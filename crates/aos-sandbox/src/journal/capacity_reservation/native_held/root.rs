@@ -10,7 +10,7 @@ use aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion
 
 use super::super::super::{
     JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
-    encoded_transaction_append_bytes, validate_transaction,
+    validate_transaction,
 };
 use super::{
     NativeHeldCapacityAppendV3, NativeHeldCapacityChangeV3, NativeHeldCapacityPurposeV3,
@@ -132,12 +132,8 @@ pub fn root_native_capacity_transition_v3(
     {
         return Err(invalid("native Root continuation old floor or count"));
     }
-    let mut records = proposal_records(proposal)?;
-    records.push(JournalRecord::delete(
-        RecordNamespace::GlobalCapacityReservation,
-        old.to_journal_record().key().to_vec(),
-    ));
-    let next_request = match next {
+    let records = proposal_records(proposal)?;
+    match next {
         Some(next) => {
             let request = next.request();
             if proposal.maximum_remaining_transactions == 0
@@ -149,41 +145,22 @@ pub fn root_native_capacity_transition_v3(
                     "native Root successor does not preserve original floor",
                 ));
             }
-            records.push(next.to_journal_record());
-            Some(request)
         }
         None if proposal.maximum_remaining_transactions == 0
-            && proposal.kind == Kind::TerminalAckStored =>
-        {
-            None
-        }
+            && proposal.kind == Kind::TerminalAckStored => {}
         None => return Err(invalid("native Root premature capacity deletion")),
-    };
-    let transaction = JournalTransaction::new(proposal.transaction_id, records)?;
-    validate_transaction(&transaction, limits)?;
-    let consumed_bytes = encoded_transaction_append_bytes(&transaction)?;
-    let consumed_records = u32::try_from(transaction.records().len())
-        .map_err(|_| JournalError::LimitExceeded("native Root consumed records"))?;
-    let (remaining_records, remaining_bytes) = next_request.map_or((0, 0), |request| {
-        (
-            request.terminal_records.max(request.poison_records),
-            request.terminal_bytes.max(request.poison_bytes),
-        )
-    });
-    if remaining_records
-        .checked_add(consumed_records)
-        .is_none_or(|records| {
-            records > old_request.terminal_records.max(old_request.poison_records)
-        })
-        || remaining_bytes
-            .checked_add(consumed_bytes)
-            .is_none_or(|bytes| bytes > old_request.terminal_bytes.max(old_request.poison_bytes))
-    {
-        return Err(JournalError::LimitExceeded(
-            "native Root complete transferred suffix",
-        ));
     }
-    Ok(transaction)
+    super::transfer::frame_transfer(
+        proposal.transaction_id,
+        records,
+        old,
+        next,
+        limits,
+        (
+            "native Root consumed records",
+            "native Root complete transferred suffix",
+        ),
+    )
 }
 
 fn proposal_records(

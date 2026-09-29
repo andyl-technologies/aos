@@ -261,6 +261,98 @@ fn v1_bytes_remain_exact_and_cannot_be_inferred_into_v2_or_mixed() {
 }
 
 #[test]
+fn pre_cas_closed_terminal_has_only_one_native_ack_continuation() {
+    let fixture = Fixture::new(true);
+    let one = sign(fixture.prepared());
+    let disposition = fixture.closed();
+    let cut = RootNativeCutV1::capture(
+        RootNativeCutKindV1::Disposition,
+        [140; 16],
+        &legacy(&fixture),
+        fixture.attempt.attempt_id,
+    )
+    .unwrap();
+    let closed = fixture.sidecar(10, None, vec![one.clone()], Some(disposition.clone()));
+    let (seven, ack, settlement) = super::terminal::terminal(&fixture, &one, &disposition);
+    let make = |phase, prepared, controls| {
+        RootNativeHeldSidecarV1::new(
+            fixture.scope,
+            [0; 16],
+            Some(disposition.clone()),
+            Some(settlement),
+            None,
+            NativeHeldCompletionSuffixV1::new(
+                Owner::Root,
+                phase,
+                fixture.scope.flight,
+                prepared,
+                controls,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let graph = |claims| {
+        let value = sidecar(&fixture, &claims, Some(cut.clone()));
+        let mut records = fixture.legacy.clone();
+        records.insert(
+            native_root_sidecar_key_v2(fixture.attempt.attempt_id).unwrap(),
+            value.to_canonical_bytes().unwrap(),
+        );
+        checked_v2(&records).unwrap()
+    };
+    let before = graph(closed);
+    let after = graph(make(
+        12,
+        Some(ack.clone()),
+        vec![one.clone(), seven.clone()],
+    ));
+    let terminal = graph(make(13, None, vec![one, seven, sign(ack)]));
+
+    // Today's original attempt remains Reserved: native terminal counting must
+    // not import its independent ordinary replacement/Inventory obligations.
+    assert_eq!(
+        before.data_class(fixture.attempt.attempt_id),
+        Some(RootNativeDataClassV2::LiveOriginal)
+    );
+    assert!(matches!(
+        after.legacy().provider_attempts[&fixture.attempt.attempt_id].state,
+        crate::mount_source_acquisition_state::ProviderAttemptStateV2::Reserved
+    ));
+    let retained =
+        validate_native_root_transition_v2(&before, &before, fixture.attempt.attempt_id, [141; 16])
+            .unwrap();
+    assert_eq!(retained.maximum_remaining_transactions, 4);
+    let recorded =
+        validate_native_root_transition_v2(&before, &after, fixture.attempt.attempt_id, [142; 16])
+            .unwrap();
+    assert_eq!(recorded.kind, RootNativeTransitionKindV2::TerminalRecorded);
+    assert_eq!(recorded.maximum_remaining_transactions, 1);
+    assert!(
+        after.sidecars()[&fixture.attempt.attempt_id]
+            .suffix()
+            .control(Kind::ProviderHeld)
+            .is_none()
+    );
+    assert_eq!(
+        after.sidecars()[&fixture.attempt.attempt_id].response_transaction(),
+        [0; 16]
+    );
+    let acknowledged = validate_native_root_transition_v2(
+        &after,
+        &terminal,
+        fixture.attempt.attempt_id,
+        [143; 16],
+    )
+    .unwrap();
+    assert_eq!(
+        acknowledged.kind,
+        RootNativeTransitionKindV2::TerminalAckStored
+    );
+    assert_eq!(acknowledged.maximum_remaining_transactions, 0);
+}
+
+#[test]
 fn local_no_interest_marker_uses_actual_fixed_encoder_and_refuses_substitution() {
     let fixture = Fixture::new(true);
     let attempt = RecordRefV2 {

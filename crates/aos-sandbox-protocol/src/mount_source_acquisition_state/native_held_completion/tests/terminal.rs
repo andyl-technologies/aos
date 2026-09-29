@@ -40,7 +40,7 @@ pub(super) fn provider_witness(family: Family) -> NativeHeldByteWitnessV1 {
     NativeHeldByteWitnessV1::new(family, key, digest(90)).unwrap()
 }
 
-fn terminal(
+pub(super) fn terminal(
     fixture: &Fixture,
     one: &SignedNativeHeldControlV1,
     r: &RootNativeDispositionAssertionV1,

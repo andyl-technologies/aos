@@ -79,6 +79,37 @@ impl SourceNativeHeldLifecycleTransactionV1 {
     }
 }
 
+/// Binds retained Release status DATA to its actual held carrier and session history.
+///
+/// The complete canonical graph and terminal held archive are validated before
+/// returning the existing six-field association for Reserved or immutable
+/// Pending/Unavailable status. Completed status remains associated after genuine
+/// Release and later current-owner advances, without proving an outstanding floor.
+///
+/// This DATA proves neither current authorization, original custody closure nor
+/// committed capacity admission. Those remain protected producer obligations.
+///
+/// # Errors
+///
+/// Rejects incomplete, duplicate or noncanonical graphs, nonterminal or legacy
+/// carriers, missing or compacted Release associations, foreign session history
+/// and outcomes other than Reserved or immutable Pending/Unavailable.
+pub fn native_held_release_status_binding_v1<'records>(
+    records: impl IntoIterator<Item = (&'records [u8], &'records [u8])>,
+    acquisition: ObjectDigest,
+) -> Result<NativeReleaseStatusCapacityBindingV1, LedgerFormatErrorV1> {
+    let records = graph::collect(records)?;
+    graph::validate(&records)?;
+
+    let key = native_completion::native_completion_key_v2(acquisition);
+    let bytes = records
+        .get(&key)
+        .ok_or(corrupt("held status retained carrier"))?;
+    let held = Record::from_canonical_bytes(&key, bytes)?;
+    graph::TerminalHeldArchive::read(&held)?;
+    status_binding(&records, &held)
+}
+
 /// Compares complete current graphs for one narrowly named held lifecycle.
 ///
 /// Release admission requires a terminal archive and the full original Complete
@@ -400,14 +431,31 @@ fn status_binding(
                 _ => None,
             },
         )
-        .ok_or(corrupt("held status current Release Attempt"))?;
+        .ok_or(corrupt("held status retained Release Attempt"))?;
+
+    // The current Holder can advance independently of this retained Release.
+    // Neither it nor the original Acquire history identifies the Release session.
+    let history_key = format::session_history_key(
+        attempt.provider.authority_id(),
+        attempt.holder.authority_id(),
+        attempt.session_binding,
+    );
+    let DecodedRecordV1::SessionHistory(history) = format::decode_record(
+        &history_key,
+        records
+            .get(&history_key)
+            .ok_or(corrupt("held status retained Release history"))?,
+    )?
+    else {
+        return Err(corrupt("held status Release history kind"));
+    };
     release_fence::release_status_binding(
         &rows.acquisition,
         &held.original,
         &rows.attempt,
         &release,
         &attempt,
-        &rows.holder,
+        &history,
         &held.to_canonical_bytes()?,
     )
 }

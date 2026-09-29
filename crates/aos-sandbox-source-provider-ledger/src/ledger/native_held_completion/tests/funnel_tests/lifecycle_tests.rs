@@ -1,7 +1,8 @@
 //! Full canonical lifecycle DATA fixtures; no owner, cancellation or IO proof.
 
 use super::super::super::{
-    SourceNativeHeldLifecycleV1 as Lifecycle, propose_native_held_lifecycle_v1,
+    SourceNativeHeldLifecycleV1 as Lifecycle, native_held_release_status_binding_v1,
+    propose_native_held_lifecycle_v1,
 };
 use super::*;
 use crate::ledger::{completion, model::*};
@@ -262,13 +263,20 @@ fn cold_terminal_reserved_pending_and_inexact_inverse_are_retained_negatives() {
 }
 
 fn add_fresh_acquire(flight: &Flight, successor: bool) -> Flight {
+    add_acquire(flight, successor.then_some(70), [144; 16], [145; 32])
+}
+
+fn add_acquire(
+    flight: &Flight,
+    successor: Option<u8>,
+    request_id: [u8; 16],
+    nonce: [u8; 32],
+) -> Flight {
     let rows = graph::Companions::read(&flight.rows, &flight.record).unwrap();
-    let mut session = if successor {
-        fixtures::session(70)
-    } else {
-        rows.holder.clone()
-    };
-    if successor {
+    let mut session = successor
+        .map(fixtures::session)
+        .unwrap_or_else(|| rows.holder.clone());
+    if successor.is_some() {
         session.session_generation = rows.holder.session_generation + 1;
         session.predecessor_session_binding = Some(rows.holder.session_binding);
         session.supersession_evidence_digest = Some(d(143));
@@ -276,7 +284,7 @@ fn add_fresh_acquire(flight: &Flight, successor: bool) -> Flight {
         session.next_acquisition_sequence = rows.holder.next_acquisition_sequence;
     }
     session.revision += 1;
-    let request_sequence = if successor {
+    let request_sequence = if successor.is_some() {
         1
     } else {
         session.next_request_sequence
@@ -285,9 +293,9 @@ fn add_fresh_acquire(flight: &Flight, successor: bool) -> Flight {
     let fresh = fixtures::Graph::applying_for_session(
         session,
         request_sequence,
-        [144; 16],
+        request_id,
         acquisition_sequence,
-        [145; 32],
+        nonce,
     );
     let record = initial(fresh.native.clone());
     let mut after = flight.rows.clone();
@@ -623,6 +631,14 @@ fn both_release_predecessors_use_actual_owner_counts_and_envelope8_status_proven
                 .into(),
         );
         assert_eq!(proposal.status_binding().unwrap().owner_digest, expected);
+        assert_eq!(
+            native_held_release_status_binding_v1(
+                after.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
+                native.original.acquisition_id,
+            )
+            .unwrap(),
+            *proposal.status_binding().unwrap()
+        );
         assert_eq!(evidence::artifact(&native).unwrap(), artifact);
         assert!(proposal.original_custody_required().is_some());
         assert!(
@@ -1073,6 +1089,161 @@ fn actual_held_status_fence_survives_genuine_release_and_refuses_projected_cut()
 }
 
 #[test]
+fn retained_status_uses_release_history_independently_of_acquire_and_current_sessions() {
+    for release_successor in [false, true] {
+        let mut complete = completed_terminal();
+        if release_successor {
+            let mut fresh = add_fresh_acquire(&complete, true);
+            fresh.first_query(false);
+            fresh.settle_cold();
+            retire(&mut fresh, true);
+            complete.rows = fresh.rows;
+        }
+        let flight = marker(&complete);
+        let admitted = release_admission(&flight);
+        let binding = *propose_lifecycle(
+            &flight.rows,
+            &admitted,
+            &flight.record,
+            Lifecycle::ReleaseAdmitted,
+        )
+        .unwrap()
+        .status_binding()
+        .unwrap();
+        assert_eq!(
+            binding.chain_head_digest == flight.record.original.session_binding,
+            !release_successor
+        );
+
+        for status in [
+            SourceProviderStatus::Pending,
+            SourceProviderStatus::Unavailable,
+        ] {
+            let status_rows = fenced_status_rows(&admitted, &flight.record, status, false);
+            let released = release_completion(&status_rows, &flight.record, status, true);
+            propose_lifecycle(
+                &status_rows,
+                &released,
+                &flight.record,
+                Lifecycle::ReleaseCompleted,
+            )
+            .unwrap();
+            let released = Flight {
+                rows: released,
+                record: flight.record.clone(),
+            };
+
+            for successor in [None, Some(71)] {
+                let current = add_acquire(&released, successor, [146; 16], [147; 32]);
+                let rows = graph::Companions::read(&current.rows, &flight.record).unwrap();
+                assert_eq!(
+                    rows.holder.session_binding == binding.chain_head_digest,
+                    successor.is_none()
+                );
+                assert_eq!(
+                    native_held_release_status_binding_v1(
+                        current
+                            .rows
+                            .iter()
+                            .map(|(k, v)| (k.as_slice(), v.as_slice())),
+                        flight.record.original.acquisition_id,
+                    )
+                    .unwrap(),
+                    binding
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn retained_status_rejects_missing_associations_wrong_history_and_nonstatus_outcomes() {
+    let flight = marker(&completed_terminal());
+    let admitted = release_admission(&flight);
+    let status = SourceProviderStatus::Pending;
+    let status_rows = fenced_status_rows(&admitted, &flight.record, status, false);
+    let released = Flight {
+        rows: release_completion(&status_rows, &flight.record, status, true),
+        record: flight.record.clone(),
+    };
+    let current = add_fresh_acquire(&released, true);
+    let binding = *propose_lifecycle(
+        &flight.rows,
+        &admitted,
+        &flight.record,
+        Lifecycle::ReleaseAdmitted,
+    )
+    .unwrap()
+    .status_binding()
+    .unwrap();
+    let associate = |records: &graph::Records| {
+        native_held_release_status_binding_v1(
+            records.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
+            flight.record.original.acquisition_id,
+        )
+    };
+    let rows = graph::Companions::read(&current.rows, &flight.record).unwrap();
+    let history_key = format::session_history_key(
+        flight.record.original.provider_id,
+        flight.record.original.holder_id,
+        binding.chain_head_digest,
+    );
+    let mut required = vec![
+        history_key.clone(),
+        format::release_key(&ReleaseKeyV1 {
+            provider_id: flight.record.original.provider_id,
+            holder_id: flight.record.original.holder_id,
+            acquisition_id: flight.record.original.acquisition_id,
+        }),
+        rows.keys[1].clone(),
+        rows.keys[5].clone(),
+    ];
+    required.extend(current.rows.iter().filter_map(|(key, bytes)| {
+        matches!(format::decode_record(key, bytes), Ok(DecodedRecordV1::Attempt(attempt))
+            if attempt.attempt_digest == binding.artifact_digest)
+        .then(|| key.clone())
+    }));
+    for key in required {
+        let mut missing = current.rows.clone();
+        missing.remove(&key);
+        assert!(associate(&missing).is_err());
+    }
+
+    let mut wrong_history = current.rows.clone();
+    wrong_history.insert(history_key, format::encode_session_history(&rows.holder));
+    assert!(associate(&wrong_history).is_err());
+    let mut legacy = current.rows.clone();
+    legacy.insert(
+        rows.keys[5].clone(),
+        format::encode_native_completion_v2(&flight.record.original),
+    );
+    assert!(associate(&legacy).is_err());
+    let nonterminal = marker(&Flight::held_prepared());
+    assert!(associate(&nonterminal.rows).is_err());
+    assert!(
+        associate(&release_completion(
+            &admitted,
+            &flight.record,
+            SourceProviderStatus::Complete,
+            false,
+        ))
+        .is_err()
+    );
+    assert!(associate(&flight.rows).is_err());
+    assert!(
+        native_held_release_status_binding_v1(
+            current
+                .rows
+                .iter()
+                .chain(current.rows.iter())
+                .map(|(k, v)| (k.as_slice(), v.as_slice())),
+            flight.record.original.acquisition_id,
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn release_admission_rejects_missing_complete_wrong_revision_extra_owner_and_authority_patch() {
     let flight = marker(&completed_terminal());
     let valid = release_admission(&flight);
@@ -1158,7 +1329,13 @@ fn completed_archive_allows_current_successor_and_valid_faulted_graph_without_ze
         );
     }
     let closed = marker(&complete);
-    let mut faulted = release_admission(&closed);
+    let admitted = release_admission(&closed);
+    let binding = native_held_release_status_binding_v1(
+        admitted.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
+        closed.record.original.acquisition_id,
+    )
+    .unwrap();
+    let mut faulted = admitted;
     let mut rows = graph::Companions::read(&faulted, &closed.record).unwrap();
     rows.acquisition.revision += 1;
     rows.acquisition.state = ProviderAcquisitionStateV1::Faulted;
@@ -1181,6 +1358,14 @@ fn completed_archive_allows_current_successor_and_valid_faulted_graph_without_ze
     rows.authority.inventory_generation += 1;
     refresh_inventory(&mut faulted, &mut rows.authority);
     graph::validate(&faulted).unwrap();
+    assert_eq!(
+        native_held_release_status_binding_v1(
+            faulted.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
+            closed.record.original.acquisition_id,
+        )
+        .unwrap(),
+        binding
+    );
     assert_eq!(
         completion::original_native_complete_artifact(
             &closed.record.original,

@@ -1,9 +1,10 @@
 //! Pure signed canonical Mount graph fixtures, without IO or custody constructors.
 
-use crate::mount_source_acquisition_state::checkpoint::validate_session_checkpoint;
-use crate::mount_source_acquisition_state::format::execution_digest;
-use crate::mount_source_acquisition_state::*;
-use crate::{
+use super::protocol;
+use super::protocol::mount_source_acquisition_state::checkpoint::validate_session_checkpoint;
+use super::protocol::mount_source_acquisition_state::format::execution_digest;
+use super::protocol::mount_source_acquisition_state::*;
+use super::protocol::{
     PeerCredentials, PeerPolicy, ValidatedAcquireMountSourceRequest,
     decode_historical_acquire_mount_source_request, decode_mount_request, semantics,
 };
@@ -558,7 +559,7 @@ pub(super) fn initial_signed_graph_with_catalog(
 
 fn acquire_intent(
     scope: ProviderScopeV2,
-    request: &aos_sandbox_protocol::ValidatedAcquireMountSourceRequest,
+    request: &protocol::ValidatedAcquireMountSourceRequest,
     mount_request: Vec<u8>,
     mount_plan_digest: [u8; 32],
     ownership_lease_digest: [u8; 32],
@@ -583,7 +584,7 @@ fn acquire_intent(
     }
 }
 
-fn assignment(request: &aos_sandbox_protocol::ValidatedAcquireMountSourceRequest) -> AssignmentV2 {
+fn assignment(request: &protocol::ValidatedAcquireMountSourceRequest) -> AssignmentV2 {
     AssignmentV2 {
         sandbox_id: *request.fence().sandbox_id(),
         incarnation_id: *request.fence().incarnation_id(),
@@ -596,7 +597,7 @@ fn assignment(request: &aos_sandbox_protocol::ValidatedAcquireMountSourceRequest
 
 #[allow(clippy::too_many_arguments)]
 fn initial_row(
-    request: &aos_sandbox_protocol::ValidatedAcquireMountSourceRequest,
+    request: &protocol::ValidatedAcquireMountSourceRequest,
     mount_request: Vec<u8>,
     mount_plan_digest: [u8; 32],
     ownership_lease_digest: [u8; 32],
