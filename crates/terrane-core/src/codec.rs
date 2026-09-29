@@ -112,8 +112,9 @@ pub fn parse_envelope(encoded: &[u8]) -> Result<EncodedChunk<'_>, CodecError> {
 
 /// Checks the declared plaintext length and encoded body overhead.
 ///
-/// The ratio check compares integers without rounding away a fraction of a
-/// byte: `100 * (body - plaintext) <= 12800 + plaintext`.
+/// The ratio check includes the dictionary ID in the encoded body and
+/// compares integers without rounding away a fraction of a byte:
+/// `100 * (encoded_body - plaintext) <= 12800 + plaintext`.
 ///
 /// # Errors
 ///
@@ -135,7 +136,10 @@ pub fn validate_envelope_size(
         }
         Codec::Raw => Ok(()),
         Codec::Zstd | Codec::ZstdDictionary(_) => {
-            let excess = chunk.body.len().saturating_sub(declared_plaintext_len) as u128;
+            let encoded_body_len = chunk.body.len().saturating_add(
+                usize::from(matches!(chunk.codec, Codec::ZstdDictionary(_))) * DICTIONARY_ID_SIZE,
+            );
+            let excess = encoded_body_len.saturating_sub(declared_plaintext_len) as u128;
             let scaled_excess = excess * 100;
             let scaled_allowance =
                 (FRAME_OVERHEAD_BYTES as u128 * 100) + declared_plaintext_len as u128;
@@ -210,6 +214,16 @@ mod tests {
         assert_eq!(
             validate_envelope_size(raw, 2, 100),
             Err(CodecError::RawLengthMismatch)
+        );
+
+        let dictionary_body = [0; 198];
+        let dictionary_chunk = EncodedChunk {
+            codec: Codec::ZstdDictionary([0; 32]),
+            body: &dictionary_body,
+        };
+        assert_eq!(
+            validate_envelope_size(dictionary_chunk, 100, 100),
+            Err(CodecError::CompressedLengthTooLarge),
         );
     }
 }

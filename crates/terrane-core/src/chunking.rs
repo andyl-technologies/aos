@@ -407,6 +407,8 @@ mod tests {
     fn sparse_masks_use_exact_48_byte_span_and_level_two() {
         let strict = sparse_mask(48, 22);
         let eager = sparse_mask(48, 18);
+        assert_eq!(strict, 0x0000_b6db_6db7_0000);
+        assert_eq!(eager, 0x0000_aab5_56ab_0000);
         assert_eq!(strict.count_ones(), 22);
         assert_eq!(eager.count_ones(), 18);
         assert_eq!(strict.trailing_zeros(), 16);
