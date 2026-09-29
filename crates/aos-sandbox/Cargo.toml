@@ -21,6 +21,7 @@ aos-sandbox-agent.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-ownership-protocol.workspace = true
 aos-sandbox-protocol.workspace = true
+aos-sandbox-source-provider-ledger.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
 axum.workspace = true
 buffa.workspace = true

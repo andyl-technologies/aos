@@ -48,6 +48,10 @@ fn graph(state: &State) -> Result<RootNativeHeldGraphV2, JournalError> {
 fn require_named_funding(state: &State) -> Result<(), JournalError> {
     for family in canonical_reservations(state)? {
         match family {
+            // Source5 is pure DATA only until its own named writer is implemented.
+            CanonicalCapacityFamily::OriginalSource5(_) => {
+                return Err(JournalError::ProtectedBoundary);
+            }
             CanonicalCapacityFamily::Native3(floor)
                 if floor.request().purpose.owner_namespace()
                     == RecordNamespace::MountSourceAcquisition =>
@@ -474,10 +478,13 @@ pub(super) fn validate_replayed_transaction(
         };
         // Dispatch the complete canonical family, not version5 alone. Future
         // distinct namespace/purpose tuples must have their own strict codec.
-        let CanonicalCapacityFamily::OriginalRoot5(floor) =
-            CanonicalCapacityFamily::decode(record.key(), bytes)?
-        else {
-            continue;
+        let floor = match CanonicalCapacityFamily::decode(record.key(), bytes)? {
+            CanonicalCapacityFamily::OriginalRoot5(floor) => floor,
+            // No producer or protected replay edge admits Source5 in this leaf.
+            CanonicalCapacityFamily::OriginalSource5(_) => {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            _ => continue,
         };
         let attempt = floor.request().owner_id;
         if selected.is_some_and(|old| old != attempt) {

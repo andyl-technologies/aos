@@ -22,6 +22,7 @@ pub(in crate::journal) use super::family::{require_legacy_owner, require_legacy_
 
 mod admission;
 mod original;
+mod original_source;
 mod profile;
 mod root;
 mod root_v2;
@@ -35,6 +36,10 @@ pub use admission::{
 pub use original::{
     ORIGINAL_ROOT_CAPACITY_MAXIMUM_VALUE_BYTES_V5, ORIGINAL_ROOT_PREPARED_BYTES_V5,
     OriginalRootCapacityRecordV5,
+};
+pub use original_source::{
+    ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5, OriginalSourceCapacityBudgetsV5,
+    OriginalSourceCapacityRecordV5,
 };
 pub use profile::provider_native_capacity_transition_v2;
 pub use profile::{
@@ -143,6 +148,12 @@ pub struct NativeHeldCapacityRequestV3 {
 
 impl NativeHeldCapacityRequestV3 {
     fn validate(&self) -> Result<(), JournalError> {
+        self.validate_with_maximum(self.purpose.maximum_future_transactions())
+    }
+
+    // Only closed original-family codecs may choose a different fixed count.
+    // Every V3 constructor/decoder continues to call validate(), preserving 19.
+    fn validate_with_maximum(&self, maximum: u32) -> Result<(), JournalError> {
         if self.owner_id == [0; 32]
             || self.owner_digest == [0; 32]
             || self.operation_id == [0; 16]
@@ -150,7 +161,7 @@ impl NativeHeldCapacityRequestV3 {
             || self.checkpoint_digest == [0; 32]
             || self.chain_head_digest == [0; 32]
             || self.future_transactions == 0
-            || self.future_transactions > self.purpose.maximum_future_transactions()
+            || self.future_transactions > maximum
             || self.terminal_records == 0
             || self.terminal_bytes == 0
             || self.poison_records == 0
