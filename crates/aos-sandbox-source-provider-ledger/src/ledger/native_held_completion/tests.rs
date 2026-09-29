@@ -46,6 +46,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod fixtures;
 mod funnel_tests;
 mod original_provenance_tests;
+mod original_source_owner_tests;
 mod recovery_tests;
 
 fn d(byte: u8) -> ObjectDigest {

@@ -559,7 +559,7 @@ pub(super) fn validate_recovery_before(
         &key, Some(bytes))
 }
 
-pub(super) fn exact_mutations(
+pub(crate) fn exact_mutations(
     before: &Records,
     after: &Records,
     expected: &BTreeSet<Vec<u8>>,
