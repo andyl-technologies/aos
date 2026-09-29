@@ -85,9 +85,9 @@ fn step(machine: &[Atom], state: &[usize], byte: u8, grant_separator: bool) -> V
 
 pub(super) fn matches(pattern: &str, bytes: &[u8]) -> bool {
     let machine = atoms(pattern);
-    let state = bytes
-        .iter()
-        .fold(start(&machine), |state, &byte| step(&machine, &state, byte, false));
+    let state = bytes.iter().fold(start(&machine), |state, &byte| {
+        step(&machine, &state, byte, false)
+    });
     state.contains(&machine.len())
 }
 
