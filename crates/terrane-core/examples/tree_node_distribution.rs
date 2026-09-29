@@ -91,9 +91,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 );
 
                 // Roots and the final partial node are allowed below MIN_NODE.
-                // Complete nodes still have to respect the stated target band.
+                // TREE-22 assesses a distribution only with 100 complete nodes;
+                // smaller levels remain in the report and obey the hard cap.
                 if oversized != 0
-                    || complete_mean.is_some_and(|mean| !(8_192..=16_384).contains(&mean))
+                    || (report.complete_nodes() >= 100
+                        && complete_mean.is_some_and(|mean| !(8_192..=16_384).contains(&mean)))
                 {
                     failed = true;
                     eprintln!(
