@@ -214,14 +214,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.store-error-taxonomy`,
   `checks.terrane.gates.store-trait-split`,
   `checks.terrane.gates.runtime-agnostic`.
-- [ ] **T-PACK-1** Pack writer and reader, per-pack index objects, trailer
-  recovery, meta packs, tree-order emission. — satisfies PACK-1 to PACK-16;
+- [x] **T-PACK-1** Pack writer and reader, per-pack index objects, trailer
+  recovery, meta packs, tree-order emission. Durable backend publication and
+  ref-advance ordering are completed jointly with T-BKT-1 and T-REF-2.
+  — satisfies PACK-1 to PACK-16;
   `checks.terrane.gates.pack-header`,
   `checks.terrane.gates.pack-self-describing`,
   `checks.terrane.gates.pack-single-writer`.
-- [ ] **T-PACK-2** Merged index shards by generation, tombstones, rebuild
+- [x] **T-PACK-2** Merged index shards by generation, tombstones, rebuild
   from per-pack indexes, and bundles. Narrowed to trunk scope: filters are
-  T-PACK-3 on B-bandwidth. — satisfies PACK-17 to PACK-20, PACK-24 to
+  T-PACK-3 on B-bandwidth. Authoritative generation-manifest publication
+  is completed jointly with T-BKT-1. — satisfies PACK-17 to PACK-20, PACK-24 to
   PACK-28; `checks.terrane.gates.index-shard-generations`,
   `checks.terrane.gates.index-rebuild`,
   `checks.terrane.gates.bundle-verify`.
