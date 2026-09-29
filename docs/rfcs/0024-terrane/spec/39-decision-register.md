@@ -816,6 +816,40 @@ is added rather than editing history.
     before the format freeze; existing encodings, identities and golden
     vectors remain unchanged. Requirement IDs remain stable.
 
+- **[D-48] Make filesystem coordination and conflict mutability explicit.**
+  - **Status:** Decided
+  - **Decision:** Conflict refs use CAS as REF-3 and the key registry
+    require. Register filesystem-only stable lock inodes and unpublished
+    same-directory staging names separately from logical bucket keys.
+  - **Rationale:** The layout called conflict refs create-once, preventing
+    their required resolution. BKT-13 and BKT-14 require temporary writes
+    and exclusion while BKT-1 otherwise prohibited their filesystem names.
+  - **Affects:** REF-3, BKT-1 to BKT-3, BKT-13 and BKT-14. Logical bucket
+    keys and encoded records remain unchanged; requirement IDs stay stable.
+
+- **[D-49] Exclude the filesystem current-directory ref segment.**
+  - **Status:** Decided
+  - **Decision:** REF-1 rejects a segment equal to `.` as well as its
+    existing consecutive-dot restriction. Other dotted names stay valid.
+  - **Rationale:** A `.` segment aliases another key on a filesystem,
+    contradicting BKT-3's identical layout and REF-1's distinct names.
+  - **Affects:** REF-1 and BKT-3; no encoding or golden changes and no
+    requirement renumbering.
+
+- **[D-50] Publish index generations through an authoritative pointer.**
+  - **Status:** Decided
+  - **Decision:** Optional CAPABILITIES key 9 selects the current index
+    generation after its manifest is durably stored. Publication uses CAS,
+    never decreases the generation, and survives startup probes unchanged.
+    Manifest shard entries omit both filter fields when no filter exists.
+  - **Rationale:** STORE-11 forbids authoritative LIST, but the layout had
+    no way to discover a published generation after reopening. Requiring
+    filter fields also prevented publishing a shard without a filter.
+  - **Affects:** BKT-4, BKT-10, STORE-11, PACK-17 and their CDDL records.
+    This draft correction precedes the format freeze and preserves existing
+    encodings when key 9 is absent and filter fields are present.
+    Requirement IDs remain stable.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

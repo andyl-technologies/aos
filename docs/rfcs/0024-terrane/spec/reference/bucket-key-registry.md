@@ -79,6 +79,25 @@ pointers, [`../10-derived-data.md`](../10-derived-data.md)).
 Keys under any other prefix are reserved. A reader MUST ignore them and
 scrub MUST report them (BKT-1).
 
+## Filesystem coordination files
+
+These registered filesystem-only names implement BKT-13 and BKT-14 and
+are not logical bucket keys or objects. They do not appear in object-store
+buckets, authoritative catalogs, or logical listings.
+
+| Name | Holds | Rule |
+| --- | --- | --- |
+| `.terrane-locks/<key-digest>` | local exclusion inode | stable while writers can hold it; never replaced or unlinked |
+| `<directory>/.terrane-tmp:<random-id>` | unpublished staged bytes | synced before atomic publication; never readable as content |
+
+`<key-digest>` is lowercase hexadecimal BLAKE3-256 of the logical key's
+ASCII bytes; `<random-id>` is lowercase hexadecimal of 16 secure random
+bytes. Coordination files have no content identity or cross-provider
+version token.
+
+The colon in staging names is forbidden by REF-1, so a staged file cannot
+alias a valid ref segment.
+
 ## Host-tier prefixes
 
 A `disk` tier is a `file://` bucket in the layout above plus these

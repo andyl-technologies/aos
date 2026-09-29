@@ -31,7 +31,8 @@ has pointed. The object encoding is not git's, for the reasons in
 - **[REF-1]** A ref name MUST match `refs/<class>/<path>` where `<class>` is
   one of `heads`, `tags`, `notes`, `jobs`, `conflicts`, `derived`, and
   `<path>` is one or more
-  non-empty segments of printable ASCII excluding `/`, `..`, control
+  non-empty segments of printable ASCII excluding `/`, the segment `.`,
+  consecutive dots `..`, control
   characters, and the characters `~^:?*[\`. Names are case-sensitive.
   *Gate:* `gate:ref-names`.
 - **[REF-2]** `refs/heads/<path>` is a **branch**: it advances by

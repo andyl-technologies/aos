@@ -37,7 +37,7 @@ nothing else.
     tags/<tenant>/<name>                 tag ref record        create-once
     notes/<kind>/<tenant>/<name>         advisory sidecar      CAS
     jobs/<tenant>/<id>                   tree-job ref record   CAS
-    conflicts/<tenant>/<ref>/<seq>       unresolved merge      create-once
+    conflicts/<tenant>/<ref>/<seq>       unresolved merge      CAS
     derived/<tenant>/<path>              realization root      CAS
   logs/
     refs/heads/<tenant>/<name>/<seq>     commit log record     create-once
@@ -89,7 +89,19 @@ so a reader can fetch a generation atomically and detect a partial one.
   shard and filter it lists. A reader MUST NOT use any shard from a
   generation whose
   `MANIFEST` is absent or lists a shard the reader cannot fetch or verify.
+  The published generation MUST be selected through `CAPABILITIES` key 9
+  by conditional write after the manifest, and MUST NOT decrease.
   *Gate:* `gate:index-generation-manifest`.
+
+The optional `CAPABILITIES` key 9 selects the current authoritative index
+generation. A writer first stores and verifies every listed shard and
+filter, then writes that generation's immutable `MANIFEST`, and finally
+advances key 9 by CAS without decreasing its value. Readers fetch this
+pointer and the exact named manifest; they never discover a generation by
+`LIST`. An absent pointer supplies no published catalog. Startup probes
+preserve the pointer, and a failed pointer CAS leaves an unpublished
+generation available only for recovery. A manifest entry omits both filter
+fields when no filter is published for that shard.
 
 ### `refs/heads/`
 
@@ -113,7 +125,7 @@ and other data that MUST NOT affect identity or authority
 Tree-job checkpoints, unresolved multi-writer merges, and memoized
 realization roots, as registered by [`09-refs-and-commits.md`](09-refs-and-commits.md).
 Job and derived refs are branches with the mutability of `refs/heads/`;
-conflict records are written once at their sequence number.
+conflict refs advance by resolution at their original conflict key (REF-3).
 
 ### `logs/refs/heads/`
 
@@ -215,6 +227,14 @@ A `bucket(file://<root>)` is the same layout on a local filesystem.
   across read, compare, write, and rename, or an exchange rename against
   the observed inode. A filesystem that provides neither MUST be reported
   as `refs: single-writer`. *Gate:* `gate:bucket-file-cas`.
+Filesystem coordination files are separate from logical bucket keys.
+The reserved `.terrane-locks/<key-digest>` files provide stable exclusion
+inodes; `.terrane-tmp:<random-id>` files in a destination's directory hold
+unpublished writes. Readers and logical listings ignore both, and scrub
+recognizes them as coordination files rather than unknown bucket objects.
+Writers never replace or unlink a live lock inode. A copied bucket recreates
+locks locally and never treats copied staging files as published content.
+
 - **[BKT-15]** A `disk` tier's durable state ([`14-host-tier.md`](14-host-tier.md))
   MUST be a valid `file://` bucket under this layout, extended only by the
   registered host-tier prefixes in

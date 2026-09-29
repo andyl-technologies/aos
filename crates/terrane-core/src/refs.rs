@@ -287,7 +287,7 @@ impl RefName {
     /// # Errors
     ///
     /// Returns [`RefNameError`] for an unknown class, empty segment,
-    /// forbidden byte, or a segment containing two consecutive dots.
+    /// forbidden byte, a current-directory segment, or consecutive dots.
     pub fn parse(value: &str) -> Result<Self, RefNameError> {
         let mut components = value.split('/');
         if components.next() != Some("refs") {
@@ -310,7 +310,7 @@ impl RefName {
             if component.is_empty() {
                 return Err(RefNameError::EmptySegment);
             }
-            if component.contains("..") {
+            if component == "." || component.contains("..") {
                 return Err(RefNameError::DotDot);
             }
             if component
@@ -357,7 +357,7 @@ impl RefName {
         let mut key = String::from("logs/");
         key.push_str(&self.value);
         key.push('/');
-        key.push_str(&seq.to_string());
+        key.push_str(&alloc::format!("{seq:020}"));
         Ok(key)
     }
 }
@@ -385,7 +385,7 @@ pub enum RefNameError {
     Class,
     /// The path is absent or has an empty segment.
     EmptySegment,
-    /// A segment contains `..`.
+    /// A segment is `.` or contains `..`.
     DotDot,
     /// A segment contains non-printable ASCII or a forbidden character.
     ForbiddenCharacter,
@@ -397,7 +397,7 @@ impl fmt::Display for RefNameError {
             Self::Prefix => "ref name must begin with refs/",
             Self::Class => "ref name has an unknown class",
             Self::EmptySegment => "ref name has an empty path segment",
-            Self::DotDot => "ref name contains consecutive dots",
+            Self::DotDot => "ref name contains a current-directory segment or consecutive dots",
             Self::ForbiddenCharacter => "ref name contains a forbidden character",
         };
         formatter.write_str(message)
@@ -827,7 +827,7 @@ mod tests {
         assert_eq!(branch.class().write_mode(), RefWriteMode::CompareAndSwap);
         assert_eq!(
             branch.reflog_key(17).unwrap(),
-            "logs/refs/heads/tenant/main/17"
+            "logs/refs/heads/tenant/main/00000000000000000017"
         );
         let tag = RefName::parse("refs/tags/tenant/v1").unwrap();
         assert_eq!(tag.class().write_mode(), RefWriteMode::PutIfAbsent);
@@ -892,6 +892,7 @@ mod tests {
             "refs/heads//x",
             "refs/heads/x/",
             "refs/heads/a..b",
+            "refs/heads/./main",
             "refs/heads/x\n",
             "refs/heads/é",
             "refs/heads/~",

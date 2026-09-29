@@ -268,7 +268,7 @@ IndexGenerationManifest = {
   4 => cycle,                           ; collection cycle that produced it
 }
 shard-entry = [ shard: uint, idx-hash: digest32, idx-size: uint,
-                flt-hash: digest32, flt-size: uint ]
+                ? (flt-hash: digest32, flt-size: uint) ]
 
 ; ---------------------------------------------------------------------------
 ; Store records (13-bucket-layout.md, 17-garbage-collection.md)
@@ -284,6 +284,7 @@ Capabilities = {
   6 => 1 / 2,                           ; refs mode: multi-writer, single-writer
   7 => timestamp,                       ; probed at
   ? 8 => store-profile,                 ; OBJ-8
+  ? 9 => generation,                    ; authoritative published index generation
 }
 store-profile = {
   1 => tstr,                            ; identity profile name, "terrane-v1"
