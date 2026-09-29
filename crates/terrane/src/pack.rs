@@ -113,7 +113,7 @@ impl fmt::Display for PackId {
 pub enum PackClass {
     /// Plaintext chunks stored under a chunk codec envelope.
     Data,
-    /// Canonically encoded manifests, nodes, commits, bundles, filters, or indexes.
+    /// Canonically encoded metadata, including attributes, policies, and memos.
     Meta,
 }
 
