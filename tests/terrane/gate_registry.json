@@ -67,12 +67,12 @@
   {
     "name": "gc-grace",
     "owner": "01",
-    "requirements": "prose in 01"
+    "requirements": "INV-3"
   },
   {
     "name": "identity-idempotence",
     "owner": "04",
-    "requirements": "prose in 01, OBJ-1, OBJ-5"
+    "requirements": "PERF-11, TEST-15, OBJ-1, OBJ-5"
   },
   {
     "name": "index-tree-maintenance",
@@ -82,7 +82,7 @@
   {
     "name": "no-duplicate-tiers",
     "owner": "01",
-    "requirements": "prose in 01"
+    "requirements": "INV-4"
   },
   {
     "name": "no-privileged-mounts",
@@ -127,7 +127,7 @@
   {
     "name": "ref-cas-only",
     "owner": "01",
-    "requirements": "prose in 01"
+    "requirements": "INV-2"
   },
   {
     "name": "ref-epoch-fencing",
@@ -162,7 +162,7 @@
   {
     "name": "surface-layering",
     "owner": "03",
-    "requirements": "prose in 01, ARCH-3"
+    "requirements": "PERF-11, TEST-15, ARCH-3"
   },
   {
     "name": "tree-acyclic",
@@ -202,7 +202,7 @@
   {
     "name": "view-identity",
     "owner": "01",
-    "requirements": "prose in 01"
+    "requirements": "INV-5"
   },
   {
     "name": "worker-no-network",
@@ -267,7 +267,7 @@
   {
     "name": "bucket-probe",
     "owner": "13",
-    "requirements": "BKT-10, MIG-25, TEST-7, EDGE-2, prose in 40"
+    "requirements": "BKT-10, MIG-25, TEST-7, EDGE-2, PERF-11, TEST-15"
   },
   {
     "name": "bucket-ref-cas",
@@ -282,7 +282,7 @@
   {
     "name": "commit-order",
     "owner": "12",
-    "requirements": "prose in 01, PACK-14"
+    "requirements": "PERF-11, TEST-15, PACK-14"
   },
   {
     "name": "gc-grace-window",
@@ -1247,82 +1247,82 @@
   {
     "name": "perf-cold-closure",
     "owner": "35",
-    "requirements": "prose in 35"
+    "requirements": "PERF-11, TEST-15"
   },
   {
     "name": "perf-cold-mount",
     "owner": "35",
-    "requirements": "prose in 35"
+    "requirements": "PERF-11, TEST-15"
   },
   {
     "name": "perf-cold-span",
     "owner": "35",
-    "requirements": "prose in 35, PERF-2"
+    "requirements": "PERF-11, TEST-15, PERF-2"
   },
   {
     "name": "perf-commit-delta",
     "owner": "35",
-    "requirements": "prose in 35, PERF-5"
+    "requirements": "PERF-11, TEST-15, PERF-5"
   },
   {
     "name": "perf-commit-latency",
     "owner": "35",
-    "requirements": "prose in 35"
+    "requirements": "PERF-11, TEST-15"
   },
   {
     "name": "perf-erofs-gen",
     "owner": "35",
-    "requirements": "prose in 35"
+    "requirements": "PERF-11, TEST-15"
   },
   {
     "name": "perf-fork",
     "owner": "35",
-    "requirements": "prose in 35"
+    "requirements": "PERF-11, TEST-15"
   },
   {
     "name": "perf-fsync-sync",
     "owner": "35",
-    "requirements": "prose in 35"
+    "requirements": "PERF-11, TEST-15"
   },
   {
     "name": "perf-gateway-memory",
     "owner": "35",
-    "requirements": "prose in 35"
+    "requirements": "PERF-11, TEST-15"
   },
   {
     "name": "perf-gateway-rps",
     "owner": "35",
-    "requirements": "prose in 35"
+    "requirements": "PERF-11, TEST-15"
   },
   {
     "name": "perf-gateway-zero-copy",
     "owner": "35",
-    "requirements": "prose in 35, PERF-9"
+    "requirements": "PERF-11, TEST-15, PERF-9"
   },
   {
     "name": "perf-gc-mark",
     "owner": "35",
-    "requirements": "prose in 35"
+    "requirements": "PERF-11, TEST-15"
   },
   {
     "name": "perf-hot-read",
     "owner": "35",
-    "requirements": "prose in 35, PERF-1"
+    "requirements": "PERF-11, TEST-15, PERF-1"
   },
   {
     "name": "perf-index-size",
     "owner": "35",
-    "requirements": "prose in 35"
+    "requirements": "PERF-11, TEST-15"
   },
   {
     "name": "perf-inode-memory",
     "owner": "35",
-    "requirements": "prose in 35, PERF-7"
+    "requirements": "PERF-11, TEST-15, PERF-7"
   },
   {
     "name": "perf-merge-delta",
     "owner": "35",
-    "requirements": "prose in 35, PERF-6, TEST-4"
+    "requirements": "PERF-11, TEST-15, PERF-6, TEST-4"
   },
   {
     "name": "perf-methodology",
@@ -1332,42 +1332,42 @@
   {
     "name": "perf-negotiation",
     "owner": "35",
-    "requirements": "prose in 35"
+    "requirements": "PERF-11, TEST-15"
   },
   {
     "name": "perf-nested-zero-dup",
     "owner": "35",
-    "requirements": "prose in 35"
+    "requirements": "PERF-11, TEST-15"
   },
   {
     "name": "perf-no-bookkeeping-on-read",
     "owner": "35",
-    "requirements": "prose in 35, PERF-8"
+    "requirements": "PERF-11, TEST-15, PERF-8"
   },
   {
     "name": "perf-readdir",
     "owner": "35",
-    "requirements": "prose in 35, PERF-3"
+    "requirements": "PERF-11, TEST-15, PERF-3"
   },
   {
     "name": "perf-shared-page-cache",
     "owner": "35",
-    "requirements": "prose in 35, PERF-10"
+    "requirements": "PERF-11, TEST-15, PERF-10"
   },
   {
     "name": "perf-warm-mount",
     "owner": "35",
-    "requirements": "prose in 35, PERF-4"
+    "requirements": "PERF-11, TEST-15, PERF-4"
   },
   {
     "name": "perf-warm-read",
     "owner": "35",
-    "requirements": "prose in 35"
+    "requirements": "PERF-11, TEST-15"
   },
   {
     "name": "perf-worker-rss",
     "owner": "35",
-    "requirements": "prose in 35"
+    "requirements": "PERF-11, TEST-15"
   },
   {
     "name": "registry-complete",
@@ -1402,7 +1402,7 @@
   {
     "name": "exec-through-overlay",
     "owner": "40",
-    "requirements": "prose in 40"
+    "requirements": "RISK-11"
   },
   {
     "name": "feature-matrix",
@@ -1422,17 +1422,17 @@
   {
     "name": "negotiation-bytes",
     "owner": "40",
-    "requirements": "prose in 40"
+    "requirements": "RISK-7"
   },
   {
     "name": "perf-write-path",
     "owner": "40",
-    "requirements": "prose in 40"
+    "requirements": "RISK-10"
   },
   {
     "name": "routing-stability",
     "owner": "40",
-    "requirements": "prose in 40"
+    "requirements": "RISK-12"
   },
   {
     "name": "runtime-agnostic",
@@ -1442,7 +1442,7 @@
   {
     "name": "tree-node-distribution",
     "owner": "40",
-    "requirements": "prose in 40"
+    "requirements": "TREE-22, RISK-5"
   },
   {
     "name": "unsafe-audit",

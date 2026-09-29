@@ -15,7 +15,8 @@
   };
   # Linux realizers are target-specific; the portable SDK and CLI are tested
   # on every supported native target (PKG-3).
-  testPackages = ["terrane-core" "terrane" "terrane-cli" "aos-terrane"]
+  testPackages =
+    ["terrane-core" "terrane" "terrane-cli" "aos-terrane"]
     ++ lib.optionals stdenv.hostPlatform.isLinux ["terrane-fs"];
 in
   mkCargoPackage {

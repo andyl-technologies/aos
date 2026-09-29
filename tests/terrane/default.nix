@@ -3,8 +3,7 @@
   lib,
 }: let
   registry = builtins.fromJSON (builtins.readFile ./gate_registry.json);
-  gateNames = map (row: row.name) registry;
-  checkNames = builtins.toFile "terrane-check-names.json" (builtins.toJSON gateNames);
+  checkNames = builtins.toFile "terrane-check-names.json" (builtins.toJSON (builtins.attrNames gates));
 
   # Registration is distinct from conformance: a deferred gate is a failing
   # derivation, so requesting it cannot report an unimplemented MUST green.
@@ -106,9 +105,10 @@
   };
 
   gates = builtins.listToAttrs (map (row: {
-    name = row.name;
-    value = implementedGates.${row.name} or (pendingGate row);
-  }) registry);
+      name = row.name;
+      value = implementedGates.${row.name} or (pendingGate row);
+    })
+    registry);
 in {
   package = pkgs.terrane;
   inherit gates;

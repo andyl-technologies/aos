@@ -7,14 +7,14 @@
   join = builtins.concatStringsSep "\n";
   isDerivation = value: builtins.isAttrs value && (value.type or null) == "derivation";
   collectChecks = prefix: value: let
-      kind = builtins.tryEval (value.type or null);
-      children = builtins.tryEval (names value);
-    in
-      if kind.success && kind.value == "derivation"
-      then [prefix]
-      else if children.success
-      then builtins.concatMap (name: collectChecks "${prefix}.${name}" value.${name}) children.value
-      else [];
+    kind = builtins.tryEval (value.type or null);
+    children = builtins.tryEval (names value);
+  in
+    if kind.success && kind.value == "derivation"
+    then [prefix]
+    else if children.success
+    then builtins.concatMap (name: collectChecks "${prefix}.${name}" value.${name}) children.value
+    else [];
   checkNames = builtins.concatMap (
     group: let
       value = aos.checks.${group};
