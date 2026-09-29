@@ -2,6 +2,14 @@
 //!
 //! The required map keys and optional map keys match the `commit` CDDL map.
 //! Unknown fields fail decoding so new wire fields require an explicit version.
+//!
+//! The required fields have this CBOR diagnostic shape; digest placeholders
+//! stand for 32-byte byte strings and nested maps follow the v1 CDDL:
+//!
+//! ```text
+//! {1: tree_digest, 2: [parent_digest, ...], 3: provenance,
+//!  4: timestamp, 5: message, 6: profile_pair}
+//! ```
 
 use super::token_shape::validate_token;
 use super::{Locality, RecordError, read_bool, read_digest, read_key, write_bool};

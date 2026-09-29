@@ -1,4 +1,13 @@
 //! Canonical ref, reflog, locality, and policy record codecs.
+//!
+//! The required fields have these CBOR diagnostic shapes. Commit placeholders
+//! stand for 32-byte byte strings; the previous commit may instead be null:
+//!
+//! ```text
+//! RefRecord:    {1: commit, 2: seq, 3: writer_epoch, 4: locality}
+//! RefLogRecord: {1: ref_record, 2: previous_commit, 3: principal,
+//!                4: reason, 5: timestamp}
+//! ```
 
 use super::*;
 
