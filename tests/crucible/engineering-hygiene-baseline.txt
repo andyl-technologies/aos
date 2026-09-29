@@ -125,7 +125,6 @@ shape-review|crates/crucible-daemon/src/qemu_campaign_resume/tests.rs|sha256:a06
 shape-review|crates/crucible-daemon/src/qemu_hot_fork_world_factory.rs|sha256:19f8373b7be310834436fe73538474d6683b73784e68d207d1ea8d272b2ac158|implementation|1488|Whole-world retained-source selection, launch, execution, terminal-fingerprint preparation, and recovery.|threshold-not-reached
 shape-review|crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests.rs|sha256:a8a6e9451a710e1546ecd016d84ffa717cfc25d5b56d98c599dd0f1c93454a64|tests|1500|Scripted production whole-world composition and terminal-preparation regressions.|threshold-not-reached
 shape-review|crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs|sha256:9e285e313ffcb17839f2412281cabec5927ac4841a2043f52189e9aa07886175|tests|1355|Native production equivalence, campaign planner timing, and thin, exact-resume, and hot-fork performance regressions.|threshold-not-reached
-shape-review|crates/crucible-device/src/block/fault/state_execution.rs|sha256:0f0601c3720834eef600e07a1e573ff7eef3bc6b22dfab122b50a2f8ac75c295|implementation|1923|Block-fault directive execution against overlays, caches, controllers, and media.|Delivery, service progression, immediate execution, and durability mutation operate on one block-fault state machine.
 shape-review|crates/crucible-harness/src/phase_plan.rs|sha256:15971ad2214806630cb95f790498e5b3df74f519c0106295503d66e903b4bf31|implementation|1445|Phase-gate ordering for RFC-0010.|threshold-not-reached
 shape-review|crates/crucible-harness/tests/campaign_gate_traceability.rs|sha256:93514ccc7e01dc48cc69e0a4e8ef98013b3f5f49fa0f49e1ad1f3f150fdb563e|tests|1106|RFC-0020 requirement-to-target, exact-selector, Nix, and automated-evidence contract validation.|threshold-not-reached
 shape-review|crates/crucible-harness/tests/engineering_hygiene.rs|sha256:b50d60eb83d04b47e8e6bf94499ce760cbebe5cfc8602f4d127ed02666436cfa|tests|1043|Checks source-role reviews, module headers, QEMU boundary confinement, and commit-hygiene policy wiring.|threshold-not-reached
@@ -417,10 +416,6 @@ shape-line|crates/crucible-daemon/src/qemu_baked_genesis.rs|716
 shape-line|crates/crucible-daemon/src/qemu_resource_guard.rs|1091
 shape-line|crates/crucible-daemon/src/qemu_resource_guard/tests.rs|608
 shape-line|crates/crucible-debug-gateway/src/lib.rs|632
-shape-line|crates/crucible-device/src/block/fault.rs|1960
-shape-line|crates/crucible-device/src/block/fault/state_admission.rs|2360
-shape-line|crates/crucible-device/src/block/fault/state_execution.rs|1920
-shape-line|crates/crucible-device/src/block/fault_tests.rs|1818
 shape-line|crates/crucible-device/src/harness.rs|794
 shape-line|crates/crucible-device/src/ninep/codec.rs|1011
 shape-line|crates/crucible-device/src/ninep/tree.rs|903
