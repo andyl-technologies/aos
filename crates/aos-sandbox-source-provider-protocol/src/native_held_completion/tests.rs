@@ -29,6 +29,7 @@ type Tag = NativeHeldSectionTagV1;
 fn d(byte: u8) -> ObjectDigest {
     ObjectDigest::from_bytes([byte; 32])
 }
+
 fn zero() -> ObjectDigest {
     d(0)
 }
