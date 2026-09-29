@@ -11,6 +11,7 @@
 //!  4: timestamp, 5: message, 6: profile_pair}
 //! ```
 
+use super::entry_receipts::{self, EntryReceipt};
 use super::token_shape::validate_token;
 use super::{
     Locality, RecordError, read_bool, read_digest, read_key, read_nested_value, read_raw_value,
@@ -244,6 +245,8 @@ pub struct ProfilePair {
     pub lease: Option<Lease>,
     /// Canonical CBOR required-property snapshot.
     pub required_properties: Option<Vec<u8>>,
+    /// Signed root/path receipts resolving entry and attribute introductions.
+    pub entry_receipts: Option<Vec<EntryReceipt>>,
 }
 
 /// A sealed pack first referenced by a commit and its writing locality.
@@ -480,7 +483,8 @@ impl ProfilePair {
             + usize::from(self.recipe.is_some())
             + usize::from(self.conflicted.is_some())
             + usize::from(self.lease.is_some())
-            + usize::from(self.required_properties.is_some());
+            + usize::from(self.required_properties.is_some())
+            + usize::from(self.entry_receipts.is_some());
         cbor::write_map(output, count);
         cbor::write_uint(output, 1);
         cbor::write_uint(output, self.tree_format);
@@ -506,21 +510,25 @@ impl ProfilePair {
             cbor::write_uint(output, 6);
             output.extend_from_slice(properties);
         }
+        if let Some(receipts) = &self.entry_receipts {
+            cbor::write_uint(output, 7);
+            entry_receipts::encode_into(receipts, output)?;
+        }
         Ok(())
     }
 
     fn decode_from(decoder: &mut Decoder<'_>) -> Result<Self, RecordError> {
-        let count = decoder.map(6)?;
-        if !(2..=6).contains(&count) {
+        let count = decoder.map(7)?;
+        if !(2..=7).contains(&count) {
             return Err(RecordError::Schema);
         }
         let mut previous = 0;
-        require_key(decoder, &mut previous, 1, 6)?;
+        require_key(decoder, &mut previous, 1, 7)?;
         let tree_format = decoder.uint()?;
         if tree_format != 1 {
             return Err(RecordError::Schema);
         }
-        require_key(decoder, &mut previous, 2, 6)?;
+        require_key(decoder, &mut previous, 2, 7)?;
         let chunk_profile = decoder.text(decoder.remaining().len())?.to_string();
         if chunk_profile.is_empty() {
             return Err(RecordError::Schema);
@@ -529,9 +537,10 @@ impl ProfilePair {
         let mut conflicted = None;
         let mut lease = None;
         let mut required_properties = None;
+        let mut entry_receipts = None;
 
         for _ in 2..count {
-            match read_key(decoder, &mut previous, 6)? {
+            match read_key(decoder, &mut previous, 7)? {
                 3 => {
                     let bytes = read_raw_value(decoder)?.to_vec();
                     validate_recipe(&bytes)?;
@@ -556,6 +565,7 @@ impl ProfilePair {
                     validate_properties(&bytes)?;
                     required_properties = Some(bytes);
                 }
+                7 => entry_receipts = Some(entry_receipts::decode_from(decoder)?),
                 _ => return Err(RecordError::Schema),
             }
         }
@@ -566,6 +576,7 @@ impl ProfilePair {
             conflicted,
             lease,
             required_properties,
+            entry_receipts,
         })
     }
 }
@@ -684,10 +695,32 @@ mod tests {
                 conflicted: None,
                 lease: None,
                 required_properties: None,
+                entry_receipts: None,
             },
             packs: None,
             signature: None,
         }
+    }
+
+    #[test]
+    fn commit_entry_receipts_extend_profile_without_changing_absent_encoding() {
+        use super::super::{EntryOrigin, EntryReceipt};
+
+        let mut commit = root_commit();
+        let original = commit.encode().unwrap();
+        commit.profile_pair.entry_receipts = Some(alloc::vec![EntryReceipt {
+            root: commit.tree,
+            path: alloc::vec![0xff],
+            origin: EntryOrigin::Current,
+            attributes: None,
+            reintroduced_from: None,
+        }]);
+
+        let extended = commit.encode().unwrap();
+        assert_eq!(Commit::decode(&extended).unwrap(), commit);
+        assert_ne!(extended, original);
+        commit.profile_pair.entry_receipts = None;
+        assert_eq!(commit.encode().unwrap(), original);
     }
 
     #[test]

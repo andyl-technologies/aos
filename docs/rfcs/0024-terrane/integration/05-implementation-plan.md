@@ -186,6 +186,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   name grammar. Repository enforcement of tag immutability, ref transitions,
   and commit provenance is completed jointly with T-REF-2; merge/fold parent
   order and composite recipes are completed jointly with T-ALG-2. —
+  D-46's typed, canonical entry-origin receipts are included in this format
+  task; construction and authenticated root/path evidence remain joint with
+  T-PROV-1 and T-REF-2. —
   satisfies OBJ-21, OBJ-22, REF-1 to REF-11, REF-24 to REF-26;
   `checks.terrane.gates.ref-names`.
 - [ ] **T-DRV-1** Derived attribute records and classification (`hash.*`,
