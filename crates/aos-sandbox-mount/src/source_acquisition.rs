@@ -3507,13 +3507,7 @@ impl SourceAcquisitionTableV2 {
         let state = validate_mount_source_state_graph_v2(
             journal.records(RecordNamespace::MountSourceAcquisition),
         )?;
-        Ok(Self {
-            acquisitions: state.acquisitions,
-            holder_sequences: state.holder_sequences,
-            provider_heads: state.provider_heads,
-            provider_sessions: state.provider_sessions,
-            provider_attempts: state.provider_attempts,
-        })
+        Ok(Self::from_state(state))
     }
 
     /// Reconstructs state through the fixed-owner source-consumption authority.
@@ -3527,13 +3521,7 @@ impl SourceAcquisitionTableV2 {
         authority: &aos_sandbox::MountSourceConsumptionJournalAuthorityV1<'_>,
     ) -> Result<Self> {
         let state = validate_mount_source_state_graph_v2(authority.records()?)?;
-        Ok(Self {
-            acquisitions: state.acquisitions,
-            holder_sequences: state.holder_sequences,
-            provider_heads: state.provider_heads,
-            provider_sessions: state.provider_sessions,
-            provider_attempts: state.provider_attempts,
-        })
+        Ok(Self::from_state(state))
     }
 
     pub(super) fn state(&self) -> MountSourceAcquisitionStateV2 {
