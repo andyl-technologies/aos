@@ -623,6 +623,28 @@ impl<H: WasmHost> Clock for WasmBindings<H> {
 #[cfg_attr(feature = "send", async_trait::async_trait)]
 #[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
 pub trait LocalFs {
+    /// The owned guard that releases file exclusion when dropped.
+    #[cfg(feature = "send")]
+    type Lock: Send;
+
+    /// The owned guard that releases file exclusion when dropped.
+    #[cfg(not(feature = "send"))]
+    type Lock;
+
+    /// Acquires exclusive file exclusion until the returned guard is dropped.
+    ///
+    /// The lock file is created if absent. All writers must use this same
+    /// stable path and must never unlink or replace its inode while the store
+    /// is open. A CAS writer retains the guard through durable directory
+    /// synchronization. Process death releases exclusion without stale-lock
+    /// deletion; this primitive does not infer ownership from file age.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the file cannot be opened or locked, including
+    /// when the platform cannot supply the required exclusion.
+    async fn lock_exclusive(&self, path: &std::path::Path) -> std::io::Result<Self::Lock>;
+
     /// Reads a complete file.
     ///
     /// # Errors
@@ -795,6 +817,16 @@ impl Clock for TokioClock {
     }
 }
 
+/// Retains native file exclusion until dropped or the process terminates.
+///
+/// The descriptor stays private so callers cannot explicitly unlock it while
+/// a CAS write still holds the guard. Closing the descriptor releases the lock.
+#[cfg(feature = "tokio")]
+#[derive(Debug)]
+pub struct TokioFileLock {
+    _file: std::fs::File,
+}
+
 /// Binds portable file operations to the native runtime (CRATE-8).
 #[cfg(feature = "tokio")]
 #[derive(Clone, Copy, Debug, Default)]
@@ -803,6 +835,27 @@ pub struct TokioLocalFs;
 #[cfg(feature = "tokio")]
 #[async_trait::async_trait]
 impl LocalFs for TokioLocalFs {
+    type Lock = TokioFileLock;
+
+    async fn lock_exclusive(&self, path: &std::path::Path) -> std::io::Result<Self::Lock> {
+        let path = path.to_owned();
+
+        // Waiting for the kernel lock must not block an async executor thread.
+        tokio::task::spawn_blocking(move || {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(path)?;
+            file.lock()?;
+
+            Ok(TokioFileLock { _file: file })
+        })
+        .await
+        .map_err(std::io::Error::other)?
+    }
+
     async fn read(&self, path: &std::path::Path) -> std::io::Result<Vec<u8>> {
         tokio::fs::read(path).await
     }
@@ -1108,6 +1161,24 @@ mod tests {
             let destination = directory.join("destination");
 
             fs.create_dir_all(directory).await.unwrap();
+
+            let lock_path = directory.join("cas.lock");
+            let guard = fs.lock_exclusive(&lock_path).await.unwrap();
+            let contender = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+                .unwrap();
+
+            assert!(contender.try_lock().is_err());
+            drop(guard);
+            contender.try_lock().unwrap();
+            drop(contender);
+
+            let replacement_guard = fs.lock_exclusive(&lock_path).await.unwrap();
+            drop(replacement_guard);
+            fs.remove_file(&lock_path).await.unwrap();
+
             fs.write_new(&source, b"first bytes").await.unwrap();
             fs.sync_file(&source).await.unwrap();
             assert_eq!(
