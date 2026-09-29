@@ -132,6 +132,42 @@ control request can reach Native without sending the body there. A client
 retry uses the existing ticket and idempotency key rather than creating a
 second publication.
 
+### Direct multipart, resume and independent metadata
+
+A direct-required client sends object bytes only through exact provider
+UploadPart grants on private session staging keys. The storage Worker owns
+create/close/abort, whole-object hash verification and guarded storage-side
+promotion; Native sees bounded batch admission, normalized index projections
+and signed results. Missing signing credentials, unqualified provider closure,
+expired admission or an unavailable storage executor rejects direct mode. The
+client does not silently select a Native body endpoint. Native rejects body
+routes before polling/buffering the body, including misleading phase headers.
+
+Resume retains the same logical session and immutable source digest, length and
+geometry. Status returns sparse part observations and explicit unknown states;
+new grants cover only eligible exact parts. Clients use bounded positional
+source reads or private disk spools, share global byte/request concurrency
+budgets, and persist no bearer URLs. File mutation, different immutable inputs
+or unresolved provider control effects refuse resume. Part observations and
+expiry are never substituted for settlement.
+
+Small files use parallel independently scoped sessions and bounded batched
+Begin/Status/Grant/Report/Complete operations. HTTP cache mutability is distinct
+from publication dependency order: independent narinfos/leaf metadata can run
+concurrently under their own key guards and expected revisions after their
+referenced immutable objects are verified. Final release/root/channel/tag
+visibility waits for its complete dependency barrier. Existing content-addressed
+object layout and HTTP cache-control are preserved; coalescing requires an
+explicit compatible versioned format. The Worker parses uploaded narinfos and
+returns the bounded validated index projection rather than routing the original
+file upload through Native. Provider request counts, control RPCs and per-phase
+latency for large metadata sets are measured, not hidden by file size totals.
+
+Standard OCI PATCH clients may keep authenticated Worker byte ingress because
+PATCH is not a presigned UploadPart PUT. AOS direct OCI producers must use the
+explicit staged-session contract. Neither compatibility path sends OCI layer
+bytes to Native or redirects an authenticated PATCH to an incompatible grant.
+
 ## Downloads and machine paths
 
 The public Worker serves static assets and immutable public object paths from

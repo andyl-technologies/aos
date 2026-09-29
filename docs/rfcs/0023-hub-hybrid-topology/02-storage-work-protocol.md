@@ -46,6 +46,52 @@ error, allowing the caller to choose a narrower plan, split the work, or report
 that the workflow needs implementation. This is the enforcement point for the
 hybrid GCP egress budget.
 
+## Direct upload control and delegated capabilities
+
+Public GetCapabilities distinguishes direct-required upload support from legacy
+transport, including the exact supported providers, negotiated checksums and
+control limits. An unavailable, invalid or expired capability response stops
+direct-required publication with an actionable configuration error; the client
+does not silently switch to a Native body route.
+
+DirectUploadService uses closed, versioned bounded batches for session admission,
+status, part grants/reports, completion and abort. Public callers authenticate
+through the ordinary Hub authorization contract. Native resolves scope, quota,
+required placements, full expected digest/length, dependency phase and immutable
+binding revisions. A signed storage admission binds the deployment/executor
+identity, public method/path, request nonce/body hash, issue/expiry times, logical
+session and immutable intent fingerprint before the Worker creates provider
+state. Reauthorization or a narrowly scoped session capability is explicit;
+possessing an unsigned session ID never authorizes part grants or completion.
+
+Grant responses name the exact PUT method, provider URL, required headers, part
+number/offset/length, grant fingerprint and expiry. Bearer URLs and provider
+credentials stay request-local and are redacted from errors, Debug, checkpoints
+and durable records. Signing credentials live only at storage execution; a
+Native primary API does not need them. Deployment R2 S3 credentials must be
+qualified against the actual R2 binding, while external credentials must resolve
+the approved authority/association and immutable revision. A request cannot
+supply a new bucket, endpoint or physical namespace. Each per-session coordinator
+retains compact effect/grant/part records; no upload body enters its journal.
+
+Signed completion evidence binds the logical request and frozen manifest, exact
+placement/binding revisions, independently observed full digest/size and guarded
+final incarnation/promotion operation. Native rechecks every item before SQL
+commit. Batch limits bound item count, aggregate encoded bytes, provider fanout
+and response bytes separately. Controls accept at most 64 sessions/items and
+256 KiB of encoded data; grant/report/status pages contain at most 64 actual
+part descriptors after required-placement fanout, with at most 16 placements
+per session. Count limits do not imply that every maximum-length combination
+fits the byte limit. Completion carries compact per-placement part counts and
+domain-bound canonical manifest digests rather than an unbounded full part
+list; sparse status/receipt pages preserve that same 64-descriptor bound.
+Per-item unknown/refused results cannot advance
+another item's visibility barrier or manufacture a batch success. Direct mode
+has no per-part Native admission/completion RPC and no bulk-body origin fallback.
+Delegated staging remains governed by the capability and unknown-outcome
+requirements in the object lifecycle chapter; an admission signature is not a
+claim that the provider enforces a fresh issuer lease at URL use.
+
 ## Native-issued work plans
 
 `StorageWorkPlan` is a closed, versioned request body authenticated with a

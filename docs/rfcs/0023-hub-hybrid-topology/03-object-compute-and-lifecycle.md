@@ -341,21 +341,79 @@ identity and unknown fence, so concurrent retries cannot overwrite one part.
 Whether parts use local records or separate part guards requires an explicit
 persistence/concurrency contract.
 
-Freeze admitted parts before completion: stop new part admission and require
-exact terminal outcomes for every earlier admitted part. Under the final-key
+For server-executed parts, freeze admitted parts before completion: stop new
+part admission and require exact terminal outcomes for every earlier admitted
+part. Under the final-key
 guard, verify the immutable settled-part/ETag commitment and a freshly valid
 completion lease before persisting final-visible intent and invoking completion.
-Unknown parts block that session; unknown completion blocks the final key.
+Unknown server-executed parts block that session; unknown completion blocks
+the final key.
 Create/abort uncertainty retains provider resource accounting even without a
 visible final object. HEAD and URL/lease expiry settle none of these effects.
 
+The delegated staging protocol below substitutes qualified upload-ID closure
+for settlement of reusable part capabilities; it cannot reinterpret a client
+report as one of those exact server-executed part receipts.
+
 Direct presigned final-key PUT cannot enforce this guard and fails closed for
-managed storage. Initially reject presigned part URLs too. A later staged upload
-alternative may avoid body proxying only after provider semantics prove that
-parts cannot independently publish/replace the final object, controlled guarded
-completion and unknown-session recovery work, and abandoned resources are
-accounted for. Exclude already issued bypass capabilities before enabling the
-managed authority; the lease design itself makes no bandwidth-bypass claim.
+managed storage. Direct uploads instead use a fresh private staging key and a
+permanently retained upload session. The client receives only exact UploadPart
+capabilities naming one provider upload ID, part number, immutable part geometry,
+required checksum headers and bounded expiry. It receives no create, complete,
+abort or final-key write capability. One-part small objects use the same staged
+protocol unless a separately qualified attempt-specific PUT/materialization
+contract is selected. An ordinary cohort lease is not a provider-side check at
+the later invocation of a presigned URL: delegated staging is a distinct purpose
+with an explicit capability tail and provider qualification.
+
+Before provider creation, reserve the original immutable admission in a
+permanently retained coordinator addressed by deployment, authenticated stable
+principal and client operation ID. The address excludes SQL session/owner IDs,
+restored database labels and mutable placement coordinates; those belong to the
+original admission fingerprint. A reconstructed or changed admission cannot
+select a fresh coordinator to escape an unknown effect or prior receipt.
+
+Grant issuance and renewal validate the exact application admission, physical
+authority, immutable session, binding/credential revisions and staging scope.
+Grant batching and independent part transfers do not occupy a final-key gate or
+make per-part Native control round trips. Each grant and its original input
+fingerprint is retained; a client part report is an observation, not terminal
+settlement. A content-bound retry of the same private upload ID and part is
+allowed while active with the original checksum, length and source fingerprint;
+packet loss need not permanently block that part. Changed content and new
+control identities cannot reset an unknown create/close/promote/abort. Freeze stops new grants and commits the canonical ordered part/ETag
+manifest. Previously issued grants remain reusable; a late part replacement can
+invalidate that manifest. URL expiry and provider listing do not settle queued
+or unknown work. Unknown create, completion or abort remains fenced and retains
+provider resource accounting across SQL restore, expiration and rotation.
+
+The server alone completes staging. It parses the complete provider response,
+including errors carried in a success HTTP status. Before enabling a provider,
+qualify that a successful canonical close prevents old part grants, including
+requests started before close, from modifying the completed staging object or
+creating its replacement. Lost completion acknowledgment does not prove close.
+The storage executor then streams an exact completed-stage snapshot, verifies
+full SHA-256 and length, and materializes only those verified bytes under the
+final-key retained intent and a freshly valid promotion-purpose lease. Native
+receives signed compact incarnation/hash evidence and commits discoverability
+only for the original logical admission and required placements. No bulk bytes
+or verification read may fall back through Native.
+
+Direct staging requires a provider-qualified private bucket or reviewed
+prefix-private policy. Unguessable names and facade denial alone do not make a
+public provider binding private. Publicly readable bindings refuse direct-required
+uploads until a qualified private policy or separately approved private staging
+authority/materialization path exists. Public delivery and ordinary inventory
+exclude the reserved staging namespace before provider reads.
+
+Exclude already issued bypass capabilities and uncoordinated writers before
+managed authority activation. Staging qualification does not prove whole-domain
+drain or external deletion readiness. Abort acknowledgment, acknowledged upload
+closure, logical ticket cancellation and eventual provider resource reclamation
+are separate states. Lifecycle expiry is only a resource leak backstop; it
+cannot discard an unknown fence or terminal receipt. Unsupported or unqualified
+direct capabilities reject before granting a URL, rather than selecting a
+Native body transport.
 
 ## Failure and cost controls
 

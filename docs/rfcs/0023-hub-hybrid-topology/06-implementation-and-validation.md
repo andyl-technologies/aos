@@ -172,6 +172,39 @@ HTTP error bodies that were discarded unread, and use provider telemetry for
 framing, internal prefetch, and actual billed wire usage. Offered request bytes
 are not proof that the destination received them.
 
+## Direct-upload launch gates
+
+Qualify the actual managed R2 and external S3/R2 provider independently. The
+common staged client/server path must transfer parallel out-of-order parts,
+resume a sparse session after process/runtime restart, preserve exact operation
+replay, and reject changed source/geometry/revision. Test checksum corruption,
+full-SHA/composite-checksum confusion, embedded completion errors, lost create,
+close, promotion and abort acknowledgments, receipt-persistence failure and
+same-number part replacement. Retained unknown state must survive clock expiry,
+SQL restore, credential rotation and provider HEAD/listing.
+
+Exercise the actual signed UploadPart capability after successful completion and
+abort, including an already started request racing completion. Prove completed
+staging/final bytes remain immutable under the selected materialization contract;
+an S3 emulator or another provider's documentation cannot qualify R2. Distinguish
+upload-ID closure and exact final publication from eventual resource reclamation
+and account for acknowledged abort with still-running part uploads. Do not enable
+external final-key DELETE solely because staged upload tests pass.
+
+Use the real publisher command with thousands of small independent metadata
+files and large multipart objects. Record active transfers, source spool memory,
+aggregate grant/control bytes, RPC/provider request count, batch refusals,
+p50/p95/p99 stage latency and dependency visibility ordering. Demonstrate batched
+control rather than per-file/per-part serial Native calls. Browser gates cover
+exact-origin CORS, required checksum headers, ETag exposure and expired grants;
+CLI gates cover interruption/checkpoint resume and redacted failures. A Native
+body that fails if polled must be refused before consumption even with forged
+phase headers. Captured Worker-origin requests contain bounded metadata only;
+verify actual GCP ingress/egress stays metadata-sized through upload, hash and
+promotion. No unavailable-capability test may pass by proxying bulk bytes to
+Native. Report configured direct-provider readiness separately from intended
+RFC state and preserve all failed qualification artifacts.
+
 ## Failure and recovery tests
 
 Inject a Native origin outage, PostgreSQL outage, Worker storage executor
