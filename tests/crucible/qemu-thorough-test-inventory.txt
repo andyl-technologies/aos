@@ -1477,6 +1477,7 @@ unit - qemu:test-crucible-mips-gic-migration
 unit - qemu:test-crucible-mos6522-clock
 unit - qemu:test-crucible-nvme-phase
 unit - qemu:test-crucible-parallel-fingerprint
+unit - qemu:test-crucible-ptimer-wide-clock
 unit - qemu:test-crucible-rc4030-period
 unit - qemu:test-crucible-riscv-cpc-clock
 unit - qemu:test-crucible-rtc-phase

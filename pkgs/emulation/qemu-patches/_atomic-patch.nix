@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "3255e809b9a6501745563c5b9382ddcdf52a34888efea404718b004972ca33e1";
+  sha256 = "a9086140499c599f372454715dc28de426e7419aa5a4279126b7008480f147f9";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -131,9 +131,17 @@
     "Validate asynchronous block job pause and resume progress."
     "Retain actual QMP progress invariants without comparing racy pause offset"
     "samples to a fixed zero delta; keep test coverage and skip policy unchanged."
+    ""
+    "Preserve the full signed picosecond horizon in the ptimer engine."
+    "Keep absolute time separate from fractional period state, validate the"
+    "versioned exact-wide migration subsection before timer effects, and retain"
+    "the ordinary nanosecond wire format and countdown policy tests."
+    ""
+    "Reject migrated active ptimer countdowns without a period before arming."
+    "Preserve valid disabled zero-period state in exact and ordinary modes."
   ];
-  commit = "23a4e278aa6ddcdd6b858a2204854c75dd51125d";
-  tree = "e9cbfed5742afca61b2f3dec230d1269c09b28e1";
+  commit = "466e51167a99d290558816a7646ad0f2c6329466";
+  tree = "5b5b4c406864f5cdff928364382fd5fe5132e025";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -142,7 +150,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "a6516381a089997a44c82a6a807b157cac3d8854600da2362dac92286a84ae8a";
+  bundleSha256 = "9a60f5f35f535ab73c7e99abeda7b27ba6c5468277e38cfdbda28529f348c265";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
