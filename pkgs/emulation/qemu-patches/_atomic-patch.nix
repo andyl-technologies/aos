@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "444841fea91f6b03b2d0ac1a7a869b65ad6ea33d8c04730088e6b659c3b95629";
+  sha256 = "b5452d886b8074d3903f70a7d4ed147bafe0e2b5b661e8d94288b5c4f75a5e93";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -146,9 +146,11 @@
     "Preserve full-range SPARC and MIPS CPU timer origins and deadlines."
     "Convert S390 TOD arithmetic without overflowing the wide clock domain."
     "Link the real IRQ implementation for the configured MIPS timer unit."
+    ""
+    "Preserve wide ARM, HPPA and LoongArch CPU timer origins and deadlines."
   ];
-  commit = "d1eeb6ca69927e0659238e59df8fb77d66e1b546";
-  tree = "a84ec78891d888851a5a1b871826fae704439bdb";
+  commit = "0e5e0fb04bfad9e8f5ec70ff5383f47b622e640f";
+  tree = "b8b12adbe02b683325724bc65514bb3ca6a92512";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -157,7 +159,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "a3caa36e4568bbcddfe226ec0060c1b19382b83405b9e7252da6bcc05be189aa";
+  bundleSha256 = "60399f7e3e6c7e5afc19c43f4cfdcd8a8256f466107aa3b0c8c3830494775761";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

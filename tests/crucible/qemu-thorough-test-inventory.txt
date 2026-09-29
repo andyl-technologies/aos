@@ -1465,6 +1465,7 @@ unit - qemu:test-coroutine
 unit - qemu:test-crucible-acpi-piix-fingerprint
 unit - qemu:test-crucible-ahci-fingerprint
 unit - qemu:test-crucible-arm-fingerprint
+unit - qemu:test-crucible-arm-timer-wide-clock
 unit - qemu:test-crucible-cxl-timestamp
 unit - qemu:test-crucible-e1000-fingerprint
 unit - qemu:test-crucible-fdc-fingerprint
