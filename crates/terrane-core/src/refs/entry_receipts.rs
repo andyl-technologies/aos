@@ -1,6 +1,7 @@
 //! Signed root/path receipts resolve introductions without self-referential hashes.
 //!
-//! Paths are opaque byte keys; namespace validation belongs to verified trees.
+//! Structural codec validation does not verify signatures or root/path witnesses;
+//! those checks belong to provenance. Paths are opaque byte keys.
 //! Receipts sort by root and path, while attribute keys sort by encoded CBOR.
 //!
 //! ```text
@@ -42,7 +43,7 @@ pub struct EntryReceipt {
     pub root: Digest,
     /// Opaque entry key, containing one through 4096 bytes.
     pub path: Vec<u8>,
-    /// Introduction origin of the entry's own content and metadata.
+    /// Introduction origin of the entry content; metadata changes preserve it.
     pub origin: EntryOrigin,
     /// Optional attribute introductions, independent of the entry origin.
     pub attributes: Option<Vec<(String, EntryOrigin)>>,
