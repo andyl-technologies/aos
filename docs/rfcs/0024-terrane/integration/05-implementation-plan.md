@@ -137,7 +137,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 - [ ] **T-OBJ-1** Identity domains, descriptors, and the `terrane-v1`
   identity profile; second-identity-profile registration hook. — satisfies
-  OBJ-1 to OBJ-10; `checks.terrane.gates.identity-idempotence`,
+  OBJ-1 to OBJ-4, OBJ-6 to OBJ-10; `checks.terrane.gates.identity-idempotence`,
   `checks.terrane.gates.descriptor-strict`.
 - [ ] **T-CDC-1** FastCDC chunker with the seeded gear table, codec bytes,
   dictionary identities, and the receiver-side validation rules. —
@@ -204,8 +204,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 - [ ] **T-BKT-1** `bucket` backend over `file://`: key layout, mutability
   classes, atomic writes, filesystem CAS, generation manifests, startup
   probe. Narrowed to trunk scope: S3-compatible and GCS backends are
-  T-BKT-2 and T-BKT-3 at T3. — satisfies BKT-1 to BKT-4, BKT-6 to BKT-8,
-  BKT-13, BKT-14, BKT-16; `checks.terrane.gates.bucket-key-registry`,
+  T-BKT-2 and T-BKT-3 at T3. The backend implements OBJ-5's idempotent
+  writes and verified reads; T-HOST-1 completes its cache-admission rule.
+  — satisfies OBJ-5 jointly with T-HOST-1, BKT-1 to BKT-4, BKT-6 to
+  BKT-8, BKT-13, BKT-14, BKT-16;
+  `checks.terrane.gates.store-idempotent-put`,
+  `checks.terrane.gates.store-verify-on-get`,
+  `checks.terrane.gates.bucket-key-registry`,
   `checks.terrane.gates.bucket-file-layout`,
   `checks.terrane.gates.bucket-file-atomic-write`,
   `checks.terrane.gates.bucket-file-cas`.
