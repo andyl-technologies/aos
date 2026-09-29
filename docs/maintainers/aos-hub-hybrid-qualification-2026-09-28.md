@@ -645,11 +645,32 @@ value classes, oversized lineage markers, schema drift, page/cell bounds and
 lock release on drop or task cancellation. The integrated test run took 9.71
 seconds, with no failed or skipped reader tests.
 
-This qualifies only Native SQLite database input. Secret classification,
-authenticated export, import, provider object closure, restored activation,
+This qualifies only Native SQLite database input. Authenticated export, import,
+provider object closure, restored activation,
 Worker and PostgreSQL snapshot readers remain pending. Normal SQLite WAL lock
 and shared-memory coordination is allowed; no zero-filesystem-write claim is
 made.
+
+## Snapshot row classification
+
+The independently reviewed classifier covers all 267 current production tables
+and 2,586 columns. Its explicit contract rejects unknown schema, configuration
+keys and registered document formats. Credential material, unrestricted
+context, configured credential-bearing URLs, upload tail bytes and persisted
+error bodies become exact private-cell restoration dependencies. Durable
+leases, mutation fences, terminal receipts and authority history remain retained.
+
+The integrated source passed 42 focused tests: 26 classifier tests and the
+sixteen reader tests above, with no failures or skips, in 11.93 seconds. Coverage
+includes the actual production initializer, declared foreign-key closure for
+excluded tables, lossless values, private payload omission and real bounded
+reader pages. Complete application and object closure remains unqualified.
+
+This is a row classification seam. Private dependencies require a separate
+restoration mechanism; export archives, signing, import, topology conversion
+and activation remain pending. Historical watermarks are evidence and do not
+grant fresh provider admission. See the
+[classification contract](../plans/hub-snapshot-classification-foundation.md).
 
 See the [deployment procedure](aos-hub-hybrid-deployment.md) and
 [RFC acceptance gates](../rfcs/0023-hub-hybrid-topology/06-implementation-and-validation.md).

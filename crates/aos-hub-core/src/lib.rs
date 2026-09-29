@@ -116,6 +116,7 @@ pub mod s3surface;
 pub mod secret_version;
 pub mod service;
 pub mod signing;
+pub mod snapshot;
 pub mod sigv4;
 pub mod storage_authority;
 pub mod storage_credential;
