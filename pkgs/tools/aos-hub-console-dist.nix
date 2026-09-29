@@ -97,7 +97,7 @@
     inherit src;
     name = "aos-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-ufQHfgNDDEgTh2tadmGf+4ZiFspFLbyVfAZMl3jHAgY=";
+    hash = "sha256-zvKX8RsnoDEA0ZyCL7Z7W5GmL5bjEL17GlhfpS+JcL4=";
   };
   # Optimize the browser download without changing native Hub or CLI profiles.
   # Keep dependency artifacts and the final application on the same profile.

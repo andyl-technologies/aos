@@ -12,6 +12,7 @@
 
 extern crate alloc;
 
+pub mod auth;
 pub mod boundary;
 pub mod cbor;
 pub mod chunking;
