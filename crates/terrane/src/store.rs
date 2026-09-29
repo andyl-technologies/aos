@@ -465,6 +465,17 @@ pub trait LocalFs {
     /// Returns a typed failure if the file cannot be read.
     async fn read(&self, path: &std::path::Path) -> std::io::Result<Vec<u8>>;
 
+    /// Reads an exact byte range without reading the entire file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the range cannot be read in full.
+    async fn read_range(
+        &self,
+        path: &std::path::Path,
+        range: ByteRange,
+    ) -> std::io::Result<Vec<u8>>;
+
     /// Creates a new file without replacing an existing one.
     ///
     /// # Errors
@@ -472,12 +483,70 @@ pub trait LocalFs {
     /// Returns a typed failure if the file exists or cannot be written.
     async fn write_new(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()>;
 
+    /// Creates a directory and its missing ancestors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if creation fails.
+    async fn create_dir_all(&self, path: &std::path::Path) -> std::io::Result<()>;
+
+    /// Lists the immediate children of a directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if listing fails.
+    async fn read_dir(&self, path: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>>;
+
+    /// Returns metadata for a file or directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if metadata cannot be read.
+    async fn metadata(&self, path: &std::path::Path) -> std::io::Result<std::fs::Metadata>;
+
+    /// Removes a file after GC, eviction, or temporary-write cleanup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if removal fails.
+    async fn remove_file(&self, path: &std::path::Path) -> std::io::Result<()>;
+
     /// Renames one path within a filesystem.
     ///
     /// # Errors
     ///
     /// Returns a typed failure if the rename cannot complete.
     async fn rename(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()>;
+
+    /// Installs a completed file under a new name without replacement.
+    ///
+    /// The source and destination must be on one filesystem. A failure to
+    /// remove the old name after installation leaves both names pointing to
+    /// the same bytes; callers may safely retry cleanup.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AlreadyExists` when the destination exists, or another I/O
+    /// error if installation or cleanup fails.
+    async fn rename_no_replace(
+        &self,
+        from: &std::path::Path,
+        to: &std::path::Path,
+    ) -> std::io::Result<()>;
+
+    /// Synchronizes a file's content and metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if durability cannot be established.
+    async fn sync_file(&self, path: &std::path::Path) -> std::io::Result<()>;
+
+    /// Synchronizes directory entries after a rename or removal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if directory durability cannot be established.
+    async fn sync_directory(&self, path: &std::path::Path) -> std::io::Result<()>;
 }
 
 /// Binds portable HTTP transport to the native runtime (CRATE-8).
@@ -560,6 +629,27 @@ impl LocalFs for TokioLocalFs {
         tokio::fs::read(path).await
     }
 
+    async fn read_range(
+        &self,
+        path: &std::path::Path,
+        range: ByteRange,
+    ) -> std::io::Result<Vec<u8>> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        let length = usize::try_from(range.length)
+            .map_err(|source| std::io::Error::new(std::io::ErrorKind::InvalidInput, source))?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|source| std::io::Error::new(std::io::ErrorKind::InvalidInput, source))?;
+        bytes.resize(length, 0);
+
+        let mut file = tokio::fs::File::open(path).await?;
+        file.seek(std::io::SeekFrom::Start(range.start)).await?;
+        file.read_exact(&mut bytes).await?;
+        Ok(bytes)
+    }
+
     async fn write_new(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
         use tokio::io::AsyncWriteExt;
 
@@ -572,8 +662,46 @@ impl LocalFs for TokioLocalFs {
         file.sync_all().await
     }
 
+    async fn create_dir_all(&self, path: &std::path::Path) -> std::io::Result<()> {
+        tokio::fs::create_dir_all(path).await
+    }
+
+    async fn read_dir(&self, path: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+        let mut entries = tokio::fs::read_dir(path).await?;
+        let mut paths = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            paths.push(entry.path());
+        }
+        Ok(paths)
+    }
+
+    async fn metadata(&self, path: &std::path::Path) -> std::io::Result<std::fs::Metadata> {
+        tokio::fs::metadata(path).await
+    }
+
+    async fn remove_file(&self, path: &std::path::Path) -> std::io::Result<()> {
+        tokio::fs::remove_file(path).await
+    }
+
     async fn rename(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
         tokio::fs::rename(from, to).await
+    }
+
+    async fn rename_no_replace(
+        &self,
+        from: &std::path::Path,
+        to: &std::path::Path,
+    ) -> std::io::Result<()> {
+        tokio::fs::hard_link(from, to).await?;
+        tokio::fs::remove_file(from).await
+    }
+
+    async fn sync_file(&self, path: &std::path::Path) -> std::io::Result<()> {
+        tokio::fs::File::open(path).await?.sync_all().await
+    }
+
+    async fn sync_directory(&self, path: &std::path::Path) -> std::io::Result<()> {
+        tokio::fs::File::open(path).await?.sync_all().await
     }
 }
 
@@ -707,19 +835,57 @@ mod tests {
 
     #[cfg(feature = "tokio")]
     #[tokio::test]
-    async fn native_create_new_preserves_existing_bytes() {
-        let path =
-            std::env::temp_dir().join(format!("terrane-store-create-new-{}", std::process::id()));
-        let fs = TokioLocalFs;
+    async fn native_file_binding_preserves_atomic_names_and_ranges() {
+        async fn check_binding<F: LocalFs + Sync>(fs: &F, directory: &std::path::Path) {
+            let source = directory.join("source");
+            let destination = directory.join("destination");
 
-        fs.write_new(&path, b"first").await.unwrap();
-        let second = fs.write_new(&path, b"second").await;
-        assert_eq!(
-            second.unwrap_err().kind(),
-            std::io::ErrorKind::AlreadyExists
-        );
-        assert_eq!(fs.read(&path).await.unwrap(), b"first");
+            fs.create_dir_all(directory).await.unwrap();
+            fs.write_new(&source, b"first bytes").await.unwrap();
+            fs.sync_file(&source).await.unwrap();
+            assert_eq!(
+                fs.read_range(
+                    &source,
+                    ByteRange {
+                        start: 6,
+                        length: 5,
+                    },
+                )
+                .await
+                .unwrap(),
+                b"bytes"
+            );
+            assert_eq!(fs.metadata(&source).await.unwrap().len(), 11);
+            assert_eq!(fs.read_dir(directory).await.unwrap(), vec![source.clone()]);
 
-        tokio::fs::remove_file(path).await.unwrap();
+            let second = fs.write_new(&source, b"replacement").await;
+            assert_eq!(
+                second.unwrap_err().kind(),
+                std::io::ErrorKind::AlreadyExists
+            );
+            fs.rename_no_replace(&source, &destination).await.unwrap();
+            assert_eq!(fs.read(&destination).await.unwrap(), b"first bytes");
+
+            fs.write_new(&source, b"new source").await.unwrap();
+            let collision = fs.rename_no_replace(&source, &destination).await;
+            assert_eq!(
+                collision.unwrap_err().kind(),
+                std::io::ErrorKind::AlreadyExists
+            );
+            assert_eq!(fs.read(&destination).await.unwrap(), b"first bytes");
+            fs.remove_file(&source).await.unwrap();
+            fs.sync_directory(directory).await.unwrap();
+            fs.remove_file(&destination).await.unwrap();
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("terrane-localfs-{}-{unique}", std::process::id()));
+
+        check_binding(&TokioLocalFs, &directory).await;
+        tokio::fs::remove_dir(directory).await.unwrap();
     }
 }
