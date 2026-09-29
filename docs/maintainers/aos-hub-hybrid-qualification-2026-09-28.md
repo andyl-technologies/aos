@@ -1052,6 +1052,33 @@ PostgreSQL/Worker readers, source-key custody, application/object closure,
 whole-Hub import and activation remain pending. The in-flight fleet predates
 this increment.
 
+## Private SQLite snapshot constraint verification
+
+The Native verifier now reconstructs authenticated records in private in-memory
+SQLite using only an opaque catalogue compiled from the current production
+schema. It inserts exact typed cells, checks readback, and waits for both paired
+streams' authenticated END and clean EOF before full integrity, foreign-key,
+omission and lineage checks. No archive SQL or source database seeds are run.
+Cancellation closes the connection before a report can escape.
+
+All **19 focused tests pass** against AOS SQLite 3.53.4. They include correctly
+signed duplicate primary keys, UNIQUE and CHECK violations, missing foreign
+keys, valid child-before-parent insertion, extreme scalar values, truncated or
+trailing streams, cancellation and selected resource limits. Producer receipt
+`/tmp/hub-snapshot-scratch-qualified.json`
+(`df2d50d331593d814d2c87ed8de89a84c423f6276e6fabd0f5bfa5b70f0828e8`)
+and independent review `/tmp/hub-snapshot-scratch-independent-review.json`
+(`310b9f2f35033f8b9f69f9f9ea118c2ebb9f27dda584da532ca733a001b33abb`)
+bind the exact ten integrated files. All 26 prerequisites match, with the
+disclosed additive Native journal module declaration retained during integration.
+That declaration was not in the focused candidate; combined qualification is
+still required.
+
+This proves retained SQL constraints for the admitted snapshot format. It does
+not prove application or storage-object completeness, source-key custody,
+external authority restoration, import or activation. Limits bound selected
+pages, payloads and SQLite work, not total heap or blocked I/O duration.
+
 ## Shared issuer control and retained Native journal
 
 The shared issuer control protocol adds bounded authenticated requests, compact

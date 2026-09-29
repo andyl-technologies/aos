@@ -271,6 +271,14 @@ impl SnapshotClassifier {
         &self.manifest
     }
 
+    /// Selects classification metadata without exposing the private contract.
+    pub(crate) fn table_disposition(&self, name: &str) -> Result<&str> {
+        self.tables
+            .get(name)
+            .map(|table| table.disposition.as_str())
+            .ok_or_else(|| anyhow::anyhow!("snapshot table is unclassified"))
+    }
+
     /// Classifies one row in the source's declared column order.
     ///
     /// Private cells produce exact-cell dependencies with no raw payload. Unknown

@@ -29,6 +29,13 @@ mod source_audit;
 #[path = "sqlite_snapshot/compiled_checks.rs"]
 mod compiled_checks;
 
+mod catalogue;
+
+pub use catalogue::{
+    CompiledSqliteSnapshotCatalogue, CompiledSqliteSnapshotDefinition,
+    CompiledSqliteSnapshotDisposition, CompiledSqliteSnapshotObjectKind,
+};
+
 pub use source_audit::{
     SqliteSnapshotAuditLimits, SqliteSnapshotSourceAudit, SqliteSnapshotTableCount,
 };

@@ -4,3 +4,5 @@
 //! files, keys, import, storage binding, jobs or activation policy.
 
 pub mod capture;
+
+pub mod scratch;

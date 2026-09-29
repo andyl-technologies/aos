@@ -35,7 +35,7 @@ tokio-util = { workspace = true }
 axum = { workspace = true }
 rand = { workspace = true }
 rustix = { workspace = true, features = ["process"] }
-rusqlite = { workspace = true }
+rusqlite = { workspace = true, features = ["hooks"] }
 uuid = { workspace = true }
 tower-http = { workspace = true, features = ["catch-panic", "limit"] }
 clap = { workspace = true }
