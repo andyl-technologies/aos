@@ -400,12 +400,16 @@ only for the original logical admission and required placements. No bulk bytes
 or verification read may fall back through Native.
 
 Verification uses an explicit, provider-qualified execution profile. Foreground
-work is bounded by the original public invocation and its fixed deadline. If a
-completed object exceeds that measured budget, the original Begin must reserve
-queue execution and its exact placement before provider creation. A successful
-provider Complete response establishes closed staging, not a verified whole
-object digest. The client may observe `CompletingStaging` and poll its original
-operation while the storage Worker verifies the object asynchronously.
+work is bounded by the original public invocation and its fixed deadline. A
+queued profile must be reserved by the original Begin, with its exact placement,
+before provider creation. Objects exceeding the measured foreground budget use
+that qualified queue profile. Small objects may use it too when foreground
+verification is unavailable; neither mode is selected after provider creation.
+
+A successful provider Complete response establishes closed staging, not a
+verified whole object digest. The client may observe `CompletingStaging` and
+poll its original operation while the storage Worker verifies the object
+asynchronously.
 
 The queue carries only a bounded job reference. A consumer obtains a fresh,
 scoped machine read permission for the retained original session, placement and

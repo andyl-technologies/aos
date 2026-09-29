@@ -163,6 +163,11 @@ returns the bounded validated index projection rather than routing the original
 file upload through Native. Provider request counts, control RPCs and per-phase
 latency for large metadata sets are measured, not hidden by file size totals.
 
+When foreground verification is unqualified, small metadata objects use a
+separately qualified queued profile. Queue sends and Native read-evidence
+controls are batched within fixed message, item and invocation budgets; each
+object retains its own attempt, evidence and publication dependency.
+
 Completion may remain in `CompletingStaging` while a storage-local queue job
 verifies a large closed object. The client retains and polls its exact original
 Complete; it does not resend parts, create a replacement Complete, or publish a

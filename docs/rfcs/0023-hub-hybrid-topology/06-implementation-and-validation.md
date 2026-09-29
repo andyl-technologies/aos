@@ -215,6 +215,10 @@ to Native. Prove that a pending status never starts another provider upload or
 crosses the publication barrier. A platform time limit alone does not qualify
 an object size or authorize a retry after an unknown read effect.
 
+For thousands of small metadata objects, measure bounded queue send batches and
+Native read-evidence pages alongside actual object concurrency. A one-object
+consumer setting for large archives is not evidence of metadata throughput.
+
 ## Failure and recovery tests
 
 Inject a Native origin outage, PostgreSQL outage, Worker storage executor
