@@ -14,7 +14,7 @@
 use std::error::Error;
 use std::fmt;
 
-use terrane_core::boundary::{MAX_NODE, closes_node};
+use terrane_core::boundary::{BoundaryDecision, BoundaryError, MAX_NODE, decide};
 
 const INLINE_CHUNK: [u8; 32] = [
     0x94, 0x79, 0xe1, 0xe5, 0x74, 0x91, 0x07, 0x8e, 0xb0, 0x9f, 0x9d, 0xec, 0xc2, 0xc5, 0x6c, 0x63,
@@ -108,10 +108,16 @@ pub(super) enum BuildError {
     EmptyInput,
     /// Indicates that the fixture encoder disagrees with the normative node.
     GoldenMismatch,
+    /// Retains a rejected encoded item or node size.
+    Boundary(BoundaryError),
 }
 
 impl fmt::Display for BuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Self::Boundary(error) = self {
+            return error.fmt(formatter);
+        }
+
         formatter.write_str(match self {
             Self::Allocation => "fixture digest allocation failed",
             Self::DuplicateKey => "fixture contains duplicate hash-like keys",
@@ -119,11 +125,25 @@ impl fmt::Display for BuildError {
             Self::Depth => "fixture exceeded the sixteen-level limit",
             Self::EmptyInput => "fixture requires entries and a nonzero ingestion batch",
             Self::GoldenMismatch => "fixture encoder failed the normative inline-file node vector",
+            Self::Boundary(_) => "invalid fixture boundary input",
         })
     }
 }
 
-impl Error for BuildError {}
+impl Error for BuildError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Boundary(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<BoundaryError> for BuildError {
+    fn from(error: BoundaryError) -> Self {
+        Self::Boundary(error)
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 /// Records a complete tree identity and each level's encoded-item sizes.
@@ -149,6 +169,11 @@ impl LevelReport {
     /// Returns the mean size of nodes closed by the boundary rule.
     pub(super) fn complete_mean(&self) -> Option<u64> {
         self.complete_total.checked_div(self.complete_nodes)
+    }
+
+    /// Returns the number of nodes closed by a boundary rather than the tail.
+    pub(super) fn complete_nodes(&self) -> u64 {
+        self.complete_nodes
     }
 
     fn record(&mut self, bytes: u64, forced: bool, complete: bool) -> Result<(), BuildError> {
@@ -248,7 +273,7 @@ pub(super) fn verify_golden_node() -> Result<(), BuildError> {
     Ok(())
 }
 
-/// Constructs canonical nodes and measures the draft boundary procedure.
+/// Constructs canonical nodes and measures the corrected boundary procedure.
 ///
 /// # Errors
 /// Returns an error for empty inputs, integer overflow, or excessive depth.
@@ -261,6 +286,7 @@ pub(super) fn build(fixture: &Fixture, batch: usize) -> Result<Measurement, Buil
     let mut report = LevelReport::default();
     let mut children = Vec::new();
     let mut canonical = Vec::new();
+    let mut stored = Vec::new();
 
     for start in (0..fixture.entries).step_by(batch) {
         for ordinal in start..fixture.entries.min(start + batch) {
@@ -272,12 +298,26 @@ pub(super) fn build(fixture: &Fixture, batch: usize) -> Result<Measurement, Buil
                 .count();
             canonical.clear();
             leaf_item(&mut canonical, &key, 0);
-            leaf_item(&mut node.items, &key[shared..], shared as u64);
+            stored.clear();
+            leaf_item(&mut stored, &key[shared..], shared as u64);
+            let mut decision = decide(node.items.len() as u64, stored.len() as u64, &canonical)?;
+            if decision == BoundaryDecision::SplitBefore {
+                report.record(node.items.len() as u64, true, true)?;
+                children.push(node.finish(0)?);
+
+                // A split resets prefix compression and changes the stored
+                // length used for the byte-normalized comparison threshold.
+                stored.clear();
+                stored.extend_from_slice(&canonical);
+                decision = decide(0, stored.len() as u64, &canonical)?;
+            }
+
+            node.items.extend_from_slice(&stored);
             node.push(&key, 1, 0)?;
 
             let size = node.items.len() as u64;
-            if closes_node(size, &canonical) {
-                report.record(size, size >= MAX_NODE, true)?;
+            if decision == BoundaryDecision::CloseAfter {
+                report.record(size, size == MAX_NODE, true)?;
                 children.push(node.finish(0)?);
             }
         }
@@ -300,12 +340,19 @@ pub(super) fn build(fixture: &Fixture, batch: usize) -> Result<Measurement, Buil
         for child in children {
             canonical.clear();
             child_item(&mut canonical, &child);
+            let mut decision = decide(node.items.len() as u64, canonical.len() as u64, &canonical)?;
+            if decision == BoundaryDecision::SplitBefore {
+                report.record(node.items.len() as u64, true, true)?;
+                parents.push(node.finish(level)?);
+                decision = decide(0, canonical.len() as u64, &canonical)?;
+            }
+
             node.items.extend_from_slice(&canonical);
             node.push(&child.last_key, child.count, child.weight)?;
 
             let size = node.items.len() as u64;
-            if closes_node(size, &canonical) {
-                report.record(size, size >= MAX_NODE, true)?;
+            if decision == BoundaryDecision::CloseAfter {
+                report.record(size, size == MAX_NODE, true)?;
                 parents.push(node.finish(level)?);
             }
         }
