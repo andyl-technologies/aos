@@ -321,55 +321,244 @@ fn measurement_hash_domains_do_not_relabel_payload_versions() {
     );
 }
 
-#[test]
-fn qemu_vmstate_section_versions_match_registry() {
-    let registry = registry_versions(super::SCHEMA_REGISTRY);
-    let patch = include_str!("../../../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch");
+// An added VMStateDescription declaration establishes ownership in the atomic
+// patch. Upstream descriptors whose existing declarations are merely context
+// do not become owned formats because a field or a QOM name resembles one.
+fn owned_qemu_vmstate_sections(patch: &str) -> Result<BTreeMap<String, u32>, String> {
     let lines = patch.lines().collect::<Vec<_>>();
-    let mut covered = BTreeSet::new();
+    let mut sections = BTreeMap::new();
+
+    if lines.iter().any(|line| {
+        line.strip_prefix('+')
+            .is_some_and(|added| added.trim().starts_with("#define TYPE_IMX6UL_LCDIF "))
+    }) {
+        return Err("Pinned QEMU VMState macro definition changed".to_owned());
+    }
 
     for (index, line) in lines.iter().enumerate() {
-        let Some(name) = line
-            .strip_prefix("+    .name = \"")
-            .and_then(|line| line.split_once('"').map(|(name, _)| name))
-        else {
+        let Some(declaration) = line.strip_prefix('+').map(str::trim) else {
             continue;
         };
-        // This Crucible-owned section deliberately retains QEMU's existing name.
-        if !name.contains("crucible") && name != "virtio-blk/dropped-requests" {
+        if !declaration.contains("VMStateDescription ") || !declaration.ends_with("= {") {
             continue;
         }
 
-        let Some(version) = lines[index + 1..]
-            .iter()
-            .take(4)
-            .find_map(|line| line.strip_prefix("+    .version_id = "))
-            .and_then(|version| version.trim_end_matches(',').parse::<u32>().ok())
-        else {
-            continue; // A QOM or transport name, not a VMStateDescription.
-        };
+        let mut name = None;
+        let mut version = None;
+        for field in &lines[index + 1..] {
+            let Some(field) = field.strip_prefix('+').map(str::trim) else {
+                break;
+            };
+            if field.starts_with(".fields =") || field == "};" {
+                break;
+            }
+            if let Some(value) = field.strip_prefix(".name = ") {
+                name = qemu_vmstate_literal_name(value)?;
+            }
+            if let Some(value) = field.strip_prefix(".version_id = ") {
+                version = value.trim_end_matches(',').parse::<u32>().ok();
+            }
+        }
 
-        let normalized = name.replace(['/', '_', ' '], "-");
+        let declaration_identifies_owned =
+            declaration.contains("crucible") || declaration.contains("_wide");
+        let Some(name) = name else {
+            if declaration_identifies_owned {
+                return Err(format!(
+                    "Owned QEMU VMState declaration has no literal name: {declaration}"
+                ));
+            }
+            continue;
+        };
+        let owned = name.contains("crucible")
+            || name == "virtio-blk/dropped-requests"
+            || name.ends_with("-wide")
+            || name.ends_with("/wide");
+        if !owned {
+            continue;
+        }
+        let version = version.filter(|version| *version != 0).ok_or_else(|| {
+            format!("Owned QEMU VMState section {name} has no positive literal version")
+        })?;
+
+        // New wide formats have distinct literal names across targets (for
+        // example cpu/timer versus cpu_timer). Escape separators losslessly;
+        // preserve the established IDs of previously registered formats.
+        let wide = name.ends_with("-wide") || name.ends_with("/wide");
+        let normalized = if wide {
+            name.replace('%', "%25")
+                .replace('/', "%2f")
+                .replace(' ', "%20")
+        } else {
+            name.replace(['/', '_', ' '], "-")
+        };
         let registry_name = format!("crucible.qemu.vmstate.{normalized}");
-        assert!(
-            covered.insert(registry_name.clone()),
-            "duplicate QEMU VMState section {name}"
-        );
-        assert_eq!(
-            registry.get(registry_name.as_str()),
-            Some(&version),
-            "QEMU VMState section {name} version {version} differs from registry"
-        );
+        if sections.insert(registry_name.clone(), version).is_some() {
+            return Err(format!(
+                "Duplicate or colliding QEMU VMState name {registry_name}"
+            ));
+        }
+    }
+    Ok(sections)
+}
+
+fn qemu_vmstate_literal_name(expression: &str) -> Result<Option<String>, String> {
+    let expression = expression.trim_end_matches(',').trim();
+    if let Some(literal) = expression
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    {
+        if !literal.contains(['"', '\\']) {
+            return Ok(Some(literal.to_owned()));
+        }
     }
 
+    // This unchanged header constant is from the pinned sole upstream source:
+    // include/hw/display/imx6ul_lcdif.h defines TYPE_IMX6UL_LCDIF as
+    // "imx6ul-lcdif". The owned subsection concatenates this exact suffix.
+    if expression == "TYPE_IMX6UL_LCDIF \"/crucible-clock\"" {
+        return Ok(Some("imx6ul-lcdif/crucible-clock".to_owned()));
+    }
+    if expression.contains("crucible")
+        || expression.contains("-wide")
+        || expression.contains("/wide")
+    {
+        return Err(format!("Unresolved owned QEMU VMState name: {expression}"));
+    }
+    Ok(None)
+}
+
+fn validate_qemu_vmstate_registry(
+    patch: &str,
+    registry: &BTreeMap<&str, u32>,
+) -> Result<(), String> {
+    let sections = owned_qemu_vmstate_sections(patch)?;
     let registered = registry
-        .keys()
-        .filter(|name| name.starts_with("crucible.qemu.vmstate."))
-        .copied()
-        .collect::<BTreeSet<_>>();
+        .iter()
+        .filter(|(name, _)| name.starts_with("crucible.qemu.vmstate."))
+        .map(|(name, version)| ((*name).to_owned(), *version))
+        .collect::<BTreeMap<_, _>>();
+
+    if sections != registered {
+        return Err(format!(
+            "QEMU VMState inventory or versions differ: actual={sections:?}, registry={registered:?}"
+        ));
+    }
+    Ok(())
+}
+
+const QEMU_PATCH: &str =
+    include_str!("../../../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch");
+
+#[test]
+fn qemu_vmstate_section_versions_match_registry() {
+    // The single macro alias above is anchored to this immutable header base.
+    let descriptor = include_str!("../../../../pkgs/emulation/qemu-patches/_atomic-patch.nix");
+    assert!(descriptor.contains("baseCommit = \"1ed046750938db278a12dc55c6a7934d5fc68c14\";"));
+    validate_qemu_vmstate_registry(QEMU_PATCH, &registry_versions(super::SCHEMA_REGISTRY))
+        .expect("Every owned QEMU VMState format has its exact current registry version");
+}
+
+#[test]
+fn qemu_vmstate_registry_rejects_missing_wide_format() {
+    let mut registry = registry_versions(super::SCHEMA_REGISTRY);
     assert_eq!(
-        covered.iter().map(String::as_str).collect::<BTreeSet<_>>(),
-        registered,
-        "QEMU VMState inventory differs from the registry"
+        registry.remove("crucible.qemu.vmstate.ptimer%2fexact-wide"),
+        Some(1)
     );
+    assert!(validate_qemu_vmstate_registry(QEMU_PATCH, &registry).is_err());
+}
+
+#[test]
+fn qemu_vmstate_registry_rejects_deleted_format() {
+    let mut registry = registry_versions(super::SCHEMA_REGISTRY);
+    assert!(
+        registry
+            .insert("crucible.qemu.vmstate.apic-crucible-clock", 3)
+            .is_none()
+    );
+    assert!(validate_qemu_vmstate_registry(QEMU_PATCH, &registry).is_err());
+}
+
+#[test]
+fn qemu_vmstate_registry_rejects_version_drift() {
+    let mut registry = registry_versions(super::SCHEMA_REGISTRY);
+    assert_eq!(
+        registry.insert("crucible.qemu.vmstate.apic%2ftimer-wide", 2),
+        Some(1)
+    );
+    assert!(validate_qemu_vmstate_registry(QEMU_PATCH, &registry).is_err());
+}
+
+#[test]
+fn qemu_vmstate_discovery_rejects_missing_owned_version() {
+    let patch = "+static const VMStateDescription vmstate_timer_wide = {\n\
+                 +    .name = \"clock/timer-wide\",\n\
+                 +    .fields = (const VMStateField[]) {\n\
+                 +    }\n+};\n";
+    assert!(owned_qemu_vmstate_sections(patch).is_err());
+}
+
+#[test]
+fn qemu_vmstate_discovery_rejects_normalization_collision() {
+    let patch = "+static const VMStateDescription vmstate_one_wide = {\n\
+                 +    .name = \"clock/crucible-timer\",\n\
+                 +    .version_id = 1,\n+};\n\
+                 +static const VMStateDescription vmstate_two_wide = {\n\
+                 +    .name = \"clock_crucible-timer\",\n\
+                 +    .version_id = 1,\n+};\n";
+    assert!(owned_qemu_vmstate_sections(patch).is_err());
+}
+
+#[test]
+fn qemu_vmstate_discovery_preserves_actual_target_name_separation() {
+    let sections = owned_qemu_vmstate_sections(QEMU_PATCH).unwrap();
+    assert_eq!(
+        sections.get("crucible.qemu.vmstate.cpu%2ftimer%2fclock-wide"),
+        Some(&1)
+    );
+    assert_eq!(
+        sections.get("crucible.qemu.vmstate.cpu_timer%2fclock-wide"),
+        Some(&1)
+    );
+}
+
+#[test]
+fn qemu_vmstate_discovery_rejects_invalid_owned_versions() {
+    for version in ["0", "-1", "4294967296", "VERSION_MACRO"] {
+        let patch = format!(
+            "+static const VMStateDescription vmstate_timer_wide = {{\n\
+             +    .name = \"clock/timer-wide\",\n\
+             +    .version_id = {version},\n+}};\n"
+        );
+        assert!(owned_qemu_vmstate_sections(&patch).is_err(), "{version}");
+    }
+}
+
+#[test]
+fn qemu_vmstate_discovery_excludes_qom_and_existing_upstream_formats() {
+    let patch = "+static const TypeInfo timer_type = {\n\
+                 +    .name = \"clock/timer-wide\",\n\
+                 +    .version_id = 1,\n+};\n\
+                  static const VMStateDescription vmstate_upstream = {\n\
+                 +    .name = \"upstream/timer-wide\",\n\
+                 +    .version_id = 1,\n };\n";
+    assert!(owned_qemu_vmstate_sections(patch).unwrap().is_empty());
+}
+
+#[test]
+fn qemu_vmstate_discovery_resolves_pinned_owned_macro_name() {
+    let patch = "+static const VMStateDescription vmstate_imx6ul_lcdif_crucible_clock = {\n\
+                 +    .name = TYPE_IMX6UL_LCDIF \"/crucible-clock\",\n\
+                 +    .version_id = 1,\n+};\n";
+    let sections = owned_qemu_vmstate_sections(patch).unwrap();
+    assert_eq!(
+        sections.get("crucible.qemu.vmstate.imx6ul-lcdif-crucible-clock"),
+        Some(&1)
+    );
+    let unresolved = patch.replace("TYPE_IMX6UL_LCDIF", "UNKNOWN_DEVICE_TYPE");
+    assert!(owned_qemu_vmstate_sections(&unresolved).is_err());
+
+    let changed_definition = format!("+#define TYPE_IMX6UL_LCDIF \"different-device\"\n{patch}");
+    assert!(owned_qemu_vmstate_sections(&changed_definition).is_err());
 }
