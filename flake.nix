@@ -231,6 +231,11 @@
   in {
     aosSystems = genAttrs systems (system: (aosFor system).systems);
 
+    # The complete package set, including its builders (mkDerivation,
+    # mkCargoPackage, mkGoPackage, callPackage, mkShell) and `lib`, for
+    # downstream flakes that take AOS as their only input.
+    legacyPackages = genAttrs systems (system: (aosFor system).pkgs);
+
     packages = genAttrs systems (
       system: let
         aos = aosFor system;
