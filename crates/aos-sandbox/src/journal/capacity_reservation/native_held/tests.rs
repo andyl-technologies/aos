@@ -297,7 +297,7 @@ fn substitution_version_padding_and_key_relabel_are_rejected() {
 }
 
 #[test]
-fn native_rows_are_accounting_data_but_reject_every_legacy_route() {
+fn native_rows_are_canonical_accounting_data_but_reject_legacy_authority() {
     let native =
         NativeHeldCapacityRecordV3::new(request(NativeHeldCapacityPurposeV3::Root, 7), [7; 16])
             .unwrap()
@@ -307,11 +307,12 @@ fn native_rows_are_accounting_data_but_reject_every_legacy_route() {
         native.value().unwrap().to_vec(),
     )]);
     assert!(super::super::decode_capacity_record(native.key(), native.value().unwrap()).is_ok());
-    assert!(super::super::validate_all_reservations(&state).is_err());
+    assert!(super::super::validate_all_reservations(&state).is_ok());
     assert!(
         super::super::all_reservations_owned_by(&state, RecordNamespace::MountSourceAcquisition)
-            .is_err()
+            .unwrap()
     );
+    assert!(super::super::require_legacy_reservations(&state).is_err());
     assert!(require_legacy_owner(&state, RecordNamespace::MountSourceAcquisition).is_err());
 
     for record in [

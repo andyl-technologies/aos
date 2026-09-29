@@ -16,7 +16,9 @@
 use sha2::{Digest as _, Sha256};
 
 use super::super::{JournalError, JournalRecord, RecordNamespace};
-use super::{DecodedCapacityReservationV1, reservation_key, take};
+use super::{reservation_key, take};
+
+pub(in crate::journal) use super::family::{require_legacy_owner, require_legacy_transaction};
 
 mod admission;
 mod profile;
@@ -247,7 +249,7 @@ impl NativeHeldCapacityRecordV3 {
         Self::decode(record.key(), value)
     }
 
-    fn decode(key: &[u8], value: &[u8]) -> Result<Self, JournalError> {
+    pub(super) fn decode(key: &[u8], value: &[u8]) -> Result<Self, JournalError> {
         if value.len() != NATIVE_HELD_CAPACITY_VALUE_BYTES_V3
             || &value[..8] != b"AOSJCR01"
             || value[8..10] != 3_u16.to_be_bytes()
@@ -310,80 +312,6 @@ fn identity(request: &NativeHeldCapacityRequestV3, admission: [u8; 16]) -> [u8; 
     digest.update(binding_bytes(request));
     digest.update(admission);
     digest.finalize().into()
-}
-
-pub(super) fn has_native_version(value: &[u8]) -> bool {
-    value.get(8..10) == Some(3_u16.to_be_bytes().as_slice())
-}
-
-pub(super) fn decode_accounting_record(
-    key: &[u8],
-    value: &[u8],
-) -> Result<DecodedCapacityReservationV1, JournalError> {
-    let record = NativeHeldCapacityRecordV3::decode(key, value)?;
-    let request = record.request;
-    Ok(DecodedCapacityReservationV1 {
-        reservation_id: record.identity,
-        maximum_records: usize::try_from(request.terminal_records.max(request.poison_records))
-            .map_err(|_| JournalError::LimitExceeded("native reserved records"))?,
-        maximum_bytes: request.terminal_bytes.max(request.poison_bytes),
-        maximum_transactions: usize::try_from(request.future_transactions)
-            .map_err(|_| JournalError::LimitExceeded("native reserved transactions"))?,
-    })
-}
-
-pub(in crate::journal) fn require_legacy_owner(
-    state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    namespace: RecordNamespace,
-) -> Result<(), JournalError> {
-    for ((record_namespace, key), value) in state {
-        if *record_namespace == RecordNamespace::GlobalCapacityReservation
-            && has_native_version(value)
-        {
-            let record = NativeHeldCapacityRecordV3::decode(key, value)?;
-            if record.request.purpose.owner_namespace() == namespace {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
-    }
-    Ok(())
-}
-
-pub(in crate::journal) fn require_legacy_transaction(
-    state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    transaction: &super::super::JournalTransaction,
-) -> Result<(), JournalError> {
-    let mut changed_owners = std::collections::BTreeSet::new();
-    for record in transaction.records() {
-        if record.namespace() == RecordNamespace::GlobalCapacityReservation
-            && record.value().is_some_and(has_native_version)
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        if matches!(
-            record.namespace(),
-            RecordNamespace::MountSourceAcquisition | RecordNamespace::SourceProviderAuthority
-        ) {
-            changed_owners.insert(record.namespace());
-        }
-        if record.namespace() == RecordNamespace::GlobalCapacityReservation {
-            if let Some(value) = state.get(&(record.namespace(), record.key().to_vec())) {
-                if has_native_version(value) {
-                    NativeHeldCapacityRecordV3::decode(record.key(), value)?;
-                    return Err(JournalError::ProtectedBoundary);
-                }
-            }
-        }
-    }
-    for ((namespace, key), value) in state {
-        if *namespace == RecordNamespace::GlobalCapacityReservation && has_native_version(value) {
-            let native = NativeHeldCapacityRecordV3::decode(key, value)?;
-            if changed_owners.contains(&native.request.purpose.owner_namespace()) {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
-    }
-    Ok(())
 }
 
 fn invalid(reason: &'static str) -> JournalError {
