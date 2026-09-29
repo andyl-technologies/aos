@@ -405,6 +405,181 @@ fn declared_io_nodes_bind_only_matching_concrete_artifacts() {
 }
 
 #[test]
+fn foreign_world_block_layout_refuses_a_different_canonical_source() {
+    let world = world_with_io_nodes(vec![block_node()]);
+    let mut earlier = block_node();
+    earlier.id = node_id("a-prefix");
+    let foreign_world = world_with_io_nodes(vec![earlier, block_node()]);
+    let foreign_layout =
+        WorldIoInstantiationLayout::derive(&foreign_world, WorldIoLayoutPolicy::default())
+            .expect("foreign actual layout");
+    let current_layout = WorldIoInstantiationLayout::derive(&world, WorldIoLayoutPolicy::default())
+        .expect("current actual layout");
+    assert_ne!(world.id(), foreign_world.id());
+    assert_ne!(
+        current_layout.get(&node_id("disk-node")),
+        foreign_layout.get(&node_id("disk-node"))
+    );
+
+    let bound = DeviceSchedulingSubNode::bind_world_block_with_layout(
+        &world,
+        &foreign_layout,
+        &node_id("disk-node"),
+        BaseImage::new(block_bytes()),
+        Seed::from_u64(3),
+    );
+
+    assert!(matches!(
+        bound,
+        Err(DeviceSubNodeBindingError::Layout {
+            node,
+            source: WorldIoLayoutError::WorldMismatch { expected, actual },
+        }) if node == "disk-node" && expected == world.id() && actual == foreign_world.id()
+    ));
+}
+
+#[test]
+fn foreign_world_ninep_layout_refuses_a_different_canonical_source() {
+    let world = world_with_io_nodes(vec![ninep_node()]);
+    let foreign_world = world_with_io_nodes(vec![block_node(), ninep_node()]);
+    let foreign_layout =
+        WorldIoInstantiationLayout::derive(&foreign_world, WorldIoLayoutPolicy::default())
+            .expect("foreign actual layout");
+    let current_layout = WorldIoInstantiationLayout::derive(&world, WorldIoLayoutPolicy::default())
+        .expect("current actual layout");
+    assert_ne!(world.id(), foreign_world.id());
+    assert_ne!(
+        current_layout.get(&node_id("share-node")),
+        foreign_layout.get(&node_id("share-node"))
+    );
+
+    let bound = DeviceSchedulingSubNode::bind_world_ninep_with_layout(
+        &world,
+        &foreign_layout,
+        &node_id("share-node"),
+        ninep_tree(),
+        Seed::from_u64(4),
+    );
+
+    assert!(matches!(
+        bound,
+        Err(DeviceSubNodeBindingError::Layout {
+            node,
+            source: WorldIoLayoutError::WorldMismatch { expected, actual },
+        }) if node == "share-node" && expected == world.id() && actual == foreign_world.id()
+    ));
+}
+
+#[test]
+fn foreign_world_layout_refuses_even_when_source_numbers_are_identical() {
+    let world = world_with_io_nodes(vec![block_node()]);
+    let mut reassigned = block_node();
+    reassigned.owner = node_id("node-b");
+    let foreign_world = world_with_io_nodes(vec![reassigned]);
+    let foreign_layout =
+        WorldIoInstantiationLayout::derive(&foreign_world, WorldIoLayoutPolicy::default())
+            .expect("foreign owner layout");
+    let current_layout = WorldIoInstantiationLayout::derive(&world, WorldIoLayoutPolicy::default())
+        .expect("current owner layout");
+    assert_ne!(world.id(), foreign_world.id());
+    assert_eq!(
+        current_layout.get(&node_id("disk-node")),
+        foreign_layout.get(&node_id("disk-node"))
+    );
+
+    let bound = DeviceSchedulingSubNode::bind_world_block_with_layout(
+        &world,
+        &foreign_layout.clone(),
+        &node_id("disk-node"),
+        BaseImage::new(block_bytes()),
+        Seed::from_u64(3),
+    );
+
+    assert!(matches!(
+        bound,
+        Err(DeviceSubNodeBindingError::Layout {
+            source: WorldIoLayoutError::WorldMismatch { expected, actual },
+            ..
+        }) if expected == world.id() && actual == foreign_world.id()
+    ));
+}
+
+#[test]
+fn same_world_reconstruction_and_capacity_policies_bind_both_device_families() {
+    let world = world_with_io_nodes(vec![block_node(), ninep_node()]);
+    let reconstructed = World::from_canonical_toml(
+        &world
+            .to_canonical_toml()
+            .expect("canonical configured World"),
+    )
+    .expect("reconstructed canonical World");
+    let original_world = world.id();
+    let original_devices = world
+        .io_nodes()
+        .map(WorldIoNode::device_id)
+        .collect::<Vec<_>>();
+
+    for (inbox_capacity, outbox_capacity) in [(8, 16), (1024, 2048)] {
+        let layout = WorldIoInstantiationLayout::derive(
+            &reconstructed,
+            WorldIoLayoutPolicy {
+                inbox_capacity,
+                outbox_capacity,
+            },
+        )
+        .expect("physical capacity policy");
+        let block = DeviceSchedulingSubNode::bind_world_block_with_layout(
+            &world,
+            &layout,
+            &node_id("disk-node"),
+            BaseImage::new(block_bytes()),
+            Seed::from_u64(3),
+        )
+        .expect("same canonical World block binding");
+        let ninep = DeviceSchedulingSubNode::bind_world_ninep_with_layout(
+            &world,
+            &layout,
+            &node_id("share-node"),
+            ninep_tree(),
+            Seed::from_u64(4),
+        )
+        .expect("same canonical World 9p binding");
+
+        let block_core = block
+            .block_device()
+            .expect("actual block device")
+            .core()
+            .snapshot();
+        let ninep_core = ninep
+            .ninep_device()
+            .expect("actual 9p device")
+            .core()
+            .snapshot();
+        for (node, core) in [("disk-node", block_core), ("share-node", ninep_core)] {
+            assert_eq!(
+                core.src_node,
+                layout
+                    .get(&node_id(node))
+                    .expect("canonical source")
+                    .source_node
+            );
+            assert_eq!(core.inbox_capacity, inbox_capacity);
+            assert_eq!(core.outbox_capacity, outbox_capacity);
+        }
+    }
+
+    assert_eq!(world.id(), original_world);
+    assert_eq!(world.id(), reconstructed.id());
+    assert_eq!(
+        world
+            .io_nodes()
+            .map(WorldIoNode::device_id)
+            .collect::<Vec<_>>(),
+        original_devices
+    );
+}
+
+#[test]
 fn production_world_instantiation_rejects_malformed_ninep_artifact_bytes() {
     let store = MemoryDagStore::new();
     let malformed = b"not-a-canonical-ninep-tree".to_vec();
