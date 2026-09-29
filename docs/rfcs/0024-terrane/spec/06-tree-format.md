@@ -247,8 +247,10 @@ nonempty node closes at the end of the sequence.
   by item bytes prevents large entries from reducing the split frequency
   per byte. The target mean of complete nodes is 8 KiB to 16 KiB for the
   sequential, shared-prefix, and hash-like fixtures of
-  `gate:tree-node-distribution`; final tail nodes and the root are reported
-  separately. The base table and comparison vectors are in
+  `gate:tree-node-distribution`, applied separately to each fixture level
+  with at least 100 complete nodes. Smaller samples, final tail nodes, and
+  the root MUST be reported but do not establish a distribution; the hard
+  size bound and deterministic replay checks still apply to every node. The base table and comparison vectors are in
   [`reference/golden-vectors.md`](reference/golden-vectors.md) §node-boundaries.
   A builder MUST split before an item that would exceed `MAX_NODE`, and
   MUST reject an item whose encoding as a node's first item exceeds that

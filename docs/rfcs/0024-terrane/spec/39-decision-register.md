@@ -421,7 +421,10 @@ is added rather than editing history.
     stored encoded length divided by eight, with exact integer arithmetic
     and saturation at `2^32`. Split before an item that would exceed the
     64 KiB item-byte cap, recompute prefix compression after a split, and
-    reject an item that cannot fit alone. Keep every requirement ID stable.
+    reject an item that cannot fit alone. Assess the mean target only at
+    fixture levels with at least 100 complete nodes, while reporting all
+    smaller samples and enforcing the hard cap everywhere. Keep every
+    requirement ID stable.
   - **Rationale:** The original per-item comparison made the expected size
     depend on entry width. A reference spike over ten million entries
     measured complete leaf means of 27,674, 27,980, and 39,292 bytes for
@@ -431,7 +434,11 @@ is added rather than editing history.
     by bytes restores the intended size hazard, and splitting before
     overflow preserves the decoder limit. Both decisions depend only on
     sorted content and preserve history independence. This correction occurs
-    before the identity format is frozen.
+    before the identity format is frozen. Small internal levels can contain
+    one ordinary probabilistic cut; measured singleton means of 4,982 and
+    6,431 bytes do not estimate a distribution. Requiring 100 complete nodes
+    avoids treating those samples as a failed mean target while retaining
+    their measurements and size checks.
   - **Alternatives considered:** Raising the decoder cap (rejected: leaves
     entry-width-dependent variance and enlarges untrusted allocations);
     weakening the target to fit the old measurements (rejected: hides the
