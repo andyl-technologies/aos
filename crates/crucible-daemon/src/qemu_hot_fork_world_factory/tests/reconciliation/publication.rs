@@ -16,9 +16,12 @@ fn short_source_horizon_refuses_budget_before_guest_choice_handoff() {
     .expect("first source");
     let second =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("second source");
+    // Complete physical inventory includes every VM in this three-node World.
+    let third =
+        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("third source");
     let (_nodes, source_world) = prepared_multi_node_hot_fork_source_world_for_scenario_for_test(
         &scenario,
-        vec![first, second],
+        vec![first, second, third],
     )
     .expect("short-horizon source world");
     let input = execution_input_for_scenario_with_stop(scenario, StopCondition::NextChoice);
@@ -164,10 +167,13 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
     .expect("first source");
     let second =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("second source");
+    // Complete physical inventory includes every VM in this three-node World.
+    let third =
+        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("third source");
     let (_nodes, source_world) =
         prepared_multi_node_hot_fork_source_world_with_time_limit_for_scenario_for_test(
             &scenario,
-            vec![first, second],
+            vec![first, second, third],
             source_time_limit_ticks,
         )
         .expect("prepared source world");
@@ -201,7 +207,7 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
     )
     .expect("compatibility profile");
     let epoch = DaemonEpoch::from_bytes([0x72; 16]).expect("daemon epoch");
-    // Both runnable nodes must pass the exact 100 ps guest-choice stop.
+    // Every runnable node must pass the exact 100 ps guest-choice stop.
     let resources = AttemptResourceLimits::new(8, 8 << 30, 8 << 30, 64).expect("attempt resources");
     let request = SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0x73; 16]).expect("assignment"),

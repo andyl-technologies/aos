@@ -2021,6 +2021,51 @@ fn parked_selectable_step(
 }
 
 impl SimulationBackend for QemuNodeSet {
+    fn step_node_with_admission(
+        &mut self,
+        admission: &crucible::PreparedRunAdmission,
+    ) -> Result<crucible::BackendRunResult, BackendError> {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.node_mut(admission.node())?
+                .validate_scripted_run_admission_for_test(admission)?;
+            self.step_node_to(
+                admission.node(),
+                VirtualTime {
+                    ticks: admission.dispatch_horizon().icount.retired,
+                },
+            )
+            .map(crucible::BackendRunResult::Completed)
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            let _ = admission;
+            Err(BackendError::Unsupported {
+                capability: "step_node_with_admission",
+            })
+        }
+    }
+
+    fn observe_node_io_inventory(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<crucible::BackendIoInventory, BackendError> {
+        // Only an explicitly bound scripted runtime supplies model facts.
+        // Operational Mode8/Source observation remains a separate native join.
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.node_mut(node)?
+                .observe_scripted_io_inventory_for_test(node)
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            let _ = node;
+            Err(BackendError::Unsupported {
+                capability: "observe_node_io_inventory",
+            })
+        }
+    }
+
     fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
         let node = {
             let mut nodes = self.nodes.keys();

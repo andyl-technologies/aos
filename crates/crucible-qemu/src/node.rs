@@ -705,6 +705,46 @@ impl QemuNode {
             })
     }
 
+    /// Binds an explicit scripted host-I/O fixture to its configured World.
+    ///
+    /// This method is available only to test support. It creates no native
+    /// Source, owner or dispatch authority and refuses ordinary QEMU runtimes.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unsupported runtimes, foreign nodes or unrepresented queues.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn bind_scripted_io_inventory_for_test(
+        &mut self,
+        world: &crucible::model::World,
+        node: &NodeId,
+    ) -> Result<(), BackendError> {
+        self.host_io_runtime
+            .bind_scripted_io_inventory_for_test(world, node)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn observe_scripted_io_inventory_for_test(
+        &self,
+        node: &NodeId,
+    ) -> Result<crucible::BackendIoInventory, BackendError> {
+        self.host_io_runtime.observe_scripted_io_inventory_for_test(
+            node,
+            crucible::NodeCounter {
+                ticks: self.last_observed_time.ticks,
+            },
+        )
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn validate_scripted_run_admission_for_test(
+        &self,
+        admission: &crucible::PreparedRunAdmission,
+    ) -> Result<(), BackendError> {
+        self.host_io_runtime
+            .validate_scripted_run_admission_for_test(admission)
+    }
+
     /// Builds a QEMU scheduler node from one owned child handle and its channels.
     #[must_use]
     pub fn new(
@@ -2405,6 +2445,44 @@ impl Backend for QemuNode {
 }
 
 impl SimulationBackend for QemuNode {
+    fn step_node_with_admission(
+        &mut self,
+        admission: &crucible::PreparedRunAdmission,
+    ) -> Result<crucible::BackendRunResult, BackendError> {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.validate_scripted_run_admission_for_test(admission)?;
+            self.step_to(VirtualTime {
+                ticks: admission.dispatch_horizon().icount.retired,
+            })
+            .map(crucible::BackendRunResult::Completed)
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            let _ = admission;
+            Err(BackendError::Unsupported {
+                capability: "step_node_with_admission",
+            })
+        }
+    }
+
+    fn observe_node_io_inventory(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<crucible::BackendIoInventory, BackendError> {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.observe_scripted_io_inventory_for_test(node)
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            let _ = node;
+            Err(BackendError::Unsupported {
+                capability: "observe_node_io_inventory",
+            })
+        }
+    }
+
     fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
         let icount_ceiling = Icount {
             retired: ceiling.ticks,
