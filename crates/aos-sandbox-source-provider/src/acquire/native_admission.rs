@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use super::*;
 
 /// Holds the actual current-row owner alongside its selected comparison data.
-pub(super) struct CurrentSelection {
+pub(crate) struct CurrentSelection {
     current: ProtectedCurrentCatalogPublicationV1,
     projection: CurrentCatalogPublicationProjectionV1,
     publication_digest: ObjectDigest,
@@ -28,6 +28,20 @@ pub(super) struct CurrentSelection {
 }
 
 impl CurrentSelection {
+    pub(crate) fn require_native_claims(
+        &self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        claims: &NativeAcquireCatalogBindingV3,
+        namespace: ObjectDigest,
+    ) -> Result<(), ProviderLedgerError> {
+        self.current
+            .require_native_catalog_binding_v3(journal, claims)?;
+        if claims.resource_namespace_digest() != namespace || self.snapshot.is_none() {
+            return Err(ProviderLedgerError::ConfigurationMismatch);
+        }
+        Ok(())
+    }
+
     pub(super) fn resource(&self) -> &SourceResourceV1 {
         &self.resource
     }
@@ -74,6 +88,27 @@ pub(super) fn select_current_resource(
     publication_bytes: &[u8],
     rows: &[u8],
 ) -> Result<CurrentSelection, ProviderLedgerError> {
+    select_current_resource_at(
+        &ledger.journal,
+        &ledger.recovered.catalog,
+        session,
+        normalized,
+        namespace,
+        publication_bytes,
+        rows,
+    )
+}
+
+/// Shares the original row-selection engine with the immutable pairing view.
+pub(crate) fn select_current_resource_at(
+    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    catalog: &crate::model::CatalogHeadRecordV1,
+    session: &mut CurrentProviderIngressSessionV1,
+    normalized: &NormalizedAcquisitionIntentV1,
+    namespace: ObjectDigest,
+    publication_bytes: &[u8],
+    rows: &[u8],
+) -> Result<CurrentSelection, ProviderLedgerError> {
     let configuration = session.revalidated_provider_configuration()?;
     let publication = aos_sandbox_source_provider_security::verify_catalog_publication(
         &configuration,
@@ -83,32 +118,31 @@ pub(super) fn select_current_resource(
     let publication_digest =
         ObjectDigest::from_bytes(Sha256::digest(publication.canonical_publication()).into());
     let current = session.authorize_fixed_current_catalog_publication_v1(
-        &ledger.journal,
-        ledger.journal.snapshot()?,
+        journal,
+        journal.snapshot()?,
         publication,
     )?;
     let projection = current.projection().clone();
     let (resource, snapshot, is_current) = if normalized.kernel_coupled() {
-        let selected =
-            current.select_manifest_row(&ledger.journal, rows, normalized.binding_digest())?;
+        let selected = current.select_manifest_row(journal, rows, normalized.binding_digest())?;
         (
             selected.selected().0.clone(),
             None,
-            selected.is_current(&ledger.journal),
+            selected.is_current(journal),
         )
     } else {
         let selected =
-            current.select_held_snapshot_row(&ledger.journal, rows, normalized.binding_digest())?;
+            current.select_held_snapshot_row(journal, rows, normalized.binding_digest())?;
         (
             selected.selected().0.clone(),
             Some(selected.selected().1.clone()),
-            selected.is_current(&ledger.journal),
+            selected.is_current(journal),
         )
     };
     if !is_current
         || resource.resource_namespace_digest() != namespace
-        || resource.catalog_generation() != ledger.recovered.catalog.catalog_generation
-        || resource.catalog_digest() != ledger.recovered.catalog.catalog_digest
+        || resource.catalog_generation() != catalog.catalog_generation
+        || resource.catalog_digest() != catalog.catalog_digest
     {
         return Err(ProviderLedgerError::ConfigurationMismatch);
     }
@@ -127,13 +161,7 @@ fn require_catalog_claims(
     selection: &CurrentSelection,
     namespace: ObjectDigest,
 ) -> Result<(), ProviderLedgerError> {
-    selection
-        .current
-        .require_native_catalog_binding_v3(&ledger.journal, claims)?;
-    if claims.resource_namespace_digest() != namespace || selection.snapshot.is_none() {
-        return Err(ProviderLedgerError::ConfigurationMismatch);
-    }
-    Ok(())
+    selection.require_native_claims(&ledger.journal, claims, namespace)
 }
 
 /// Retains original packet, clock, and selected row until reservation readback.

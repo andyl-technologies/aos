@@ -35,6 +35,7 @@ const CANONICAL_CATALOG_PUBLICATION_BYTES: usize = 520;
 
 mod held_readonly;
 pub use held_readonly::FixedProviderHeldReadOnlyObservationV1;
+mod original_ingress;
 
 enum FixedProviderOwnerStateV1 {
     Handshake {
@@ -102,6 +103,10 @@ pub enum FixedProviderIngressProgressV1 {
     InventoryReadback(InventoryReadbackQueryV1),
     /// A kernel-coupled Acquire or holder Inventory awaits protected admission.
     Source(FixedProviderAuthenticatedSourceRequestV1),
+    /// Root1 remains owned while its exact original Acquire is awaited.
+    OriginalRootPreparedRetained,
+    /// A fresh original pair is retained without dispatch or admission authority.
+    OriginalPairRetained,
 }
 
 /// Reports exact protected replay performed by the fixed provider owner.
@@ -281,6 +286,7 @@ pub struct FixedProviderOwnerV1 {
     pending_recovery_plan_digest: Option<ObjectDigest>,
     pending_recovery_terminal_digests: Option<NativeRecoveryTerminalDigestsV1>,
     pending_inventory_readback_digest: Option<ObjectDigest>,
+    original_ingress: original_ingress::OriginalIngressV1,
 }
 
 impl core::fmt::Debug for FixedProviderOwnerV1 {
@@ -343,6 +349,7 @@ impl FixedProviderOwnerV1 {
                 pending_recovery_plan_digest: None,
                 pending_recovery_terminal_digests: None,
                 pending_inventory_readback_digest: None,
+                original_ingress: original_ingress::OriginalIngressV1::default(),
             },
             FixedProviderOpenReportV1 { journal: recovery },
         ))
@@ -362,6 +369,7 @@ impl FixedProviderOwnerV1 {
     /// Returns [`ProviderLedgerError`] for fatal handshake failure, catalog or
     /// configuration mismatch, malformed replay, or ambiguous initialization.
     pub fn advance_handshake(&mut self) -> Result<FixedProviderOwnerStatusV1, ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         let state = self
             .state
             .take()
@@ -556,6 +564,7 @@ impl FixedProviderOwnerV1 {
             &mut crate::zfs_hold_challenge::ProtectedZfsHoldChallengesV1,
         ) -> Result<R, ProviderLedgerError>,
     ) -> Result<R, ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         let state = self
             .state
             .take()
@@ -627,6 +636,7 @@ impl FixedProviderOwnerV1 {
     /// ingress session and has not yet accepted a fresh request.
     #[doc(hidden)]
     pub fn begin_recovery_successor_handshake(&mut self) -> Result<(), ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         if let Some(FixedProviderOwnerStateV1::Ready(detached)) = &self.state {
             // The old fallible rotation consumes detached ownership. Native
             // custody needs a genuine future disposition, not that error path.
@@ -677,6 +687,7 @@ impl FixedProviderOwnerV1 {
         &mut self,
         checkpoint: aos_sandbox_source_provider_security::ProviderIngressReopenCheckpointV1,
     ) -> Result<(), ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         if let Some(FixedProviderOwnerStateV1::Ready(detached)) = &self.state {
             detached.require_native_reply_custody_empty()?;
         }
@@ -718,6 +729,7 @@ impl FixedProviderOwnerV1 {
         &mut self,
         socket: DescriptorSubjectSocket,
     ) -> Result<(), ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         if self.recovery_handshake.is_some() {
             return Err(ProviderLedgerError::InvalidTransition(
                 "provider recovery handshake is already pending",
@@ -758,6 +770,7 @@ impl FixedProviderOwnerV1 {
     pub fn advance_recovery_successor_handshake(
         &mut self,
     ) -> Result<FixedProviderOwnerStatusV1, ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         let (mut security, detached, recovered_execution_death) = self
             .recovery_handshake
             .take()
@@ -832,6 +845,7 @@ impl FixedProviderOwnerV1 {
         &mut self,
         signed_request: &aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1,
     ) -> Result<bool, ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         let matching = self
             .pending_backend_recovery
             .iter()
@@ -883,6 +897,7 @@ impl FixedProviderOwnerV1 {
         &mut self,
         signed_request: aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1,
     ) -> Result<(), ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         if self.ingress_reopen.is_none() {
             return Err(ProviderLedgerError::InvalidTransition(
                 "provider ingress is not awaiting reopen",
@@ -1166,6 +1181,7 @@ impl FixedProviderOwnerV1 {
     /// Records that the fixed Root-Mount carrier accepted the fresh packet.
     #[doc(hidden)]
     pub fn mark_backend_recovery_request_in_flight(&mut self) -> Result<(), ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         if self.pending_backend_recovery.is_empty()
             || self.pending_backend_recovery[0].has_fresh_request()
             || !self.pending_backend_recovery[0].successor_session_ready()
@@ -1196,6 +1212,7 @@ impl FixedProviderOwnerV1 {
         provenance: crate::SupplementalV2MigrationProvenanceV1,
         canonical_manifest: &[u8],
     ) -> Result<FixedProviderOwnerStatusV1, ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         let state = self
             .state
             .take()
@@ -1298,6 +1315,7 @@ impl FixedProviderOwnerV1 {
     pub fn recover_aosspl_v2_to_v3_migration(
         &mut self,
     ) -> Result<FixedProviderOwnerStatusV1, ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         let state = self
             .state
             .take()
@@ -1381,6 +1399,7 @@ impl FixedProviderOwnerV1 {
     /// is malformed, its session is no longer installed, or final durability,
     /// custody, peer, descriptor, or carrier validation fails.
     pub fn send_reply(&mut self, reply: DurableProviderReplyV1) -> Result<(), ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         let native_identity = reply.native_identity();
         let session_binding = reply.session_binding()?;
         let state = self
@@ -1483,6 +1502,7 @@ impl FixedProviderOwnerV1 {
         &mut self,
         canonical_catalog_publication: &[u8],
     ) -> Result<FixedProviderCatalogProgressV1, ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         if canonical_catalog_publication.len() != CANONICAL_CATALOG_PUBLICATION_BYTES {
             return Err(ProviderLedgerError::Corrupt(
                 "canonical catalog publication length",
@@ -1552,6 +1572,7 @@ impl FixedProviderOwnerV1 {
         &mut self,
         canonical_catalog_publication: &[u8],
     ) -> Result<FixedProviderIngressProgressV1, ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         if canonical_catalog_publication.len() != CANONICAL_CATALOG_PUBLICATION_BYTES {
             return Err(ProviderLedgerError::Corrupt(
                 "canonical catalog publication length",
@@ -1576,19 +1597,9 @@ impl FixedProviderOwnerV1 {
                 "recovery answer remains pending on this carrier",
             ));
         }
-        let packet = self.with_ledger(|ledger| {
-            let installed = ledger.current_sessions.values_mut().next().ok_or(
-                ProviderLedgerError::InvalidTransition(
-                    "fixed provider owner has no live ingress session",
-                ),
-            )?;
-            installed
-                .session
-                .receive_current_request_packet()
-                .map_err(Into::into)
-        })?;
-        let Some(packet) = packet else {
-            return Ok(FixedProviderIngressProgressV1::Pending);
+        let packet = match self.receive_original_ingress(canonical_catalog_publication, None)? {
+            original_ingress::ReceivedOriginalIngressV1::Ordinary(packet) => packet,
+            original_ingress::ReceivedOriginalIngressV1::Progress(progress) => return Ok(progress),
         };
         if let Ok(query) = CatalogCurrentnessQueryV1::from_canonical_bytes(&packet) {
             return self
@@ -1794,6 +1805,7 @@ impl FixedProviderOwnerV1 {
         canonical_catalog_publication: &[u8],
         query: CatalogCurrentnessQueryV1,
     ) -> Result<FixedProviderCatalogProgressV1, ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         let last_sequence = self.last_catalog_sequence;
         let last_minimum = self.last_catalog_minimum;
         let pending = self.with_ledger(|ledger| {
@@ -1853,6 +1865,7 @@ impl FixedProviderOwnerV1 {
         &mut self,
         canonical_catalog_publication: &[u8],
     ) -> Result<(), ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         let state = self
             .state
             .take()
@@ -1918,6 +1931,7 @@ impl FixedProviderOwnerV1 {
         aos_sandbox_source_provider_security::ProtectedCurrentCatalogPublicationV1,
         ProviderLedgerError,
     > {
+        self.require_original_ingress_idle()?;
         if canonical_catalog_publication.len() != CANONICAL_CATALOG_PUBLICATION_BYTES {
             return Err(ProviderLedgerError::Corrupt(
                 "canonical catalog publication length",
@@ -1986,6 +2000,7 @@ impl FixedProviderOwnerV1 {
             &aos_sandbox::ProtectedJournalAuthority<'journal>,
         ) -> Result<R, ProviderLedgerError>,
     ) -> Result<R, ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         let state = self
             .state
             .take()
@@ -2032,6 +2047,7 @@ impl FixedProviderOwnerV1 {
         aos_sandbox_source_provider_security::MountSourceStateMigrationInstallOutcomeV2,
         ProviderLedgerError,
     > {
+        self.require_original_ingress_idle()?;
         let state = self
             .state
             .take()
@@ -2100,6 +2116,9 @@ impl FixedProviderOwnerV1 {
         mount_owner: &mut aos_sandbox::MountManagerStartupProtectedOwnerV1,
         recovery: aos_sandbox_source_provider_security::MountSourceStateMigrationRecoveryV2,
     ) -> FixedMountStateMigrationRecoveryOutcomeV2 {
+        if let Err(error) = self.require_original_ingress_idle() {
+            return FixedMountStateMigrationRecoveryOutcomeV2::RetryRequired { error, recovery };
+        }
         let Some(state) = self.state.take() else {
             return FixedMountStateMigrationRecoveryOutcomeV2::RetryRequired {
                 error: ProviderLedgerError::RuntimePoisoned,
@@ -2172,6 +2191,7 @@ impl FixedProviderOwnerV1 {
     }
 
     fn reopen_fixed_journal(&mut self) -> Result<(), ProviderLedgerError> {
+        self.require_original_ingress_idle()?;
         drop(self.journal.take());
         let (journal, _) = Journal::open_protected_at(
             Path::new(FIXED_PROVIDER_STATE_ROOT),

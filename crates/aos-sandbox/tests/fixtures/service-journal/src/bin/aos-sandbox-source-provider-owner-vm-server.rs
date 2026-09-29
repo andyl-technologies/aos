@@ -139,7 +139,9 @@ fn answer_one_native_recovery(
             }
             FixedProviderIngressProgressV1::CatalogReplied => {}
             FixedProviderIngressProgressV1::InventoryReadback(_)
-            | FixedProviderIngressProgressV1::Source(_) => {
+            | FixedProviderIngressProgressV1::Source(_)
+            | FixedProviderIngressProgressV1::OriginalRootPreparedRetained
+            | FixedProviderIngressProgressV1::OriginalPairRetained => {
                 return Err("unexpected Provider request during native recovery".into());
             }
         }

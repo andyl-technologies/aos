@@ -210,11 +210,29 @@ impl ProductionSourceProviderIngressV1 {
         &self,
         owner: &mut FixedProviderOwnerV1,
     ) -> Result<FixedProviderIngressProgressV1, ProductionSourceProviderIngressErrorV1> {
-        self.listener.validate_current()?;
-        let publication = read_protected_catalog_publication()?;
-        owner
-            .advance_authenticated_ingress(&publication)
-            .map_err(Into::into)
+        if owner.original_native_ingress_closed() {
+            return Err(
+                ProviderLedgerError::InvalidTransition("original ingress is closed").into(),
+            );
+        }
+        let result = (|| {
+            self.listener.validate_current()?;
+            if owner.original_native_pair_pending() {
+                let (publication, rows) = self.read_current_catalog_manifest()?;
+                owner
+                    .advance_original_native_pair(&publication, &rows)
+                    .map_err(Into::into)
+            } else {
+                let publication = read_protected_catalog_publication()?;
+                owner
+                    .advance_authenticated_ingress(&publication)
+                    .map_err(Into::into)
+            }
+        })();
+        if result.is_err() {
+            owner.close_original_native_ingress_after_failure();
+        }
+        result
     }
 
     /// Reads the content-addressed row catalog under the protected fixed root.

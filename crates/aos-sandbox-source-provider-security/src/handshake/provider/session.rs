@@ -422,15 +422,23 @@ impl CurrentProviderIngressSessionV1 {
     pub fn receive_current_request_packet(
         &mut self,
     ) -> Result<Option<Vec<u8>>, SourceProviderSecurityError> {
-        self.revalidate()?;
+        self.receive_current_request_packet_owned()
+            .map_err(|(_, error)| error)
+    }
+
+    // Keep post-receive bytes available to the original carrier classifier.
+    // The legacy wrapper preserves its exact error and retry behavior.
+    pub(super) fn receive_current_request_packet_owned(
+        &mut self,
+    ) -> Result<Option<Vec<u8>>, (Option<Vec<u8>>, SourceProviderSecurityError)> {
+        self.revalidate().map_err(|error| (None, error))?;
         let received = match self.carrier.receive_zero_descriptors(MAXIMUM_FRAME_BYTES) {
             Ok(received) => received,
             Err(CarrierFailureV1::Retryable) => return Ok(None),
             Err(CarrierFailureV1::Fatal(error)) => {
-                return Err(poison_and_close(
-                    &mut self.custody,
-                    &mut self.carrier,
-                    error,
+                return Err((
+                    None,
+                    poison_and_close(&mut self.custody, &mut self.carrier, error),
                 ));
             }
         };
@@ -440,13 +448,18 @@ impl CurrentProviderIngressSessionV1 {
             execution,
         } = received;
         if !descriptors.is_empty() || !execution.has_same_execution(&self.root_mount_execution) {
-            return Err(poison_and_close(
-                &mut self.custody,
-                &mut self.carrier,
-                SourceProviderSecurityError::SessionContinuity,
+            return Err((
+                Some(payload),
+                poison_and_close(
+                    &mut self.custody,
+                    &mut self.carrier,
+                    SourceProviderSecurityError::SessionContinuity,
+                ),
             ));
         }
-        self.revalidate()?;
+        if let Err(error) = self.revalidate() {
+            return Err((Some(payload), error));
+        }
         Ok(Some(payload))
     }
 
