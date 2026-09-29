@@ -93,6 +93,8 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ### T0 — Foundations
 
+**Status:** Complete (2026-09-29).
+
 Freezes: crate layering and the `no_std` boundary.
 
 Exit gates: `checks.terrane.gates.crate-graph`,
