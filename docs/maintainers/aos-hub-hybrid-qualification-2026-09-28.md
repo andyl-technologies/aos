@@ -914,3 +914,29 @@ not physical I/O or a hard wall-clock deadline. Source integrity and declared
 constraints do not establish artifact authenticity, independent archive FK proof,
 application/object closure or activation. The current full fleet predates this
 source-audit increment and is not its qualification evidence.
+
+
+## Signed snapshot declarations and separate key custody
+
+The signed declaration layer passes **21 focused tests** with independent review.
+Its closed canonical root binds fixed metadata/private stream roles, archive ID,
+framing summaries and wrapped keys. Verification requires externally pinned
+Ed25519 keys and the exact signer ID before key unwrapping. Encrypted inner key
+records bind archive, role, wrapping ID and suite. Metadata-only verification
+requires only its selected wrapping key; pair recovery additionally checks both
+roles' key separation. Reader-only recovered keys cannot create stream writers.
+
+Qualification is `/tmp/hub-snapshot-root-qualified.json`
+(`485215c29a17cc8c785aa576d4bb1db0fa4a6045f2f700089f98bae5e8b876f6`);
+independent review is `/tmp/hub-snapshot-root-independent-review.json`
+(`9ba112bbeb2fab04d7a0d882914c035e3630cfb8df73ebd0c63952a971048812`).
+Integration verified four exact files, eight prerequisites, the patch and the
+actual passing log. Known key exclusions are explicit and bounded; absent source
+or other-role material cannot establish global key separation. Owned private
+buffers and errors are redacted, without perfect erasure or entropy guarantees.
+
+The only profile is `framing_only`. The signature authenticates declared
+summaries; it does not inspect files or establish their decoder provenance.
+Actual stream reconciliation, typed logical records, source authenticity,
+whole-Hub closure, filesystem orchestration, export/import and activation remain
+pending. The current full fleet predates this increment.

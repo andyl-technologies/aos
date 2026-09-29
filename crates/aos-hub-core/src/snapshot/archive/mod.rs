@@ -40,6 +40,8 @@ use zeroize::Zeroizing;
 
 mod frames;
 
+pub mod root;
+
 pub use frames::{PrivateStreamChunk, StreamDecoder, StreamEncoder, StreamLimits, StreamSummary};
 
 #[cfg(test)]
