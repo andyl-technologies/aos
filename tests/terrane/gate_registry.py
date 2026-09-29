@@ -17,6 +17,10 @@ GATE_NAME = re.compile(r"gate:([a-z0-9]+(?:-[a-z0-9]+)*)(?![a-z0-9*-])")
 REGISTRY_ROW = re.compile(
     r"\| `gate:([a-z0-9-]+)` \| ([0-9]+) \| (.+) \|"
 )
+REQUIREMENT_ID = re.compile(r"\b[A-Z]+-[0-9]+\b")
+REQUIREMENT_DECLARATION = re.compile(
+    r"^\s*-\s+\*\*\[([A-Z]+-[0-9]+)\]", re.MULTILINE
+)
 
 
 def check_registry(spec: Path, registry: Path, check_names: Path) -> None:
@@ -61,13 +65,29 @@ def check_registry(spec: Path, registry: Path, check_names: Path) -> None:
     if set(actual) != registered or len(actual) != len(registered):
         raise ValueError("PKG-7: AOS check names differ from specification registry")
 
+    # Ownership may cross specification files. Declarations, rather than
+    # incidental references in prose, establish the set of stable IDs.
+    declared = set()
+    for document in spec.glob("[0-9][0-9]-*.md"):
+        declared.update(REQUIREMENT_DECLARATION.findall(document.read_text()))
+
     unowned = sorted(
         row["name"]
         for row in rows
-        if not re.search(r"\b[A-Z]+-[0-9]+\b", row["requirements"])
+        if not REQUIREMENT_ID.search(row["requirements"])
     )
     if unowned:
         raise ValueError(f"TEST-16: registry rows name no requirement ID: {unowned}")
+
+    unknown = {}
+    for row in rows:
+        referenced = set(REQUIREMENT_ID.findall(row["requirements"]))
+        missing = referenced - declared
+        if missing:
+            unknown[row["name"]] = sorted(missing)
+
+    if unknown:
+        raise ValueError(f"TEST-16: registry rows reference undeclared IDs: {unknown}")
 
     print(f"PASS: {len(rows)} unique specification gates map to AOS checks")
 
