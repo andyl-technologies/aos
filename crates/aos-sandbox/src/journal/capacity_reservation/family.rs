@@ -168,6 +168,19 @@ pub(super) fn canonical_reservations(
     Ok(families)
 }
 
+/// Projects every canonical family before any purpose-specific mutation.
+pub(in crate::journal) fn accounting_reservations(
+    state: &State,
+) -> Result<BTreeMap<[u8; 32], DecodedCapacityReservationV1>, JournalError> {
+    canonical_reservations(state)?
+        .into_iter()
+        .map(|family| {
+            let accounting = family.accounting()?;
+            Ok((accounting.reservation_id, accounting))
+        })
+        .collect()
+}
+
 /// Preserves the old whole-journal legacy claim refusal for other families.
 ///
 /// # Errors

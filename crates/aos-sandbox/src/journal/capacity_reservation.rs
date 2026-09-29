@@ -22,8 +22,8 @@ mod family;
 pub mod native_held;
 mod ordinary;
 
-pub(in crate::journal) use family::require_legacy_reservations;
 use family::{CanonicalCapacityFamily, canonical_reservations};
+pub(in crate::journal) use family::{accounting_reservations, require_legacy_reservations};
 
 const KEY_PREFIX: &[u8] = b"aos.journal.global-capacity-reservation.v1\0";
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.journal.global-capacity-reservation.v1\0";
