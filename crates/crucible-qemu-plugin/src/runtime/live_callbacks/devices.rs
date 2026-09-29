@@ -730,6 +730,13 @@ impl LiveDeviceCallbackState {
                 observed: output.len(),
             });
         }
+        if self
+            .ninep
+            .pending_delivery_len(request_id)
+            .is_some_and(|response_len| response_len > output.len())
+        {
+            return Ok(QEMU_PLUGIN_NINEP_POLL_PENDING);
+        }
         let pending = self.ninep_tokens.remove(&request_id).ok_or(
             LiveDeviceCallbackError::UnknownRequest {
                 family: "9p",
@@ -738,18 +745,21 @@ impl LiveDeviceCallbackState {
             },
         )?;
         let inbound = self.ninep_rings.inbound.ninep_inbound();
-        let mut completion = NinePOutput { output };
-        match handle_9p_poll_callback(
-            &self.ninep,
-            &mut self.freeze,
-            slot,
-            &inbound,
-            &mut completion,
-            current_icount,
-            pending.token,
-        )
-        .map_err(|source| LiveDeviceCallbackError::NineP { source })?
-        {
+        let result = {
+            let mut completion = NinePOutput { output };
+            handle_9p_poll_callback(
+                &self.ninep,
+                &mut self.freeze,
+                slot,
+                &inbound,
+                &mut completion,
+                current_icount,
+                pending.token,
+            )
+            .map_err(|source| LiveDeviceCallbackError::NineP { source })?
+        };
+
+        match result {
             NinePPoll::NotReady { token } => {
                 self.ninep_tokens.insert(
                     request_id,
@@ -760,11 +770,48 @@ impl LiveDeviceCallbackState {
                 );
                 Ok(QEMU_PLUGIN_NINEP_POLL_PENDING)
             }
-            NinePPoll::Completed { response, .. } => i64::try_from(response.payload().len())
-                .map_err(|_error| LiveDeviceCallbackError::ResponseLengthOverflow {
-                    family: "9p",
-                    len: response.payload().len(),
-                }),
+            NinePPoll::Retry { token, source } => {
+                self.ninep_tokens.insert(
+                    request_id,
+                    PendingNinePRequest {
+                        token,
+                        response_capacity: pending.response_capacity,
+                    },
+                );
+                match source {
+                    NinePIoError::GuestCompletion { .. }
+                    | NinePIoError::RingDequeue {
+                        source: crucible_shmem::SpscRingError::ConsumerBarrierHeld,
+                        ..
+                    } => Ok(QEMU_PLUGIN_NINEP_POLL_PENDING),
+                    source => Err(LiveDeviceCallbackError::NineP { source }),
+                }
+            }
+            NinePPoll::Quarantined { token, source } => {
+                self.ninep_tokens.insert(
+                    request_id,
+                    PendingNinePRequest {
+                        token,
+                        response_capacity: pending.response_capacity,
+                    },
+                );
+                Err(LiveDeviceCallbackError::NineP { source })
+            }
+            NinePPoll::Completed { response, .. } => {
+                let payload = response.payload();
+                let Some(destination) = output.get_mut(..payload.len()) else {
+                    // Every successful delivery checked the current buffer
+                    // before the irreversible ring and freeze settlement.
+                    std::process::abort();
+                };
+                destination.copy_from_slice(payload);
+                i64::try_from(payload.len()).map_err(|_error| {
+                    LiveDeviceCallbackError::ResponseLengthOverflow {
+                        family: "9p",
+                        len: payload.len(),
+                    }
+                })
+            }
         }
     }
 

@@ -79,6 +79,126 @@ fn live_device_adapters_retain_tokens_and_complete_block_and_ninep() {
 }
 
 #[test]
+fn live_ninep_delivery_retry_keeps_the_original_head_and_request() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let mut storage = DeviceRingStorage::new();
+    let mut devices = LiveDeviceCallbackState::new(
+        0,
+        storage.block_pair(),
+        storage.ninep_pair(),
+        1,
+        storage.accelerator_rings(),
+    )
+    .unwrap_or_else(|error| panic!("live devices should bind fixed rings: {error}"));
+
+    devices
+        .begin_ninep_burst(&slot)
+        .unwrap_or_else(|error| panic!("9p burst should start: {error}"));
+    devices
+        .submit_ninep(&slot, 7, 0, b"request", 4)
+        .unwrap_or_else(|error| panic!("9p request should submit: {error}"));
+    enqueue_response(
+        &storage.ninep_in_header,
+        &mut storage.ninep_in_entries,
+        7,
+        SLOT_9P_IO as u32,
+        0,
+        b"response",
+    );
+
+    let mut short_output = [0_u8; 4];
+    assert_eq!(
+        devices
+            .poll_ninep(&slot, 7, 0, &mut short_output)
+            .unwrap_or_else(|error| panic!("no-effect delivery failure should retry: {error}")),
+        QEMU_PLUGIN_NINEP_POLL_PENDING
+    );
+    assert_eq!(short_output, [0; 4]);
+    assert_eq!(storage.ninep_in_header.read_index(), 0);
+    assert!(devices.ninep_tokens.contains_key(&0));
+    assert_eq!(devices.freeze.pending_requests(), 1);
+    assert_eq!(slot.snapshot().device_io_active, 1);
+
+    let mut full_output = [0_u8; 8];
+    assert_eq!(
+        devices
+            .poll_ninep(&slot, 7, 0, &mut full_output)
+            .unwrap_or_else(|error| panic!("same 9p response should settle: {error}")),
+        8
+    );
+    assert_eq!(&full_output, b"response");
+    assert_eq!(storage.ninep_in_header.read_index(), 1);
+    assert!(!devices.ninep_tokens.contains_key(&0));
+    assert_eq!(devices.freeze.pending_requests(), 0);
+}
+
+#[test]
+fn live_ninep_settlement_retry_copies_into_the_final_poll_buffer() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let mut storage = DeviceRingStorage::new();
+    let mut devices = LiveDeviceCallbackState::new(
+        0,
+        storage.block_pair(),
+        storage.ninep_pair(),
+        1,
+        storage.accelerator_rings(),
+    )
+    .unwrap_or_else(|error| panic!("live devices should bind fixed rings: {error}"));
+
+    devices
+        .begin_ninep_burst(&slot)
+        .unwrap_or_else(|error| panic!("9p burst should start: {error}"));
+    devices
+        .submit_ninep(&slot, 7, 0, b"request", 8)
+        .unwrap_or_else(|error| panic!("9p request should submit: {error}"));
+    enqueue_response(
+        &storage.ninep_in_header,
+        &mut storage.ninep_in_entries,
+        7,
+        SLOT_9P_IO as u32,
+        0,
+        b"response",
+    );
+
+    assert!(
+        storage
+            .ninep_in_header
+            .hold_hot_fork_consumers()
+            .quiescent()
+    );
+    let mut first_output = [0_u8; 8];
+    assert_eq!(
+        devices
+            .poll_ninep(&slot, 7, 0, &mut first_output)
+            .unwrap_or_else(|error| panic!("held settlement should retry: {error}")),
+        QEMU_PLUGIN_NINEP_POLL_PENDING
+    );
+    assert_eq!(storage.ninep_in_header.read_index(), 0);
+    assert_eq!(devices.freeze.pending_requests(), 1);
+    assert!(devices.ninep_tokens.contains_key(&0));
+
+    assert!(!storage.ninep_in_header.release_hot_fork_consumers().held());
+    let mut final_output = [0_u8; 8];
+    assert_eq!(
+        devices
+            .poll_ninep(&slot, 7, 0, &mut final_output)
+            .unwrap_or_else(|error| panic!("same response should settle: {error}")),
+        8
+    );
+    assert_eq!(&final_output, b"response");
+    assert_eq!(storage.ninep_in_header.read_index(), 1);
+    assert_eq!(devices.freeze.pending_requests(), 0);
+}
+
+#[test]
 fn live_block_event_poll_delivers_reset_without_losing_pre_reset_tokens() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 40, None)
