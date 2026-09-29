@@ -631,16 +631,28 @@ mod tests {
             decode_broker_authorization_plan(&unknown_audience, DecodeLimits::default()),
             Err(CanonicalCborError::UnknownRegistryValue {
                 registry: "broker audience",
+                value: 5,
+                ..
+            })
+        ));
+
+        let mut invalid_fuse_profile = encode_broker_authorization_plan(&plan());
+        invalid_fuse_profile[3] = 5;
+        assert!(matches!(
+            decode_broker_authorization_plan(&invalid_fuse_profile, DecodeLimits::default()),
+            Err(CanonicalCborError::InvalidSemantics {
+                object: "broker authorization plan",
                 ..
             })
         ));
 
         let mut unknown_protocol = encode_broker_authorization_plan(&plan());
-        unknown_protocol[3] = 5;
+        unknown_protocol[3] = 6;
         assert!(matches!(
             decode_broker_authorization_plan(&unknown_protocol, DecodeLimits::default()),
             Err(CanonicalCborError::UnknownRegistryValue {
                 registry: "broker protocol",
+                value: 6,
                 ..
             })
         ));
