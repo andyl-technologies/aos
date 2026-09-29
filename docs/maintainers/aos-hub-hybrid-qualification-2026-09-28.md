@@ -26,13 +26,17 @@ terminal and legacy replay, missing-version rejection, unknown-outcome fences,
 range identity and forward migration from persisted baseline storage. These
 are local runtime checks; they establish no live Cloudflare provider guarantee.
 
-The most recent completed full fleet attempt used earlier source and failed at
-the Native-only parity ingress route. A focused fresh-VM reproduction proved
-the corrected fixture route returns HTTP 200 through ordinary control APIs.
-The full nonempty SQL and typed projection comparison has not passed on the
-current source. A new consolidated fleet run is required before qualification.
+An earlier full fleet attempt failed at the Native-only parity ingress route.
+A focused fresh-VM reproduction proved the corrected fixture route returns
+HTTP 200 through ordinary control APIs. The consolidated current-source attempt
+passed 4,026 shared tests with six skipped, signed publication and indexing,
+external S3 workflows, parallel uploads, and a 26-object inventory with no hash
+mismatches. It subsequently failed with HTTP 503 because its direct signed
+deletion probe omitted the newly required R2 provider upload version. The
+failure occurred before the full nonempty SQL and typed projection comparison
+completed. Fixture correction and that complete parity remain unqualified.
 
-That failed fleet also missed the RFC's public latency target: baseline p95
+The earlier failed fleet also missed the RFC's public latency target: baseline p95
 was 17.968 ms and concurrent-upload p95 was 169.995 ms, a 9.46-fold increase.
 Direct Native p95 was 8.790 ms. Reported Worker handler p95 was 6 ms, but it
 excludes TLS and admission. The loaded curl `time_appconnect` p95 of 97.737 ms
@@ -43,8 +47,35 @@ percentiles do not establish causality.
 The same attempt recorded 2,942,396 bytes of offered Native-to-Worker plans,
 5,800,451 bytes of inbound results and 8,425,239,271 bytes processed beside
 storage. These are local payload counters, not GCP billing measurements.
-Current browser, ARM and hosted qualification remain outstanding. Earlier
-results below retain their original artifact scope.
+The current fleet's cold-request measurement passed its local relative target:
+baseline p95 was 16.289 ms and concurrent-upload p95 was 13.747 ms, a ratio of
+0.844. It recorded 2,155,361 bytes of offered plans, 4,222,271 bytes of inbound
+results and 6,176,579,982 bytes processed beside storage across 4,155 exchanges.
+Those counters precede the later failure and do not establish complete parity
+or billed provider bandwidth.
+
+The separate current browser run measured the same authenticated page over
+reused connections, with browser response caching disabled. All 25 loaded
+samples overlapped all eight unthrottled 4 MiB uploads; all 50 measured responses
+were HTTP 200, and the uploads produced eight Native completion receipts.
+Baseline p95 was 5.278 ms and loaded p95 was 9.082 ms, a 1.721 ratio. Loaded p99
+was 17.178 ms. The absolute targets pass, but the 25% relative target fails.
+Browser transport timing places the slow samples after request send; it does
+not distinguish Worker admission, origin transit or Native handling. Empirical
+p99 from 25 samples is the maximum observation. Shared-host contention and
+emulator effects remain possible confounders, not established causes.
+
+Current full fleet parity and hosted qualification remain outstanding. These
+local measurements do not establish production acceptance.
+
+The current ARM Native artifact
+`/nix/store/xmm1sx1l2qj8vsxns5nj1dcp83i9dic4-aos-hub-0.1.0`
+passed actual AOS QEMU 11.1.1 execution: SQLite initialization, HTTP health,
+login, session issuance and the authenticated instance page. Its captured
+source matches all 49 qualified file hashes and all 2,373 filtered workspace
+files at `429cae6cf3`. PostgreSQL is compiled into the artifact but was not
+exercised on ARM; Hybrid, TLS and hosted behavior are outside this ARM result.
+Earlier results below retain their original artifact scope.
 
 ## Earlier fleet qualification
 

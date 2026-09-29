@@ -130,6 +130,8 @@ DELETE with writes to the same key. A deletion plan carries the SQL claim ID,
 strong ETag, size, reviewed hash, and provider upload version. The guard compares
 the reviewed upload version with the current R2 object before issuing DELETE;
 an identical replacement with the same bytes and ETag still fails that check.
+The identity is the upload-specific `version` from Cloudflare's
+[R2Object API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/#r2object-definition).
 Inventory and cache scans persist the observed version through their reviewed
 digests, frozen actions, jobs and immutable attempt receipts. Existing
 versionless candidates require a new scan before a first R2 deletion; a
