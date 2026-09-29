@@ -332,15 +332,7 @@ impl S3Surface {
         // `..` can never sign (or directly request) an object outside this
         // resource's prefix — the same containment the filesystem and R2 writers
         // enforce, applied here before the key reaches the origin.
-        crate::url_guard::validate_http_surface_path(path)?;
-        // Avoid a doubled slash when `key_prefix` is empty (a binding whose root
-        // and sub-prefix are both empty) or carries a trailing slash — an
-        // `s3://host/bucket//key` URL is rejected (R2 returns 400).
-        let key = if self.key_prefix.is_empty() {
-            path.to_string()
-        } else {
-            format!("{}/{}", self.key_prefix.trim_end_matches('/'), path)
-        };
+        let key = self.physical_key(path)?;
         let object_path = format!("/{key}");
         match &self.creds {
             Some(creds) => {
@@ -605,6 +597,26 @@ impl S3Surface {
             amz_date: &crate::sigv4::amz_date_from_unix(now),
         };
         crate::sigv4::presign_list_url(&params, &list_prefix, continuation, max_keys)
+    }
+
+    /// Resolves the exact path-style provider key using the object URL resolver.
+    ///
+    /// The key includes the bucket segment and binding/resource prefixes. Public
+    /// callers can inspect the fully resolved key for reserved private staging
+    /// segments before signing or fetching. This performs no URL decoding and
+    /// grants no read, write or provider-policy authority.
+    ///
+    /// # Errors
+    /// Returns an error for an absolute, traversing, empty-segment or control
+    /// path, using the same surface-path validation as object URL signing.
+    pub fn physical_key(&self, path: &str) -> Result<String> {
+        crate::url_guard::validate_http_surface_path(path)?;
+        // Preserve the exact existing composition, including empty/trailing prefixes.
+        Ok(if self.key_prefix.is_empty() {
+            path.to_string()
+        } else {
+            format!("{}/{}", self.key_prefix.trim_end_matches('/'), path)
+        })
     }
 
     /// Recover the surface-relative path from a `ListObjectsV2` `<Key>`.
@@ -1233,6 +1245,32 @@ mod tests {
         assert_ne!(get, put, "method is signed, so GET and PUT differ");
         // The secret never leaks into a URL.
         assert!(!get.contains("secretkey"));
+    }
+
+    #[test]
+    fn physical_key_preserves_exact_prefix_and_reserved_segment_resolution() {
+        let b = binding("s3", "public", Some("https://cdn.example.com"));
+        let normal = S3Surface::from_binding(&b, "tenant", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            normal.physical_key("objects/data").unwrap(),
+            "my-bucket/tenant/objects/data"
+        );
+        let private = S3Surface::from_binding(&b, "tenant/.aos-direct-upload/stage", None)
+            .unwrap()
+            .unwrap();
+        let key = private.physical_key("payload").unwrap();
+        assert!(crate::direct_upload::is_direct_staging_key(&key));
+        assert_eq!(
+            private.object_url(Method::Get, "payload", 1).unwrap(),
+            format!("https://cdn.example.com/{key}")
+        );
+        let literal = normal.physical_key("%2Eaos-direct-upload/payload").unwrap();
+        assert!(!crate::direct_upload::is_direct_staging_key(&literal));
+        for invalid in ["../x", "/x", "x//y", "x/./y", "x\n"] {
+            assert!(normal.physical_key(invalid).is_err());
+        }
     }
 
     #[test]
