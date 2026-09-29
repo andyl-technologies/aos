@@ -769,3 +769,45 @@ authenticity, archive encryption, SQL import or activation. See the
 
 See the [deployment procedure](aos-hub-hybrid-deployment.md) and
 [RFC acceptance gates](../rfcs/0023-hub-hybrid-topology/06-implementation-and-validation.md).
+
+## Bounded OCI HEAD transport recovery
+
+The current client adds one application-level transport retry for a bodyless
+Distribution HEAD that fails before any response with a typed closed-connection
+cause. It excludes connection establishment, timeouts, redirects and body
+failures, status responses and provider-effect methods. The logical request
+retains its original URL, normalized scopes, caller headers and authorization
+across transport replay. An explicit authentication challenge can replace its
+token through the existing authentication flow. Cancellation is checked before
+dispatch and takes priority while awaiting each attempt.
+
+The frozen two-file patch is
+`daa49725c5a41946d7ccfac945525fb27c1d51ed9bf01b32cd6b1b7ae0df7bb6`.
+Its author receipt is `/tmp/hub-oci-head-recovery/qualification-receipt.json`
+(`2710ffb40d73356644e6a197d8d2f2f69c90b81e07eb80e94039c401359c3e88`);
+the independent review is `/tmp/hub-oci-head-recovery-independent-review.json`
+(`f4fb4f2f0b83d0d3f8d41b6ca33c14188b90ea006a29929feaf01119f3a23946`).
+Root verified the patch, five unchanged base inputs, exact final source hashes,
+actual log hashes and successful exit files before integration.
+
+Eleven focused local socket/framing tests and 29 existing registry tests pass.
+Actual TCP faults consume the complete request before reset. They qualify
+successful recovery, repeated-reset refusal, exact token replay despite a
+concurrent token-cache refresh, cancellation, independent authentication budgets,
+nonretrying status responses, and one consumed provider-effect POST without an
+added retry. The tests retain production reqwest retry settings. Its existing
+safe HTTP/2 protocol-NACK retries remain: the new limit is one added application
+retry, not an absolute two-physical-attempt bound for every HTTP/2 request.
+
+The current frozen production CLI source is
+`/nix/store/rd9vxbqzpnlbb8fbdxmhcm2zsms956a1-aos-workspace-src`.
+All 46 captured authority, snapshot and OCI source hashes match the integrated
+source; the structured-attribute derivation source was checked explicitly.
+The full packaged CLI gate passes **4,204 tests, six skipped, 49.945 seconds**.
+Capture and logs are `/tmp/hub-head-recovery-current-source-capture.json` and
+`/tmp/hub-head-recovery-current-fleet.log`.
+
+The full four-VM fleet remains in progress at this checkpoint. This client
+recovery does not establish the original server-close cause, full runtime parity,
+hosted provider behavior or performance acceptance. The retained pre-003 reset
+and upload-isolation misses remain historical evidence.

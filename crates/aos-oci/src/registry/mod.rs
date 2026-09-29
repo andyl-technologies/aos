@@ -412,9 +412,14 @@ impl RegistryClient {
         let scopes = normalized_scopes(scopes)?;
         let cache_key = scopes.join("\n");
         let mut retries = 0;
+        let mut retried_closed_head = false;
         let mut previous_challenge = None;
+        ensure_not_cancelled(cancellation)?;
+        // A concurrent cache refresh must not change a transport replay's
+        // Authorization. Only this request's explicit challenge replaces it.
+        let mut token = self.token_for_scope(&cache_key)?;
         loop {
-            let token = self.token_for_scope(&cache_key)?;
+            ensure_not_cancelled(cancellation)?;
             let mut request = self
                 .inner
                 .http
@@ -431,9 +436,27 @@ impl RegistryClient {
                 }
                 request = request.body(body);
             }
-            let response = tokio::select! {
+            let result = tokio::select! {
+                biased;
                 () = cancellation.cancelled() => bail!("OCI transfer cancelled"),
-                response = request.send() => response.context("sending Distribution request")?,
+                response = request.send() => response,
+            };
+            let response = match result {
+                Ok(response) => response,
+                Err(error)
+                    if method == Method::HEAD
+                        && body.as_ref().is_none_or(Bytes::is_empty)
+                        && !retried_closed_head
+                        && is_closed_connection_error(&error) =>
+                {
+                    // A bodyless HEAD has no provider effect to replay. Spend
+                    // one transport retry across this entire logical request,
+                    // independently of the existing authentication exchanges.
+                    // Reqwest's existing safe protocol-NACK policy is retained.
+                    retried_closed_head = true;
+                    continue;
+                }
+                Err(error) => return Err(error).context("sending Distribution request"),
             };
             let denied = matches!(
                 response.status(),
@@ -458,10 +481,11 @@ impl RegistryClient {
                     .clone()
                     .context("registry returned 401 without WWW-Authenticate")?,
             };
-            let token = self
+            let authorized_token = self
                 .authorize(&challenge, &scopes, cancellation, retry_credentials)
                 .await?;
-            self.store_scoped_token(&cache_key, token)?;
+            self.store_scoped_token(&cache_key, authorized_token.clone())?;
+            token = Some(authorized_token);
             previous_challenge = Some(challenge);
             retries += 1;
         }
@@ -825,6 +849,30 @@ fn build_http_client(resolution: Option<(&str, &[SocketAddr])>) -> Result<reqwes
         builder = builder.resolve_to_addrs(domain, addresses);
     }
     builder.build().context("building confined OCI HTTP client")
+}
+
+// Inspect typed causes only after excluding establishment, timeout, redirect,
+// and body failures. Status responses and error messages never authorize retry.
+fn is_closed_connection_error(error: &reqwest::Error) -> bool {
+    if error.is_connect() || error.is_timeout() || error.is_redirect() || error.is_body() {
+        return false;
+    }
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = cause {
+        if let Some(error) = error.downcast_ref::<std::io::Error>()
+            && matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::UnexpectedEof
+            )
+        {
+            return true;
+        }
+        cause = error.source();
+    }
+    false
 }
 
 fn http_client_builder() -> reqwest::ClientBuilder {
