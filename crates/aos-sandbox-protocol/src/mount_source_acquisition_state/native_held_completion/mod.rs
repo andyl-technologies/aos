@@ -11,6 +11,8 @@
 //! cuts. [`validate_native_root_graph_v2`] validates today's entire legacy graph
 //! before reconstructing those historical bytes; it never infers a cut from a
 //! v1 sidecar. Historical byte equality is not physical equality at today's keys.
+//! [`RootNativeNoEscapeTerminalV2`] is a standalone marker codec; no sidecar or
+//! owner reducer accepts it yet.
 //!
 //! ```text
 //! key = aos.mount.native-held-completion.v1\0 | Mount_attempt[32]
@@ -36,6 +38,7 @@ mod cut;
 mod evidence;
 mod graph;
 mod graph_v2;
+mod no_escape_terminal;
 mod recovery_v2;
 mod reducer;
 mod reducer_v2;
@@ -57,6 +60,7 @@ pub use cut::{
 pub use evidence::{MAXIMUM_ROOT_NATIVE_VERIFIER_BYTES_V1, RootNativeTerminalVerifierV1};
 pub use graph::{RootNativeHeldGraphV1, validate_native_root_graph_v1};
 pub use graph_v2::{RootNativeDataClassV2, RootNativeHeldGraphV2, validate_native_root_graph_v2};
+pub use no_escape_terminal::{ROOT_NATIVE_NO_ESCAPE_TERMINAL_BYTES_V2, RootNativeNoEscapeTerminalV2};
 pub use reducer::{
     RootNativeHeldTransitionV1, RootNativeTransitionKindV1,
     validate_native_root_cold_transition_v1, validate_native_root_transition_v1,
