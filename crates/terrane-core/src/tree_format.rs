@@ -1077,21 +1077,24 @@ pub fn validate_tree_entries(entries: &[LeafItem<'_>], usage: TreeUse) -> Result
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
     use super::{
-        ContentRef, Entry, EntryKind, Error, LeafItem, Node, NodeItems, TreeUse,
+        ChildRef, ContentRef, Entry, EntryKind, Error, LeafItem, Node, NodeItems, TreeUse,
         decode_entry_bytes, decode_node, encode_node, validate_graft_chain, validate_key,
-        validate_tree_entries,
+        validate_tree_entries, verify_child_ref,
     };
 
     const MIN_CHUNK: u64 = 262_144;
 
     fn hex_bytes(hex: &str) -> Vec<u8> {
         hex.as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 let text = core::str::from_utf8(pair).expect("ASCII test vector");
                 u8::from_str_radix(text, 16).expect("hex test vector")
@@ -1363,6 +1366,40 @@ mod tests {
             props: Some(props),
         };
         assert_eq!(encode_node(&oversized, true, MIN_CHUNK), Err(Error::Limit));
+    }
+
+    #[test]
+    fn child_summary_binds_identity_count_and_weight() {
+        let child = Node {
+            level: 0,
+            items: NodeItems::Leaf(vec![item(b"f", file(None))]),
+            props: None,
+        };
+        let encoded = encode_node(&child, false, MIN_CHUNK).expect("child encoding");
+        let identity = crate::identity::TERRANE_V1
+            .calculate(crate::identity::IdentityKind::Node, &encoded)
+            .expect("node identity")
+            .terrane_v1_digest()
+            .expect("profile digest");
+        let mut reference = ChildRef {
+            last_key: b"f".to_vec(),
+            child: identity,
+            count: 1,
+            weight: encoded.len() as u64,
+        };
+        verify_child_ref(1, &reference, &child, &encoded, MIN_CHUNK).expect("exact child");
+
+        reference.count = 2;
+        assert_eq!(
+            verify_child_ref(1, &reference, &child, &encoded, MIN_CHUNK),
+            Err(Error::Node)
+        );
+        reference.count = 1;
+        reference.weight += 1;
+        assert_eq!(
+            verify_child_ref(1, &reference, &child, &encoded, MIN_CHUNK),
+            Err(Error::Node)
+        );
     }
 
     #[test]

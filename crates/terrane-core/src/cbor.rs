@@ -347,6 +347,7 @@ pub fn write_map(output: &mut Vec<u8>, count: usize) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use alloc::vec::Vec;
 
