@@ -30,6 +30,8 @@ in {
     ${runTest "prov_entry_preserve_index_receipts_use_checked_opaque_keys"}
     ${runTest "prov_selector_presets_candidate_decisions_bind_full_signed_entry"}
     ${runTest "prov_attribute_acceptance_does_not_borrow_content_acceptance"}
+    ${runTest "prov_property_wrappers_resolve_inheritance_and_graft_overrides"}
+    ${runTest "prov_external_sources_preserve_producers_without_granting_acceptance"}
     ${runTest "prov_attribute_producer_rejects_equal_value_inherited_on_changed_content"}
     printf 'PASS: closed trust presets and verified entry preservation\n' > "$out/result"
   '';

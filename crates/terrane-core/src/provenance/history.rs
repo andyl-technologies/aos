@@ -357,9 +357,9 @@ impl VerifiedHistory {
                 if let EntryKind::Tree {
                     root: target,
                     props,
-                } = entry.kind
+                } = &entry.kind
                 {
-                    selected = Some((target, &relative[position + 1..], props));
+                    selected = Some((*target, &relative[position + 1..], props.clone()));
                     break;
                 }
             }
@@ -590,7 +590,8 @@ impl VerifiedHistory {
         let mut accepted = BTreeSet::new();
 
         // Receipts preserve carried-entry evidence when grafts or transforms
-        // change a key/root, including sources outside ordinary parent ancestry.
+        // change a key/root. Source edges preserve introduction evidence, but only
+        // actual view ancestors can establish acceptance.
         let mut pending = vec![location.clone()];
         let mut seen = BTreeSet::new();
         while let Some(current) = pending.pop() {
@@ -598,7 +599,9 @@ impl VerifiedHistory {
             {
                 continue;
             }
-            if current.commit != introducing {
+            if current.commit != introducing
+                && self.graph.is_ancestor(current.commit, location.commit) == Ok(true)
+            {
                 accepted.insert(current.commit);
             }
             if let Ok(Some(dependencies)) = self.dependencies(&current) {

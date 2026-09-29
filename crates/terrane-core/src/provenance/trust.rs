@@ -231,33 +231,45 @@ impl TrustContext {
         let introducing = self.history.introducing_commit(location)?;
         let mut baseline = self.baseline.clone();
         let mut selectors = Vec::new();
-        let mut root_selector = Selector::preset(Preset::Any);
+        let mut layers = Vec::new();
         let mut key = self.canonical.clone();
         cbor::write_bytes(&mut key, &introducing);
         cbor::write_array(&mut key, properties.len());
         for root_properties in properties {
-            // Bind each root's selector to that root's effective baseline.
-            // A descendant override must not widen an ancestor's requirement.
-            if let Some(property) = root_properties
-                .iter()
-                .find(|property| property.name == "baseline")
-            {
-                let mut decoder = Decoder::new(property.value);
-                baseline = Some(
-                    decoder
-                        .text(decoder.remaining().len())
-                        .map_err(|_| Rejected)?
-                        .to_string(),
-                );
-                decoder.finish().map_err(|_| Rejected)?;
-            }
+            layers.push(crate::properties::RootLayer {
+                properties: root_properties,
+                overrides: &[],
+            });
+            // Resolve each prefix independently: non-inheriting bindings apply
+            // locally, while ancestor trust constraints remain conjoined.
+            let effective = crate::properties::resolve(
+                &layers,
+                crate::properties::Defaults {
+                    store: "provenance",
+                    private_domain: "private:provenance",
+                    home: "provenance",
+                },
+            )
+            .map_err(|_| Rejected)?;
+            baseline = match effective.get(crate::properties::PropertyName::Baseline) {
+                Some(crate::properties::Value::Text(value)) => Some((*value).to_string()),
+                Some(crate::properties::Value::Unset) => self.baseline.clone(),
+                _ => return Err(Rejected),
+            };
+            let root_selector = match effective.get(crate::properties::PropertyName::Trust) {
+                Some(crate::properties::Value::Selector(bytes)) => {
+                    Selector::decode(bytes).map_err(|_| Rejected)?
+                }
+                Some(crate::properties::Value::Text(value)) => {
+                    let mut encoded = Vec::new();
+                    cbor::write_text(&mut encoded, value);
+                    Selector::from_property(&encoded).map_err(|_| Rejected)?
+                }
+                _ => return Err(Rejected),
+            };
             cbor::write_array(&mut key, root_properties.len());
             for property in root_properties {
                 cbor::write_array(&mut key, 2);
-                if property.name == "trust" {
-                    root_selector =
-                        Selector::from_property(property.value).map_err(|_| Rejected)?;
-                }
                 cbor::write_text(&mut key, property.name);
                 cbor::write_bytes(&mut key, property.value);
             }

@@ -1125,3 +1125,186 @@ fn prov_attribute_producer_rejects_equal_value_inherited_on_changed_content() {
             .is_err()
     );
 }
+
+#[test]
+fn prov_external_sources_preserve_producers_without_granting_acceptance() {
+    let mut annotated = entry(b"target");
+    annotated.attrs = vec![crate::tree_format::Attribute {
+        name: "hash.sha256",
+        value: b"\x61x",
+    }];
+    annotated.attrs_present = true;
+    let (root, bytes) = tree(vec![item(b"file", annotated)], None);
+    let mut initial_receipt = receipt(root, crate::refs::EntryOrigin::Current);
+    initial_receipt.attributes = Some(vec![(
+        "hash.sha256".to_string(),
+        crate::refs::EntryOrigin::Current,
+    )]);
+    let introduced = signed_record(root, Vec::new(), Some(vec![initial_receipt]), false);
+    let introducing = introduced.identity();
+    let accepted = signed_record(root, vec![introducing], None, true);
+    let accepting = accepted.identity();
+    let source = crate::refs::EntrySource {
+        commit: accepting,
+        root,
+        path: b"file".to_vec(),
+    };
+    let mut external_receipt = receipt(root, crate::refs::EntryOrigin::Source(source.clone()));
+    external_receipt.attributes = Some(vec![(
+        "hash.sha256".to_string(),
+        crate::refs::EntryOrigin::Source(source),
+    )]);
+    let imported = signed_record(root, Vec::new(), Some(vec![external_receipt]), false);
+    let view = imported.identity();
+    let mut history = VerifiedHistory::new(MIN_CHUNK);
+    history.insert_tree(root, &[(root, bytes)]).unwrap();
+    for commit in [introduced, accepted, imported] {
+        history.insert_commit(commit).unwrap();
+    }
+    let location = EntryLocation {
+        commit: view,
+        root,
+        path: b"file".to_vec(),
+    };
+
+    assert_eq!(history.introducing_commit(&location), Ok(introducing));
+    assert_eq!(
+        history.attribute_producer(&location, "hash.sha256"),
+        Ok(introducing)
+    );
+    assert!(
+        !history
+            .acceptance_commits(&location, introducing)
+            .contains(&accepting)
+    );
+    assert!(
+        !history
+            .attribute_acceptance_commits(&location, "hash.sha256", introducing)
+            .contains(&accepting)
+    );
+    for inner in [Selector::preset(Preset::SignedBaseline), {
+        let mut bytes = Vec::new();
+        crate::cbor::write_array(&mut bytes, 2);
+        crate::cbor::write_text(&mut bytes, "accepted-by");
+        crate::cbor::write_array(&mut bytes, 2);
+        crate::cbor::write_text(&mut bytes, "group");
+        crate::cbor::write_text(&mut bytes, "baseline");
+        Selector::decode(&bytes).unwrap()
+    }] {
+        let content =
+            TrustContext::new(&history, view, inner.clone(), "private", Some("baseline")).unwrap();
+        let mut attribute = Vec::new();
+        crate::cbor::write_array(&mut attribute, 3);
+        crate::cbor::write_text(&mut attribute, "attr-by");
+        crate::cbor::write_text(&mut attribute, "hash.sha256");
+        attribute.extend_from_slice(inner.encode());
+        let attribute = TrustContext::new(
+            &history,
+            view,
+            Selector::decode(&attribute).unwrap(),
+            "private",
+            Some("baseline"),
+        )
+        .unwrap();
+
+        assert!(!content.accepts(root, b"file"));
+        assert!(!attribute.accepts(root, b"file"));
+    }
+}
+
+#[test]
+fn prov_property_wrappers_resolve_inheritance_and_graft_overrides() {
+    fn binding(value: &str, inherit: bool) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        crate::cbor::write_map(&mut bytes, 2);
+        crate::cbor::write_text(&mut bytes, "value");
+        crate::cbor::write_text(&mut bytes, value);
+        crate::cbor::write_text(&mut bytes, "inherit");
+        bytes.push(if inherit { 0xf5 } else { 0xf4 });
+        bytes
+    }
+    for inherit in [false, true] {
+        let strict = binding("strict", inherit);
+        let baseline = binding("baseline", false);
+        let overridden = binding("attested", true);
+        let graft_any = binding("any", false);
+        let (child_root, child_bytes) = tree(
+            vec![item(b"file", entry(b"target"))],
+            Some(vec![crate::tree_format::Property {
+                name: "trust",
+                value: &overridden,
+            }]),
+        );
+        let introduced = signed_record(
+            child_root,
+            Vec::new(),
+            Some(vec![receipt(child_root, crate::refs::EntryOrigin::Current)]),
+            true,
+        );
+        let introducing = introduced.identity();
+        let mut graft = entry(b"unused");
+        graft.kind = crate::tree_format::EntryKind::Tree {
+            root: child_root,
+            props: Some(vec![crate::tree_format::Property {
+                name: "trust",
+                value: &graft_any,
+            }]),
+        };
+        let (root, bytes) = tree(
+            vec![item(b"mount", graft)],
+            Some(vec![
+                crate::tree_format::Property {
+                    name: "trust",
+                    value: &strict,
+                },
+                crate::tree_format::Property {
+                    name: "baseline",
+                    value: &baseline,
+                },
+            ]),
+        );
+        let mut graft_receipt = receipt(root, crate::refs::EntryOrigin::Current);
+        graft_receipt.path = b"mount".to_vec();
+        let source = crate::refs::EntrySource {
+            commit: introducing,
+            root: child_root,
+            path: b"file".to_vec(),
+        };
+        let commit = signed_record(
+            root,
+            Vec::new(),
+            Some(vec![
+                graft_receipt,
+                receipt(child_root, crate::refs::EntryOrigin::Source(source)),
+            ]),
+            true,
+        );
+        let view = commit.identity();
+        let mut history = VerifiedHistory::new(MIN_CHUNK);
+        history
+            .insert_tree(child_root, &[(child_root, child_bytes)])
+            .unwrap();
+        history.insert_tree(root, &[(root, bytes)]).unwrap();
+        history.insert_commit(introduced).unwrap();
+        history.insert_commit(commit).unwrap();
+        let local = TrustContext::new(
+            &history,
+            view,
+            Selector::preset(Preset::Any),
+            "private",
+            None,
+        )
+        .unwrap();
+        let descendant = TrustContext::new(
+            &history,
+            view,
+            Selector::preset(Preset::Strict),
+            "private",
+            None,
+        )
+        .unwrap();
+
+        assert!(local.accepts(root, b"mount/file"));
+        assert!(!descendant.accepts(root, b"mount/file"));
+    }
+}

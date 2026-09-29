@@ -154,7 +154,9 @@ impl VerifiedHistory {
             {
                 continue;
             }
-            if current.commit != producer {
+            if current.commit != producer
+                && self.graph.is_ancestor(current.commit, location.commit) == Ok(true)
+            {
                 accepted.insert(current.commit);
             }
             if let Ok(Some(dependencies)) = self.attribute_dependencies(&current, name) {
