@@ -15,10 +15,29 @@ nix develop -c cargo test --manifest-path crates/Cargo.toml \
   -p aos-filesystem-view --features test-fixtures --test metadata_scale --jobs 2
 ```
 
+The two harness-free fixture binaries support libtest-style discovery and
+exact execution. `metadata_scale --list --format terse` prints only
+`metadata_scale_small: test`; `semantic_no_alloc` prints only
+`semantic_no_alloc: test`. Adding `--ignored` lists no cases because neither
+fixture has ignored cases. Discovery never creates children or enters measured
+work. Nextest invokes `--exact metadata_scale_small --nocapture` for the real
+256-child coordinator and `--exact semantic_no_alloc --nocapture` for the
+existing allocation assertions. Each binary also runs that same case without
+arguments. Unsupported arguments and unknown case names fail.
+
+The adapter accepts `--test-threads 1`, `--include-ignored` and `--format pretty`
+for ordinary Cargo invocations; the fixture remains single-threaded. The
+ordinary-harness `fixture_runner` target checks parsing, listing, exact dispatch,
+failure propagation and manual profile options without running measurements.
+These regressions are distinct from execution of the measured fixture cases.
+
 Run the resulting test executable directly for the optional million profile;
 do not use `cargo run`. Its ordinary test invocation creates 256 children. The
 explicit `--million` invocation creates 1,000,000 children plus root, exactly
-1,000,001 records. Set `AOS_METADATA_SCALE_HARDWARE_CLASS` and
+1,000,001 records. Million-profile and validation-envelope options cannot be
+mixed with runner arguments; they remain direct executable opt-ins. The internal
+`--build`/`--measure` child mode/path/profile/envelope CLI is unchanged.
+Set `AOS_METADATA_SCALE_HARDWARE_CLASS` and
 `AOS_METADATA_SCALE_SOURCE_COMMIT` to label the execution; these are operator
 labels, not verified hardware or source attestations.
 Operator labels are limited to 256 bytes and the complete final report to

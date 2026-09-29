@@ -8,6 +8,8 @@ use std::io::Cursor;
 
 #[path = "support/allocation.rs"]
 mod allocation;
+#[path = "support/fixture_runner.rs"]
+mod fixture_runner;
 
 use allocation::{CountingAllocator, measure_allocations};
 
@@ -173,7 +175,21 @@ fn fixture() -> (Vec<u8>, ObjectDescriptor, ObjectDescriptor) {
     (writer.into_inner(), tree, root)
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let invocation = fixture_runner::parse(&arguments, "semantic_no_alloc")?;
+    fixture_runner::execute(
+        invocation,
+        "semantic_no_alloc",
+        &mut std::io::stdout(),
+        || {
+            run();
+            Ok(())
+        },
+    )
+}
+
+fn run() {
     let (bytes, tree, root_descriptor) = fixture();
     let index_media =
         MediaType::new(INDEX_MEDIA_TYPE).unwrap_or_else(|error| panic!("media failed: {error}"));
