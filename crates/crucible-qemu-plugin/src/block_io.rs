@@ -78,6 +78,15 @@ pub struct PluginBlockIo {
     next_request_id: Cell<u32>,
     completed_history_limits: PluginStorageHistoryLimits,
     completed_identities: RefCell<CompletedIdentityHistory>,
+    pending_delivery: RefCell<Option<PendingBlockDelivery>>,
+}
+
+#[derive(Debug)]
+struct PendingBlockDelivery {
+    frame: FrameEntry,
+    response: BlockResponse,
+    delivered: bool,
+    quarantine: Option<BlockIoError>,
 }
 
 impl PluginBlockIo {
@@ -180,6 +189,7 @@ impl PluginBlockIo {
                 epochs: BTreeMap::new(),
                 gaps: 0,
             }),
+            pending_delivery: RefCell::new(None),
         }
     }
 
@@ -219,6 +229,18 @@ impl PluginBlockIo {
         self.request_epoch.get()
     }
 
+    pub(crate) fn pending_delivery_len(&self, identity: BlockRequestIdentity) -> Option<usize> {
+        self.pending_delivery
+            .borrow()
+            .as_ref()
+            .filter(|pending| {
+                pending.response.identity() == identity
+                    && pending.quarantine.is_none()
+                    && pending.response.status() == BlockResponseStatus::Ok
+            })
+            .map(|pending| pending.response.payload().len())
+    }
+
     /// Encodes the complete transport continuation for QEMU VMState.
     ///
     /// The closed little-endian format contains the allocator and the exact
@@ -229,8 +251,14 @@ impl PluginBlockIo {
     /// # Errors
     ///
     /// Returns [`BlockIoError::InvalidTransportContinuation`] if counts or the
-    /// encoded length cannot be represented exactly.
+    /// encoded length cannot be represented exactly, or a guest-delivered head
+    /// still awaits physical ring settlement.
     pub(crate) fn encode_transport_continuation(&self) -> Result<Vec<u8>, BlockIoError> {
+        if self.pending_delivery.borrow().is_some() {
+            return Err(BlockIoError::InvalidTransportContinuation {
+                reason: "block response delivery is pending ring settlement",
+            });
+        }
         let history = self.completed_identities.borrow();
         let epoch_count = u32::try_from(history.epochs.len()).map_err(|_error| {
             BlockIoError::InvalidTransportContinuation {
@@ -308,6 +336,11 @@ impl PluginBlockIo {
         qemu_epoch: u64,
         qemu_next_request_id: u32,
     ) -> Result<(), BlockIoError> {
+        if self.pending_delivery.borrow().is_some() {
+            return Err(BlockIoError::InvalidTransportContinuation {
+                reason: "block response delivery is pending ring settlement",
+            });
+        }
         if encoded.len() < BLOCK_TRANSPORT_CONTINUATION_HEADER_LEN
             || encoded.get(..4) != Some(BLOCK_TRANSPORT_CONTINUATION_MAGIC)
             || read_u16(encoded, 4) != Some(BLOCK_TRANSPORT_CONTINUATION_VERSION)
@@ -561,8 +594,10 @@ impl PluginBlockIo {
     ///
     /// Returns [`BlockIoError`] when the inbound ring does not match registration
     /// state, the response frame is malformed, a due response does not match the
-    /// request token, the SPSC dequeue fails, delivery to QEMU fails, or the
-    /// device-I/O token cannot be completed.
+    /// request token, or the original request must fail closed. Recoverable
+    /// guest-delivery and dequeue failures return [`BlockPoll::Retry`] with the
+    /// original token. A changed or missing head after guest delivery returns
+    /// [`BlockPoll::Quarantined`] without exposing the response again.
     pub fn poll_response<D>(
         &self,
         freeze: &mut PluginDeviceIoFreeze,
@@ -576,9 +611,72 @@ impl PluginBlockIo {
         D: BlockGuestCompletion + ?Sized,
     {
         self.check_inbound_ring(inbound_ring)?;
-        let Some(head) = peek_head_frame(inbound_ring)? else {
-            return Ok(BlockPoll::NotReady { token });
+        if let Some(source) = self
+            .pending_delivery
+            .borrow()
+            .as_ref()
+            .and_then(|pending| pending.quarantine.clone())
+        {
+            return Ok(BlockPoll::Quarantined { token, source });
+        }
+
+        let head = match peek_head_frame(inbound_ring) {
+            Ok(Some(head)) => head,
+            Ok(None) => {
+                let expected =
+                    self.pending_delivery.borrow().as_ref().and_then(|pending| {
+                        pending.delivered.then(|| pending.frame.delivery_key())
+                    });
+                return Ok(match expected {
+                    Some(expected) => self.quarantine(
+                        token,
+                        BlockIoError::DequeuedUnexpectedFrame {
+                            ring_index: self.inbound_ring_index,
+                            expected,
+                            actual: None,
+                        },
+                    ),
+                    None => BlockPoll::NotReady { token },
+                });
+            }
+            Err(source) => {
+                let delivered = self
+                    .pending_delivery
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|pending| pending.delivered);
+                return Ok(if delivered {
+                    self.quarantine(token, source)
+                } else {
+                    BlockPoll::Retry { token, source }
+                });
+            }
         };
+        let staged_head = self.pending_delivery.borrow().as_ref().map(|pending| {
+            (
+                pending.response.identity(),
+                pending.frame.delivery_key(),
+                same_response_frame(&pending.frame, &head),
+                pending.delivered,
+            )
+        });
+        if let Some((identity, expected, same_head, delivered)) = staged_head {
+            if identity != token.identity {
+                return Ok(BlockPoll::NotReady { token });
+            }
+            if !same_head {
+                let source = BlockIoError::DequeuedUnexpectedFrame {
+                    ring_index: self.inbound_ring_index,
+                    expected,
+                    actual: Some(head.delivery_key()),
+                };
+                return Ok(if delivered {
+                    self.quarantine(token, source)
+                } else {
+                    BlockPoll::Retry { token, source }
+                });
+            }
+        }
         if head.delivery_icount > current_icount {
             return Ok(BlockPoll::NotReady { token });
         }
@@ -635,46 +733,99 @@ impl PluginBlockIo {
                 release,
             });
         }
-        self.completed_identities
+        if let Err(source) = self
+            .completed_identities
             .borrow()
-            .ensure_record_capacity(response.identity(), self.completed_history_limits)?;
-        let release = freeze
-            .complete_request(slot, token.device_token)
-            .map_err(|source| BlockIoError::DeviceIoFreeze { source })?;
+            .ensure_record_capacity(response.identity(), self.completed_history_limits)
+        {
+            return Ok(BlockPoll::Retry { token, source });
+        }
+        if let Err(source) = freeze.completion_current(
+            &token.device_token,
+            crate::DeviceIoRequestOutcome::Completed,
+        ) {
+            return Ok(BlockPoll::Retry {
+                token,
+                source: BlockIoError::DeviceIoFreeze { source },
+            });
+        }
 
-        let Some(dequeued) =
+        if self.pending_delivery.borrow().is_none() {
+            self.pending_delivery.replace(Some(PendingBlockDelivery {
+                frame: head.clone(),
+                response: response.clone(),
+                delivered: false,
+                quarantine: None,
+            }));
+        }
+        let delivered = self
+            .pending_delivery
+            .borrow()
+            .as_ref()
+            .is_some_and(|pending| pending.delivered);
+        if !delivered {
+            if let Err(source) = deliver.complete_block_response(&response) {
+                return Ok(BlockPoll::Retry {
+                    token,
+                    source: BlockIoError::GuestCompletion {
+                        request_id: response.request_id(),
+                        source,
+                    },
+                });
+            }
+            if let Some(pending) = self.pending_delivery.borrow_mut().as_mut() {
+                pending.delivered = true;
+            }
+        }
+
+        let dequeued =
             PluginShmemOrdering::dequeue_inbound_frame(inbound_ring.header, inbound_ring.entries)
                 .map_err(|source| BlockIoError::RingDequeue {
-                ring_index: self.inbound_ring_index,
-                source,
-            })?
-        else {
-            return Err(BlockIoError::DequeuedUnexpectedFrame {
-                ring_index: self.inbound_ring_index,
-                expected: head.delivery_key(),
-                actual: None,
-            });
+                    ring_index: self.inbound_ring_index,
+                    source,
+                });
+        let Some(dequeued) = (match dequeued {
+            Ok(dequeued) => dequeued,
+            Err(source) => return Ok(BlockPoll::Retry { token, source }),
+        }) else {
+            return Ok(self.quarantine(
+                token,
+                BlockIoError::DequeuedUnexpectedFrame {
+                    ring_index: self.inbound_ring_index,
+                    expected: head.delivery_key(),
+                    actual: None,
+                },
+            ));
         };
-        if dequeued.delivery_key() != head.delivery_key() {
-            return Err(BlockIoError::DequeuedUnexpectedFrame {
-                ring_index: self.inbound_ring_index,
-                expected: head.delivery_key(),
-                actual: Some(dequeued.delivery_key()),
-            });
+        if !same_response_frame(&dequeued, &head) {
+            return Ok(self.quarantine(
+                token,
+                BlockIoError::DequeuedUnexpectedFrame {
+                    ring_index: self.inbound_ring_index,
+                    expected: head.delivery_key(),
+                    actual: Some(dequeued.delivery_key()),
+                },
+            ));
         }
 
         self.completed_identities
             .borrow_mut()
             .record(response.identity());
-
-        deliver
-            .complete_block_response(&response)
-            .map_err(|source| BlockIoError::GuestCompletion {
-                request_id: response.request_id(),
-                release,
-                source,
-            })?;
+        // Dequeue and guest delivery are irreversible. A failed final wake
+        // cannot turn the consumed original token into a recoverable retry.
+        let release = match freeze.complete_request(slot, token.device_token) {
+            Ok(release) => release,
+            Err(_) => std::process::abort(),
+        };
+        self.pending_delivery.replace(None);
         Ok(BlockPoll::Completed { response, release })
+    }
+
+    fn quarantine(&self, token: BlockRequestToken, source: BlockIoError) -> BlockPoll {
+        if let Some(pending) = self.pending_delivery.borrow_mut().as_mut() {
+            pending.quarantine = Some(source.clone());
+        }
+        BlockPoll::Quarantined { token, source }
     }
 
     /// Peeks one post-primary duplicate or reset event at the transport boundary.
@@ -953,6 +1104,15 @@ fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
     Some(u64::from_le_bytes([
         field[0], field[1], field[2], field[3], field[4], field[5], field[6], field[7],
     ]))
+}
+
+fn same_response_frame(expected: &FrameEntry, observed: &FrameEntry) -> bool {
+    expected.delivery_key() == observed.delivery_key()
+        && expected.len == observed.len
+        && matches!(
+            (expected.payload(), observed.payload()),
+            (Ok(expected), Ok(observed)) if expected == observed
+        )
 }
 
 fn peek_head_frame(ring: &BlockInboundRing<'_>) -> Result<Option<FrameEntry>, BlockIoError> {

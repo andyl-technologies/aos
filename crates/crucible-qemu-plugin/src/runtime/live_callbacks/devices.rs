@@ -484,6 +484,13 @@ impl LiveDeviceCallbackState {
         output: &mut [u8],
     ) -> Result<i64, LiveDeviceCallbackError> {
         let identity = BlockRequestIdentity::new(epoch, request_id);
+        if self
+            .block
+            .pending_delivery_len(identity)
+            .is_some_and(|len| len > output.len())
+        {
+            return Ok(QEMU_PLUGIN_BLOCK_POLL_PENDING);
+        }
         let token =
             self.block_tokens
                 .remove(&identity)
@@ -509,41 +516,65 @@ impl LiveDeviceCallbackState {
                 self.block_tokens.insert(identity, token);
                 Ok(QEMU_PLUGIN_BLOCK_POLL_PENDING)
             }
-            BlockPoll::Completed { response, .. } => match response.status() {
-                BlockResponseStatus::Ok => {
-                    i64::try_from(response.payload().len()).map_err(|_error| {
-                        LiveDeviceCallbackError::ResponseLengthOverflow {
-                            family: "block",
-                            len: response.payload().len(),
-                        }
-                    })
+            BlockPoll::Retry { token, source } => {
+                self.block_tokens.insert(identity, token);
+                match source {
+                    BlockIoError::GuestCompletion { .. }
+                    | BlockIoError::RingDequeue {
+                        source: crucible_shmem::SpscRingError::ConsumerBarrierHeld,
+                        ..
+                    } => Ok(QEMU_PLUGIN_BLOCK_POLL_PENDING),
+                    source => Err(LiveDeviceCallbackError::Block { source }),
                 }
-                BlockResponseStatus::Error => {
-                    let errno = block_error_errno(response.error_code().map_err(|source| {
-                        LiveDeviceCallbackError::Block {
-                            source: BlockIoError::Wire { source },
-                        }
-                    })?);
-                    Ok(-(QEMU_PLUGIN_BLOCK_ERROR_BASE + errno))
+            }
+            BlockPoll::Quarantined { token, source } => {
+                self.block_tokens.insert(identity, token);
+                Err(LiveDeviceCallbackError::Block { source })
+            }
+            BlockPoll::Completed { response, .. } => {
+                if response.status() == BlockResponseStatus::Ok {
+                    let Some(destination) = output.get_mut(..response.payload().len()) else {
+                        // A successful delivery checked capacity before ring settlement.
+                        std::process::abort();
+                    };
+                    destination.copy_from_slice(response.payload());
                 }
-                BlockResponseStatus::TransportReset => {
-                    Err(LiveDeviceCallbackError::UnexpectedBlockResetPrimary {
-                        request_id: response.request_id(),
-                    })
+                match response.status() {
+                    BlockResponseStatus::Ok => {
+                        i64::try_from(response.payload().len()).map_err(|_error| {
+                            LiveDeviceCallbackError::ResponseLengthOverflow {
+                                family: "block",
+                                len: response.payload().len(),
+                            }
+                        })
+                    }
+                    BlockResponseStatus::Error => {
+                        let errno = block_error_errno(response.error_code().map_err(|source| {
+                            LiveDeviceCallbackError::Block {
+                                source: BlockIoError::Wire { source },
+                            }
+                        })?);
+                        Ok(-(QEMU_PLUGIN_BLOCK_ERROR_BASE + errno))
+                    }
+                    BlockResponseStatus::TransportReset => {
+                        Err(LiveDeviceCallbackError::UnexpectedBlockResetPrimary {
+                            request_id: response.request_id(),
+                        })
+                    }
+                    BlockResponseStatus::DuplicateIgnored
+                    | BlockResponseStatus::DuplicateProtocolError => {
+                        Err(LiveDeviceCallbackError::UnexpectedBlockDuplicatePrimary {
+                            request_id: response.request_id(),
+                        })
+                    }
+                    BlockResponseStatus::RetryPreserveId => {
+                        self.block_reissue_preserve.insert(identity);
+                        Ok(QEMU_PLUGIN_BLOCK_RETRY_PRESERVE_ID)
+                    }
+                    BlockResponseStatus::RetryNewId => Ok(QEMU_PLUGIN_BLOCK_RETRY_NEW_ID),
+                    BlockResponseStatus::DropCompletion => Ok(QEMU_PLUGIN_BLOCK_DROP_COMPLETION),
                 }
-                BlockResponseStatus::DuplicateIgnored
-                | BlockResponseStatus::DuplicateProtocolError => {
-                    Err(LiveDeviceCallbackError::UnexpectedBlockDuplicatePrimary {
-                        request_id: response.request_id(),
-                    })
-                }
-                BlockResponseStatus::RetryPreserveId => {
-                    self.block_reissue_preserve.insert(identity);
-                    Ok(QEMU_PLUGIN_BLOCK_RETRY_PRESERVE_ID)
-                }
-                BlockResponseStatus::RetryNewId => Ok(QEMU_PLUGIN_BLOCK_RETRY_NEW_ID),
-                BlockResponseStatus::DropCompletion => Ok(QEMU_PLUGIN_BLOCK_DROP_COMPLETION),
-            },
+            }
         }
     }
 
