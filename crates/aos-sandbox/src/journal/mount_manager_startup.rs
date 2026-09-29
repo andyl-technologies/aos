@@ -623,7 +623,11 @@ impl ProtectedJournalAuthority<'_> {
         &self,
     ) -> Result<(u64, usize), JournalError> {
         self.journal.ensure_protected_authority()?;
-        if self.scope != ProtectedAuthorityScope::RootLocalRecoveryKind2 {
+        if !matches!(
+            self.scope,
+            ProtectedAuthorityScope::RootLocalRecoveryKind2
+                | ProtectedAuthorityScope::RootLocalRecoveryKind5
+        ) {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
         super::root_local_recovery::graph(&self.journal.state)?;

@@ -1,4 +1,4 @@
-//! Same-writer kind2 admission and local installed-metadata retirement.
+//! Same-writer kind2/kind5 admission and local installed-metadata retirement.
 //!
 //! The lower scope proves physical protected rows, not live Security custody or
 //! Mount's private table installation. The trusted fixed coordinator consumes
@@ -38,12 +38,14 @@ type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
 type Map = BTreeMap<Vec<u8>, Option<Vec<u8>>>;
 type FencedFloors = Vec<(OrdinaryCapacityRecordV4, BTreeSet<Vec<u8>>)>;
 
+mod dead_replacement;
 #[cfg(test)]
 mod tests;
 mod writer;
 pub use writer::{
-    Kind2ProtectedReadbackV4, MountBarrierIdleReplacementJournalAuthorityV4,
-    PreparedBarrierIdleReplacementV4,
+    Kind2ProtectedReadbackV4, Kind5ProtectedReadbackV4,
+    MountBarrierIdleReplacementJournalAuthorityV4, MountDeadReplacementJournalAuthorityV4,
+    PreparedBarrierIdleReplacementV4, PreparedDeadReplacementV4,
 };
 
 fn invalid() -> JournalError {
@@ -55,7 +57,7 @@ pub(super) fn graph(state: &State) -> Result<RootNativeHeldGraphV2, JournalError
 }
 
 fn checked_owner(state: &State) -> Result<(RootNativeHeldGraphV2, FencedFloors), JournalError> {
-    let floors = kind2_floors(state)?;
+    let floors = local_floors(state)?;
     checked_owner_floors(state, floors)
 }
 
@@ -157,11 +159,14 @@ fn read_map(state: &State, head: &SourceProviderHeadV2) -> Result<Map, JournalEr
 }
 
 /// Reconstructs only current local postimages/references, never a prior guard.
-struct Kind2PostimageBindings {
+struct LocalPostimageBindings {
+    kind: Kind,
+    primary: [u8; 32],
+    selector: u8,
     owner: Map,
     reads: Map,
     references: Map,
-    acquisition: Vec<u8>,
+    acquisition: Option<Vec<u8>>,
     transaction: [u8; 16],
     session: SourceProviderSessionV2,
 }
@@ -171,7 +176,7 @@ fn installed(
     table: &MountSourceAcquisitionStateV2,
     session: SourceProviderSessionV2,
     head: SourceProviderHeadV2,
-) -> Result<Kind2PostimageBindings, JournalError> {
+) -> Result<LocalPostimageBindings, JournalError> {
     let witness = session
         .barrier_idle_replacement
         .as_ref()
@@ -256,20 +261,23 @@ fn installed(
         None,
         Some(session.session_id),
     );
-    Ok(Kind2PostimageBindings {
+    Ok(LocalPostimageBindings {
+        kind: Kind::BarrierIdleReplacement,
+        primary: session.session_id,
+        selector: 2,
         owner,
         reads: read_map(state, &head)?,
         references,
-        acquisition: acquisition_key(acquisition_id),
+        acquisition: Some(acquisition_key(acquisition_id)),
         transaction,
         session,
     })
 }
 
 fn local_bindings(
-    installed: &Kind2PostimageBindings,
+    installed: &LocalPostimageBindings,
 ) -> Result<([u8; 32], [u8; 32], [u8; 32]), JournalError> {
-    let mut owner = vec![Kind::BarrierIdleReplacement as u8];
+    let mut owner = vec![installed.kind as u8];
     owner.extend_from_slice(&installed.transaction);
     owner.extend_from_slice(&map_bytes(
         RecordNamespace::MountSourceAcquisition,
@@ -277,14 +285,14 @@ fn local_bindings(
     )?);
     let owner_digest = commitment("owner-put-map", &owner)?;
     let artifact = commitment("local-artifact", &owner)?;
-    let mut profile = vec![0, 4, 10, 40, 2, 1];
-    profile.extend_from_slice(&installed.session.session_id);
+    let mut profile = vec![0, 4, 10, 40, installed.kind as u8, 1];
+    profile.extend_from_slice(&installed.primary);
     profile.extend_from_slice(&installed.transaction);
     profile.extend_from_slice(&installed.transaction);
     profile.extend_from_slice(&artifact);
     profile.extend_from_slice(&owner_digest);
-    profile.push(2); // Closed Session selector.
-    profile.extend_from_slice(&installed.session.session_id);
+    profile.push(installed.selector); // Closed Session or Attempt selector.
+    profile.extend_from_slice(&installed.primary);
     profile.extend_from_slice(&scope_bytes(installed.session.scope));
     profile.extend_from_slice(&map_bytes(
         RecordNamespace::MountSourceAcquisition,
@@ -321,24 +329,29 @@ fn rejoin_checked(
     table: &MountSourceAcquisitionStateV2,
 ) -> Result<BTreeSet<Vec<u8>>, JournalError> {
     let data = floor.data();
-    if data.kind != Kind::BarrierIdleReplacement || data.profile != Profile::LocalCommittedReadback
-    {
+    if data.profile != Profile::LocalCommittedReadback {
         return Err(invalid());
     }
-    let session = table
-        .provider_sessions
-        .get(&data.owner_id)
-        .ok_or_else(invalid)?
-        .clone();
-    let head = table
-        .provider_heads
-        .get(&(
-            session.scope.holder_authority_id,
-            session.scope.provider_authority_id,
-        ))
-        .ok_or_else(invalid)?
-        .clone();
-    let installed = installed(state, table, session, head)?;
+    let installed = match data.kind {
+        Kind::BarrierIdleReplacement => {
+            let session = table
+                .provider_sessions
+                .get(&data.owner_id)
+                .ok_or_else(invalid)?
+                .clone();
+            let head = table
+                .provider_heads
+                .get(&(
+                    session.scope.holder_authority_id,
+                    session.scope.provider_authority_id,
+                ))
+                .ok_or_else(invalid)?
+                .clone();
+            installed(state, table, session, head)?
+        }
+        Kind::DeadReplacement => dead_replacement::installed(state, table, data.owner_id)?,
+        _ => return Err(invalid()),
+    };
     let (owner, artifact, profile) = local_bindings(&installed)?;
     if data.admission_transaction != installed.transaction
         || data.operation_id != installed.transaction
@@ -354,7 +367,7 @@ fn rejoin_checked(
         .chain(installed.reads.keys())
         .chain(installed.references.keys())
         .cloned()
-        .chain(std::iter::once(installed.acquisition))
+        .chain(installed.acquisition)
         .collect())
 }
 
@@ -367,15 +380,15 @@ pub(super) fn pending(state: &State) -> Result<Vec<OrdinaryCapacityRecordV4>, Jo
 
 fn fenced_floors(state: &State) -> Result<FencedFloors, JournalError> {
     // The common hook also runs for journals with no Root owner. Do not impose
-    // a Root graph on those journals merely to prove that no kind2 fence exists.
-    let floors = kind2_floors(state)?;
+    // a Root graph on those journals merely to prove that no local fence exists.
+    let floors = local_floors(state)?;
     if floors.is_empty() {
         return Ok(Vec::new());
     }
     Ok(checked_owner_floors(state, floors)?.1)
 }
 
-fn kind2_floors(state: &State) -> Result<Vec<OrdinaryCapacityRecordV4>, JournalError> {
+fn local_floors(state: &State) -> Result<Vec<OrdinaryCapacityRecordV4>, JournalError> {
     super::capacity_reservation::accounting_reservations(state)?;
     let floors = state
         .iter()
@@ -385,7 +398,10 @@ fn kind2_floors(state: &State) -> Result<Vec<OrdinaryCapacityRecordV4>, JournalE
         })
         .map(|((_, key), value)| {
             let floor = OrdinaryCapacityRecordV4::decode(key, value)?;
-            if floor.data().kind == Kind::BarrierIdleReplacement {
+            if matches!(
+                floor.data().kind,
+                Kind::BarrierIdleReplacement | Kind::DeadReplacement
+            ) {
                 Ok(Some(floor))
             } else {
                 Ok(None)
@@ -421,6 +437,7 @@ fn require_derived_fences(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Edge {
     Admission,
+    DeadAdmission,
     InstalledDelete,
 }
 
@@ -430,30 +447,7 @@ pub(super) fn prepare(
 ) -> Result<(JournalTransaction, OrdinaryCapacityRecordV4), JournalError> {
     let (checked, fences) = checked_owner(state)?;
     let table = checked.legacy();
-    // No production original-native admission/envelope exists yet. Canonical
-    // native DATA cannot justify an ordinary change to that original debt.
-    if !checked.sidecars().is_empty()
-        || state.iter().any(|((namespace, _), value)| {
-            *namespace == RecordNamespace::GlobalCapacityReservation
-                && value.get(8..11) == Some(&[0, 3, 40])
-        })
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    // Other ordinary owner grammars can pin the very Head/Session changed here.
-    // Their numerical floors alone do not prove independence from this edge.
-    for ((namespace, key), value) in state {
-        if *namespace == RecordNamespace::MountSourceAcquisition && key_kind(key).is_err() {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        if *namespace == RecordNamespace::GlobalCapacityReservation
-            && value.get(8..10) == Some(&[0, 4])
-            && OrdinaryCapacityRecordV4::decode(key, value)?.data().kind
-                != Kind::BarrierIdleReplacement
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-    }
+    require_funded_local_owner(state, &checked)?;
     let witness = successor
         .barrier_idle_replacement
         .as_ref()
@@ -526,27 +520,92 @@ pub(super) fn prepare(
         hvalue.clone(),
     );
     let after_graph = graph(&after)?;
+    let head_for_reads = head.clone();
     let installed = installed(&after, after_graph.legacy(), successor, head)?;
+    let before_reads = read_map(state, before)?;
+    let owner_records = vec![
+        StoredRecordV2::ProviderSession {
+            value: installed.session.clone(),
+        },
+        StoredRecordV2::ProviderHead {
+            value: head_for_reads.clone(),
+        },
+    ];
+    admitted_local_operation(state, owner_records, installed, before_reads, &fences)
+}
+
+/// Rejects unsupported owner debt before creating any new local floor.
+fn require_funded_local_owner(
+    state: &State,
+    checked: &RootNativeHeldGraphV2,
+) -> Result<(), JournalError> {
+    // No production original-native admission/envelope exists yet. Canonical
+    // native DATA cannot justify an ordinary change to that original debt.
+    if !checked.sidecars().is_empty()
+        || state.iter().any(|((namespace, _), value)| {
+            *namespace == RecordNamespace::GlobalCapacityReservation
+                && value.get(8..11) == Some(&[0, 3, 40])
+        })
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    // Other ordinary owner grammars can pin the very Head/Session changed here.
+    // Their numerical floors alone do not prove independence from this edge.
+    for ((namespace, key), value) in state {
+        if *namespace == RecordNamespace::MountSourceAcquisition && key_kind(key).is_err() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        if *namespace == RecordNamespace::GlobalCapacityReservation
+            && value.get(8..10) == Some(&[0, 4])
+        {
+            let kind = OrdinaryCapacityRecordV4::decode(key, value)?.data().kind;
+            if !matches!(kind, Kind::BarrierIdleReplacement | Kind::DeadReplacement) {
+                return Err(JournalError::ProtectedBoundary);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Couples one named owner proposal with its exact profile1 local installation debt.
+fn admitted_local_operation(
+    state: &State,
+    owner_records: Vec<StoredRecordV2>,
+    installed: LocalPostimageBindings,
+    mut reads: Map,
+    fences: &FencedFloors,
+) -> Result<(JournalTransaction, OrdinaryCapacityRecordV4), JournalError> {
     let (owner, artifact, profile) = local_bindings(&installed)?;
     let mut before_map = Map::new();
-    before_map.insert(skey.clone(), None);
-    before_map.insert(
-        hkey.clone(),
-        state
-            .get(&(RecordNamespace::MountSourceAcquisition, hkey.clone()))
-            .cloned(),
-    );
-    let mut reads = read_map(state, before)?;
+    let records = owner_records
+        .into_iter()
+        .map(|record| {
+            let (key, value) = stored(record)?;
+            before_map.insert(
+                key.clone(),
+                state
+                    .get(&(RecordNamespace::MountSourceAcquisition, key.clone()))
+                    .cloned(),
+            );
+            Ok(JournalRecord::put(
+                RecordNamespace::MountSourceAcquisition,
+                key,
+                value,
+            ))
+        })
+        .collect::<Result<Vec<_>, JournalError>>()?;
     for (key, value) in &installed.references {
         reads.insert(key.clone(), value.clone());
     }
-    map_record(
-        &mut reads,
-        StoredRecordV2::Acquisition {
-            value: acquisition.clone(),
-        },
-    )?;
-    let mut cut = vec![2];
+    if let Some(acquisition) = &installed.acquisition {
+        reads.insert(
+            acquisition.clone(),
+            state
+                .get(&(RecordNamespace::MountSourceAcquisition, acquisition.clone()))
+                .cloned(),
+        );
+    }
+    let mut cut = vec![installed.kind as u8];
     cut.extend_from_slice(&installed.transaction);
     cut.extend_from_slice(&map_bytes(
         RecordNamespace::MountSourceAcquisition,
@@ -571,9 +630,9 @@ pub(super) fn prepare(
         &native,
     )?);
     let floor = OrdinaryCapacityRecordV4::new(OrdinaryCapacityDataV4 {
-        kind: Kind::BarrierIdleReplacement,
+        kind: installed.kind,
         profile: Profile::LocalCommittedReadback,
-        owner_id: installed.session.session_id,
+        owner_id: installed.primary,
         original_owner_cut_digest: commitment("owner-before-cut", &cut)?,
         operation_id: installed.transaction,
         original_artifact_digest: artifact,
@@ -587,15 +646,10 @@ pub(super) fn prepare(
         admission_transaction: installed.transaction,
         remaining_profile_digest: profile,
     })?;
-    let transaction = JournalTransaction::new(
-        installed.transaction,
-        vec![
-            JournalRecord::put(RecordNamespace::MountSourceAcquisition, skey, svalue),
-            JournalRecord::put(RecordNamespace::MountSourceAcquisition, hkey, hvalue),
-            floor.to_journal_record(),
-        ],
-    )?;
-    require_derived_fences(&fences, &transaction)?;
+    let mut records = records;
+    records.push(floor.to_journal_record());
+    let transaction = JournalTransaction::new(installed.transaction, records)?;
+    require_derived_fences(fences, &transaction)?;
     Ok((transaction, floor))
 }
 
@@ -637,6 +691,10 @@ pub(super) fn validate_edge(
             }
             Ok(None)
         }
+        Edge::DeadAdmission => {
+            dead_replacement::validate_admission(state, transaction)?;
+            Ok(None)
+        }
         Edge::InstalledDelete => {
             let record = transaction.records().first().ok_or_else(invalid)?;
             let floor = checked_owner(state)?
@@ -653,7 +711,7 @@ pub(super) fn validate_edge(
     }
 }
 
-/// Rechecks kind2's logical edges and retained dependency fences during replay.
+/// Rechecks both named local logical edges and durable dependency fences.
 pub(super) fn validate_replayed_transaction(
     state: &State,
     transaction: &JournalTransaction,
@@ -673,14 +731,21 @@ pub(super) fn validate_replayed_transaction(
             continue;
         }
         let floor = OrdinaryCapacityRecordV4::decode(record.key(), value)?;
-        if floor.data().kind != Kind::BarrierIdleReplacement {
+        if !matches!(
+            floor.data().kind,
+            Kind::BarrierIdleReplacement | Kind::DeadReplacement
+        ) {
             continue;
         }
         if edge.is_some() {
             return Err(invalid());
         }
         edge = Some(if record.value().is_some() {
-            Edge::Admission
+            match floor.data().kind {
+                Kind::BarrierIdleReplacement => Edge::Admission,
+                Kind::DeadReplacement => Edge::DeadAdmission,
+                _ => return Err(invalid()),
+            }
         } else {
             Edge::InstalledDelete
         });

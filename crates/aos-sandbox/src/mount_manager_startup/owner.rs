@@ -124,6 +124,21 @@ impl<'journal> MountManagerStartupJournalBorrowV1<'journal> {
         Ok(crate::journal::MountBarrierIdleReplacementJournalAuthorityV4::claim(self.journal)?)
     }
 
+    /// Lends only exact kind5 dead-replacement admission and local retirement.
+    ///
+    /// This reuses the held fixed writer; it opens no journal or effect scope.
+    ///
+    /// # Errors
+    /// Refuses wrong physical currentness, startup replay, graph or floor joins.
+    pub fn root_dead_replacement_authority_v4(
+        &mut self,
+    ) -> Result<
+        crate::journal::MountDeadReplacementJournalAuthorityV4<'_>,
+        MountManagerSourceInventoryError,
+    > {
+        Ok(crate::journal::MountDeadReplacementJournalAuthorityV4::claim(self.journal)?)
+    }
+
     /// Borrows an existing protected fixed Mount journal without opening it.
     ///
     /// # Errors

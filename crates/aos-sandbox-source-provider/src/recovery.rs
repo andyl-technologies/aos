@@ -33,6 +33,7 @@ use crate::state::ProtectedProviderConfigurationV1;
 mod graph;
 #[path = "recovery/history.rs"]
 mod history;
+pub(crate) mod native_profile;
 #[path = "recovery/sessions.rs"]
 mod sessions;
 #[path = "recovery/work.rs"]
@@ -121,6 +122,19 @@ pub(crate) fn recover_records<'record>(
     records: impl IntoIterator<Item = (&'record [u8], &'record [u8])>,
     configuration: &ProtectedProviderConfigurationV1,
 ) -> Result<RecoveredProviderLedgerV1, ProviderLedgerError> {
+    recover_records_with_held(records, configuration, &BTreeMap::new())
+}
+
+// Only the private profile reader calls this with full typed rows after the
+// complete shared canonical held gate. Legacy entry points still decode every row.
+fn recover_records_with_held<'record>(
+    records: impl IntoIterator<Item = (&'record [u8], &'record [u8])>,
+    configuration: &ProtectedProviderConfigurationV1,
+    held: &BTreeMap<
+        ObjectDigest,
+        crate::ledger::native_held_completion::SourceNativeHeldCompletionRecordV1,
+    >,
+) -> Result<RecoveredProviderLedgerV1, ProviderLedgerError> {
     let mut authorities = Vec::new();
     let mut catalogs = BTreeMap::new();
     let mut sessions = BTreeMap::new();
@@ -131,6 +145,19 @@ pub(crate) fn recover_records<'record>(
     let mut native_completions = BTreeMap::new();
     let mut aggregate_bytes = 0_usize;
     let mut record_count = 0_usize;
+    let held_rows = held
+        .values()
+        .map(|record| {
+            Ok((
+                crate::ledger::native_completion::native_completion_key_v2(
+                    record.original().acquisition_id,
+                ),
+                record
+                    .to_canonical_bytes()
+                    .map_err(crate::transaction::map_pure_ledger_error)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, ProviderLedgerError>>()?;
 
     for (key, bytes) in records {
         record_count = record_count
@@ -150,6 +177,12 @@ pub(crate) fn recover_records<'record>(
             return Err(ProviderLedgerError::LimitExceeded(
                 "recovered aggregate bounds",
             ));
+        }
+        if let Some(expected) = held_rows.get(key) {
+            if expected.as_slice() != bytes {
+                return Err(ProviderLedgerError::Corrupt("changed held profile row"));
+            }
+            continue;
         }
         match decode_record(key, bytes)? {
             DecodedRecordV1::Authority(record) => authorities.push(record),
@@ -305,11 +338,20 @@ pub(crate) fn recover_records<'record>(
         ));
     }
 
-    let recovery_work = recovery_work(&attempts, &acquisitions, &native_completions);
+    let recovery_work = work::recovery_work_for_profiles(
+        &attempts,
+        &acquisitions,
+        &native_completions
+            .keys()
+            .chain(held.keys())
+            .copied()
+            .collect(),
+    );
     if acquisitions.values().any(|acquisition| {
         crate::native_completion::is_native_dispatch_acquisition(acquisition)
             && acquisition.state != ProviderAcquisitionStateV1::Applying
             && !native_completions.contains_key(&acquisition.acquisition_id)
+            && !held.contains_key(&acquisition.acquisition_id)
     }) {
         return Err(ProviderLedgerError::Corrupt(
             "native acquisition missing completion",
@@ -347,6 +389,12 @@ pub(crate) fn recover_records<'record>(
             .ok_or(ProviderLedgerError::Corrupt(
                 "native fence current acquisition",
             ))?;
+        if held.contains_key(&acquisition.acquisition_id) {
+            // The complete held gate checks its actual envelope8 export/fence
+            // join. Historical signature eligibility remains checked above;
+            // do not re-encode the held outer into the legacy envelope7 helper.
+            continue;
+        }
         let native = native_completions.get(&acquisition.acquisition_id).ok_or(
             ProviderLedgerError::Corrupt("native fence retained carrier"),
         )?;

@@ -571,24 +571,52 @@ impl ProviderSourceProviderOwnerV1 {
     /// current immediately before the handoff.
     #[doc(hidden)]
     pub fn into_fixed_ledger_session(
-        mut self,
+        self,
         journal: aos_sandbox::FixedSourceProviderJournalHandoffV1<'_, '_>,
     ) -> Result<CurrentProviderIngressSessionV1, SourceProviderSecurityError> {
-        journal
+        self.try_into_fixed_ledger_session(journal)
+            .map_err(|(_, error)| error)
+    }
+
+    /// Returns the genuine owner on any failed fixed-ledger handoff.
+    ///
+    /// This narrow handoff keeps opaque handshake and current custody in the
+    /// caller on failure. A successful session proves no Source ledger profile,
+    /// archive eligibility, original native admission or effect authorization.
+    ///
+    /// # Errors
+    ///
+    /// Returns the retained owning container and the failure for stale journal
+    /// custody, incomplete handshake, predecessor state or currentness failure.
+    #[doc(hidden)]
+    pub fn try_into_fixed_ledger_session(
+        mut self,
+        journal: aos_sandbox::FixedSourceProviderJournalHandoffV1<'_, '_>,
+    ) -> Result<CurrentProviderIngressSessionV1, (Self, SourceProviderSecurityError)> {
+        let checked = journal
             .validate_current()
-            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-        let state = self
-            .state
-            .take()
-            .ok_or(SourceProviderSecurityError::Poisoned)?;
-        let ProviderSourceProviderOwnerStateV1::Current(mut current) = state else {
-            return Err(SourceProviderSecurityError::SessionContinuity);
-        };
-        current.revalidate()?;
-        if self.predecessor.is_some() {
-            return Err(SourceProviderSecurityError::SessionContinuity);
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)
+            .and_then(|_| match self.state.as_mut() {
+                Some(ProviderSourceProviderOwnerStateV1::Current(current)) => current.revalidate(),
+                Some(_) => Err(SourceProviderSecurityError::SessionContinuity),
+                None => Err(SourceProviderSecurityError::Poisoned),
+            })
+            .and_then(|_| {
+                if self.predecessor.is_some() {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+                Ok(())
+            });
+        if let Err(error) = checked {
+            return Err((self, error));
         }
-        Ok(current)
+        match self.state.take() {
+            Some(ProviderSourceProviderOwnerStateV1::Current(current)) => Ok(current),
+            state => {
+                self.state = state;
+                Err((self, SourceProviderSecurityError::SessionContinuity))
+            }
+        }
     }
 
     /// Consumes a completed same-carrier successor into session and supersession evidence.

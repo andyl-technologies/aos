@@ -41,7 +41,7 @@ fn request(binding: NativeReleaseStatusCapacityBindingV1) -> GlobalCapacityReser
     }
 }
 
-fn binding(
+pub(crate) fn binding(
     recovered: &RecoveredProviderLedgerV1,
     acquisition_id: ObjectDigest,
 ) -> Result<NativeReleaseStatusCapacityBindingV1, ProviderLedgerError> {
@@ -163,6 +163,42 @@ pub(crate) fn add_expected(
     recovered: &RecoveredProviderLedgerV1,
     expected: &mut BTreeSet<[u8; 32]>,
 ) -> Result<(), ProviderLedgerError> {
+    add_expected_with(
+        recovered,
+        expected,
+        |acquisition| binding(recovered, acquisition),
+        |request| {
+            let stable = GlobalCapacityReservationRecoveryBindingV1 {
+                purpose: request.purpose,
+                operation_id: request.operation_id,
+                artifact_digest: request.artifact_digest,
+                checkpoint_digest: request.checkpoint_digest,
+                chain_head_digest: request.chain_head_digest,
+                future_transactions: request.future_transactions,
+                terminal_records: request.terminal_records,
+                terminal_bytes: request.terminal_bytes,
+                poison_records: request.poison_records,
+                poison_bytes: request.poison_bytes,
+            };
+            let reservation = journal.recover_unique_global_capacity_reservation_v1(&stable)?;
+            if reservation.request() != request {
+                return Err(ProviderLedgerError::Equivocation);
+            }
+            Ok(reservation.reservation_id())
+        },
+    )
+}
+
+/// Reuses status disposition and expectation logic for the checked actual profile.
+pub(crate) fn add_expected_with(
+    recovered: &RecoveredProviderLedgerV1,
+    expected: &mut BTreeSet<[u8; 32]>,
+    mut association: impl FnMut(
+        ObjectDigest,
+    )
+        -> Result<NativeReleaseStatusCapacityBindingV1, ProviderLedgerError>,
+    mut exact: impl FnMut(GlobalCapacityReservationRequestV1) -> Result<[u8; 32], ProviderLedgerError>,
+) -> Result<(), ProviderLedgerError> {
     for acquisition in recovered.acquisitions.values().filter(|row| {
         matches!(
             row.state,
@@ -186,8 +222,8 @@ pub(crate) fn add_expected(
                 "native Release status attempt",
             ))?;
         if attempt.state == ProviderAttemptStateV1::Reserved {
-            let reservation = exact_reservation(journal, recovered, acquisition.acquisition_id)?;
-            if !expected.insert(reservation.reservation_id()) {
+            let identifier = exact(request(association(acquisition.acquisition_id)?))?;
+            if !expected.insert(identifier) {
                 return Err(ProviderLedgerError::Equivocation);
             }
         } else if !native_release_status_is_completed_v1(attempt) {
@@ -197,7 +233,7 @@ pub(crate) fn add_expected(
         } else {
             // Consumed status capacity is absent, but exact native/lease/Root
             // request lineage must remain valid for authenticated recovery.
-            binding(recovered, acquisition.acquisition_id)?;
+            association(acquisition.acquisition_id)?;
         }
     }
     Ok(())

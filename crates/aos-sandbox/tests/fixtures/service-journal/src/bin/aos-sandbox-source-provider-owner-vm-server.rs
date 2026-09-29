@@ -76,6 +76,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         match owner.advance_handshake()? {
             FixedProviderOwnerStatusV1::Ready => break,
             FixedProviderOwnerStatusV1::HandshakePending => std::thread::sleep(RETRY_PAUSE),
+            FixedProviderOwnerStatusV1::HeldReadOnly => {
+                return Err("held Provider profile is observation-only".into());
+            }
             FixedProviderOwnerStatusV1::MigrationRequired
             | FixedProviderOwnerStatusV1::MigrationRecoveryRequired => {
                 return Err("fixed Provider journal requires migration".into());

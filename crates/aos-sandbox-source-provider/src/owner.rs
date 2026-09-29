@@ -33,6 +33,9 @@ const FIXED_PROVIDER_STATE_ROOT: &str = "/var/lib/aos/source-provider";
 const FIXED_PROVIDER_JOURNAL: &str = "provider.journal";
 const CANONICAL_CATALOG_PUBLICATION_BYTES: usize = 520;
 
+mod held_readonly;
+pub use held_readonly::FixedProviderHeldReadOnlyObservationV1;
+
 enum FixedProviderOwnerStateV1 {
     Handshake {
         security: ProviderSourceProviderOwnerV1,
@@ -48,6 +51,7 @@ enum FixedProviderOwnerStateV1 {
         recovery: crate::migration::AossplMigrationRecoveryV1,
     },
     Ready(DetachedProviderLedgerV1),
+    HeldReadOnly(Box<held_readonly::HeldReadOnlyV1>),
 }
 
 struct PendingCatalogCurrentnessV1 {
@@ -225,6 +229,8 @@ pub enum FixedProviderOwnerStatusV1 {
     MigrationRecoveryRequired,
     /// The fixed journal, configuration, and live session are current.
     Ready,
+    /// A mixed held snapshot is retained for structural observations only.
+    HeldReadOnly,
 }
 
 /// Preserves a Mount migration recovery token across owner-acquisition failure.
@@ -342,12 +348,14 @@ impl FixedProviderOwnerV1 {
         ))
     }
 
-    /// Advances one owner-held handshake step and installs a current ledger.
+    /// Advances one handshake step into legacy Ready or mixed read-only custody.
     ///
     /// Retryable I/O leaves all custody and transcript state in this owner. On
-    /// completion, the method verifies the catalog through current session
-    /// custody, initializes or fully replays namespace 41, installs that exact
-    /// session, and detaches only non-journal in-memory state.
+    /// legacy completion, the method verifies the catalog through current
+    /// session custody, initializes or fully replays namespace 41, installs
+    /// that exact session, and detaches only non-journal in-memory state. A
+    /// mixed held snapshot retains the genuine prospective session outside
+    /// Ready and exposes structural observations only.
     ///
     /// # Errors
     ///
@@ -389,8 +397,23 @@ impl FixedProviderOwnerV1 {
                 self.state = Some(FixedProviderOwnerStateV1::Ready(detached));
                 return Ok(FixedProviderOwnerStatusV1::Ready);
             }
+            FixedProviderOwnerStateV1::HeldReadOnly(held) => {
+                self.state = Some(FixedProviderOwnerStateV1::HeldReadOnly(held));
+                self.observe_held_readonly()?;
+                return Ok(FixedProviderOwnerStatusV1::HeldReadOnly);
+            }
         };
-        if security.advance_handshake()? == ProviderSourceProviderHandshakeStatusV1::Pending {
+        let progress = match security.advance_handshake() {
+            Ok(progress) => progress,
+            Err(error) => {
+                self.state = Some(FixedProviderOwnerStateV1::Handshake {
+                    security,
+                    canonical_catalog_publication,
+                });
+                return Err(error.into());
+            }
+        };
+        if progress == ProviderSourceProviderHandshakeStatusV1::Pending {
             self.state = Some(FixedProviderOwnerStateV1::Handshake {
                 security,
                 canonical_catalog_publication,
@@ -398,14 +421,53 @@ impl FixedProviderOwnerV1 {
             return Ok(FixedProviderOwnerStatusV1::HandshakePending);
         }
 
-        let initial_authority = self
+        let Some((security, canonical_catalog_publication)) =
+            self.select_held_readonly(security, canonical_catalog_publication)?
+        else {
+            return Ok(FixedProviderOwnerStatusV1::HeldReadOnly);
+        };
+        let initial_authority = match self
             .journal
             .as_mut()
-            .ok_or(ProviderLedgerError::RuntimePoisoned)?
-            .claim_source_provider_native_terminal_authority_v1()?;
-        initial_authority.validate_fixed_source_provider_storage()?;
-        let handoff = initial_authority.fixed_source_provider_session_handoff()?;
-        let mut session = security.into_fixed_ledger_session(handoff)?;
+            .ok_or(ProviderLedgerError::RuntimePoisoned)
+            .and_then(|journal| {
+                journal
+                    .claim_source_provider_native_terminal_authority_v1()
+                    .and_then(|authority| {
+                        authority.validate_fixed_source_provider_storage()?;
+                        Ok(authority)
+                    })
+                    .map_err(Into::into)
+            }) {
+            Ok(authority) => authority,
+            Err(error) => {
+                self.state = Some(FixedProviderOwnerStateV1::Handshake {
+                    security,
+                    canonical_catalog_publication,
+                });
+                return Err(error);
+            }
+        };
+        let handoff = match initial_authority.fixed_source_provider_session_handoff() {
+            Ok(handoff) => handoff,
+            Err(error) => {
+                self.state = Some(FixedProviderOwnerStateV1::Handshake {
+                    security,
+                    canonical_catalog_publication,
+                });
+                return Err(error.into());
+            }
+        };
+        let mut session = match security.try_into_fixed_ledger_session(handoff) {
+            Ok(session) => session,
+            Err((security, error)) => {
+                self.state = Some(FixedProviderOwnerStateV1::Handshake {
+                    security,
+                    canonical_catalog_publication,
+                });
+                return Err(error.into());
+            }
+        };
         let first = open_claimed_ledger(
             initial_authority,
             &mut session,
@@ -500,6 +562,12 @@ impl FixedProviderOwnerV1 {
             .ok_or(ProviderLedgerError::RuntimePoisoned)?;
         let detached = match state {
             FixedProviderOwnerStateV1::Ready(detached) => detached,
+            FixedProviderOwnerStateV1::HeldReadOnly(held) => {
+                self.state = Some(FixedProviderOwnerStateV1::HeldReadOnly(held));
+                return Err(ProviderLedgerError::InvalidTransition(
+                    "held profile is observation-only",
+                ));
+            }
             state @ (FixedProviderOwnerStateV1::MigrationRequired { .. }
             | FixedProviderOwnerStateV1::MigrationRecovery { .. }) => {
                 self.state = Some(state);
@@ -1321,6 +1389,12 @@ impl FixedProviderOwnerV1 {
             .ok_or(ProviderLedgerError::RuntimePoisoned)?;
         let mut detached = match state {
             FixedProviderOwnerStateV1::Ready(detached) => detached,
+            FixedProviderOwnerStateV1::HeldReadOnly(held) => {
+                self.state = Some(FixedProviderOwnerStateV1::HeldReadOnly(held));
+                return Err(ProviderLedgerError::InvalidTransition(
+                    "held profile is observation-only",
+                ));
+            }
             state @ (FixedProviderOwnerStateV1::MigrationRequired { .. }
             | FixedProviderOwnerStateV1::MigrationRecovery { .. }) => {
                 self.state = Some(state);

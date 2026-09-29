@@ -162,6 +162,12 @@ impl ProductionSourceProviderIngressV1 {
                 FixedProviderOwnerStatusV1::HandshakePending => {
                     std::thread::sleep(Duration::from_nanos(remaining.min(2_000_000)));
                 }
+                FixedProviderOwnerStatusV1::HeldReadOnly => {
+                    return Err(ProviderLedgerError::InvalidTransition(
+                        "held profile cannot serve authenticated effects",
+                    )
+                    .into());
+                }
                 FixedProviderOwnerStatusV1::MigrationRequired
                 | FixedProviderOwnerStatusV1::MigrationRecoveryRequired => {
                     return Err(ProductionSourceProviderIngressErrorV1::MigrationRequired);

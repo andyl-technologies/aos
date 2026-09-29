@@ -37,15 +37,18 @@ pub mod canonical_map;
 pub(crate) mod mount_manager_startup;
 mod prepared_transaction;
 mod root_local_recovery;
+mod source_provider_readonly;
 pub use mount_manager_startup::MountManagerStartupPolicyReceiptV1;
 pub(crate) use mount_manager_startup::{
     MountManagerStartupCapturePreflightV1, MountManagerStartupCaptureReceiptV1,
     MountManagerStartupCaptureRecoveryV1,
 };
 pub use root_local_recovery::{
-    Kind2ProtectedReadbackV4, MountBarrierIdleReplacementJournalAuthorityV4,
-    PreparedBarrierIdleReplacementV4,
+    Kind2ProtectedReadbackV4, Kind5ProtectedReadbackV4,
+    MountBarrierIdleReplacementJournalAuthorityV4, MountDeadReplacementJournalAuthorityV4,
+    PreparedBarrierIdleReplacementV4, PreparedDeadReplacementV4,
 };
+pub use source_provider_readonly::SourceProviderHeldReadOnlyJournalAuthorityV1;
 mod cache_policy_hold;
 pub(crate) use cache_policy_hold::{CacheMutationGateV1, HeldCacheMutationGateV1};
 mod capacity_reservation;
@@ -955,6 +958,8 @@ enum ProtectedAuthorityScope {
     SingleNamespace,
     FixedMountSourceAcquisition,
     RootLocalRecoveryKind2,
+    RootLocalRecoveryKind5,
+    SourceProviderHeldReadOnly,
     MountSourceConsumption,
     MountSourceMigration,
     MountManagerStartup,
@@ -3076,7 +3081,11 @@ impl ProtectedJournalAuthority<'_> {
         &self,
         handoff: &FixedSourceProviderJournalHandoffV1<'_, '_>,
     ) -> Result<(), JournalError> {
-        self.validate_fixed_source_provider_storage()?;
+        if self.scope == ProtectedAuthorityScope::SourceProviderHeldReadOnly {
+            source_provider_readonly::validate_current_authority(self)?;
+        } else {
+            self.validate_fixed_source_provider_storage()?;
+        }
         if !core::ptr::eq(handoff.authority, self) || handoff.sequence != self.journal.next_sequence
         {
             return Err(JournalError::StaleAuthoritySnapshot);
@@ -3103,6 +3112,7 @@ impl ProtectedJournalAuthority<'_> {
                 ProtectedAuthorityScope::SingleNamespace
                     | ProtectedAuthorityScope::FixedMountSourceAcquisition
                     | ProtectedAuthorityScope::RootLocalRecoveryKind2
+                    | ProtectedAuthorityScope::RootLocalRecoveryKind5
                     | ProtectedAuthorityScope::MountSourceConsumption
                     | ProtectedAuthorityScope::MountSourceMigration
             ) | (
@@ -3398,11 +3408,15 @@ impl ProtectedJournalAuthority<'_> {
     /// [`JournalError::ProtectedBoundary`] when this journal lacks retained
     /// protected-open provenance, or [`JournalError::StaleAuthoritySnapshot`]
     /// when `snapshot` belongs to another journal or namespace or its sequence
-    /// is no longer current.
+    /// is no longer current. Read-only Source guards return
+    /// [`JournalError::ForeignAuthorityNamespace`] without granting an effect.
     pub fn validate_snapshot_for_effect(
         &self,
         snapshot: &ProtectedJournalSnapshot,
     ) -> Result<(), JournalError> {
+        if self.scope == ProtectedAuthorityScope::SourceProviderHeldReadOnly {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
         self.validate_generic_authority_read()?;
         self.journal.ensure_protected_authority()?;
         self.validate_snapshot(snapshot)
@@ -4623,7 +4637,7 @@ fn validate_reserved_capacity(
         match record.value() {
             Some(value) => {
                 let decoded = if root_local_edge.is_some() {
-                    // Only the exact private kind2 edge has passed whole-owner
+                    // Only a closed private local edge has passed whole-owner
                     // validation above. Generic and legacy callers stay strict.
                     capacity_reservation::accounting_reservation(record.key(), value)?
                 } else {
@@ -5455,10 +5469,11 @@ mod tests {
         GlobalCapacityReservationRecoveryBindingV1, GlobalCapacityReservationRequestV1,
         HEADER_BYTES, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
         JournalRecord, JournalTransaction, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
-        ProtectedAncestry, ProtectedJournalLocation, ProtectedJournalLockCustodyV1,
-        ProtectedOwnerPolicy, ReadOnlyJournalNameWitness, RecordNamespace, RecoveryReport,
-        encode_transaction, open_protected_file, open_read_only_protected_file,
-        protected_open_error, require_opened_directory_identity, traverse_protected_directory,
+        ProtectedAncestry, ProtectedAuthorityScope, ProtectedJournalAuthority,
+        ProtectedJournalLocation, ProtectedJournalLockCustodyV1, ProtectedOwnerPolicy,
+        ReadOnlyJournalNameWitness, RecordNamespace, RecoveryReport, encode_transaction,
+        open_protected_file, open_read_only_protected_file, protected_open_error,
+        require_opened_directory_identity, traverse_protected_directory,
     };
 
     struct TestDirectory(PathBuf);
@@ -5523,6 +5538,111 @@ mod tests {
             poison_records: 3,
             poison_bytes: 4096,
         }
+    }
+
+    #[test]
+    fn source_held_readonly_scope_refuses_legacy_factories_and_effects() {
+        // This local protected-open fixture tests scope refusal only. It is
+        // not the fixed production location or a qualified Security Session.
+        let directory = TestDirectory::new("source-held-readonly-scope");
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        let before = (
+            journal.state.clone(),
+            journal.next_sequence,
+            journal.committed_transactions,
+            journal.file.metadata().unwrap().len(),
+        );
+        let request = source_provider_capacity_request();
+        let binding = GlobalCapacityReservationRecoveryBindingV1 {
+            purpose: request.purpose,
+            operation_id: request.operation_id,
+            artifact_digest: request.artifact_digest,
+            checkpoint_digest: request.checkpoint_digest,
+            chain_head_digest: request.chain_head_digest,
+            future_transactions: request.future_transactions,
+            terminal_records: request.terminal_records,
+            terminal_bytes: request.terminal_bytes,
+            poison_records: request.poison_records,
+            poison_bytes: request.poison_bytes,
+        };
+        let change = transaction(
+            1,
+            vec![JournalRecord::put(
+                RecordNamespace::SourceProviderAuthority,
+                b"forbidden".to_vec(),
+                vec![1],
+            )],
+        );
+        {
+            let mut view = ProtectedJournalAuthority {
+                journal: &mut journal,
+                namespace: RecordNamespace::SourceProviderAuthority,
+                scope: ProtectedAuthorityScope::SourceProviderHeldReadOnly,
+            };
+            let snapshot = view.snapshot().unwrap();
+
+            // Immutable Security artifact factories use these unchanged
+            // purpose checks, not a generic readable snapshot as authority.
+            assert!(matches!(
+                view.validate_source_provider_authority(),
+                Err(JournalError::ForeignAuthorityNamespace)
+            ));
+            assert!(matches!(
+                view.validate_source_provider_authority_snapshot(&snapshot),
+                Err(JournalError::ForeignAuthorityNamespace)
+            ));
+            assert!(view.validate_fixed_source_provider_storage().is_err());
+            assert!(view.fixed_source_provider_session_handoff().is_err());
+            assert!(matches!(
+                view.validate_snapshot_for_effect(&snapshot),
+                Err(JournalError::ForeignAuthorityNamespace)
+            ));
+            assert!(matches!(
+                view.prepare_global_capacity_reservation_v1(request, [2; 16]),
+                Err(JournalError::ForeignAuthorityNamespace)
+            ));
+            assert!(matches!(
+                view.recover_unique_global_capacity_reservation_v1(&binding),
+                Err(JournalError::ForeignAuthorityNamespace)
+            ));
+            assert!(matches!(
+                view.preflight_transactions(std::slice::from_ref(&change)),
+                Err(JournalError::ForeignAuthorityNamespace)
+            ));
+            let preflight = super::ProtectedJournalPreflight {
+                snapshot: view.snapshot().unwrap(),
+                transaction_digest: super::authority_preflight_digest(std::slice::from_ref(
+                    &change,
+                )),
+            };
+            assert!(matches!(
+                view.validate_preflight_for_effect(&preflight, std::slice::from_ref(&change)),
+                Err(JournalError::ForeignAuthorityNamespace)
+            ));
+            assert!(matches!(
+                view.commit(&change),
+                Err(JournalError::ForeignAuthorityNamespace)
+            ));
+        }
+        assert_eq!(
+            before,
+            (
+                journal.state.clone(),
+                journal.next_sequence,
+                journal.committed_transactions,
+                journal.file.metadata().unwrap().len(),
+            )
+        );
+        journal.ensure_healthy().unwrap();
+    }
+
+    #[test]
+    fn source_held_readonly_claim_requires_actual_fixed_physical_custody() {
+        let directory = TestDirectory::new("source-held-readonly-location");
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        assert!(journal.claim_source_provider_held_readonly_v1().is_err());
+        journal.ensure_healthy().unwrap();
+        assert!(journal.state.is_empty());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Canonical kind2 DATA edges, dependency fences and physical replay vectors.
+//! Canonical kind2/kind5 DATA edges, dependency fences and replay vectors.
 //!
 //! These vectors borrow the existing signed fixture, not protected custody. No
 //! live Security, fixed writer or private Mount installation is manufactured.
@@ -28,7 +28,11 @@ fn sealed(record: StoredRecordV2) -> StoredRecordV2 {
 
 // This is the existing four-row dead-replacement shape, with genuine signed
 // initial records. It supplies canonical DATA only, not a death capability.
-fn recovery() -> (State, SourceProviderSessionV2) {
+fn reserved_dead() -> (
+    State,
+    SourceProviderSessionV2,
+    DeadProviderExecutionProjectionV2,
+) {
     let original = fixture::signed_session([19; 16], 31);
     let records =
         fixture::initial_signed_graph_with_catalog(original.clone(), 500, [62; 32], [63; 32], None);
@@ -36,14 +40,10 @@ fn recovery() -> (State, SourceProviderSessionV2) {
     for record in records {
         put(&mut state, record);
     }
-    let table = graph(&state).unwrap().legacy().clone();
-    let mut root = table.provider_attempts.values().next().unwrap().clone();
-    let mut row = table.acquisitions.values().next().unwrap().clone();
-    let mut head = table.provider_heads.values().next().unwrap().clone();
-    let mut replacement = fixture::signed_session([32; 16], 32);
-    replacement.predecessor_session_id = Some(original.session_id);
-    let StoredRecordV2::ProviderSession { value: replacement } =
-        sealed(StoredRecordV2::ProviderSession { value: replacement })
+    let mut successor = fixture::signed_session([32; 16], 32);
+    successor.predecessor_session_id = Some(original.session_id);
+    let StoredRecordV2::ProviderSession { value: successor } =
+        sealed(StoredRecordV2::ProviderSession { value: successor })
     else {
         panic!("Session")
     };
@@ -59,63 +59,18 @@ fn recovery() -> (State, SourceProviderSessionV2) {
         death_evidence_digest: [0; 32],
     };
     death.death_evidence_digest = death_digest(&death).unwrap();
-    root.revision += 1;
-    root.state = ProviderAttemptStateV2::AbandonedIndeterminate {
-        dead_execution: death,
-        successor_session_id: replacement.session_id,
-        recovery_root_attempt_id: root.attempt_id,
-        outcome_may_exist: true,
-        resolution: None,
-    };
-    let StoredRecordV2::ProviderQueryAttempt { value: root } =
-        sealed(StoredRecordV2::ProviderQueryAttempt { value: root })
-    else {
-        panic!("Attempt")
-    };
-    let reference = RecordRefV2 {
-        id: root.attempt_id,
-        revision: root.revision,
-        record_digest: root.record_digest,
-    };
-    row.revision += 1;
-    row.acquire_lineage.root = reference;
-    row.acquire_lineage.tail = reference;
-    row.recovery = AcquisitionRecoveryV2::InventoryRequired {
-        root_attempt: reference,
-    };
-    head.revision += 1;
-    head.current_session_id = replacement.session_id;
-    head.current_session_record_digest = replacement.record_digest;
-    head.next_request_sequence = 1;
-    head.next_response_sequence = 1;
-    head.pending_attempt = None;
-    head.recovery_barrier = Some(RecoveryBarrierV2 {
-        root_attempt: reference,
-        required_session_id: replacement.session_id,
-        replacement_count: 1,
-        baseline_inventory_ordinal: head.inventory_observation_ordinal,
-        recovery_inventory_tail: None,
-    });
-    put(
-        &mut state,
-        StoredRecordV2::ProviderSession {
-            value: replacement.clone(),
-        },
-    );
-    put(
-        &mut state,
-        StoredRecordV2::ProviderQueryAttempt { value: root },
-    );
-    put(
-        &mut state,
-        sealed(StoredRecordV2::Acquisition { value: row }),
-    );
-    put(
-        &mut state,
-        sealed(StoredRecordV2::ProviderHead { value: head }),
-    );
+    (state, successor, death)
+}
+
+fn recovery() -> (State, SourceProviderSessionV2) {
+    let (mut state, replacement, death) = reserved_dead();
+    let table = graph(&state).unwrap().legacy().clone();
+    for record in prepare_dead_replacement_v2(&table, replacement.clone(), death).unwrap() {
+        put(&mut state, record);
+    }
     let table = graph(&state).unwrap().legacy().clone();
     let head = table.provider_heads.values().next().unwrap().clone();
+    let reference = head.recovery_barrier.as_ref().unwrap().root_attempt;
     let mut successor = fixture::signed_session([33; 16], 33);
     successor.predecessor_session_id = Some(replacement.session_id);
     successor.barrier_idle_replacement = Some(BarrierIdleReplacementWitnessV2 {
@@ -277,13 +232,12 @@ fn every_postimage_read_reference_and_derived_acquisition_key_is_fenced() {
 }
 
 #[test]
-fn unsupported_kind5_overlap_refuses_before_head_mutation() {
+fn unsupported_kind3_overlap_refuses_before_head_mutation() {
     let (mut state, successor) = recovery();
     let (_, proposed) = prepare(&state, successor.clone()).unwrap();
-    // Canonical kind5 DATA stands for the unsupported retained owner grammar;
-    // it is deliberately not a qualified protected kind5 producer proof.
+    // This other local owner grammar is not implemented by the closed writer.
     let mut data = proposed.data();
-    data.kind = Kind::DeadReplacement;
+    data.kind = Kind::BackendRecoveryReplacement;
     data.owner_id = graph(&state)
         .unwrap()
         .legacy()
@@ -304,6 +258,146 @@ fn unsupported_kind5_overlap_refuses_before_head_mutation() {
         prepare(&state, successor),
         Err(JournalError::ProtectedBoundary)
     ));
+}
+
+#[test]
+fn kind5_atomic_first_admission_fences_and_own_delete_are_exact() {
+    let (before, successor, death) = reserved_dead();
+    let (admission, floor) =
+        dead_replacement::prepare(&before, successor.clone(), death.clone()).unwrap();
+    assert_eq!(admission.records().len(), 5);
+    assert_eq!(floor.data().kind, Kind::DeadReplacement);
+    assert_eq!(floor.data().profile, Profile::LocalCommittedReadback);
+    assert_eq!(
+        validate_edge(&before, &admission, Edge::DeadAdmission).unwrap(),
+        None
+    );
+    let mut state = before.clone();
+    apply(&mut state, &admission);
+    assert_eq!(pending(&state).unwrap(), vec![floor.clone()]);
+    assert!(dead_replacement::prepare(&state, successor, death).is_err());
+
+    let (_, barrier_successor) = recovery();
+    assert!(prepare(&state, barrier_successor).is_err());
+    for key in rejoin(&state, &floor).unwrap() {
+        let deletion = JournalTransaction::new(
+            [89; 16],
+            vec![JournalRecord::delete(
+                RecordNamespace::MountSourceAcquisition,
+                key,
+            )],
+        )
+        .unwrap();
+        assert!(require_fences(&state, &deletion).is_err());
+        assert!(validate_replayed_transaction(&state, &deletion).is_err());
+    }
+    let deletion = settlement(&floor).unwrap();
+    assert_eq!(encoded_transaction_append_bytes(&deletion).unwrap(), 338);
+    assert_eq!(
+        validate_edge(&state, &deletion, Edge::InstalledDelete).unwrap(),
+        Some(floor.reservation_id())
+    );
+    apply(&mut state, &deletion);
+    assert!(pending(&state).unwrap().is_empty());
+}
+
+#[test]
+fn kind5_wrong_death_or_original_native_debt_refuses_before_admission() {
+    let (mut state, successor, mut death) = reserved_dead();
+    death.old_session_record_digest[0] ^= 1;
+    death.death_evidence_digest = death_digest(&death).unwrap();
+    assert!(dead_replacement::prepare(&state, successor, death).is_err());
+    let (_, successor, death) = reserved_dead();
+    let floor = native_floor(
+        super::super::capacity_reservation::native_held::NativeHeldCapacityPurposeV3::Root,
+    );
+    state.insert(
+        (floor.namespace(), floor.key().to_vec()),
+        floor.value().unwrap().to_vec(),
+    );
+    assert!(matches!(
+        dead_replacement::prepare(&state, successor, death),
+        Err(JournalError::ProtectedBoundary)
+    ));
+}
+
+#[test]
+fn kind5_counts_new_floor_and_retains_unrelated_native_promises() {
+    use super::super::capacity_reservation::native_held::NativeHeldCapacityPurposeV3;
+    let (mut state, successor, death) = reserved_dead();
+    let unrelated = native_floor(NativeHeldCapacityPurposeV3::Provider);
+    let key = (unrelated.namespace(), unrelated.key().to_vec());
+    state.insert(key.clone(), unrelated.value().unwrap().to_vec());
+    let (admission, floor) = dead_replacement::prepare(&state, successor, death).unwrap();
+    let mut limits = JournalLimits::default();
+    limits.maximum_transactions = 2;
+    assert!(
+        validate_reserved_capacity(
+            &state,
+            0,
+            admission.records(),
+            None,
+            0,
+            1,
+            limits,
+            Some(Edge::DeadAdmission),
+        )
+        .is_err()
+    );
+    apply(&mut state, &admission);
+    apply(&mut state, &settlement(&floor).unwrap());
+    assert_eq!(state.get(&key).map(Vec::as_slice), unrelated.value());
+}
+
+#[test]
+fn kind5_compaction_preserves_readback_and_logical_replay_rejects_fenced_put() {
+    let (before, successor, death) = reserved_dead();
+    let (admission, floor) = dead_replacement::prepare(&before, successor, death).unwrap();
+    let mut file = NamedTempFile::new().unwrap();
+    write_compacted(file.as_file_mut(), &before, JournalLimits::default()).unwrap();
+    let initial = replay(file.as_file_mut(), JournalLimits::default()).unwrap();
+    append_and_sync(
+        file.as_file_mut(),
+        &encode_transaction(&admission, initial.next_sequence).unwrap(),
+    )
+    .unwrap();
+    let admitted = replay(file.as_file_mut(), JournalLimits::default()).unwrap();
+    assert_eq!(pending(&admitted.state).unwrap(), vec![floor.clone()]);
+    let mut compact = NamedTempFile::new().unwrap();
+    write_compacted(
+        compact.as_file_mut(),
+        &admitted.state,
+        JournalLimits::default(),
+    )
+    .unwrap();
+    let recovered = replay(compact.as_file_mut(), JournalLimits::default()).unwrap();
+    assert_eq!(recovered.state, admitted.state);
+    assert_eq!(pending(&recovered.state).unwrap(), vec![floor.clone()]);
+    let key = rejoin(&recovered.state, &floor)
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    let value = recovered
+        .state
+        .get(&(RecordNamespace::MountSourceAcquisition, key.clone()))
+        .unwrap()
+        .clone();
+    let mutation = JournalTransaction::new(
+        [90; 16],
+        vec![JournalRecord::put(
+            RecordNamespace::MountSourceAcquisition,
+            key,
+            value,
+        )],
+    )
+    .unwrap();
+    append_and_sync(
+        compact.as_file_mut(),
+        &encode_transaction(&mutation, recovered.next_sequence).unwrap(),
+    )
+    .unwrap();
+    assert!(replay(compact.as_file_mut(), JournalLimits::default()).is_err());
 }
 
 #[test]
