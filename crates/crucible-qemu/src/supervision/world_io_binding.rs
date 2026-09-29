@@ -3,6 +3,26 @@
 use crucible::model::{World, WorldDeviceKind};
 use crucible::{ContentHash, NodeId, WorldIoInstantiationLayout, WorldIoLayoutPolicy};
 
+/// Failure to bind a live queue to its canonical World declaration.
+#[derive(Debug, thiserror::Error)]
+pub enum QemuWorldIoBindingError {
+    /// The requested logical device is absent from the World.
+    #[error("World I/O device `{device}` is not declared")]
+    MissingDevice {
+        /// Name of the requested logical device.
+        device: String,
+    },
+    /// The canonical physical queue layout is invalid.
+    #[error(transparent)]
+    Layout(#[from] crucible::WorldIoLayoutError),
+    /// The declared device is absent from the derived queue layout.
+    #[error("World I/O device `{device}` has no canonical binding")]
+    MissingBinding {
+        /// Name of the declared logical device.
+        device: String,
+    },
+}
+
 /// Immutable World identity and canonical producer number for one live queue.
 ///
 /// This binds configuration and restore state. Physical publication still
@@ -25,18 +45,18 @@ impl QemuWorldIoBinding {
     /// # Errors
     ///
     /// Rejects an absent device or an invalid canonical runtime layout.
-    pub fn from_world(world: &World, device: &NodeId) -> Result<Self, String> {
+    pub fn from_world(world: &World, device: &NodeId) -> Result<Self, QemuWorldIoBindingError> {
         let node = world
             .io_node(device)
-            .ok_or_else(|| format!("World I/O device `{}` is not declared", device.name))?;
-        let layout = WorldIoInstantiationLayout::derive(world, WorldIoLayoutPolicy::default())
-            .map_err(|error| error.to_string())?;
-        let source = layout.get(device).ok_or_else(|| {
-            format!(
-                "World I/O device `{}` has no canonical binding",
-                device.name
-            )
-        })?;
+            .ok_or_else(|| QemuWorldIoBindingError::MissingDevice {
+                device: device.name.clone(),
+            })?;
+        let layout = WorldIoInstantiationLayout::derive(world, WorldIoLayoutPolicy::default())?;
+        let source = layout
+            .get(device)
+            .ok_or_else(|| QemuWorldIoBindingError::MissingBinding {
+                device: device.name.clone(),
+            })?;
         Ok(Self {
             world: world.id(),
             device: node.id.clone(),
@@ -123,15 +143,15 @@ mod tests {
             bindings.push(binding);
         }
         assert_ne!(bindings[0].source_node(), bindings[1].source_node());
-        assert!(
+        assert!(matches!(
             QemuWorldIoBinding::from_world(
                 &world,
                 &NodeId {
                     name: "missing".into()
                 }
-            )
-            .is_err()
-        );
+            ),
+            Err(QemuWorldIoBindingError::MissingDevice { device }) if device == "missing"
+        ));
     }
 
     #[test]

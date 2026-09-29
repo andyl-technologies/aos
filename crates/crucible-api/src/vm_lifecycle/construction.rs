@@ -619,9 +619,15 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             block_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
         };
         if let Some(block) = block {
+            let queue_binding = crucible_qemu::QemuWorldIoBinding::from_world(
+                source.world(),
+                block.queue.node_for_world(source.world())?,
+            )
+            .map_err(|error| loop_factory_error(error.to_string()))?;
+
             if restored_service_state != Some(ProductionNodeServiceState::PermanentlyFailed) {
                 launch = launch.with_world_shmem_block(
-                    block.queue_binding.clone(),
+                    queue_binding,
                     block.base.clone(),
                     block.durability.clone(),
                 );
@@ -634,12 +640,15 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             ninep_binding_for_vm(source.world(), &vm.id, config.world_artifacts.as_ref())?
         };
         if let Some(ninep) = ninep {
+            let queue_binding = crucible_qemu::QemuWorldIoBinding::from_world(
+                source.world(),
+                ninep.queue.node_for_world(source.world())?,
+            )
+            .map_err(|error| loop_factory_error(error.to_string()))?;
+
             if restored_service_state != Some(ProductionNodeServiceState::PermanentlyFailed) {
-                launch = launch.with_world_shmem_ninep(
-                    ninep.queue_binding.clone(),
-                    ninep.tree.clone(),
-                    ninep.latency,
-                );
+                launch =
+                    launch.with_world_shmem_ninep(queue_binding, ninep.tree.clone(), ninep.latency);
             }
             ninep_bindings.insert(vm.id.clone(), ninep);
         }

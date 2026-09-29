@@ -373,4 +373,4 @@ pub use supervision::{
 };
 
 /// World-derived device producer identity retained by live I/O queues.
-pub use supervision::QemuWorldIoBinding;
+pub use supervision::{QemuWorldIoBinding, QemuWorldIoBindingError};

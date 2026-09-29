@@ -8,6 +8,8 @@
 //! campaign_store_profile request=1 phase=planner measurements={...}
 //! ```
 
+// crucible-lint: allow rust-allow -- Opt-in host diagnostics leave campaign inputs unchanged.
+// crucible-lint: allow clippy-disallowed-method -- Instant measures storage diagnostics only.
 #![allow(
     clippy::disallowed_methods,
     reason = "Opt-in wall-time diagnostics never enter campaign inputs or records."
