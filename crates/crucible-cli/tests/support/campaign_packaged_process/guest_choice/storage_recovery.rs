@@ -1,7 +1,7 @@
 //! Real exact-restored guest progress after S3 outage and credential recovery.
 
+use super::super::super::live_s3_product::{GaragePauseGuard, write_credentials, write_store};
 use super::*;
-use crate::live_s3_product::{GaragePauseGuard, write_credentials, write_store};
 use crucible_cas::content_store::{S3BlobBackend, S3BlobBackendConfig, StoreS3EndpointId};
 use crucible_daemon::campaign_store_composition::{AwsSdkS3Client, AwsSdkS3ClientConfig};
 use crucible_qemu::QemuLaunchArtifactIdentity;
