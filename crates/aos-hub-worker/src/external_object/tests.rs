@@ -27,7 +27,7 @@ fn integer(value: i64) -> LeaseInteger {
     LeaseInteger::new(value).unwrap()
 }
 
-fn clock(value: i64) -> LeaseClock {
+pub(super) fn clock(value: i64) -> LeaseClock {
     LeaseClock {
         observed_at: value,
         uncertainty: 2,
@@ -119,7 +119,7 @@ fn publication() -> StorageAuthorityPublication {
     publication
 }
 
-fn config() -> Config {
+pub(super) fn config() -> Config {
     let publication = publication();
     let write = LeaseCohort::from_publication(
         &publication,
@@ -155,7 +155,7 @@ fn config() -> Config {
     value
 }
 
-fn intent(config: &Config, index: usize, op: &str) -> Intent {
+pub(super) fn intent(config: &Config, index: usize, op: &str) -> Intent {
     let cohort = &config.cohorts[index];
     Intent {
         scope: config
@@ -175,7 +175,7 @@ fn intent(config: &Config, index: usize, op: &str) -> Intent {
     }
 }
 
-async fn token(config: &Config, index: usize, previous_sequence: i64) -> Vec<u8> {
+pub(super) async fn token(config: &Config, index: usize, previous_sequence: i64) -> Vec<u8> {
     let publication = &config.publications[0];
     let mut journal = EpochLeaseIssuerJournal::initialize_fresh_namespace(
         publication,
@@ -223,7 +223,7 @@ async fn token(config: &Config, index: usize, previous_sequence: i64) -> Vec<u8>
         .unwrap()
 }
 
-async fn pending(config: &Config, index: usize) -> (Head, Intent) {
+pub(super) async fn pending(config: &Config, index: usize) -> (Head, Intent) {
     let intent = intent(config, index, "retained-op-one");
     let initial = Head::initialize(config, &intent, clock(100)).unwrap();
     let (head, reply) = initial
@@ -239,7 +239,7 @@ async fn pending(config: &Config, index: usize) -> (Head, Intent) {
     (head, intent)
 }
 
-fn receipt(head: &Head) -> Receipt {
+pub(super) fn receipt(head: &Head) -> Receipt {
     let turn = head.pending.clone().unwrap();
     let outcome = match turn.intent.effect {
         Effect::Put { .. } => Outcome::PutAcknowledged,
@@ -544,7 +544,8 @@ async fn historical_head_receipt_replay_is_explicit_and_not_new_observation() {
     ));
 }
 
-fn application() -> aos_hub_core::storage_authority::external_object::ExternalObjectRequest {
+pub(super) fn application(
+) -> aos_hub_core::storage_authority::external_object::ExternalObjectRequest {
     aos_hub_core::storage_authority::external_object::ExternalObjectRequest {
         version: 1,
         domain:
@@ -708,7 +709,7 @@ fn application_writer_revision_is_required_and_lossless() {
     .is_err());
 }
 
-fn snapshot(config: &Config) -> aos_hub_core::storage_work::StorageBindingSnapshot {
+pub(super) fn snapshot(config: &Config) -> aos_hub_core::storage_work::StorageBindingSnapshot {
     let cohort = &config.cohorts[0];
     aos_hub_core::storage_work::StorageBindingSnapshot {
         version: 1,

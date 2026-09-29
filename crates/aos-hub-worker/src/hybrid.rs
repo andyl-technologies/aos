@@ -84,6 +84,11 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if path == aos_hub_core::storage_authority::external_object::stage::EXTERNAL_STAGE_PATH {
         return crate::external_object::fetch_stage(request, env).await;
     }
+    if path
+        == aos_hub_core::storage_authority::external_object::observation::EXTERNAL_OBSERVATION_PATH
+    {
+        return crate::external_object::fetch_observation(request, env).await;
+    }
     if path == crate::external_object::PATH {
         return crate::external_object::fetch(request, env).await;
     }

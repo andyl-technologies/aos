@@ -258,7 +258,7 @@ async fn execute(request: &mut Request, env: &Env) -> Result<ExternalObjectResul
     }
 }
 
-fn select_cohort<'a>(
+pub(super) fn select_cohort<'a>(
     config: &'a Config,
     publication: &StorageBindingPublication,
     purpose: &str,

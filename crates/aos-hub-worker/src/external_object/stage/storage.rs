@@ -127,6 +127,7 @@ impl ExternalObjectGuard {
                 session.validate(head, &config)?;
                 ensure!(
                     head.pending.is_none()
+                        && head.observation.is_none()
                         && session.pending.is_none()
                         && session.context == intent.context
                         && !session.destination
@@ -480,6 +481,7 @@ impl ExternalObjectGuard {
                 session.validate(head, &config)?;
                 ensure!(
                     head.pending.is_none()
+                        && head.observation.is_none()
                         && session.pending.is_none()
                         && session.context == context
                         && !session.destination
@@ -571,6 +573,8 @@ fn initialize(object: &ObjectConfig, config: &config::Config, intent: &Intent) -
         configuration: digest(object)?,
         floor,
         pending: None,
+        observation: None,
+        visible_receipt: None,
         receipts: LeaseInteger::new(0)?,
         incarnation: WireInteger::new(0),
         stage: None,
@@ -808,5 +812,76 @@ async fn commit(
             }
         })
         .await?;
+    Ok(())
+}
+
+/// Verifies the actual positive destination closure before new observation.
+pub(in crate::external_object) async fn verify_observable_destination(
+    env: &worker::Env,
+    storage: &Storage,
+    head: &Head,
+    object: &ObjectConfig,
+) -> Result<()> {
+    ensure!(
+        head.pending.is_none() && head.stage.is_none() && head.observation.is_none(),
+        "active physical turn blocks observation"
+    );
+    let visible = head
+        .visible_receipt
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("current positive publication proof absent"))?;
+    visible.validate(head)?;
+    match visible.kind {
+        super::super::state::VisibleKind::MetadataPut => {
+            let receipt = super::super::storage::load_receipt(storage, &visible.operation_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("metadata publication receipt absent"))?;
+            ensure!(
+                receipt.turn.intent.operation_id == visible.operation_id
+                    && digest(&receipt)? == visible.receipt_digest
+                    && receipt.turn.intent.scope == head.scope
+                    && receipt.turn.intent.context == visible.context_digest
+                    && matches!(
+                        (&receipt.turn.intent.effect, &receipt.outcome),
+                        (
+                            super::super::protocol::Effect::Put { .. },
+                            super::super::protocol::Outcome::PutAcknowledged
+                        )
+                    ),
+                "metadata publication receipt differs"
+            );
+        }
+        super::super::state::VisibleKind::DestinationClose => {
+            let config = config::configured(env, object)?
+                .ok_or_else(|| anyhow::anyhow!("stage configuration unavailable"))?;
+            ensure!(
+                visible.stage_configuration.as_ref() == Some(&digest(&config)?),
+                "destination configuration differs"
+            );
+            let receipt = load_receipt(storage, &visible.operation_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("destination close receipt absent"))?;
+            receipt.validate()?;
+            config.domain(&receipt.turn.intent.context)?;
+            ensure!(
+                receipt.turn.intent.operation_id == visible.operation_id
+                    && digest(&receipt)? == visible.receipt_digest
+                    && receipt.turn.intent.scope()? == head.scope
+                    && digest(&receipt.turn.intent.context)? == visible.context_digest
+                    && receipt.turn.expected_incarnation == head.incarnation
+                    && matches!(
+                        (&receipt.turn.intent.operation, &receipt.outcome),
+                        (
+                            ExternalStageOperation::CompleteDestination { .. },
+                            ExternalStageOutcome::Closed { .. }
+                        ) | (
+                            ExternalStageOperation::CreateDestination { .. },
+                            ExternalStageOutcome::EmptyClosed { .. }
+                        )
+                    ),
+                "destination closure receipt differs"
+            );
+        }
+    }
     Ok(())
 }

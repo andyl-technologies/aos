@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use super::super::{
     config::Config as ObjectConfig,
     protocol::{digest, digest_string},
-    state::{Head, MAX_RECEIPTS},
+    state::{Head, VisibleKind, VisibleReceipt, MAX_RECEIPTS},
 };
 use super::{
     config::Config,
@@ -494,7 +494,10 @@ pub(super) fn begin(
         }
     }
     ensure!(
-        head.pending.is_none() && head.receipts.get() < MAX_RECEIPTS && digest_string(&nonce),
+        head.pending.is_none()
+            && head.observation.is_none()
+            && head.receipts.get() < MAX_RECEIPTS
+            && digest_string(&nonce),
         "prior object effect or journal capacity blocks stage"
     );
     // Refuse Create before allocating a provider UploadId that could never be
@@ -508,7 +511,7 @@ pub(super) fn begin(
     );
     let mut session = match &head.stage {
         Some(session) => session.clone(),
-        None => Session::initialize(config, &intent, source.clone())?,
+        None => Box::new(Session::initialize(config, &intent, source.clone())?),
     };
     if session.destination {
         if let Some(proof) = source {
@@ -722,6 +725,16 @@ pub(super) fn terminal(head: &Head, config: &Config, receipt: &Receipt) -> Resul
             session.phase = Phase::Closed;
             session.upload_id_visibility_closed = true;
             session.closed = Some(reference.clone());
+            if session.destination {
+                next.visible_receipt = Some(VisibleReceipt {
+                    kind: VisibleKind::DestinationClose,
+                    operation_id: reference.operation_id.clone(),
+                    receipt_digest: reference.digest.clone(),
+                    context_digest: digest(&session.context)?,
+                    incarnation: next.incarnation,
+                    stage_configuration: Some(session.configuration.clone()),
+                });
+            }
         }
         Outcome::Verified { .. } => {
             session.phase = Phase::Verified;

@@ -214,3 +214,46 @@ This resolves the focused schema/archive integration failures. It does not
 establish a new full-core pass, whole-Hub restore activation, current provider
 or fleet acceptance. Direct service routing and later schema continuations
 remain separate work.
+
+## Fresh external metadata observations and retained journal decoding
+
+The Worker can hold the addressed object's read slot through a provider HEAD
+and its durable acknowledgement. A new observation requires the current compact
+pointer to an actual positive publication receipt. Active or unknown writes
+block it; missing legacy pointers are refused without HEAD-based adoption.
+Exact historical replay performs no provider request and remains explicitly
+historical. Application, snapshot and read-lease deadlines are checked after
+acknowledgement and reply signing.
+
+Heap ownership of the stage session preserves its JSON representation. The
+original inline representation produced a Wasm RuntimeError during retained
+state decoding; the precise trap cause is unproved. A serialization witness and
+read-only restart checks preserve the original unknown operation without
+rewriting its journal or issuing a provider effect.
+
+Producer receipt `/tmp/hub-external-observation-box/qualification-v3.json`
+(`3f0433c96a1bce76e38b8bffbb72712457464fe892610b6be9f7a6c5c3dd2aed`)
+records 56 distinct pure tests, ordinary development Worker Wasm compilation,
+ten persistent observation fault groups and two original pending-journal
+restart checks. The separately run codec case overlaps those 56 tests.
+Independent review
+`832f17d167689c112c52e6a8a06529be91c648c908cb5edabe250fd8d8323b2c`
+binds the exact source, artifacts and retained failures. Initial fixture field
+ordering mistakes, the original stalled runtime and diagnostic runs remain
+preserved. These runtime results use the earlier authentication context and a
+controlled provider.
+
+Current receipt `/tmp/hub-observation-current-context/qualification.json`
+(`f03454288a154b7675847e700714fe98970dcb4162f223968b9af9ed815ceb96`)
+records another 56 named pure tests and ordinary default Worker Wasm compilation
+passing, with all 2,918 captured inputs unchanged and all 20 owned postimages
+exact. Existing file preimages match without changes to current authentication.
+Source input digest is
+`7dd82e12e876c6b255e032bb437008b08578fe1007cc4e37453f7793c54076f1`.
+The helper declaration wrap accompanies its required visibility change; other
+existing hunks contain functional changes.
+
+This qualifies metadata observations and retained decoding. Mutable GET,
+Native after-await authorization, current persistent provider behavior,
+complete writer closure, optimized packages, fleet and hosted activation remain
+separate gates. An observation does not authorize a later independent body read.

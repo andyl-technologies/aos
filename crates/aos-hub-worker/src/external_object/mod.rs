@@ -8,6 +8,7 @@
 //! No domain is enabled by this module or by its local fault fixture.
 
 mod config;
+mod observation;
 mod protocol;
 mod stage;
 mod state;
@@ -19,6 +20,8 @@ mod storage;
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) use executor::{deny_legacy, fetch, PATH};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use observation::fetch as fetch_observation;
 #[cfg(target_arch = "wasm32")]
 pub use storage::ExternalObjectGuard;
 

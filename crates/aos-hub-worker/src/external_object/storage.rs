@@ -52,6 +52,9 @@ impl DurableObject for ExternalObjectGuard {
     }
 
     async fn fetch(&self, mut request: Request) -> worker::Result<Response> {
+        if request.url()?.path() == "/observation-turn" {
+            return self.observation_fetch(&mut request).await;
+        }
         if request.url()?.path() == "/stage-turn" {
             return self.stage_fetch(&mut request).await;
         }
@@ -184,7 +187,7 @@ pub(super) async fn load_head(storage: &Storage) -> Result<Option<Head>> {
     decode(raw, MAX_MESSAGE)
 }
 
-async fn load_receipt(storage: &Storage, operation: &str) -> Result<Option<Receipt>> {
+pub(super) async fn load_receipt(storage: &Storage, operation: &str) -> Result<Option<Receipt>> {
     let raw = storage.get::<String>(&receipt_key(operation)?).await?;
     let receipt: Option<Receipt> = decode(raw, MAX_RECEIPT)?;
     if let Some(value) = &receipt {

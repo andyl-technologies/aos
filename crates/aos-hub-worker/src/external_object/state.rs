@@ -31,11 +31,56 @@ pub(super) struct Head {
     pub configuration: String,
     pub floor: EpochLeaseFloor,
     pub pending: Option<Pending>,
+    #[serde(default)]
+    pub observation: Option<super::observation::Pending>,
+    #[serde(default)]
+    pub visible_receipt: Option<VisibleReceipt>,
     pub receipts: LeaseInteger,
     #[serde(default)]
     pub incarnation: aos_hub_core::direct_upload::WireInteger,
     #[serde(default)]
-    pub stage: Option<super::stage::state::Session>,
+    // Heap ownership bounds the compact head layout; serde keeps the existing JSON.
+    pub stage: Option<Box<super::stage::state::Session>>,
+}
+
+/// One current positive publication pointer; receipts remain immutable KV records.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct VisibleReceipt {
+    pub kind: VisibleKind,
+    pub operation_id: String,
+    pub receipt_digest: String,
+    pub context_digest: String,
+    pub incarnation: aos_hub_core::direct_upload::WireInteger,
+    pub stage_configuration: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum VisibleKind {
+    MetadataPut,
+    DestinationClose,
+}
+
+impl VisibleReceipt {
+    pub(super) fn validate(&self, head: &Head) -> Result<()> {
+        ensure!(
+            super::protocol::id(&self.operation_id)
+                && digest_string(&self.receipt_digest)
+                && digest_string(&self.context_digest)
+                && self.incarnation == head.incarnation
+                && self.incarnation.get() > 0
+                && match self.kind {
+                    VisibleKind::MetadataPut => self.stage_configuration.is_none(),
+                    VisibleKind::DestinationClose => self
+                        .stage_configuration
+                        .as_ref()
+                        .is_some_and(|value| digest_string(value)),
+                },
+            "current visible receipt pointer differs"
+        );
+        Ok(())
+    }
 }
 
 impl Head {
@@ -58,6 +103,8 @@ impl Head {
             configuration: digest(config)?,
             floor,
             pending: None,
+            observation: None,
+            visible_receipt: None,
             receipts: LeaseInteger::new(0)?,
             incarnation: aos_hub_core::direct_upload::WireInteger::new(0),
             stage: None,
@@ -92,6 +139,9 @@ impl Head {
             self.incarnation.get() <= super::stage::state::MAX_INCARNATION,
             "corrupt retained incarnation counter"
         );
+        if let Some(visible) = &self.visible_receipt {
+            visible.validate(self)?;
+        }
         if let Some(stage) = &self.stage {
             stage.validate_shape(self)?;
         }
@@ -121,6 +171,18 @@ impl Head {
             ensure!(
                 digest_string(commitment),
                 "corrupt retained floor commitment"
+            );
+        }
+        if let Some(slot) = &self.observation {
+            slot.validate()?;
+            ensure!(
+                slot.scope() == &self.scope
+                    && slot.stamp.physical_authority_id == self.scope.physical_authority_id
+                    && slot.stamp.incarnation.as_str() == self.incarnation.get().to_string()
+                    && self.pending.is_none()
+                    && self.stage.is_none()
+                    && self.visible_receipt.is_some(),
+                "corrupt observation slot"
             );
         }
         if let Some(turn) = &self.pending {
@@ -168,7 +230,7 @@ impl Head {
             "object incarnation capacity exhausted"
         );
         ensure!(
-            self.pending.is_none() && self.stage.is_none(),
+            self.pending.is_none() && self.stage.is_none() && self.observation.is_none(),
             "unknown object turn blocks dispatch"
         );
         ensure!(
@@ -233,6 +295,14 @@ impl Head {
                     .checked_add(1)
                     .ok_or_else(|| anyhow::anyhow!("object incarnation exhausted"))?,
             );
+            next.visible_receipt = Some(VisibleReceipt {
+                kind: VisibleKind::MetadataPut,
+                operation_id: receipt.turn.intent.operation_id.clone(),
+                receipt_digest: digest(receipt)?,
+                context_digest: receipt.turn.intent.context.clone(),
+                incarnation: next.incarnation,
+                stage_configuration: None,
+            });
         }
         Ok(next)
     }

@@ -376,6 +376,8 @@ impl Fixture {
             )
             .unwrap(),
             pending: None,
+            observation: None,
+            visible_receipt: None,
             receipts: integer(0),
             incarnation: WireInteger::new(0),
             stage: None,
@@ -1002,3 +1004,9 @@ async fn corrupted_pending_incarnation_rejects_before_terminal_replay() {
 }
 
 mod recovery;
+
+#[path = "tests/observation.rs"]
+mod observation;
+
+#[path = "tests/boxed_journal.rs"]
+mod boxed_journal;
