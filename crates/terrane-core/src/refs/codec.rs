@@ -13,7 +13,7 @@ use core::fmt;
 
 const MAX_COMMIT_BYTES: usize = 1 << 20;
 const MAX_TEXT_BYTES: usize = 65536;
-const MAX_PARENTS: usize = 4096;
+const MAX_PARENTS: usize = 256;
 const MAX_PACKS: usize = 4096;
 
 /// The principal category asserted by commit provenance.
@@ -752,5 +752,9 @@ mod tests {
             commit.identity().unwrap().to_vec(),
             hex_bytes("c8efdd180de6c5b1e04abe4435238e8969776497759682c6094a4cede9c579d6")
         );
+
+        let mut excessive_parents = commit;
+        excessive_parents.parents = alloc::vec![[0; 32]; MAX_PARENTS + 1];
+        assert_eq!(excessive_parents.encode(), Err(RecordError::Schema));
     }
 }
