@@ -201,6 +201,21 @@ pub struct GenerationShard {
     pub filter: Option<([u8; 32], u64)>,
 }
 
+/// Describes a published pack and its matching detached index container.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackInventoryEntry {
+    /// The opaque UUID identifying both registered container keys.
+    pub pack_id: [u8; 16],
+    /// The identity digest of the complete sealed pack bytes.
+    pub pack_hash: [u8; 32],
+    /// The exact encoded size of the sealed pack.
+    pub pack_size: u64,
+    /// The identity digest of the header-prefixed detached index bytes.
+    pub index_hash: [u8; 32],
+    /// The exact encoded size of the detached index.
+    pub index_size: u64,
+}
+
 /// Makes a complete immutable index generation visible atomically.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GenerationManifest {
@@ -212,6 +227,8 @@ pub struct GenerationManifest {
     pub written_at: u64,
     /// The collection cycle producing the generation.
     pub cycle: u64,
+    /// The optional authoritative container inventory, ordered by unique pack ID.
+    pub inventory: Option<Vec<PackInventoryEntry>>,
 }
 
 impl GenerationManifest {
@@ -228,8 +245,12 @@ impl GenerationManifest {
             return Err(RecordError::Schema);
         }
 
+        if self.inventory.as_ref().is_some_and(|entries| entries.windows(2).any(|pair| pair[0].pack_id >= pair[1].pack_id)) {
+            return Err(RecordError::Schema);
+        }
+
         let mut bytes = Vec::new();
-        cbor::write_map(&mut bytes, 4);
+        cbor::write_map(&mut bytes, 4 + usize::from(self.inventory.is_some()));
         uint_field(&mut bytes, 1, self.generation);
         cbor::write_uint(&mut bytes, 2);
         cbor::write_array(&mut bytes, self.shards.len());
@@ -245,6 +266,18 @@ impl GenerationManifest {
         }
         uint_field(&mut bytes, 3, self.written_at);
         uint_field(&mut bytes, 4, self.cycle);
+        if let Some(entries) = &self.inventory {
+            cbor::write_uint(&mut bytes, 5);
+            cbor::write_array(&mut bytes, entries.len());
+            for entry in entries {
+                cbor::write_array(&mut bytes, 5);
+                cbor::write_bytes(&mut bytes, &entry.pack_id);
+                cbor::write_bytes(&mut bytes, &entry.pack_hash);
+                cbor::write_uint(&mut bytes, entry.pack_size);
+                cbor::write_bytes(&mut bytes, &entry.index_hash);
+                cbor::write_uint(&mut bytes, entry.index_size);
+            }
+        }
         Ok(bytes)
     }
 
@@ -254,7 +287,8 @@ impl GenerationManifest {
     /// Rejects malformed fields, duplicate or unordered shards, and trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, RecordError> {
         let mut decoder = Decoder::new(bytes);
-        if decoder.map(4)? != 4 {
+        let fields = decoder.map(5)?;
+        if !matches!(fields, 4 | 5) {
             return Err(RecordError::Schema);
         }
         key(&mut decoder, 1)?;
@@ -292,6 +326,22 @@ impl GenerationManifest {
         let written_at = decoder.uint()?;
         key(&mut decoder, 4)?;
         let cycle = decoder.uint()?;
+        let inventory = if fields == 5 {
+            key(&mut decoder, 5)?;
+            let count = decoder.array(decoder.remaining().len())?;
+            let mut entries = Vec::with_capacity(count);
+            for _ in 0..count {
+                if decoder.array(5)? != 5 {return Err(RecordError::Schema);}
+                let pack_id = decoder.bytes(16)?.try_into().map_err(|_| RecordError::Schema)?;
+                if entries.last().is_some_and(|prior: &PackInventoryEntry| prior.pack_id >= pack_id) {return Err(RecordError::Schema);}
+                let pack_hash = digest(&mut decoder)?;
+                let pack_size = decoder.uint()?;
+                let index_hash = digest(&mut decoder)?;
+                let index_size = decoder.uint()?;
+                entries.push(PackInventoryEntry {pack_id, pack_hash, pack_size, index_hash, index_size});
+            }
+            Some(entries)
+        } else {None};
         decoder.finish()?;
 
         Ok(Self {
@@ -299,6 +349,7 @@ impl GenerationManifest {
             shards,
             written_at,
             cycle,
+            inventory,
         })
     }
 }
@@ -430,6 +481,7 @@ mod tests {
     fn generation_manifest_binds_all_shards_and_optional_filters() {
         let mut manifest = GenerationManifest {
             generation: 2,
+            inventory: None,
             shards: alloc::vec![
                 GenerationShard {
                     shard: 0,
