@@ -40,6 +40,8 @@ pub enum RootNativeTransitionKindV2 {
     AcceptedAssertionRecorded,
     /// Captures irreversible Closed R and its separate DispositionCut.
     ClosedAssertionRecorded,
+    /// Consumes actual original Pending and first Closed R together, hot-only v5.
+    OriginalPendingClosedRecorded,
     /// Stores the exact original prepared hot4 or hot8 signature.
     DispositionStored,
     /// Stores genuine original7 or current10 with the unsigned terminal ACK.
@@ -289,6 +291,7 @@ pub fn validate_native_root_cold_transition_v2(
             | RootNativeTransitionKindV2::PreparedStored
             | RootNativeTransitionKindV2::HeldStored
             | RootNativeTransitionKindV2::ResponseDispositionRecorded
+            | RootNativeTransitionKindV2::OriginalPendingClosedRecorded
             | RootNativeTransitionKindV2::AcceptedAssertionRecorded
             | RootNativeTransitionKindV2::DispositionStored
     ) || (proposal.kind == RootNativeTransitionKindV2::TerminalAckStored
@@ -328,14 +331,17 @@ fn require_current_original_companions(
         .provider_attempts
         .get(&attempt)
         .ok_or_else(|| state_error("native Root hot original Attempt absent"))?;
-    if !matches!(
-        current.state,
-        ProviderAttemptStateV2::Reserved
-            | ProviderAttemptStateV2::DispositionConsumed {
-                status: crate::mount_source_acquisition_state::ProviderStatusV2::Complete,
-                ..
-            }
-    ) {
+    let original_pending = super::pending_v5::has_original_pending_closed_cut_v5(graph, sidecar)?;
+    if !original_pending
+        && !matches!(
+            current.state,
+            ProviderAttemptStateV2::Reserved
+                | ProviderAttemptStateV2::DispositionConsumed {
+                    status: crate::mount_source_acquisition_state::ProviderStatusV2::Complete,
+                    ..
+                }
+        )
+    {
         return Err(state_error(
             "native Root hot step cannot revive abandoned original custody",
         ));
@@ -369,6 +375,13 @@ pub(super) fn remaining(
     // obligations do not revive this separately funded native continuation.
     if matches!(sidecar.suffix().phase(), 6 | 12) {
         return Ok(1);
+    }
+    if super::pending_v5::has_original_pending_closed_cut_v5(graph, sidecar)? {
+        return match sidecar.suffix().phase() {
+            10 => Ok(3),
+            11 => Ok(2),
+            _ => Err(state_error("original Pending Closed suffix geometry")),
+        };
     }
     let attempt_id = *sidecar.original_scope().mount_attempt.as_bytes();
     let (attempt, _) = super::graph_v2::original_rows(graph, sidecar)?;

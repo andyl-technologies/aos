@@ -174,6 +174,45 @@ fn opposite_descriptor_endpoint_rejects_origin_and_closes() {
 }
 
 #[test]
+fn retaining_origin_failure_returns_the_exact_packet_and_subject_pin() {
+    use std::os::fd::AsRawFd as _;
+
+    let (mut first_receiver, first_sender) = pair();
+    let (mut other_receiver, _other_sender) = pair();
+    let mut sender = DescriptorSubjectSocket::from_owned(first_sender).expect("adopt sender");
+    let file = tempfile::tempfile().expect("transferred file fixture");
+    sender
+        .send_with_descriptors(b"retained foreign packet", &[file.as_fd()])
+        .expect("send typed packet with one FD");
+    let packet = first_receiver
+        .receive_optional_descriptor_reply(64)
+        .expect("receive typed packet");
+    let original_subject = packet.subject().credentials();
+    let received_fd = packet.descriptors()[0].as_raw_fd();
+    let identity = rustix::fs::fstat(packet.descriptors()[0].as_fd()).expect("received FD identity");
+
+    let (error, retained) = other_receiver
+        .bind_received_retaining(packet)
+        .expect_err("reject a different socket origin");
+
+    assert_eq!(
+        error.category(),
+        crate::seqpacket::RecordBindingErrorCategory::OriginMismatch,
+    );
+    assert_eq!(retained.payload(), b"retained foreign packet");
+    assert_eq!(retained.subject().credentials(), original_subject);
+    assert_eq!(retained.descriptors().len(), 1);
+    assert_eq!(retained.descriptors()[0].as_raw_fd(), received_fd);
+    let still_open =
+        rustix::fs::fstat(retained.descriptors()[0].as_fd()).expect("retained FD remains open");
+    assert_eq!(
+        (still_open.st_dev, still_open.st_ino),
+        (identity.st_dev, identity.st_ino),
+    );
+    assert!(matches!(other_receiver.as_fd(), Err(SeqpacketError::Closed)));
+}
+
+#[test]
 fn origin_mismatch_drops_transferred_descriptors_in_isolated_process() {
     if std::env::var_os(ORIGIN_DESCRIPTOR_DROP_FIXTURE_ENV).as_deref()
         == Some(std::ffi::OsStr::new("1"))

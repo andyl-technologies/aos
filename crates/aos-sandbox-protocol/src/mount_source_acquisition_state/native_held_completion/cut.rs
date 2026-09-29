@@ -11,6 +11,9 @@
 //! head_length:u32 | acquisition_witness_length:u32 |
 //! canonical_Head_JSON | canonical_AcquisitionPredecessorWitness_JSON
 //! ```
+//!
+//! Draft tag6 captures only consumed Pending revision2 in a Disposition cut;
+//! tags1 through5 and their existing encodings remain unchanged.
 
 use std::collections::BTreeMap;
 
@@ -72,6 +75,7 @@ enum AttemptCutState {
     AbandonedUnresolved,
     Superseded,
     AbandonedResolved,
+    Pending,
 }
 
 impl AttemptCutState {
@@ -82,13 +86,14 @@ impl AttemptCutState {
             Self::AbandonedUnresolved => 3,
             Self::Superseded => 4,
             Self::AbandonedResolved => 5,
+            Self::Pending => 6,
         }
     }
 
     const fn revision(self) -> u64 {
         match self {
             Self::Reserved => 1,
-            Self::Complete | Self::AbandonedUnresolved | Self::Superseded => 2,
+            Self::Complete | Self::AbandonedUnresolved | Self::Superseded | Self::Pending => 2,
             Self::AbandonedResolved => 3,
         }
     }
@@ -100,6 +105,11 @@ impl AttemptCutState {
                 status: ProviderStatusV2::Complete,
                 ..
             } => Ok(Self::Complete),
+            ProviderAttemptStateV2::DispositionConsumed {
+                status: ProviderStatusV2::Pending,
+                signed_result,
+                ..
+            } if signed_result.is_empty() => Ok(Self::Pending),
             ProviderAttemptStateV2::AbandonedIndeterminate {
                 resolution: None, ..
             } => Ok(Self::AbandonedUnresolved),
@@ -159,6 +169,13 @@ impl RootNativeCutV1 {
     #[must_use]
     pub const fn kind(&self) -> RootNativeCutKindV1 {
         self.kind
+    }
+
+    /// Identifies the exact draft tag6 consumed-Pending disposition DATA.
+    #[must_use]
+    pub fn is_pending_disposition(&self) -> bool {
+        self.kind == RootNativeCutKindV1::Disposition
+            && self.attempt_state == AttemptCutState::Pending
     }
 
     /// Returns the capture proposal's actual transaction identity as data.
@@ -340,6 +357,7 @@ impl RootNativeCutV1 {
             3 => AttemptCutState::AbandonedUnresolved,
             4 => AttemptCutState::Superseded,
             5 => AttemptCutState::AbandonedResolved,
+            6 => AttemptCutState::Pending,
             _ => return Err(state_error("native cut Attempt state")),
         };
         if reader.bytes(4)? != [0; 4] {
@@ -475,6 +493,8 @@ impl RootNativeCutV1 {
                     return Err(state_error("native cut original Complete companions"));
                 }
             }
+            // The decoder and reconstruction share the same closed tag6 shape.
+            AttemptCutState::Pending => {}
             AttemptCutState::AbandonedUnresolved => {
                 if witness.acquire_terminal_attempt.is_some()
                     || witness.evidence.is_some()
@@ -607,6 +627,28 @@ impl RootNativeCutV1 {
         {
             return Err(state_error("native cut closed shape or captured stamp"));
         }
+        // Tag6 captures consumed original Pending, not a generic recovery
+        // snapshot. Enforce its shape during decoding as well as reconstruction.
+        let pending_reference = RecordRefV2 {
+            id: witness.acquire_lineage.root.id,
+            revision: self.original_attempt_revision,
+            record_digest: self.original_attempt_digest,
+        };
+        if self.attempt_state == AttemptCutState::Pending
+            && (self.kind != RootNativeCutKindV1::Disposition
+                || self.head.pending_attempt.is_some()
+                || self.head.recovery_barrier.is_some()
+                || self.head.next_request_sequence != self.head.next_response_sequence
+                || witness.acquire_terminal_attempt.is_some()
+                || witness.evidence.is_some()
+                || pending_reference.id == [0; 32]
+                || witness.acquire_lineage.root != pending_reference
+                || witness.acquire_lineage.tail != pending_reference
+                || witness.acquire_lineage.next_attempt_number != 2
+                || witness.recovery != AcquisitionRecoveryV2::Ready)
+        {
+            return Err(state_error("native cut original Pending companions"));
+        }
         Ok(())
     }
 }
@@ -617,6 +659,14 @@ fn historical_state(
 ) -> Result<ProviderAttemptStateV2> {
     if tag == AttemptCutState::Reserved {
         return Ok(ProviderAttemptStateV2::Reserved);
+    }
+    // Pending is retained original response custody DATA, never a projection
+    // through a later no-dispatch settlement or another consumed status.
+    if tag == AttemptCutState::Pending {
+        if current.revision != 2 || AttemptCutState::from_state(&current.state)? != tag {
+            return Err(state_error("native cut exact retained Pending2 absent"));
+        }
+        return Ok(current.state.clone());
     }
     let retained = match &current.state {
         ProviderAttemptStateV2::NativeNoDispatchSettled { prior_state, .. } => prior_state.as_ref(),

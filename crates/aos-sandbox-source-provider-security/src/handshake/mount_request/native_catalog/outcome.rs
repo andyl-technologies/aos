@@ -6,6 +6,9 @@
 //! completion; that owner path remains a separate activation prerequisite.
 
 use super::*;
+use aos_sandbox_source_provider_protocol::native_held_completion::witness::{
+    NativeHeldByteWitnessV1, RootNativeHeldWitnessV1,
+};
 
 // Shares an existing owner rather than duplicating its non-Clone guard. A DATA
 // marker can exercise this retention seam without constructing session custody.
@@ -34,6 +37,14 @@ pub(in crate::handshake::mount_request) struct NativeAcquireOutcomeCustodyV3 {
 }
 
 impl NativeAcquireOutcomeCustodyV3 {
+    pub(in crate::handshake::mount_request) fn original_root_witness(
+        &self,
+        records: [NativeHeldByteWitnessV1; 4],
+        sequence: u64,
+    ) -> RootNativeHeldWitnessV1 {
+        self.guard.original_root_witness(records, sequence)
+    }
+
     pub(in crate::handshake::mount_request) fn retain_original(
         guard: NativeAcquireCurrentnessGuardV3,
         signed_request: SignedSourceProviderRequestV1,

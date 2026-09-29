@@ -86,7 +86,7 @@ pub use handshake::{
     MountProviderAuthorityTrustProjectionV2, MountProviderRequestProjectionV2,
     MountProviderRequestSendRecoveryV2, MountProviderSessionProjectionV2,
     MountProviderSignerProjectionV2, PendingNativeMountAcquireV3, PersistedProviderOutcomeV1,
-    PreparedMountProviderRequestV2, ProviderCompletionBuilderV1, ProviderIngressReopenCheckpointV1,
+    OriginalNativeReceivedOutcomeV5, PreparedMountProviderRequestV2, ProviderCompletionBuilderV1, ProviderIngressReopenCheckpointV1,
     ProviderOutcomeAuthorizationV1, ProviderOwnerSecurityFacadeV1,
     ProviderSessionSupersessionEvidenceV1, ProviderSourceProviderHandshakeStatusV1,
     ProviderSourceProviderOwnerV1, ReceivedMountProviderOutcomePartsV2,

@@ -49,6 +49,10 @@ mod recovery;
 mod native_catalog;
 #[path = "mount_request/native_root_prepared.rs"]
 mod native_root_prepared;
+#[path = "mount_request/native_pending.rs"]
+mod native_pending;
+
+pub use native_pending::OriginalNativeReceivedOutcomeV5;
 
 #[path = "mount_request/catalog_floor.rs"]
 mod catalog_floor;

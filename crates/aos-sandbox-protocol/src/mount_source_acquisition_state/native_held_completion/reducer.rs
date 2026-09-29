@@ -19,7 +19,8 @@ use super::{
     native_root_sidecar_key_v1,
 };
 use crate::mount_source_acquisition_state::{
-    ProviderAttemptStateV2, ProviderStatusV2, RecordRefV2, Result, StoredRecordV2, acquisition_key,
+    MountSourceAcquisitionStateV2, ProviderAttemptStateV2, ProviderStatusV2, RecordRefV2, Result,
+    SourceProviderQueryAttemptV2, SourceProviderSessionV2, StoredRecordV2, acquisition_key,
     format::state_error, projection_entries, projection_from_entries, provider_attempt_key,
     provider_head_key, record_digest,
 };
@@ -397,6 +398,29 @@ pub(super) fn validate_response_cas(
             "native Root actual response CAS identity/state",
         ));
     }
+    validate_response_companions(
+        &before.legacy,
+        &after.legacy,
+        original,
+        consumed,
+        session,
+        true,
+        native_root_sidecar_key_v1(original.attempt_id)?,
+        puts,
+    )
+}
+
+/// Shares exact immutable lineage/Head checks, without granting a status choice.
+pub(super) fn validate_response_companions(
+    before: &MountSourceAcquisitionStateV2,
+    after: &MountSourceAcquisitionStateV2,
+    original: &SourceProviderQueryAttemptV2,
+    consumed: &SourceProviderQueryAttemptV2,
+    session: &SourceProviderSessionV2,
+    complete: bool,
+    sidecar_key: Vec<u8>,
+    puts: &BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Result<()> {
     let mut reconstructed = consumed.clone();
     reconstructed.revision = original.revision;
     reconstructed.record_digest = original.record_digest;
@@ -409,12 +433,10 @@ pub(super) fn validate_response_cas(
 
     let acquisition_id = original.owner.owner_id();
     let previous_row = before
-        .legacy
         .acquisitions
         .get(&acquisition_id)
         .ok_or_else(|| state_error("native Root response before acquisition absent"))?;
     let next_row = after
-        .legacy
         .acquisitions
         .get(&acquisition_id)
         .ok_or_else(|| state_error("native Root response after acquisition absent"))?;
@@ -440,10 +462,12 @@ pub(super) fn validate_response_cas(
         expected_row.acquire_lineage.root = consumed_ref;
     }
     expected_row.acquire_lineage.tail = consumed_ref;
-    expected_row.acquire_terminal_attempt = Some(consumed_ref);
-    // The unchanged complete legacy graph validator has independently verified
-    // this evidence against the exact signed response, lease and descriptor.
-    expected_row.evidence = next_row.evidence.clone();
+    if complete {
+        expected_row.acquire_terminal_attempt = Some(consumed_ref);
+        // The unchanged complete legacy graph validator has independently verified
+        // this evidence against the exact signed response, lease and descriptor.
+        expected_row.evidence = next_row.evidence.clone();
+    }
     expected_row.record_digest = next_row.record_digest;
     if expected_row != *next_row {
         return Err(state_error(
@@ -456,12 +480,10 @@ pub(super) fn validate_response_cas(
         session.scope.provider_authority_id,
     );
     let previous_head = before
-        .legacy
         .provider_heads
         .get(&head_id)
         .ok_or_else(|| state_error("native Root response before head absent"))?;
     let next_head = after
-        .legacy
         .provider_heads
         .get(&head_id)
         .ok_or_else(|| state_error("native Root response after head absent"))?;
@@ -483,8 +505,8 @@ pub(super) fn validate_response_cas(
         return Err(state_error("native Root response head sequence"));
     }
     expected_head.pending_attempt = None;
-    let previous_entries = projection_entries(previous_head.scope, &before.legacy.acquisitions);
-    let next_entries = projection_entries(previous_head.scope, &after.legacy.acquisitions);
+    let previous_entries = projection_entries(previous_head.scope, &before.acquisitions);
+    let next_entries = projection_entries(previous_head.scope, &after.acquisitions);
     if previous_entries != next_entries {
         expected_head.current_projection_epoch = previous_head
             .current_projection_epoch
@@ -508,7 +530,7 @@ pub(super) fn validate_response_cas(
     }
 
     let exact_keys = [
-        native_root_sidecar_key_v1(original.attempt_id)?,
+        sidecar_key,
         provider_attempt_key(original.attempt_id),
         acquisition_key(acquisition_id),
         provider_head_key(head_id.0, head_id.1),

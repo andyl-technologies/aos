@@ -112,6 +112,25 @@ pub fn validate_original_root_transition_v5(
     attempt: [u8; 32],
     transaction: [u8; 16],
 ) -> Result<RootNativeHeldTransitionV2> {
+    let pending_closed = after.sidecars().get(&attempt).is_some_and(|sidecar| {
+        sidecar.suffix().phase() == 10
+            && sidecar
+                .disposition_cut()
+                .is_some_and(RootNativeCutV1::is_pending_disposition)
+    });
+    let originally_prepared = before
+        .sidecars()
+        .get(&attempt)
+        .is_some_and(|sidecar| sidecar.suffix().phase() == 1);
+    if pending_closed && originally_prepared {
+        return super::pending_v5::validate_original_pending_closed_transition_v5(
+            before,
+            after,
+            attempt,
+            transaction,
+        );
+    }
+
     let mut proposal =
         super::reducer_v2::validate_owner_transition(before, after, attempt, transaction)?;
     if matches!(

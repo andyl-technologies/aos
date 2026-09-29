@@ -4447,6 +4447,7 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
                         &state,
                         &replay_transaction,
                         limits,
+                        expected_sequence,
                     )? {
                         root_local_recovery::validate_replayed_transaction(
                             &state,

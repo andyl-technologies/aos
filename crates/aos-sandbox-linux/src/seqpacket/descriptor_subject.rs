@@ -429,10 +429,29 @@ impl DescriptorSubjectSocket {
         &'socket mut self,
         record: ReceivedDescriptorRecord,
     ) -> Result<ConnectionBoundReceivedDescriptorRecord<'socket>, super::RecordBindingError> {
-        let result = self.require_record_origin(&record);
-        if let Err(error) = result {
+        self.bind_received_retaining(record)
+            .map_err(|(error, _record)| error)
+    }
+
+    /// Binds a typed packet while returning all received custody on failure.
+    ///
+    /// This has the same socket-origin checks and fatal-close behavior as
+    /// [`Self::bind_received`]. It does not clone the record subject or any FD.
+    ///
+    /// # Errors
+    ///
+    /// Returns the binding error together with the original complete packet
+    /// after closing the socket when its origin or current binding is invalid.
+    pub fn bind_received_retaining<'socket>(
+        &'socket mut self,
+        record: ReceivedDescriptorRecord,
+    ) -> Result<
+        ConnectionBoundReceivedDescriptorRecord<'socket>,
+        (super::RecordBindingError, ReceivedDescriptorRecord),
+    > {
+        if let Err(error) = self.require_record_origin(&record) {
             self.fd.take();
-            return Err(error);
+            return Err((error, record));
         }
 
         Ok(ConnectionBoundReceivedDescriptorRecord {

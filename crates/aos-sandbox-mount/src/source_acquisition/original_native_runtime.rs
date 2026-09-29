@@ -94,6 +94,34 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
         Ok(finished)
     }
 
+    /// Advances the Pending-only continuation without releasing original custody.
+    pub(crate) fn advance_original_native_pending_v5(
+        &mut self,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+    ) -> Result<bool> {
+        let flight = self
+            .runtime
+            .pending_original_native
+            .as_mut()
+            .ok_or_else(|| state_error("original Pending runtime owner is absent"))?;
+        let sent = self
+            .runtime
+            .pending_provider
+            .as_ref()
+            .ok_or_else(|| state_error("original Pending actual sent custody is absent"))?;
+        let mut writer = self
+            .protected
+            .root_original_native_authority_v5()
+            .map_err(|error| state_error(&error.to_string()))?;
+        flight.advance_pending(
+            &mut self.runtime.table,
+            &mut self.runtime.original_native_sidecars,
+            &mut writer,
+            session,
+            sent,
+        )
+    }
+
     /// Keeps unrelated legacy operations away from retained original owners.
     pub(super) fn require_no_original_native_flight(&self) -> Result<()> {
         if self.runtime.pending_original_native.is_some() {
