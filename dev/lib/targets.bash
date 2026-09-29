@@ -76,10 +76,10 @@ aos_dev_target_attr() {
 }
 
 aos_dev_validate_target() {
-  # Most names must be listed exactly. Deep check attrs are evaluated lazily
-  # by Nix and can be addressed directly without flattening the whole tree.
+  # Most names must be listed exactly. Dotted check scopes and leaves are
+  # evaluated lazily by Nix, which diagnoses a missing attribute directly.
   local category=$1 name=$2
-  if [[ $category == checks && $name == *.*.* ]]; then
+  if [[ $category == checks && $name == *.* ]]; then
     return
   fi
   local entries
