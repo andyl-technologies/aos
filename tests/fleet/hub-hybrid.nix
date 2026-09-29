@@ -196,6 +196,7 @@
   ];
 
   workerRunner = writeFixture "hub-hybrid-fleet-worker-runner" (builtins.readFile ./_hub-worker-runner.cjs);
+  processSampler = writeFixture "hub-hybrid-fleet-process-sampler" (builtins.readFile ./_hub-perf-proc.py);
   workerOptions = writeFixture "hub-hybrid-fleet-worker-options" (builtins.toJSON {
     name = "hub-hybrid-fleet";
     scriptPath = "${pkgs.aos-hub-worker-dist}/shim.mjs";
@@ -248,6 +249,7 @@
       pkgs.jq
       pkgs.miniflare
       pkgs.nodejs
+      pkgs.python3
       pkgs.garage
       pkgs.nginx
       pkgs.nix
@@ -275,6 +277,7 @@
       garageConfig
       s3ProxyConfig
       workerRunner
+      processSampler
       workerOptions
       parityRouteKeys
     ];
@@ -325,6 +328,7 @@ in {
 
   testScript =
     builtins.readFile ./_hub-publication.py
+    + builtins.readFile ./_hub-perf.py
     # python
     + ''
       import base64
@@ -1137,21 +1141,32 @@ in {
           f"test \"$({CURL} -s -o /dev/null -w '%{{http_code}}' https://aos.staging.andyl.org/-/instance)\" = 401"
       )
 
+      def worker_process_counters():
+          return json.loads(worker.succeed(
+              "${pkgs.python3}/bin/python3 ${processSampler}/value "
+              "--pid-file /var/lib/hybrid-worker/worker.pid "
+              "--node-exe ${pkgs.nodejs}/bin/node "
+              "--workerd-exe ${pkgs.workerd-source}/bin/workerd"
+          ))
+
+      baseline_process_before = worker_process_counters()
       samples = client.succeed(textwrap.dedent(f"""
           set -eu
           cookie=$(cat /tmp/hybrid-cookie)
           attempt=0
           while test "$attempt" -lt 100; do
-            {CURL} -sS -o /dev/null -w '%{{time_starttransfer}} %{{http_code}} %{{time_connect}} %{{time_appconnect}}\\n' \\
+            {CURL} -sS -o /dev/null -w {shlex.quote(PAGE_PERF_WRITEOUT)} \\
               -H 'cf-connecting-ip: 192.0.2.10' -H "Cookie: $cookie" \\
               https://aos.andyl.org/-/instance
             attempt=$((attempt + 1))
           done
       """), timeout=180).splitlines()
-      assert len(samples) == 100, samples
-      assert all(sample.split()[1] == "200" for sample in samples), samples
-      first_bytes = sorted(float(sample.split()[0]) for sample in samples)
-      baseline_tls = sorted(float(sample.split()[3]) for sample in samples)
+      baseline_process_after = worker_process_counters()
+      baseline_observations = parse_page_observations("\n".join(samples), 100)
+      report_page_observations("baseline", baseline_observations)
+      report_process_window("baseline", baseline_process_before, baseline_process_after)
+      first_bytes = page_cumulative_values(baseline_observations, "time_starttransfer")
+      baseline_tls = page_cumulative_values(baseline_observations, "time_appconnect")
       print("hybrid authenticated page TTFB seconds:", {
           "p50": statistics.median(first_bytes),
           "p95": first_bytes[94],
@@ -2025,6 +2040,7 @@ in {
       assert [upload["path"] for upload in parallel_uploads] == parallel_paths, parallel_uploads
       assert all(upload["uploadUrl"] and upload["uploadTicketId"] for upload in parallel_uploads), parallel_uploads
 
+      loaded_process_before = worker_process_counters()
       parallel_commands = ["set -eu", 'pids=""']
       for index, upload in enumerate(parallel_uploads):
           parallel_commands.append(
@@ -2062,7 +2078,7 @@ in {
           ).digest()).rstrip(b"=").decode()
           compact = payload + "." + signature
           native_page_commands.append(
-              f"{CURL} -sS -o /dev/null -w '%{{time_starttransfer}} %{{http_code}} %{{time_connect}} %{{time_appconnect}}\\n' "
+              f"{CURL} -sS -o /dev/null -w {shlex.quote(PAGE_PERF_WRITEOUT)} "
               f"-H 'x-aos-hybrid-ingress: {compact}' -H \"Cookie: $cookie\" "
               "https://aos.staging.andyl.org/-/instance"
           )
@@ -2073,7 +2089,7 @@ in {
           'native_pid=$!',
           'attempt=0',
           'while test "$attempt" -lt 25; do',
-          f"{CURL} -sS -o /dev/null -w '%{{time_starttransfer}} %{{http_code}} %{{time_connect}} %{{time_appconnect}}\\n' "
+          f"{CURL} -sS -o /dev/null -w {shlex.quote(PAGE_PERF_WRITEOUT)} "
           "-H 'cf-connecting-ip: 192.0.2.10' -H \"Cookie: $cookie\" "
           "https://aos.andyl.org/-/instance >> /tmp/hybrid-parallel-pages",
           'attempt=$((attempt + 1))',
@@ -2120,10 +2136,14 @@ in {
           raise
 
       loaded_samples = client.succeed("cat /tmp/hybrid-parallel-pages").splitlines()
-      assert len(loaded_samples) == 25, loaded_samples
-      assert all(sample.split()[1] == "200" for sample in loaded_samples), loaded_samples
-      loaded_first_bytes = sorted(float(sample.split()[0]) for sample in loaded_samples)
-      loaded_tls = sorted(float(sample.split()[3]) for sample in loaded_samples)
+      loaded_process_after = worker_process_counters()
+      loaded_observations = parse_page_observations("\n".join(loaded_samples), 25)
+      report_page_observations("loaded", loaded_observations)
+      report_process_window(
+          "loaded including all eight uploads", loaded_process_before, loaded_process_after
+      )
+      loaded_first_bytes = page_cumulative_values(loaded_observations, "time_starttransfer")
+      loaded_tls = page_cumulative_values(loaded_observations, "time_appconnect")
       print("hybrid authenticated page TTFB during parallel uploads:", {
           "p50": statistics.median(loaded_first_bytes),
           "p95": loaded_first_bytes[23],
@@ -2132,9 +2152,9 @@ in {
           "tls_p95": loaded_tls[23],
       })
       native_samples = client.succeed("cat /tmp/hybrid-native-pages").splitlines()
-      assert len(native_samples) == 25, native_samples
-      assert all(sample.split()[1] == "200" for sample in native_samples), native_samples
-      native_first_bytes = sorted(float(sample.split()[0]) for sample in native_samples)
+      native_observations = parse_page_observations("\n".join(native_samples), 25)
+      report_page_observations("direct Native loaded", native_observations)
+      native_first_bytes = page_cumulative_values(native_observations, "time_starttransfer")
       print("hybrid direct Native page TTFB during parallel uploads:", {
           "p50": statistics.median(native_first_bytes),
           "p95": native_first_bytes[23],

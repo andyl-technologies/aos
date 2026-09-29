@@ -1136,8 +1136,19 @@ The failed derivation is
 root session 20159 returns exit 1. Full driver evidence is retained in
 `/tmp/hub-paired-perf-live-driver.log` and the build directory
 `/nix/var/nix/builds/nix-435670-3462360238/build`. The actual guest sampler
-failure is under diagnosis; the same sampler reads the exact source-built Node
-process successfully on the host. The earlier 6.469 latency miss remains
+failure is reproduced in a bounded real Worker guest probe: the kernel omits
+`/proc/PID/task/PID/children` while executable identity, process stat, scheduler
+and I/O counters are present. The correction discovers children through a
+bounded parent-stat scan when that interface is absent, preserving exact
+executable, parent and lifetime checks. Optional unavailable counters are null
+with an explicit reason, never fabricated zeros. All **15 focused tests**, the
+actual Worker VM probe and evaluated Nix driver syntax pass. Producer receipt
+`/tmp/hub-perf-sampler-fix/receipt.json`
+(`053880aa979866bf3b0fa68f6f06f8b8593c5959294e3f565c05549ef4b09d62`)
+and root independent source/evidence review bind the three corrected helper
+files. The fresh-connection counts, concurrent upload size/count and numerical
+latency gates remain unchanged. No new full fleet latency result is available.
+The earlier 6.469 latency miss remains
 unresolved. This frozen fleet predates the lease-floor, encrypted-record and
 issuer/journal increments above.
 
