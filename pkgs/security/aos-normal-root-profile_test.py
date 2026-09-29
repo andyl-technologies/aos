@@ -18,6 +18,10 @@ PROFILE = load("aos-normal-root-profile")
 
 
 class ProducerTests(unittest.TestCase):
+    def test_context_is_exact_non_mls_root_subject(self):
+        self.assertEqual(PROFILE.CONTEXT, "system_u:system_r:aos_sandbox_policy_authority_t")
+        self.assertEqual(len(PROFILE.CONTEXT.split(":")), 3)
+
     def test_exact_self_reference_only(self):
         path = "/nix/store/fixture/profile.json"
         original = f"OpenFile={path}:aos-normal-root-profile:read-only\n".encode()

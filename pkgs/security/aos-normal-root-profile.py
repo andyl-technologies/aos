@@ -21,7 +21,7 @@ MAXIMUM_PROFILE_BYTES = 1024 * 1024
 MAXIMUM_RUNTIME_FILES = 512
 PROFILE_PLACEHOLDER = "@AOS_NORMAL_ROOT_PROFILE@"
 UNIT = "aos-sandbox-policy-authorityd.service"
-CONTEXT = "system_u:system_r:aos_sandbox_policy_authority_t:s0"
+CONTEXT = "system_u:system_r:aos_sandbox_policy_authority_t"
 
 
 def load_runtime_helpers(path: Path):
