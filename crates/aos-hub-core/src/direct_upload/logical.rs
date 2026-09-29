@@ -80,8 +80,14 @@ pub enum DirectUploadLogicalRequest {
         action: DirectLogicalAction,
         /// Complete-only fresh authorization before freeze or final promotion.
         complete_step: Option<DirectCompleteStep>,
-        /// Complete/Promote-only exact parsed immutable stage proofs, before finals.
+        /// Baseline/Promote-only exact parsed immutable stage proofs, before finals.
         stage_evidence: Vec<DirectVerifiedStageEvidence>,
+        /// Immutable first destination observations; Native requires them for cache Promote.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        baseline_evidence: Vec<DirectDestinationBaselineEvidence>,
+        /// Distinct current witnesses for the same first baselines and held reservations.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        baseline_witnesses: Vec<DirectDestinationBaselineWitness>,
         /// Exact logical sessions and mutation CAS versions.
         sessions: Vec<DirectSessionAuthorization>,
     },
@@ -107,6 +113,9 @@ pub struct DirectUploadLogicalReply {
     pub sessions: Vec<DirectSessionStatus>,
     /// Exact session/action authorizations, empty for non-authorize phases.
     pub authorizations: Vec<DirectSessionAuthorization>,
+    /// Exact committed Native baseline activations and fresh per-placement permissions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub baseline_permissions: Vec<DirectDestinationBaselinePermission>,
     /// Independent value-free per-item refusals.
     pub errors: Vec<DirectItemError>,
 }
@@ -117,6 +126,8 @@ pub struct DirectUploadLogicalReply {
 pub enum DirectCompleteStep {
     /// Closes grants and freezes original retained parts for staging completion.
     Freeze,
+    /// Reserves and observes final keys; authorizes no destination mutation.
+    Baseline,
     /// Fresh ACL/CAS authorization before final provider-key promotion.
     Promote,
 }

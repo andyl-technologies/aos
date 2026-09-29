@@ -1,7 +1,7 @@
 //! Exact bounded signed Native/broker logical requests and result envelopes.
 //!
 //! Fresh envelopes do not replace the original retained admission. Each domain
-//! binds the original public request's bytes, method, path, nonce and audience.
+//! binds the original public request's bytes, method, authority, path, nonce and audience.
 //!
 //! ```json
 //! {"context":{"deploymentId":"deployment","publicMethod":"POST","publicPath":"/aos.hub.v1.DirectUploadService/CompleteBatch"},"request":{"kind":"authorize","action":"complete","completeStep":"promote"}}
@@ -17,8 +17,8 @@ use crate::storage_work::StorageWorkKey;
 
 use super::*;
 
-const REQUEST_DOMAIN: &[u8] = b"aos.direct-upload.logical-request.v1\0";
-const REPLY_DOMAIN: &[u8] = b"aos.direct-upload.logical-reply.v1\0";
+const REQUEST_DOMAIN: &[u8] = b"aos.direct-upload.logical-request.v3\0";
+const REPLY_DOMAIN: &[u8] = b"aos.direct-upload.logical-reply.v3\0";
 
 /// Dedicated exact-body signature header for the private logical request/reply.
 pub const DIRECT_LOGICAL_SIGNATURE_HEADER: &str = "x-aos-direct-upload-logical-signature";
@@ -31,6 +31,11 @@ pub struct DirectRequestContext {
     pub deployment_id: String,
     /// Protected executor HTTPS public origin, without path or credentials.
     pub executor_public_origin: String,
+    /// Canonical original HTTPS authority, independently checked against live routing.
+    /// This host and optional nondefault port are separate from the executor origin.
+    pub public_authority: String,
+    /// Exact original invocation budget, retained unchanged across private refreshes.
+    pub foreground: DirectForegroundBudget,
     /// Fresh transport correlation identity, separate from stable operation IDs.
     pub request_nonce: String,
     /// SHA-256 of the exact original public request body.
@@ -54,6 +59,9 @@ impl DirectRequestContext {
     /// # Errors
     /// Returns a value-free error for audience, method, hash, path or time mismatch.
     pub fn validate(&self, deployment: &str, executor_origin: &str, latest_now: u64) -> Result<()> {
+        self.foreground.validate_at(latest_now)?;
+        self.foreground
+            .validate_context_window(self.issued_at, self.expires_at)?;
         ensure!(
             valid_direct_identity(deployment)
                 && self.deployment_id == deployment
@@ -62,7 +70,8 @@ impl DirectRequestContext {
             "direct logical audience mismatch"
         );
         ensure!(
-            valid_direct_digest(&self.request_nonce)
+            valid_public_authority(&self.public_authority)
+                && valid_direct_digest(&self.request_nonce)
                 && valid_direct_digest(&self.request_body_sha256)
                 && self.public_method == "POST"
                 && direct_method(&self.public_path).is_some(),
@@ -99,10 +108,19 @@ impl DirectLogicalRequestEnvelope {
     /// reading the request body; this check correlates that header with the arm.
     ///
     /// # Errors
-    /// Returns an error for a changed actual method, public path or private phase.
-    pub fn validate_transport(&self, method: &str, path: &str, phase: &str) -> Result<()> {
+    /// Returns an error for a malformed authority or changed actual method, authority,
+    /// public path or private phase. Syntax alone does not prove alias readiness.
+    pub fn validate_transport(
+        &self,
+        method: &str,
+        path: &str,
+        authority: &str,
+        phase: &str,
+    ) -> Result<()> {
         ensure!(
-            self.context.public_method == method
+            valid_public_authority(authority)
+                && self.context.public_authority == authority
+                && self.context.public_method == method
                 && self.context.public_path == path
                 && self.request.phase() == phase,
             "direct logical transport phase mismatch"
@@ -170,6 +188,7 @@ pub fn verify_direct_logical_request(
         .context
         .validate(deployment, executor_origin, latest_now)?;
     validate_phase(&envelope)?;
+    validate_baseline_times(&envelope, latest_now)?;
     Ok(envelope)
 }
 
@@ -181,7 +200,16 @@ pub fn sign_direct_logical_reply(
     key: &StorageWorkKey,
     envelope: &DirectLogicalReplyEnvelope,
 ) -> Result<SignedDirectControl> {
+    envelope
+        .context
+        .foreground
+        .validate_context_window(envelope.context.issued_at, envelope.context.expires_at)?;
+    ensure!(
+        valid_public_authority(&envelope.context.public_authority),
+        "invalid direct logical public authority"
+    );
     envelope.reply.validate(&envelope.context.deployment_id)?;
+    validate_permission_context(&envelope, None)?;
     sign_control(key, REPLY_DOMAIN, envelope)
 }
 
@@ -208,6 +236,7 @@ pub fn verify_direct_logical_reply(
         latest_now,
     )?;
     envelope.reply.validate(&expected.deployment_id)?;
+    validate_permission_context(&envelope, Some(latest_now))?;
     Ok(envelope)
 }
 
@@ -251,6 +280,14 @@ fn domain_body(domain: &[u8], body: &[u8]) -> Vec<u8> {
 }
 
 fn validate_phase(envelope: &DirectLogicalRequestEnvelope) -> Result<()> {
+    envelope
+        .context
+        .foreground
+        .validate_context_window(envelope.context.issued_at, envelope.context.expires_at)?;
+    ensure!(
+        valid_public_authority(&envelope.context.public_authority),
+        "invalid direct logical public authority"
+    );
     let method = direct_method(&envelope.context.public_path);
     match &envelope.request {
         DirectUploadLogicalRequest::Admission { intents } => {
@@ -268,6 +305,8 @@ fn validate_phase(envelope: &DirectLogicalRequestEnvelope) -> Result<()> {
             action,
             complete_step,
             stage_evidence,
+            baseline_evidence,
+            baseline_witnesses,
             sessions,
         } => {
             let expected = match action {
@@ -317,9 +356,13 @@ fn validate_phase(envelope: &DirectLogicalRequestEnvelope) -> Result<()> {
                 }
             }
             let promote = *complete_step == Some(DirectCompleteStep::Promote);
+            let stage_required = matches!(
+                complete_step,
+                Some(DirectCompleteStep::Baseline | DirectCompleteStep::Promote)
+            );
             ensure!(
-                (!promote && stage_evidence.is_empty())
-                    || (promote && stage_evidence.len() == sessions.len()),
+                (!stage_required && stage_evidence.is_empty())
+                    || (stage_required && stage_evidence.len() == sessions.len()),
                 "direct promotion stage evidence count mismatch"
             );
             for (evidence, session) in stage_evidence.iter().zip(sessions) {
@@ -340,6 +383,48 @@ fn validate_phase(envelope: &DirectLogicalRequestEnvelope) -> Result<()> {
                         .map(|placement| &placement.manifest)
                         .eq(intent.manifests.iter()),
                     "direct promotion original manifest mismatch"
+                );
+            }
+            ensure!(
+                (promote || baseline_evidence.is_empty())
+                    && baseline_evidence.len() == baseline_witnesses.len()
+                    && baseline_evidence.len() <= MAX_DIRECT_BATCH_ITEMS * MAX_DIRECT_PLACEMENTS,
+                "direct baseline phase or count mismatch"
+            );
+            let mut unique = std::collections::BTreeSet::new();
+            for (baseline, witness) in baseline_evidence.iter().zip(baseline_witnesses) {
+                baseline.validate()?;
+                witness.validate()?;
+                let binding = &baseline.binding;
+                ensure!(
+                    binding.deployment_id == envelope.context.deployment_id
+                        && unique.insert((
+                            &binding.session.session_id,
+                            binding.placement.placement_id.get()
+                        )),
+                    "direct baseline audience or duplicate mismatch"
+                );
+                let session = sessions
+                    .iter()
+                    .find(|item| item.session == binding.session)
+                    .ok_or_else(|| anyhow::anyhow!("direct baseline session absent"))?;
+                let intent = session
+                    .complete_intent
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("direct baseline complete intent absent"))?;
+                ensure!(
+                    binding.complete_operation_id == session.operation_id
+                        && binding.complete_intent_digest == intent.fingerprint()?
+                        && intent
+                            .manifests
+                            .iter()
+                            .any(|item| item.placement == binding.placement)
+                        && witness.binding == *binding
+                        && witness.baseline_digest == baseline.fingerprint()?
+                        && witness.observation_operation_id != baseline.observation_operation_id
+                        && envelope.context.issued_at.get() <= witness.issued_at.get()
+                        && witness.expires_at.get() <= envelope.context.expires_at.get(),
+                    "direct baseline original or current witness mismatch"
                 );
             }
         }
@@ -406,4 +491,44 @@ fn valid_origin(origin: &str) -> bool {
             && url.path() == "/"
             && url.origin().ascii_serialization() == origin
     })
+}
+
+// Canonical URL origin serialization rejects default-port aliases, escaped hosts,
+// case variants and trailing path syntax. Callers still prove actual route readiness.
+fn valid_public_authority(authority: &str) -> bool {
+    if authority.is_empty() || authority.len() > 260 || !authority.is_ascii() {
+        return false;
+    }
+    let origin = format!("https://{authority}");
+    valid_origin(&origin) && url::Url::parse(&origin).is_ok_and(|url| url.port() != Some(0))
+}
+
+fn validate_baseline_times(envelope: &DirectLogicalRequestEnvelope, latest_now: u64) -> Result<()> {
+    if let DirectUploadLogicalRequest::Authorize {
+        baseline_evidence,
+        baseline_witnesses,
+        ..
+    } = &envelope.request
+    {
+        for (baseline, witness) in baseline_evidence.iter().zip(baseline_witnesses) {
+            witness.validate_for(baseline, &envelope.context, latest_now)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_permission_context(
+    envelope: &DirectLogicalReplyEnvelope,
+    latest_now: Option<u64>,
+) -> Result<()> {
+    for permission in &envelope.reply.baseline_permissions {
+        ensure!(
+            permission.request_nonce == envelope.context.request_nonce
+                && envelope.context.issued_at.get() < permission.expires_at.get()
+                && permission.expires_at.get() <= envelope.context.expires_at.get()
+                && latest_now.is_none_or(|now| now < permission.expires_at.get()),
+            "direct baseline reply permission context mismatch"
+        );
+    }
+    Ok(())
 }

@@ -14,7 +14,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectStorageCapabilities {
-    /// Closed direct protocol version, currently one.
+    /// Closed protected profile-set version, currently two.
     pub version: u32,
     /// Exact public protocol capability identifier.
     pub capability: String,
@@ -22,8 +22,10 @@ pub struct DirectStorageCapabilities {
     pub profile: Option<DirectManagedR2Profile>,
     /// Exact independently qualified provider plus Worker private namespace policy.
     pub private_stage_policy: Option<DirectPrivateStagePolicyRef>,
-    /// Only exact requested current external profiles, never a global inventory.
-    pub external_profiles: Vec<DirectExternalStorageCapabilities>,
+    /// Managed runtime reference; all three managed fields must be present together.
+    pub runtime_qualification: Option<DirectRuntimeQualification>,
+    /// Only exact requested qualified external wrappers, never a global inventory.
+    pub external_profiles: Vec<DirectProtectedExternalProfile>,
 }
 
 impl DirectStorageCapabilities {
@@ -35,17 +37,27 @@ impl DirectStorageCapabilities {
     /// Returns an error for malformed version, profile, policy or oversized reply.
     pub fn validate(&self, deployment: &str) -> Result<()> {
         ensure!(
-            self.version == 1 && self.capability == DIRECT_UPLOAD_CAPABILITY,
+            self.version == 2 && self.capability == DIRECT_UPLOAD_CAPABILITY,
             "invalid protected direct capability projection"
         );
         ensure!(
             self.profile.is_some() == self.private_stage_policy.is_some()
+                && self.profile.is_some() == self.runtime_qualification.is_some()
                 && (self.profile.is_some() || !self.external_profiles.is_empty())
                 && self.external_profiles.len() <= MAX_DIRECT_PLACEMENTS,
             "invalid protected direct capability profile set"
         );
-        if let (Some(profile), Some(policy)) = (&self.profile, &self.private_stage_policy) {
-            profile.validate()?;
+        if let (Some(profile), Some(policy), Some(runtime)) = (
+            &self.profile,
+            &self.private_stage_policy,
+            &self.runtime_qualification,
+        ) {
+            DirectProtectedProfile::Managed {
+                profile: profile.clone(),
+                private_stage_policy: policy.clone(),
+                runtime_qualification: runtime.clone(),
+            }
+            .validate()?;
             ensure!(
                 profile.deployment_id == deployment
                     && valid_direct_identity(&policy.policy_id)
@@ -59,8 +71,8 @@ impl DirectStorageCapabilities {
             profile.validate()?;
             ensure!(
                 identities.insert((
-                    profile.selector.physical_authority_id.clone(),
-                    profile.selector.association.association_id.clone()
+                    profile.profile.selector.physical_authority_id.clone(),
+                    profile.profile.selector.association.association_id.clone()
                 )),
                 "duplicate protected external capability profile"
             );

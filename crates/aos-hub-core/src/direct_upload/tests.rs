@@ -44,6 +44,7 @@ fn placement() -> DirectPlacement {
             policy_digest: "44".repeat(32),
             namespace: "private-bucket".into(),
         },
+        protected_profile_digest: "12".repeat(32),
         checksum_algorithm: DirectChecksumAlgorithm::Md5,
         physical: DirectPhysicalContext::DeploymentR2 {
             deployment_id: "deployment".into(),
@@ -128,6 +129,12 @@ fn context(path: &str) -> DirectRequestContext {
     DirectRequestContext {
         deployment_id: "deployment".into(),
         executor_public_origin: "https://executor.test".into(),
+        public_authority: "primary.test".into(),
+        foreground: DirectForegroundBudget {
+            invocation_id: "aa".repeat(32),
+            issued_at: WireInteger::new(100),
+            expires_at: WireInteger::new(130),
+        },
         request_nonce: "55".repeat(32),
         request_body_sha256: "66".repeat(32),
         public_method: "POST".into(),
@@ -217,10 +224,20 @@ fn protected_domains_exact_context_and_exclusive_time_are_checked_before_effects
     )
     .unwrap();
     verified
-        .validate_transport("POST", &request.context.public_path, "admission")
+        .validate_transport(
+            "POST",
+            &request.context.public_path,
+            "primary.test",
+            "admission",
+        )
         .unwrap();
     assert!(verified
-        .validate_transport("POST", &request.context.public_path, "commit")
+        .validate_transport(
+            "POST",
+            &request.context.public_path,
+            "primary.test",
+            "commit"
+        )
         .is_err());
     assert!(verify_direct_logical_request(
         &key,
@@ -279,6 +296,8 @@ fn changed_rpc_or_promote_step_cannot_reuse_freeze_authority() {
             action: DirectLogicalAction::Complete,
             complete_step: Some(DirectCompleteStep::Freeze),
             stage_evidence: vec![],
+            baseline_evidence: vec![],
+            baseline_witnesses: vec![],
             sessions: vec![DirectSessionAuthorization {
                 session: DirectSessionRef {
                     session_id: "s".into(),
@@ -418,7 +437,15 @@ fn verified_stage_and_final_evidence_require_exact_original_required_destination
             binding_resource_version: original.placements[0].binding_resource_version,
             binding_write_revision: original.placements[0].binding_write_revision,
             manifest: manifest.clone(),
-            promotion_operation_id: "aa".repeat(32),
+            promotion_operation_id: direct_destination_promotion_operation_id(
+                &DirectSessionRef {
+                    session_id: stage.session_id.clone(),
+                    logical_fingerprint: stage.logical_fingerprint.clone(),
+                },
+                original.placements[0].placement_id,
+                &stage.operation_id,
+            )
+            .unwrap(),
             staging_incarnation: stage.placements[0].staging_incarnation.clone(),
             final_incarnation: DirectObjectIncarnation::ProviderVersion {
                 version: "real-final-version".into(),
@@ -445,6 +472,8 @@ fn verified_stage_and_final_evidence_require_exact_original_required_destination
             action: DirectLogicalAction::Complete,
             complete_step: Some(DirectCompleteStep::Promote),
             stage_evidence: vec![stage.clone()],
+            baseline_evidence: vec![],
+            baseline_witnesses: vec![],
             sessions: vec![DirectSessionAuthorization {
                 session: complete.session.clone(),
                 expected_resource_version: Some(complete.expected_resource_version),
@@ -467,4 +496,358 @@ fn verified_stage_and_final_evidence_require_exact_original_required_destination
     changed.placements[0].placement.profile_fingerprint = "cc".repeat(32);
     changed.placements[0].manifest.placement = changed.placements[0].placement.clone();
     assert!(changed.validate_against(&original, "deployment").is_err());
+}
+
+fn authority_request(authority: &str) -> DirectLogicalRequestEnvelope {
+    let mut context = context("BeginBatch");
+    context.public_authority = authority.into();
+    DirectLogicalRequestEnvelope {
+        context,
+        request: DirectUploadLogicalRequest::Admission {
+            intents: vec![intent()],
+        },
+    }
+}
+
+fn sign_raw_logical_domain(key: &StorageWorkKey, domain: &[u8], body: &[u8]) -> String {
+    let mut authenticated = domain.to_vec();
+    authenticated.extend_from_slice(body);
+    key.sign_body(&authenticated).unwrap()
+}
+
+#[test]
+fn original_primary_or_alias_authority_is_independent_and_transport_exact() {
+    let key = StorageWorkKey::new([7; 32]).unwrap();
+    for authority in [
+        "primary.test",
+        "registry.test",
+        "registry.test:8443",
+        "[::1]:8443",
+    ] {
+        let request = authority_request(authority);
+        let signed = sign_direct_logical_request(&key, &request).unwrap();
+        let verified = verify_direct_logical_request(
+            &key,
+            &signed.signature,
+            &signed.body,
+            "deployment",
+            "https://executor.test",
+            100,
+        )
+        .unwrap();
+        verified
+            .validate_transport("POST", &request.context.public_path, authority, "admission")
+            .unwrap();
+        for other in ["changed.test", "executor.test"] {
+            assert!(verified
+                .validate_transport("POST", &request.context.public_path, other, "admission")
+                .is_err());
+        }
+        assert!(verified
+            .validate_transport("GET", &request.context.public_path, authority, "admission")
+            .is_err());
+        assert!(verified
+            .validate_transport(
+                "POST",
+                &context("CompleteBatch").public_path,
+                authority,
+                "admission"
+            )
+            .is_err());
+    }
+    // These syntax/transport checks do not assert registered alias readiness.
+}
+
+#[test]
+fn authority_is_mandatory_closed_and_duplicate_fields_are_refused_after_authentication() {
+    let key = StorageWorkKey::new([7; 32]).unwrap();
+    let signed = sign_direct_logical_request(&key, &authority_request("primary.test")).unwrap();
+    let canonical = String::from_utf8(signed.body).unwrap();
+    for changed in [
+        canonical.replace("\"publicAuthority\":\"primary.test\",", ""),
+        canonical.replace(
+            "\"publicAuthority\":\"primary.test\"",
+            "\"publicAuthority\":\"primary.test\",\"publicAuthority\":\"primary.test\"",
+        ),
+        canonical.replace(
+            "\"publicAuthority\":\"primary.test\"",
+            "\"publicAuthority\":\"primary.test\",\"authorityAlias\":\"primary.test\"",
+        ),
+    ] {
+        assert_ne!(changed, canonical);
+        let signature = sign_raw_logical_domain(
+            &key,
+            b"aos.direct-upload.logical-request.v3\0",
+            changed.as_bytes(),
+        );
+        assert!(verify_direct_logical_request(
+            &key,
+            &signature,
+            changed.as_bytes(),
+            "deployment",
+            "https://executor.test",
+            100
+        )
+        .is_err());
+    }
+}
+
+#[test]
+fn public_authority_canonical_syntax_is_bounded_before_any_logical_effect() {
+    let key = StorageWorkKey::new([7; 32]).unwrap();
+    let oversized = "a".repeat(261);
+    for authority in [
+        "",
+        "https://primary.test",
+        "PRIMARY.test",
+        "primary.test:443",
+        "primary.test:0443",
+        "primary.test:0",
+        "primary.test:65536",
+        "user@primary.test",
+        "primary.test/",
+        "primary.test?x=1",
+        "primary.test#fragment",
+        "primary.test\n",
+        "primary.test\\suffix",
+        "prímary.test",
+        oversized.as_str(),
+    ] {
+        let request = authority_request(authority);
+        assert!(request
+            .context
+            .validate("deployment", "https://executor.test", 100)
+            .is_err());
+        assert!(sign_direct_logical_request(&key, &request).is_err());
+        let body = encode_direct_control(&request).unwrap();
+        let signature =
+            sign_raw_logical_domain(&key, b"aos.direct-upload.logical-request.v3\0", &body);
+        assert!(verify_direct_logical_request(
+            &key,
+            &signature,
+            &body,
+            "deployment",
+            "https://executor.test",
+            100
+        )
+        .is_err());
+    }
+}
+
+#[test]
+fn old_private_mac_domains_and_changed_reply_authority_cannot_be_reused() {
+    let key = StorageWorkKey::new([7; 32]).unwrap();
+    let request = authority_request("primary.test");
+    let signed = sign_direct_logical_request(&key, &request).unwrap();
+    let old = sign_raw_logical_domain(
+        &key,
+        b"aos.direct-upload.logical-request.v1\0",
+        &signed.body,
+    );
+    assert!(verify_direct_logical_request(
+        &key,
+        &old,
+        &signed.body,
+        "deployment",
+        "https://executor.test",
+        100
+    )
+    .is_err());
+    // A genuinely old missing-authority envelope is refused; old authentication
+    // cannot confer current dispatch authority.
+    let old_body = String::from_utf8(signed.body)
+        .unwrap()
+        .replace("\"publicAuthority\":\"primary.test\",", "");
+    let old_signature = sign_raw_logical_domain(
+        &key,
+        b"aos.direct-upload.logical-request.v1\0",
+        old_body.as_bytes(),
+    );
+    assert!(verify_direct_logical_request(
+        &key,
+        &old_signature,
+        old_body.as_bytes(),
+        "deployment",
+        "https://executor.test",
+        100
+    )
+    .is_err());
+
+    let mut reply = DirectLogicalReplyEnvelope {
+        context: request.context.clone(),
+        reply: DirectUploadLogicalReply {
+            admissions: vec![],
+            sessions: vec![],
+            authorizations: vec![],
+            baseline_permissions: vec![],
+            errors: vec![],
+        },
+    };
+    let signed = sign_direct_logical_reply(&key, &reply).unwrap();
+    verify_direct_logical_reply(&key, &signed.signature, &signed.body, &request.context, 100)
+        .unwrap();
+    let old = sign_raw_logical_domain(&key, b"aos.direct-upload.logical-reply.v1\0", &signed.body);
+    assert!(verify_direct_logical_reply(&key, &old, &signed.body, &request.context, 100).is_err());
+    reply.context.public_authority = "registry.test".into();
+    let changed = sign_direct_logical_reply(&key, &reply).unwrap();
+    assert!(verify_direct_logical_reply(
+        &key,
+        &changed.signature,
+        &changed.body,
+        &request.context,
+        100
+    )
+    .is_err());
+}
+
+#[test]
+fn foreground_capsule_rejects_invalid_lifetimes_and_exclusive_expiry() {
+    let original = context("BeginBatch").foreground;
+    original.validate_at(100).unwrap();
+    original.validate_at(129).unwrap();
+    assert!(original.validate_at(99).is_err());
+    assert!(original.validate_at(130).is_err());
+    for (issued, expires) in [(100, 100), (100, 99), (100, 131), (u64::MAX, 0)] {
+        let mut changed = original.clone();
+        changed.issued_at = WireInteger::new(issued);
+        changed.expires_at = WireInteger::new(expires);
+        assert!(changed.validate_shape().is_err());
+    }
+    let mut changed = original;
+    changed.invocation_id = "not-an-invocation".into();
+    assert!(changed.validate_shape().is_err());
+}
+
+#[test]
+fn refreshed_private_context_cannot_renew_original_foreground_deadline() {
+    let key = StorageWorkKey::new([7; 32]).unwrap();
+    let mut request = authority_request("primary.test");
+    let original = request.context.foreground.clone();
+    request.context.issued_at = WireInteger::new(120);
+    request.context.expires_at = WireInteger::new(130);
+    let signed = sign_direct_logical_request(&key, &request).unwrap();
+    verify_direct_logical_request(
+        &key,
+        &signed.signature,
+        &signed.body,
+        "deployment",
+        "https://executor.test",
+        129,
+    )
+    .unwrap();
+    assert_eq!(request.context.foreground, original);
+    assert!(verify_direct_logical_request(
+        &key,
+        &signed.signature,
+        &signed.body,
+        "deployment",
+        "https://executor.test",
+        130,
+    )
+    .is_err());
+
+    request.context.expires_at = WireInteger::new(150);
+    assert!(sign_direct_logical_request(&key, &request).is_err());
+    let body = encode_direct_control(&request).unwrap();
+    let signature = sign_raw_logical_domain(&key, b"aos.direct-upload.logical-request.v3\0", &body);
+    assert!(verify_direct_logical_request(
+        &key,
+        &signature,
+        &body,
+        "deployment",
+        "https://executor.test",
+        120,
+    )
+    .is_err());
+    request.context.expires_at = WireInteger::new(130);
+    request.context.issued_at = WireInteger::new(99);
+    assert!(sign_direct_logical_request(&key, &request).is_err());
+}
+
+#[test]
+fn foreground_capsule_is_mandatory_closed_and_authenticated_without_defaults() {
+    let key = StorageWorkKey::new([7; 32]).unwrap();
+    let request = authority_request("primary.test");
+    let signed = sign_direct_logical_request(&key, &request).unwrap();
+    let canonical = String::from_utf8(signed.body.clone()).unwrap();
+    let capsule = serde_json::to_string(&request.context.foreground).unwrap();
+    for changed in [
+        canonical.replace(&format!("\"foreground\":{capsule},"), ""),
+        canonical.replace(
+            &format!("\"foreground\":{capsule}"),
+            &format!("\"foreground\":{capsule},\"foreground\":{capsule}"),
+        ),
+        canonical.replace(&capsule, &capsule.replacen('{', "{\"renewable\":true,", 1)),
+        canonical.replace(
+            &capsule,
+            &capsule.replacen(
+                "\"expiresAt\":\"130\"",
+                "\"expiresAt\":\"130\",\"expiresAt\":\"130\"",
+                1,
+            ),
+        ),
+    ] {
+        assert_ne!(changed, canonical);
+        let signature = sign_raw_logical_domain(
+            &key,
+            b"aos.direct-upload.logical-request.v3\0",
+            changed.as_bytes(),
+        );
+        assert!(verify_direct_logical_request(
+            &key,
+            &signature,
+            changed.as_bytes(),
+            "deployment",
+            "https://executor.test",
+            100,
+        )
+        .is_err());
+    }
+    let old = sign_raw_logical_domain(
+        &key,
+        b"aos.direct-upload.logical-request.v2\0",
+        &signed.body,
+    );
+    assert!(verify_direct_logical_request(
+        &key,
+        &old,
+        &signed.body,
+        "deployment",
+        "https://executor.test",
+        100,
+    )
+    .is_err());
+}
+
+#[test]
+fn reply_preserves_exact_foreground_identity_and_rejects_old_response_domain() {
+    let key = StorageWorkKey::new([7; 32]).unwrap();
+    let request = authority_request("primary.test");
+    let mut reply = DirectLogicalReplyEnvelope {
+        context: request.context.clone(),
+        reply: DirectUploadLogicalReply {
+            admissions: vec![],
+            sessions: vec![],
+            authorizations: vec![],
+            baseline_permissions: vec![],
+            errors: vec![],
+        },
+    };
+    let signed = sign_direct_logical_reply(&key, &reply).unwrap();
+    verify_direct_logical_reply(&key, &signed.signature, &signed.body, &request.context, 100)
+        .unwrap();
+    let old = sign_raw_logical_domain(&key, b"aos.direct-upload.logical-reply.v2\0", &signed.body);
+    assert!(verify_direct_logical_reply(&key, &old, &signed.body, &request.context, 100).is_err());
+    reply.context.foreground.invocation_id = "bb".repeat(32);
+    let changed = sign_direct_logical_reply(&key, &reply).unwrap();
+    assert!(verify_direct_logical_reply(
+        &key,
+        &changed.signature,
+        &changed.body,
+        &request.context,
+        100
+    )
+    .is_err());
+    reply.context.expires_at = WireInteger::new(131);
+    assert!(sign_direct_logical_reply(&key, &reply).is_err());
 }

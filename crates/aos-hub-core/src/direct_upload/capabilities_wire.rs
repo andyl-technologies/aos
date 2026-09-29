@@ -147,7 +147,7 @@ impl DirectStorageCapabilitiesReply {
             .zip(&request.external_selectors)
         {
             ensure!(
-                &profile.selector == selector,
+                &profile.profile.selector == selector,
                 "direct capability selector response mismatch"
             );
         }
@@ -289,4 +289,4 @@ impl io::Write for CapabilityWriter {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

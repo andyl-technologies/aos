@@ -84,6 +84,9 @@ pub struct DirectPlacement {
     pub staging_prefix: String,
     /// Exact configured policy governing private stage visibility and grants.
     pub private_stage_policy: DirectPrivateStagePolicyRef,
+    /// Whole independently reviewed actual protected profile captured before first staging.
+    /// Old admissions cannot default this pin or adopt a later profile on replay.
+    pub protected_profile_digest: String,
     /// Qualified exact checksum for this destination, announced before grants.
     pub checksum_algorithm: super::DirectChecksumAlgorithm,
     /// Exact independent provider/bucket authority projection.

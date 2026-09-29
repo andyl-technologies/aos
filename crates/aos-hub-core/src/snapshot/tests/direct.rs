@@ -28,6 +28,7 @@ fn admission() -> DirectUploadAdmission {
             policy_digest: "4".repeat(64),
             namespace: "private-bucket".into(),
         },
+        protected_profile_digest: "5".repeat(64),
         checksum_algorithm: DirectChecksumAlgorithm::Md5,
         physical: DirectPhysicalContext::DeploymentR2 {
             deployment_id: "deployment".into(),

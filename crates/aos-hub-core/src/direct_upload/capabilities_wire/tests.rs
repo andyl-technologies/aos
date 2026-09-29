@@ -90,7 +90,7 @@ fn publication() -> StorageAuthorityPublication {
     publication
 }
 
-fn profile() -> DirectExternalStorageCapabilities {
+pub(crate) fn profile() -> DirectExternalStorageCapabilities {
     let publication = publication();
     let write = LeaseCohort::from_publication(
         &publication,
@@ -163,6 +163,19 @@ fn profile() -> DirectExternalStorageCapabilities {
     }
 }
 
+pub(crate) fn runtime_reference() -> DirectRuntimeQualification {
+    DirectRuntimeQualification {
+        version: 1,
+        qualification_digest: "f".repeat(64),
+        maximum_object_bytes: WireInteger::new(1024 * 1024),
+        maximum_verification_seconds: WireInteger::new(10),
+        settlement_reserve_seconds: WireInteger::new(8),
+        maximum_parallel_objects: WireInteger::new(4),
+        maximum_parallel_provider_requests: WireInteger::new(8),
+        cache_destination_policy: DirectCacheDestinationPolicy::RetainedOriginalBaseline,
+    }
+}
+
 fn request(profile: &DirectExternalStorageCapabilities) -> DirectStorageCapabilitiesRequest {
     DirectStorageCapabilitiesRequest {
         version: 2,
@@ -180,11 +193,16 @@ fn reply(profile: DirectExternalStorageCapabilities) -> DirectStorageCapabilitie
     DirectStorageCapabilitiesReply {
         request: request(&profile),
         capabilities: DirectStorageCapabilities {
-            version: 1,
+            version: 2,
             capability: DIRECT_UPLOAD_CAPABILITY.into(),
             profile: None,
             private_stage_policy: None,
-            external_profiles: vec![profile],
+            runtime_qualification: None,
+            external_profiles: vec![DirectProtectedExternalProfile::new(
+                profile,
+                runtime_reference(),
+            )
+            .unwrap()],
         },
     }
 }

@@ -190,6 +190,18 @@ impl DirectCompletionEvidence {
                     && item.manifest.placement == original.public_ref(deployment)?,
                 "direct completion destination mismatch"
             );
+            ensure!(
+                item.promotion_operation_id
+                    == direct_destination_promotion_operation_id(
+                        &DirectSessionRef {
+                            session_id: self.session_id.clone(),
+                            logical_fingerprint: self.logical_fingerprint.clone()
+                        },
+                        item.placement_id,
+                        &self.operation_id
+                    )?,
+                "direct completion original promotion operation mismatch"
+            );
             for identity in [&item.staging_incarnation, &item.final_incarnation] {
                 match (&original.physical, identity) {
                     (
@@ -245,6 +257,46 @@ impl DirectUploadLogicalReply {
             ensure!(
                 valid_direct_digest(&item.operation_id),
                 "invalid direct logical authorization operation"
+            );
+        }
+        ensure!(
+            self.baseline_permissions.len() <= MAX_DIRECT_BATCH_ITEMS * MAX_DIRECT_PLACEMENTS,
+            "direct baseline permission count exceeds limit"
+        );
+        let mut unique = std::collections::BTreeSet::new();
+        for permission in &self.baseline_permissions {
+            permission.validate()?;
+            let binding = &permission.binding;
+            ensure!(
+                binding.deployment_id == deployment
+                    && unique.insert((
+                        &binding.session.session_id,
+                        binding.placement.placement_id.get()
+                    )),
+                "direct baseline permission audience or duplicate mismatch"
+            );
+            let authorization = self
+                .authorizations
+                .iter()
+                .find(|item| item.session == binding.session)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("direct baseline permission authorization absent")
+                })?;
+            let intent = authorization.complete_intent.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("direct baseline permission complete intent absent")
+            })?;
+            ensure!(
+                binding.complete_operation_id == authorization.operation_id
+                    && intent.operation_id == authorization.operation_id
+                    && intent.session == authorization.session
+                    && authorization.expected_resource_version
+                        == Some(intent.expected_resource_version)
+                    && binding.complete_intent_digest == intent.fingerprint()?
+                    && intent
+                        .manifests
+                        .iter()
+                        .any(|item| item.placement == binding.placement),
+                "direct baseline permission original intent mismatch"
             );
         }
         encode_direct_control(self)?;

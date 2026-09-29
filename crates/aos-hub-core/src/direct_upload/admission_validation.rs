@@ -31,6 +31,10 @@ impl DirectPlacement {
             );
         }
         ensure!(
+            valid_direct_digest(&self.protected_profile_digest),
+            "invalid direct protected profile digest"
+        );
+        ensure!(
             valid_direct_path(&self.final_key),
             "invalid direct final key"
         );
