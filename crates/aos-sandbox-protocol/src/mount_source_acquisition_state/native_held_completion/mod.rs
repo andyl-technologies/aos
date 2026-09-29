@@ -7,11 +7,22 @@
 //! [`validate_native_root_transition_v1`] checks exact before/after snapshots.
 //! These results are data, never a protected append, signing or custody permit.
 //!
+//! [`RootNativeHeldSidecarV2`] separately retains immutable admission and first-R
+//! cuts. [`validate_native_root_graph_v2`] validates today's entire legacy graph
+//! before reconstructing those historical bytes; it never infers a cut from a
+//! v1 sidecar. Historical byte equality is not physical equality at today's keys.
+//!
 //! ```text
 //! key = aos.mount.native-held-completion.v1\0 | Mount_attempt[32]
 //! AOSMHC01 | version:u16be=1 | flags:u16be=0 | reserved[4] |
 //! original_Root_scope[224] | response_CAS_transaction[16] |
 //! lengths:u32be[4] | R | S | optional_native_verifier | suffix
+//!
+//! key = aos.mount.native-held-completion.v2\0 | Mount_attempt[32]
+//! AOSMHC02 | version:u16be=2 | flags:u16be=0 | reserved[4] |
+//! original_Root_scope[224] | response_CAS_transaction[16] |
+//! lengths:u32be[7] | R | S | optional_native_verifier | suffix |
+//! AdmissionCut | optional_DispositionCut | optional_NoInterestTerminal
 //! ```
 //!
 //! The legacy JSON codec, graph validator and mutation scopes remain separate.
@@ -20,19 +31,39 @@
 
 mod admission;
 mod codec;
+mod codec_v2;
+mod cut;
 mod evidence;
 mod graph;
+mod graph_v2;
+mod recovery_v2;
 mod reducer;
+mod reducer_v2;
 
 pub use admission::RootNativeAdmissionBindingV1;
 pub use codec::{
     ROOT_NATIVE_HELD_KEY_BYTES_V1, RootNativeHeldSidecarV1, native_root_sidecar_key_v1,
 };
+pub use codec_v2::{
+    MAXIMUM_ROOT_NATIVE_HELD_SIDECAR_BYTES_V2, ROOT_NATIVE_HELD_KEY_BYTES_V2,
+    ROOT_NATIVE_NO_INTEREST_TERMINAL_BYTES_V1, RootNativeHeldSidecarV2,
+    RootNativeNoInterestTerminalV1, native_root_sidecar_key_v2,
+};
+pub use cut::{
+    MAXIMUM_ROOT_NATIVE_CUT_ACQUISITION_BYTES_V1, MAXIMUM_ROOT_NATIVE_CUT_BYTES_V1,
+    MAXIMUM_ROOT_NATIVE_CUT_HEAD_BYTES_V1, RootNativeCutKindV1, RootNativeCutV1,
+    RootNativeReconstructedCutV1,
+};
 pub use evidence::{MAXIMUM_ROOT_NATIVE_VERIFIER_BYTES_V1, RootNativeTerminalVerifierV1};
 pub use graph::{RootNativeHeldGraphV1, validate_native_root_graph_v1};
+pub use graph_v2::{RootNativeDataClassV2, RootNativeHeldGraphV2, validate_native_root_graph_v2};
 pub use reducer::{
     RootNativeHeldTransitionV1, RootNativeTransitionKindV1,
     validate_native_root_cold_transition_v1, validate_native_root_transition_v1,
+};
+pub use reducer_v2::{
+    RootNativeAdmissionBindingV2, RootNativeHeldTransitionV2, RootNativeTransitionKindV2,
+    validate_native_root_cold_transition_v2, validate_native_root_transition_v2,
 };
 
 /// Bounds one binary Root sidecar including every permitted nested archive.

@@ -204,7 +204,10 @@ pub fn validate_native_root_cold_transition_v1(
     Ok(proposal)
 }
 
-fn preserve_immutable(old: &RootNativeHeldSidecarV1, next: &RootNativeHeldSidecarV1) -> Result<()> {
+pub(super) fn preserve_immutable(
+    old: &RootNativeHeldSidecarV1,
+    next: &RootNativeHeldSidecarV1,
+) -> Result<()> {
     if old.original_scope != next.original_scope
         || (old.response_transaction != [0; 16]
             && old.response_transaction != next.response_transaction)
@@ -220,7 +223,7 @@ fn preserve_immutable(old: &RootNativeHeldSidecarV1, next: &RootNativeHeldSideca
     Ok(())
 }
 
-fn classify(
+pub(super) fn classify(
     old: &RootNativeHeldSidecarV1,
     next: &RootNativeHeldSidecarV1,
 ) -> Result<RootNativeTransitionKindV1> {
@@ -238,7 +241,7 @@ fn classify(
     }
 }
 
-fn validate_slot_update(
+pub(super) fn validate_slot_update(
     old: &RootNativeHeldSidecarV1,
     next: &RootNativeHeldSidecarV1,
     kind: RootNativeTransitionKindV1,
@@ -367,7 +370,7 @@ fn require_signed_preparation(
     Ok(())
 }
 
-fn validate_response_cas(
+pub(super) fn validate_response_cas(
     before: &RootNativeHeldGraphV1,
     after: &RootNativeHeldGraphV1,
     old: &RootNativeHeldSidecarV1,

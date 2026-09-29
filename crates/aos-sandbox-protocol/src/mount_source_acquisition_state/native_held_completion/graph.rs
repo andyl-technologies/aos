@@ -184,7 +184,7 @@ pub(super) fn companion_witnesses(
         .map_err(|_| state_error("native Root companion count"))
 }
 
-fn validate_sidecar(
+pub(super) fn validate_sidecar(
     graph: &RootNativeHeldGraphV1,
     sidecar: &RootNativeHeldSidecarV1,
 ) -> Result<()> {
@@ -193,7 +193,7 @@ fn validate_sidecar(
         .map_err(|_| state_error("native Root original request"))?;
     let request = decode_acquire_request(signed.subject())
         .map_err(|_| state_error("native Root original Acquire"))?;
-    let catalog = request
+    request
         .native_catalog()
         .ok_or_else(|| state_error("native Root requires original native V3"))?;
     let acquisition = attempt
@@ -212,7 +212,6 @@ fn validate_sidecar(
     {
         return Err(state_error("native Root original graph scope"));
     }
-    let phase = sidecar.suffix.phase();
     validate_phase_slots(sidecar)?;
     let cas = sidecar.response_transaction != [0; 16];
     if cas {
@@ -295,6 +294,38 @@ fn validate_sidecar(
         }
     }
 
+    validate_historical_archives(sidecar, attempt, session, &expected, None)?;
+
+    // Root phase0 has no signed1, but its exact unsigned1 still binds all of the
+    // initial canonical rows. Graph validation never synthesizes a signature.
+    if graph
+        .canonical
+        .get(&native_root_sidecar_key_v1(attempt.attempt_id)?)
+        .is_none()
+    {
+        return Err(state_error("native Root sidecar canonical value absent"));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_historical_archives(
+    sidecar: &RootNativeHeldSidecarV1,
+    attempt: &SourceProviderQueryAttemptV2,
+    session: &SourceProviderSessionV2,
+    expected: &[NativeHeldByteWitnessV1; 4],
+    admission_expected: Option<&[NativeHeldByteWitnessV1; 4]>,
+) -> Result<()> {
+    let signed = SignedSourceProviderRequestV1::from_canonical_bytes(&attempt.signed_request)
+        .map_err(|_| state_error("native Root retained original request"))?;
+    let request = decode_acquire_request(signed.subject())
+        .map_err(|_| state_error("native Root retained original Acquire"))?;
+    let catalog = request
+        .native_catalog()
+        .ok_or_else(|| state_error("native Root original native catalog absent"))?;
+    let scope = sidecar.original_scope;
+    let phase = sidecar.suffix.phase();
+    let cas = sidecar.response_transaction != [0; 16];
+    validate_phase_slots(sidecar)?;
     let original = sidecar.suffix.control(Kind::RootPrepared);
     let mut last_slot = 0;
     for control in sidecar.suffix.controls() {
@@ -332,8 +363,12 @@ fn validate_sidecar(
                 required(control, Tag::Witness)?,
                 session,
                 catalog,
-                &expected,
-                control.kind() != Kind::RootPrepared || !cas,
+                if control.kind() == Kind::RootPrepared {
+                    admission_expected.unwrap_or(expected)
+                } else {
+                    expected
+                },
+                admission_expected.is_some() || control.kind() != Kind::RootPrepared || !cas,
             )?;
         }
         match control.kind() {
@@ -460,7 +495,7 @@ fn validate_sidecar(
                     || k.phase != if phase == 7 { 6 } else { 12 }
                     || k.disposition != sidecar.disposition
                     || k.settlement != sidecar.settlement
-                    || k.records != expected
+                    || &k.records != expected
                     || k.hot_archive
                         != sidecar
                             .suffix
@@ -511,7 +546,11 @@ fn validate_sidecar(
                 .ok_or_else(|| state_error("native Root prepared witness absent"))?,
             session,
             catalog,
-            &expected,
+            if prepared.kind() == Kind::RootPrepared {
+                admission_expected.unwrap_or(expected)
+            } else {
+                expected
+            },
             true,
         )?;
         if matches!(prepared.kind(), Kind::RootAccepted | Kind::RootClosed) {
@@ -544,15 +583,6 @@ fn validate_sidecar(
                 return Err(state_error("native Root prepared terminal ACK"));
             }
         }
-    }
-    // Root phase0 has no signed1, but its exact unsigned1 still binds all of the
-    // initial canonical rows. Graph validation never synthesizes a signature.
-    if graph
-        .canonical
-        .get(&native_root_sidecar_key_v1(attempt.attempt_id)?)
-        .is_none()
-    {
-        return Err(state_error("native Root sidecar canonical value absent"));
     }
     Ok(())
 }

@@ -93,25 +93,17 @@ pub(super) fn validate_session_reachability(table: &SourceAcquisitionTableV2) ->
                 .provider_sessions
                 .get(&witness.predecessor_head.current_session_id)
                 .ok_or_else(|| state_error("barrier-idle predecessor session is missing"))?;
-            let root = table
-                .provider_attempts
-                .get(&witness.root_attempt.id)
-                .ok_or_else(|| state_error("barrier-idle recovery root is missing"))?;
-            let original_digest = match &root.state {
-                ProviderAttemptStateV2::AbandonedIndeterminate { .. } => root.record_digest,
-                ProviderAttemptStateV2::NativeNoDispatchSettled {
-                    canonical_query, ..
-                } => {
-                    let query = RecoveryCurrentnessQueryV1::from_canonical_bytes(canonical_query)
-                        .map_err(|_| state_error("barrier-idle root query is invalid"))?;
-                    *query.original_attempt_digest().as_bytes()
-                }
-                _ => return Err(state_error("barrier-idle root is not recoverable")),
-            };
+            let root = resolve_historical_attempt(table, witness.root_attempt)?;
             if session.predecessor_session_id != Some(predecessor.session_id)
                 || predecessor.scope != session.scope
                 || witness.root_attempt.revision != 2
-                || witness.root_attempt.record_digest != original_digest
+                || !matches!(
+                    root.state,
+                    ProviderAttemptStateV2::AbandonedIndeterminate {
+                        resolution: None,
+                        ..
+                    }
+                )
                 || root.scope != session.scope
                 || witness.predecessor_head.scope != session.scope
                 || witness.predecessor_head.current_session_id != predecessor.session_id

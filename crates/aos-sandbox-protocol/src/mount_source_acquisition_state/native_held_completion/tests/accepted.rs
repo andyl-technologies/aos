@@ -18,6 +18,7 @@ use ed25519_dalek::Signer as _;
 
 mod receipt_fixture;
 mod recovery;
+mod v2;
 
 fn native_fixture() -> Fixture {
     let session = fixture::signed_session([19; 16], 31);

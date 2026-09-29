@@ -137,7 +137,7 @@ pub(super) fn validate_lineages(table: &SourceAcquisitionTableV2) -> Result<()> 
         if let ProviderAttemptStateV2::AbandonedIndeterminate {
             resolution: Some(resolution),
             ..
-        } = &attempt.state
+        } = retained_indeterminate_state(attempt)
         {
             let inventory = exact_attempt(table, recovery_inventory_reference(resolution))?;
             authoritative_roots.insert(inventory.lineage_root_attempt_id);
@@ -159,7 +159,7 @@ pub(super) fn validate_lineages(table: &SourceAcquisitionTableV2) -> Result<()> 
             .into_iter()
             .flatten()
             {
-                let retained = exact_attempt(table, reference)?;
+                let retained = resolve_historical_attempt(table, reference)?;
                 authoritative_roots.insert(retained.lineage_root_attempt_id);
             }
         }
@@ -373,7 +373,7 @@ pub(super) fn validate_sequence_and_reservation_graph(
             reserved.insert(attempt.attempt_id);
         }
         if matches!(
-            &attempt.state,
+            retained_indeterminate_state(attempt),
             ProviderAttemptStateV2::AbandonedIndeterminate { .. }
                 | ProviderAttemptStateV2::SupersededIndeterminate { .. }
         ) {

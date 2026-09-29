@@ -833,7 +833,25 @@ impl SourceAcquisitionTableV2 {
                 let mut row = current_row.clone();
                 row.revision = next_revision(current_row.revision)?;
                 match current_attempt.method {
-                    ProviderMethodV2::Acquire => row.acquire_lineage.tail = next_attempt_ref,
+                    ProviderMethodV2::Acquire => {
+                        let lineage = &mut row.acquire_lineage;
+                        if lineage.tail != current_attempt_ref
+                            || lineage.root.id != current_attempt.lineage_root_attempt_id
+                            || (lineage.root.id == current_attempt_ref.id
+                                && lineage.root != current_attempt_ref)
+                        {
+                            return Err(state_error(
+                                "dead Acquire does not replace its exact lineage predecessor",
+                            ));
+                        }
+
+                        // The sole stored revision changes; an original root
+                        // must follow it without rewriting a different root.
+                        if lineage.root == current_attempt_ref {
+                            lineage.root = next_attempt_ref;
+                        }
+                        lineage.tail = next_attempt_ref;
+                    }
                     ProviderMethodV2::Release => {
                         row.release_lineage
                             .as_mut()

@@ -278,18 +278,23 @@ fn expected_attempt_revision(state: &ProviderAttemptStateV2, attempt_id: [u8; 32
     Ok(match state {
         ProviderAttemptStateV2::Reserved => 1,
         ProviderAttemptStateV2::NativeNoDispatchSettled { prior_state, .. } => {
-            if !matches!(
-                prior_state.as_ref(),
+            let prior_revision = match prior_state.as_ref() {
                 ProviderAttemptStateV2::AbandonedIndeterminate {
-                    resolution: None,
+                    resolution: None, ..
+                }
+                | ProviderAttemptStateV2::SupersededIndeterminate { .. } => 2,
+                ProviderAttemptStateV2::AbandonedIndeterminate {
+                    recovery_root_attempt_id,
+                    resolution: Some(RecoveryResolutionV2::RetryAcquireSameIntent { .. }),
                     ..
-                } | ProviderAttemptStateV2::SupersededIndeterminate { .. }
-            ) {
-                return Err(state_error(
-                    "native no-dispatch settlement has invalid prior state",
-                ));
-            }
-            3
+                } if *recovery_root_attempt_id == attempt_id => 3,
+                _ => {
+                    return Err(state_error(
+                        "native no-dispatch settlement has invalid prior state",
+                    ));
+                }
+            };
+            prior_revision + 1
         }
         ProviderAttemptStateV2::DispositionConsumed { .. } => 2,
         ProviderAttemptStateV2::AbandonedIndeterminate { resolution, .. } => {
@@ -317,7 +322,7 @@ mod native_settlement_revision_tests {
     use super::*;
 
     #[test]
-    fn native_settlement_accepts_both_indeterminate_predecessors_only() {
+    fn native_settlement_keeps_prior2_and_allows_only_absent_acquire_prior3() {
         let attempt_id = [3; 32];
         let superseded = ProviderAttemptStateV2::SupersededIndeterminate {
             successor_session_id: [4; 32],
@@ -353,11 +358,53 @@ mod native_settlement_revision_tests {
             Ok(3)
         );
         assert_eq!(
-            expected_attempt_revision(&wrap(abandoned), attempt_id),
+            expected_attempt_revision(&wrap(abandoned.clone()), attempt_id),
             Ok(3)
         );
+        let mut resolved = abandoned;
+        let reconciliation = ReconciliationV2 {
+            projection_epoch: 1,
+            projection_digest: [13; 32],
+            residual_count: 0,
+            residual_digest: [14; 32],
+            conflict_count: 0,
+            conflict_digest: [15; 32],
+        };
+        let proof = RecoveryInventoryProofV2 {
+            inventory_attempt: RecordRefV2 {
+                id: [16; 32],
+                revision: 2,
+                record_digest: [17; 32],
+            },
+            inventory_digest: [18; 32],
+            inventory_observation_ordinal: 1,
+            projection_epoch: 1,
+            projection_digest: reconciliation.projection_digest,
+            reconciliation,
+            reconciliation_digest: reconciliation_commitment(&reconciliation),
+        };
+        let ProviderAttemptStateV2::AbandonedIndeterminate { resolution, .. } = &mut resolved
+        else {
+            panic!("revision fixture prior state");
+        };
+        *resolution = Some(RecoveryResolutionV2::RetryAcquireSameIntent { proof });
+        assert_eq!(
+            expected_attempt_revision(&wrap(resolved.clone()), attempt_id),
+            Ok(4)
+        );
+        assert!(expected_attempt_revision(&wrap(resolved.clone()), [19; 32]).is_err());
+        let ProviderAttemptStateV2::AbandonedIndeterminate { resolution, .. } = &mut resolved
+        else {
+            panic!("revision fixture resolved state");
+        };
+        *resolution = Some(RecoveryResolutionV2::RetryReleaseSameIntent { proof });
+        assert!(expected_attempt_revision(&wrap(resolved), attempt_id).is_err());
         assert!(
             expected_attempt_revision(&wrap(ProviderAttemptStateV2::Reserved), attempt_id).is_err()
+        );
+        assert!(
+            expected_attempt_revision(&wrap(wrap(ProviderAttemptStateV2::Reserved)), attempt_id)
+                .is_err()
         );
     }
 }
@@ -366,6 +413,24 @@ pub(super) fn validate_native_no_dispatch_settlement(
     attempt: &SourceProviderQueryAttemptV2,
     table: &SourceAcquisitionTableV2,
 ) -> Result<()> {
+    if !matches!(
+        attempt.state,
+        ProviderAttemptStateV2::NativeNoDispatchSettled { .. }
+    ) {
+        return Ok(());
+    }
+    validate_native_no_dispatch_settlement_artifact(attempt, table).map(|_| ())
+}
+
+/// Authenticates the closed wrapper, exact prior, and any signed absence proof.
+///
+/// Historical before-image resolvers use this nonrecursive layer. Inventory
+/// before-image/session-chain reachability remains in the full table validator.
+/// This layer never invokes that validator or a historical reference resolver.
+pub(super) fn validate_native_no_dispatch_settlement_artifact(
+    attempt: &SourceProviderQueryAttemptV2,
+    table: &SourceAcquisitionTableV2,
+) -> Result<SourceProviderQueryAttemptV2> {
     let ProviderAttemptStateV2::NativeNoDispatchSettled {
         prior_state,
         canonical_query,
@@ -373,7 +438,7 @@ pub(super) fn validate_native_no_dispatch_settlement(
         settlement_session_id,
     } = &attempt.state
     else {
-        return Ok(());
+        return Err(state_error("provider attempt is not a native settlement"));
     };
     let (successor_session_id, predecessor_valid) = match prior_state.as_ref() {
         ProviderAttemptStateV2::AbandonedIndeterminate {
@@ -381,11 +446,17 @@ pub(super) fn validate_native_no_dispatch_settlement(
             successor_session_id,
             recovery_root_attempt_id,
             outcome_may_exist,
-            resolution: None,
+            resolution,
         } => (
             *successor_session_id,
             *recovery_root_attempt_id == attempt.attempt_id
                 && *outcome_may_exist
+                && resolution.as_ref().is_none_or(|resolution| {
+                    matches!(
+                        resolution,
+                        RecoveryResolutionV2::RetryAcquireSameIntent { .. }
+                    )
+                })
                 && dead_execution.old_session_id == attempt.session_id
                 && dead_execution.old_session_record_digest == attempt.session_record_digest
                 && dead_execution.death_evidence_digest == death_digest(dead_execution)?,
@@ -437,17 +508,17 @@ pub(super) fn validate_native_no_dispatch_settlement(
         .acquisitions
         .get(&acquisition_id)
         .ok_or_else(|| state_error("native no-dispatch owner acquisition is missing"))?;
-    let mut prior = attempt.clone();
-    prior.revision = 2;
-    prior.state = prior_state.as_ref().clone();
-    prior.record_digest = *query.original_attempt_digest().as_bytes();
-    let prior_record = StoredRecordV2::ProviderQueryAttempt { value: prior };
+    let prior = reconstruct_native_no_dispatch_prior(attempt)?;
+    validate_indeterminate_attempt(&prior, table)?;
+    if prior.revision == 3 {
+        validate_native_no_dispatch_absent_resolution(&prior, table)?;
+    }
     let terminal_reference = RecordRefV2 {
         id: attempt.attempt_id,
         revision: attempt.revision,
         record_digest: attempt.record_digest,
     };
-    if attempt.revision != 3
+    if attempt.revision != prior.revision + 1
         || !predecessor_valid
         || successor_session_id == attempt.session_id
         || table
@@ -457,7 +528,6 @@ pub(super) fn validate_native_no_dispatch_settlement(
         || session_successor_distance(table, successor_session_id, *settlement_session_id).is_err()
         || session_successor_distance(table, *settlement_session_id, head.current_session_id)
             .is_err()
-        || record_digest(&prior_record)? != *query.original_attempt_digest().as_bytes()
         || query.session_binding().as_bytes() != &settlement_session.session_binding
         || query.authorities()
             != (
@@ -478,10 +548,212 @@ pub(super) fn validate_native_no_dispatch_settlement(
         || row.acquire_terminal_attempt.is_some()
         || row.evidence.is_some()
         || !matches!(row.recovery, AcquisitionRecoveryV2::Ready)
-        || head.recovery_barrier.is_some()
+        || head.recovery_barrier.as_ref().is_some_and(|barrier| {
+            barrier.root_attempt.id == attempt.attempt_id
+                || table
+                    .provider_attempts
+                    .get(&barrier.root_attempt.id)
+                    .is_none_or(|root| {
+                        root.lineage_root_attempt_id == attempt.lineage_root_attempt_id
+                            || root.scope != attempt.scope
+                            || session_successor_distance(
+                                table,
+                                *settlement_session_id,
+                                root.session_id,
+                            )
+                            .is_err()
+                    })
+        })
     {
         return Err(state_error(
             "native no-dispatch settlement contradicts protected graph",
+        ));
+    }
+    Ok(prior)
+}
+
+/// Reproduces only the retained native settlement predecessor, including its digest.
+pub(super) fn reconstruct_native_no_dispatch_prior(
+    attempt: &SourceProviderQueryAttemptV2,
+) -> Result<SourceProviderQueryAttemptV2> {
+    let ProviderAttemptStateV2::NativeNoDispatchSettled {
+        prior_state,
+        canonical_query,
+        ..
+    } = &attempt.state
+    else {
+        return Err(state_error("provider attempt is not a native settlement"));
+    };
+    let expected_revision = expected_attempt_revision(&attempt.state, attempt.attempt_id)?;
+    if attempt.revision != expected_revision {
+        return Err(state_error(
+            "native settlement revision differs from predecessor",
+        ));
+    }
+    let query = RecoveryCurrentnessQueryV1::from_canonical_bytes(canonical_query)
+        .map_err(|_| state_error("native no-dispatch query is malformed"))?;
+    let mut prior = attempt.clone();
+    prior.revision = expected_revision - 1;
+    prior.state = prior_state.as_ref().clone();
+    prior.record_digest = *query.original_attempt_digest().as_bytes();
+    if record_digest(&StoredRecordV2::ProviderQueryAttempt {
+        value: prior.clone(),
+    })? != prior.record_digest
+    {
+        return Err(state_error("native settlement predecessor digest differs"));
+    }
+    Ok(prior)
+}
+
+/// Validates the exact absent-Inventory predecessor of a native no-dispatch cleanup.
+///
+/// This is a DATA check. It grants neither a retry nor authority to settle an
+/// operation; cleanup still requires the dedicated authenticated unavailable
+/// proof and a protected atomic transition.
+///
+/// # Errors
+///
+/// Rejects any other original intent, retry child, resolution, signed Inventory,
+/// stale reference, or current/retained predecessor association.
+#[doc(hidden)]
+pub fn validate_native_no_dispatch_absent_resolution_v2(
+    attempt: &SourceProviderQueryAttemptV2,
+    table: &SourceAcquisitionTableV2,
+) -> Result<()> {
+    validate_recovered_table(table)?;
+    let current = table
+        .provider_attempts
+        .get(&attempt.attempt_id)
+        .ok_or_else(|| state_error("native absence predecessor is missing"))?;
+    let prior = if matches!(
+        current.state,
+        ProviderAttemptStateV2::NativeNoDispatchSettled { .. }
+    ) {
+        validate_native_no_dispatch_settlement(current, table)?;
+        reconstruct_native_no_dispatch_prior(current)?
+    } else {
+        current.clone()
+    };
+    if attempt != &prior && attempt != current {
+        return Err(state_error(
+            "native absence predecessor differs from retained bytes",
+        ));
+    }
+    validate_native_no_dispatch_absent_resolution(&prior, table)
+}
+
+// This closed artifact path checks signatures, exact references, absence and
+// direct causal/floor joins, never whole-table or historical-reference traversal.
+fn validate_native_no_dispatch_absent_resolution(
+    root: &SourceProviderQueryAttemptV2,
+    table: &SourceAcquisitionTableV2,
+) -> Result<()> {
+    let ProviderAttemptStateV2::AbandonedIndeterminate {
+        recovery_root_attempt_id,
+        resolution: Some(resolution @ RecoveryResolutionV2::RetryAcquireSameIntent { proof }),
+        ..
+    } = &root.state
+    else {
+        return Err(state_error(
+            "native absence requires exact resolved abandoned Acquire",
+        ));
+    };
+    let ProviderQueryOwnerV2::Acquire { acquisition_id } = root.owner else {
+        return Err(state_error("native absence has no original Acquire owner"));
+    };
+    let row = table
+        .acquisitions
+        .get(&acquisition_id)
+        .ok_or_else(|| state_error("native absence owner acquisition is missing"))?;
+    let current = table
+        .provider_attempts
+        .get(&root.attempt_id)
+        .ok_or_else(|| state_error("native absence current root is missing"))?;
+    let current_reference = RecordRefV2 {
+        id: current.attempt_id,
+        revision: current.revision,
+        record_digest: current.record_digest,
+    };
+    let live = current == root;
+    let retained = matches!(
+        current.state,
+        ProviderAttemptStateV2::NativeNoDispatchSettled { .. }
+    ) && reconstruct_native_no_dispatch_prior(current)? == *root;
+    if root.revision != 3
+        || root.method != ProviderMethodV2::Acquire
+        || *recovery_root_attempt_id != root.attempt_id
+        || root.lineage_root_attempt_id != root.attempt_id
+        || root.previous_attempt_id.is_some()
+        || root.attempt_number != 1
+        || row.scope != root.scope
+        || root.provider_acquisition != Some(row.provider_acquisition)
+        || row.acquire_lineage.root != current_reference
+        || row.acquire_lineage.tail != current_reference
+        || row.acquire_terminal_attempt.is_some()
+        || row.evidence.is_some()
+        || row.release_lineage.is_some()
+        || row.release_proof.is_some()
+        || table
+            .provider_attempts
+            .values()
+            .any(|attempt| attempt.previous_attempt_id == Some(root.attempt_id))
+        || !(live
+            && row.phase == SourceAcquisitionPhaseV2::PendingQuery
+            && row.recovery
+                == (AcquisitionRecoveryV2::RetryPermitted {
+                    root_attempt: current_reference,
+                })
+            || retained
+                && row.phase == SourceAcquisitionPhaseV2::Faulted
+                && row.faulted_from == Some(SourceAcquisitionPhaseV2::PendingQuery)
+                && row.recovery == AcquisitionRecoveryV2::Ready)
+    {
+        return Err(state_error(
+            "native absence does not retain its original no-retry row",
+        ));
+    }
+
+    let session = exact_session(table, root.session_id, root.session_record_digest)?;
+    let signed_request = SignedSourceProviderRequestV1::from_canonical_bytes(&root.signed_request)
+        .map_err(|_| state_error("native absence original request is invalid"))?;
+    let request = decode_acquire_request(signed_request.subject())
+        .map_err(|_| state_error("native absence original Acquire is invalid"))?;
+    if request.native_catalog().is_none() {
+        return Err(state_error(
+            "native absence original Acquire is not nativeV3",
+        ));
+    }
+    validate_attempt_revision(root)?;
+    validate_provider_request(root, session, table)?;
+    validate_attempt_checkpoint(root, session)?;
+    validate_indeterminate_attempt(root, table)?;
+
+    let inventory = exact_attempt(table, proof.inventory_attempt)?;
+    let inventory_session =
+        exact_session(table, inventory.session_id, inventory.session_record_digest)?;
+    validate_provider_request(inventory, inventory_session, table)?;
+    validate_attempt_checkpoint(inventory, inventory_session)?;
+    validate_consumed_result(inventory, inventory_session)?;
+    validate_recovery_resolution(root, resolution, table)?;
+    let ProviderAttemptStateV2::DispositionConsumed {
+        status: ProviderStatusV2::Complete,
+        signed_result,
+        ..
+    } = &inventory.state
+    else {
+        return Err(state_error("native absence Inventory is not Complete"));
+    };
+    let signed_inventory = SignedSourceProviderInventoryV1::from_canonical_bytes(signed_result)
+        .map_err(|_| state_error("native absence Inventory is malformed"))?;
+    if signed_inventory
+        .subject()
+        .entries()
+        .iter()
+        .any(|entry| entry.acquisition_id().as_bytes() == &row.provider_acquisition.acquisition_id)
+        || !attempt_happens_after(table, root, inventory)?
+    {
+        return Err(state_error(
+            "native absence Inventory contains the original acquisition",
         ));
     }
     Ok(())
@@ -786,7 +1058,7 @@ pub(super) fn validate_indeterminate_attempt(
         || successor.scope != old.scope
         || recovery_root.scope != attempt.scope
         || !matches!(
-            recovery_root.state,
+            retained_indeterminate_state(recovery_root),
             ProviderAttemptStateV2::AbandonedIndeterminate { .. }
         )
         || !joins_root

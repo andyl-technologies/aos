@@ -4,6 +4,7 @@ use aos_sandbox::journal::ProtectedJournalAuthority;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::mount_source_acquisition_state::{
     MutationTagV2, native_recovery_settlement_digest_v2, validate_mount_source_state_graph_v2,
+    validate_native_no_dispatch_absent_resolution_v2,
 };
 use aos_sandbox_source_provider_protocol::RecoveryCurrentnessQueryV1;
 use aos_sandbox_source_provider_security::AuthenticatedRootMountNativeRecoveryUnavailableV1;
@@ -12,7 +13,7 @@ use super::SourceAcquisitionTableV2;
 use super::format::state_error;
 use super::model::{
     AcquisitionRecoveryV2, ProviderAttemptStateV2, ProviderMethodV2, ProviderQueryOwnerV2,
-    RecordRefV2, SourceAcquisitionPhaseV2, StoredRecordV2,
+    RecordRefV2, RecoveryResolutionV2, SourceAcquisitionPhaseV2, StoredRecordV2,
 };
 use super::reservation::{sealed_attempt, sealed_head, sealed_row};
 use super::transition::{MutationIdentityV2, next_revision, prepare_mutation};
@@ -80,6 +81,9 @@ impl SourceAcquisitionTableV2 {
                         ProviderAttemptStateV2::AbandonedIndeterminate {
                             resolution: None,
                             ..
+                        } | ProviderAttemptStateV2::AbandonedIndeterminate {
+                            resolution: Some(RecoveryResolutionV2::RetryAcquireSameIntent { .. }),
+                            ..
                         } | ProviderAttemptStateV2::SupersededIndeterminate { .. }
                     )
             })
@@ -115,6 +119,20 @@ impl SourceAcquisitionTableV2 {
             ProviderAttemptStateV2::SupersededIndeterminate { .. } => {
                 matches!(row.recovery, AcquisitionRecoveryV2::Ready)
                     && head.recovery_barrier.is_none()
+            }
+            ProviderAttemptStateV2::AbandonedIndeterminate {
+                resolution: Some(RecoveryResolutionV2::RetryAcquireSameIntent { .. }),
+                ..
+            } => {
+                // Inventory absence alone never settles the old flight. This
+                // branch also consumes the existing authenticated dedicated
+                // no-dispatch proof and retains the complete exact prior3.
+                validate_native_no_dispatch_absent_resolution_v2(old_attempt, &current)?;
+                matches!(
+                    row.recovery,
+                    AcquisitionRecoveryV2::RetryPermitted { root_attempt }
+                        if root_attempt == row.acquire_lineage.root
+                ) && head.recovery_barrier.is_none()
             }
             _ => false,
         };

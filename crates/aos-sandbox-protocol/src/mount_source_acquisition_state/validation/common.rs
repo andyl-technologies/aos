@@ -51,13 +51,27 @@ pub(super) fn resolve_historical_attempt(
     if current.revision == reference.revision && current.record_digest == reference.record_digest {
         return Ok(current.clone());
     }
-    if reference.revision != 2 || current.revision != 3 {
+    let mut historical = if matches!(
+        current.state,
+        ProviderAttemptStateV2::NativeNoDispatchSettled { .. }
+    ) {
+        // Only the genuine terminal wrapper can expose its exact retained prior.
+        // Current acquisition references continue to use exact_attempt.
+        validate_native_no_dispatch_settlement_artifact(current, table)?
+    } else {
+        current.clone()
+    };
+    if historical.revision == reference.revision
+        && historical.record_digest == reference.record_digest
+    {
+        return Ok(historical);
+    }
+    if reference.revision != 2 || historical.revision != 3 {
         return Err(state_error(
             "historical provider attempt reference has an invalid revision",
         ));
     }
 
-    let mut historical = current.clone();
     let attempt_id = historical.attempt_id;
     let ProviderAttemptStateV2::AbandonedIndeterminate {
         recovery_root_attempt_id,
@@ -84,6 +98,19 @@ pub(super) fn resolve_historical_attempt(
         ));
     }
     Ok(historical)
+}
+
+/// Exposes the closed retained state for graph checks after artifact validation.
+///
+/// This does not resolve a record reference. The complete table validator checks
+/// every terminal wrapper's signature and exact predecessor before these joins.
+pub(super) fn retained_indeterminate_state(
+    attempt: &SourceProviderQueryAttemptV2,
+) -> &ProviderAttemptStateV2 {
+    match &attempt.state {
+        ProviderAttemptStateV2::NativeNoDispatchSettled { prior_state, .. } => prior_state,
+        state => state,
+    }
 }
 
 pub(super) fn session_holder_authority(

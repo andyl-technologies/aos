@@ -6,6 +6,7 @@
 mod accepted;
 mod fixture;
 mod terminal;
+mod v2;
 
 use std::collections::BTreeMap;
 
