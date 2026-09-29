@@ -19,6 +19,8 @@ use core::fmt;
 use crate::cbor::{self, Decoder};
 use crate::identity::{Digest, IdentityKind, TERRANE_V1};
 
+mod entry;
+
 /// Maximum encoded key length in bytes.
 pub const MAX_KEY: usize = 4096;
 /// Maximum path component length in bytes.
