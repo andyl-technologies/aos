@@ -469,6 +469,30 @@ pub trait WasmHost {
 }
 
 /// Adapts one WebAssembly host to the portable HTTP and clock contracts.
+///
+/// When the `send` feature selects native futures, this binding cannot be an
+/// HTTP client in the same I/O consumer. An all-features build still compiles
+/// both adapter types for feature-matrix validation (CRATE-8, CRATE-29).
+///
+/// ```compile_fail
+/// use std::time::{Duration, SystemTime};
+/// use terrane::store::{HttpClient, HttpError, HttpRequest, HttpResponse, WasmBindings, WasmHost};
+///
+/// struct Host;
+///
+/// #[async_trait::async_trait(?Send)]
+/// impl WasmHost for Host {
+///     async fn fetch(&self, request: HttpRequest) -> Result<HttpResponse, HttpError> {
+///         Ok(HttpResponse { status: 200, headers: vec![], body: request.body })
+///     }
+///
+///     fn now(&self) -> SystemTime { SystemTime::UNIX_EPOCH }
+///     fn monotonic(&self) -> Duration { Duration::ZERO }
+/// }
+///
+/// fn native_consumer<C: HttpClient>(_: C) {}
+/// fn main() { native_consumer(WasmBindings::new(Host)); }
+/// ```
 #[cfg(feature = "wasm")]
 #[derive(Clone, Debug)]
 pub struct WasmBindings<H> {
@@ -966,6 +990,14 @@ mod tests {
         let second = clock.monotonic();
 
         assert!(second >= first);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn native_http_client_is_send_and_sync() {
+        fn accepts_native_client<C: HttpClient + Send + Sync>() {}
+
+        accepts_native_client::<TokioHttpClient>();
     }
 
     #[cfg(feature = "tokio")]
