@@ -148,12 +148,13 @@ fn disk_sub_node(seed: Seed, condition: HostCondition) -> DeviceSchedulingSubNod
         HostCondition::ComputeSkew => vec![1, 0],
         _ => vec![0, 1],
     };
-    for index in order {
-        let (request_tick, request) = &requests[index];
-        sub_node
-            .submit(*request_tick, request)
-            .unwrap_or_else(|error| panic!("disk submit should succeed: {error}"));
-    }
+    let arrivals = order
+        .into_iter()
+        .map(|index| requests[index].clone())
+        .collect();
+    sub_node
+        .submit_arrivals(arrivals)
+        .unwrap_or_else(|error| panic!("complete modeled ARRIVE phase computes: {error}"));
     sub_node
 }
 

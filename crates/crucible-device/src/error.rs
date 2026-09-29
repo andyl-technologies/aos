@@ -20,6 +20,10 @@ use crate::ninep::codec::NinepCodecError;
 /// loudly and reproducibly.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DeviceError {
+    /// A complete modeled ARRIVE phase contains an ambiguous request identity.
+    #[error("modeled ARRIVE batch repeats the same tick and request identity")]
+    AmbiguousModeledArrival,
+
     /// The retained I/O queue revision cannot advance without wrapping.
     #[error("I/O queue revision is exhausted")]
     IoQueueRevisionExhausted,

@@ -94,6 +94,7 @@ const INITIALIZATION_SETTLE_STEPS: usize = 4_096;
 
 /// A production host servicer for one live node's `SLOT_BLK_IO` rings.
 pub struct QemuLiveBlockIoServicer {
+    world_binding: Option<super::QemuWorldIoBinding>,
     region: MappedSetupRegion,
     device: QemuSharedBlockDevice,
     vm_slot: u32,
@@ -729,12 +730,13 @@ impl QemuLiveBlockIoServicer {
     ) -> Result<Self, QemuLiveBlockIoServicerError> {
         let checkpoint = self.checkpoint(execution_binding)?;
         let base = self.device.lock()?.base().clone();
-        let mut continuation = Self::from_shmem_fd_with_base_and_latency(
+        let mut continuation = Self::from_bound_parts(
             shmem_fd,
             region_len,
             checkpoint.vm_slot,
             base,
             checkpoint.device.latency,
+            self.world_binding.clone(),
         )?;
         continuation.restore_checkpoint(execution_binding, &checkpoint)?;
         Ok(continuation)
@@ -810,12 +812,47 @@ impl QemuLiveBlockIoServicer {
         base: BaseImage,
         latency: BlockLatency,
     ) -> Result<Self, QemuLiveBlockIoServicerError> {
+        Self::from_bound_parts(shmem_fd, region_len, vm_slot, base, latency, None)
+    }
+
+    /// Maps a device queue with its explicit World-derived source identity.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a binding of the wrong device family and the ordinary mapping or
+    /// device-construction failures.
+    pub fn from_shmem_fd_with_base_and_latency_and_binding(
+        shmem_fd: BorrowedFd<'_>,
+        region_len: u64,
+        vm_slot: u32,
+        base: BaseImage,
+        latency: BlockLatency,
+        binding: super::QemuWorldIoBinding,
+    ) -> Result<Self, QemuLiveBlockIoServicerError> {
+        if !binding.is_block() {
+            return Err(QemuLiveBlockIoServicerError::Device {
+                source: DeviceError::InvalidComputedResponse,
+            });
+        }
+        Self::from_bound_parts(shmem_fd, region_len, vm_slot, base, latency, Some(binding))
+    }
+
+    fn from_bound_parts(
+        shmem_fd: BorrowedFd<'_>,
+        region_len: u64,
+        vm_slot: u32,
+        base: BaseImage,
+        latency: BlockLatency,
+        world_binding: Option<super::QemuWorldIoBinding>,
+    ) -> Result<Self, QemuLiveBlockIoServicerError> {
         let region = mmap_setup_region(shmem_fd, region_len)
             .map_err(|source| QemuLiveBlockIoServicerError::MapRegion { source })?;
         let notification_region = mmap_setup_region(shmem_fd, region_len)
             .map_err(|source| QemuLiveBlockIoServicerError::MapRegion { source })?;
         let core = IoCore::new(
-            SLOT_BLK_IO as u32,
+            world_binding
+                .as_ref()
+                .map_or(SLOT_BLK_IO as u32, |binding| binding.source_node()),
             SERVICER_INBOX_CAPACITY,
             SERVICER_OUTBOX_CAPACITY,
         )
@@ -826,6 +863,7 @@ impl QemuLiveBlockIoServicer {
             vm_slot,
         );
         Ok(Self {
+            world_binding,
             region,
             device,
             vm_slot,
@@ -866,6 +904,11 @@ impl QemuLiveBlockIoServicer {
         checkpoint: QemuLiveBlockIoServicerCheckpoint,
         base: BaseImage,
     ) -> Result<Self, QemuLiveBlockIoServicerError> {
+        if checkpoint.world_binding.as_ref().is_some_and(|binding| {
+            !binding.is_block() || binding.source_node() != checkpoint.device.core.src_node
+        }) {
+            return Err(QemuLiveBlockIoServicerError::CheckpointRegionMismatch);
+        }
         if checkpoint.execution_binding != expected_execution_binding {
             return Err(QemuLiveBlockIoServicerError::CheckpointBindingMismatch);
         }
@@ -924,6 +967,7 @@ impl QemuLiveBlockIoServicer {
         pair.node_slot
             .store_device_completion_deadline_tick(device.next_exact_local_event().unwrap_or(0));
         Ok(Self {
+            world_binding: checkpoint.world_binding.clone(),
             region,
             device: QemuSharedBlockDevice::new(device, notification_region, checkpoint.vm_slot),
             vm_slot: checkpoint.vm_slot,
@@ -972,6 +1016,7 @@ impl QemuLiveBlockIoServicer {
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
         let device = self.device.lock()?;
         Ok(QemuLiveBlockIoServicerCheckpoint {
+            world_binding: self.world_binding.clone(),
             execution_binding,
             storage_device: None,
             region_header: self.region.header_snapshot(),
@@ -1064,6 +1109,9 @@ impl QemuLiveBlockIoServicer {
         expected_execution_binding: ContentHash,
         checkpoint: &QemuLiveBlockIoServicerCheckpoint,
     ) -> Result<(), QemuLiveBlockIoServicerError> {
+        if self.world_binding != checkpoint.world_binding {
+            return Err(QemuLiveBlockIoServicerError::CheckpointRegionMismatch);
+        }
         if checkpoint.execution_binding != expected_execution_binding {
             return Err(QemuLiveBlockIoServicerError::CheckpointBindingMismatch);
         }
@@ -1072,6 +1120,7 @@ impl QemuLiveBlockIoServicer {
             || !same_region_layout(self.region.header_snapshot(), checkpoint.region_header)
             || checkpoint.vm_slot != self.vm_slot
             || checkpoint.size_bytes != device.length()
+            || checkpoint.device.core.src_node != device.core().snapshot().src_node
         {
             return Err(QemuLiveBlockIoServicerError::CheckpointRegionMismatch);
         }

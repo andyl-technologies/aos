@@ -110,6 +110,10 @@ impl CoverageBackend {
 }
 
 impl crucible::SimulationBackend for CoverageBackend {
+    fn io_inventory_authority(&self) -> crucible::BackendIoInventoryAuthority {
+        crucible::BackendIoInventoryAuthority::SchedulerOwnedModel
+    }
+
     fn step_to(&mut self, ceiling: VirtualTime) -> Result<crucible::StepObservation, BackendError> {
         self.now = ceiling;
         Ok(crucible::StepObservation::from_advance_outcome(
@@ -162,7 +166,7 @@ impl crucible::ConcurrentSimulationBackend for CoverageBackend {
         &mut self,
         runs: Vec<crucible::ConcurrentBackendRun>,
         max_host_workers: usize,
-    ) -> Result<Vec<crucible::ConcurrentBackendRunOutcome>, BackendError> {
+    ) -> Result<Vec<crucible::ConcurrentBackendRunResult>, BackendError> {
         if max_host_workers == 0 || runs.len() != 1 || !runs[0].preemptions.is_empty() {
             return Err(BackendError::Rejected {
                 message: String::from("coverage fixture requires one unpreempted RUN"),
@@ -171,15 +175,17 @@ impl crucible::ConcurrentSimulationBackend for CoverageBackend {
 
         runs.into_iter()
             .map(|run| {
-                let step = crucible::SimulationBackend::step_to(self, run.ceiling)?;
+                let step = crucible::SimulationBackend::step_to(self, run.ceiling())?;
                 let observations = crucible::SimulationBackend::drain_observable_events(self)?;
-                Ok(crucible::ConcurrentBackendRunOutcome {
-                    node: run.node,
-                    step,
-                    rng_evidence: Vec::new(),
-                    network_outputs: Vec::new(),
-                    observations,
-                })
+                Ok(crucible::ConcurrentBackendRunResult::Completed(
+                    crucible::ConcurrentBackendRunOutcome {
+                        node: run.node().clone(),
+                        step,
+                        rng_evidence: Vec::new(),
+                        network_outputs: Vec::new(),
+                        observations,
+                    },
+                ))
             })
             .collect()
     }

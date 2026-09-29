@@ -202,12 +202,13 @@ fn cohort_boundaries_retain_exact_events_and_bound_samples() -> Result<(), Box<d
     ];
 
     let evaluation = evaluate_measurements(&definitions, &entries, samples.clone(), &terminal(40))?;
+    // This binds exact event hashes under the mandatory event-segment v5 codec.
     assert_eq!(
         evaluation.content_hash(),
         ContentHash {
             bytes: [
-                56, 81, 210, 89, 136, 118, 1, 65, 212, 44, 190, 247, 198, 141, 36, 190, 115, 210,
-                78, 23, 88, 215, 200, 50, 56, 149, 125, 181, 66, 186, 226, 141,
+                234, 55, 193, 221, 55, 188, 200, 222, 71, 179, 125, 141, 31, 68, 125, 169, 172,
+                245, 125, 97, 176, 17, 128, 139, 211, 241, 36, 71, 61, 239, 27, 57,
             ],
         }
     );

@@ -134,7 +134,7 @@ crucible.execution.signal-trace-manifest|crates/crucible/src/model/fault_signal/
 crucible.execution.signal-trace-chunk|crates/crucible/src/model/fault_signal/trace.rs|magic|CHUNK_MAGIC
 crucible.execution.failure-triage-replay-evidence|crates/crucible/src/model/failure/replay_evidence.rs|number|FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
 crucible.execution.host-assertion-continuation|crates/crucible/src/trigger/assertions.rs|magic|HOST_ASSERTION_CHECKPOINT_MAGIC
-crucible.execution.single-scheduler-continuation|crates/crucible/src/scheduler/checkpoint.rs|magic|crucible.single-scheduler-continuation.v3
+crucible.execution.single-scheduler-continuation|crates/crucible/src/scheduler/checkpoint.rs|magic|crucible.single-scheduler-continuation.v6
 crucible.execution.device-scheduling-subnode|crates/crucible/src/device_subnode/checkpoint.rs|magic|crucible.device-scheduling-subnode.v1
 crucible.execution.scenario-selectable-component|crates/crucible/src/model/scenario_selectables.rs|number|SCENARIO_SELECTABLE_VERSION
 crucible.execution.fault-adapter-checkpoint|crates/crucible/src/model/fault_signal/adapter_runtime.rs|number|ADAPTER_CHECKPOINT_VERSION
@@ -149,7 +149,7 @@ crucible.device.io-core-snapshot|crates/crucible-device/src/subnode/snapshot.rs|
 crucible.device.link-snapshot|crates/crucible-device/src/netlink/link/snapshot.rs|magic|LINK_SNAPSHOT_MAGIC
 crucible.device.ninep-snapshot|crates/crucible-device/src/ninep/device/snapshot.rs|magic|NINEP_SNAPSHOT_MAGIC
 crucible.qemu.checkpoint-qmp|crates/crucible-qemu/src/qmp/ram_delta.rs|number|QMP_CHECKPOINT_SCHEMA_VERSION
-crucible.qemu.host-io-checkpoint|crates/crucible-qemu/src/checkpoint/host_io_codec.rs|magic|crucible.qemu-host-io-checkpoint.v5
+crucible.qemu.host-io-checkpoint|crates/crucible-qemu/src/checkpoint/host_io_codec.rs|magic|crucible.qemu-host-io-checkpoint.v6
 crucible.qemu.production-fault-runtime|crates/crucible-qemu/src/production_fault_runtime/checkpoint_codec.rs|magic|crucible.production-fault-runtime.v7
 crucible.qemu.node-continuation|crates/crucible-qemu/src/checkpoint.rs|magic|crucible.qemu-node-continuation.v7
 crucible.qemu.accelerator-checkpoint|crates/crucible-qemu/src/supervision/accelerator_io_servicer.rs|magic|ACCELERATOR_CHECKPOINT_MAGIC

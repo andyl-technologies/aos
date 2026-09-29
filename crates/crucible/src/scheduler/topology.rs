@@ -719,6 +719,12 @@ pub struct IoCompletion {
     pub target: NodeId,
     /// The exact logical tick where the completion becomes visible.
     pub delivery_tick: SimInstant,
+    /// Original device-queue delivery key retained across resolution and restore.
+    ///
+    /// This is independent of the scheduler's canonical event ordinal. Physical
+    /// publication must authenticate it against the actual retained queue and
+    /// native input-boundary credential; these scalar fields grant no authority.
+    pub source_delivery: crucible_device::FrameDeliveryKey,
     /// The deterministic completion payload.
     pub payload: Vec<u8>,
 }

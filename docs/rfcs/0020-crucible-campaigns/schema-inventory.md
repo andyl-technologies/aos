@@ -75,7 +75,7 @@ rows. They do not create an additional wire or durable schema:
   The `crucible.execution.measurement-definitions` and
   `crucible.execution.measurement-evaluation` registry rows remain version 1;
   their containing scenario or observation codec owns byte compatibility.
-- `crucible.scheduler.event-log.entry.v4` and
+- `crucible.scheduler.event-log.entry.v5` and
   `crucible.session.fork-handle.v1` identify hash material, not separately
   decoded records. `crucible.model.world-fault-topology.v1` is a hash domain
   for JSON carried by the versioned world record. Device snapshot codecs in
@@ -92,7 +92,7 @@ rows. They do not create an additional wire or durable schema:
 - The lifecycle manifest and journal are fields of `run-state.json`, and the
   campaign runtime identity is a hash of the emitted configuration. Neither
   is a separately decoded format.
-- `crucible.scheduler.event-log.segment-text.v4` is a text projection generated
+- `crucible.scheduler.event-log.segment-text.v5` is a text projection generated
   from a decoded binary event-log segment; it is not independently stored or
   decoded for resume.
 - `crucible-cas::cas::campaign_codec` also emits

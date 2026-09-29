@@ -714,6 +714,10 @@ impl SimDouble {
 }
 
 impl SimulationBackend for SimDouble {
+    fn io_inventory_authority(&self) -> crate::BackendIoInventoryAuthority {
+        crate::BackendIoInventoryAuthority::SchedulerOwnedModel
+    }
+
     fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
         let outcome = self
             .advance_scripted_quantum(

@@ -26,6 +26,7 @@ use node_codec::{
 /// Complete host block-device continuation paired with QEMU VMState.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLiveBlockIoServicerCheckpoint {
+    pub(crate) world_binding: Option<crate::QemuWorldIoBinding>,
     pub(crate) execution_binding: ContentHash,
     pub(crate) storage_device: Option<ContentHash>,
     pub(crate) region_header: RegionHeaderSnapshot,
@@ -41,6 +42,7 @@ pub struct QemuLiveBlockIoServicerCheckpoint {
 /// Complete host 9p-device continuation paired with QEMU VMState.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLive9pIoServicerCheckpoint {
+    pub(crate) world_binding: Option<crate::QemuWorldIoBinding>,
     pub(crate) execution_binding: ContentHash,
     pub(crate) tree: ContentHash,
     pub(crate) region_header: RegionHeaderSnapshot,

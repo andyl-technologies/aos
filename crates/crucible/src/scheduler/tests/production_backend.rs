@@ -15,32 +15,18 @@ use crate::{
 
 #[test]
 fn backend_quantum_loop_applies_resolved_preemption_before_run() {
-    struct PreemptionLoop {
-        decision: PreemptionDecision,
-    }
-
-    impl QuantumLoop for PreemptionLoop {
-        fn drive_quantum(
-            &mut self,
-            request: QuantumRequest,
-        ) -> Result<QuantumOutcome, SchedulerError> {
-            Ok(QuantumOutcome {
-                configuration: request.configuration,
-                frontier: VirtualTime { ticks: 10 },
-                advanced_node: Some(scheduler_node("vm-a", SchedulingNodeKind::Vm)),
-                resolved_events: Vec::new(),
-                decisions: vec![Decision::Preemption(self.decision.clone())],
-                discovered_choices: Vec::new(),
-                event_log_entries: Vec::new(),
-                event_log_segment_bytes: Vec::new(),
-                event_log_segment_text: String::new(),
-                event_log_segment_hash: None,
-                event_log_offset: EventLogOffset::default(),
-                scheduler_quiescence: None,
-            })
-        }
-    }
-
+    let mut scheduler = test_scheduler(
+        vec![test_scenario_node(
+            "vm-a",
+            0,
+            SchedulerNodeActivity::Runnable,
+            NetworkLookahead::Infinite,
+            ExactLocalEvent::TimerDeadline {
+                virtual_time: SimInstant { ticks: 10 },
+            },
+        )],
+        Vec::new(),
+    );
     let decision = PreemptionDecision {
         node: NodeId {
             name: String::from("vm-a"),
@@ -51,29 +37,21 @@ fn backend_quantum_loop_applies_resolved_preemption_before_run() {
             to_vcpu: VcpuId { index: 1 },
         },
     };
-    let config = Configuration::genesis(ScenarioDef::from_canonical_material(
-        "crucible.test.scheduler.backend-preemption",
-        "scenario=backend-preemption",
-    ));
-    let mut adapter = BackendQuantumLoop::new(
-        PreemptionLoop {
-            decision: decision.clone(),
-        },
-        MockSimulationBackend::default(),
-    );
-
-    adapter
+    scheduler.preemption_requests.push(decision.clone());
+    let mut adapter = BackendQuantumLoop::new(scheduler, MockSimulationBackend::default());
+    let configuration = adapter.loop_impl().configuration().clone();
+    let outcome = adapter
         .drive_quantum(QuantumRequest {
-            configuration: config,
+            configuration,
             control: Vec::new(),
         })
-        .unwrap_or_else(|error| panic!("preemption-backed quantum should run: {error}"));
-
-    assert_eq!(adapter.backend().now(), VirtualTime { ticks: 10 });
+        .expect("native command must complete before publication");
+    assert_eq!(adapter.backend().now(), VirtualTime { ticks: 7 });
     assert_eq!(
         adapter.backend().state().applied_effects,
-        vec![BackendEffect::Preemption(decision)]
+        vec![BackendEffect::Preemption(decision.clone())]
     );
+    assert!(outcome.decisions.contains(&Decision::Preemption(decision)));
 }
 
 #[test]
@@ -404,7 +382,7 @@ fn backend_quantum_loop_buffers_observations_at_an_ahead_node_poll_boundary() {
     );
 
     let first = adapter
-        .drive_quantum(QuantumRequest {
+        .complete_test_observation_boundary(QuantumRequest {
             configuration: configuration.clone(),
             control: Vec::new(),
         })
@@ -416,7 +394,7 @@ fn backend_quantum_loop_buffers_observations_at_an_ahead_node_poll_boundary() {
 
     let mut uncommitted = adapter.clone();
     let diagnostic = uncommitted
-        .shutdown()
+        .shutdown_backend_owner()
         .expect_err("shutdown must reject an observation beyond the shared frontier")
         .to_string();
     assert!(diagnostic.contains("first timestamp is 10"));
@@ -425,7 +403,7 @@ fn backend_quantum_loop_buffers_observations_at_an_ahead_node_poll_boundary() {
     assert!(diagnostic.contains("committed frontier 5"));
 
     let second = adapter
-        .drive_quantum(QuantumRequest {
+        .complete_test_observation_boundary(QuantumRequest {
             configuration,
             control: Vec::new(),
         })
@@ -452,6 +430,10 @@ fn shutdown_rejects_causal_decisions_without_a_discovery_handoff() {
     }
 
     impl SimulationBackend for ShutdownDecisionBackend {
+        fn io_inventory_authority(&self) -> crate::BackendIoInventoryAuthority {
+            crate::BackendIoInventoryAuthority::SchedulerOwnedModel
+        }
+
         fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
             self.inner.step_to(ceiling)
         }
@@ -482,6 +464,16 @@ fn shutdown_rejects_causal_decisions_without_a_discovery_handoff() {
 
         fn shutdown(&mut self) -> Result<(), BackendError> {
             self.inner.shutdown()
+        }
+    }
+
+    impl ConcurrentSimulationBackend for ShutdownDecisionBackend {
+        fn execute_concurrent_runs(
+            &mut self,
+            runs: Vec<ConcurrentBackendRun>,
+            workers: usize,
+        ) -> Result<Vec<ConcurrentBackendRunResult>, BackendError> {
+            self.inner.execute_concurrent_runs(runs, workers)
         }
     }
 
@@ -860,30 +852,6 @@ fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
 }
 #[test]
 fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {
-    struct StubLoop;
-
-    impl QuantumLoop for StubLoop {
-        fn drive_quantum(
-            &mut self,
-            request: QuantumRequest,
-        ) -> Result<QuantumOutcome, SchedulerError> {
-            Ok(QuantumOutcome {
-                configuration: request.configuration,
-                frontier: VirtualTime { ticks: 0 },
-                advanced_node: None,
-                resolved_events: Vec::new(),
-                decisions: Vec::new(),
-                discovered_choices: Vec::new(),
-                event_log_entries: Vec::new(),
-                event_log_segment_bytes: Vec::new(),
-                event_log_segment_text: String::new(),
-                event_log_segment_hash: None,
-                event_log_offset: EventLogOffset::default(),
-                scheduler_quiescence: None,
-            })
-        }
-    }
-
     #[derive(Default)]
     struct GdbBackend {
         opened: Vec<(NodeId, String)>,
@@ -945,8 +913,8 @@ fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {
         }
     }
 
-    let mut adapter = BackendQuantumLoop::new(StubLoop, GdbBackend::default());
-    let info = adapter
+    let mut backend = GdbBackend::default();
+    let info = backend
         .open_gdbstub(
             NodeId {
                 name: String::from("vm-a"),
@@ -958,7 +926,7 @@ fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {
 
     assert_eq!(info.qemu_endpoint, "tcp:127.0.0.1:9001");
     assert_eq!(
-        adapter.backend().opened,
+        backend.opened,
         vec![(
             NodeId {
                 name: String::from("vm-a"),

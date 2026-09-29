@@ -234,6 +234,8 @@ pub(super) enum EffectiveHorizonProjection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct AdvanceWindow {
     pub(super) target_time: SimInstant,
+    pub(super) semantic_target_time: SimInstant,
+    pub(super) semantic_icount_rounding: SchedulerIcountRounding,
     pub(super) quiescent_horizon: Option<SimInstant>,
     pub(super) conservative_dependency: Option<UnresolvedCrossNodeDependency>,
     pub(super) icount_rounding: SchedulerIcountRounding,

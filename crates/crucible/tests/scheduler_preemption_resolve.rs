@@ -295,6 +295,7 @@ fn concurrent_preemption_validation_is_all_or_nothing() {
     .expect("scenario should build");
     let before_configuration = scheduler.configuration().clone();
     let before_frontier = scheduler.frontier();
+    let before_log_offset = scheduler.event_log().offset();
 
     let error = scheduler
         .drive_concurrent_quantum(
@@ -308,9 +309,10 @@ fn concurrent_preemption_validation_is_all_or_nothing() {
 
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
     assert!(error.to_string().contains("outside authorized window"));
-    assert_eq!(scheduler.run_ceiling_publications().len(), 2);
+    assert!(scheduler.run_ceiling_publications().is_empty());
     assert_eq!(scheduler.configuration(), &before_configuration);
     assert_eq!(scheduler.frontier(), before_frontier);
+    assert_eq!(scheduler.event_log().offset(), before_log_offset);
     assert!(scheduler.preemption_applications().is_empty());
 }
 
@@ -344,6 +346,7 @@ fn concurrent_multiple_preemptions_for_one_run_fail_before_any_commit() {
     .expect("scenario should build");
     let before_configuration = scheduler.configuration().clone();
     let before_frontier = scheduler.frontier();
+    let before_log_offset = scheduler.event_log().offset();
 
     let error = scheduler
         .drive_concurrent_quantum(
@@ -357,9 +360,10 @@ fn concurrent_multiple_preemptions_for_one_run_fail_before_any_commit() {
 
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
     assert!(error.to_string().contains("multiple explorer preemptions"));
-    assert_eq!(scheduler.run_ceiling_publications().len(), 2);
+    assert!(scheduler.run_ceiling_publications().is_empty());
     assert_eq!(scheduler.configuration(), &before_configuration);
     assert_eq!(scheduler.frontier(), before_frontier);
+    assert_eq!(scheduler.event_log().offset(), before_log_offset);
     assert!(scheduler.preemption_applications().is_empty());
 }
 
@@ -428,6 +432,8 @@ fn concurrent_preemptions_record_in_commanded_time_order() {
             .collect::<Vec<_>>(),
         vec![beta.clone(), alpha.clone()]
     );
+    // Known native commands fence each RUN at their application coordinate,
+    // so neither quantum endpoint passes a still-unpublished earlier command.
     assert_eq!(
         round
             .outcomes
@@ -437,9 +443,9 @@ fn concurrent_preemptions_record_in_commanded_time_order() {
             .collect::<Vec<_>>(),
         vec![
             VirtualTime { ticks: 2 },
-            VirtualTime { ticks: 6 },
+            VirtualTime { ticks: 2 },
             VirtualTime { ticks: 5 },
-            VirtualTime { ticks: 6 },
+            VirtualTime { ticks: 5 },
         ]
     );
 }

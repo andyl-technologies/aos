@@ -16,16 +16,24 @@ use crate::{
     RngDecision, ScenarioDef, StepObservation,
 };
 
+#[path = "tests/cap_boundary.rs"]
+mod cap_boundary;
 #[path = "tests/concurrent.rs"]
 mod concurrent;
 #[path = "tests/event_log_contracts.rs"]
 mod event_log_contracts;
+#[path = "tests/input_replan.rs"]
+mod input_replan;
+#[path = "tests/io_origin.rs"]
+mod io_origin;
 #[path = "tests/network_checkpoint.rs"]
 mod network_checkpoint;
 #[path = "tests/ordering.rs"]
 mod ordering;
 #[path = "tests/production_backend.rs"]
 mod production_backend;
+#[path = "tests/run_admission.rs"]
+mod run_admission;
 
 #[test]
 fn pending_network_boundary_release_settles_before_a_far_quantum() {
@@ -224,11 +232,11 @@ fn pending_pre_choice_frame_keeps_its_emission_time_across_counter_rebase() {
         "scenario=pending-rebase",
     ));
     adapter
-        .drive_quantum(QuantumRequest {
+        .complete_test_observation_boundary(QuantumRequest {
             configuration,
             control: Vec::new(),
         })
-        .expect("original-time frame should release when the shared frontier reaches it");
+        .expect("original-time frame should release at the shared frontier");
 
     assert_eq!(delivered.get(), 1);
     assert_eq!(adapter.pending_network_output_count(), 0);
@@ -407,21 +415,7 @@ fn failed_exact_boundary_network_append_poison_preserves_pending_frame() {
             .is_err()
     );
     assert_eq!(adapter.network_transaction_parts_mut().3, &[output]);
-    let config = Configuration::genesis(ScenarioDef::from_canonical_material(
-        "crucible.test.scheduler.poisoned-network-settlement",
-        "scenario=poisoned-network-settlement",
-    ));
-    let error = adapter
-        .drive_quantum(QuantumRequest {
-            configuration: config,
-            control: Vec::new(),
-        })
-        .expect_err("poisoned settlement must reject all later drive attempts");
-    assert!(
-        error
-            .to_string()
-            .contains("backend continuation is poisoned")
-    );
+    assert!(adapter.continuation_is_poisoned());
 }
 
 #[test]
@@ -1590,6 +1584,12 @@ fn io_completion_event(
             delivery_tick: SimInstant {
                 ticks: virtual_time,
             },
+            // This explicit model key is evidence only, never physical authority.
+            source_delivery: crucible_device::FrameDeliveryKey {
+                delivery_icount: virtual_time,
+                src_node: 37,
+                seq: 11,
+            },
             payload: payload.to_vec(),
         }),
     }
@@ -1624,14 +1624,17 @@ fn disk_with_reads(
         block,
         crate::Seed::from_u64(0x0d15_c0de),
     );
-    for (index, (request_icount, count)) in reads.iter().enumerate() {
-        let request_id = u32::try_from(index + 1).unwrap_or(u32::MAX);
-        if let Err(error) =
-            sub_node.submit(*request_icount, &BlockRequest::read(request_id, 0, *count))
-        {
-            panic!("disk submit should succeed: {error}");
-        }
-    }
+    let arrivals = reads
+        .iter()
+        .enumerate()
+        .map(|(index, (tick, count))| {
+            let request_id = u32::try_from(index + 1).unwrap_or(u32::MAX);
+            (*tick, BlockRequest::read(request_id, 0, *count))
+        })
+        .collect();
+    sub_node
+        .submit_arrivals(arrivals)
+        .unwrap_or_else(|error| panic!("complete modeled ARRIVE phase computes: {error}"));
     sub_node
 }
 
