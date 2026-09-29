@@ -19,6 +19,7 @@ struct SelectedQueueBackend {
     ring: RingHeader,
     entries: Vec<FrameEntry>,
     staged: Vec<ScheduledEventKey>,
+    refuse_shutdown: bool,
 }
 
 impl SimulationBackend for SelectedQueueBackend {
@@ -82,6 +83,11 @@ impl SimulationBackend for SelectedQueueBackend {
     }
 
     fn shutdown(&mut self) -> Result<(), BackendError> {
+        if self.refuse_shutdown {
+            return Err(BackendError::Rejected {
+                message: String::from("modeled shutdown refused without releasing its owner"),
+            });
+        }
         self.model.shutdown()
     }
 }
@@ -163,6 +169,7 @@ fn late_queue_stop(
         ring: RingHeader::new(),
         entries: vec![ok(FrameEntry::new(0, 0, 0, &[])); 4],
         staged: Vec::new(),
+        refuse_shutdown: false,
     };
     (scheduler, run, backend, pipeline, event)
 }
@@ -254,7 +261,7 @@ fn dispatch_ledger_refusal_retains_acknowledged_prefix_and_uncertain_original_ke
     let failed = retained
         .as_ref()
         .unwrap_or_else(|| panic!("owed dispatch owner lost"));
-    assert_eq!(failed.applied_keys(), &[first.key.clone()]);
+    assert_eq!(failed.applied_keys(), std::slice::from_ref(&first.key));
     assert_eq!(failed.attempted_key(), Some(&second.key));
     assert_eq!(failed.events(), &[first, second]);
     assert_eq!(failed._run.admission, original_owner);
@@ -264,4 +271,50 @@ fn dispatch_ledger_refusal_retains_acknowledged_prefix_and_uncertain_original_ke
     assert_eq!(scheduler.event_log.offset(), prefix);
     assert_eq!(scheduler.pending_events.len(), 2);
     assert!(scheduler.last_advance.is_none());
+}
+
+#[test]
+fn dispatch_shutdown_retains_owed_owner_on_failure_and_releases_it_on_success() {
+    let (mut scheduler, mut run, mut backend, _, first) = late_queue_stop(true);
+    let second = scheduler.pending_events[1].clone();
+    ok(scheduler.record_imported_io_publication(&second));
+    let boundary = BackendRunDispatchBoundary {
+        admission: run.admission.clone(),
+        reached: NodeCounter { ticks: 30 },
+    };
+    let held = HeldDeliveryCeiling::observe(&scheduler, &BTreeMap::new());
+    let mut retained = None;
+    assert!(
+        resolve_dispatch_boundary(
+            &mut scheduler,
+            &mut backend,
+            &mut run,
+            boundary,
+            &held,
+            &mut retained,
+        )
+        .is_err()
+    );
+    backend.refuse_shutdown = true;
+    let mut actor = BackendQuantumLoop::new(scheduler, backend);
+    actor.failed_dispatch_resolution = retained;
+    actor.continuation_poisoned = true;
+
+    assert!(actor.shutdown_backend_owner().is_err());
+    let owed = actor
+        .failed_dispatch_resolution()
+        .unwrap_or_else(|| panic!("failed shutdown lost owner"));
+    assert_eq!(owed.applied_keys(), std::slice::from_ref(&first.key));
+    assert_eq!(owed.attempted_key(), Some(&second.key));
+    assert_eq!(owed.events(), &[first, second]);
+    assert_eq!(owed._run.admission, run.admission);
+    assert!(!actor.backend().model.state().shutdown);
+
+    actor.backend_mut().refuse_shutdown = false;
+    ok(actor.shutdown_backend_owner());
+    assert!(actor.failed_dispatch_resolution().is_none());
+    assert!(actor.backend().model.state().shutdown);
+    assert!(actor.continuation_is_poisoned());
+    assert_eq!(actor.loop_impl().nodes[0].counter, NodeCounter { ticks: 0 });
+    assert!(actor.loop_impl().last_advance.is_none());
 }
