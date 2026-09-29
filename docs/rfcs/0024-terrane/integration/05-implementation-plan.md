@@ -114,7 +114,7 @@ empty `terrane` binary.
   CRATE-16, PKG-7; `checks.terrane.gates.crate-graph`,
   `checks.terrane.gates.role-selection`,
   `checks.terrane.gates.registry-complete`.
-- [ ] **T-RISK-3** Prolly boundary variance: generate trees of 10^4 to 10^7
+- [x] **T-RISK-3** Prolly boundary variance: generate trees of 10^4 to 10^7
   entries, measure node-size distribution under TREE-21 to TREE-24, and
   confirm the size-scaled boundary probability holds the distribution within
   spec limits. — satisfies RISK-5, TREE-22, TREE-24;
