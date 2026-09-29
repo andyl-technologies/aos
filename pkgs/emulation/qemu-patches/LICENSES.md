@@ -107,6 +107,9 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-mips-gic-migration.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-ptimer-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-openrisc-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-sparc-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-mips-count-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-s390-tod-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated
