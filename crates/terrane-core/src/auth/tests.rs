@@ -9,7 +9,9 @@ use alloc::{string::ToString, vec};
 fn hex(value: &str) -> Vec<u8> {
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             u8::from_str_radix(core::str::from_utf8(pair).expect("valid test fixture"), 16)
                 .expect("valid test fixture")
@@ -549,6 +551,36 @@ fn auth_attenuation_monotone_scope_union_and_caveats_survive_append() {
         b"refs/heads//main".as_slice(),
         b"refs/heads/../main",
         b"refs/heads/main\0",
+    ] {
+        context.reference = reference;
+        assert!(verified.authorize(&context).is_err());
+    }
+}
+
+#[test]
+fn auth_verify_pure_accepts_unbounded_schema_text_and_canonical_root_bytes() {
+    let mut body = authority();
+    body.subject = "s".repeat(70_000);
+    body.groups = vec!["group".to_string(); 300];
+    body.grants = vec![grant("refs/heads/main:/a:b/*", 1)];
+    let token =
+        Token::issue(body, &issuer_secret(), delegate_public()).expect("valid large subject");
+    let verified = verify(&token.encode(), &keys(), 10).expect("schema has no text size cap");
+    let locality = Locality::default();
+    let roots = [RequestRoot {
+        path: b"/a:b/file*",
+        domain: "public",
+    }];
+    let mut context = request(&locality, &roots);
+    context.reference = b"refs/heads/main";
+    context.verb = Verb::Read;
+    context.now = 10;
+    assert!(verified.authorize(&context).is_ok());
+    for reference in [
+        b"refs/unknown/main".as_slice(),
+        b"refs/heads/a?",
+        b"refs/heads/a..b",
+        b"refs/heads/\xc3\xa9",
     ] {
         context.reference = reference;
         assert!(verified.authorize(&context).is_err());

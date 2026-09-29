@@ -73,10 +73,10 @@ fn step(machine: &[Atom], state: &[usize], byte: u8) -> Vec<usize> {
             Some(Atom::Deep) if byte != 0 => Some(position),
             _ => None,
         };
-        if let Some(target) = target {
-            if !next.contains(&target) {
-                next.push(target);
-            }
+        if let Some(target) = target
+            && !next.contains(&target)
+        {
+            next.push(target);
         }
     }
     closure(machine, &mut next);
@@ -157,17 +157,39 @@ pub(super) fn contained(child: &Grant, parents: &[Grant], verb: u8) -> Result<bo
 }
 
 pub(super) fn canonical_reference(bytes: &[u8]) -> bool {
-    bytes.starts_with(b"refs/") && canonical_components(bytes, false)
+    let mut components = bytes.split(|byte| *byte == b'/');
+    if components.next() != Some(b"refs".as_slice()) {
+        return false;
+    }
+    if !matches!(
+        components.next(),
+        Some(b"heads" | b"tags" | b"notes" | b"jobs" | b"conflicts" | b"derived")
+    ) {
+        return false;
+    }
+    let mut count = 0;
+    for component in components {
+        count += 1;
+        if component.is_empty()
+            || component.windows(2).any(|pair| pair == b"..")
+            || component
+                .iter()
+                .any(|byte| !(0x20..=0x7e).contains(byte) || b"~^:?*[\\".contains(byte))
+        {
+            return false;
+        }
+    }
+    count != 0
 }
 
 pub(super) fn canonical_root(bytes: &[u8]) -> bool {
     bytes == b"/"
         || bytes
             .strip_prefix(b"/")
-            .is_some_and(|path| canonical_components(path, false))
+            .is_some_and(|path| crate::tree_format::validate_key(path).is_ok())
 }
 
-fn canonical_components(bytes: &[u8], pattern: bool) -> bool {
+fn canonical_components(bytes: &[u8], root: bool) -> bool {
     !bytes.is_empty()
         && bytes.split(|byte| *byte == b'/').all(|component| {
             !component.is_empty()
@@ -175,14 +197,14 @@ fn canonical_components(bytes: &[u8], pattern: bool) -> bool {
                 && component != b".."
                 && component
                     .iter()
-                    .all(|byte| *byte != 0 && *byte != b':' && (pattern || *byte != b'*'))
+                    .all(|byte| *byte != 0 && (root || *byte != b':'))
         })
 }
 
 pub(super) fn valid_grant(pattern: &str) -> bool {
     let (reference, root) = pattern.split_once(':').unwrap_or((pattern, "/"));
     reference.starts_with("refs/")
-        && canonical_components(reference.as_bytes(), true)
+        && canonical_components(reference.as_bytes(), false)
         && (root == "/"
             || root
                 .strip_prefix('/')

@@ -405,7 +405,11 @@ impl Token {
             return Err(Diagnostic::Signature);
         }
 
-        let effective = self.effective()?;
+        let mut effective = self.effective()?;
+        if let Some(retirement) = keys[0].retirement {
+            // A verified value cannot be reused beyond the configured key lifetime.
+            effective.not_after = effective.not_after.min(retirement.saturating_sub(1));
+        }
         if now > effective.not_after || now < effective.not_before {
             return Err(Diagnostic::Time);
         }
