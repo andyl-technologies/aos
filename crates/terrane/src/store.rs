@@ -412,6 +412,12 @@ pub trait HttpClient {
 pub trait Clock {
     /// Returns the current wall-clock time.
     fn now(&self) -> SystemTime;
+
+    /// Returns ticks since an arbitrary monotonic origin for elapsed time.
+    ///
+    /// Callers compare values from the same clock instance; they never persist
+    /// a tick or compare it with wall time.
+    fn monotonic(&self) -> Duration;
 }
 
 /// Supplies a WebAssembly host's fetch and time primitives (CRATE-8).
@@ -433,6 +439,9 @@ pub trait WasmHost {
 
     /// Returns the host's current wall-clock time.
     fn now(&self) -> SystemTime;
+
+    /// Returns the host's monotonic ticks from an arbitrary origin.
+    fn monotonic(&self) -> Duration;
 }
 
 /// Adapts one WebAssembly host to the portable HTTP and clock contracts.
@@ -465,6 +474,10 @@ impl<H: WasmHost> HttpClient for WasmBindings<H> {
 impl<H: WasmHost> Clock for WasmBindings<H> {
     fn now(&self) -> SystemTime {
         self.host.now()
+    }
+
+    fn monotonic(&self) -> Duration {
+        self.host.monotonic()
     }
 }
 
@@ -636,6 +649,12 @@ pub struct TokioClock;
 impl Clock for TokioClock {
     fn now(&self) -> SystemTime {
         SystemTime::now()
+    }
+
+    fn monotonic(&self) -> Duration {
+        static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+        ORIGIN.get_or_init(std::time::Instant::now).elapsed()
     }
 }
 
@@ -840,8 +859,13 @@ mod tests {
 
     #[cfg(all(feature = "wasm", not(feature = "send")))]
     #[test]
-    fn wasm_binding_forwards_fetch_and_host_time() {
-        struct TestHost;
+    fn wasm_binding_forwards_fetch_and_separates_wall_from_elapsed_time() {
+        use std::cell::Cell;
+
+        struct TestHost {
+            wall: Cell<SystemTime>,
+            ticks: Cell<Duration>,
+        }
 
         #[async_trait::async_trait(?Send)]
         impl WasmHost for TestHost {
@@ -854,11 +878,18 @@ mod tests {
             }
 
             fn now(&self) -> SystemTime {
-                SystemTime::UNIX_EPOCH + Duration::from_secs(42)
+                self.wall.get()
+            }
+
+            fn monotonic(&self) -> Duration {
+                self.ticks.get()
             }
         }
 
-        let binding = WasmBindings::new(TestHost);
+        let binding = WasmBindings::new(TestHost {
+            wall: Cell::new(SystemTime::UNIX_EPOCH + Duration::from_secs(42)),
+            ticks: Cell::new(Duration::from_secs(8)),
+        });
         let request = HttpRequest {
             method: "POST".to_owned(),
             url: "https://example.invalid".to_owned(),
@@ -873,6 +904,22 @@ mod tests {
             binding.now(),
             SystemTime::UNIX_EPOCH + Duration::from_secs(42)
         );
+
+        let deadline = binding.monotonic() + Duration::from_secs(5);
+        binding.host.wall.set(SystemTime::UNIX_EPOCH);
+        assert_eq!(binding.monotonic(), Duration::from_secs(8));
+        binding.host.ticks.set(Duration::from_secs(14));
+        assert!(binding.monotonic() >= deadline);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn native_clock_ticks_do_not_move_backward() {
+        let clock = TokioClock;
+        let first = clock.monotonic();
+        let second = clock.monotonic();
+
+        assert!(second >= first);
     }
 
     #[cfg(feature = "tokio")]

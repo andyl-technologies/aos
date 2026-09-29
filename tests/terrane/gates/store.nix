@@ -21,10 +21,11 @@
     cd crates
     cargo check --frozen --offline -p terrane --lib --no-default-features
     cargo check --frozen --offline -p terrane --lib --no-default-features --features std,send
-    cargo test --frozen --offline -p terrane --lib --no-default-features --features wasm store::tests::wasm_binding_forwards_fetch_and_host_time
+    cargo test --frozen --offline -p terrane --lib --no-default-features --features wasm store::tests::wasm_binding_forwards_fetch_and_separates_wall_from_elapsed_time
     cargo check --frozen --offline -p terrane --lib --features tokio
     cargo check --frozen --offline -p terrane --lib --all-features
     cargo test --frozen --offline -p terrane --lib --features tokio store::tests::native_file_binding_preserves_atomic_names_and_ranges
+    cargo test --frozen --offline -p terrane --lib --features tokio store::tests::native_clock_ticks_do_not_move_backward
     printf 'PASS: portable store traits and native binding compile\n' > "$out/result"
   '';
 }
