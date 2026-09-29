@@ -1,4 +1,4 @@
-From 64038173a3156eca05c5eca8afbfa466ce9325d2 Mon Sep 17 00:00:00 2001
+From 1c341804cf3e538e59ee8aac6f900163f151328e Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -95,6 +95,12 @@ microframe origin. Keep polling and callback lateness from shifting
 architectural microframe boundaries, preserve generic non-TCG behavior
 and the existing phase migration format, and exercise literal arming
 bodies with real fractional timers and serialized phase round trips.
+
+Preserve exact HPET timer history for all TCG migration.
+Retain the wide picosecond origin, extended comparator and periodic
+storm-clamp deadline even when all phases align to nanoseconds.
+Require exact TCG state on restore; keep generic non-TCG timing unchanged
+and exercise literal device timers, pin IRQs and full migration streams.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -42319,7 +42325,7 @@ index 0424539c78fb6dbf70184b935253ec9efd5b1c04..052f966a68732f44bed47c7db4f1475a
  #endif
              qemu_irq_raise(s->irq);
 diff --git a/hw/timer/hpet.c b/hw/timer/hpet.c
-index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b714744b1 100644
+index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d954a55bc1 100644
 --- a/hw/timer/hpet.c
 +++ b/hw/timer/hpet.c
 @@ -25,9 +25,12 @@
@@ -42469,16 +42475,13 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
  }
  
  /*
-@@ -236,13 +304,48 @@ static void update_irq(struct HPETTimer *timer, int set)
+@@ -236,13 +304,45 @@ static void update_irq(struct HPETTimer *timer, int set)
      }
  }
  
 +static bool hpet_crucible_clock_exact_required(void)
 +{
-+    const char *accelerator_name = current_accel_name();
-+
-+    return icount_enabled() && accelerator_name &&
-+        strcmp(accelerator_name, "sim") == 0;
++    return qemu_timer_tcg_ps_enabled();
 +}
 +
 +static int hpet_pre_load(void *opaque)
@@ -42519,13 +42522,13 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
      }
  
      /*
-@@ -266,12 +369,30 @@ static int hpet_post_load(void *opaque, int version_id)
+@@ -266,12 +366,30 @@ static int hpet_post_load(void *opaque, int version_id)
      HPETState *s = opaque;
      int i;
  
 +    if (hpet_crucible_clock_exact_required() &&
 +        !s->crucible_clock_exact_loaded) {
-+        error_report("Crucible HPET exact timer state is missing");
++        error_report("TCG HPET exact timer state is missing");
 +        return -EINVAL;
 +    }
 +    if (s->crucible_clock_exact_loaded) {
@@ -42551,7 +42554,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
      return 0;
  }
  
-@@ -322,17 +443,192 @@ static const VMStateDescription vmstate_hpet_timer = {
+@@ -322,17 +440,193 @@ static const VMStateDescription vmstate_hpet_timer = {
          VMSTATE_UINT64(fsb, HPETTimer),
          VMSTATE_UINT64(period, HPETTimer),
          VMSTATE_UINT8(wrap_flag, HPETTimer),
@@ -42574,15 +42577,16 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
 +        VMSTATE_UINT64(cmp64, HPETTimer),
 +        VMSTATE_INT64(last_ns_save, HPETTimer),
 +        VMSTATE_UINT16(last_phase_ps_save, HPETTimer),
-         VMSTATE_END_OF_LIST()
-     }
- };
- 
++        VMSTATE_END_OF_LIST()
++    }
++};
++
 +static bool hpet_crucible_clock_needed(void *opaque)
 +{
 +    HPETState *s = opaque;
 +
-+    if (icount_crucible_sim_mode() || s->hpet_offset_ps % 1000 != 0) {
++    /* Aligned state also carries cmp64 and periodic storm-clamp history. */
++    if (qemu_timer_tcg_ps_enabled() || s->hpet_offset_ps % 1000 != 0) {
 +        return true;
 +    }
 +    for (unsigned i = 0; i < s->num_timers; i++) {
@@ -42638,10 +42642,10 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
 +        VMSTATE_STRUCT_VARRAY_UINT8(timer, HPETState, num_timers, 0,
 +                                    vmstate_hpet_timer_crucible_clock,
 +                                    HPETTimer),
-+        VMSTATE_END_OF_LIST()
-+    }
-+};
-+
+         VMSTATE_END_OF_LIST()
+     }
+ };
+ 
 +static bool hpet_fingerprint_projection(QEMUFile *f, const void *opaque,
 +                                        Error **errp)
 +{
@@ -42745,7 +42749,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
      .fields = (const VMStateField[]) {
          VMSTATE_UINT64(config, HPETState),
          VMSTATE_UINT64(isr, HPETState),
-@@ -346,21 +642,143 @@ static const VMStateDescription vmstate_hpet = {
+@@ -346,21 +640,143 @@ static const VMStateDescription vmstate_hpet = {
      .subsections = (const VMStateDescription * const []) {
          &vmstate_hpet_rtc_irq_level,
          &vmstate_hpet_offset,
@@ -42897,7 +42901,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
  }
  
  /*
-@@ -370,7 +788,24 @@ static void hpet_timer(void *opaque)
+@@ -370,7 +786,24 @@ static void hpet_timer(void *opaque)
  {
      HPETTimer *t = opaque;
      uint64_t period = t->period;
@@ -42923,7 +42927,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
  
      if (timer_is_periodic(t) && period != 0) {
          while (hpet_time_after(cur_tick, t->cmp64)) {
-@@ -391,7 +826,7 @@ static void hpet_timer(void *opaque)
+@@ -391,7 +824,7 @@ static void hpet_timer(void *opaque)
  
  static void hpet_set_timer(HPETTimer *t)
  {
@@ -42932,7 +42936,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
  
      t->wrap_flag = 0;
      t->cmp64 = hpet_calculate_cmp64(t, cur_tick, t->cmp);
-@@ -412,7 +847,27 @@ static void hpet_set_timer(HPETTimer *t)
+@@ -412,7 +845,27 @@ static void hpet_set_timer(HPETTimer *t)
  static void hpet_del_timer(HPETTimer *t)
  {
      HPETState *s = t->state;
@@ -42960,7 +42964,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
  
      if (s->isr & (1 << t->tn)) {
          /* For level-triggered interrupt, this leaves ISR set but lowers irq.  */
-@@ -440,8 +895,20 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
+@@ -440,8 +893,20 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
              version = seqlock_read_begin(&s->state_version);
              if (unlikely(!hpet_enabled(s))) {
                  cur_tick = s->hpet_counter;
@@ -42982,7 +42986,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
              }
          } while (seqlock_read_retry(&s->state_version, version));
          trace_hpet_ram_read_reading_counter(addr & 4, cur_tick);
-@@ -512,9 +979,32 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
+@@ -512,9 +977,32 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
              seqlock_write_begin(&s->state_version);
              s->config = new_val;
              if (activating_bit(old_val, new_val, HPET_CFG_ENABLE)) {
@@ -43016,7 +43020,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
                  for (i = 0; i < s->num_timers; i++) {
                      if (timer_enabled(&s->timer[i]) && (s->isr & (1 << i))) {
                          update_irq(&s->timer[i], 1);
-@@ -523,7 +1013,7 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
+@@ -523,7 +1011,7 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
                  }
              } else if (deactivating_bit(old_val, new_val, HPET_CFG_ENABLE)) {
                  /* Halt main counter and disable interrupt generation. */
@@ -43025,7 +43029,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
                  for (i = 0; i < s->num_timers; i++) {
                      hpet_del_timer(&s->timer[i]);
                  }
-@@ -667,11 +1157,13 @@ static void hpet_reset(DeviceState *d)
+@@ -667,11 +1155,13 @@ static void hpet_reset(DeviceState *d)
          timer->config |=  (uint64_t)s->intcap << 32;
          timer->period = 0ULL;
          timer->wrap_flag = 0;
@@ -43039,7 +43043,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
      s->config = 0ULL;
      hpet_fw_cfg.hpet[s->hpet_id].event_timer_block_id = (uint32_t)s->capability;
      hpet_fw_cfg.hpet[s->hpet_id].address = sbd->mmio[0].addr;
-@@ -711,6 +1203,57 @@ static void hpet_init(Object *obj)
+@@ -711,6 +1201,57 @@ static void hpet_init(Object *obj)
      sysbus_init_mmio(sbd, &s->iomem);
  }
  
@@ -43097,7 +43101,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
  static void hpet_realize(DeviceState *dev, Error **errp)
  {
      SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
-@@ -757,6 +1300,38 @@ static void hpet_realize(DeviceState *dev, Error **errp)
+@@ -757,6 +1298,38 @@ static void hpet_realize(DeviceState *dev, Error **errp)
  
      qdev_init_gpio_in(dev, hpet_handle_legacy_irq, 2);
      qdev_init_gpio_out(dev, &s->pit_enabled, 1);
@@ -43136,7 +43140,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b
  }
  
  static const Property hpet_device_properties[] = {
-@@ -769,6 +1344,7 @@ static void hpet_device_class_init(ObjectClass *klass, const void *data)
+@@ -769,6 +1342,7 @@ static void hpet_device_class_init(ObjectClass *klass, const void *data)
  {
      DeviceClass *dc = DEVICE_CLASS(klass);
  
@@ -141339,7 +141343,7 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..9752929cae3f5cef2695e4cfec16fa5a5b2c9225 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..547ec35f742741fbbf7259d12cf29a037ae1def1 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -147,6 +147,37 @@ if have_system
@@ -141380,7 +141384,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..9752929cae3f5cef2695e4cfec16fa5a
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +238,175 @@ foreach test_name, extra: tests
+@@ -207,3 +238,196 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -141549,6 +141553,27 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..9752929cae3f5cef2695e4cfec16fa5a
 +  test(
 +    'test-crucible-xhci-microframe',
 +    xhci_microframe_test,
++    env: test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 30,
++    suite: ['unit'],
++  )
++endif
++
++if have_system and config_all_devices.has_key('CONFIG_HPET')
++  hpet_phase_test = executable(
++    'test-crucible-hpet-phase',
++    'test-crucible-hpet-phase.c',
++    '../../hw/core/irq.c',
++    genh,
++    dependencies: [qemuutil, qom, migration, io],
++    c_args: ['-ffunction-sections', '-fdata-sections'],
++    link_args: ['-Wl,--gc-sections'],
++  )
++  test(
++    'test-crucible-hpet-phase',
++    hpet_phase_test,
 +    env: test_env,
 +    args: ['--tap', '-k'],
 +    protocol: 'tap',
@@ -149142,6 +149167,402 @@ index 0000000000000000000000000000000000000000..05bca65903fd80021e579ca94d20b1be
 +                    test_main_loop_owns_fork);
 +    g_test_add_func("/crucible/hot-fork/coordinator/status-schema-boundary",
 +                    test_status_schema_rejects_before_record_access);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-hpet-phase.c b/tests/unit/test-crucible-hpet-phase.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..e83fed624e375e4d3a0d63cc3bdbd679c7c6bfc3
+--- /dev/null
++++ b/tests/unit/test-crucible-hpet-phase.c
+@@ -0,0 +1,390 @@
++/*
++ * Literal HPET comparator, timer and migration regressions.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "qemu/module.h"
++#include "system/cpu-timers.h"
++#include "io/channel-buffer.h"
++#include "../../migration/qemu-file.h"
++
++/* Keep the complete device implementation; no machine or QOM registration. */
++#undef type_init
++#define type_init(function) \
++    static void (*const fixture_##function)(void) G_GNUC_UNUSED = function;
++#include "../../hw/timer/hpet.c"
++
++static __int128 observed_ps;
++static unsigned irq_count;
++
++/* MSI routing is outside this pin-IRQ fixture and must never execute. */
++AddressSpace address_space_memory;
++
++void address_space_stl_le(AddressSpace *space, hwaddr address, uint32_t value,
++                          MemTxAttrs attributes, MemTxResult *result)
++{
++    g_assert_not_reached();
++}
++
++static __int128 expiry_ps(const QEMUTimer *timer)
++{
++    return qemu_timer_tcg_ps_enabled() ? timer_expire_time_ps_wide(timer) :
++        (__int128)timer_expire_time_ns(timer) * PICOSECONDS_PER_NANOSECOND;
++}
++
++int64_t cpu_get_clock(void)
++{
++    return observed_ps / PICOSECONDS_PER_NANOSECOND;
++}
++
++bool icount_crucible_sim_mode(void)
++{
++    return false;
++}
++
++static __int128 observed_clock_ps(void)
++{
++    return observed_ps;
++}
++
++/* No transform is installed: fault paths must not become timer permission. */
++bool qemu_crucible_fault_clock_source_active(uint16_t kind, uint32_t instance)
++{
++    g_assert_cmpuint(kind, ==, QEMU_CRUCIBLE_CLOCK_X86_HPET);
++    g_assert_cmpuint(instance, ==, 0);
++    return false;
++}
++
++bool qemu_crucible_fault_clock_source_rebase(uint16_t kind, uint32_t instance,
++                                            uint64_t raw)
++{
++    g_assert_cmpuint(kind, ==, QEMU_CRUCIBLE_CLOCK_X86_HPET);
++    return true;
++}
++
++bool qemu_crucible_fault_clock_timer_fire(
++    uint16_t kind, uint32_t instance, uint16_t role, uint32_t index,
++    uint64_t sequence, uint64_t guest, uint64_t scheduler, uint64_t generation)
++{
++    g_assert_cmpuint(generation, ==, 0);
++    return true;
++}
++
++bool qemu_crucible_fault_clock_read_ticks(
++    uint16_t kind, uint32_t instance, uint64_t raw, uint64_t opportunity,
++    uint64_t *value, bool *read_error)
++{
++    g_assert_not_reached();
++}
++
++bool qemu_crucible_fault_clock_project_ticks(
++    uint16_t kind, uint32_t instance, uint64_t raw,
++    uint64_t *value, bool *read_error)
++{
++    g_assert_not_reached();
++}
++
++bool qemu_crucible_fault_clock_deadline_ps(
++    uint16_t kind, uint32_t instance, uint64_t guest, uint16_t role,
++    uint32_t index, uint64_t period, uint64_t *sequence, int64_t *scheduler,
++    uint32_t *action, uint64_t *generation, uint64_t *effective)
++{
++    g_assert_not_reached();
++}
++
++bool qemu_crucible_fault_clock_timer_arm(uint64_t *sequence)
++{
++    g_assert_not_reached();
++}
++
++bool qemu_crucible_fault_clock_timer_transition(
++    uint16_t kind, uint32_t instance, uint16_t role, uint32_t index,
++    uint64_t sequence, uint64_t old_guest, uint64_t old_scheduler,
++    uint64_t old_generation, uint64_t new_guest, uint64_t new_scheduler,
++    uint64_t new_generation, uint32_t action)
++{
++    g_assert_not_reached();
++}
++
++void qemu_crucible_fault_clock_event_terminal_at(const char *file,
++                                                unsigned int line)
++{
++    g_assert_not_reached();
++}
++
++static void record_irq(void *opaque, int irq, int level)
++{
++    if (level) {
++        irq_count++;
++    }
++}
++
++static void initialize_clock(bool exact)
++{
++    Error *error = NULL;
++
++    module_call_init(MODULE_INIT_QOM);
++    qemu_init_main_loop(&error);
++    g_assert_null(error);
++    if (exact) {
++        qemu_timer_enable_tcg_ps_clock(NULL, observed_clock_ps);
++    }
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++}
++
++static void initialize_hpet(HPETState *state)
++{
++    qemu_mutex_init(&state->lock);
++    seqlock_init(&state->state_version);
++    state->num_timers = 1;
++    state->timer[0].state = state;
++    state->timer[0].qemu_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
++                                             hpet_timer, &state->timer[0]);
++    state->irqs[0] = qemu_allocate_irq(record_irq, NULL, 0);
++    state->timer[0].config = HPET_TN_ENABLE;
++}
++
++static void destroy_hpet(HPETState *state)
++{
++    timer_free(state->timer[0].qemu_timer);
++    qemu_free_irq(state->irqs[0]);
++    qemu_mutex_destroy(&state->lock);
++}
++
++static QIOChannelBuffer *save_hpet(HPETState *state,
++                                  const VMStateDescription *description)
++{
++    QIOChannelBuffer *buffer = qio_channel_buffer_new(1024);
++    QIOChannelBuffer *input;
++    QEMUFile *file = qemu_file_new_output(QIO_CHANNEL(buffer));
++    Error *error = NULL;
++
++    g_assert_cmpint(vmstate_save_state(file, description, state, NULL, &error),
++                    ==, 0);
++    g_assert_null(error);
++    qemu_put_byte(file, 0);
++    qemu_fflush(file);
++    input = qio_channel_buffer_new(buffer->usage);
++    input->usage = buffer->usage;
++    memcpy(input->data, buffer->data, buffer->usage);
++    g_assert_cmpint(qemu_fclose(file), ==, 0);
++    object_unref(OBJECT(buffer));
++    return input;
++}
++
++static int load_hpet(HPETState *state, QIOChannelBuffer *input,
++                     const VMStateDescription *description)
++{
++    QEMUFile *file = qemu_file_new_input(QIO_CHANNEL(input));
++    Error *error = NULL;
++    int result = vmstate_load_state(file, description, state,
++                                    description->version_id, &error);
++
++    if (result < 0) {
++        g_assert_nonnull(error);
++        error_free(error);
++    } else {
++        g_assert_null(error);
++    }
++    qemu_fclose(file);
++    object_unref(OBJECT(input));
++    return result;
++}
++
++static void test_irq_boundary(gconstpointer opaque)
++{
++    bool exact = GPOINTER_TO_INT(opaque);
++    HPETState state = { 0 };
++    __int128 deadline;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = 10501;
++    initialize_clock(exact);
++    initialize_hpet(&state);
++    state.timer[0].cmp = 1;
++    hpet_ram_write(&state, HPET_CFG, HPET_CFG_ENABLE, 8);
++    deadline = exact ? 20501 : 20000;
++    g_assert_true(expiry_ps(state.timer[0].qemu_timer) ==
++                  deadline);
++    observed_ps = deadline - 1;
++    g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++    g_assert_cmpuint(hpet_get_ticks_raw(&state), ==, 0);
++    g_assert_cmpuint(irq_count, ==, 0);
++    observed_ps = deadline;
++    g_assert_true(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++    g_assert_cmpuint(hpet_get_ticks_raw(&state), ==, 1);
++    g_assert_cmpuint(irq_count, ==, 1);
++    destroy_hpet(&state);
++}
++
++static void test_periodic_migration(gconstpointer opaque)
++{
++    uint16_t phase = GPOINTER_TO_INT(opaque);
++    HPETState original = { 0 };
++    HPETState restored = { 0 };
++    QIOChannelBuffer *input;
++    __int128 original_deadline;
++    bool exact_state_needed;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = 0;
++    initialize_clock(true);
++    initialize_hpet(&original);
++    original.timer[0].config |= HPET_TN_PERIODIC | HPET_TN_32BIT;
++    original.timer[0].cmp = 100;
++    original.timer[0].period = 100;
++    original.timer[0].last_ps = 995000 + phase;
++    hpet_ram_write(&original, HPET_COUNTER, UINT64_C(0x100000000), 8);
++    hpet_ram_write(&original, HPET_CFG, HPET_CFG_ENABLE, 8);
++    g_assert_cmpuint(original.timer[0].cmp64, ==, UINT64_C(0x100000064));
++    original_deadline = 1995000 + phase;
++    g_assert_true(timer_expire_time_ps_wide(original.timer[0].qemu_timer) ==
++                  original_deadline);
++    exact_state_needed = hpet_crucible_clock_needed(&original);
++    input = save_hpet(&original, &vmstate_hpet);
++    destroy_hpet(&original);
++
++    initialize_hpet(&restored);
++    g_assert_cmpint(load_hpet(&restored, input, &vmstate_hpet), ==, 0);
++    g_assert_true(timer_expire_time_ps_wide(restored.timer[0].qemu_timer) ==
++                  original_deadline);
++    /* The next comparator arm retains the same storm-clamp origin. */
++    hpet_arm(&restored.timer[0], restored.timer[0].cmp64);
++    g_assert_true(timer_expire_time_ps_wide(restored.timer[0].qemu_timer) ==
++                  original_deadline + 1000000);
++    g_assert_true(exact_state_needed);
++    g_assert_true(restored.crucible_clock_exact_loaded);
++    g_assert_cmpuint(restored.timer[0].cmp64, ==, UINT64_C(0x100000064));
++    g_assert_true(restored.timer[0].last_ps == original_deadline + 1000000);
++    destroy_hpet(&restored);
++}
++
++static void test_wide_counter_and_migration(void)
++{
++    HPETState original = { 0 };
++    HPETState restored = { 0 };
++    QIOChannelBuffer *input;
++    __int128 deadline;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = (__int128)INT64_MAX * 1000 - 3000000 + 501;
++    initialize_clock(true);
++    initialize_hpet(&original);
++    original.timer[0].cmp = 100;
++    hpet_ram_write(&original, HPET_CFG, HPET_CFG_ENABLE, 8);
++    deadline = observed_ps + 1000000;
++    g_assert_true(deadline > UINT64_MAX);
++    g_assert_true(timer_expire_time_ps_wide(original.timer[0].qemu_timer) ==
++                  deadline);
++    input = save_hpet(&original, &vmstate_hpet);
++    destroy_hpet(&original);
++
++    initialize_hpet(&restored);
++    g_assert_cmpint(load_hpet(&restored, input, &vmstate_hpet), ==, 0);
++    g_assert_true(timer_expire_time_ps_wide(restored.timer[0].qemu_timer) ==
++                  deadline);
++    observed_ps = deadline - 1;
++    g_assert_cmpuint(hpet_get_ticks_raw(&restored), ==, 99);
++    g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++    observed_ps = deadline;
++    g_assert_cmpuint(hpet_get_ticks_raw(&restored), ==, 100);
++    g_assert_true(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++    g_assert_cmpuint(irq_count, ==, 1);
++    destroy_hpet(&restored);
++}
++
++static void test_missing_exact_state(gconstpointer opaque)
++{
++    bool exact = GPOINTER_TO_INT(opaque);
++    HPETState original = { 0 };
++    HPETState restored = { 0 };
++    QIOChannelBuffer *input;
++    VMStateDescription legacy;
++    const VMStateDescription *legacy_subsections[] = {
++        &vmstate_hpet_rtc_irq_level, &vmstate_hpet_offset, NULL,
++    };
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = 10000;
++    initialize_clock(exact);
++    initialize_hpet(&original);
++    /* Reproduce the old aligned TCG stream's omitted exact subsection. */
++    legacy = vmstate_hpet;
++    legacy.subsections = legacy_subsections;
++    input = save_hpet(&original, exact ? &legacy : &vmstate_hpet);
++    destroy_hpet(&original);
++
++    initialize_hpet(&restored);
++    g_assert_cmpint(load_hpet(&restored, input, &vmstate_hpet), ==,
++                    exact ? -EINVAL : 0);
++    g_assert_cmpint(hpet_crucible_clock_needed(&restored), ==, exact);
++    g_assert_false(restored.crucible_clock_exact_loaded);
++    destroy_hpet(&restored);
++}
++
++static void test_malformed_phase(void)
++{
++    HPETState state = { 0 };
++    QIOChannelBuffer *input;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    initialize_hpet(&state);
++    state.hpet_offset_ps = 10501;
++    g_assert_cmpint(hpet_pre_save(&state), ==, 0);
++    input = save_hpet(&state, &vmstate_hpet_crucible_clock);
++    stw_be_p(input->data + 8, 1000);
++    g_assert_cmpint(load_hpet(&state, input, &vmstate_hpet_crucible_clock),
++                    <, 0);
++    g_assert_false(state.crucible_clock_exact_loaded);
++    destroy_hpet(&state);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_data_func("/hpet/fractional-irq", GINT_TO_POINTER(true),
++                         test_irq_boundary);
++    g_test_add_data_func("/hpet/non-tcg-irq", GINT_TO_POINTER(false),
++                         test_irq_boundary);
++    g_test_add_data_func("/hpet/aligned-periodic-migration", GINT_TO_POINTER(0),
++                         test_periodic_migration);
++    g_test_add_data_func("/hpet/fractional-periodic-migration",
++                         GINT_TO_POINTER(501), test_periodic_migration);
++    g_test_add_func("/hpet/wide-counter-migration",
++                    test_wide_counter_and_migration);
++    g_test_add_data_func("/hpet/missing-tcg-exact", GINT_TO_POINTER(true),
++                         test_missing_exact_state);
++    g_test_add_data_func("/hpet/non-tcg-legacy", GINT_TO_POINTER(false),
++                         test_missing_exact_state);
++    g_test_add_func("/hpet/malformed-phase", test_malformed_phase);
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-i3c-timer.c b/tests/unit/test-crucible-i3c-timer.c
