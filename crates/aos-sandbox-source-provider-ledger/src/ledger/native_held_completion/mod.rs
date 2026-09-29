@@ -26,7 +26,7 @@ pub use admission::SourceNativeHeldAdmissionBindingV1;
 pub use graph::validate_native_held_records_v1;
 pub use lifecycle::{
     SourceNativeHeldLifecycleTransactionV1, SourceNativeHeldLifecycleV1,
-    propose_native_held_lifecycle_v1,
+    native_held_release_status_binding_v1, propose_native_held_lifecycle_v1,
 };
 pub use transition::{
     SourceNativeHeldMutationV1, SourceNativeHeldStepV1, SourceNativeHeldTransactionV1,
