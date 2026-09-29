@@ -1482,6 +1482,7 @@ unit - qemu:test-crucible-ptimer-wide-clock
 unit - qemu:test-crucible-rc4030-period
 unit - qemu:test-crucible-riscv-cpc-clock
 unit - qemu:test-crucible-rtc-phase
+unit - qemu:test-crucible-s390-tod-wide-clock
 unit - qemu:test-crucible-slirp-time
 unit - qemu:test-crucible-vfio-timer
 unit - qemu:test-crucible-vga-blink

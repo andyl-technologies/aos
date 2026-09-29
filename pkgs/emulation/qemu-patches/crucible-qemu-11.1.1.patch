@@ -1,4 +1,4 @@
-From 267e4ed93fee233d7d8158386d430d2b76ef37da Mon Sep 17 00:00:00 2001
+From d1eeb6ca69927e0659238e59df8fb77d66e1b546 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -137,10 +137,14 @@ Preserve valid disabled zero-period state in exact and ordinary modes.
 Preserve full-range OpenRISC timer origins and exact pending deadlines.
 Retain genuine signed negative expiry through the versioned timer state.
 
+Preserve full-range SPARC and MIPS CPU timer origins and deadlines.
+Convert S390 TOD arithmetic without overflowing the wide clock domain.
+Link the real IRQ implementation for the configured MIPS timer unit.
+
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
 diff --git a/MAINTAINERS b/MAINTAINERS
-index 902db77218eacc2461b54fe675c9816b3d98aec6..e5f3ab3321517d039134f6b7b9d2be7445004944 100644
+index 902db77218eacc2461b54fe675c9816b3d98aec6..8824f05496d70fe913c0215d744efc79586216c3 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
 @@ -328,6 +328,7 @@ F: hw/or1k/
@@ -151,7 +155,15 @@ index 902db77218eacc2461b54fe675c9816b3d98aec6..e5f3ab3321517d039134f6b7b9d2be74
  
  PowerPC TCG CPUs
  M: Nicholas Piggin <npiggin@gmail.com>
-@@ -3012,6 +3013,7 @@ F: hw/intc/mips_gic.c
+@@ -406,6 +407,7 @@ F: target/s390x/
+ F: target/s390x/tcg
+ F: hw/s390x/
+ F: tests/tcg/s390x/
++F: tests/unit/test-crucible-s390-tod-wide-clock.c
+ L: qemu-s390x@nongnu.org
+ 
+ SH4 TCG CPUs
+@@ -3012,6 +3014,7 @@ F: hw/intc/mips_gic.c
  F: hw/timer/mips_gictimer.c
  F: include/hw/intc/mips_gic.h
  F: include/hw/timer/mips_gictimer.h
@@ -159,7 +171,7 @@ index 902db77218eacc2461b54fe675c9816b3d98aec6..e5f3ab3321517d039134f6b7b9d2be74
  
  S390 3270 device
  M: Halil Pasic <pasic@linux.ibm.com>
-@@ -3472,6 +3474,7 @@ Main loop
+@@ -3472,6 +3475,7 @@ Main loop
  M: Paolo Bonzini <pbonzini@redhat.com>
  S: Maintained
  F: include/qemu/main-loop.h
@@ -167,7 +179,7 @@ index 902db77218eacc2461b54fe675c9816b3d98aec6..e5f3ab3321517d039134f6b7b9d2be74
  F: include/system/runstate.h
  F: include/system/runstate-action.h
  F: util/main-loop.c
-@@ -4201,11 +4204,24 @@ R: Alexandre Iooss <erdnaxe@crans.org>
+@@ -4201,11 +4205,24 @@ R: Alexandre Iooss <erdnaxe@crans.org>
  S: Maintained
  F: docs/devel/tcg-plugins.rst
  F: plugins/
@@ -40926,41 +40938,47 @@ index e58a6103970adee239a83bc7bd9d24466a10bef0..b5534ffc6229a2cef33a31f9db7d878b
      },
  };
 diff --git a/hw/sparc64/sparc64.c b/hw/sparc64/sparc64.c
-index 16f4aa052bc20916ce417c9d49c6204cf4be6215..1ab3808b9b3e537a968f9c810b7dbab1957dbb2f 100644
+index 16f4aa052bc20916ce417c9d49c6204cf4be6215..257ef68c5a38933a90366fc9d08e55deb1a7966f 100644
 --- a/hw/sparc64/sparc64.c
 +++ b/hw/sparc64/sparc64.c
-@@ -91,7 +91,13 @@ static CPUTimer *cpu_timer_create(const char *name, SPARCCPU *cpu,
+@@ -35,6 +35,8 @@
+ 
+ #define TICK_MAX             0x7fffffffffffffffULL
+ 
++static void cpu_timer_set_clock_offset_ps(CPUTimer *timer, __int128 offset_ps);
++
+ static void cpu_kick_irq(SPARCCPU *cpu)
+ {
+     CPUState *cs = CPU(cpu);
+@@ -91,7 +93,12 @@ static CPUTimer *cpu_timer_create(const char *name, SPARCCPU *cpu,
  
      timer->disabled = 1;
      timer->npt = 1;
 -    timer->clock_offset = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 +    if (qemu_timer_tcg_ps_enabled()) {
-+        g_assert(qemu_time_split_ps(
-+            qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL),
-+            &timer->clock_offset, &timer->clock_offset_phase_ps));
++        cpu_timer_set_clock_offset_ps(
++            timer, qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL));
 +    } else {
 +        timer->clock_offset = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 +    }
  
      timer->qtimer = timer_new_ns(QEMU_CLOCK_VIRTUAL, cb, cpu);
  
-@@ -101,7 +107,14 @@ static CPUTimer *cpu_timer_create(const char *name, SPARCCPU *cpu,
+@@ -101,7 +108,12 @@ static CPUTimer *cpu_timer_create(const char *name, SPARCCPU *cpu,
  static void cpu_timer_reset(CPUTimer *timer)
  {
      timer->disabled = 1;
 -    timer->clock_offset = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 +    if (qemu_timer_tcg_ps_enabled()) {
-+        g_assert(qemu_time_split_ps(
-+            qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL),
-+            &timer->clock_offset, &timer->clock_offset_phase_ps));
++        cpu_timer_set_clock_offset_ps(
++            timer, qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL));
 +    } else {
 +        timer->clock_offset = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-+        timer->clock_offset_phase_ps = 0;
 +    }
  
      timer_del(timer->qtimer);
  }
-@@ -194,27 +207,67 @@ static uint64_t timer_to_cpu_ticks(int64_t timer_ticks, uint32_t frequency)
+@@ -194,27 +206,84 @@ static uint64_t timer_to_cpu_ticks(int64_t timer_ticks, uint32_t frequency)
      return muldiv64(timer_ticks, frequency, NANOSECONDS_PER_SECOND);
  }
  
@@ -40969,26 +40987,39 @@ index 16f4aa052bc20916ce417c9d49c6204cf4be6215..1ab3808b9b3e537a968f9c810b7dbab1
 +    return (__int128)cpu_ticks * PICOSECONDS_PER_SECOND / frequency;
 +}
 +
-+static uint64_t timer_ps_to_cpu_ticks(__int128 timer_ps,
++static uint64_t timer_ps_to_cpu_ticks(__int128 now_ps, __int128 origin_ps,
 +                                      uint32_t frequency)
 +{
-+    return timer_ps * frequency / PICOSECONDS_PER_SECOND;
++    bool negative = now_ps < origin_ps;
++    __uint128_t magnitude = negative ?
++        (__uint128_t)origin_ps - (__uint128_t)now_ps :
++        (__uint128_t)now_ps - (__uint128_t)origin_ps;
++    uint64_t seconds = magnitude / PICOSECONDS_PER_SECOND;
++    uint64_t remainder = magnitude % PICOSECONDS_PER_SECOND;
++    uint64_t ticks;
++
++    /*
++     * Divide before multiplying, keeping architectural uint64_t rollover.
++     * Unsigned subtraction also covers elapsed spans beyond signed128.
++     */
++    ticks = seconds * frequency +
++            (__uint128_t)remainder * frequency / PICOSECONDS_PER_SECOND;
++    return negative ? 0 - ticks : ticks;
 +}
 +
 +static __int128 cpu_timer_clock_offset_ps(CPUTimer *timer)
 +{
-+    __int128 offset_ps;
-+
-+    g_assert(qemu_time_join_ps(timer->clock_offset,
-+                               timer->clock_offset_phase_ps, &offset_ps));
-+    return offset_ps;
++    return (__int128)timer->clock_offset_ps_hi * ((__int128)1 << 64) +
++           timer->clock_offset_ps_lo;
 +}
 +
-+static void cpu_timer_set_clock_offset_ps(CPUTimer *timer,
-+                                          __int128 offset_ps)
++static void cpu_timer_set_clock_offset_ps(CPUTimer *timer, __int128 offset_ps)
 +{
-+    g_assert(qemu_time_split_ps(offset_ps, &timer->clock_offset,
-+                                &timer->clock_offset_phase_ps));
++    timer->clock_offset_ps_hi = offset_ps / ((__int128)1 << 64);
++    if (offset_ps % ((__int128)1 << 64) < 0) {
++        timer->clock_offset_ps_hi--;
++    }
++    timer->clock_offset_ps_lo = offset_ps;
 +}
 +
  void cpu_tick_set_count(CPUTimer *timer, uint64_t count)
@@ -41006,13 +41037,17 @@ index 16f4aa052bc20916ce417c9d49c6204cf4be6215..1ab3808b9b3e537a968f9c810b7dbab1
      timer->npt = npt_bit ? 1 : 0;
 -    timer->clock_offset = vm_clock_offset;
 +    if (qemu_timer_tcg_ps_enabled()) {
-+        cpu_timer_set_clock_offset_ps(
-+            timer, qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL) -
-+                   cpu_to_timer_ps(real_count, timer->frequency));
++        __int128 origin_ps;
++
++        if (__builtin_sub_overflow(qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL),
++                                   cpu_to_timer_ps(real_count, timer->frequency),
++                                   &origin_ps)) {
++            g_error("SPARC tick origin exceeds signed128 picoseconds");
++        }
++        cpu_timer_set_clock_offset_ps(timer, origin_ps);
 +    } else {
 +        timer->clock_offset = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
 +            cpu_to_timer_ticks(real_count, timer->frequency);
-+        timer->clock_offset_phase_ps = 0;
 +    }
  }
  
@@ -41025,7 +41060,7 @@ index 16f4aa052bc20916ce417c9d49c6204cf4be6215..1ab3808b9b3e537a968f9c810b7dbab1
 +
 +    if (qemu_timer_tcg_ps_enabled()) {
 +        real_count = timer_ps_to_cpu_ticks(
-+            qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL) -
++            qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL),
 +            cpu_timer_clock_offset_ps(timer), timer->frequency);
 +    } else {
 +        real_count = timer_to_cpu_ticks(
@@ -41035,7 +41070,7 @@ index 16f4aa052bc20916ce417c9d49c6204cf4be6215..1ab3808b9b3e537a968f9c810b7dbab1
  
      trace_sparc64_cpu_tick_get_count(timer->name, real_count,
                                       timer->npt ? "disabled" : "enabled",
-@@ -229,11 +282,38 @@ uint64_t cpu_tick_get_count(CPUTimer *timer)
+@@ -229,11 +298,44 @@ uint64_t cpu_tick_get_count(CPUTimer *timer)
  
  void cpu_tick_set_limit(CPUTimer *timer, uint64_t limit)
  {
@@ -41046,28 +41081,34 @@ index 16f4aa052bc20916ce417c9d49c6204cf4be6215..1ab3808b9b3e537a968f9c810b7dbab1
  
 +    if (qemu_timer_tcg_ps_enabled()) {
 +        __int128 now_ps = qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL);
-+        __int128 expires_ps = cpu_to_timer_ps(real_limit, timer->frequency) +
-+                              cpu_timer_clock_offset_ps(timer);
++        __int128 expires_ps;
 +
-+        if (expires_ps < now_ps) {
-+            expires_ps = now_ps + PICOSECONDS_PER_NANOSECOND;
++        if (!real_limit) {
++            trace_sparc64_cpu_tick_set_limit_zero(timer->name);
++            timer_del(timer->qtimer);
++            return;
++        }
++        if (timer->disabled) {
++            timer_del(timer->qtimer);
++            return;
++        }
++        if (__builtin_add_overflow(cpu_to_timer_ps(real_limit, timer->frequency),
++                                   cpu_timer_clock_offset_ps(timer),
++                                   &expires_ps) ||
++            (expires_ps < now_ps &&
++             __builtin_add_overflow(now_ps, (__int128)PICOSECONDS_PER_NANOSECOND,
++                                    &expires_ps))) {
++            g_error("SPARC tick deadline exceeds signed128 picoseconds");
 +        }
 +
 +        trace_sparc64_cpu_tick_set_limit(
 +            timer->name, real_limit,
 +            timer->disabled ? "disabled" : "enabled", timer, limit,
-+            timer_ps_to_cpu_ticks(now_ps - cpu_timer_clock_offset_ps(timer),
++            timer_ps_to_cpu_ticks(now_ps, cpu_timer_clock_offset_ps(timer),
 +                                  timer->frequency),
-+            timer_ps_to_cpu_ticks(expires_ps - now_ps, timer->frequency));
++            timer_ps_to_cpu_ticks(expires_ps, now_ps, timer->frequency));
 +
-+        if (!real_limit) {
-+            trace_sparc64_cpu_tick_set_limit_zero(timer->name);
-+            timer_del(timer->qtimer);
-+        } else if (timer->disabled) {
-+            timer_del(timer->qtimer);
-+        } else {
-+            timer_mod_ps_wide(timer->qtimer, expires_ps);
-+        }
++        timer_mod_ps_wide(timer->qtimer, expires_ps);
 +        return;
 +    }
 +
@@ -128494,43 +128535,56 @@ index f56e76d482e4fb4c322c9634a527cf678db8df73..f906a8440d44eee22268c87edf7dd7f5
          sys->CSR_TCFG = FIELD_DP64(sys->CSR_TCFG, CSR_TCFG, EN, 0);
      }
 diff --git a/target/mips/cpu.h b/target/mips/cpu.h
-index 319147a948cecf2576bd7d9642858f5a8b7e4fca..a2cbcbe0ffd174d9a7f24e7e71a3191835d326df 100644
+index 319147a948cecf2576bd7d9642858f5a8b7e4fca..3e1cd29512f1c959904104a274609d95f754d73b 100644
 --- a/target/mips/cpu.h
 +++ b/target/mips/cpu.h
-@@ -1235,6 +1235,7 @@ typedef struct CPUArchState {
+@@ -1235,6 +1235,13 @@ typedef struct CPUArchState {
  
      const mips_def_t *cpu_model;
      QEMUTimer *timer; /* Internal timer */
 +    bool timer_exact_loaded;
++    /* Exact TCG deadline; the parent nanosecond wire field is a shadow. */
++    int64_t timer_deadline_ns;
++    int64_t timer_deadline_ps_hi;
++    uint64_t timer_deadline_ps_lo;
++    uint8_t timer_active;
++    uint8_t timer_wide_clock_mode;
      target_ulong exception_base; /* ExceptionBase input to the core */
  } CPUMIPSState;
  
 diff --git a/target/mips/system/cp0_timer.c b/target/mips/system/cp0_timer.c
-index 6aed5d3af24355559237e34813ac4593b16d21da..530cea30183ad5d6f2ce17e26f5558c6037350bb 100644
+index 6aed5d3af24355559237e34813ac4593b16d21da..b6005cde0c97b6ce843000638cd75c738b342da7 100644
 --- a/target/mips/system/cp0_timer.c
 +++ b/target/mips/system/cp0_timer.c
-@@ -26,29 +26,80 @@
+@@ -26,29 +26,86 @@
  #include "internal.h"
  
  /* MIPS R4K timer */
 +static uint32_t mips_clock_ps_to_ticks(const Clock *clock, __int128 time_ps)
 +{
-+    __int128 divisor = (__int128)clock_get(clock) *
-+                       PICOSECONDS_PER_NANOSECOND;
-+    __int128 dividend;
-+    __int128 ticks;
++    __uint128_t divisor = (__uint128_t)clock_get(clock) *
++                          PICOSECONDS_PER_NANOSECOND;
++    __uint128_t magnitude = time_ps < 0 ?
++                           0 - (__uint128_t)time_ps : (__uint128_t)time_ps;
++    __uint128_t scaled_remainder;
++    uint32_t ticks;
 +
 +    if (!divisor) {
 +        return 0;
 +    }
 +
-+    /* Clock periods use 2^-32 ns units; floor keeps negative time canonical. */
-+    dividend = time_ps * ((__int128)1 << 32);
-+    ticks = dividend / divisor;
-+    if (dividend < 0 && dividend % divisor) {
-+        ticks--;
++    /*
++     * Each complete divisor contributes exactly 2^32 architectural ticks.
++     * Reduce before scaling, so the full signed128 coordinate never overflows.
++     * The remainder is below a 64-bit fixed-point period times 1000.
++     */
++    scaled_remainder = (magnitude % divisor) << 32;
++    ticks = scaled_remainder / divisor;
++    if (time_ps < 0) {
++        /* Counter coordinates use floor, including negative fractional ticks. */
++        return 0 - ticks - (scaled_remainder % divisor != 0);
 +    }
-+    return (uint32_t)ticks;
++    return ticks;
 +}
 +
 +static __int128 mips_clock_ticks_to_ps(const Clock *clock, uint32_t ticks)
@@ -128579,15 +128633,14 @@ index 6aed5d3af24355559237e34813ac4593b16d21da..530cea30183ad5d6f2ce17e26f5558c6
 -    timer_mod(env->timer, next_ns);
 +
 +    if (qemu_timer_tcg_ps_enabled()) {
-+        __int128 max_ps = (__int128)INT64_MAX *
-+                          PICOSECONDS_PER_NANOSECOND +
-+                          PICOSECONDS_PER_NANOSECOND - 1;
 +        __int128 now_ps = qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL);
 +        __int128 delta_ps = mips_clock_ticks_to_ps(cpu->count_clock, wait);
++        __int128 deadline_ps;
 +
-+        timer_mod_ps_wide(env->timer,
-+                          delta_ps > max_ps - now_ps ? max_ps :
-+                          now_ps + delta_ps);
++        if (__builtin_add_overflow(now_ps, delta_ps, &deadline_ps)) {
++            g_error("MIPS Count/Compare deadline exceeds signed128 picoseconds");
++        }
++        timer_mod_ps_wide(env->timer, deadline_ps);
 +    } else {
 +        uint64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 +        uint64_t next_ns = now_ns +
@@ -128598,7 +128651,7 @@ index 6aed5d3af24355559237e34813ac4593b16d21da..530cea30183ad5d6f2ce17e26f5558c6
  }
  
  /* Expire the timer.  */
-@@ -66,11 +117,18 @@ uint32_t cpu_mips_get_count(CPUMIPSState *env)
+@@ -66,11 +123,18 @@ uint32_t cpu_mips_get_count(CPUMIPSState *env)
      if (env->CP0_Cause & (1 << CP0Ca_DC)) {
          return env->CP0_Count;
      } else {
@@ -128622,7 +128675,7 @@ index 6aed5d3af24355559237e34813ac4593b16d21da..530cea30183ad5d6f2ce17e26f5558c6
              /* The timer has already expired.  */
              cpu_mips_timer_expire(env);
          }
-@@ -90,8 +148,16 @@ void cpu_mips_store_count(CPUMIPSState *env, uint32_t count)
+@@ -90,8 +154,16 @@ void cpu_mips_store_count(CPUMIPSState *env, uint32_t count)
          env->CP0_Count = count;
      } else {
          /* Store new count register */
@@ -128641,7 +128694,7 @@ index 6aed5d3af24355559237e34813ac4593b16d21da..530cea30183ad5d6f2ce17e26f5558c6
          /* Update timer timer */
          cpu_mips_timer_update(env);
      }
-@@ -118,8 +184,17 @@ void cpu_mips_stop_count(CPUMIPSState *env)
+@@ -118,8 +190,17 @@ void cpu_mips_stop_count(CPUMIPSState *env)
  {
      /* Store the current value */
      MIPSCPU *cpu = env_archcpu(env);
@@ -128662,7 +128715,7 @@ index 6aed5d3af24355559237e34813ac4593b16d21da..530cea30183ad5d6f2ce17e26f5558c6
  
  static void mips_timer_cb(void *opaque)
 diff --git a/target/mips/system/machine.c b/target/mips/system/machine.c
-index bd1e4002cfde895ceeb984647561ef129bf80855..4d6375ae0c0a9ebae170948a7784c70372ddd2d7 100644
+index bd1e4002cfde895ceeb984647561ef129bf80855..10af8b234582d2d22c338a03a900126eb24a84f4 100644
 --- a/target/mips/system/machine.c
 +++ b/target/mips/system/machine.c
 @@ -5,6 +5,8 @@
@@ -128674,92 +128727,128 @@ index bd1e4002cfde895ceeb984647561ef129bf80855..4d6375ae0c0a9ebae170948a7784c703
  #include "qemu/timer.h"
  
  static int cpu_post_load(void *opaque, int version_id)
-@@ -310,15 +312,108 @@ static bool mips_timer_needed(void *opaque)
+@@ -310,15 +312,144 @@ static bool mips_timer_needed(void *opaque)
      return cpu->env.timer != NULL;
  }
  
-+/* The phase subsection disambiguates an active -1ns floor from inactive. */
-+static bool mips_timer_load_ns_floor(QEMUFile *f, void *pv, size_t size,
-+                                     const VMStateField *field, Error **errp)
++static __int128 mips_timer_deadline_ps(CPUMIPSState *env)
 +{
-+    QEMUTimer *timer = pv;
-+    int64_t deadline_ns = qemu_get_sbe64(f);
-+
-+    if (deadline_ns == -1) {
-+        timer_del(timer);
-+    } else if (!timer_mod_ns_phase(timer, deadline_ns, 0)) {
-+        error_setg(errp, "MIPS timer deadline cannot be restored");
-+        return false;
-+    }
-+    return true;
++    return (__int128)env->timer_deadline_ps_hi * ((__int128)1 << 64) +
++           env->timer_deadline_ps_lo;
 +}
 +
-+static bool mips_timer_save_ns_floor(QEMUFile *f, void *pv, size_t size,
-+                                     const VMStateField *field,
-+                                     JSONWriter *vmdesc, Error **errp)
++static int64_t mips_timer_ns_shadow(__int128 deadline_ps)
 +{
-+    QEMUTimer *timer = pv;
-+    uint16_t phase_ps;
-+    int64_t deadline_ns;
-+    int status;
++    __int128 ns = deadline_ps / PICOSECONDS_PER_NANOSECOND;
 +
-+    status = timer_expire_time_ns_phase(timer, &deadline_ns, &phase_ps);
-+    if (status < 0) {
-+        error_setg(errp, "MIPS timer deadline exceeds the nanosecond horizon");
-+        return false;
++    if (deadline_ps % PICOSECONDS_PER_NANOSECOND < 0) {
++        ns--;
 +    }
-+    qemu_put_sbe64(f, status ? deadline_ns : -1);
-+    return true;
++    return ns < INT64_MIN ? INT64_MIN : ns > INT64_MAX ? INT64_MAX : ns;
 +}
 +
-+static const VMStateInfo mips_vmstate_info_timer_ns_floor = {
-+    .name = "timer",
-+    .load = mips_timer_load_ns_floor,
-+    .save = mips_timer_save_ns_floor,
-+};
++static int mips_timer_pre_save(void *opaque)
++{
++    MIPSCPU *cpu = opaque;
++    CPUMIPSState *env = &cpu->env;
++    __int128 deadline_ps;
++
++    env->timer_active = timer_pending(env->timer);
++    if (!qemu_timer_tcg_ps_enabled()) {
++        env->timer_deadline_ns = env->timer_active ?
++                                 timer_expire_time_ns(env->timer) : -1;
++        return 0;
++    }
++
++    env->timer_wide_clock_mode = 1;
++    deadline_ps = env->timer_active ? timer_expire_time_ps_wide(env->timer) : 0;
++    env->timer_deadline_ps_hi = deadline_ps / ((__int128)1 << 64);
++    if (deadline_ps % ((__int128)1 << 64) < 0) {
++        env->timer_deadline_ps_hi--;
++    }
++    env->timer_deadline_ps_lo = deadline_ps;
++    env->timer_deadline_ns = env->timer_active ?
++                             mips_timer_ns_shadow(deadline_ps) : -1;
++    return 0;
++}
 +
 +static int mips_timer_pre_load(void *opaque)
 +{
 +    MIPSCPU *cpu = opaque;
 +
++    timer_del(cpu->env.timer);
 +    cpu->env.timer_exact_loaded = false;
++    cpu->env.timer_wide_clock_mode = 0;
 +    return 0;
 +}
 +
 +static int mips_timer_post_load(void *opaque, int version_id)
 +{
 +    MIPSCPU *cpu = opaque;
++    CPUMIPSState *env = &cpu->env;
++    __int128 deadline_ps = 0;
++    int64_t deadline_ns = env->timer_deadline_ns;
++    uint16_t phase_ps;
++    bool active = deadline_ns != -1;
 +
-+    (void)version_id;
-+    if (icount_crucible_sim_mode() && !cpu->env.timer_exact_loaded) {
++    if (qemu_timer_tcg_ps_enabled() && !env->timer_exact_loaded) {
 +        return -EINVAL;
++    }
++    if (env->timer_exact_loaded) {
++        deadline_ps = mips_timer_deadline_ps(env);
++        active = env->timer_active;
++        if (env->timer_wide_clock_mode != 1 || env->timer_active > 1 ||
++            (active && mips_timer_ns_shadow(deadline_ps) != deadline_ns) ||
++            (!active && (deadline_ps != 0 || deadline_ns != -1))) {
++            return -EINVAL;
++        }
++        if (active && !qemu_timer_tcg_ps_enabled()) {
++            if (!qemu_time_split_ps(deadline_ps, &deadline_ns, &phase_ps) ||
++                (phase_ps && deadline_ns == INT64_MAX)) {
++                return -EINVAL;
++            }
++            deadline_ns += !!phase_ps;
++        }
++    }
++
++    /* Validate the complete exact section before any timer admission. */
++    if (active) {
++        if (qemu_timer_tcg_ps_enabled()) {
++            timer_mod_ps_wide(env->timer, deadline_ps);
++        } else {
++            timer_mod_ns(env->timer, deadline_ns);
++        }
 +    }
 +    return 0;
 +}
 +
-+static int mips_timer_phase_post_load(void *opaque, int version_id)
++static int mips_timer_exact_post_load(void *opaque, int version_id)
 +{
 +    MIPSCPU *cpu = opaque;
 +
-+    (void)version_id;
++    if (cpu->env.timer_exact_loaded) {
++        return -EINVAL;
++    }
 +    cpu->env.timer_exact_loaded = true;
 +    return 0;
 +}
 +
-+static bool mips_timer_phase_needed(void *opaque)
++static bool mips_timer_wide_needed(void *opaque)
 +{
-+    (void)opaque;
 +    return qemu_timer_tcg_ps_enabled();
 +}
 +
-+static const VMStateDescription mips_vmstate_timer_phase = {
-+    .name = "cpu/timer/ps-phase",
++static const VMStateDescription mips_vmstate_timer_wide = {
++    .name = "cpu/timer/clock-wide",
 +    .version_id = 1,
 +    .minimum_version_id = 1,
-+    .needed = mips_timer_phase_needed,
-+    .post_load = mips_timer_phase_post_load,
++    .needed = mips_timer_wide_needed,
++    .post_load = mips_timer_exact_post_load,
 +    .fields = (const VMStateField[]) {
-+        VMSTATE_TIMER_NS_PHASE_PTR(env.timer, MIPSCPU),
++        VMSTATE_UINT8(env.timer_wide_clock_mode, MIPSCPU),
++        VMSTATE_UINT8(env.timer_active, MIPSCPU),
++        VMSTATE_INT64(env.timer_deadline_ps_hi, MIPSCPU),
++        VMSTATE_UINT64(env.timer_deadline_ps_lo, MIPSCPU),
 +        VMSTATE_END_OF_LIST(),
 +    },
 +};
@@ -128769,17 +128858,17 @@ index bd1e4002cfde895ceeb984647561ef129bf80855..4d6375ae0c0a9ebae170948a7784c703
      .version_id = 1,
      .minimum_version_id = 1,
      .needed = mips_timer_needed,
++    .pre_save = mips_timer_pre_save,
 +    .pre_load = mips_timer_pre_load,
 +    .post_load = mips_timer_post_load,
      .fields = (const VMStateField[]) {
 -        VMSTATE_TIMER_PTR(env.timer, MIPSCPU),
-+        VMSTATE_POINTER(env.timer, MIPSCPU, 0,
-+                        mips_vmstate_info_timer_ns_floor, QEMUTimer *),
++        VMSTATE_INT64(env.timer_deadline_ns, MIPSCPU),
          VMSTATE_END_OF_LIST()
 -    }
 +    },
 +    .subsections = (const VMStateDescription * const []) {
-+        &mips_vmstate_timer_phase,
++        &mips_vmstate_timer_wide,
 +        NULL,
 +    },
  };
@@ -130234,10 +130323,10 @@ index 09a45e58a5dbc582cdca99bb6ecaa9b344afd202..a5c648d28085184241605c39fba883b2
      timer_mod(env->cpu_timer, env->cputm);
  }
 diff --git a/target/s390x/tcg/s390-tod.h b/target/s390x/tcg/s390-tod.h
-index 8b74d6a6d886080ece7aaacca60018c88f190aca..ebe4915dbed2d4fc1b982b0a57cd1632dbd4999b 100644
+index 8b74d6a6d886080ece7aaacca60018c88f190aca..af7e7053e97b15cc7e40cefcc77df4ce4ef85a90 100644
 --- a/target/s390x/tcg/s390-tod.h
 +++ b/target/s390x/tcg/s390-tod.h
-@@ -14,6 +14,73 @@
+@@ -14,6 +14,79 @@
  /* The value of the TOD clock for 1.1.1970. */
  #define TOD_UNIX_EPOCH 0x7d91048bca000000ULL
  
@@ -130248,8 +130337,14 @@ index 8b74d6a6d886080ece7aaacca60018c88f190aca..ebe4915dbed2d4fc1b982b0a57cd1632
 +/* Converts signed ps to s390 clock units, rounding toward negative infinity. */
 +static inline __int128 ps2tod(__int128 ps)
 +{
-+    __int128 numerator = ps * TOD_UNITS_PER_MICROSECOND;
-+    __int128 result = numerator / PICOSECONDS_PER_MICROSECOND;
++    /*
++     * Scaling the absolute clock first would overflow within its legal range.
++     */
++    __int128 whole = ps / PICOSECONDS_PER_MICROSECOND;
++    __int128 remainder = ps % PICOSECONDS_PER_MICROSECOND;
++    __int128 numerator = remainder * TOD_UNITS_PER_MICROSECOND;
++    __int128 result = whole * TOD_UNITS_PER_MICROSECOND +
++                      numerator / PICOSECONDS_PER_MICROSECOND;
 +
 +    if (numerator % PICOSECONDS_PER_MICROSECOND < 0) {
 +        result--;
@@ -130312,21 +130407,27 @@ index 8b74d6a6d886080ece7aaacca60018c88f190aca..ebe4915dbed2d4fc1b982b0a57cd1632
  static inline uint64_t time2tod(uint64_t ns)
  {
 diff --git a/target/sparc/cpu.h b/target/sparc/cpu.h
-index 5f583ed9de2b4adb18ed1e6e079de8f7372884a1..ed22f42de3ce41cb3154ad269d15f1bb71046d49 100644
+index 5f583ed9de2b4adb18ed1e6e079de8f7372884a1..6526ab2bdc2ccc4fefc5cc204dd0b3b8472554c1 100644
 --- a/target/sparc/cpu.h
 +++ b/target/sparc/cpu.h
-@@ -375,6 +375,9 @@ struct CPUTimer
+@@ -375,6 +375,15 @@ struct CPUTimer
      uint32_t    npt;
      uint64_t    npt_mask;
      int64_t     clock_offset;
-+    uint16_t    clock_offset_phase_ps;
-+    uint16_t    qtimer_phase_ps;
-+    uint8_t     ps_clock_unit;
++    /* Exact TCG origin and deadline; nanoseconds are migration shadows only. */
++    int64_t     clock_offset_ps_hi;
++    uint64_t    clock_offset_ps_lo;
++    int64_t     deadline_ps_hi;
++    uint64_t    deadline_ps_lo;
++    int64_t     deadline_ns;
++    uint8_t     timer_active;
++    uint8_t     wide_clock_mode;
++    bool        exact_loaded;
      QEMUTimer  *qtimer;
  };
  
 diff --git a/target/sparc/machine.c b/target/sparc/machine.c
-index 0d5d79b5e7be53bb01d8830e9beb1d1b2a45a186..6a83cac68f3045a8bb9a0d74314d37feb47e43d2 100644
+index 0d5d79b5e7be53bb01d8830e9beb1d1b2a45a186..09c21f1d7280d1d65d3c003db3196f8f6d75248e 100644
 --- a/target/sparc/machine.c
 +++ b/target/sparc/machine.c
 @@ -1,4 +1,5 @@
@@ -130335,53 +130436,91 @@ index 0d5d79b5e7be53bb01d8830e9beb1d1b2a45a186..6a83cac68f3045a8bb9a0d74314d37fe
  #include "cpu.h"
  #include "qemu/target-info.h"
  #include "qemu/timer.h"
-@@ -7,10 +8,97 @@
+@@ -7,10 +8,161 @@
  #include "migration/qemu-file-types.h"
  
  #ifdef TARGET_SPARC64
++static __int128 cpu_timer_migration_ps(int64_t hi, uint64_t lo)
++{
++    return (__int128)hi * ((__int128)1 << 64) + lo;
++}
++
++static int64_t cpu_timer_ns_shadow(__int128 ps)
++{
++    __int128 ns = ps / PICOSECONDS_PER_NANOSECOND;
++
++    if (ps % PICOSECONDS_PER_NANOSECOND < 0) {
++        ns--;
++    }
++    return ns < INT64_MIN ? INT64_MIN : ns > INT64_MAX ? INT64_MAX : ns;
++}
++
 +static int cpu_timer_pre_save(void *opaque)
 +{
 +    CPUTimer *timer = opaque;
-+    int64_t deadline_ns;
-+    int status;
++    __int128 deadline_ps;
 +
++    timer->timer_active = timer_pending(timer->qtimer);
 +    if (!qemu_timer_tcg_ps_enabled()) {
++        timer->deadline_ns = timer->timer_active ?
++                             timer_expire_time_ns(timer->qtimer) : -1;
 +        return 0;
 +    }
-+    timer->ps_clock_unit = 1;
-+    status = timer_expire_time_ns_phase(timer->qtimer, &deadline_ns,
-+                                        &timer->qtimer_phase_ps);
-+    if (status <= 0) {
-+        timer->qtimer_phase_ps = 0;
++
++    timer->wide_clock_mode = 1;
++    timer->clock_offset = cpu_timer_ns_shadow(cpu_timer_migration_ps(
++        timer->clock_offset_ps_hi, timer->clock_offset_ps_lo));
++    deadline_ps = timer->timer_active ?
++                  timer_expire_time_ps_wide(timer->qtimer) : 0;
++    timer->deadline_ps_hi = deadline_ps / ((__int128)1 << 64);
++    if (deadline_ps % ((__int128)1 << 64) < 0) {
++        timer->deadline_ps_hi--;
 +    }
-+    return status < 0 ? status : 0;
++    timer->deadline_ps_lo = deadline_ps;
++    timer->deadline_ns = timer->timer_active ?
++                         cpu_timer_ns_shadow(deadline_ps) : -1;
++    return 0;
 +}
 +
 +static int cpu_timer_pre_load(void *opaque)
 +{
 +    CPUTimer *timer = opaque;
 +
-+    timer->clock_offset_phase_ps = 0;
-+    timer->qtimer_phase_ps = 0;
-+    timer->ps_clock_unit = 0;
++    timer_del(timer->qtimer);
++    timer->wide_clock_mode = 0;
++    timer->exact_loaded = false;
 +    return 0;
 +}
 +
-+static bool cpu_timer_ps_clock_needed(void *opaque)
++static bool cpu_timer_wide_clock_needed(void *opaque)
 +{
-+    (void)opaque;
 +    return qemu_timer_tcg_ps_enabled();
 +}
 +
-+static const VMStateDescription vmstate_cpu_timer_ps_clock = {
-+    .name = "cpu_timer/ps-clock",
++static int cpu_timer_exact_post_load(void *opaque, int version_id)
++{
++    CPUTimer *timer = opaque;
++
++    if (timer->exact_loaded) {
++        return -EINVAL;
++    }
++    timer->exact_loaded = true;
++    return 0;
++}
++
++static const VMStateDescription vmstate_cpu_timer_wide_clock = {
++    .name = "cpu_timer/clock-wide",
 +    .version_id = 1,
 +    .minimum_version_id = 1,
-+    .needed = cpu_timer_ps_clock_needed,
++    .needed = cpu_timer_wide_clock_needed,
++    .post_load = cpu_timer_exact_post_load,
 +    .fields = (const VMStateField[]) {
-+        VMSTATE_UINT16(clock_offset_phase_ps, CPUTimer),
-+        VMSTATE_UINT16(qtimer_phase_ps, CPUTimer),
-+        VMSTATE_UINT8(ps_clock_unit, CPUTimer),
++        VMSTATE_UINT8(wide_clock_mode, CPUTimer),
++        VMSTATE_UINT8(timer_active, CPUTimer),
++        VMSTATE_INT64(clock_offset_ps_hi, CPUTimer),
++        VMSTATE_UINT64(clock_offset_ps_lo, CPUTimer),
++        VMSTATE_INT64(deadline_ps_hi, CPUTimer),
++        VMSTATE_UINT64(deadline_ps_lo, CPUTimer),
 +        VMSTATE_END_OF_LIST(),
 +    },
 +};
@@ -130389,36 +130528,62 @@ index 0d5d79b5e7be53bb01d8830e9beb1d1b2a45a186..6a83cac68f3045a8bb9a0d74314d37fe
 +static int cpu_timer_post_load(void *opaque, int version_id)
 +{
 +    CPUTimer *timer = opaque;
-+    int64_t deadline_ns;
-+    uint16_t loaded_phase;
-+    int status;
++    __int128 origin_ps;
++    __int128 deadline_ps = 0;
++    int64_t origin_ns = timer->clock_offset;
++    int64_t deadline_ns = timer->deadline_ns;
++    uint16_t phase;
++    bool active = deadline_ns != -1;
 +
-+    (void)version_id;
-+    if (timer->ps_clock_unit > 1 ||
-+        (icount_crucible_sim_mode() && qemu_timer_tcg_ps_enabled() &&
-+         !timer->ps_clock_unit) ||
-+        timer->clock_offset_phase_ps >= PICOSECONDS_PER_NANOSECOND ||
-+        timer->qtimer_phase_ps >= PICOSECONDS_PER_NANOSECOND) {
++    if (!timer->frequency || timer->disabled > 1 || timer->npt > 1 ||
++        timer->disabled_mask != (1ULL << 63) ||
++        timer->npt_mask != (1ULL << 63) ||
++        (qemu_timer_tcg_ps_enabled() && !timer->exact_loaded)) {
 +        return -EINVAL;
 +    }
-+
-+    status = timer_expire_time_ns_phase(timer->qtimer, &deadline_ns,
-+                                        &loaded_phase);
-+    if (status < 0 || loaded_phase ||
-+        (!status && timer->qtimer_phase_ps) ||
-+        (status && !timer_mod_ns_phase(timer->qtimer, deadline_ns,
-+                                       timer->qtimer_phase_ps))) {
-+        return -EINVAL;
-+    }
-+
-+    if (!qemu_timer_tcg_ps_enabled()) {
-+        if (timer->clock_offset_phase_ps &&
-+            timer->clock_offset == INT64_MAX) {
++    if (timer->exact_loaded) {
++        origin_ps = cpu_timer_migration_ps(timer->clock_offset_ps_hi,
++                                           timer->clock_offset_ps_lo);
++        deadline_ps = cpu_timer_migration_ps(timer->deadline_ps_hi,
++                                             timer->deadline_ps_lo);
++        active = timer->timer_active;
++        if (timer->wide_clock_mode != 1 || timer->timer_active > 1 ||
++            cpu_timer_ns_shadow(origin_ps) != timer->clock_offset ||
++            (active && cpu_timer_ns_shadow(deadline_ps) != deadline_ns) ||
++            (!active && (deadline_ps != 0 || deadline_ns != -1))) {
 +            return -EINVAL;
 +        }
-+        timer->clock_offset += !!timer->clock_offset_phase_ps;
-+        timer->clock_offset_phase_ps = 0;
-+        timer->qtimer_phase_ps = 0;
++        if (!qemu_timer_tcg_ps_enabled()) {
++            /*
++             * Ordinary clocks accept only an exactly representable origin.
++             * Fractional active deadlines retain the usual ceiling rule.
++             */
++            if (!qemu_time_split_ps(origin_ps, &origin_ns, &phase) || phase ||
++                (active &&
++                 (!qemu_time_split_ps(deadline_ps, &deadline_ns, &phase) ||
++                  (phase && deadline_ns == INT64_MAX)))) {
++                return -EINVAL;
++            }
++            if (active) {
++                deadline_ns += !!phase;
++            }
++        }
++    }
++    if (active && timer->disabled) {
++        return -EINVAL;
++    }
++
++    /*
++     * Parent wire fields never arm a timer; the complete exact section and
++     * its shadow joins must succeed before publishing a deadline.
++     */
++    timer->clock_offset = origin_ns;
++    if (active) {
++        if (qemu_timer_tcg_ps_enabled()) {
++            timer_mod_ps_wide(timer->qtimer, deadline_ps);
++        } else {
++            timer_mod_ns(timer->qtimer, deadline_ns);
++        }
 +    }
 +    return 0;
 +}
@@ -130433,17 +130598,17 @@ index 0d5d79b5e7be53bb01d8830e9beb1d1b2a45a186..6a83cac68f3045a8bb9a0d74314d37fe
      .fields = (const VMStateField[]) {
          VMSTATE_UINT32(frequency, CPUTimer),
          VMSTATE_UINT32(disabled, CPUTimer),
-@@ -18,9 +106,13 @@ static const VMStateDescription vmstate_cpu_timer = {
+@@ -18,9 +170,13 @@ static const VMStateDescription vmstate_cpu_timer = {
          VMSTATE_UINT32(npt, CPUTimer),
          VMSTATE_UINT64(npt_mask, CPUTimer),
          VMSTATE_INT64(clock_offset, CPUTimer),
 -        VMSTATE_TIMER_PTR(qtimer, CPUTimer),
-+        VMSTATE_TIMER_NS_FLOOR_PTR(qtimer, CPUTimer),
++        VMSTATE_INT64(deadline_ns, CPUTimer),
          VMSTATE_END_OF_LIST()
 -    }
 +    },
 +    .subsections = (const VMStateDescription * const []) {
-+        &vmstate_cpu_timer_ps_clock,
++        &vmstate_cpu_timer_wide_clock,
 +        NULL,
 +    },
  };
@@ -142120,7 +142285,7 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..91e45d1186a0ac0cc32fe2a2a2c46434bbd2f2e0 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..e8f9fad3a67462bbd73fb1e31b962eaa690fa0f4 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -147,6 +147,37 @@ if have_system
@@ -142161,7 +142326,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..91e45d1186a0ac0cc32fe2a2a2c46434
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +238,302 @@ foreach test_name, extra: tests
+@@ -207,3 +238,379 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -142457,6 +142622,83 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..91e45d1186a0ac0cc32fe2a2a2c46434
 +  test(
 +    'test-crucible-openrisc-wide-clock',
 +    openrisc_wide_clock_test,
++    env: test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 30,
++    suite: ['unit'],
++  )
++endif
++
++# SPARC CPU fields require the genuine configured SPARC64 target header.
++if have_system and 'sparc64-softmmu' in config_target_h
++  sparc_wide_clock_test = executable(
++    'test-crucible-sparc-wide-clock',
++    'test-crucible-sparc-wide-clock.c',
++    config_target_h['sparc64-softmmu'],
++    genh,
++    dependencies: [qemuutil, qom, migration, io],
++    include_directories: include_directories('../../target/sparc'),
++    c_args: ['-DCOMPILING_PER_TARGET',
++             '-DCONFIG_TARGET="sparc64-softmmu-config-target.h"',
++             '-ffunction-sections', '-fdata-sections'],
++    link_args: ['-Wl,--gc-sections'],
++  )
++  test(
++    'test-crucible-sparc-wide-clock',
++    sparc_wide_clock_test,
++    env: test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 30,
++    suite: ['unit'],
++  )
++endif
++
++# Count/Compare uses the actual configured MIPS CPU layout and clock object.
++mips_count_test_target = ''
++foreach candidate: ['mips64el-softmmu', 'mips64-softmmu', 'mipsel-softmmu', 'mips-softmmu']
++  if mips_count_test_target == '' and candidate in config_target_h
++    mips_count_test_target = candidate
++  endif
++endforeach
++if have_system and mips_count_test_target != ''
++  mips_count_wide_clock_test = executable(
++    'test-crucible-mips-count-wide-clock',
++    'test-crucible-mips-count-wide-clock.c',
++    '../../hw/core/clock.c',
++    '../../hw/core/irq.c',
++    config_target_h[mips_count_test_target],
++    genh,
++    dependencies: [qemuutil, qom, migration, io],
++    include_directories: include_directories('../../target/mips'),
++    c_args: ['-DCOMPILING_PER_TARGET',
++             '-DCONFIG_TARGET="' + mips_count_test_target + '-config-target.h"',
++             '-ffunction-sections', '-fdata-sections'],
++    link_args: ['-Wl,--gc-sections'],
++  )
++  test(
++    'test-crucible-mips-count-wide-clock',
++    mips_count_wide_clock_test,
++    env: test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 30,
++    suite: ['unit'],
++  )
++endif
++
++# The literal TOD helpers preserve architectural units over the wide clock.
++if have_system
++  s390_tod_wide_clock_test = executable(
++    'test-crucible-s390-tod-wide-clock',
++    'test-crucible-s390-tod-wide-clock.c',
++    genh,
++    dependencies: [qemuutil],
++  )
++  test(
++    'test-crucible-s390-tod-wide-clock',
++    s390_tod_wide_clock_test,
 +    env: test_env,
 +    args: ['--tap', '-k'],
 +    protocol: 'tap',
@@ -152154,6 +152396,681 @@ index 0000000000000000000000000000000000000000..ee2bb16e87d73feab53496231bcb3f46
 +                    test_rr_timer_notify_queues_work_only_while_parked);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-mips-count-wide-clock.c b/tests/unit/test-crucible-mips-count-wide-clock.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..6c6604e15711f6ed0d12aa6b1cf536f54a5cefaa
+--- /dev/null
++++ b/tests/unit/test-crucible-mips-count-wide-clock.c
+@@ -0,0 +1,669 @@
++/*
++ * Literal MIPS Count/Compare and migration with a controlled clock.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "system/cpu-timers.h"
++#include "io/channel-buffer.h"
++#include "../../migration/qemu-file.h"
++#include "migration/savevm.h"
++#include "../../target/mips/system/cp0_timer.c"
++#include "../../target/mips/system/machine.c"
++
++/* Diagnostic fixture uses the ordinary non-qtest clock object mode. */
++bool qtest_allowed;
++
++static __int128 observed_ps;
++static unsigned irqs;
++static unsigned lowered;
++static const char *program_path;
++
++int64_t cpu_get_clock(void)
++{
++    g_assert_true(observed_ps / 1000 <= INT64_MAX);
++    return observed_ps / 1000;
++}
++
++bool icount_crucible_sim_mode(void)
++{
++    return false;
++}
++
++static __int128 observed_clock_ps(void)
++{
++    return observed_ps;
++}
++
++static void irq_consumer(void *opaque, int number, int level)
++{
++    irqs += !!level;
++    lowered += !level;
++}
++
++static void initialize_clock(bool exact)
++{
++    Error *error = NULL;
++    const TypeInfo diagnostic_cpu = {
++        .name = TYPE_CPU,
++        .parent = TYPE_OBJECT,
++        .instance_size = sizeof(CPUState),
++        .class_size = sizeof(CPUClass),
++    };
++
++    module_call_init(MODULE_INIT_QOM);
++    type_register_static(&diagnostic_cpu);
++    qemu_init_main_loop(&error);
++    g_assert_null(error);
++    if (exact) {
++        qemu_timer_enable_tcg_ps_clock(NULL, observed_clock_ps);
++    }
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++}
++
++static void initialize_cpu(MIPSCPU *cpu)
++{
++    object_initialize(cpu, sizeof(*cpu), TYPE_CPU);
++    cpu->count_clock = clock_new(OBJECT(cpu), "count");
++    clock_set_ns(cpu->count_clock, 4);
++    cpu->env.irq[0] = qemu_allocate_irq(irq_consumer, NULL, 0);
++    cpu_mips_clock_init(cpu);
++}
++
++static GByteArray *save_state(const VMStateDescription *description,
++                             void *state)
++{
++    QIOChannelBuffer *output = qio_channel_buffer_new(4096);
++    QEMUFile *file = qemu_file_new_output(QIO_CHANNEL(output));
++    GByteArray *bytes = g_byte_array_new();
++    Error *error = NULL;
++
++    g_assert_cmpint(vmstate_save_state(file, description, state, NULL,
++                                      &error), ==, 0);
++    g_assert_null(error);
++    qemu_put_byte(file, QEMU_VM_EOF);
++    g_assert_cmpint(qemu_fflush(file), ==, 0);
++    g_byte_array_append(bytes, output->data, output->usage);
++    g_assert_cmpint(qemu_fclose(file), ==, 0);
++    object_unref(OBJECT(output));
++    return bytes;
++}
++
++static int load_state(const VMStateDescription *description, void *state,
++                      GByteArray *bytes)
++{
++    QIOChannelBuffer *input = qio_channel_buffer_new(bytes->len);
++    QEMUFile *file;
++    int status;
++
++    memcpy(input->data, bytes->data, bytes->len);
++    input->usage = bytes->len;
++    file = qemu_file_new_input(QIO_CHANNEL(input));
++    status = vmstate_load_state(file, description, state,
++                                description->version_id, NULL);
++    qemu_fclose(file);
++    object_unref(OBJECT(input));
++    return status;
++}
++
++static size_t subsection_payload(const GByteArray *bytes, const char *name)
++{
++    size_t length = strlen(name);
++
++    for (size_t position = 2; position + length + 4 < bytes->len; position++) {
++        if (bytes->data[position - 2] == QEMU_VM_SUBSECTION &&
++            bytes->data[position - 1] == length &&
++            !memcmp(bytes->data + position, name, length)) {
++            return position + length + 4;
++        }
++    }
++    g_assert_not_reached();
++}
++
++static void remove_subsection(GByteArray *bytes, const char *name)
++{
++    size_t start = subsection_payload(bytes, name) - strlen(name) - 6;
++
++    g_byte_array_set_size(bytes, start);
++    g_byte_array_append(bytes, (const uint8_t[]) { QEMU_VM_EOF }, 1);
++}
++
++static void duplicate_subsection(GByteArray *bytes, const char *name)
++{
++    size_t start = subsection_payload(bytes, name) - strlen(name) - 6;
++    size_t length = bytes->len - start - 1;
++    uint8_t *copy = g_memdup2(bytes->data + start, length);
++
++    g_byte_array_set_size(bytes, bytes->len - 1);
++    g_byte_array_append(bytes, copy, length);
++    g_byte_array_append(bytes, (const uint8_t[]) { QEMU_VM_EOF }, 1);
++    g_free(copy);
++}
++
++/* Expected values use unbounded Python floor(time_ps * 2^32 / (period * 1000)). */
++static const struct {
++    int64_t origin_hi;
++    uint64_t origin_lo;
++    uint64_t clock_period;
++    uint32_t expected_count;
++} counter_vectors[] = {
++    {
++        .origin_hi = INT64_C(500),
++        .origin_lo = UINT64_C(1357),
++        .clock_period = UINT64_C(17179869184),
++        .expected_count = UINT32_C(0),
++    },
++    {
++        .origin_hi = INT64_C(500),
++        .origin_lo = UINT64_C(1357),
++        .clock_period = UINT64_C(15032385536),
++        .expected_count = UINT32_C(2454267026),
++    },
++    {
++        .origin_hi = INT64_C(500),
++        .origin_lo = UINT64_C(1357),
++        .clock_period = UINT64_C(1),
++        .expected_count = UINT32_C(1533303324),
++    },
++    {
++        .origin_hi = INT64_C(500),
++        .origin_lo = UINT64_C(1357),
++        .clock_period = UINT64_C(18446744073709551615),
++        .expected_count = UINT32_C(2147483648),
++    },
++    {
++        .origin_hi = INT64_C(72057594037927936),
++        .origin_lo = UINT64_C(357),
++        .clock_period = UINT64_C(17179869184),
++        .expected_count = UINT32_C(1133871366),
++    },
++    {
++        .origin_hi = INT64_C(72057594037927936),
++        .origin_lo = UINT64_C(357),
++        .clock_period = UINT64_C(15032385536),
++        .expected_count = UINT32_C(1909419746),
++    },
++    {
++        .origin_hi = INT64_C(72057594037927936),
++        .origin_lo = UINT64_C(357),
++        .clock_period = UINT64_C(1),
++        .expected_count = UINT32_C(4007204487),
++    },
++    {
++        .origin_hi = INT64_C(72057594037927936),
++        .origin_lo = UINT64_C(357),
++        .clock_period = UINT64_C(18446744073709551615),
++        .expected_count = UINT32_C(4020106166),
++    },
++    {
++        .origin_hi = INT64_C(-72057594037927936),
++        .origin_lo = UINT64_C(357),
++        .clock_period = UINT64_C(17179869184),
++        .expected_count = UINT32_C(3161095929),
++    },
++    {
++        .origin_hi = INT64_C(-72057594037927936),
++        .origin_lo = UINT64_C(357),
++        .clock_period = UINT64_C(15032385536),
++        .expected_count = UINT32_C(2385547549),
++    },
++    {
++        .origin_hi = INT64_C(-72057594037927936),
++        .origin_lo = UINT64_C(357),
++        .clock_period = UINT64_C(1),
++        .expected_count = UINT32_C(3354369458),
++    },
++    {
++        .origin_hi = INT64_C(-72057594037927936),
++        .origin_lo = UINT64_C(357),
++        .clock_period = UINT64_C(18446744073709551615),
++        .expected_count = UINT32_C(274861129),
++    },
++    {
++        .origin_hi = INT64_C(9223372036854775807),
++        .origin_lo = UINT64_C(18446744073709551615),
++        .clock_period = UINT64_C(17179869184),
++        .expected_count = UINT32_C(3401614098),
++    },
++    {
++        .origin_hi = INT64_C(9223372036854775807),
++        .origin_lo = UINT64_C(18446744073709551615),
++        .clock_period = UINT64_C(15032385536),
++        .expected_count = UINT32_C(3887558969),
++    },
++    {
++        .origin_hi = INT64_C(9223372036854775807),
++        .origin_lo = UINT64_C(18446744073709551615),
++        .clock_period = UINT64_C(1),
++        .expected_count = UINT32_C(3122441224),
++    },
++    {
++        .origin_hi = INT64_C(9223372036854775807),
++        .origin_lo = UINT64_C(18446744073709551615),
++        .clock_period = UINT64_C(18446744073709551615),
++        .expected_count = UINT32_C(3472481058),
++    },
++    {
++        .origin_hi = INT64_MIN,
++        .origin_lo = UINT64_C(0),
++        .clock_period = UINT64_C(17179869184),
++        .expected_count = UINT32_C(893353197),
++    },
++    {
++        .origin_hi = INT64_MIN,
++        .origin_lo = UINT64_C(0),
++        .clock_period = UINT64_C(15032385536),
++        .expected_count = UINT32_C(407408326),
++    },
++    {
++        .origin_hi = INT64_MIN,
++        .origin_lo = UINT64_C(0),
++        .clock_period = UINT64_C(1),
++        .expected_count = UINT32_C(1168231104),
++    },
++    {
++        .origin_hi = INT64_MIN,
++        .origin_lo = UINT64_C(0),
++        .clock_period = UINT64_C(18446744073709551615),
++        .expected_count = UINT32_C(822486237),
++    },
++    {
++        .origin_hi = INT64_C(0),
++        .origin_lo = UINT64_C(17179869215999),
++        .clock_period = UINT64_C(17179869184),
++        .expected_count = UINT32_C(7),
++    },
++    {
++        .origin_hi = INT64_C(0),
++        .origin_lo = UINT64_C(17179869215999),
++        .clock_period = UINT64_C(15032385536),
++        .expected_count = UINT32_C(613566765),
++    },
++    {
++        .origin_hi = INT64_C(0),
++        .origin_lo = UINT64_C(17179869215999),
++        .clock_period = UINT64_C(1),
++        .expected_count = UINT32_C(4290672328),
++    },
++    {
++        .origin_hi = INT64_C(0),
++        .origin_lo = UINT64_C(17179869215999),
++        .clock_period = UINT64_C(18446744073709551615),
++        .expected_count = UINT32_C(4),
++    },
++    {
++        .origin_hi = INT64_C(-1),
++        .origin_lo = UINT64_C(18446744073709551615),
++        .clock_period = UINT64_C(17179869184),
++        .expected_count = UINT32_C(4294967295),
++    },
++    {
++        .origin_hi = INT64_C(-1),
++        .origin_lo = UINT64_C(18446744073709551615),
++        .clock_period = UINT64_C(15032385536),
++        .expected_count = UINT32_C(4294967295),
++    },
++    {
++        .origin_hi = INT64_C(-1),
++        .origin_lo = UINT64_C(18446744073709551615),
++        .clock_period = UINT64_C(1),
++        .expected_count = UINT32_C(4290672328),
++    },
++    {
++        .origin_hi = INT64_C(-1),
++        .origin_lo = UINT64_C(18446744073709551615),
++        .clock_period = UINT64_C(18446744073709551615),
++        .expected_count = UINT32_C(4294967295),
++    },
++    {
++        .origin_hi = INT64_C(-1),
++        .origin_lo = UINT64_C(18446744073709547615),
++        .clock_period = UINT64_C(17179869184),
++        .expected_count = UINT32_C(4294967294),
++    },
++    {
++        .origin_hi = INT64_C(-1),
++        .origin_lo = UINT64_C(18446744073709547615),
++        .clock_period = UINT64_C(15032385536),
++        .expected_count = UINT32_C(4294967294),
++    },
++    {
++        .origin_hi = INT64_C(-1),
++        .origin_lo = UINT64_C(18446744073709547615),
++        .clock_period = UINT64_C(1),
++        .expected_count = UINT32_C(4290672328),
++    },
++    {
++        .origin_hi = INT64_C(-1),
++        .origin_lo = UINT64_C(18446744073709547615),
++        .clock_period = UINT64_C(18446744073709551615),
++        .expected_count = UINT32_C(4294967295),
++    }
++};
++
++static void destroy_cpu(MIPSCPU *cpu)
++{
++    timer_free(cpu->env.timer);
++    qemu_free_irq(cpu->env.irq[0]);
++    object_unparent(OBJECT(cpu->count_clock));
++    object_unref(OBJECT(cpu));
++}
++
++static void test_count(gconstpointer data)
++{
++    unsigned kind = GPOINTER_TO_UINT(data);
++    MIPSCPU cpu = { 0 };
++    __int128 origin;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    initialize_clock(true);
++    initialize_cpu(&cpu);
++    origin = (__int128)counter_vectors[kind].origin_hi * ((__int128)1 << 64) +
++             counter_vectors[kind].origin_lo;
++    clock_set(cpu.count_clock, counter_vectors[kind].clock_period);
++    observed_ps = origin;
++    g_assert_cmpuint(mips_clock_ps_to_ticks(cpu.count_clock, observed_ps), ==,
++                    counter_vectors[kind].expected_count);
++    cpu.env.CP0_Count = 123;
++    g_assert_cmpuint(cpu_mips_get_count_val(&cpu.env), ==,
++                    (uint32_t)(counter_vectors[kind].expected_count + 123));
++    cpu_mips_stop_count(&cpu.env);
++    g_assert_cmpuint((uint32_t)cpu.env.CP0_Count, ==,
++                    (uint32_t)(counter_vectors[kind].expected_count + 123));
++    clock_set(cpu.count_clock, 0);
++    g_assert_cmpuint(mips_clock_ps_to_ticks(cpu.count_clock, observed_ps), ==, 0);
++    destroy_cpu(&cpu);
++}
++
++static void test_compare(gconstpointer data)
++{
++    unsigned kind = GPOINTER_TO_UINT(data);
++    MIPSCPU cpu = { 0 };
++    __int128 origin;
++    __int128 deadline;
++    bool exact = kind != 3;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    initialize_clock(exact);
++    initialize_cpu(&cpu);
++    cpu.env.insn_flags = ISA_MIPS_R2;
++    origin = kind == 0 ? ((__int128)INT64_MAX + 1) * 1000 + 357 :
++             kind == 1 ? ((__int128)1 << 120) + 357 :
++             kind == 2 ? -((__int128)1 << 120) + 357 : 100000;
++    observed_ps = origin;
++    cpu_mips_store_count(&cpu.env, 0);
++    cpu_mips_store_compare(&cpu.env, 7);
++    deadline = origin + 28000;
++    g_assert_cmpuint(cpu_mips_get_count(&cpu.env), ==, 0);
++    if (exact) {
++        g_assert_true(timer_expire_time_ps_wide(cpu.env.timer) == deadline);
++    } else {
++        g_assert_cmpint(timer_expire_time_ns(cpu.env.timer), ==, 128);
++    }
++    observed_ps = deadline - (exact ? 1 : 1000);
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(irqs, ==, 0);
++    observed_ps = deadline;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(irqs, ==, 1);
++    g_assert_cmpuint(cpu.env.CP0_Cause & (1 << CP0Ca_TI), !=, 0);
++    g_assert_true(timer_pending(cpu.env.timer));
++    cpu_mips_store_compare(&cpu.env, 9);
++    g_assert_cmpuint(cpu.env.CP0_Cause & (1 << CP0Ca_TI), ==, 0);
++    g_assert_cmpuint(lowered, >, 0);
++    cpu_mips_stop_count(&cpu.env);
++    cpu.env.CP0_Cause |= 1 << CP0Ca_DC;
++    observed_ps += 200000;
++    g_assert_cmpuint(cpu_mips_get_count(&cpu.env), ==, 7);
++    cpu_mips_store_count(&cpu.env, 11);
++    g_assert_cmpuint(cpu_mips_get_count(&cpu.env), ==, 11);
++    destroy_cpu(&cpu);
++}
++
++static void test_migration(gconstpointer data)
++{
++    unsigned kind = GPOINTER_TO_UINT(data);
++    MIPSCPU cpu = { 0 };
++    MIPSCPU restored = { 0 };
++    GByteArray *bytes;
++    __int128 deadline;
++    bool exact = kind != 3;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    initialize_clock(exact);
++    initialize_cpu(&cpu);
++    initialize_cpu(&restored);
++    deadline = kind == 0 ? ((__int128)1 << 120) + 357 :
++               kind == 1 ? -((__int128)1 << 120) + 357 :
++               kind == 4 ? -1 : 120000;
++    observed_ps = deadline - 4000;
++    if (kind != 2) {
++        if (exact) {
++            timer_mod_ps_wide(cpu.env.timer, deadline);
++        } else {
++            timer_mod_ns(cpu.env.timer, 120);
++        }
++    }
++    bytes = save_state(&mips_vmstate_timer, &cpu);
++    g_assert_cmpint(load_state(&mips_vmstate_timer, &restored, bytes), ==, 0);
++    g_assert_cmpuint(timer_pending(restored.env.timer), ==, kind != 2);
++    if (kind != 2) {
++        if (exact) {
++            g_assert_true(timer_expire_time_ps_wide(restored.env.timer) == deadline);
++        } else {
++            g_assert_cmpint(timer_expire_time_ns(restored.env.timer), ==, 120);
++        }
++    }
++    timer_del(cpu.env.timer);
++    if (kind != 2) {
++        observed_ps = deadline;
++        qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++        g_assert_cmpuint(irqs, ==, 1);
++    }
++    g_byte_array_unref(bytes);
++    destroy_cpu(&cpu);
++    destroy_cpu(&restored);
++}
++
++static void test_malformed(gconstpointer data)
++{
++    unsigned kind = GPOINTER_TO_UINT(data);
++    MIPSCPU cpu = { 0 };
++    MIPSCPU restored = { 0 };
++    GByteArray *bytes;
++    size_t payload;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    initialize_clock(true);
++    initialize_cpu(&cpu);
++    initialize_cpu(&restored);
++    observed_ps = ((__int128)1 << 120) + 357;
++    timer_mod_ps_wide(cpu.env.timer, observed_ps + 4000);
++    timer_mod_ps_wide(restored.env.timer, observed_ps + 9000);
++    bytes = save_state(&mips_vmstate_timer, &cpu);
++    payload = subsection_payload(bytes, "cpu/timer/clock-wide");
++
++    switch (kind) {
++    case 0:
++        remove_subsection(bytes, "cpu/timer/clock-wide");
++        break;
++    case 1:
++        duplicate_subsection(bytes, "cpu/timer/clock-wide");
++        break;
++    case 2:
++        bytes->data[payload] = 2;
++        break;
++    case 3:
++        bytes->data[payload + 1] = 2;
++        break;
++    case 4:
++        bytes->data[7] ^= 1; /* mismatched parent shadow */
++        break;
++    case 5:
++        bytes->data[payload + 1] = 0;
++        break;
++    case 6:
++        bytes->data[payload - 1] = 0;
++        break;
++    default:
++        g_assert_not_reached();
++    }
++
++    g_assert_cmpint(load_state(&mips_vmstate_timer, &restored, bytes), <, 0);
++    g_assert_false(timer_pending(restored.env.timer));
++    g_assert_cmpuint(irqs, ==, 0);
++
++    g_byte_array_unref(bytes);
++    destroy_cpu(&cpu);
++    destroy_cpu(&restored);
++}
++
++static void test_range(void)
++{
++    MIPSCPU cpu = { 0 };
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_failed();
++        g_test_trap_assert_stderr("*exceeds signed128 picoseconds*");
++        return;
++    }
++    initialize_clock(true);
++    initialize_cpu(&cpu);
++    observed_ps = (__int128)(((__uint128_t)-1) >> 1);
++    cpu_mips_store_compare(&cpu.env, 7);
++    g_assert_not_reached();
++}
++
++static int import_ordinary(const char *path, unsigned kind)
++{
++    MIPSCPU cpu = { 0 };
++    GByteArray *bytes;
++    gchar *contents;
++    gsize length;
++    int status;
++
++    initialize_clock(false);
++    initialize_cpu(&cpu);
++    timer_mod_ns(cpu.env.timer, 42);
++    g_assert_true(g_file_get_contents(path, &contents, &length, NULL));
++    bytes = g_byte_array_new_take((guint8 *)contents, length);
++    status = load_state(&mips_vmstate_timer, &cpu, bytes);
++    if (kind == 0 || kind == 4) {
++        g_assert_cmpint(status, ==, 0);
++        g_assert_cmpint(timer_expire_time_ns(cpu.env.timer), ==,
++                        kind == 0 ? 141 : 0);
++    } else {
++        g_assert_cmpint(status, <, 0);
++        g_assert_false(timer_pending(cpu.env.timer));
++    }
++    destroy_cpu(&cpu);
++    g_byte_array_unref(bytes);
++    return 0;
++}
++
++static void test_cross_mode(gconstpointer data)
++{
++    unsigned kind = GPOINTER_TO_UINT(data);
++    MIPSCPU cpu = { 0 };
++    GByteArray *bytes;
++    __int128 deadline;
++    int descriptor;
++    char *path = NULL;
++    char *output = NULL;
++    char *errors = NULL;
++    char *kind_argument;
++    int status;
++    char *arguments[5];
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    initialize_clock(true);
++    initialize_cpu(&cpu);
++    deadline = kind == 0 ? 140001 :
++               kind == 1 ? ((__int128)1 << 120) + 357 :
++               kind == 2 ? -((__int128)1 << 120) + 357 :
++               kind == 3 ? (__int128)INT64_MAX * 1000 + 999 : -1001;
++    timer_mod_ps_wide(cpu.env.timer, deadline);
++    bytes = save_state(&mips_vmstate_timer, &cpu);
++    descriptor = g_file_open_tmp("mips-count-wide-XXXXXX", &path, NULL);
++    g_assert_cmpint(descriptor, >=, 0);
++    close(descriptor);
++    g_assert_true(g_file_set_contents(path, (char *)bytes->data, bytes->len, NULL));
++    kind_argument = g_strdup_printf("%u", kind);
++    arguments[0] = (char *)program_path;
++    arguments[1] = (char *)"--import-ordinary";
++    arguments[2] = path;
++    arguments[3] = kind_argument;
++    arguments[4] = NULL;
++    g_assert_true(g_spawn_sync(NULL, arguments, NULL, 0, NULL, NULL,
++                              &output, &errors, &status, NULL));
++    if (status) {
++        g_test_message("ordinary import: %s", errors);
++    }
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    g_assert_cmpint(unlink(path), ==, 0);
++    g_free(kind_argument);
++    g_free(output);
++    g_free(errors);
++    g_free(path);
++    destroy_cpu(&cpu);
++    g_byte_array_unref(bytes);
++}
++
++int main(int argc, char **argv)
++{
++    program_path = argv[0];
++    if (argc == 4 && !strcmp(argv[1], "--import-ordinary")) {
++        return import_ordinary(argv[2], strtoul(argv[3], NULL, 10));
++    }
++    g_test_init(&argc, &argv, NULL);
++    for (unsigned kind = 0; kind < ARRAY_SIZE(counter_vectors); kind++) {
++        char *name = g_strdup_printf("/mips/count/%u", kind);
++        g_test_add_data_func(name, GUINT_TO_POINTER(kind), test_count);
++        g_free(name);
++    }
++    for (unsigned kind = 0; kind < 4; kind++) {
++        char *name = g_strdup_printf("/mips/compare/%u", kind);
++        g_test_add_data_func(name, GUINT_TO_POINTER(kind), test_compare);
++        g_free(name);
++    }
++    for (unsigned kind = 0; kind < 5; kind++) {
++        char *name = g_strdup_printf("/mips/migration/%u", kind);
++        g_test_add_data_func(name, GUINT_TO_POINTER(kind), test_migration);
++        g_free(name);
++    }
++    for (unsigned kind = 0; kind < 7; kind++) {
++        char *name = g_strdup_printf("/mips/malformed/%u", kind);
++        g_test_add_data_func(name, GUINT_TO_POINTER(kind), test_malformed);
++        g_free(name);
++    }
++    for (unsigned kind = 0; kind < 5; kind++) {
++        char *name = g_strdup_printf("/mips/cross-mode/%u", kind);
++        g_test_add_data_func(name, GUINT_TO_POINTER(kind), test_cross_mode);
++        g_free(name);
++    }
++    g_test_add_func("/mips/range", test_range);
++    return g_test_run();
++}
 diff --git a/tests/unit/test-crucible-mips-gic-migration.c b/tests/unit/test-crucible-mips-gic-migration.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..ceb4e1c2c05a9d5886b05ae0b70bcf5b96d0703e
@@ -155850,6 +156767,165 @@ index 0000000000000000000000000000000000000000..41a6a463ef6a5e886684479974503887
 +    g_test_add_func("/rtc/update/origin-range", test_clock_range);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-s390-tod-wide-clock.c b/tests/unit/test-crucible-s390-tod-wide-clock.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..499fca44dbc091b889cae1cc156a9a00d47c4393
+--- /dev/null
++++ b/tests/unit/test-crucible-s390-tod-wide-clock.c
+@@ -0,0 +1,153 @@
++/*
++ * Actual s390 TOD conversion over the supported picosecond domain.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "target/s390x/tcg/s390-tod.h"
++
++typedef struct TODVector {
++    const char *name;
++    int64_t ps_high;
++    uint64_t ps_low;
++    int64_t units_high;
++    uint64_t units_low;
++} TODVector;
++
++/* Exact floor(ps * 4096 / 1000000), computed with arbitrary precision. */
++static const TODVector vectors[] = {
++    { "zero",
++      INT64_C(0), UINT64_C(0),
++      INT64_C(0), UINT64_C(0) },
++    { "one",
++      INT64_C(0), UINT64_C(1),
++      INT64_C(0), UINT64_C(0) },
++    { "negative-one",
++      -INT64_C(1), UINT64_C(18446744073709551615),
++      -INT64_C(1), UINT64_C(18446744073709551615) },
++    { "tick-before",
++      INT64_C(0), UINT64_C(244),
++      INT64_C(0), UINT64_C(0) },
++    { "tick-after",
++      INT64_C(0), UINT64_C(245),
++      INT64_C(0), UINT64_C(1) },
++    { "negative-tick-before",
++      -INT64_C(1), UINT64_C(18446744073709551372),
++      -INT64_C(1), UINT64_C(18446744073709551615) },
++    { "negative-tick-after",
++      -INT64_C(1), UINT64_C(18446744073709551371),
++      -INT64_C(1), UINT64_C(18446744073709551614) },
++    { "microsecond-before",
++      INT64_C(0), UINT64_C(999999),
++      INT64_C(0), UINT64_C(4095) },
++    { "microsecond",
++      INT64_C(0), UINT64_C(1000000),
++      INT64_C(0), UINT64_C(4096) },
++    { "microsecond-after",
++      INT64_C(0), UINT64_C(1000001),
++      INT64_C(0), UINT64_C(4096) },
++    { "negative-microsecond-before",
++      -INT64_C(1), UINT64_C(18446744073708551617),
++      -INT64_C(1), UINT64_C(18446744073709547520) },
++    { "negative-microsecond",
++      -INT64_C(1), UINT64_C(18446744073708551616),
++      -INT64_C(1), UINT64_C(18446744073709547520) },
++    { "negative-microsecond-after",
++      -INT64_C(1), UINT64_C(18446744073708551615),
++      -INT64_C(1), UINT64_C(18446744073709547519) },
++    { "ns-horizon",
++      INT64_C(500), UINT64_C(357),
++      INT64_C(2), UINT64_C(885443715538058479) },
++    { "negative-ns-horizon",
++      -INT64_C(501), UINT64_C(18446744073709551259),
++      -INT64_C(3), UINT64_C(17561300358171493136) },
++    { "wide",
++      INT64_C(72057594037927936), UINT64_C(357),
++      INT64_C(295147905179352), UINT64_C(15234354273737475460) },
++    { "negative-wide",
++      -INT64_C(72057594037927937), UINT64_C(18446744073709551259),
++      -INT64_C(295147905179353), UINT64_C(3212389799972076155) },
++    { "maximum",
++      INT64_C(9223372036854775807), UINT64_C(18446744073709551615),
++      INT64_C(37778931862957161), UINT64_C(13089219298893939121) },
++    { "minimum",
++      INT64_MIN, UINT64_C(0),
++      -INT64_C(37778931862957162), UINT64_C(5357524774815612494) },
++    { "minimum-next",
++      INT64_MIN, UINT64_C(1),
++      -INT64_C(37778931862957162), UINT64_C(5357524774815612494) },
++};
++
++static __int128 join_words(int64_t high, uint64_t low)
++{
++    return (__int128)high * ((__int128)1 << 64) + low;
++}
++
++static void test_conversion(gconstpointer data)
++{
++    const TODVector *vector = data;
++    __int128 ps = join_words(vector->ps_high, vector->ps_low);
++    __int128 expected = join_words(vector->units_high, vector->units_low);
++    __uint128_t base = ((__uint128_t)37 << 64) | (UINT64_MAX - 7);
++    __uint128_t expected_clock = base + (__uint128_t)expected;
++    uint8_t high = 37;
++    uint64_t low = UINT64_MAX - 7;
++
++    g_assert_true(ps2tod(ps) == expected);
++    s390_tod_add_ps(&high, &low, ps);
++    g_assert_cmpuint(high, ==, (uint8_t)(expected_clock >> 64));
++    g_assert_cmpuint(low, ==, (uint64_t)expected_clock);
++}
++
++static void test_nanosecond_projection(void)
++{
++    const uint64_t nanoseconds[] = {
++        0, 1, 124, 125, 126, 999, 1000, UINT32_MAX,
++    };
++
++    for (unsigned index = 0; index < G_N_ELEMENTS(nanoseconds); index++) {
++        uint64_t ns = nanoseconds[index];
++
++        g_assert_cmpuint((uint64_t)ps2tod((__int128)ns * 1000),
++                         ==, time2tod(ns));
++    }
++
++    /* Preserve the existing ordinary helper's large-value projection. */
++    g_assert_cmpuint(time2tod(UINT64_MAX), ==, UINT64_C(1770887431076116856));
++    g_assert_cmpuint((uint64_t)ps2tod((__int128)UINT64_MAX * 1000),
++                     ==, UINT64_C(1770887431076116951));
++}
++
++static void test_canonical_distance(void)
++{
++    const __int128 distances[] = {
++        0, 1, -1, ((__int128)1 << 71) - 1, -((__int128)1 << 71),
++    };
++
++    for (unsigned index = 0; index < G_N_ELEMENTS(distances); index++) {
++        __int128 distance = distances[index];
++        __int128 numerator = distance * PICOSECONDS_PER_MICROSECOND;
++        __int128 expected = numerator / TOD_UNITS_PER_MICROSECOND +
++                            (numerator % TOD_UNITS_PER_MICROSECOND > 0);
++        uint8_t high = (uint8_t)((__uint128_t)distance >> 64);
++        uint64_t low = distance;
++
++        g_assert_true(s390_tod_delta(high, low, 0, 0) == distance);
++        g_assert_true(tod2ps_ceil(distance) == expected);
++    }
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    for (unsigned index = 0; index < G_N_ELEMENTS(vectors); index++) {
++        g_autofree char *name = g_strdup_printf("/s390/tod/%s",
++                                               vectors[index].name);
++
++        g_test_add_data_func(name, &vectors[index], test_conversion);
++    }
++    g_test_add_func("/s390/tod/nanosecond-projection",
++                    test_nanosecond_projection);
++    g_test_add_func("/s390/tod/canonical-distance", test_canonical_distance);
++    return g_test_run();
++}
 diff --git a/tests/unit/test-crucible-slirp-time.c b/tests/unit/test-crucible-slirp-time.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..22e321204c3443ea7d63c9329ea1208d84ff6ea5
@@ -155884,6 +156960,557 @@ index 0000000000000000000000000000000000000000..22e321204c3443ea7d63c9329ea1208d
 +{
 +    g_test_init(&argc, &argv, NULL);
 +    g_test_add_func("/crucible/slirp/ns-projection", test_ns_projection);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-sparc-wide-clock.c b/tests/unit/test-crucible-sparc-wide-clock.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..99c5e4e0e5e6c2b1687a34c93c5d3c2d35442eda
+--- /dev/null
++++ b/tests/unit/test-crucible-sparc-wide-clock.c
+@@ -0,0 +1,545 @@
++/*
++ * Literal SPARC timer paths with a controlled clock.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "system/cpu-timers.h"
++#include "io/channel-buffer.h"
++#include "../../migration/qemu-file.h"
++#include "migration/savevm.h"
++#include "../../hw/sparc64/sparc64.c"
++#include "../../target/sparc/machine.c"
++
++static __int128 observed_ps;
++static unsigned callbacks;
++static unsigned irq_checks;
++static unsigned kicks;
++static const char *program_path;
++
++int64_t cpu_get_clock(void)
++{
++    g_assert_true(observed_ps / 1000 <= INT64_MAX);
++    return observed_ps / 1000;
++}
++
++bool icount_crucible_sim_mode(void)
++{
++    return false;
++}
++
++/* Only interrupt consumers are diagnostic; timer and softint paths are real. */
++void cpu_check_irqs(CPUSPARCState *env)
++{
++    irq_checks++;
++}
++
++void qemu_cpu_kick(CPUState *cpu)
++{
++    kicks++;
++}
++
++static __int128 observed_clock_ps(void)
++{
++    return observed_ps;
++}
++
++static void timer_callback(void *opaque)
++{
++    callbacks++;
++}
++
++static void initialize_clock(bool exact)
++{
++    Error *error = NULL;
++
++    const TypeInfo diagnostic_cpu = {
++        .name = TYPE_CPU,
++        .parent = TYPE_OBJECT,
++        .instance_size = sizeof(CPUState),
++        .class_size = sizeof(CPUClass),
++    };
++
++    module_call_init(MODULE_INIT_QOM);
++    type_register_static(&diagnostic_cpu);
++    qemu_init_main_loop(&error);
++    g_assert_null(error);
++    if (exact) {
++        qemu_timer_enable_tcg_ps_clock(NULL, observed_clock_ps);
++    }
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++}
++
++static CPUTimer *create_timer(void)
++{
++    return cpu_timer_create("diagnostic", NULL, timer_callback,
++                             100000000, 1ULL << 63, 1ULL << 63);
++}
++
++static void destroy_timer(CPUTimer *timer)
++{
++    timer_free(timer->qtimer);
++    g_free(timer);
++}
++
++static GByteArray *save_state(const VMStateDescription *description,
++                             void *state)
++{
++    QIOChannelBuffer *output = qio_channel_buffer_new(4096);
++    QEMUFile *file = qemu_file_new_output(QIO_CHANNEL(output));
++    GByteArray *bytes = g_byte_array_new();
++    Error *error = NULL;
++
++    g_assert_cmpint(vmstate_save_state(file, description, state, NULL,
++                                      &error), ==, 0);
++    g_assert_null(error);
++    qemu_put_byte(file, QEMU_VM_EOF);
++    g_assert_cmpint(qemu_fflush(file), ==, 0);
++    g_byte_array_append(bytes, output->data, output->usage);
++    g_assert_cmpint(qemu_fclose(file), ==, 0);
++    object_unref(OBJECT(output));
++    return bytes;
++}
++
++static int load_state(const VMStateDescription *description, void *state,
++                      GByteArray *bytes)
++{
++    QIOChannelBuffer *input = qio_channel_buffer_new(bytes->len);
++    QEMUFile *file;
++    int status;
++
++    memcpy(input->data, bytes->data, bytes->len);
++    input->usage = bytes->len;
++    file = qemu_file_new_input(QIO_CHANNEL(input));
++    status = vmstate_load_state(file, description, state,
++                                description->version_id, NULL);
++    qemu_fclose(file);
++    object_unref(OBJECT(input));
++    return status;
++}
++
++static size_t subsection_payload(const GByteArray *bytes, const char *name)
++{
++    size_t length = strlen(name);
++
++    for (size_t position = 2; position + length + 4 < bytes->len; position++) {
++        if (bytes->data[position - 2] == QEMU_VM_SUBSECTION &&
++            bytes->data[position - 1] == length &&
++            !memcmp(bytes->data + position, name, length)) {
++            return position + length + 4;
++        }
++    }
++    g_assert_not_reached();
++}
++
++static void remove_subsection(GByteArray *bytes, const char *name)
++{
++    size_t start = subsection_payload(bytes, name) - strlen(name) - 6;
++
++    g_byte_array_set_size(bytes, start);
++    g_byte_array_append(bytes, (const uint8_t[]) { QEMU_VM_EOF }, 1);
++}
++
++static void duplicate_subsection(GByteArray *bytes, const char *name)
++{
++    size_t start = subsection_payload(bytes, name) - strlen(name) - 6;
++    size_t length = bytes->len - start - 1;
++    uint8_t *copy = g_memdup2(bytes->data + start, length);
++
++    g_byte_array_set_size(bytes, bytes->len - 1);
++    g_byte_array_append(bytes, copy, length);
++    g_byte_array_append(bytes, (const uint8_t[]) { QEMU_VM_EOF }, 1);
++    g_free(copy);
++}
++
++static void test_origin(gconstpointer data)
++{
++    unsigned kind = GPOINTER_TO_UINT(data);
++    CPUTimer *timer;
++    __int128 origin;
++    __int128 deadline;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    initialize_clock(true);
++    origin = kind == 0 ? ((__int128)INT64_MAX + 1) * 1000 + 357 :
++             kind == 1 ? ((__int128)1 << 120) + 357 :
++             kind == 2 ? -((__int128)1 << 120) + 357 :
++             kind == 3 ? (__int128)(((__uint128_t)-1) >> 1) - 100000 :
++                         -(__int128)(((__uint128_t)-1) >> 1) + 100000;
++    observed_ps = origin;
++    timer = create_timer();
++    g_assert_true(cpu_timer_clock_offset_ps(timer) == origin);
++    cpu_timer_reset(timer);
++    g_assert_true(cpu_timer_clock_offset_ps(timer) == origin);
++    cpu_tick_set_count(timer, 3);
++    g_assert_cmpuint(cpu_tick_get_count(timer), ==, 3);
++    cpu_tick_set_limit(timer, 7);
++    deadline = origin + 40000;
++    g_assert_true(timer_expire_time_ps_wide(timer->qtimer) == deadline);
++    observed_ps = deadline - 1;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(callbacks, ==, 0);
++    observed_ps++;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(callbacks, ==, 1);
++    g_assert_false(timer_pending(timer->qtimer));
++    destroy_timer(timer);
++}
++
++static void test_elapsed(gconstpointer data)
++{
++    unsigned kind = GPOINTER_TO_UINT(data);
++    CPUTimer *timer;
++    __int128 half_span = (__int128)1 << 126;
++    uint64_t expected;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    initialize_clock(true);
++    observed_ps = 0;
++    timer = create_timer();
++    cpu_tick_set_count(timer, 0);
++    if (kind < 2) {
++        observed_ps = kind ? -half_span : half_span;
++        expected = (uint64_t)((__uint128_t)half_span / 10000);
++        if (kind) {
++            expected = 0 - expected;
++        }
++    } else if (kind == 2) {
++        cpu_timer_set_clock_offset_ps(timer, -half_span - 1);
++        observed_ps = half_span;
++        expected = (uint64_t)((((__uint128_t)1 << 127) + 1) / 10000);
++    } else {
++        observed_ps = ((__int128)UINT64_MAX + 2) * 10000;
++        expected = 1;
++    }
++    g_assert_cmpuint(cpu_tick_get_count(timer), ==, expected);
++    timer->frequency = UINT32_MAX;
++    observed_ps = 999999999999;
++    cpu_timer_set_clock_offset_ps(timer, 0);
++    g_assert_cmpuint(cpu_tick_get_count(timer), ==,
++                    ((__uint128_t)999999999999 * UINT32_MAX) / 1000000000000ULL);
++    destroy_timer(timer);
++}
++
++static void test_migration(gconstpointer data)
++{
++    unsigned kind = GPOINTER_TO_UINT(data);
++    CPUTimer *timer;
++    CPUTimer *restored;
++    GByteArray *bytes;
++    __int128 origin;
++    __int128 deadline;
++    bool exact = kind != 3;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    initialize_clock(exact);
++    origin = kind == 0 ? ((__int128)1 << 120) + 357 :
++             kind == 1 ? -((__int128)1 << 120) + 357 :
++             kind == 4 ? -10001 : 100000;
++    observed_ps = origin;
++    timer = create_timer();
++    restored = create_timer();
++    cpu_tick_set_count(timer, kind == 4 ? 0 : 3);
++    if (kind != 2) {
++        cpu_tick_set_limit(timer, kind == 4 ? 1 : 7);
++    }
++    deadline = kind == 4 ? -1 : origin + 40000;
++    bytes = save_state(&vmstate_cpu_timer, timer);
++    g_assert_cmpint(load_state(&vmstate_cpu_timer, restored, bytes), ==, 0);
++    g_assert_cmpuint(timer_pending(restored->qtimer), ==, kind != 2);
++    if (exact) {
++        g_assert_true(cpu_timer_clock_offset_ps(restored) == origin - (kind == 4 ? 0 : 30000));
++        if (kind != 2) {
++            g_assert_true(timer_expire_time_ps_wide(restored->qtimer) == deadline);
++        }
++    } else {
++        g_assert_cmpint(restored->clock_offset, ==, 70);
++        g_assert_cmpint(timer_expire_time_ns(restored->qtimer), ==, 140);
++    }
++    timer_del(timer->qtimer);
++    if (kind != 2) {
++        observed_ps = deadline;
++        qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++        g_assert_cmpuint(callbacks, ==, 1);
++    }
++    g_byte_array_unref(bytes);
++    destroy_timer(timer);
++    destroy_timer(restored);
++}
++
++static void test_malformed(gconstpointer data)
++{
++    unsigned kind = GPOINTER_TO_UINT(data);
++    CPUTimer *timer;
++    CPUTimer *restored;
++    GByteArray *bytes;
++    size_t payload;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    initialize_clock(true);
++    observed_ps = ((__int128)1 << 120) + 357;
++    timer = create_timer();
++    restored = create_timer();
++    cpu_tick_set_count(timer, 0);
++    cpu_tick_set_limit(timer, 7);
++    bytes = save_state(&vmstate_cpu_timer, timer);
++    payload = subsection_payload(bytes, "cpu_timer/clock-wide");
++    timer_mod_ps_wide(restored->qtimer, observed_ps + 123);
++    switch (kind) {
++    case 0: remove_subsection(bytes, "cpu_timer/clock-wide"); break;
++    case 1: duplicate_subsection(bytes, "cpu_timer/clock-wide"); break;
++    case 2: bytes->data[payload] = 2; break;
++    case 3: bytes->data[payload + 1] = 2; break;
++    case 4: bytes->data[0] = bytes->data[1] = bytes->data[2] = bytes->data[3] = 0; break;
++    case 5: bytes->data[35] ^= 1; break; /* origin shadow */
++    case 6: bytes->data[43] ^= 1; break; /* deadline shadow */
++    case 7: bytes->data[payload + 1] = 0; break;
++    case 8: bytes->data[payload - 1] = 0; break; /* section version */
++    case 9: bytes->data[7] = 2; break; /* disabled boolean */
++    case 10: bytes->data[19] = 2; break; /* npt boolean */
++    case 11: bytes->data[15] ^= 1; break; /* disabled mask */
++    case 12: bytes->data[27] ^= 1; break; /* npt mask */
++    case 13: bytes->data[7] = 1; break; /* active disabled timer */
++    default: g_assert_not_reached();
++    }
++    g_assert_cmpint(load_state(&vmstate_cpu_timer, restored, bytes), <, 0);
++    g_assert_false(timer_pending(restored->qtimer));
++    g_assert_cmpuint(callbacks, ==, 0);
++    g_byte_array_unref(bytes);
++    destroy_timer(timer);
++    destroy_timer(restored);
++}
++
++static void test_ordinary(void)
++{
++    CPUTimer *timer;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    initialize_clock(false);
++    observed_ps = 100000;
++    timer = create_timer();
++    cpu_tick_set_count(timer, 3 | (1ULL << 63));
++    g_assert_cmpuint(cpu_tick_get_count(timer), ==, 3 | (1ULL << 63));
++    cpu_tick_set_limit(timer, 7 | (1ULL << 63));
++    g_assert_false(timer_pending(timer->qtimer));
++    cpu_tick_set_limit(timer, 7);
++    g_assert_cmpint(timer_expire_time_ns(timer->qtimer), ==, 140);
++    observed_ps = 140000;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(callbacks, ==, 1);
++    cpu_tick_set_limit(timer, 0);
++    g_assert_false(timer_pending(timer->qtimer));
++    cpu_timer_reset(timer);
++    g_assert_cmpuint(timer->disabled, ==, 1);
++    destroy_timer(timer);
++}
++
++static void test_irq(gconstpointer data)
++{
++    unsigned kind = GPOINTER_TO_UINT(data);
++    SPARCCPU cpu = { 0 };
++    CPUTimer *timer;
++    QEMUTimerCB *callback = kind == 0 ? tick_irq :
++                            kind == 1 ? stick_irq : hstick_irq;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    initialize_clock(true);
++    object_initialize(&cpu, sizeof(cpu), TYPE_CPU);
++    observed_ps = ((__int128)1 << 120) + 357;
++    timer = cpu_timer_create("diagnostic-irq", &cpu, callback,
++                             100000000, 1ULL << 63, 1ULL << 63);
++    if (kind == 0) {
++        cpu.env.tick = timer;
++    } else if (kind == 1) {
++        cpu.env.stick = timer;
++    } else {
++        cpu.env.hstick = timer;
++    }
++    cpu_tick_set_count(timer, 0);
++    cpu_tick_set_limit(timer, 3);
++    observed_ps += 30000;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(cpu.env.softint, ==,
++                    kind == 0 ? SOFTINT_TIMER : SOFTINT_STIMER);
++    g_assert_cmpuint(irq_checks, ==, 1);
++    g_assert_cmpuint(kicks, ==, 1);
++    timer->disabled = 1;
++    callback(&cpu);
++    g_assert_cmpuint(kicks, ==, 1);
++    destroy_timer(timer);
++    object_unref(OBJECT(&cpu));
++}
++
++static int import_ordinary(const char *path, unsigned kind)
++{
++    CPUTimer *timer;
++    GByteArray *bytes;
++    gchar *contents;
++    gsize length;
++    int status;
++
++    initialize_clock(false);
++    timer = create_timer();
++    timer_mod_ns(timer->qtimer, 42);
++    g_assert_true(g_file_get_contents(path, &contents, &length, NULL));
++    bytes = g_byte_array_new_take((guint8 *)contents, length);
++    status = load_state(&vmstate_cpu_timer, timer, bytes);
++    if (kind == 0) {
++        g_assert_cmpint(status, ==, 0);
++        g_assert_cmpint(timer->clock_offset, ==, 100);
++        g_assert_cmpint(timer_expire_time_ns(timer->qtimer), ==, 141);
++    } else {
++        g_assert_cmpint(status, <, 0);
++        g_assert_false(timer_pending(timer->qtimer));
++    }
++    destroy_timer(timer);
++    g_byte_array_unref(bytes);
++    return 0;
++}
++
++static void test_cross_mode(gconstpointer data)
++{
++    unsigned kind = GPOINTER_TO_UINT(data);
++    CPUTimer *timer;
++    GByteArray *bytes;
++    int descriptor;
++    char *path = NULL;
++    char *output = NULL;
++    char *errors = NULL;
++    int status;
++    char *arguments[5];
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    initialize_clock(true);
++    observed_ps = kind == 1 ? ((__int128)1 << 120) + 357 :
++                  kind == 2 ? 100357 : 100000;
++    timer = create_timer();
++    cpu_tick_set_count(timer, 0);
++    cpu_tick_set_limit(timer, 4);
++    if (kind == 0) {
++        timer_mod_ps_wide(timer->qtimer, observed_ps + 40001);
++    }
++    bytes = save_state(&vmstate_cpu_timer, timer);
++    descriptor = g_file_open_tmp("sparc-wide-XXXXXX", &path, NULL);
++    g_assert_cmpint(descriptor, >=, 0);
++    close(descriptor);
++    g_assert_true(g_file_set_contents(path, (char *)bytes->data, bytes->len, NULL));
++    arguments[0] = (char *)program_path;
++    arguments[1] = (char *)"--import-ordinary";
++    arguments[2] = path;
++    arguments[3] = kind == 0 ? (char *)"0" : kind == 1 ? (char *)"1" : (char *)"2";
++    arguments[4] = NULL;
++    g_assert_true(g_spawn_sync(NULL, arguments, NULL, 0, NULL, NULL,
++                              &output, &errors, &status, NULL));
++    if (status) {
++        g_test_message("ordinary import: %s", errors);
++    }
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    unlink(path);
++    g_free(output);
++    g_free(errors);
++    g_free(path);
++    destroy_timer(timer);
++    g_byte_array_unref(bytes);
++}
++
++static void test_range(gconstpointer data)
++{
++    unsigned kind = GPOINTER_TO_UINT(data);
++    CPUTimer *timer;
++    __int128 maximum = (__int128)(((__uint128_t)-1) >> 1);
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_failed();
++        g_test_trap_assert_stderr("*exceeds signed128 picoseconds*");
++        return;
++    }
++    initialize_clock(true);
++    observed_ps = kind == 0 ? -maximum - 1 : maximum;
++    timer = create_timer();
++    if (kind == 0) {
++        cpu_tick_set_count(timer, 1);
++    } else if (kind == 1) {
++        cpu_tick_set_limit(timer, 1);
++    } else {
++        cpu_timer_set_clock_offset_ps(timer, 0);
++        cpu_tick_set_limit(timer, 1);
++    }
++    g_assert_not_reached();
++}
++
++int main(int argc, char **argv)
++{
++    program_path = argv[0];
++    if (argc == 4 && !strcmp(argv[1], "--import-ordinary")) {
++        return import_ordinary(argv[2], strtoul(argv[3], NULL, 10));
++    }
++    g_test_init(&argc, &argv, NULL);
++    for (unsigned kind = 0; kind < 5; kind++) {
++        char *name = g_strdup_printf("/sparc/origin/%u", kind);
++        g_test_add_data_func(name, GUINT_TO_POINTER(kind), test_origin);
++        g_free(name);
++    }
++    for (unsigned kind = 0; kind < 4; kind++) {
++        char *name = g_strdup_printf("/sparc/elapsed/%u", kind);
++        g_test_add_data_func(name, GUINT_TO_POINTER(kind), test_elapsed);
++        g_free(name);
++
++    }
++    for (unsigned kind = 0; kind < 5; kind++) {
++        char *name = g_strdup_printf("/sparc/migration/%u", kind);
++        g_test_add_data_func(name, GUINT_TO_POINTER(kind), test_migration);
++        g_free(name);
++    }
++    for (unsigned kind = 0; kind < 14; kind++) {
++        char *name = g_strdup_printf("/sparc/malformed/%u", kind);
++        g_test_add_data_func(name, GUINT_TO_POINTER(kind), test_malformed);
++        g_free(name);
++    }
++    for (unsigned kind = 0; kind < 3; kind++) {
++        char *name = g_strdup_printf("/sparc/irq/%u", kind);
++        g_test_add_data_func(name, GUINT_TO_POINTER(kind), test_irq);
++        g_free(name);
++        name = g_strdup_printf("/sparc/cross-mode/%u", kind);
++        g_test_add_data_func(name, GUINT_TO_POINTER(kind), test_cross_mode);
++        g_free(name);
++    }
++    for (unsigned kind = 0; kind < 3; kind++) {
++        char *name = g_strdup_printf("/sparc/range/%u", kind);
++        g_test_add_data_func(name, GUINT_TO_POINTER(kind), test_range);
++        g_free(name);
++    }
++    g_test_add_func("/sparc/ordinary", test_ordinary);
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-vfio-timer.c b/tests/unit/test-crucible-vfio-timer.c
