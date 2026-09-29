@@ -39,9 +39,13 @@ enum transport_phase {
   TRANSPORT_FINISHED,
 };
 
+struct aos_fuse_reply_scope_v3;
+
 struct aos_fuse_transport {
   const struct aos_fuse_core_operations *operations;
   const struct aos_fuse_fallback_operations_v2 *fallback;
+  const struct aos_fuse_scoped_operations_v3 *scoped;
+  struct aos_fuse_reply_scope_v3 *write_scope;
   void *core_context;
   struct aos_fuse_limits limits;
   struct fuse_session *session;
@@ -79,6 +83,14 @@ struct aos_fuse_open_responder {
 static int begin_deadline(struct aos_fuse_transport *, struct timespec *);
 static int remaining_milliseconds(struct aos_fuse_transport *,
                                   const struct timespec *);
+static int check_write_scope(struct aos_fuse_transport *);
+static void scoped_lookup(fuse_req_t, fuse_ino_t, const char *);
+static void scoped_getattr(fuse_req_t, fuse_ino_t);
+static void scoped_readlink(fuse_req_t, fuse_ino_t);
+static void scoped_readdir(fuse_req_t, fuse_ino_t, size_t, off_t,
+                           struct fuse_file_info *);
+static void scoped_read(fuse_req_t, fuse_ino_t, size_t, off_t,
+                        struct fuse_file_info *);
 
 static int normalize_error(int error) {
   switch (error) {
@@ -275,10 +287,14 @@ static int checked_reply(struct aos_fuse_transport *transport, int result) {
   return error;
 }
 
-static void reply_error(fuse_req_t request, int error) {
+static int publish_error(fuse_req_t request, int error) {
   struct aos_fuse_transport *transport = transport_for(request);
-  (void)checked_reply(transport,
-                      fuse_reply_err(request, normalize_error(error)));
+  return checked_reply(transport,
+                       fuse_reply_err(request, normalize_error(error)));
+}
+
+static void reply_error(fuse_req_t request, int error) {
+  (void)publish_error(request, error);
 }
 
 static void reply_integrity_failure(fuse_req_t request) {
@@ -339,8 +355,37 @@ static int reply_open_once(struct aos_fuse_open_responder *responder,
   return checked_reply(responder->transport, result);
 }
 
+static int publish_lookup(fuse_req_t request, int error,
+                           const struct aos_fuse_attributes *attributes) {
+  struct aos_fuse_transport *transport = transport_for(request);
+  if (error == ENOENT) {
+    struct fuse_entry_param entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.entry_timeout = seconds(transport->limits.entry_valid_ns);
+    return checked_reply(transport, fuse_reply_entry(request, &entry));
+  }
+  if (error != 0)
+    return publish_error(request, error);
+  struct fuse_entry_param entry;
+  memset(&entry, 0, sizeof(entry));
+  entry.ino = attributes->node_id;
+  entry.generation = 1;
+  error = fill_stat(attributes, &entry.attr);
+  if (error != 0) {
+    reply_integrity_failure(request);
+    return EIO;
+  }
+  entry.attr_timeout = seconds(transport->limits.attribute_valid_ns);
+  entry.entry_timeout = seconds(transport->limits.entry_valid_ns);
+  return checked_reply(transport, fuse_reply_entry(request, &entry));
+}
+
 static void lookup(fuse_req_t request, fuse_ino_t parent, const char *name) {
   struct aos_fuse_transport *transport = transport_for(request);
+  if (transport->scoped != NULL) {
+    scoped_lookup(request, parent, name);
+    return;
+  }
   size_t length = strnlen(name, transport->limits.maximum_name_bytes + 1U);
   if (length == 0 || length > transport->limits.maximum_name_bytes ||
       memchr(name, '/', length) != NULL) {
@@ -363,29 +408,7 @@ static void lookup(fuse_req_t request, fuse_ino_t parent, const char *name) {
     poison(transport, EIO);
     return;
   }
-  if (error == ENOENT) {
-    struct fuse_entry_param entry;
-    memset(&entry, 0, sizeof(entry));
-    entry.entry_timeout = seconds(transport->limits.entry_valid_ns);
-    (void)checked_reply(transport, fuse_reply_entry(request, &entry));
-    return;
-  }
-  if (error != 0) {
-    reply_error(request, error);
-    return;
-  }
-  struct fuse_entry_param entry;
-  memset(&entry, 0, sizeof(entry));
-  entry.ino = attributes.node_id;
-  entry.generation = 1;
-  error = fill_stat(&attributes, &entry.attr);
-  if (error != 0) {
-    reply_integrity_failure(request);
-    return;
-  }
-  entry.attr_timeout = seconds(transport->limits.attribute_valid_ns);
-  entry.entry_timeout = seconds(transport->limits.entry_valid_ns);
-  (void)checked_reply(transport, fuse_reply_entry(request, &entry));
+  (void)publish_lookup(request, error, &attributes);
 }
 
 static void forget(fuse_req_t request, fuse_ino_t node, uint64_t count) {
@@ -403,22 +426,13 @@ static void forget(fuse_req_t request, fuse_ino_t node, uint64_t count) {
     poison(transport, fatal ? EIO : error);
 }
 
-static void getattr(fuse_req_t request, fuse_ino_t node,
-                    struct fuse_file_info *file) {
-  (void)file;
+static int publish_attributes(fuse_req_t request, int error,
+                               const struct aos_fuse_attributes *attributes) {
   struct aos_fuse_transport *transport = transport_for(request);
-  struct aos_fuse_attributes attributes;
-  memset(&attributes, 0, sizeof(attributes));
-  int error = interrupted(request);
-  bool fatal = false;
   bool invalid_output = false;
-  if (error == 0)
-    error = core_result(transport->operations->getattr(
-                            transport->core_context, node, &attributes),
-                        &fatal);
   struct stat output;
   if (error == 0) {
-    error = fill_stat(&attributes, &output);
+    error = fill_stat(attributes, &output);
     invalid_output = error != 0;
   }
   if (error != 0) {
@@ -426,29 +440,38 @@ static void getattr(fuse_req_t request, fuse_ino_t node,
       reply_integrity_failure(request);
     else
       reply_error(request, error);
-    if (fatal)
-      poison(transport, EIO);
-    return;
+    return invalid_output ? EIO : transport->terminal_error;
   }
-  (void)checked_reply(
+  return checked_reply(
       transport, fuse_reply_attr(request, &output,
                                  seconds(transport->limits.attribute_valid_ns)));
 }
 
-static void aos_readlink(fuse_req_t request, fuse_ino_t node) {
+static void getattr(fuse_req_t request, fuse_ino_t node,
+                    struct fuse_file_info *file) {
+  (void)file;
   struct aos_fuse_transport *transport = transport_for(request);
-  uint64_t callback_length = 0;
-  memset(transport->target, 0,
-         (size_t)transport->limits.maximum_symlink_bytes + 1U);
+  if (transport->scoped != NULL) {
+    scoped_getattr(request, node);
+    return;
+  }
+  struct aos_fuse_attributes attributes;
+  memset(&attributes, 0, sizeof(attributes));
   int error = interrupted(request);
   bool fatal = false;
-  bool invalid_output = false;
   if (error == 0)
-    error = core_result(transport->operations->readlink(
-                            transport->core_context, node, transport->target,
-                            transport->limits.maximum_symlink_bytes,
-                            &callback_length),
+    error = core_result(transport->operations->getattr(
+                            transport->core_context, node, &attributes),
                         &fatal);
+  (void)publish_attributes(request, error, &attributes);
+  if (fatal)
+    poison(transport, EIO);
+}
+
+static int publish_readlink(fuse_req_t request, int error,
+                            uint64_t callback_length) {
+  struct aos_fuse_transport *transport = transport_for(request);
+  bool invalid_output = false;
   size_t length = (size_t)callback_length;
   if (error == 0 &&
       (callback_length != (uint64_t)length || length == 0 ||
@@ -462,13 +485,33 @@ static void aos_readlink(fuse_req_t request, fuse_ino_t node) {
       reply_integrity_failure(request);
     else
       reply_error(request, error);
-    if (fatal)
-      poison(transport, EIO);
-    return;
+    return invalid_output ? EIO : transport->terminal_error;
   }
   transport->target[length] = '\0';
-  (void)checked_reply(
+  return checked_reply(
       transport, fuse_reply_readlink(request, (const char *)transport->target));
+}
+
+static void aos_readlink(fuse_req_t request, fuse_ino_t node) {
+  struct aos_fuse_transport *transport = transport_for(request);
+  if (transport->scoped != NULL) {
+    scoped_readlink(request, node);
+    return;
+  }
+  uint64_t callback_length = 0;
+  memset(transport->target, 0,
+         (size_t)transport->limits.maximum_symlink_bytes + 1U);
+  int error = interrupted(request);
+  bool fatal = false;
+  if (error == 0)
+    error = core_result(transport->operations->readlink(
+                            transport->core_context, node, transport->target,
+                            transport->limits.maximum_symlink_bytes,
+                            &callback_length),
+                        &fatal);
+  (void)publish_readlink(request, error, callback_length);
+  if (fatal)
+    poison(transport, EIO);
 }
 
 static void opendir(fuse_req_t request, fuse_ino_t node,
@@ -501,9 +544,80 @@ static void opendir(fuse_req_t request, fuse_ino_t node,
   }
 }
 
+static int publish_directory(fuse_req_t request, uint64_t cookie, size_t limit,
+                             uint64_t callback_entry_count,
+                             uint64_t callback_names_length) {
+  struct aos_fuse_transport *transport = transport_for(request);
+  if (callback_entry_count > transport->limits.maximum_readdir_entries ||
+      callback_names_length > transport->limits.maximum_readdir_bytes) {
+    reply_integrity_failure(request);
+    return EIO;
+  }
+  size_t entry_count = (size_t)callback_entry_count;
+  size_t names_length = (size_t)callback_names_length;
+
+  size_t used = 0;
+  uint64_t previous_cookie = cookie;
+  bool output_full = false;
+  for (size_t index = 0; index < entry_count; ++index) {
+    const struct aos_fuse_directory_entry *entry = &transport->entries[index];
+    size_t begin = entry->name_offset;
+    size_t length = entry->name_length;
+    if (entry->reserved != 0 || length == 0 ||
+        length > transport->limits.maximum_name_bytes || begin > names_length ||
+        length > names_length - begin ||
+        entry->next_cookie > (uint64_t)INT64_MAX ||
+        entry->next_cookie <= previous_cookie ||
+        memchr(transport->names + begin, '\0', length) != NULL ||
+        memchr(transport->names + begin, '/', length) != NULL) {
+      reply_integrity_failure(request);
+      return EIO;
+    }
+    previous_cookie = entry->next_cookie;
+    memcpy(transport->name, transport->names + begin, length);
+    transport->name[length] = '\0';
+    struct stat stat;
+    memset(&stat, 0, sizeof(stat));
+    stat.st_ino = entry->node_id;
+    stat.st_mode = kind_mode(entry->kind);
+    if ((uint64_t)stat.st_ino != entry->node_id || stat.st_mode == 0) {
+      reply_integrity_failure(request);
+      return EIO;
+    }
+    if (!output_full) {
+      size_t needed = fuse_add_direntry(request, NULL, 0, transport->name,
+                                        &stat, (off_t)entry->next_cookie);
+      if (needed > limit - used) {
+        output_full = true;
+      } else {
+        size_t packed = fuse_add_direntry(
+            request, transport->directory_output + used, limit - used,
+            transport->name, &stat, (off_t)entry->next_cookie);
+        if (packed != needed) {
+          reply_integrity_failure(request);
+          return EIO;
+        }
+        used += needed;
+      }
+    }
+  }
+  /* An empty successful reply means EOF to the kernel. A nonempty core page
+   * that cannot fit even its first record must remain retryable, not truncate
+   * the directory silently. Validate the entire page before this decision. */
+  if (entry_count != 0 && used == 0) {
+    return publish_error(request, EINVAL);
+  }
+  return checked_reply(
+      transport, fuse_reply_buf(request, transport->directory_output, used));
+}
+
 static void readdir(fuse_req_t request, fuse_ino_t node, size_t size,
                     off_t offset, struct fuse_file_info *file) {
   struct aos_fuse_transport *transport = transport_for(request);
+  if (transport->scoped != NULL) {
+    scoped_readdir(request, node, size, offset, file);
+    return;
+  }
   if (offset < 0) {
     reply_error(request, EINVAL);
     return;
@@ -538,68 +652,8 @@ static void readdir(fuse_req_t request, fuse_ino_t node, size_t size,
       poison(transport, EIO);
     return;
   }
-  if (callback_entry_count > transport->limits.maximum_readdir_entries ||
-      callback_names_length > transport->limits.maximum_readdir_bytes) {
-    reply_integrity_failure(request);
-    return;
-  }
-  size_t entry_count = (size_t)callback_entry_count;
-  size_t names_length = (size_t)callback_names_length;
-
-  size_t used = 0;
-  uint64_t previous_cookie = (uint64_t)offset;
-  bool output_full = false;
-  for (size_t index = 0; index < entry_count; ++index) {
-    const struct aos_fuse_directory_entry *entry = &transport->entries[index];
-    size_t begin = entry->name_offset;
-    size_t length = entry->name_length;
-    if (entry->reserved != 0 || length == 0 ||
-        length > transport->limits.maximum_name_bytes || begin > names_length ||
-        length > names_length - begin ||
-        entry->next_cookie > (uint64_t)INT64_MAX ||
-        entry->next_cookie <= previous_cookie ||
-        memchr(transport->names + begin, '\0', length) != NULL ||
-        memchr(transport->names + begin, '/', length) != NULL) {
-      reply_integrity_failure(request);
-      return;
-    }
-    previous_cookie = entry->next_cookie;
-    memcpy(transport->name, transport->names + begin, length);
-    transport->name[length] = '\0';
-    struct stat stat;
-    memset(&stat, 0, sizeof(stat));
-    stat.st_ino = entry->node_id;
-    stat.st_mode = kind_mode(entry->kind);
-    if ((uint64_t)stat.st_ino != entry->node_id || stat.st_mode == 0) {
-      reply_integrity_failure(request);
-      return;
-    }
-    if (!output_full) {
-      size_t needed = fuse_add_direntry(request, NULL, 0, transport->name,
-                                        &stat, (off_t)entry->next_cookie);
-      if (needed > limit - used) {
-        output_full = true;
-      } else {
-        size_t packed = fuse_add_direntry(
-            request, transport->directory_output + used, limit - used,
-            transport->name, &stat, (off_t)entry->next_cookie);
-        if (packed != needed) {
-          reply_integrity_failure(request);
-          return;
-        }
-        used += needed;
-      }
-    }
-  }
-  /* An empty successful reply means EOF to the kernel. A nonempty core page
-   * that cannot fit even its first record must remain retryable, not truncate
-   * the directory silently. Validate the entire page before this decision. */
-  if (entry_count != 0 && used == 0) {
-    reply_error(request, EINVAL);
-    return;
-  }
-  (void)checked_reply(
-      transport, fuse_reply_buf(request, transport->directory_output, used));
+  (void)publish_directory(request, (uint64_t)offset, limit,
+                          callback_entry_count, callback_names_length);
 }
 
 static void releasedir(fuse_req_t request, fuse_ino_t node,
@@ -708,9 +762,26 @@ static void aos_open(fuse_req_t request, fuse_ino_t node,
   transport->file_deadline_active = false;
 }
 
+static int publish_read(fuse_req_t request, int error, uint64_t length,
+                        size_t requested) {
+  struct aos_fuse_transport *transport = transport_for(request);
+  if (error != 0)
+    return publish_error(request, error);
+  if (length > requested) {
+    reply_integrity_failure(request);
+    return EIO;
+  }
+  return checked_reply(transport, fuse_reply_buf(
+      request, (const char *)transport->read_output, (size_t)length));
+}
+
 static void aos_read(fuse_req_t request, fuse_ino_t node, size_t size, off_t offset,
                      struct fuse_file_info *file) {
   struct aos_fuse_transport *transport = transport_for(request);
+  if (transport->scoped != NULL) {
+    scoped_read(request, node, size, offset, file);
+    return;
+  }
   if (transport->fallback == NULL) {
     reply_error(request, ENOTSUP);
     return;
@@ -739,10 +810,9 @@ static void aos_read(fuse_req_t request, fuse_ino_t node, size_t size, off_t off
   if (error != 0) {
     /* Callback prefixes remain private and never become an error reply body. */
     memset(transport->read_output, 0, transport->limits.maximum_write_bytes);
-    reply_error(request, error);
+    (void)publish_read(request, error, 0, size);
   } else {
-    (void)checked_reply(transport, fuse_reply_buf(
-        request, (const char *)transport->read_output, (size_t)length));
+    (void)publish_read(request, 0, length, size);
     memset(transport->read_output, 0, transport->limits.maximum_write_bytes);
   }
   if (fatal)
@@ -1052,6 +1122,8 @@ static ssize_t custom_writev(int fd, struct iovec *iov, int count,
     deadline = transport->preparation_deadline;
 
   for (;;) {
+    if (check_write_scope(transport) != 0)
+      return -1;
     if (wait_for_io(transport, fd, POLLOUT, &deadline) != 0)
       return -1;
     /* A poll wakeup can be delayed after readiness. V2 must not treat it as
@@ -1063,6 +1135,8 @@ static ssize_t custom_writev(int fd, struct iovec *iov, int count,
         return -1;
       }
     }
+    if (check_write_scope(transport) != 0)
+      return -1;
     ssize_t result = writev(fd, iov, count);
     if (result < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
       continue;
@@ -1452,6 +1526,10 @@ void aos_fuse_transport_destroy_prepared_v1(
   release_transport(&prepared->transport);
   free(prepared);
 }
+
+/* One engine/session owns both profiles; the additive adapter shares all
+ * serialization, custom I/O, poisoning and release helpers above. */
+#include "scoped_reply.c.inc"
 
 #ifdef AOS_FUSE_TRANSPORT_TESTING
 int aos_fuse_transport_prepare_test_fd_v1(

@@ -12,6 +12,10 @@ use std::ptr::NonNull;
 
 use aos_sandbox_linux::fuse_worker_startup::FixedFuseWorkerSessionV1;
 
+// Inert ABI declarations only: no production table, runner or guard factory.
+#[allow(dead_code)]
+mod scoped;
+
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Attributes {
