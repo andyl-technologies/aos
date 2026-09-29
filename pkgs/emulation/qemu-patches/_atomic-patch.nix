@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "b5452d886b8074d3903f70a7d4ed147bafe0e2b5b661e8d94288b5c4f75a5e93";
+  sha256 = "c9e2dff35297a1ce7e97f3a8e7be2b5a6ed6b7b42769594dd626cf729a9549e6";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -148,9 +148,11 @@
     "Link the real IRQ implementation for the configured MIPS timer unit."
     ""
     "Preserve wide ARM, HPPA and LoongArch CPU timer origins and deadlines."
+    ""
+    "Preserve wide PowerPC timer coordinates and exact precise BookE edges."
   ];
-  commit = "0e5e0fb04bfad9e8f5ec70ff5383f47b622e640f";
-  tree = "b8b12adbe02b683325724bc65514bb3ca6a92512";
+  commit = "d498e0591b0344e2c1bb6a79df8e47255dd39e57";
+  tree = "24190a19cdcfb18cf131e273fdf256ef7a5e8213";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -159,7 +161,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "60399f7e3e6c7e5afc19c43f4cfdcd8a8256f466107aa3b0c8c3830494775761";
+  bundleSha256 = "992edfaafd7889f9e05a8f87f2e9f344b4190c01e13fa61ce5ac56db02d4c49a";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
