@@ -2400,7 +2400,8 @@ fn validate_capacity_domain_shape(
         GlobalCapacityReservationPurposeV1::RootProjectAdmission
         | GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal
         | GlobalCapacityReservationPurposeV1::ControllerProjectAdmission
-        | GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor => false,
+        | GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor
+        | GlobalCapacityReservationPurposeV1::ControllerConsumerResource => false,
     };
     closed
         .then_some(())

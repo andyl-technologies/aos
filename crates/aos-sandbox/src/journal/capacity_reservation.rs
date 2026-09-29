@@ -36,6 +36,8 @@ pub enum GlobalCapacityReservationPurposeV1 {
     ControllerProjectAdmission = 5,
     /// Root-owned initial Source intent and exact semantic-floor settlement.
     RootSourceGenesisAnchor = 6,
+    /// Non-authorizing Controller resource preparation and retained quarantine.
+    ControllerConsumerResource = 7,
 }
 
 impl GlobalCapacityReservationPurposeV1 {
@@ -47,6 +49,7 @@ impl GlobalCapacityReservationPurposeV1 {
             Self::SourceProviderNativeTerminal => RecordNamespace::SourceProviderAuthority,
             Self::ControllerProjectAdmission => RecordNamespace::Effect,
             Self::RootSourceGenesisAnchor => RecordNamespace::DesiredState,
+            Self::ControllerConsumerResource => RecordNamespace::ControllerConsumerReadAttempt,
         }
     }
 
@@ -80,6 +83,11 @@ impl GlobalCapacityReservationPurposeV1 {
                 namespace,
                 RecordNamespace::DesiredState | RecordNamespace::GlobalCapacityReservation
             ),
+            Self::ControllerConsumerResource => matches!(
+                namespace,
+                RecordNamespace::ControllerConsumerReadAttempt
+                    | RecordNamespace::GlobalCapacityReservation
+            ),
         }
     }
 
@@ -91,6 +99,7 @@ impl GlobalCapacityReservationPurposeV1 {
             4 => Ok(Self::RootProjectAdmission),
             5 => Ok(Self::ControllerProjectAdmission),
             6 => Ok(Self::RootSourceGenesisAnchor),
+            7 => Ok(Self::ControllerConsumerResource),
             _ => Err(JournalError::MalformedRecord(
                 "unknown global capacity reservation purpose",
             )),
@@ -984,6 +993,7 @@ fn valid_future_transactions(purpose: GlobalCapacityReservationPurposeV1, count:
         GlobalCapacityReservationPurposeV1::PublisherCompletion
         | GlobalCapacityReservationPurposeV1::RuntimeExecution
         | GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal
+        | GlobalCapacityReservationPurposeV1::ControllerConsumerResource
         | GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor => count == 1,
     }
 }
@@ -1185,6 +1195,7 @@ mod purpose_tests {
             GlobalCapacityReservationPurposeV1::RuntimeExecution,
             GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal,
             GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor,
+            GlobalCapacityReservationPurposeV1::ControllerConsumerResource,
         ] {
             for count in [0, 2, 3, 4] {
                 let mut request = root_request();
@@ -1238,6 +1249,41 @@ mod purpose_tests {
             changed.purpose = foreign;
             changed.owner_namespace = foreign.owner_namespace();
             assert_ne!(reservation_id(&changed, admission), identifier);
+        }
+    }
+
+    #[test]
+    fn consumer_resource_capacity_has_only_its_local_namespace_and_one_slot() {
+        let mut request = root_request();
+        request.purpose = GlobalCapacityReservationPurposeV1::ControllerConsumerResource;
+        request.owner_namespace = RecordNamespace::ControllerConsumerReadAttempt;
+        let identifier = reservation_id(&request, [7; 16]);
+        let bytes = encode_reservation(&request, [7; 16], identifier);
+
+        assert_eq!(bytes.len(), VALUE_BYTES_V1);
+        assert_eq!(bytes[11], 7);
+        assert_eq!(decode_reservation(&bytes).unwrap().0, request);
+        assert!(decode_capacity_record(&reservation_key(identifier), &bytes).is_ok());
+        assert!(
+            request
+                .purpose
+                .permits(RecordNamespace::ControllerConsumerReadAttempt)
+        );
+        assert!(
+            request
+                .purpose
+                .permits(RecordNamespace::GlobalCapacityReservation)
+        );
+        for foreign in [
+            RecordNamespace::DesiredState,
+            RecordNamespace::Effect,
+            RecordNamespace::MountAttempt,
+            RecordNamespace::SourceProviderAuthority,
+        ] {
+            assert!(!request.purpose.permits(foreign));
+        }
+        for code in [0, 8, 255] {
+            assert!(GlobalCapacityReservationPurposeV1::from_byte(code).is_err());
         }
     }
 
