@@ -13,7 +13,7 @@ pub use mount_request::{
     HistoricalMountReleaseAuthorizationV2, MountProviderAuthorityTrustProjectionV2,
     MountProviderRequestProjectionV2, MountProviderRequestSendRecoveryV2,
     MountProviderSessionProjectionV2, MountProviderSignerProjectionV2, PendingNativeMountAcquireV3,
-    PreparedMountProviderRequestV2, ReceivedMountProviderOutcomePartsV2,
+    OriginalNativeReceivedOutcomeV5, PreparedMountProviderRequestV2, ReceivedMountProviderOutcomePartsV2,
     RecoveredMountProviderOutcomePartsV2, RecoveredMountProviderOutcomeV2,
     ReopenedMountSourceRootV2, ReservedMountProviderRequestV2, RetainedRootRecoveryAuthorizationV2,
     RootAcceptedNativeExportFenceV1, SentMountProviderRequestV2, VerifiedMountProviderOutcomeV2,

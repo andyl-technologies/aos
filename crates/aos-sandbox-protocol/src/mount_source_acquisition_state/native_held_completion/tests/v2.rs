@@ -4,6 +4,7 @@
 //! without invoking a runtime owner, protected signer, journal or FD factory.
 
 mod recovery;
+mod pending;
 
 use super::*;
 use crate::mount_source_acquisition_state::{RecordRefV2, record_digest};

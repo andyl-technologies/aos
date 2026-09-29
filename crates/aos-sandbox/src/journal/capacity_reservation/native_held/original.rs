@@ -13,7 +13,7 @@
 use aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::{
     MAXIMUM_ROOT_NATIVE_CUT_BYTES_V1, MAXIMUM_ROOT_NATIVE_HELD_SIDECAR_BYTES_V2,
     RootNativeCutKindV1, RootNativeCutV1, RootNativeHeldGraphV2, original_root_remaining_v5,
-    validate_original_root_preparation_v5,
+    has_original_pending_closed_cut_v5, validate_original_root_preparation_v5,
 };
 use aos_sandbox_source_provider_protocol::native_held_completion::{
     NativeHeldControlKindV1, frame::PreparedNativeHeldControlV1,
@@ -113,13 +113,18 @@ impl OriginalRootCapacityRecordV5 {
             .get(&attempt)
             .ok_or(invalid("original Root sidecar absent"))?;
         let phase = sidecar.suffix().phase();
-        let extra_owners = matches!(phase, 0..=2)
-            || (matches!(phase, 10 | 11)
-                && sidecar.response_transaction() == [0; 16]
-                && sidecar
-                    .suffix()
-                    .control(NativeHeldControlKindV1::ProviderHeld)
-                    .is_none());
+        // Consumed Pending permanently spent the one heavy legacy branch.
+        // A later Head advance cannot reserve that same branch a second time.
+        let pending_closed = has_original_pending_closed_cut_v5(graph, sidecar)
+            .map_err(|_| invalid("original Root Pending Closed cut"))?;
+        let extra_owners = !pending_closed
+            && (matches!(phase, 0..=2)
+                || (matches!(phase, 10 | 11)
+                    && sidecar.response_transaction() == [0; 16]
+                    && sidecar
+                        .suffix()
+                        .control(NativeHeldControlKindV1::ProviderHeld)
+                        .is_none()));
         let (frames, bytes) = envelope(
             count,
             extra_owners,
@@ -418,5 +423,73 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn maximal_pending_transaction_encodes_real_six_record_frames_without_double_reserve() {
+        use crate::journal::{JournalTransaction, encoded_transaction_append_bytes};
+        use aos_sandbox_protocol::mount_source_acquisition_state::{
+            acquisition_key, provider_attempt_key, provider_head_key,
+            native_held_completion::native_root_sidecar_key_v2,
+        };
+
+        let limits = JournalLimits::default();
+        let p = ORIGINAL_ROOT_PREPARED_BYTES_V5;
+        let c = MAXIMUM_ROOT_NATIVE_CUT_BYTES_V1;
+        let (old_frames, old_bytes) = envelope(6, true, p, c, limits).unwrap();
+        let (next_frames, next_bytes) = envelope(3, false, p, c, limits).unwrap();
+        let namespace = RecordNamespace::MountSourceAcquisition;
+        // Width fixtures intentionally carry no owner or floor authority. The
+        // actual journal encoder, including DEL and begin/end frames, measures
+        // the maximal six-record geometry independently of scalar arithmetic.
+        let transaction = JournalTransaction::new(
+            [1; 16],
+            vec![
+                JournalRecord::put(
+                    namespace,
+                    provider_attempt_key([1; 32]),
+                    vec![0; LEGACY_VALUE_BYTES as usize],
+                ),
+                JournalRecord::put(
+                    namespace,
+                    acquisition_key([2; 32]),
+                    vec![0; LEGACY_VALUE_BYTES as usize],
+                ),
+                JournalRecord::put(
+                    namespace,
+                    provider_head_key([3; 16], [4; 16]),
+                    vec![0; LEGACY_VALUE_BYTES as usize],
+                ),
+                JournalRecord::put(
+                    namespace,
+                    native_root_sidecar_key_v2([1; 32]).unwrap(),
+                    vec![0; MAXIMUM_ROOT_NATIVE_HELD_SIDECAR_BYTES_V2],
+                ),
+                JournalRecord::delete(
+                    RecordNamespace::GlobalCapacityReservation,
+                    reservation_key([5; 32]),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::GlobalCapacityReservation,
+                    reservation_key([6; 32]),
+                    vec![0; ORIGINAL_ROOT_CAPACITY_MAXIMUM_VALUE_BYTES_V5],
+                ),
+            ],
+        )
+        .unwrap();
+
+        let append_bytes = encoded_transaction_append_bytes(&transaction).unwrap();
+
+        assert_eq!(transaction.records().len(), 6);
+        assert_eq!((old_frames, next_frames), (20, 8));
+        assert!(6 + next_frames <= old_frames);
+        // The envelopes count records. Each physical transaction also carries
+        // Begin/Commit, so compare full frame budgets separately.
+        let append_frames = transaction.records().len() as u32 + 2;
+        assert_eq!(append_frames, 8);
+        assert!(append_frames + next_frames + 2 * 3 <= old_frames + 2 * 6);
+        assert!(append_bytes + next_bytes <= old_bytes);
+        let (_, double_reserved) = envelope(3, true, p, c, limits).unwrap();
+        assert!(append_bytes + double_reserved > old_bytes);
     }
 }

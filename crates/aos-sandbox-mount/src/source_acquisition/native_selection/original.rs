@@ -30,6 +30,9 @@ use crate::source_acquisition::{
     transition::prepare_mutation,
 };
 
+mod pending;
+use pending::OriginalNativePendingFlightV5;
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Stage {
     BeginQuery,
@@ -76,6 +79,7 @@ pub(in crate::source_acquisition) struct OriginalNativeAcquireFlightV5 {
     acquire_send_attempted: bool,
     send_recovery: Option<MountProviderRequestSendRecoveryV2>,
     sent: Option<SentMountProviderRequestV2>,
+    pending: OriginalNativePendingFlightV5,
 }
 
 impl OriginalNativeAcquireFlightV5 {
@@ -119,6 +123,7 @@ impl OriginalNativeAcquireFlightV5 {
             acquire_send_attempted: false,
             send_recovery: None,
             sent: None,
+            pending: OriginalNativePendingFlightV5::new(),
         }
     }
 

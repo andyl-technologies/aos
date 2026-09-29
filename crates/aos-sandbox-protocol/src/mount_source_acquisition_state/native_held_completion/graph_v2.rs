@@ -329,6 +329,13 @@ fn validate_v2_sidecar(
         }
         return Ok(RootNativeDataClassV2::BarrierTerminal);
     }
+    if super::pending_v5::has_original_pending_closed_cut_v5(graph, sidecar)? {
+        return Ok(if current_companions_equal(graph, applicable) {
+            RootNativeDataClassV2::LiveOriginal
+        } else {
+            RootNativeDataClassV2::ClosedRecoveryPending
+        });
+    }
     if current_companions_equal(graph, applicable)
         && matches!(
             current_attempt.state,

@@ -40,6 +40,7 @@ mod graph;
 mod graph_v2;
 mod no_escape_terminal;
 mod original_v5;
+mod pending_v5;
 mod recovery_v2;
 mod reducer;
 mod reducer_v2;
@@ -65,6 +66,9 @@ pub use no_escape_terminal::{ROOT_NATIVE_NO_ESCAPE_TERMINAL_BYTES_V2, RootNative
 pub use original_v5::{
     original_root_remaining_v5, validate_original_root_preparation_v5,
     validate_original_root_transition_v5,
+};
+pub use pending_v5::{
+    has_original_pending_closed_cut_v5, validate_original_pending_closed_transition_v5,
 };
 pub use reducer::{
     RootNativeHeldTransitionV1, RootNativeTransitionKindV1,

@@ -503,6 +503,82 @@ impl SourceAcquisitionTableV2 {
         verified: &VerifiedMountProviderOutcomeV2,
         source_root_observation: Option<&SourceRootObservationV1>,
     ) -> Result<Option<PreparedProviderDispositionV2>> {
+        let (current_head, session_record, next_attempt, terminal_ref) =
+            self.prepare_verified_attempt_v2(attempt_id, verified)?;
+        let method = next_attempt.method;
+        let status = consumed_status(&next_attempt)?;
+
+        match method {
+            ProviderMethodV2::Acquire | ProviderMethodV2::Release => {
+                let complete_acquire = method == ProviderMethodV2::Acquire
+                    && status == ProviderStatusV2::Complete;
+                let prepared = self.prepare_acquisition_disposition(
+                    current_head,
+                    session_record,
+                    next_attempt,
+                    terminal_ref,
+                    source_root_observation,
+                )?;
+                if complete_acquire {
+                    Ok(Some(prepared))
+                } else {
+                    journal.commit(&prepared.transaction)?;
+                    *self = prepared.tentative;
+                    Ok(None)
+                }
+            }
+            ProviderMethodV2::Inventory => {
+                if source_root_observation.is_some() {
+                    return Err(state_error("Inventory outcome carried a SourceRoot"));
+                }
+                self.consume_inventory_disposition(journal, current_head, next_attempt, terminal_ref)?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// Derives original Pending owners without using the generic commit route.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-Pending Acquire, missing exact Reserved owner or a
+    /// disposition that cannot reuse the existing acquisition preparation.
+    pub(super) fn prepare_original_pending_disposition_v5(
+        &self,
+        attempt_id: [u8; 32],
+        verified: &VerifiedMountProviderOutcomeV2,
+    ) -> Result<(JournalTransaction, Self)> {
+        if verified.status() != SourceProviderStatus::Pending {
+            return Err(state_error("original Pending receipt status"));
+        }
+        let (head, session, attempt, reference) =
+            self.prepare_verified_attempt_v2(attempt_id, verified)?;
+        if attempt.method != ProviderMethodV2::Acquire
+            || !matches!(
+                &attempt.state,
+                ProviderAttemptStateV2::DispositionConsumed {
+                    status: ProviderStatusV2::Pending, signed_result, ..
+                } if signed_result.is_empty()
+            )
+        {
+            return Err(state_error("original Pending disposition shape"));
+        }
+
+        let prepared = self.prepare_acquisition_disposition(head, session, attempt, reference, None)?;
+        Ok((prepared.transaction, prepared.tentative))
+    }
+
+    /// Shares the actual Reserved-owner and verifier-to-Attempt preparation.
+    fn prepare_verified_attempt_v2(
+        &self,
+        attempt_id: [u8; 32],
+        verified: &VerifiedMountProviderOutcomeV2,
+    ) -> Result<(
+        SourceProviderHeadV2,
+        SourceProviderSessionV2,
+        SourceProviderQueryAttemptV2,
+        RecordRefV2,
+    )> {
         let current_attempt = self
             .provider_attempts
             .get(&attempt_id)
@@ -532,6 +608,7 @@ impl SourceAcquisitionTableV2 {
             .filter(|session| session.record_digest == current_attempt.session_record_digest)
             .cloned()
             .ok_or_else(|| state_error("provider outcome session is absent"))?;
+
         let verified_status = verified.status();
         let response = verified.canonical_response();
         let disposition = decode_disposition(current_attempt.method, response)?;
@@ -560,38 +637,7 @@ impl SourceAcquisitionTableV2 {
             value: next_attempt.clone(),
         })?;
 
-        match current_attempt.method {
-            ProviderMethodV2::Acquire | ProviderMethodV2::Release => {
-                let complete_acquire = current_attempt.method == ProviderMethodV2::Acquire
-                    && disposition.status == ProviderStatusV2::Complete;
-                let prepared = self.prepare_acquisition_disposition(
-                    current_head,
-                    session_record,
-                    next_attempt,
-                    terminal_ref,
-                    source_root_observation,
-                )?;
-                if complete_acquire {
-                    Ok(Some(prepared))
-                } else {
-                    journal.commit(&prepared.transaction)?;
-                    *self = prepared.tentative;
-                    Ok(None)
-                }
-            }
-            ProviderMethodV2::Inventory => {
-                if source_root_observation.is_some() {
-                    return Err(state_error("Inventory outcome carried a SourceRoot"));
-                }
-                self.consume_inventory_disposition(
-                    journal,
-                    current_head,
-                    next_attempt,
-                    terminal_ref,
-                )?;
-                Ok(None)
-            }
-        }
+        Ok((current_head, session_record, next_attempt, terminal_ref))
     }
 
     #[cfg(test)]
