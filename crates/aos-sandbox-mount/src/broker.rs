@@ -287,12 +287,14 @@ impl<W: MountWorker> MountBroker<W> {
         result
     }
 
-    /// Establishes a dead-provider successor only before runtime construction.
+    /// Establishes a provider successor only before runtime construction.
     ///
     /// This actual absent-runtime boundary permits the trusted cold owner to
     /// install replay-derived indexes without losing live descriptor or reply
-    /// custody. A failure after construction retains that owner and closes all
-    /// further source borrows until protected process restart.
+    /// custody. The protected graph selects existing empty/idle startup or
+    /// death-proven recovery; callers cannot nominate a cold shape. A failure
+    /// after construction retains that owner and closes all further source
+    /// borrows until protected process restart.
     ///
     /// # Errors
     ///

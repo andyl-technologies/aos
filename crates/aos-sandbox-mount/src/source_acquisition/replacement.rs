@@ -933,16 +933,6 @@ fn protocol_state_error(error: MountSourceAcquisitionStateError) -> crate::Mount
     state_error(reason)
 }
 
-fn monotonic(
-    old_generation: u64,
-    old_digest: [u8; 32],
-    new_generation: u64,
-    new_digest: [u8; 32],
-) -> bool {
-    new_generation > old_generation
-        || (new_generation == old_generation && new_digest == old_digest)
-}
-
 fn validate_successor(
     predecessor: &SourceProviderSessionV2,
     successor: &SourceProviderSessionV2,

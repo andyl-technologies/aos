@@ -71,7 +71,7 @@ fn require_installed_runtime(
 }
 
 impl FixedMountSourceAcquisitionOwnerV2<'_> {
-    /// Runs only under the Broker's genuine absent-runtime guard.
+    /// Selects startup from the protected graph under the absent-runtime guard.
     pub(crate) fn establish_cold_dead_successor_v4(
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
@@ -82,6 +82,18 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
             .map_err(|error| state_error(&error.to_string()))?;
         let runtime = &mut self.runtime;
         require_installed_runtime(runtime, &writer.current_source_state()?)?;
+        if runtime
+            .table
+            .provider_heads
+            .values()
+            .all(|head| head.pending_attempt.is_none() && head.recovery_barrier.is_none())
+        {
+            // Empty and simple-idle startup use the existing owner route. Only
+            // the derivative borrow ends; the same journal and runtime remain.
+            drop(writer);
+            return self.establish_startup_provider_successor_v2(root);
+        }
+
         let mut heads = runtime.table.provider_heads.values();
         let head = heads
             .next()
