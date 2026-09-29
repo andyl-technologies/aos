@@ -2887,6 +2887,9 @@ in rec {
     };
     qemuFullUpstreamTestSuite = assert pkgs.qemu-crucible-full-test-suite.passthru.qemuBuildIdentity == pkgs.qemu-crucible.passthru.qemuBuildIdentity;
       pkgs.qemu-crucible-full-test-suite;
+    qemuConfiguredTestInventory = import ./phase7-qemu-configured-test-inventory.nix {
+      inherit pkgs;
+    };
     adversarialExampleVerify = import ./phase7-adversarial-example-verify.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.adversarialExampleVerify";
