@@ -546,6 +546,8 @@ mod settings_reads;
 pub(crate) mod surface_topology;
 pub(crate) use surface_topology::*;
 mod signing_keys;
+mod storage_authority;
+pub use storage_authority::*;
 mod topology;
 mod worker_jobs;
 pub use placement_policy::*;
@@ -590,6 +592,7 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("002-r2-gc-incarnation.sql"),
+    include_str!("003-physical-storage-authorities.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.
@@ -27316,8 +27319,8 @@ source_nar_hash = ""
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            2,
-            "production baseline plus the R2 incarnation forward migration"
+            3,
+            "production baseline plus the R2 and physical authority forward migrations"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection

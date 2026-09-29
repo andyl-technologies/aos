@@ -583,6 +583,30 @@ This qualifies the database account, not a Cloud Run bootstrap execution or
 public Hybrid deployment. Signed serving delivery, credential mounts, origin
 shielding and real cross-cloud latency/byte measurements remain pending.
 
+## External storage authority foundation
+
+Migration 003 adds eight tables for permanent physical storage authorities,
+globally reserved endpoint aliases, exact binding revisions, credential
+attestations, monotonic admission and control delivery records. The production
+baseline and migration 002 remain byte for byte unchanged. No existing binding
+is automatically adopted, and this migration enables no destructive capability.
+
+The reviewed database primitives passed ten focused SQLite tests, including
+atomic binding-coordinate validation and an exact concurrent decision replay.
+The broader dialect contract passed all three live PostgreSQL, MariaDB and
+SQLite cases in the hermetic VM gate. Those cases exercise all eight new tables,
+alias reservation rollback, reviewed decisions, admission, retirement and
+rejection of stale remote watermarks. Worker migration translation passed, and
+the ordinary Worker Wasm library compiled with the additive schema and types.
+
+The VM output is
+`/nix/store/cgvrj3d4skrnx93dvxgjvnfjqk0zyshh-aos-vm-test-aos-hub-live-sql-dialects-0`.
+Its captured source includes the reviewed authority implementation and portable
+contract. This qualifies the SQL foundation; it does not qualify an authenticated
+remote adapter, operator RPC, provider execution, or external DELETE. A stored
+SQL acknowledgment does not replace a fresh authenticated executor watermark.
+The full fleet run captured before this migration retains its original scope.
+
 Frozen external S3 physical GC, safe retirement of obsolete object coordination
 state, and whole-Hub snapshot/restore also remain to be implemented. This successful fleet
 run is one acceptance checkpoint; it does not complete RFC-0023.

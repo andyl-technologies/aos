@@ -47,6 +47,8 @@ use aos_oci_types::{
 mod common;
 #[path = "dialect/incarnation.rs"]
 mod incarnation;
+#[path = "dialect/storage_authority.rs"]
+mod storage_authority;
 
 fn oci_descriptor(media_type: MediaType, bytes: &[u8]) -> Descriptor {
     Descriptor {
@@ -1210,6 +1212,7 @@ async fn exercise(db: &Database) {
     exercise_oci_catalog_race(db, org, reg, &registry_placement).await;
     exercise_scoped_topology_lists(db, binding).await;
     incarnation::exercise(db, org, binding).await;
+    storage_authority::exercise(db).await;
 }
 
 #[tokio::test]

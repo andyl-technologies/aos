@@ -117,6 +117,7 @@ pub mod secret_version;
 pub mod service;
 pub mod signing;
 pub mod sigv4;
+pub mod storage_authority;
 pub mod storage_credential;
 pub mod storage_work;
 /// Re-export of the cache-stack node model from `aos-registry-surface`.
