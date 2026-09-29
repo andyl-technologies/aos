@@ -1239,7 +1239,8 @@ mod tests {
             fs.remove_file(&destination).await.unwrap();
         }
 
-        let unique = TokioClock.now()
+        let unique = TokioClock
+            .now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
