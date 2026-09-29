@@ -399,6 +399,28 @@ receives signed compact incarnation/hash evidence and commits discoverability
 only for the original logical admission and required placements. No bulk bytes
 or verification read may fall back through Native.
 
+Verification uses an explicit, provider-qualified execution profile. Foreground
+work is bounded by the original public invocation and its fixed deadline. If a
+completed object exceeds that measured budget, the original Begin must reserve
+queue execution and its exact placement before provider creation. A successful
+provider Complete response establishes closed staging, not a verified whole
+object digest. The client may observe `CompletingStaging` and poll its original
+operation while the storage Worker verifies the object asynchronously.
+
+The queue carries only a bounded job reference. A consumer obtains a fresh,
+scoped machine read permission for the retained original session, placement and
+staging incarnation, then hashes an exact conditional read beside storage. Its
+durable receipt records the bytes actually read and the immutable attempt; a
+client checksum, HEAD response or declared length cannot replace that receipt.
+Native checks the current original actor and publication authority before
+promotion, and the final-key guard admits only the selected placement under a
+separate signed authorization. A lost queue acknowledgment cannot start a
+second read for the same attempt; retries use distinct bounded attempts under
+the retained job. Neither polling nor a later private credential refresh renews
+an expired foreground invocation or creates queue authority retroactively.
+Provider object-size eligibility follows measured Worker and queue capacity,
+including the whole consumer invocation budget, and fails closed otherwise.
+
 Direct staging requires a provider-qualified private bucket or reviewed
 prefix-private policy. Unguessable names and facade denial alone do not make a
 public provider binding private. Publicly readable bindings refuse direct-required

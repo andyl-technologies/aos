@@ -163,6 +163,13 @@ returns the bounded validated index projection rather than routing the original
 file upload through Native. Provider request counts, control RPCs and per-phase
 latency for large metadata sets are measured, not hidden by file size totals.
 
+Completion may remain in `CompletingStaging` while a storage-local queue job
+verifies a large closed object. The client retains and polls its exact original
+Complete; it does not resend parts, create a replacement Complete, or publish a
+root from a pending or merely staged reply. The verified final placement and
+current Native authorization must be present before the same publication
+barrier can advance.
+
 Standard OCI PATCH clients may keep authenticated Worker byte ingress because
 PATCH is not a presigned UploadPart PUT. AOS direct OCI producers must use the
 explicit staged-session contract. Neither compatibility path sends OCI layer

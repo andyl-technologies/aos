@@ -205,6 +205,16 @@ promotion. No unavailable-capability test may pass by proxying bulk bytes to
 Native. Report configured direct-provider readiness separately from intended
 RFC state and preserve all failed qualification artifacts.
 
+Qualify foreground and queued verification separately on the actual Worker
+runner and each intended provider. For queued work, include an object above the
+measured foreground budget, a consumer restart, lost enqueue and completion
+acknowledgments, conditional-read source replacement, Native authorization
+revocation, and expired machine delegation. Measure the whole consumer
+invocation's wall and CPU time, memory, bytes read from storage, and bytes sent
+to Native. Prove that a pending status never starts another provider upload or
+crosses the publication barrier. A platform time limit alone does not qualify
+an object size or authorize a retry after an unknown read effect.
+
 ## Failure and recovery tests
 
 Inject a Native origin outage, PostgreSQL outage, Worker storage executor
