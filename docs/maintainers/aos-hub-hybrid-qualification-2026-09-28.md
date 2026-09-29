@@ -1019,3 +1019,35 @@ test log. Bounded state cannot detect forks at forgotten lower sequences:
 irreversible live issuer CAS and exclusive signing custody remain prerequisites.
 This qualifies the cache model correction, without provider enablement or
 measured renewal amortization. The in-flight fleet predates this correction.
+
+## Connected encrypted database records
+
+The actual read-only SQLite reader now feeds source audit, classification,
+private-cell capture, paired encrypted records and a signed root in one pinned
+transaction. The `database_capture/v1` grammar accounts for all 267 tables,
+including empty tables and explicit transient/lineage omissions. Verification
+reconstructs and reclassifies exact private rows with bounded ordered cells;
+completion requires logical ends, both authenticated frame ENDs, clean EOF and
+both actual summaries matching the trusted signed root.
+
+All **146 focused snapshot tests pass**: 24 new record cases and 122 prerequisite
+regressions. Cases include actual source immutability and concurrent source
+changes, worst-case escaping of a one-MiB cell, extreme signed integers,
+distinct-archive splice rejection, invalid signed grammar and capture limits.
+The source-bound producer receipt is `/tmp/hub-snapshot-records-qualified.json`
+(`b47de1decf1f4373d4280ffcfb6a3e202eb2d8448363683c50f2647ed69a1328`);
+independent acceptance is `/tmp/hub-snapshot-records-independent-final.json`
+(`c58e36788bb8341131aa9e6877aeedb5042b152ec00ac66dbf592d7210446f0f`).
+Integration verifies ten exact files and all 261 frozen prerequisites: 259 still
+match shared source, while the two lease files have the separately reviewed
+29-test correction above. This does not create a combined-source test result.
+The minimal Native wrapper is source-reviewed, pending a current Hub build.
+
+The signed root retains `framing_only`. Callbacks expose provisional private
+rows before completion and cannot authorize restore. Source audit facts are
+authenticated exporter declarations. A deliberate duplicate-primary-key test
+demonstrates that grammar and count consistency do not establish uniqueness or
+global SQL constraints. Scratch-database replay, filesystem/CLI orchestration,
+PostgreSQL/Worker readers, source-key custody, application/object closure,
+whole-Hub import and activation remain pending. The in-flight fleet predates
+this increment.

@@ -115,9 +115,15 @@ impl PrivateSnapshotCell {
             "snapshot private scalar version is invalid"
         );
         let scalar = envelope.scalar.0;
-        let value = decode_scalar(&scalar)?;
-        validate_original(&dependency, &value)?;
+        Self::from_private_scalar(dependency, &scalar)
+    }
 
+    pub(super) fn from_private_scalar(
+        dependency: SnapshotPrivateDependency,
+        scalar: &SnapshotScalar,
+    ) -> Result<Self> {
+        let value = decode_scalar(scalar)?;
+        validate_original(&dependency, &value)?;
         Ok(Self { dependency, value })
     }
 
@@ -365,7 +371,7 @@ struct ScalarEnvelope {
 
 // Deserialize the two scalar fields directly. A malformed array/object payload
 // fails before allocating a generic JSON tree; duplicate/unknown keys reject.
-struct PrivateScalarWire(SnapshotScalar);
+pub(super) struct PrivateScalarWire(pub(super) SnapshotScalar);
 
 impl<'de> Deserialize<'de> for PrivateScalarWire {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
@@ -420,7 +426,7 @@ impl<'de> Deserialize<'de> for PrivateScalarWire {
     }
 }
 
-fn scalar_payload_len(scalar: &SnapshotScalar) -> Result<usize> {
+pub(super) fn scalar_payload_len(scalar: &SnapshotScalar) -> Result<usize> {
     match scalar {
         SnapshotScalar::Integer(text) => {
             canonical_integer(text)?;
