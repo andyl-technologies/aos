@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 
-GATE_NAME = re.compile(r"gate:([a-z0-9]+(?:-[a-z0-9]+)*)")
+GATE_NAME = re.compile(r"gate:([a-z0-9]+(?:-[a-z0-9]+)*)(?![a-z0-9*-])")
 REGISTRY_ROW = re.compile(
     r"\| `gate:([a-z0-9-]+)` \| ([0-9]+) \| (.+) \|"
 )
@@ -61,9 +61,13 @@ def check_registry(spec: Path, registry: Path, check_names: Path) -> None:
     if set(actual) != registered or len(actual) != len(registered):
         raise ValueError("PKG-7: AOS check names differ from specification registry")
 
-    for row in rows:
-        if not row["requirements"].strip():
-            raise ValueError(f"TEST-16: unowned gate: {row['name']}")
+    unowned = sorted(
+        row["name"]
+        for row in rows
+        if not re.search(r"\b[A-Z]+-[0-9]+\b", row["requirements"])
+    )
+    if unowned:
+        raise ValueError(f"TEST-16: registry rows name no requirement ID: {unowned}")
 
     print(f"PASS: {len(rows)} unique specification gates map to AOS checks")
 
