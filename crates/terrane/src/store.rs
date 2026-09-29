@@ -3,6 +3,13 @@
 //! Backends and combinators implement the interfaces in specification 11.
 //! Runtime bindings are selected through features (CRATE-6 to CRATE-8).
 
+// An I/O consumer selects one binding. Library-only builds may select none.
+#[cfg(all(feature = "tokio", feature = "wasm"))]
+compile_error!("CRATE-8: tokio and wasm are mutually exclusive I/O bindings");
+
+#[cfg(all(feature = "wasm", feature = "send"))]
+compile_error!("CRATE-7: wasm host futures do not support the send feature");
+
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroU8;
@@ -470,29 +477,8 @@ pub trait WasmHost {
 
 /// Adapts one WebAssembly host to the portable HTTP and clock contracts.
 ///
-/// When the `send` feature selects native futures, this binding cannot be an
-/// HTTP client in the same I/O consumer. An all-features build still compiles
-/// both adapter types for feature-matrix validation (CRATE-8, CRATE-29).
-///
-/// ```compile_fail
-/// use std::time::{Duration, SystemTime};
-/// use terrane::store::{HttpClient, HttpError, HttpRequest, HttpResponse, WasmBindings, WasmHost};
-///
-/// struct Host;
-///
-/// #[async_trait::async_trait(?Send)]
-/// impl WasmHost for Host {
-///     async fn fetch(&self, request: HttpRequest) -> Result<HttpResponse, HttpError> {
-///         Ok(HttpResponse { status: 200, headers: vec![], body: request.body })
-///     }
-///
-///     fn now(&self) -> SystemTime { SystemTime::UNIX_EPOCH }
-///     fn monotonic(&self) -> Duration { Duration::ZERO }
-/// }
-///
-/// fn native_consumer<C: HttpClient>(_: C) {}
-/// fn main() { native_consumer(WasmBindings::new(Host)); }
-/// ```
+/// Consumers enable `wasm` without `tokio` or `send`: host fetch futures
+/// may remain on their host thread (CRATE-7, CRATE-8).
 #[cfg(feature = "wasm")]
 #[derive(Clone, Debug)]
 pub struct WasmBindings<H> {
@@ -508,8 +494,7 @@ impl<H> WasmBindings<H> {
     }
 }
 
-// A WebAssembly fetch future may be !Send. A consumer enabling `send` selects
-// the native binding; `wasm` and `tokio` may coexist in an all-features build.
+// A WebAssembly fetch future may be !Send and remains on its host thread.
 #[cfg(all(feature = "wasm", not(feature = "send")))]
 #[async_trait::async_trait(?Send)]
 impl<H: WasmHost> HttpClient for WasmBindings<H> {

@@ -1,29 +1,52 @@
-{sourceGate, ...}: {
+{sourceGate, ...}: let
+  # Cargo succeeds when a filter matches nothing, so require the exact test
+  # before executing a focused conformance check.
+  focusedTest = ''
+    run_store_test() {
+      test_name=$1
+      shift
+      cargo test --frozen --offline -p terrane --lib "$@" -- --list > "$TMPDIR/store-tests.txt"
+      python3 - "$TMPDIR/store-tests.txt" "$test_name" <<'PYTEST'
+    import sys
+
+    with open(sys.argv[1], encoding="utf-8") as test_list:
+        names = {line.strip() for line in test_list}
+
+    if f"{sys.argv[2]}: test" not in names:
+        raise SystemExit(f"required store test is missing: {sys.argv[2]}")
+    PYTEST
+      cargo test --frozen --offline -p terrane --lib "$@" "$test_name" -- --exact
+    }
+  '';
+in {
   store-error-taxonomy = sourceGate "store-error-taxonomy" ''
     cd crates
-    cargo test --frozen --offline -p terrane --lib store::tests::error_outcomes_preserve_sources_without_changing_category
-    cargo test --frozen --offline -p terrane --lib store::tests::invalid_diagnostics_preserve_upload_and_range_context
-    cargo test --frozen --offline -p terrane --lib store::tests::conflict_and_existing_log_are_distinct_from_backend_failure
+    ${focusedTest}
+    run_store_test store::tests::error_outcomes_preserve_sources_without_changing_category
+    run_store_test store::tests::invalid_diagnostics_preserve_upload_and_range_context
+    run_store_test store::tests::conflict_and_existing_log_are_distinct_from_backend_failure
     printf 'PASS: store outcomes and chained diagnostics\n' > "$out/result"
   '';
 
   store-trait-split = sourceGate "store-trait-split" ''
     cd crates
-    cargo test --frozen --offline -p terrane --lib store::tests::content_only_cache_implements_no_ref_authority
+    ${focusedTest}
+    run_store_test store::tests::content_only_cache_implements_no_ref_authority
     cargo test --frozen --offline -p terrane --doc
     printf 'PASS: content and ref interfaces remain distinct\n' > "$out/result"
   '';
 
   runtime-agnostic = sourceGate "runtime-agnostic" ''
     cd crates
+    ${focusedTest}
     cargo check --frozen --offline -p terrane --lib --no-default-features
     cargo check --frozen --offline -p terrane --lib --no-default-features --features std,send
-    cargo test --frozen --offline -p terrane --lib --no-default-features --features wasm store::tests::wasm_binding_forwards_fetch_and_separates_wall_from_elapsed_time
+    run_store_test store::tests::wasm_binding_forwards_fetch_and_separates_wall_from_elapsed_time --no-default-features --features wasm
     cargo check --frozen --offline -p terrane --lib --features tokio
-    cargo check --frozen --offline -p terrane --lib --all-features
-    cargo test --frozen --offline -p terrane --lib --features tokio store::tests::native_file_binding_preserves_atomic_names_and_ranges
-    cargo test --frozen --offline -p terrane --lib --features tokio store::tests::native_clock_ticks_do_not_move_backward
-    cargo test --frozen --offline -p terrane --lib --features tokio store::tests::native_http_client_is_send_and_sync
+    cargo check --frozen --offline -p terrane --lib --no-default-features --features std,wasm
+    run_store_test store::tests::native_file_binding_preserves_atomic_names_and_ranges --features tokio
+    run_store_test store::tests::native_clock_ticks_do_not_move_backward --features tokio
+    run_store_test store::tests::native_http_client_is_send_and_sync --features tokio
     printf 'PASS: portable store traits and native binding compile\n' > "$out/result"
   '';
 
@@ -44,6 +67,12 @@
     if not selected <= packages.keys():
         raise SystemExit(f"missing Terrane crates: {sorted(selected - packages.keys())}")
 
+    for name in ("terrane-cli", "aos-terrane"):
+        dependency = next(dep for dep in packages[name]["dependencies"] if dep["name"] == "terrane")
+        bindings = set(dependency["features"]) & {"tokio", "wasm"}
+        if bindings != {"tokio"}:
+            raise SystemExit(f"{name} must select exactly the native I/O binding: {bindings}")
+
     for name in sorted(selected):
         for feature in sorted(packages[name]["features"]):
             print(name, feature)
@@ -61,16 +90,37 @@
 
         for crate in terrane-core terrane terrane-fs terrane-cli aos-terrane; do
           test_crate "$crate" --no-default-features
-          test_crate "$crate" --all-features
+          if [ "$crate" = terrane ]; then
+            test_crate "$crate" --no-default-features --features std,send,tokio
+            test_crate "$crate" --no-default-features --features std,wasm
+          else
+            test_crate "$crate" --all-features
+          fi
         done
 
         while read -r crate feature; do
           test_crate "$crate" --no-default-features --features "$feature"
         done < "$TMPDIR/terrane-features.tsv"
 
-        # Both features may be compiled for a matrix build; each I/O consumer
-        # selects one binding, and the wasm adapter excludes Send futures.
-        cargo test --frozen --offline -p terrane --all-features --doc
+        # These configurations violate the binding contract. Check the
+        # intentional diagnostic so an unrelated compiler error cannot pass.
+        for features in tokio,wasm wasm,send; do
+          if cargo check --frozen --offline -p terrane --lib --no-default-features --features "$features" > "$TMPDIR/incompatible.txt" 2>&1; then
+            printf 'incompatible I/O features compiled: %s\n' "$features" >&2
+            exit 1
+          fi
+          python3 - "$TMPDIR/incompatible.txt" "$features" <<'PY'
+    import sys
+
+    expected = "CRATE-8:" if sys.argv[2] == "tokio,wasm" else "CRATE-7:"
+    with open(sys.argv[1], encoding="utf-8") as diagnostics:
+        if expected not in diagnostics.read():
+            raise SystemExit(f"missing intentional binding rejection: {sys.argv[2]}")
+    PY
+        done
+
+        cargo test --frozen --offline -p terrane --no-default-features --features tokio --doc
+        cargo test --frozen --offline -p terrane --no-default-features --features wasm --doc
         printf 'PASS: declared Terrane features build and test on the native target\n' > "$out/result"
   '';
 }
