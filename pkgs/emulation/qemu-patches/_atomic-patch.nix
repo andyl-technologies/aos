@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "98700be83d821428886651da0f29247f71eb2aadc4ba0bd57b364c0b966b986c";
+  sha256 = "127fe2d5a1c6f9301daf06897e37337c14858dee6127c6c30a48c0ff72684dfc";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -117,9 +117,14 @@
     "Exercise literal device callbacks and full serialized timer state."
     ""
     "Remove unused serial transmit timestamp storage and its dead clock reads."
+    ""
+    "Keep the wide TCG virtual clock until the final RISC-V CPC MTIME tick."
+    "Preserve the architectural 10 MHz rate, wrapping uint64 counter, unchanged"
+    "legacy clock policy and existing migration fields. Remove the unused target"
+    "header and unreachable read return; test literal MMIO reads and VMState."
   ];
-  commit = "5baeed9522afc63e4d9a753291f3af40f7b9d791";
-  tree = "b33e1805de8ccd4b034aec7faf22002858b0b1a9";
+  commit = "7adf6dee86ba0da59489293755db391e09b0004a";
+  tree = "f5ead1b14b7866e7bb0613f0a52bac8a9d05a7d8";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -128,7 +133,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "5125dd41c80f2ce2e0072ea8d84e86d298e2d7890ebfdb915f289eaf64c0b5e1";
+  bundleSha256 = "ee3d317b95b520ecd84b417d04751886674e0312d67d70e948e6c970ebbfe450";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

@@ -1,4 +1,4 @@
-From 5baeed9522afc63e4d9a753291f3af40f7b9d791 Mon Sep 17 00:00:00 2001
+From 7adf6dee86ba0da59489293755db391e09b0004a Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -111,6 +111,11 @@ state before timer or IRQ effects; leave generic non-TCG timing unchanged.
 Exercise literal device callbacks and full serialized timer state.
 
 Remove unused serial transmit timestamp storage and its dead clock reads.
+
+Keep the wide TCG virtual clock until the final RISC-V CPC MTIME tick.
+Preserve the architectural 10 MHz rate, wrapping uint64 counter, unchanged
+legacy clock policy and existing migration fields. Remove the unused target
+header and unreachable read return; test literal MMIO reads and VMState.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -31118,6 +31123,40 @@ index 37c832d976cec6b78f5ef465ba0e576ecde03706..56aaea142f6010aeab72ca955124cb91
  };
  
  static void nrf51_rng_class_init(ObjectClass *klass, const void *data)
+diff --git a/hw/misc/riscv_cpc.c b/hw/misc/riscv_cpc.c
+index 37fdd0b39ba6f24ec3e759079449ad79e200872e..232c397478acda80ec4d1a2fe93dfcaff049b30f 100644
+--- a/hw/misc/riscv_cpc.c
++++ b/hw/misc/riscv_cpc.c
+@@ -13,7 +13,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qapi/error.h"
+-#include "target/riscv/cpu.h"
++#include "exec/cpu-interrupt.h"
+ #include "qemu/log.h"
+ #include "qemu/module.h"
+ #include "qemu/timer.h"
+@@ -142,10 +142,19 @@ static uint64_t cpc_read(void *opaque, hwaddr offset, unsigned size)
+     case CPC_CM_STAT_CONF_OFS:
+         return CPC_Cx_STAT_CONF_SEQ_STATE_U5;
+     case CPC_MTIME_REG_OFS:
++        if (qemu_timer_tcg_ps_enabled()) {
++            const int64_t tick_period_ps = PICOSECONDS_PER_SECOND /
++                                           RISCV_ACLINT_DEFAULT_TIMEBASE_FREQ;
++            __int128 now_ps = qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL);
++
++            QEMU_BUILD_BUG_ON(PICOSECONDS_PER_SECOND %
++                              RISCV_ACLINT_DEFAULT_TIMEBASE_FREQ != 0);
++            /* Keep wide time until the final wrapping architectural tick. */
++            return (uint64_t)(now_ps / tick_period_ps);
++        }
+         return muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                         RISCV_ACLINT_DEFAULT_TIMEBASE_FREQ,
+                         NANOSECONDS_PER_SECOND);
+-        return 0;
+     default:
+         qemu_log_mask(LOG_UNIMP,
+                       "%s: Bad offset 0x%x\n",  __func__, (int)offset);
 diff --git a/hw/misc/sifive_e_aon.c b/hw/misc/sifive_e_aon.c
 index ff2a7c18235a9a55e017680ad91f26d3d2677fa1..cd4e3bebb2876a5310b3003f61e7e83221e148ce 100644
 --- a/hw/misc/sifive_e_aon.c
@@ -141388,7 +141427,7 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..63734a4d708ceb5b1d906387b442b0d94b69afde 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..cad4fa5b8ef20bfb2d3b6803f6e1710c77bdc1d6 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -147,6 +147,37 @@ if have_system
@@ -141429,7 +141468,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..63734a4d708ceb5b1d906387b442b0d9
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +238,218 @@ foreach test_name, extra: tests
+@@ -207,3 +238,239 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -141641,6 +141680,27 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..63734a4d708ceb5b1d906387b442b0d9
 +  test(
 +    'test-crucible-rc4030-period',
 +    rc4030_period_test,
++    env: test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 30,
++    suite: ['unit'],
++  )
++endif
++
++# The CPC counter reader uses common CPU interfaces without realizing a board.
++if have_system
++  riscv_cpc_clock_test = executable(
++    'test-crucible-riscv-cpc-clock',
++    'test-crucible-riscv-cpc-clock.c',
++    genh,
++    dependencies: [qemuutil, qom, migration, io],
++    c_args: ['-ffunction-sections', '-fdata-sections'],
++    link_args: ['-Wl,--gc-sections'],
++  )
++  test(
++    'test-crucible-riscv-cpc-clock',
++    riscv_cpc_clock_test,
 +    env: test_env,
 +    args: ['--tap', '-k'],
 +    protocol: 'tap',
@@ -152430,6 +152490,229 @@ index 0000000000000000000000000000000000000000..06f28b20984bed4d5ecd308bcaa3d0ff
 +                         test_migration);
 +    g_test_add_data_func("/rc4030/period/malformed", GINT_TO_POINTER(true),
 +                         test_migration);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-riscv-cpc-clock.c b/tests/unit/test-crucible-riscv-cpc-clock.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..6a18a6e4dcca7ec12163834700cc92a31e2360da
+--- /dev/null
++++ b/tests/unit/test-crucible-riscv-cpc-clock.c
+@@ -0,0 +1,217 @@
++/*
++ * Literal CPC MTIME reads with a controlled virtual-clock producer.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "system/cpu-timers.h"
++#include "exec/icount.h"
++#include "io/channel-buffer.h"
++#include "../../migration/qemu-file.h"
++
++/* Keep the actual reader and VMState without realizing CPUs or a board. */
++#undef type_init
++#define type_init(function) \
++    static void (*const fixture_##function)(void) G_GNUC_UNUSED = function;
++#include "../../hw/misc/riscv_cpc.c"
++
++static __int128 observed_ps;
++static unsigned nanosecond_reads;
++
++/* Diagnostic CPU-clock adapter, not an installed TCG/controller provider. */
++int64_t cpu_get_clock(void)
++{
++    __int128 nanoseconds = observed_ps / PICOSECONDS_PER_NANOSECOND;
++
++    nanosecond_reads++;
++    if (nanoseconds < 0 || nanoseconds > INT64_MAX) {
++        g_error("Diagnostic nanosecond projection exceeds the API range");
++    }
++    return nanoseconds;
++}
++
++bool icount_crucible_sim_mode(void)
++{
++    return false;
++}
++
++static __int128 observed_clock_ps(void)
++{
++    return observed_ps;
++}
++
++static void initialize_clock(bool exact)
++{
++    Error *error = NULL;
++
++    module_call_init(MODULE_INIT_QOM);
++    qemu_init_main_loop(&error);
++    g_assert_null(error);
++    if (exact) {
++        qemu_timer_enable_tcg_ps_clock(NULL, observed_clock_ps);
++    }
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++    nanosecond_reads = 0;
++}
++
++static uint64_t read_mtime(RISCVCPCState *controller)
++{
++    return cpc_ops.read(controller, CPC_MTIME_REG_OFS, sizeof(uint64_t));
++}
++
++static void test_tick_boundaries(void)
++{
++    RISCVCPCState controller = { 0 };
++    const __int128 times[] = { 0, 1, 999, 1000, 99999, 100000,
++                              100001, 100999, 199999, 200000 };
++    const uint64_t ticks[] = { 0, 0, 0, 0, 0, 1, 1, 1, 1, 2 };
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    for (size_t i = 0; i < G_N_ELEMENTS(times); i++) {
++        observed_ps = times[i];
++        g_assert_cmpuint(read_mtime(&controller), ==, ticks[i]);
++    }
++}
++
++static void test_wide_clock(void)
++{
++    RISCVCPCState controller = { 0 };
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    observed_ps = ((__int128)INT64_MAX + 1) *
++                  PICOSECONDS_PER_NANOSECOND + 999;
++    g_assert_cmpuint(read_mtime(&controller), ==, 92233720368547758ULL);
++    g_assert_cmpuint(nanosecond_reads, ==, 0);
++}
++
++static void test_counter_wrap(void)
++{
++    RISCVCPCState controller = { 0 };
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    observed_ps = (__int128)UINT64_MAX * 100000 + 99999;
++    g_assert_cmpuint(read_mtime(&controller), ==, UINT64_MAX);
++    observed_ps++;
++    g_assert_cmpuint(read_mtime(&controller), ==, 0);
++    observed_ps += 100000;
++    g_assert_cmpuint(read_mtime(&controller), ==, 1);
++    g_assert_cmpuint(nanosecond_reads, ==, 0);
++}
++
++static void test_legacy_clock(void)
++{
++    RISCVCPCState controller = { 0 };
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(false);
++    observed_ps = 99999;
++    g_assert_cmpuint(read_mtime(&controller), ==, 0);
++    observed_ps = 100001;
++    g_assert_cmpuint(read_mtime(&controller), ==, 1);
++    observed_ps = (__int128)INT64_MAX * PICOSECONDS_PER_NANOSECOND;
++    g_assert_cmpuint(read_mtime(&controller), ==, 92233720368547758ULL);
++    g_assert_cmpuint(nanosecond_reads, ==, 3);
++}
++
++static void test_other_registers(void)
++{
++    RISCVCPCState controller = { .num_core = 2 };
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    observed_ps = (__int128)UINT64_MAX * 100000;
++    g_assert_cmpuint(cpc_ops.read(&controller, CPC_CM_STAT_CONF_OFS, 8), ==,
++                     CPC_Cx_STAT_CONF_SEQ_STATE_U5);
++    for (unsigned core = 0; core < controller.num_core; core++) {
++        g_assert_cmpuint(cpc_ops.read(&controller,
++                                    CPC_CL_BASE_OFS + CPC_STAT_CONF_OFS +
++                                    core * CPC_CORE_REG_STRIDE, 8), ==,
++                         CPC_Cx_STAT_CONF_SEQ_STATE_U6);
++    }
++    g_assert_cmpuint(nanosecond_reads, ==, 0);
++}
++
++static void test_vmstate(void)
++{
++    RISCVCPCState original = { .vps_running_mask = 0x123456789abcdef0ULL };
++    RISCVCPCState restored = { 0 };
++    QIOChannelBuffer *output;
++    QIOChannelBuffer *input;
++    QEMUFile *file;
++    Error *error = NULL;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    observed_ps = ((__int128)INT64_MAX + 1) *
++                  PICOSECONDS_PER_NANOSECOND + 999;
++    output = qio_channel_buffer_new(32);
++    file = qemu_file_new_output(QIO_CHANNEL(output));
++    g_assert_cmpint(vmstate_save_state(file, &vmstate_riscv_cpc, &original,
++                                      NULL, &error), ==, 0);
++    g_assert_null(error);
++    qemu_fflush(file);
++    /* MTIME remains derived from the restored clock, with no new wire field. */
++    g_assert_cmpuint(output->usage, ==, sizeof(uint64_t));
++    input = qio_channel_buffer_new(output->usage);
++    input->usage = output->usage;
++    memcpy(input->data, output->data, output->usage);
++    qemu_fclose(file);
++    object_unref(OBJECT(output));
++
++    file = qemu_file_new_input(QIO_CHANNEL(input));
++    g_assert_cmpint(vmstate_load_state(file, &vmstate_riscv_cpc, &restored,
++                                      0, &error), ==, 0);
++    g_assert_null(error);
++    g_assert_cmpuint(restored.vps_running_mask, ==, original.vps_running_mask);
++    g_assert_cmpuint(read_mtime(&restored), ==, read_mtime(&original));
++    g_assert_cmpuint(nanosecond_reads, ==, 0);
++    qemu_fclose(file);
++    object_unref(OBJECT(input));
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/cpc/clock/tick-boundaries", test_tick_boundaries);
++    g_test_add_func("/cpc/clock/wide", test_wide_clock);
++    g_test_add_func("/cpc/clock/wrap", test_counter_wrap);
++    g_test_add_func("/cpc/clock/legacy", test_legacy_clock);
++    g_test_add_func("/cpc/clock/other-registers", test_other_registers);
++    g_test_add_func("/cpc/clock/vmstate", test_vmstate);
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-rr-halted-neighbor.py b/tests/unit/test-crucible-rr-halted-neighbor.py
