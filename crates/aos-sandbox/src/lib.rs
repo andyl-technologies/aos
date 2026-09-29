@@ -245,6 +245,7 @@ pub use journal::{
     PreparedBarrierIdleReplacementV4, PreparedGlobalCapacityReservationV1,
     ProtectedJournalAuthority, ProtectedJournalLockCustodyV1, ProtectedJournalPreflight,
     ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
+    SourceProviderHeldReadOnlyJournalAuthorityV1,
 };
 pub use lifecycle_authority::{
     AtomicStorageLifecyclePublicationErrorV1, compile_atomic_storage_lifecycle_template_v1,

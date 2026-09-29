@@ -10,11 +10,23 @@ pub(crate) fn recovery_work(
         crate::ledger::native_completion::NativeAcquireCompletionRecordV2,
     >,
 ) -> Vec<ProviderRecoveryWorkV1> {
+    recovery_work_for_profiles(
+        attempts,
+        acquisitions,
+        &native_completions.keys().copied().collect(),
+    )
+}
+
+pub(super) fn recovery_work_for_profiles(
+    attempts: &BTreeMap<AttemptKeyV1, crate::model::AttemptRecordV1>,
+    acquisitions: &BTreeMap<AcquisitionKeyV1, crate::model::AcquisitionRecordV1>,
+    native: &BTreeSet<ObjectDigest>,
+) -> Vec<ProviderRecoveryWorkV1> {
     let mut work: Vec<_> = acquisitions
         .values()
         // Native acceptance can only retain the original FD. Generic backend
         // observation or reopen would create an unrelated cold remount.
-        .filter(|record| !native_completions.contains_key(&record.acquisition_id))
+        .filter(|record| !native.contains(&record.acquisition_id))
         .filter_map(|record| match record.state {
             ProviderAcquisitionStateV1::Applying => Some(ProviderRecoveryWorkV1::ObserveApplying {
                 acquisition_id: record.acquisition_id,
@@ -65,7 +77,7 @@ pub(crate) fn recovery_work(
         acquisitions
             .values()
             .find(|record| {
-                !native_completions.contains_key(&record.acquisition_id)
+                !native.contains(&record.acquisition_id)
                     && record.state == ProviderAcquisitionStateV1::Active
                     && record.provider == attempt.provider
                     && record.holder == attempt.holder
