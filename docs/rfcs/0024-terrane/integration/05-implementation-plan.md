@@ -140,8 +140,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   OBJ-1 to OBJ-4, OBJ-6 to OBJ-10; `checks.terrane.gates.identity-idempotence`,
   `checks.terrane.gates.descriptor-strict`.
 - [ ] **T-CDC-1** FastCDC chunker with the seeded gear table, codec bytes,
-  dictionary identities, and the receiver-side validation rules. —
-  satisfies CDC-1 to CDC-20; `checks.terrane.gates.cdc-boundaries`,
+  dictionary identities, canonical object manifests, and receiver-side
+  validation. Content-class dictionary selection is completed jointly with
+  T-DRV-1. — satisfies OBJ-11 to OBJ-18, CDC-1 to CDC-20;
+  `checks.terrane.gates.object-identity-from-manifest`,
+  `checks.terrane.gates.cdc-boundaries`,
   `checks.terrane.gates.chunk-codec`, `checks.terrane.gates.chunk-bomb-cap`,
   `checks.terrane.gates.zstd-concat`.
 - [x] **T-TREE-1** Deterministic CBOR encoder and decoder with limits before
@@ -173,7 +176,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.property-required-attrs`,
   `checks.terrane.gates.property-domain-reference`.
 - [ ] **T-REF-1** Commit and ref record types, merge base, ancestry, ref
-  name grammar. — satisfies REF-1 to REF-11, REF-24 to REF-26;
+  name grammar. Repository enforcement of tag immutability, ref transitions,
+  and commit provenance is completed jointly with T-REF-2; merge/fold parent
+  order and composite recipes are completed jointly with T-ALG-2. —
+  satisfies OBJ-21, OBJ-22, REF-1 to REF-11, REF-24 to REF-26;
   `checks.terrane.gates.ref-names`.
 - [ ] **T-DRV-1** Derived attribute records and classification (`hash.*`,
   `class.magic`), stored per object. Narrowed to trunk scope: index trees,
@@ -188,9 +194,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   tests for every format. — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [ ] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
-  capability sets, error taxonomy, `HttpClient` and `Clock` traits, `tokio`
-  feature. — satisfies STORE-1 to STORE-12, STORE-30 to STORE-33, CRATE-6
-  to CRATE-8; `checks.terrane.gates.store-error-taxonomy`,
+  capability types, error taxonomy, `HttpClient`, `Clock`, and `LocalFs`
+  traits, and compatible runtime features. Concrete operation semantics are
+  T-BKT-1; routed authority forwarding is T-STORE-2. — satisfies STORE-30,
+  STORE-32, CRATE-6 to CRATE-8, CRATE-29;
+  `checks.terrane.gates.feature-matrix`,
+  `checks.terrane.gates.store-error-taxonomy`,
   `checks.terrane.gates.store-trait-split`,
   `checks.terrane.gates.runtime-agnostic`.
 - [ ] **T-PACK-1** Pack writer and reader, per-pack index objects, trailer
@@ -209,10 +218,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   probe. Narrowed to trunk scope: S3-compatible and GCS backends are
   T-BKT-2 and T-BKT-3 at T3. The backend implements OBJ-5's idempotent
   writes and verified reads; T-HOST-1 completes its cache-admission rule.
-  — satisfies OBJ-5 jointly with T-HOST-1, BKT-1 to BKT-4, BKT-6 to
+  — satisfies OBJ-5 jointly with T-HOST-1, STORE-1 to STORE-9, STORE-11
+  to STORE-13, STORE-33, BKT-1 to BKT-4, BKT-6 to
   BKT-8, BKT-13, BKT-14, BKT-16;
   `checks.terrane.gates.store-idempotent-put`,
+  `checks.terrane.gates.store-verify-on-put`,
   `checks.terrane.gates.store-verify-on-get`,
+  `checks.terrane.gates.store-ranged-get`,
+  `checks.terrane.gates.store-has-batched`,
+  `checks.terrane.gates.store-ref-cas`,
+  `checks.terrane.gates.store-ref-log-append-once`,
+  `checks.terrane.gates.store-capability-probe`,
+  `checks.terrane.gates.store-list-not-authoritative`,
+  `checks.terrane.gates.store-validates-uploads`,
   `checks.terrane.gates.bucket-key-registry`,
   `checks.terrane.gates.bucket-file-layout`,
   `checks.terrane.gates.bucket-file-atomic-write`,
@@ -263,7 +281,8 @@ Exit gates: `checks.terrane.gates.host-crash-recovery`,
   delete, embedded state scope, crash recovery, circuit breaker toward
   lower tiers. Narrowed to trunk scope: `smart` reassembly and the
   `discard` and `volatile` wipe modes are T-HOST-3 on B-consistency. —
-  satisfies HOST-1 to HOST-5, HOST-11 to HOST-25, HOST-27 to HOST-36,
+  satisfies OBJ-5 jointly with T-BKT-1, HOST-1 to HOST-5, HOST-11 to
+  HOST-25, HOST-27 to HOST-36,
   BKT-15; `checks.terrane.gates.host-layout`,
   `checks.terrane.gates.host-eviction-s3fifo`,
   `checks.terrane.gates.host-verify-before-admit`,
@@ -310,11 +329,11 @@ Garage.
 - [ ] **T-STORE-2** `routed`, `guard`, `cache`, `remote` combinators and the
   store expression parser and validator. `routed` selects in configured
   order with circuit breakers. Narrowed to trunk scope: cost-sorted
-  selection is T-TOPO-2 on B-topology. — satisfies STORE-13, STORE-15 to
-  STORE-29; `checks.terrane.gates.routed-read-order`,
+  selection is T-TOPO-2 on B-topology. — satisfies STORE-10, STORE-15 to
+  STORE-29, STORE-31; `checks.terrane.gates.routed-read-order`,
   `checks.terrane.gates.routed-write-authority`,
   `checks.terrane.gates.store-expression-validate`,
-  `checks.terrane.gates.store-validates-uploads`.
+  `checks.terrane.gates.store-ref-forwarding`.
 - [ ] **T-BKT-2** `bucket` backend over the S3-compatible API (reusing
   `aos-net` and `aos-hub-core` signing): conditional writes, multipart
   abort, opaque version tokens, ranged-`GET` probe, tested against the

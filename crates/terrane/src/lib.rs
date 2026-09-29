@@ -10,5 +10,6 @@
 
 pub mod codec;
 pub mod config;
+pub mod pack;
 pub mod role;
 pub mod store;

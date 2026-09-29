@@ -12,11 +12,15 @@
 
 extern crate alloc;
 
+pub mod algebra;
 pub mod auth;
 pub mod boundary;
 pub mod cbor;
 pub mod chunking;
 pub mod codec;
 pub mod identity;
+pub mod manifest;
+pub mod properties;
 pub mod refs;
+pub mod tree_builder;
 pub mod tree_format;
