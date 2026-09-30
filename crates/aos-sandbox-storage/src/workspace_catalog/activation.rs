@@ -141,6 +141,50 @@ impl StorageWorkspaceCatalogActivationCandidateV1 {
         ActivatedStorageWorkspaceCatalogV1,
         StorageWorkspaceCatalogActivationPromotionFailureV1,
     > {
+        self.promote(
+            recomposed_plan,
+            recomposed_physical_plan,
+            recomposed_request,
+            fresh,
+            now_boottime_nanoseconds,
+            CatalogPromotionV4::Materialize,
+        )
+    }
+
+    /// Reobserves only an already terminal catalog without a semantic write.
+    pub(crate) fn activate_operator_terminal_readonly_v4(
+        self,
+        recomposed_plan: StorageWorkspaceCatalogPlanV1,
+        recomposed_physical_plan: AuthenticatedWorkspaceCatalogPhysicalPlanV1,
+        recomposed_request: WorkspaceCatalogObservationRequestV1,
+        fresh: FreshWorkspaceCatalogObservationV1,
+        now_boottime_nanoseconds: u64,
+    ) -> Result<
+        ActivatedStorageWorkspaceCatalogV1,
+        StorageWorkspaceCatalogActivationPromotionFailureV1,
+    > {
+        self.promote(
+            recomposed_plan,
+            recomposed_physical_plan,
+            recomposed_request,
+            fresh,
+            now_boottime_nanoseconds,
+            CatalogPromotionV4::TerminalReadonly,
+        )
+    }
+
+    fn promote(
+        self,
+        recomposed_plan: StorageWorkspaceCatalogPlanV1,
+        recomposed_physical_plan: AuthenticatedWorkspaceCatalogPhysicalPlanV1,
+        recomposed_request: WorkspaceCatalogObservationRequestV1,
+        fresh: FreshWorkspaceCatalogObservationV1,
+        now_boottime_nanoseconds: u64,
+        promotion: CatalogPromotionV4,
+    ) -> Result<
+        ActivatedStorageWorkspaceCatalogV1,
+        StorageWorkspaceCatalogActivationPromotionFailureV1,
+    > {
         let validation = (|| {
             if self.validated.plan() != &recomposed_plan
                 || self.physical_plan != recomposed_physical_plan
@@ -164,14 +208,25 @@ impl StorageWorkspaceCatalogActivationCandidateV1 {
             });
         }
 
-        let validated = match self.validated.materialize_terminal() {
-            Ok(validated) => validated,
-            Err(error) => {
-                return Err(StorageWorkspaceCatalogActivationPromotionFailureV1 {
-                    validated: None,
-                    error,
-                });
+        let validated = match promotion {
+            CatalogPromotionV4::TerminalReadonly => {
+                if !self.validated.is_terminally_materialized() {
+                    return Err(StorageWorkspaceCatalogActivationPromotionFailureV1 {
+                        validated: Some(self.validated),
+                        error: StorageWorkspaceCatalogError::InvalidCandidate,
+                    });
+                }
+                self.validated
             }
+            CatalogPromotionV4::Materialize => match self.validated.materialize_terminal() {
+                Ok(validated) => validated,
+                Err(error) => {
+                    return Err(StorageWorkspaceCatalogActivationPromotionFailureV1 {
+                        validated: None,
+                        error,
+                    });
+                }
+            },
         };
         if let Err(error) = validate_terminal_rows(&validated, &self.request) {
             return Err(StorageWorkspaceCatalogActivationPromotionFailureV1 {
@@ -194,6 +249,11 @@ impl StorageWorkspaceCatalogActivationCandidateV1 {
             prepared_inventory,
         })
     }
+}
+
+enum CatalogPromotionV4 {
+    Materialize,
+    TerminalReadonly,
 }
 
 /// Temporarily grants inventory encoding from one freshly observed snapshot.
@@ -695,6 +755,80 @@ mod tests {
         assert!(validated.is_terminally_materialized());
         assert!(inventory.workspaces().is_empty());
         assert_eq!(inventory.catalog_generation(), 1);
+    }
+
+    #[test]
+    fn terminal_readonly_promotion_keeps_the_exact_cut_and_rejects_headless_state() {
+        for initialized in [true, false] {
+            let directory = TempDir::new().unwrap();
+            let identity_pool = StorageIdentityPoolV1::new(65_536, 65_536).unwrap();
+            let validated = if initialized {
+                validated_empty(&directory)
+            } else {
+                PendingStorageWorkspaceCatalogV1::open_for_test(directory.path(), identity_pool)
+                    .unwrap()
+                    .validate_plan(plan(1))
+                    .unwrap()
+            };
+            let before = validated.snapshot();
+            let request = observation_request(&validated, Vec::new(), Vec::new());
+            let digest = ObjectDigest::from_bytes([15; 32]);
+            let result = crate::observation_protocol::WorkspaceCatalogObservationResultV1::matched(
+                &request, digest, digest, digest, digest,
+            ).unwrap();
+            let candidate = StorageWorkspaceCatalogActivationCandidateV1::new(
+                validated, physical_empty(), request,
+            ).ok().unwrap();
+            let recomposed_request = observation_request(&candidate.validated, Vec::new(), Vec::new());
+
+            let promoted = candidate.activate_operator_terminal_readonly_v4(
+                plan(1),
+                physical_empty(),
+                recomposed_request,
+                FreshWorkspaceCatalogObservationV1::new_for_test(result),
+                99,
+            );
+
+            if initialized {
+                let (validated, _) = promoted.ok().unwrap().into_inventory();
+                assert_eq!(validated.snapshot(), before);
+                assert!(validated.is_terminally_materialized());
+            } else {
+                let (validated, _) = promoted.err().unwrap().into_parts();
+                let validated = validated.unwrap();
+                assert_eq!(validated.snapshot(), before);
+                assert!(!validated.is_initialized());
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_readonly_promotion_keeps_exact_plan_and_deadline_checks() {
+        for (sequence, now) in [(2, 99), (1, 100)] {
+            let directory = TempDir::new().unwrap();
+            let validated = validated_empty(&directory);
+            let before = validated.snapshot();
+            let request = observation_request(&validated, Vec::new(), Vec::new());
+            let digest = ObjectDigest::from_bytes([15; 32]);
+            let result = crate::observation_protocol::WorkspaceCatalogObservationResultV1::matched(
+                &request, digest, digest, digest, digest,
+            ).unwrap();
+            let candidate = StorageWorkspaceCatalogActivationCandidateV1::new(
+                validated, physical_empty(), request,
+            ).ok().unwrap();
+            let recomposed_request = observation_request(&candidate.validated, Vec::new(), Vec::new());
+
+            let failure = candidate.activate_operator_terminal_readonly_v4(
+                plan(sequence),
+                physical_empty(),
+                recomposed_request,
+                FreshWorkspaceCatalogObservationV1::new_for_test(result),
+                now,
+            ).err().unwrap();
+
+            let (validated, _) = failure.into_parts();
+            assert_eq!(validated.unwrap().snapshot(), before);
+        }
     }
 
     #[test]

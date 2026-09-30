@@ -135,6 +135,25 @@ impl StorageOperatorRecoveryCredentialsV1 {
         )
         .map_err(|_| invalid("operator receipt journal is unavailable"))
     }
+
+    /// Opens the existing owner without creating missing hold or floor state.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed credentials, absent custody, corrupt replay or rotated roles.
+    pub(crate) fn open_existing_owner(
+        &self,
+        state_root: &Path,
+    ) -> Result<StorageOperatorRecoveryOwnerV1, StorageServiceError> {
+        self.recheck()?;
+        let owner = StorageOperatorRecoveryOwnerV1::open_existing(
+            state_root, "operator-recovery.journal", self.controller_key,
+            self.controller_generation, self.owner_key.clone(), self.owner_id,
+            self.owner_generation,
+        ).map_err(|_| invalid("existing operator receipt journal is unavailable"))?;
+        self.recheck()?;
+        Ok(owner)
+    }
 }
 
 pub(crate) fn open_directory(path: &Path) -> Result<(OwnedFd, FileIdentity), StorageServiceError> {

@@ -11,6 +11,7 @@
 mod historical_checkpoint;
 mod host_terminal_archive;
 mod owner;
+mod operator_repair_history;
 mod pending_request;
 mod storage_inventory_abandonment;
 mod storage_inventory_archive;
@@ -143,6 +144,7 @@ enum BrokerSessionJournalKeyKind {
     StorageInventoryAbandonment,
     HostOriginalSessionArchive,
     HostTerminalSessionArchive,
+    OperatorRepairInventoryArchive,
 }
 
 impl BrokerSessionJournalKeyKind {
@@ -4257,6 +4259,7 @@ impl ProtectedBrokerSessionJournalV1 {
         self.validate_storage_group_archives()?;
         self.validate_storage_inventory_archives()?;
         self.validate_storage_inventory_abandonments()?;
+        self.validate_operator_repair_inventory_archives()?;
         Ok(())
     }
 
@@ -4689,6 +4692,10 @@ fn classified_broker_session_key(
             (
                 HOST_TERMINAL_SESSION_KEY_MAGIC,
                 BrokerSessionJournalKeyKind::HostTerminalSessionArchive,
+            ),
+            (
+                operator_repair_history::KEY_MAGIC,
+                BrokerSessionJournalKeyKind::OperatorRepairInventoryArchive,
             ),
         ] {
             if key.starts_with(magic) {

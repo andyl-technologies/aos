@@ -50,6 +50,13 @@ use crate::pin_worker_runtime::FreshWorkspacePinRepairObservationV1;
 use crate::workspace_pin::{WorkspacePinActionV1, WorkspacePinAttemptPhaseV1};
 use crate::workspace_repair_admission::WorkspacePinRepairAdmissionProbeV1;
 
+mod terminal_hold;
+
+pub(crate) use terminal_hold::{
+    DurableRepairSettlementV4, OperatorRepairStartupClearV4,
+    OperatorRepairStartupCustodyV4, OperatorRepairStartupDebtV4,
+};
+
 const MAGIC: &[u8; 8] = b"AOSORSP2";
 const VERSION: u16 = 2;
 const PENDING: u8 = 1;
@@ -86,6 +93,7 @@ pub struct StorageOperatorRecoveryOwnerV1 {
     owner_key: SigningKey,
     owner_id: [u8; 16],
     owner_key_generation: u64,
+    startup_instance: std::sync::Arc<()>,
 }
 
 /// Indicates whether a reservation is awaiting Storage or already completed.
@@ -337,21 +345,53 @@ impl StorageOperatorRecoveryOwnerV1 {
         {
             return Err(StorageOperatorRecoveryErrorV1::Binding);
         }
-        let limits = JournalLimits {
-            maximum_journal_bytes: 16 * 1024 * 1024,
-            maximum_record_bytes: 2048,
-            maximum_key_bytes: 32,
-            maximum_records_per_transaction: 1,
-            maximum_transaction_bytes: 2048,
-            maximum_transactions: 8192,
-            maximum_materialized_bytes: 8 * 1024 * 1024,
-            maximum_materialized_records: 4096,
-        };
-        let (mut journal, _) = Journal::open_protected_at(directory, name, limits)?;
+        let (journal, _) = Journal::open_protected_at(directory, name, operator_journal_limits())?;
+        Self::from_journal(journal, controller_key, controller_key_generation,
+            owner_key, owner_id, owner_key_generation)
+    }
+
+    /// Opens only already provisioned operator custody without creation or tail repair.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent or unsafe existing custody, incompatible roles or corrupt replay.
+    pub(crate) fn open_existing(
+        directory: &Path,
+        name: &str,
+        controller_key: VerifyingKey,
+        controller_key_generation: u64,
+        owner_key: SigningKey,
+        owner_id: [u8; 16],
+        owner_key_generation: u64,
+    ) -> Result<Self, StorageOperatorRecoveryErrorV1> {
+        let (journal, _) = Journal::open_existing_protected_at(directory, name, operator_journal_limits())?;
+        Self::from_journal(journal, controller_key, controller_key_generation,
+            owner_key, owner_id, owner_key_generation)
+    }
+
+    fn from_journal(
+        mut journal: Journal,
+        controller_key: VerifyingKey,
+        controller_key_generation: u64,
+        owner_key: SigningKey,
+        owner_id: [u8; 16],
+        owner_key_generation: u64,
+    ) -> Result<Self, StorageOperatorRecoveryErrorV1> {
+        if owner_id == [0; 16]
+            || controller_key_generation == 0
+            || owner_key_generation == 0
+            || controller_key == owner_key.verifying_key()
+        {
+            return Err(StorageOperatorRecoveryErrorV1::Binding);
+        }
         let authority = journal.claim_protected_authority(RecordNamespace::OperatorRecovery)?;
         let records: Vec<_> = authority.records()?.collect();
         for (key, value) in &records {
-            if value.starts_with(b"AOSOPA01") {
+            if value.starts_with(terminal_hold::HOLD_MAGIC) {
+                // Complete pair rows are authenticated first. Hold validation
+                // then joins those actual rows through the retained owner.
+                continue;
+            } else if value.starts_with(b"AOSOPA01") {
                 let effect_id: [u8; 32] = value
                     .get(32..64)
                     .ok_or(StorageOperatorRecoveryErrorV1::Binding)?
@@ -379,14 +419,24 @@ impl StorageOperatorRecoveryOwnerV1 {
                 )?;
             }
         }
-        Ok(Self {
+        let held_rows: Vec<_> = records.iter()
+            .filter(|(_, value)| value.starts_with(terminal_hold::HOLD_MAGIC))
+            .map(|(key, value)| (key.to_vec(), value.to_vec()))
+            .collect();
+        drop(records);
+        let mut owner = Self {
             journal,
             controller_key,
             controller_key_generation,
             owner_key,
             owner_id,
             owner_key_generation,
-        })
+            startup_instance: std::sync::Arc::new(()),
+        };
+        for (key, value) in held_rows {
+            owner.validate_terminal_row_v4(&key, &value)?;
+        }
+        Ok(owner)
     }
 
     /// Durably reserves a fresh absence probe before the Storage repair effect.
@@ -907,6 +957,19 @@ impl StoredRepairV2 {
             signed_evidence,
             signed_receipt,
         })
+    }
+}
+
+fn operator_journal_limits() -> JournalLimits {
+    JournalLimits {
+        maximum_journal_bytes: 16 * 1024 * 1024,
+        maximum_record_bytes: 2048,
+        maximum_key_bytes: 32,
+        maximum_records_per_transaction: 1,
+        maximum_transaction_bytes: 2048,
+        maximum_transactions: 8192,
+        maximum_materialized_bytes: 8 * 1024 * 1024,
+        maximum_materialized_records: 4096,
     }
 }
 

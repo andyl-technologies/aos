@@ -692,7 +692,7 @@ fn projection_kind_prefix(kind: PublicProjectionKindV1) -> Vec<u8> {
     key
 }
 
-fn projection_key(kind: PublicProjectionKindV1, resource_id: [u8; 16]) -> Vec<u8> {
+pub(crate) fn projection_key(kind: PublicProjectionKindV1, resource_id: [u8; 16]) -> Vec<u8> {
     let mut key = projection_kind_prefix(kind);
     key.extend_from_slice(&resource_id);
     key

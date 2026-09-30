@@ -28,9 +28,7 @@ use super::{
     ProtectedOperatorRecoverySignerV1, REQUEST_DOMAIN, StorageRepairIssuanceV2, hash,
     issuance_key_v2,
 };
-use crate::controller::{
-    ActivatedOperationCompiler, NodeController, SingleNodeEffectExecutor, recovery_current_key,
-};
+use crate::controller::recovery_current_key;
 use crate::lifecycle::LifecycleAuthenticatedStorageInventoryV1;
 use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 
@@ -140,11 +138,7 @@ impl StoredBeforeV1 {
     }
 }
 
-impl<C, E> NodeController<C, E>
-where
-    C: ActivatedOperationCompiler,
-    E: SingleNodeEffectExecutor,
-{
+pub(super) trait RepairBeforeV1: super::RepairJournalOwnerV1 {
     /// Commits a signed dataset-present/pin-absent inventory before dispatch.
     ///
     /// # Errors
@@ -152,7 +146,7 @@ where
     /// Rejects stale issuance, nonphysical or replayed inventory, prior
     /// Repair commit, changed protected head, or uncertain journal custody.
     #[allow(dead_code, reason = "public operator Repair route remains closed")]
-    pub(crate) fn reserve_storage_repair_before_v1(
+    fn reserve_storage_repair_before_v1(
         &mut self,
         signer: &ProtectedOperatorRecoverySignerV1,
         operation_id: OperationId,
@@ -163,7 +157,7 @@ where
             .credential
             .recheck()
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
-        let journal = self.reconciler.journal_mut();
+        let journal = self.repair_journal();
         journal
             .ensure_protected_authority()
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
@@ -261,6 +255,8 @@ where
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)
     }
 }
+
+impl<T: super::RepairJournalOwnerV1> RepairBeforeV1 for T {}
 
 pub(super) fn read(
     journal: &mut Journal,

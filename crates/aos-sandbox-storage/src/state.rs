@@ -1227,6 +1227,29 @@ impl StorageTransactionStore {
         )
     }
 
+    /// Opens provisioned runtime custody without creation, tail repair, or genesis writes.
+    pub(crate) fn open_existing_root_owned_runtime(
+        directory: &Path,
+        key: StorageStateKey,
+        minimum_generation: u64,
+        configuration_binding: ObjectDigest,
+        genesis_generation: u64,
+        genesis_catalogs: &[ResolvedCatalogCommitmentV1],
+    ) -> Result<Self, StorageStateError> {
+        let (journal, _) = Journal::open_existing_protected_at(
+            directory,
+            "storage-state.journal",
+            journal_limits(),
+        )?;
+        let store = Self::from_journal(journal, key, minimum_generation)?;
+        store.validate_runtime_restart(
+            configuration_binding,
+            genesis_generation,
+            genesis_catalogs,
+        )?;
+        Ok(store)
+    }
+
     #[cfg(test)]
     pub(crate) fn open_for_test(
         directory: &Path,

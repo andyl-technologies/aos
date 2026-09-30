@@ -445,6 +445,19 @@ impl PendingStorageWorkspaceCatalogV1 {
         Self::recover(journal, recovery, identity_pool)
     }
 
+    /// Retains only provisioned catalog names, without tail repair or materialization.
+    pub(crate) fn open_existing_root_owned(
+        state_directory: &Path,
+        identity_pool: StorageIdentityPoolV1,
+    ) -> Result<Self, StorageWorkspaceCatalogError> {
+        let (journal, recovery) = Journal::open_existing_protected_at(
+            state_directory,
+            WORKSPACE_JOURNAL_FILE,
+            workspace_journal_limits(),
+        )?;
+        Self::recover(journal, recovery, identity_pool)
+    }
+
     #[cfg(test)]
     pub(crate) fn open_for_test(
         state_directory: &Path,

@@ -1,10 +1,10 @@
 //! Protected controller signing and exact Storage repair request binding.
 //!
-//! This module has no public admission route. A protected selector joins an
-//! accepted public operation to one row of authenticated physical Storage
-//! inventory and the exact Storage request before signing. Issuance is recorded
-//! separately from legacy recovery IDs. The signer rechecks its fixed systemd
-//! credential before and after every signature.
+//! The Repair-specific admission route atomically retains the public Operation,
+//! exact physical request, authenticated Inventory and original signed issuance.
+//! The borrowed journal facade drives existing Storage Prepare/Execute/recovery
+//! and the same-socket held terminal CAS. Production qualification remains
+//! closed. The signer rechecks its fixed systemd credential around signatures.
 //!
 //! ```text
 //! operator-recovery-controller-key-v1:
@@ -72,17 +72,42 @@ const CURRENT_HEAD_DOMAIN_V2: &[u8] = b"aos.sandbox.operator-storage-repair-curr
 const ISSUANCE_BYTES_V2: usize = 184 + OPERATOR_RECOVERY_EFFECT_INTENT_BYTES;
 
 mod before;
+mod admission;
+mod bridge;
 mod probe_challenge;
 mod receipt;
 mod terminal;
 mod transport;
 
+pub use admission::{StorageRepairAdmissionV1, StorageRepairAdmissionDraftV1, StorageRepairAdmissionPreparationV1};
+pub use bridge::{OperatorStorageRepairBridgeV1, StorageRepairProgressV1, OperatorStorageRepairTerminalV1};
+
+use probe_challenge::RepairProbeChallengeV1 as _;
+
+trait RepairJournalOwnerV1 {
+    fn repair_journal(&mut self) -> &mut Journal;
+}
+
+impl<C: ActivatedOperationCompiler, E: SingleNodeEffectExecutor> RepairJournalOwnerV1
+    for NodeController<C, E>
+{
+    fn repair_journal(&mut self) -> &mut Journal {
+        self.reconciler.journal_mut()
+    }
+}
+
+/// Reports unavailable role custody, rejected exact binding, or unsettled outcome.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub(crate) enum OperatorRecoveryIssuanceErrorV1 {
+pub enum OperatorRecoveryIssuanceErrorV1 {
+    /// Fixed independently pinned role custody is unavailable or changed.
     #[error("protected operator recovery signing key is unavailable")]
     Key,
+    /// Exact original request, authority, predecessor or physical cut disagrees.
     #[error("operator repair authorization, issuance, or Storage binding is invalid")]
     Binding,
+    /// A sent effect or hold lacks definite owning-journal settlement.
+    #[error("operator Repair outcome remains unknown under original custody")]
+    OutcomeUnknown,
 }
 
 /// Holds the dedicated controller key without exposing its signing seed.
@@ -157,6 +182,32 @@ fn protected_query_roles() -> Result<
     let signer = ProtectedOperatorRecoverySignerV1::from_systemd_credentials(owner.verifier())?;
     owner.recheck()?;
     Ok((signer, owner))
+}
+
+/// Distinguishes the independently checked public truth of a terminal Repair.
+pub(crate) enum RepairPublicTerminalV1 {
+    Succeeded,
+    OriginalPreconditionReplaced,
+}
+
+pub(crate) fn verify_atomic_operator_storage_repair_terminal_v2(journal: &mut Journal, operation: OperationId) -> Result<RepairPublicTerminalV1, OperatorRecoveryIssuanceErrorV1> {
+    bridge::verify_atomic_terminal_rows_v2(journal, operation)
+}
+
+pub(crate) fn verify_operator_storage_repair_failure_v1(
+    journal: &Journal,
+    operation: OperationId,
+) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
+    let (signer, owner) = protected_query_roles()?;
+    terminal::verify_current_failure_v1(journal, &signer, &owner, operation, None)?;
+    Ok(())
+}
+
+pub(crate) fn has_operator_storage_repair_settlement_debt_v1(
+    journal: &Journal,
+    operation: OperationId,
+) -> Result<bool, OperatorRecoveryIssuanceErrorV1> {
+    bridge::has_settlement_debt(journal, operation)
 }
 
 fn decode_key(
@@ -406,156 +457,204 @@ where
         let public_digest = self
             .checked_public_request_digest(public_peer, canonical_public_request)
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let envelope = PublicMutationRequestV1::decode(canonical_public_request)
-            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let DormantSandboxRequestKindV1::OperatorRecover(enveloped) = envelope
-            .decode_validated_kind()
-            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?
-        else {
-            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
-        };
         let request = decode_public_request(public_request_body)?;
-        if envelope.method() != PublicApiAuditMethodV1::OperatorRecover
-            || envelope.protobuf_body() != public_request_body
-            || request
-                != OperatorRecoveryRequestV1::try_from(enveloped)
-                    .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?
-            || request.action() != OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_REPAIR as i32
-        {
-            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
-        }
         let journal = self.reconciler.journal_mut();
-        journal
-            .ensure_protected_authority()
-            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
         let idempotency = IdempotencyKey::new(request.idempotency_key().to_vec())
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
         if journal.check_idempotency(&idempotency, public_digest)
             != IdempotencyOutcome::Replay(public_operation_id)
-            || !crate::reconciler::public_operation_resource_from_journal_v1(
-                journal,
-                public_operation_id,
-            )
-            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?
-            .is_some_and(|operation| operation.method == "operator.recover")
-        {
-            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
-        }
-        let current_bytes = journal
-            .get(
-                RecordNamespace::OperatorRecovery,
-                &recovery_current_key(request.resource_id()),
-            )
-            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?
-            .to_vec();
-        let current = decode_recovery_current(&current_bytes)
-            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        validate_recovery_current(&request, &current_bytes)
-            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        if current.kind != 1 {
-            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
-        }
-        let projection = PublicProjectionStoreV1::new(journal)
-            .get(PublicProjectionKindV1::Sandbox, request.resource_id())
-            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?
-            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let PublicProjectionResourceV1::Sandbox(sandbox) = projection.resource() else {
-            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
-        };
-        let desired = sandbox
-            .desired
-            .as_option()
-            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let observed = sandbox
-            .observed
-            .as_option()
-            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
-        if projection.project() != public_peer.project()
-            || sandbox.resource_version != current.version
-            || desired.generation != current.desired_generation
-            || observed.desired_generation != current.desired_generation
-            || observed.observation_sequence != current.observation_sequence
-        {
-            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
-        }
-        let checked = CheckedSandboxResourceV1::try_from(sandbox.clone())
-            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let projected_current =
-            super::prepare_operator_recovery_sandbox_current_v1(journal, &checked)
+            || !crate::reconciler::public_operation_resource_from_journal_v1(journal, public_operation_id)
                 .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?
-                .into_record();
-        if projected_current.value() != Some(current_bytes.as_slice()) {
+                .is_some_and(|operation| operation.method == "operator.recover")
+        {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
         }
 
-        let selector = Selector::Resource {
-            resource: ResourceId::from_bytes(request.resource_id()),
-        };
-        let authorized = super::authorize_public_operator_recovery_v1(
+        let prepared = prepare_repair_issuance_v2(
             journal,
+            public_digest,
+            signer,
             public_peer,
             capability_id,
-            ResourceKind::Sandbox,
-            selector,
+            public_operation_id,
+            canonical_public_request,
             public_request_body,
-        )
-        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let provenance = authorized.provenance();
-        let (principal, authorization, _, canonical_request, _) = provenance.commitments();
-        if principal.digest().as_bytes() == &[0; 32] {
-            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
-        }
-        let semantics = CanonicalStorageRepairSemanticsV1::decode(
             storage_request_body,
             storage_peer,
             storage_policy,
             now_boottime_nanoseconds,
-        )
-        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let selected = ProtectedStorageRepairSelectionV1::from_authenticated_inventory(
             inventory,
-            public_operation_id,
-            request.resource_id(),
-            current.desired_generation,
-            &semantics,
         )?;
-        let authorization_digest = hash(
-            AUTHORIZATION_DOMAIN,
-            &[
-                authorization.digest().as_bytes(),
-                canonical_request.digest().as_bytes(),
-                capability_id.as_bytes(),
-                &authorized.policy_generation().to_be_bytes(),
-                &authorized.accepted_wall_seconds().to_be_bytes(),
-            ],
-        );
-        let intent = map_storage_repair_intent(
-            &request,
-            public_peer,
-            capability_id,
-            public_digest,
-            authorization_digest,
-            &semantics,
-            storage_request_body,
-            &selected,
-        )?;
-        let packet = signer.sign(&intent)?;
-        reserve_issued_storage_repair_v2(
-            journal,
-            signer.verifier(),
-            signer.key_id(),
-            signer.generation(),
-            &intent,
-            &selected,
-            public_digest,
-            &current_bytes,
-            &packet,
-        )?;
-        public_peer
-            .recheck()
-            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        Ok(packet)
+        commit_prepared_issuance_v2(journal, &prepared.issuance, public_operation_id)?;
+        Ok(prepared.signed_intent)
     }
+}
+
+/// Keeps validated issuer records private until atomic public admission.
+struct PreparedRepairIssuanceV2 {
+    signed_intent: [u8; OPERATOR_RECOVERY_EFFECT_INTENT_BYTES],
+    current: JournalRecord,
+    issuance: JournalRecord,
+    accepted_wall_seconds: i64,
+}
+
+/// Validates and signs without independently admitting an operation or record.
+#[allow(clippy::too_many_arguments)]
+fn prepare_repair_issuance_v2(
+    journal: &mut Journal,
+    public_digest: [u8; 32],
+    signer: &ProtectedOperatorRecoverySignerV1,
+    public_peer: &PublicApiPeer,
+    capability_id: CapabilityId,
+    public_operation_id: OperationId,
+    canonical_public_request: &[u8],
+    public_request_body: &[u8],
+    storage_request_body: &[u8],
+    storage_peer: PeerCredentials,
+    storage_policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+    inventory: &LifecycleAuthenticatedStorageInventoryV1,
+) -> Result<PreparedRepairIssuanceV2, OperatorRecoveryIssuanceErrorV1> {
+    let envelope = PublicMutationRequestV1::decode(canonical_public_request)
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let DormantSandboxRequestKindV1::OperatorRecover(enveloped) = envelope
+        .decode_validated_kind()
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?
+    else {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    };
+    let request = decode_public_request(public_request_body)?;
+    if envelope.method() != PublicApiAuditMethodV1::OperatorRecover
+        || envelope.protobuf_body() != public_request_body
+        || request
+            != OperatorRecoveryRequestV1::try_from(enveloped)
+                .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?
+        || request.action() != OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_REPAIR as i32
+    {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
+    journal
+        .ensure_protected_authority()
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let current_bytes = journal
+        .get(
+            RecordNamespace::OperatorRecovery,
+            &recovery_current_key(request.resource_id()),
+        )
+        .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?
+        .to_vec();
+    let current = decode_recovery_current(&current_bytes)
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    validate_recovery_current(&request, &current_bytes)
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    if current.kind != 1 {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
+    let projection = PublicProjectionStoreV1::new(journal)
+        .get(PublicProjectionKindV1::Sandbox, request.resource_id())
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?
+        .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let PublicProjectionResourceV1::Sandbox(sandbox) = projection.resource() else {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    };
+    let desired = sandbox
+        .desired
+        .as_option()
+        .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let observed = sandbox
+        .observed
+        .as_option()
+        .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+    if projection.project() != public_peer.project()
+        || sandbox.resource_version != current.version
+        || desired.generation != current.desired_generation
+        || observed.desired_generation != current.desired_generation
+        || observed.observation_sequence != current.observation_sequence
+    {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
+    let checked = CheckedSandboxResourceV1::try_from(sandbox.clone())
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let projected_current =
+        super::prepare_operator_recovery_sandbox_current_v1(journal, &checked)
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?
+            .into_record();
+    if projected_current.value() != Some(current_bytes.as_slice()) {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
+
+    let selector = Selector::Resource {
+        resource: ResourceId::from_bytes(request.resource_id()),
+    };
+    let authorized = super::authorize_public_operator_recovery_v1(
+        journal,
+        public_peer,
+        capability_id,
+        ResourceKind::Sandbox,
+        selector,
+        public_request_body,
+    )
+    .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let provenance = authorized.provenance();
+    let (principal, authorization, _, canonical_request, _) = provenance.commitments();
+    if principal.digest().as_bytes() == &[0; 32] {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
+    let semantics = CanonicalStorageRepairSemanticsV1::decode(
+        storage_request_body,
+        storage_peer,
+        storage_policy,
+        now_boottime_nanoseconds,
+    )
+    .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let selected = ProtectedStorageRepairSelectionV1::from_authenticated_inventory(
+        inventory,
+        public_operation_id,
+        request.resource_id(),
+        current.desired_generation,
+        &semantics,
+    )?;
+    let authorization_digest = hash(
+        AUTHORIZATION_DOMAIN,
+        &[
+            authorization.digest().as_bytes(),
+            canonical_request.digest().as_bytes(),
+            capability_id.as_bytes(),
+            &authorized.policy_generation().to_be_bytes(),
+            &authorized.accepted_wall_seconds().to_be_bytes(),
+        ],
+    );
+    let intent = map_storage_repair_intent(
+        &request,
+        public_peer,
+        capability_id,
+        public_digest,
+        authorization_digest,
+        &semantics,
+        storage_request_body,
+        &selected,
+    )?;
+    let packet = signer.sign(&intent)?;
+    let issuance = prepare_issued_storage_repair_v2(
+        journal,
+        signer.verifier(),
+        signer.key_id(),
+        signer.generation(),
+        &intent,
+        &selected,
+        public_digest,
+        &current_bytes,
+        &packet,
+    )?;
+    public_peer
+        .recheck()
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    Ok(PreparedRepairIssuanceV2 {
+        signed_intent: packet,
+        current: projected_current,
+        issuance,
+        accepted_wall_seconds: authorized.accepted_wall_seconds(),
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -657,7 +756,7 @@ fn issuance_key_v2(operation_id: [u8; 16]) -> Vec<u8> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn reserve_issued_storage_repair_v2(
+fn prepare_issued_storage_repair_v2(
     journal: &mut Journal,
     controller_key: &VerifyingKey,
     key_id: [u8; 16],
@@ -667,7 +766,7 @@ fn reserve_issued_storage_repair_v2(
     public_request_digest: [u8; 32],
     current_head: &[u8],
     signed_intent: &[u8; OPERATOR_RECOVERY_EFFECT_INTENT_BYTES],
-) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
+) -> Result<JournalRecord, OperatorRecoveryIssuanceErrorV1> {
     journal
         .ensure_protected_authority()
         .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
@@ -700,30 +799,40 @@ fn reserve_issued_storage_repair_v2(
         }
     }
     if let Some(existing) = journal.get(RecordNamespace::OperatorRecovery, &key) {
-        return if existing == encoded {
-            Ok(())
-        } else {
-            Err(OperatorRecoveryIssuanceErrorV1::Binding)
-        };
+        if existing != encoded {
+            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+        }
+    }
+    Ok(JournalRecord::put(
+        RecordNamespace::OperatorRecovery,
+        key,
+        encoded.to_vec(),
+    ))
+}
+
+fn commit_prepared_issuance_v2(
+    journal: &mut Journal,
+    record: &JournalRecord,
+    operation_id: OperationId,
+) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
+    let encoded = record.value().ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+    if journal.get(record.namespace(), record.key()) == Some(encoded) {
+        return Ok(());
     }
     let digest = hash(
         ISSUANCE_COMMIT_DOMAIN_V2,
-        &[&intent.recovery_operation_id, &intent.effect_id],
+        &[operation_id.as_bytes(), encoded],
     );
     let transaction_id: [u8; 16] = digest[..16]
         .try_into()
         .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
     let transaction = JournalTransaction::new(
         transaction_id,
-        vec![JournalRecord::put(
-            RecordNamespace::OperatorRecovery,
-            key.clone(),
-            encoded.to_vec(),
-        )],
+        vec![record.clone()],
     )
     .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
     let committed = journal.commit(&transaction).is_ok();
-    if journal.get(RecordNamespace::OperatorRecovery, &key) != Some(encoded.as_slice()) {
+    if journal.get(record.namespace(), record.key()) != Some(encoded) {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
     // Exact readback resolves a lost acknowledgment. No second attempt or
@@ -734,6 +843,28 @@ fn reserve_issued_storage_repair_v2(
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn reserve_issued_storage_repair_v2(
+    journal: &mut Journal,
+    controller_key: &VerifyingKey,
+    key_id: [u8; 16],
+    key_generation: u64,
+    intent: &OperatorRecoveryEffectIntentV1,
+    selected: &ProtectedStorageRepairSelectionV1,
+    public_request_digest: [u8; 32],
+    current_head: &[u8],
+    signed_intent: &[u8; OPERATOR_RECOVERY_EFFECT_INTENT_BYTES],
+) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
+    let record = prepare_issued_storage_repair_v2(
+        journal, controller_key, key_id, key_generation, intent, selected,
+        public_request_digest, current_head, signed_intent,
+    )?;
+    commit_prepared_issuance_v2(
+        journal, &record, OperationId::from_bytes(intent.recovery_operation_id),
+    )
 }
 
 fn decode_public_request(

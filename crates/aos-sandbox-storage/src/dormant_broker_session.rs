@@ -210,6 +210,44 @@ impl DormantStorageApplyCompositionV1 {
         })
     }
 
+    /// Opens provisioned Repair custody before any ordinary startup mutation.
+    ///
+    /// The same lower writers and actual sidecar owner remain held. An unresolved
+    /// token permits only terminal read-only recovery until exact settlement.
+    /// This does not activate the unqualified public Repair route.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing or malformed provisioned journals, stale credentials,
+    /// unauthenticated cuts, unavailable writer custody, or deferred startup failure.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_existing_operator_repair_v4(
+        authority_directory: &Path,
+        bootstrap_directory: &Path,
+        state_directory: &Path,
+        resolver_policy_directory: Option<&Path>,
+        identity_pool: StorageIdentityPoolV1,
+        zfs_executable: PathBuf,
+        executor: SystemdZfsExecutor,
+        credentials: &crate::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1,
+    ) -> Result<
+        (Self, crate::operator_recovery::StorageOperatorRecoveryOwnerV1),
+        StorageRuntimeError,
+    > {
+        let (runtime, owner) = StorageBrokerRuntime::open_existing_operator_repair_v4(
+            authority_directory,
+            bootstrap_directory,
+            state_directory,
+            resolver_policy_directory,
+            identity_pool,
+            zfs_executable,
+            executor,
+            credentials,
+        )?;
+
+        Ok((Self::from_runtime(runtime), owner))
+    }
+
     /// Wraps an already-open explicit dormant Apply runtime.
     #[must_use]
     pub const fn from_runtime(runtime: StorageBrokerRuntime) -> Self {
@@ -258,6 +296,7 @@ impl DormantStorageApplyCompositionV1 {
             &mut self.runtime,
             verifier,
             owner,
+            self.guest_root_template.as_ref(),
         )
     }
 
@@ -329,6 +368,23 @@ impl DormantStorageApplyCompositionV1 {
     #[must_use]
     pub const fn runtime(&self) -> &StorageBrokerRuntime {
         &self.runtime
+    }
+
+    /// Reinstalls exclusion from the actual protected operator owner on reopen.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unavailable sidecar custody or conflicting runtime dispatch.
+    pub fn retain_operator_terminal_cold_hold(
+        &self,
+        owner: &mut crate::operator_recovery::StorageOperatorRecoveryOwnerV1,
+    ) -> Result<bool, crate::service::StorageServiceError> {
+        let unresolved = owner.has_unresolved_terminal_hold_v4()
+            .map_err(|_| StorageRuntimeError::ReopenRequired)?;
+        if unresolved {
+            self.runtime.retain_operator_terminal_exclusion()?;
+        }
+        Ok(unresolved)
     }
 
     /// Proves the pinned template and no-effect publisher before accepting sessions.

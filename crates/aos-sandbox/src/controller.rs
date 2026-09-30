@@ -61,6 +61,22 @@ mod destination_slot;
 mod operator_recovery_issuance;
 
 #[cfg(target_os = "linux")]
+pub(crate) use operator_recovery_issuance::{
+    RepairPublicTerminalV1,
+    has_operator_storage_repair_settlement_debt_v1,
+    verify_atomic_operator_storage_repair_terminal_v2,
+    verify_operator_storage_repair_failure_v1,
+};
+
+#[cfg(target_os = "linux")]
+pub use operator_recovery_issuance::{
+    OperatorRecoveryIssuanceErrorV1 as OperatorStorageRepairErrorV1,
+    OperatorStorageRepairBridgeV1, StorageRepairAdmissionV1, StorageRepairProgressV1,
+    StorageRepairAdmissionDraftV1, StorageRepairAdmissionPreparationV1,
+    OperatorStorageRepairTerminalV1,
+};
+
+#[cfg(target_os = "linux")]
 mod original_attach_grant;
 #[cfg(target_os = "linux")]
 mod public_api_authorization;
