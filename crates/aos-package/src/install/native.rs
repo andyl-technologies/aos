@@ -84,6 +84,7 @@ pub(crate) async fn realize_modules(
                 .map(|(registry, meta)| (registry.config.name.clone(), meta.clone()))
                 .collect::<Vec<_>>();
             let mut selected = None;
+            let mut selected_envelope = None;
             for (registry_name, meta) in candidates {
                 let results = realize_companions(
                     config,
@@ -110,8 +111,15 @@ pub(crate) async fn realize_modules(
                     )?
                 };
                 if candidate.module.as_ref() == Some(&source) {
-                    selected = Some((registry_name, meta));
-                    break;
+                    if let Some(previous) = &selected_envelope {
+                        ensure!(
+                            crate::native_registry::same_package_context(previous, &candidate),
+                            "pinned native module source has ambiguous authenticated artifact contexts"
+                        );
+                    } else {
+                        selected_envelope = Some(candidate);
+                        selected = Some((registry_name, meta));
+                    }
                 }
             }
             let selected = selected.with_context(|| {
@@ -138,6 +146,7 @@ pub(crate) async fn realize_modules(
                 .map(|(registry, meta)| (registry.config.name.clone(), meta.clone()))
                 .collect::<Vec<_>>();
             let mut selected = None;
+            let mut selected_envelope = None;
             for (registry, meta) in candidates {
                 let results = realize_companions(
                     config,
@@ -164,8 +173,15 @@ pub(crate) async fn realize_modules(
                     )?
                 };
                 if selected_artifact_matches(&candidate.package, dependency) {
-                    selected = Some((registry, meta));
-                    break;
+                    if let Some(previous) = &selected_envelope {
+                        ensure!(
+                            crate::native_registry::same_package_context(previous, &candidate),
+                            "native runtime artifact has ambiguous authenticated package contexts"
+                        );
+                    } else {
+                        selected_envelope = Some(candidate);
+                        selected = Some((registry, meta));
+                    }
                 }
             }
             let selected = selected.with_context(|| {
@@ -707,11 +723,29 @@ pub(crate) fn reconfigure(
     printer: &aos_core::output::Printer,
 ) -> Result<()> {
     let profile = Profile::open_readonly(config.scope);
+    reconfigure_at(config, &profile, runtime, dry_run, printer)
+}
+
+/// Reuses normal native source replacement for an explicit profile owner.
+pub(crate) fn reconfigure_at(
+    config: &ApmConfig,
+    profile: &Profile,
+    runtime: &crate::runtime_modules::RuntimeModuleSnapshot,
+    dry_run: bool,
+    printer: &aos_core::output::Printer,
+) -> Result<()> {
+    ensure!(
+        profile.scope == config.scope,
+        "native profile scope differs from operator scope"
+    );
     let _profile_guard = if dry_run {
         None
     } else {
         Some(profile.lock_mutation()?)
     };
+    if !dry_run {
+        recover(profile)?;
+    }
     let current = profile
         .current_generation()?
         .context("native configuration requires an active profile")?;

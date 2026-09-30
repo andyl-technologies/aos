@@ -4,7 +4,7 @@
 //! one resolved package module set and its generated effect graph:
 //!
 //! ```json
-//! {"schema":"aos.package.transaction","scope":["profile","main"],"system":"x86_64-linux","artifacts":[],"inputs":[],"packages":[],"graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}}
+//! {"schema":"aos.package.transaction","scope":["profile","main"],"system":"x86_64-linux","artifacts":[],"inputs":[],"packages":[],"retire":[],"graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}}
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,7 +57,7 @@ pub struct Envelope {
     pub package: Artifact,
     /// Supplies an optional deployment module.
     pub module: Option<ModuleSource>,
-    /// Exposes exact runtime dependencies to that module.
+    /// Exposes exact runtime artifacts under package-owned local binding names.
     pub runtime_dependencies: BTreeMap<String, Artifact>,
     /// Names the module dependency closure's direct edges.
     pub module_dependencies: Vec<ModuleSource>,
@@ -88,10 +88,7 @@ impl Envelope {
         }
         for (name, artifact) in &envelope.runtime_dependencies {
             artifact.check()?;
-            ensure!(
-                name == &artifact.name,
-                "runtime dependency key differs from its package"
-            );
+            ensure!(!name.is_empty(), "runtime dependency binding is empty");
         }
         let mut names = BTreeSet::new();
         for module in &envelope.module_dependencies {
@@ -179,7 +176,7 @@ impl ModuleSource {
 pub struct ArtifactContext {
     /// Supplies this package's payload outputs.
     pub package: Artifact,
-    /// Supplies the package's explicit runtime dependency artifacts.
+    /// Supplies runtime artifacts under local binding names, independently of package coordinates.
     pub dependencies: BTreeMap<String, Artifact>,
 }
 
@@ -270,7 +267,7 @@ impl Deployment {
                 );
                 for (name, artifact) in &record.artifacts.dependencies {
                     artifact.check()?;
-                    ensure!(name == &artifact.name, "dependency coordinate mismatch");
+                    ensure!(!name.is_empty(), "runtime dependency binding is empty");
                 }
                 ensure!(
                     indexed
