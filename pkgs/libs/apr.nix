@@ -127,6 +127,12 @@ in
         name = "install";
         script = ''
           make install
+          # Installed helpers use the development prefix, never the discarded
+          # source/build directories. Source-mode helpers remain in the tree.
+          sed -i \
+            -e "s|^APR_SOURCE_DIR=.*|APR_SOURCE_DIR=\"$out\"|" \
+            -e "s|^APR_BUILD_DIR=.*|APR_BUILD_DIR=\"$out\"|" \
+            "$out/bin/apr-1-config"
           # Installed helper scripts execute on the target platform.
           sed -i 's|/bin/sh|${bash}/bin/bash|g' \
             "$out/bin/apr-1-config" \

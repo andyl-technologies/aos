@@ -1,5 +1,6 @@
 ##! OpenEXR — high-dynamic-range image libraries and tools.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -39,6 +40,13 @@ in
                 # help2man executes each tool. Use the matching native build for
                 # documentation while compiling the target libraries and tools.
                 sed -i 's|''${CMAKE_CURRENT_BINARY_DIR}/../bin/|${buildPackages.openexr}/bin/|g' docs/CMakeLists.txt
+                ${lib.optionalString stdenv.hostPlatform.isDarwin ''
+                  # Cross installation cannot repair Mach-O build RPATHs.
+                  # Preserve the stdenv's policy instead of upstream's override.
+                  sed -i \
+                    's|^set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)$|set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)|' \
+                    cmake/OpenEXRSetup.cmake
+                ''}
               ''
               else ""
             }
