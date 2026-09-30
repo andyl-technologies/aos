@@ -7,9 +7,22 @@
 }: let
   generatedModule = "aos_selinux_native_service";
   generatedType = "${generatedModule}_t";
-  packageModuleRoot = builtins.path {
-    path = ../../tests/fixtures/selinux-base-package;
-    name = "aos-selinux-base-test-package-module";
+  fixturePackage = pkgs.mkDerivation {
+    pname = "selinux-base-test";
+    version = "1";
+    src = null;
+    module = ../../tests/fixtures/selinux-base-package;
+    moduleDeps = [pkgs.service-management];
+    runtimeDeps = [pkgs.coreutils];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/share/selinux-base-test"
+          printf '%s\n' 'Native SELinux process and denial checks' > "$out/share/selinux-base-test/README"
+        '';
+      }
+    ];
   };
   generatedPolicySource = pkgs.writeTextFile {
     name = "${generatedModule}.te";
@@ -85,6 +98,10 @@
     modules = [
       {
         aos.system.name = "aos-selinux-base-test";
+        aos.packages.selinux-base-test = {
+          package = fixturePackage;
+          bundle = true;
+        };
         aos.security.selinux = {
           enable = true;
           mode = "enforcing";
@@ -103,18 +120,6 @@
           pkgs.policycoreutils
           pkgs.coreutils
         ];
-      }
-    ];
-    packageModules = [
-      {
-        name = "selinux-base-test";
-        version = "1";
-        configRoot = builtins.toString packageModuleRoot;
-        module = "${packageModuleRoot}/module.nix";
-        outputs = {
-          self = builtins.toString packageModuleRoot;
-          dependencies.coreutils = builtins.toString pkgs.coreutils;
-        };
       }
     ];
   };

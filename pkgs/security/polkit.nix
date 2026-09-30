@@ -1,6 +1,8 @@
 ##! polkit — System service authorization framework
 {
   lib,
+  service-management,
+  aos-filesystem-provider,
   mkDerivation,
   fetchurl,
   stdenv,
@@ -52,8 +54,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -145,7 +158,8 @@ in
     runtimeDeps = runtimeLibraries;
     propagatedDeps = [glib];
 
-    abilities = ./_polkit;
+    module = ./_polkit;
+    moduleDeps = [service-management aos-filesystem-provider linux-pam dbus];
 
     phases = [
       {

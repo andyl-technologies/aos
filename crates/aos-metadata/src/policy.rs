@@ -4,47 +4,27 @@
 //! through protected typed outputs. The complete initrd configuration
 //! evaluator consumes the authorization result directly.
 
-use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 
 use crate::AcquiredMetadata;
-use crate::root_observation::{MetadataHandler, observe_root};
+use crate::native_handler::{read_invocation, write_response};
 use crate::trust::{CONFIG_SIGNATURE_NAMESPACE, authenticate_config_payload_files};
-use anyhow::{Context as _, Result, bail, ensure};
-use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, LocalKey, MethodReference,
-    ResourceReference,
-};
-use aos_provider_protocol::{
-    ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
-    AdmissionResult, AdmissionRevision, HANDLER_ABI_ARGUMENT, INVOCATION_SCHEMA, Invocation,
-    InvocationDisposition, InvocationPurpose, InvocationResult, RESULT_SCHEMA, ResourceContext,
-    SupportedPurposes, TRANSACTION_BLOB_OUTPUT_TYPE, TransactionBlobOutput,
-    publish_transaction_blob_output, resource_set_digest, validate_admission_resource,
-    validate_resource_context, validate_resource_contexts,
-};
+use anyhow::{Context as _, Result, ensure};
 use aos_storage_provisioning::{
     AuthorizedProvisioningInput, BaseLibraryIdentity, CanonicalProvisioningSource,
-    ProvisioningAuthorization, ProvisioningIntent, ProvisioningTrustMode,
-    observed_instance_facts, validate_authorized_provisioning_input,
-    validate_provisioning_intent,
+    ProvisioningAuthorization, ProvisioningTrustMode, observed_instance_facts,
+    validate_authorized_provisioning_input,
 };
-use serde::{Deserialize, Serialize};
-
-const AUTHORIZATION_OBSERVATION: &str = "aos.metadata.provisioning-authorization-observation/v1";
-const PROVIDER_CONTEXT: &str = "aos.metadata.provisioning-provider-context/v1";
-const AUTHORIZED_INPUT_SLOT: &str = "authorized-provisioning-input";
-const AUTHORIZATION_INTERFACE: &str = "aos.metadata.storage-provisioning-input-authorization";
-const AUTHORIZATION_METHOD: &str = "authorize";
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthorizationParameters {
-    request: ProvisioningIntent,
     configuration: AuthorizationConfiguration,
     acquired_metadata: AcquiredMetadata,
+    evaluation_context: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,225 +33,75 @@ struct AuthorizationConfiguration {
     schema: String,
     trust_mode: ProvisioningTrustMode,
     trusted_config_keys: Vec<TrustedKeyFile>,
-    base_library: BaseLibraryIdentity,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 enum TrustedKeyFile {
-    ArtifactFile {
-        reference: ArtifactPathReference,
-    },
     ImmutableFile {
         path: String,
         content_sha256: String,
     },
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ArtifactPathReference {
-    artifact: ArtifactReference,
-    path: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ProviderContext {
-    schema: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(deny_unknown_fields)]
-struct AuthorizationObservation {
-    schema: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source: Option<CanonicalProvisioningSource>,
-    state: &'static str,
-}
-
-/// Runs an authorization call from the process streams.
+/// Executes one native whole-input metadata authorization operation.
 ///
 /// # Errors
-///
-/// Returns an error when the selected ABI, checked authority, metadata input,
-/// or provider result is invalid.
+/// Returns an error for invalid input, mutable trust anchors, mismatched base
+/// library identity, or failed signature authentication.
 pub async fn run_policy_provider_from_process() -> Result<()> {
-    run_provider_from_process().await
-}
-
-async fn run_provider_from_process() -> Result<()> {
-    let arguments = std::env::args_os().collect::<Vec<_>>();
+    let (purpose, invocation) = read_invocation()?;
+    let operation = invocation
+        .effect
+        .identity
+        .iter()
+        .rev()
+        .nth(1)
+        .context("metadata operation identity is missing")?;
     ensure!(
-        arguments.len() == 3 && arguments[1] == HANDLER_ABI_ARGUMENT,
-        "expected --aos-primitive-v1 and one purpose"
+        operation == "authorize",
+        "unknown metadata authorization operation"
     );
-    let purpose = arguments[2]
-        .to_str()
-        .context("metadata handler purpose is not valid UTF-8")?;
-
-    let mut input = Vec::new();
-    io::stdin()
-        .take(ABILITY_LIMITS_V1.max_document_bytes + 1)
-        .read_to_end(&mut input)?;
-    ensure!(
-        input.len() as u64 <= ABILITY_LIMITS_V1.max_document_bytes,
-        "protocol input exceeds the canonical document bound"
-    );
-
-    let value = match purpose {
-        "observe-root" => {
-            let request: aos_provider_protocol::RootObservationRequest =
-                aos_contract::canonical::from_slice(&input, "metadata policy root observation")?;
-            serde_json::to_value(observe_root(MetadataHandler::Policy, request)?)?
+    let output = match purpose.as_str() {
+        "remove" => serde_json::json!({}),
+        "observe" if invocation.action == aos_ability_runtime::activation::Action::Remove => {
+            serde_json::json!({"status":"absent"})
         }
-        "admit" => {
-            let request: AdmissionRequest =
-                aos_contract::canonical::from_slice(&input, "metadata admission")?;
-            validate_method(&request.method)?;
-            serde_json::to_value(admit(request)?)?
+        "observe" => serde_json::json!({"status":"retry-safe"}),
+        _ => {
+            let parameters: AuthorizationParameters = serde_json::from_value(invocation.input)?;
+            let authorized = authorize(
+                &parameters.configuration,
+                &parameters.acquired_metadata,
+                &parameters.evaluation_context,
+                invocation.effect.timeout_ms,
+            )?;
+            let bytes = aos_contract::canonical::to_vec(&authorized)?;
+            let canonical_input =
+                String::from_utf8(bytes).context("authorized input is not UTF-8")?;
+            serde_json::json!({"authorized_input": authorized,"canonical_input":canonical_input})
         }
-        "effect" | "reconcile" | "cancel" => {
-            let invocation: Invocation =
-                aos_contract::canonical::from_slice(&input, "metadata invocation")?;
-            validate_method(&invocation.method)?;
-            serde_json::to_value(invoke(invocation, purpose).await?)?
-        }
-        purpose => bail!("unsupported metadata provider purpose {purpose:?}"),
     };
-    let output = aos_contract::canonical::canonical_json(&value)?;
-    ensure!(
-        output.len() <= aos_provider_protocol::MAX_HANDLER_RESULT_BYTES,
-        "metadata provider result exceeds the handler bound"
-    );
-    io::stdout().write_all(&output)?;
-    Ok(())
-}
-
-fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
-    ensure!(
-        request.schema == ADMISSION_REQUEST_SCHEMA,
-        "unsupported admission schema"
-    );
-    validate_admission_resource(&request)?;
-    validate_resource_contexts(&request.resources)?;
-    validate_method(&request.method)?;
-    let intent: ProvisioningIntent = decode(&request.resource_spec.value)?;
-    validate_provisioning_intent(&intent)?;
-
-    let observation = authorization_observation(None, "ready")?;
-    Ok(AdmissionResult {
-        schema: ADMISSION_SCHEMA.into(),
-        disposition: AdmissionDisposition::Admitted,
-        revision: AdmissionRevision::Absent,
-        incarnation: Some(request.assignment.incarnation),
-        observation,
-        native_context: ability_value(serde_json::to_value(ProviderContext {
-            schema: PROVIDER_CONTEXT.into(),
-        })?)?,
-        supported_purposes: SupportedPurposes::from_ordered(vec![
-            InvocationPurpose::Effect,
-            InvocationPurpose::Reconcile,
-            InvocationPurpose::Cancel,
-        ])
-        .context("constructing metadata provider purpose set")?,
-    })
-}
-
-async fn invoke(
-    invocation: Invocation,
-    purpose: &str,
-) -> Result<InvocationResult> {
-    ensure!(
-        invocation.schema == INVOCATION_SCHEMA && purpose == purpose_name(invocation.purpose),
-        "invocation envelope differs from the selected ABI"
-    );
-    ensure!(
-        invocation.method_is_bound(),
-        "invocation method is not durably bound"
-    );
-    validate_resource_contexts(&invocation.request.resources)?;
-    ensure!(
-        resource_set_digest(&invocation.request.resources)?
-            == invocation.request.native_context_digest,
-        "resource contexts differ from their authenticated digest"
-    );
-    validate_method(&invocation.method)?;
-    validate_method(&invocation.request.method)?;
-    let target = exact_context(&invocation.request.target, &invocation.request.resources)?;
-    let bound = validate_resource_context(target)?;
-    ensure!(
-        invocation.method.interface == invocation.request.method.interface
-            && invocation.method.interface == invocation.request.target.interface
-            && invocation
-                .request
-                .target
-                .operations
-                .binary_search(&invocation.method.method)
-                .is_ok(),
-        "invocation method differs from the checked target interface"
-    );
-    let provider_context: ProviderContext = decode(&bound.provider_context)?;
-    ensure!(
-        provider_context.schema == PROVIDER_CONTEXT,
-        "metadata provider context differs from the selected handler"
-    );
-    let intent: ProvisioningIntent = decode(&bound.resource_spec.value)?;
-    validate_provisioning_intent(&intent)?;
-
-    if invocation.control.cancelled || invocation.purpose == InvocationPurpose::Cancel {
-        return cancelled_result(&invocation);
-    }
-    ensure!(
-        matches!(
-            invocation.purpose,
-            InvocationPurpose::Effect | InvocationPurpose::Reconcile
-        ),
-        "metadata provisioning does not support compensation"
-    );
-
-    let parameters: AuthorizationParameters = decode(&invocation.request.inputs)?;
-    ensure!(
-        parameters.request == intent,
-        "authorization request differs from the checked resource"
-    );
-    let input = authorize(&parameters.configuration, &parameters.acquired_metadata)?;
-    let evidence = authorization_observation(Some(input.source), "authorized")?;
-    let authorized_input = serde_json::to_value(&input)?;
-    let authorized_input_bytes = aos_contract::canonical::canonical_json(&authorized_input)?;
-    let output_slot = LocalKey::new(AUTHORIZED_INPUT_SLOT)?;
-    publish_transaction_blob_output(&output_slot, &authorized_input_bytes)?;
-    completed_result(
-        &invocation,
-        evidence,
-        method_outputs([
-            (
-                "authorized-provisioning-input",
-                ability_value(authorized_input)?,
-            ),
-            (
-                "authorized-input-blob",
-                ability_value(serde_json::to_value(TransactionBlobOutput {
-                    kind: TRANSACTION_BLOB_OUTPUT_TYPE.into(),
-                    slot: LocalKey::new(AUTHORIZED_INPUT_SLOT)?,
-                })?)?,
-            ),
-        ])?,
-    )
+    write_response(&output)
 }
 
 fn authorize(
     configuration: &AuthorizationConfiguration,
     acquired: &AcquiredMetadata,
+    evaluation_context: &str,
+    timeout_ms: u64,
 ) -> Result<AuthorizedProvisioningInput> {
     validate_authorization_configuration(configuration)?;
     validate_acquired_metadata(acquired)?;
-    authorize_validated_input(configuration, acquired)
+    let base_library = read_evaluation_library(evaluation_context)?;
+    verify_base_library(&base_library, timeout_ms)?;
+    authorize_validated_input(configuration, acquired, &base_library)
 }
 
 fn authorize_validated_input(
     configuration: &AuthorizationConfiguration,
     acquired: &AcquiredMetadata,
+    base_library: &BaseLibraryIdentity,
 ) -> Result<AuthorizedProvisioningInput> {
     let facts = observed_instance_facts(serde_json::to_value(&acquired.facts)?)?;
     let input = match &acquired.host_module {
@@ -305,7 +135,7 @@ fn authorize_validated_input(
                     signer,
                 },
                 facts,
-                base_library: configuration.base_library.clone(),
+                base_library: base_library.clone(),
             }
         }
         None => AuthorizedProvisioningInput {
@@ -319,7 +149,7 @@ fn authorize_validated_input(
                 signer: None,
             },
             facts,
-            base_library: configuration.base_library.clone(),
+            base_library: base_library.clone(),
         },
     };
     validate_authorized_provisioning_input(&input)?;
@@ -359,7 +189,7 @@ fn validate_authorization_configuration(configuration: &AuthorizationConfigurati
         );
     }
     trusted_key_files(&configuration.trusted_config_keys)?;
-    verify_base_library(&configuration.base_library)
+    Ok(())
 }
 
 fn trusted_key_files(files: &[TrustedKeyFile]) -> Result<Vec<PathBuf>> {
@@ -367,7 +197,6 @@ fn trusted_key_files(files: &[TrustedKeyFile]) -> Result<Vec<PathBuf>> {
     let mut names = std::collections::BTreeSet::new();
     for file in files {
         let path = match file {
-            TrustedKeyFile::ArtifactFile { reference } => artifact_file(reference)?,
             TrustedKeyFile::ImmutableFile {
                 path,
                 content_sha256,
@@ -376,12 +205,17 @@ fn trusted_key_files(files: &[TrustedKeyFile]) -> Result<Vec<PathBuf>> {
                     path.starts_with("/nix/store/"),
                     "trusted configuration key is not immutable"
                 );
-                let bytes = fs::read(path)?;
+                let selected = immutable_path(path)?;
+                ensure!(
+                    fs::metadata(&selected)?.len() <= 64 * 1024,
+                    "configuration key exceeds its bound"
+                );
+                let bytes = fs::read(&selected)?;
                 ensure!(
                     digest(&bytes) == *content_sha256,
                     "trusted configuration key differs from its content digest"
                 );
-                PathBuf::from(path)
+                selected
             }
         };
         ensure!(
@@ -408,108 +242,97 @@ fn trusted_key_files(files: &[TrustedKeyFile]) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn artifact_file(reference: &ArtifactPathReference) -> Result<PathBuf> {
-    let relative = Path::new(&reference.path);
+fn immutable_path(value: &str) -> Result<PathBuf> {
+    let path = Path::new(value);
+    let relative = path
+        .strip_prefix("/nix/store")
+        .context("metadata trust input is outside immutable store")?;
     ensure!(
-        !relative.is_absolute()
+        relative.components().count() > 0
             && relative
                 .components()
                 .all(|component| matches!(component, Component::Normal(_))),
-        "trusted configuration key artifact path is not strict relative"
+        "metadata trust input is not normalized"
     );
-    let root = fs::canonicalize(&reference.artifact.store_path)?;
-    let path = fs::canonicalize(root.join(relative))?;
+    let selected = fs::canonicalize(path)?;
     ensure!(
-        path.starts_with(&root),
-        "trusted configuration key escapes its artifact"
+        selected.starts_with("/nix/store"),
+        "metadata trust input escapes immutable store"
     );
-    Ok(path)
+    Ok(selected)
 }
 
-fn verify_base_library(identity: &BaseLibraryIdentity) -> Result<()> {
-    ensure!(
-        identity.store_path.starts_with("/nix/store/"),
-        "base library is not an immutable store path"
-    );
-    let actual = fs::read_to_string(Path::new(&identity.store_path).join("abi-hash"))?;
-    ensure!(
-        actual.trim() == identity.abi_hash,
-        "base-library ABI hash differs from the fixed-point identity"
-    );
-    Ok(())
+// Only authority-relevant members are projected here. APM owns the full
+// native package descriptor, whose immutable locator is admitted before dispatch.
+#[derive(Deserialize)]
+struct EvaluationLibrary {
+    schema: String,
+    library: PathBuf,
+    #[serde(rename = "libraryNarHash")]
+    library_nar_hash: aos_contract::Sha256Digest,
 }
 
-fn validate_method(method: &MethodReference) -> Result<()> {
+fn read_evaluation_library(descriptor: &str) -> Result<BaseLibraryIdentity> {
+    let descriptor = immutable_path(descriptor)?;
+    let mut bytes = Vec::new();
+    fs::File::open(descriptor)?
+        .take((aos_ability_plan::module_graph::GRAPH_LIMITS.max_bytes as u64) + 1)
+        .read_to_end(&mut bytes)?;
+    let context: EvaluationLibrary = aos_ability_plan::module_graph::GRAPH_LIMITS
+        .decode(&bytes, "native evaluation descriptor")?;
     ensure!(
-        method.interface.name.as_str() == AUTHORIZATION_INTERFACE
-            && method.method.as_str() == AUTHORIZATION_METHOD,
-        "interface method does not select metadata authorization"
+        context.schema == "aos.package.evaluation-input",
+        "unsupported native evaluation descriptor"
     );
-    Ok(())
-}
-
-fn exact_context<'a>(
-    reference: &ResourceReference,
-    resources: &'a [ResourceContext],
-) -> Result<&'a ResourceContext> {
-    let matches = resources
-        .iter()
-        .filter(|context| context.reference == *reference)
-        .collect::<Vec<_>>();
-    ensure!(
-        matches.len() == 1,
-        "resource reference has no unique runtime context"
-    );
-    Ok(matches[0])
-}
-
-fn authorization_observation(
-    source: Option<CanonicalProvisioningSource>,
-    state: &'static str,
-) -> Result<AbilityValue> {
-    ability_value(serde_json::to_value(AuthorizationObservation {
-        schema: AUTHORIZATION_OBSERVATION,
-        source,
-        state,
-    })?)
-}
-
-fn completed_result(
-    invocation: &Invocation,
-    evidence: AbilityValue,
-    outputs: BTreeMap<LocalKey, AbilityValue>,
-) -> Result<InvocationResult> {
-    Ok(InvocationResult {
-        schema: RESULT_SCHEMA.into(),
-        disposition: InvocationDisposition::Completed,
-        evidence,
-        outputs,
-        native_context_digest: invocation.request.native_context_digest,
+    let library = immutable_path(
+        context
+            .library
+            .to_str()
+            .context("library locator is not UTF-8")?,
+    )?;
+    let relative = library.strip_prefix("/nix/store")?;
+    let root = relative
+        .components()
+        .next()
+        .context("native library has no store root")?;
+    Ok(BaseLibraryIdentity {
+        store_path: Path::new("/nix/store")
+            .join(root.as_os_str())
+            .to_str()
+            .context("native library root is not UTF-8")?
+            .to_owned(),
+        nar_hash: context.library_nar_hash.to_string(),
     })
 }
 
-fn cancelled_result(invocation: &Invocation) -> Result<InvocationResult> {
-    let evidence = authorization_observation(None, "ready")?;
-    Ok(InvocationResult {
-        schema: RESULT_SCHEMA.into(),
-        disposition: InvocationDisposition::RejectedBeforeEffect,
-        evidence,
-        outputs: BTreeMap::new(),
-        native_context_digest: invocation.request.native_context_digest,
-    })
-}
-
-fn method_outputs<const N: usize>(
-    entries: [(&str, AbilityValue); N],
-) -> Result<BTreeMap<LocalKey, AbilityValue>> {
-    entries
-        .into_iter()
-        .map(|(name, value)| Ok((LocalKey::new(name)?, value)))
-        .collect()
-}
-
-fn ability_value(value: serde_json::Value) -> Result<AbilityValue> {
-    AbilityValue::new(value).map_err(anyhow::Error::msg)
+fn verify_base_library(identity: &BaseLibraryIdentity, timeout_ms: u64) -> Result<()> {
+    let library = immutable_path(&identity.store_path)?;
+    ensure!(
+        library.parent() == Some(Path::new("/nix/store")),
+        "native library identity must name an exact store root"
+    );
+    let current = std::env::current_exe()?;
+    let tool = current
+        .parent()
+        .context("metadata handler has no package directory")?
+        .join("../libexec/nix-store");
+    let tool = fs::canonicalize(tool)?;
+    let tool = crate::executable::resolve_executable(
+        tool.to_str().context("store executable is not UTF-8")?,
+    )?;
+    let command = aos_core::nix::identity::store_nar_command(
+        &tool,
+        library.to_str().context("library path is not UTF-8")?,
+    )?;
+    let (actual, _) = aos_core::nix::identity::hash_nar_command(
+        command,
+        std::time::Duration::from_millis(timeout_ms),
+    )?;
+    ensure!(
+        actual.to_string() == identity.nar_hash,
+        "native module library NAR differs from its admitted identity"
+    );
+    Ok(())
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -518,47 +341,9 @@ fn digest(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-fn decode<T: serde::de::DeserializeOwned>(value: &AbilityValue) -> Result<T> {
-    serde_json::from_value(value.as_json().clone()).map_err(anyhow::Error::from)
-}
-
-fn purpose_name(purpose: InvocationPurpose) -> &'static str {
-    match purpose {
-        InvocationPurpose::Effect => "effect",
-        InvocationPurpose::Reconcile => "reconcile",
-        InvocationPurpose::Cancel => "cancel",
-        InvocationPurpose::Compensate => "compensate",
-        InvocationPurpose::ReconcileCompensation => "reconcile-compensation",
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU32;
-
-    use aos_ability_model::{InterfaceKey, InterfaceName};
-    use aos_contract::Sha256Digest;
-
     use super::*;
-
-    fn method_reference(interface: &str, method: &str) -> MethodReference {
-        MethodReference {
-            interface: InterfaceKey {
-                name: InterfaceName::new(interface).expect("interface name"),
-                abi: NonZeroU32::new(1).expect("non-zero ABI version"),
-                descriptor: Sha256Digest::of_bytes(interface.as_bytes()),
-            },
-            method: LocalKey::new(method).expect("method name"),
-        }
-    }
-
-    #[test]
-    fn only_authorization_method_is_admitted() {
-        validate_method(&method_reference(AUTHORIZATION_INTERFACE, AUTHORIZATION_METHOD))
-            .expect("authorization method");
-        assert!(validate_method(&method_reference("aos.metadata.unknown", "detect")).is_err());
-        assert!(validate_method(&method_reference(AUTHORIZATION_INTERFACE, "observe")).is_err());
-    }
 
     #[test]
     fn platform_authorization_preserves_typed_input_without_file_round_trip() {
@@ -567,10 +352,6 @@ mod tests {
             schema: "aos.metadata.provisioning-authorization-configuration/v1".into(),
             trust_mode: ProvisioningTrustMode::Platform,
             trusted_config_keys: Vec::new(),
-            base_library: BaseLibraryIdentity {
-                store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-base-lib".into(),
-                abi_hash: format!("sha256:{}", "00".repeat(32)),
-            },
         };
         let acquired = AcquiredMetadata {
             schema: "aos.metadata.acquired-provisioning-input/v1".into(),
@@ -583,8 +364,15 @@ mod tests {
             },
         };
 
-        let authorized =
-            authorize_validated_input(&configuration, &acquired).expect("typed authorization");
+        let authorized = authorize_validated_input(
+            &configuration,
+            &acquired,
+            &BaseLibraryIdentity {
+                store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-base-lib".into(),
+                nar_hash: format!("sha256:{}", "00".repeat(32)),
+            },
+        )
+        .expect("typed authorization");
 
         assert_eq!(authorized.source, CanonicalProvisioningSource::Operator);
         assert_eq!(authorized.host_module.as_deref(), Some(host_module));

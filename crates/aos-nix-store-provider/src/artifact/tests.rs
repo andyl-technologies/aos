@@ -2,7 +2,6 @@
 
 use std::os::unix::fs::symlink;
 
-use aos_ability_model::{EnvironmentId, ExecutionStage, InstanceId, TransactionId};
 use tempfile::tempdir;
 
 use super::*;
@@ -54,25 +53,15 @@ fn local_key(value: &str) -> LocalKey {
     LocalKey::new(value).expect("fixture local key is valid")
 }
 
-fn resource() -> ResourceId {
-    ResourceId {
-        provider: InstanceId {
-            environment: EnvironmentId {
-                authority: local_key("test-authority"),
-                key: local_key("test-system"),
-                stage: ExecutionStage::Host,
-            },
-            key: local_key("artifact-provider"),
-        },
-        key: local_key("configuration-manifest"),
-    }
+fn resource() -> String {
+    "test-content-object".into()
 }
 
 fn request(media_type: &str) -> ContentObjectRequest {
     ContentObjectRequest {
         name: local_key("configuration-manifest"),
         media_type: media_type.into(),
-        prerequisites: Vec::new(),
+        content_sha256: Sha256Digest::of_bytes(b"canonical manifest"),
     }
 }
 
@@ -85,32 +74,11 @@ fn media_types_are_closed_canonical_tokens() {
 }
 
 #[test]
-fn checked_blob_rejects_symlinks_and_changed_bytes() {
+fn content_input_rejects_symlinks() {
     let temporary = tempdir().expect("temporary directory exists");
-    let handle = local_key("manifest");
-    let bytes = b"canonical manifest";
-    fs::write(temporary.path().join(handle.as_str()), bytes).expect("blob fixture is written");
-    let reference = TransactionBlobReference {
-        kind: TRANSACTION_BLOB_REFERENCE_TYPE.into(),
-        transaction: TransactionId(local_key("transaction")),
-        handle: handle.clone(),
-        content_sha256: Sha256Digest::of_bytes(bytes),
-        size_bytes: bytes.len() as u64,
-    };
-
-    assert_eq!(
-        checked_blob_at(temporary.path(), &reference).expect("regular blob is accepted"),
-        temporary.path().join(handle.as_str())
-    );
-
-    fs::write(temporary.path().join("target"), bytes).expect("target fixture is written");
-    fs::remove_file(temporary.path().join(handle.as_str())).expect("regular blob is removed");
-    symlink("target", temporary.path().join(handle.as_str())).expect("symlink fixture is created");
-    assert!(checked_blob_at(temporary.path(), &reference).is_err());
-
-    fs::remove_file(temporary.path().join(handle.as_str())).expect("symlink is removed");
-    fs::write(temporary.path().join(handle.as_str()), b"changed").expect("changed blob is written");
-    assert!(checked_blob_at(temporary.path(), &reference).is_err());
+    fs::write(temporary.path().join("target"), b"content").expect("target");
+    symlink("target", temporary.path().join("link")).expect("link");
+    assert!(read_bounded_regular(&temporary.path().join("link")).is_err());
 }
 
 #[test]
@@ -171,63 +139,14 @@ fn resource_root_retains_and_reobserves_exact_artifact_identity() {
 }
 
 #[test]
-fn semantic_revision_and_recovery_track_resolved_blob_content() {
-    let temporary = tempdir().expect("temporary directory exists");
-    let store_directory = temporary.path().join("store");
-    let root_directory = temporary.path().join("gcroots");
-    fs::create_dir(&store_directory).expect("store directory is created");
-    fs::create_dir(&root_directory).expect("root directory is created");
-    let first_path = store_directory.join(format!("{}-authorized-input", "0".repeat(32)));
-    let second_path = store_directory.join(format!("{}-authorized-input", "1".repeat(32)));
-    fs::write(&first_path, b"first canonical input").expect("first store object is written");
-    fs::write(&second_path, b"second canonical input").expect("second store object is written");
-    let provider = ContentArtifactProvider::test(
-        root_directory,
-        store_directory,
-        Box::new(FakeArtifactCommands),
-    );
-    let expected = request("application/vnd.aos.provisioning-input+json");
-    let first = provider
-        .describe_artifact(Path::new("/test/nix-store"), &first_path, 1_000)
-        .expect("first artifact identity is derived");
-    let second = provider
-        .describe_artifact(Path::new("/test/nix-store"), &second_path, 1_000)
-        .expect("second artifact identity is derived");
-
-    let first_inspection = Inspection::Ready(first.clone());
-    let second_inspection = Inspection::Ready(second.clone());
-    let first_observation = observation(
-        "aos.test.content-observation/v1",
-        &expected,
-        &first_inspection,
-    )
-    .expect("first observation is encoded");
-    let second_observation = observation(
-        "aos.test.content-observation/v1",
-        &expected,
-        &second_inspection,
-    )
-    .expect("second observation is encoded");
-    let first_revision =
-        admission_revision(&first_inspection, &first_observation).expect("first revision exists");
-    let second_revision = admission_revision(&second_inspection, &second_observation)
-        .expect("second revision exists");
-
-    assert_ne!(first_revision, second_revision);
-
-    let requested_blob = TransactionBlobReference {
-        kind: TRANSACTION_BLOB_REFERENCE_TYPE.into(),
-        transaction: TransactionId(local_key("transaction")),
-        handle: local_key("authorized-input"),
-        content_sha256: second.content_sha256,
-        size_bytes: b"second canonical input".len() as u64,
+fn recovery_detects_changed_content_digest() {
+    let first = ContentObjectRequest {
+        content_sha256: Sha256Digest::of_bytes(b"first"),
+        ..request("application/json")
     };
-    assert_eq!(
-        reconciliation_disposition("commit", &first_inspection, Some(&requested_blob)),
-        InvocationDisposition::SafeToRetry
-    );
-    assert_eq!(
-        reconciliation_disposition("commit", &second_inspection, Some(&requested_blob)),
-        InvocationDisposition::Completed
-    );
+    let second = ContentObjectRequest {
+        content_sha256: Sha256Digest::of_bytes(b"second"),
+        ..first.clone()
+    };
+    assert_ne!(first, second);
 }

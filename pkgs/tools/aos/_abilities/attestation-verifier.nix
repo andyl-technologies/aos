@@ -4,13 +4,10 @@
   lib,
   packageName,
   packageVersion,
+  package,
   ...
 }: let
   cfg = config.aos.services.attestationVerifier;
-  abilityTypes = lib.abilities.types;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  resultOf = lib.abilities.resultOf;
   serviceName = "aos-attestation-verifier";
 
   inputPaths = lib.unique (
@@ -42,17 +39,10 @@
     ];
   command = {
     executable = {
-      artifact = config.aos.packageRuntime.artifacts.apm;
-      entry_point = "bin/apm";
+      path = "${package.outputs.apm}/bin/apm";
       arguments = verifierArguments;
     };
     ignore_failure = false;
-  };
-  filesystems = serviceManagement.forProducer {
-    consumerInstance = "service";
-    key = "local-filesystems";
-    interface = serviceManagement.interfaces.filesystemReadiness;
-    parameters.scope = "local-filesystems";
   };
   service = {
     policy.hardening = {
@@ -86,7 +76,6 @@
       operation_profile = "system-service";
       isolated_identity_mapping = "none";
     };
-    consumerInstance = "service";
     service = serviceName;
     # The verifier remains available for explicit invocation without joining
     # a boot target, matching the previous standalone unit.
@@ -109,9 +98,9 @@
       stop_timeout_millis = 90000;
     };
     dependencies = {
-      after = [(resultOf "local-filesystems" "resource")];
+      after = ["local-fs.target"];
       before = [];
-      requires = [(resultOf "local-filesystems" "resource")];
+      requires = ["local-fs.target"];
       wants = [];
     };
     readiness = {
@@ -162,46 +151,37 @@
       permit_core_dumps = false;
     };
   };
-  inputPathList = abilityTypes.list {
-    element = serviceTypes.hostPath;
-    maxItems = 256;
-  };
+  inputPathList = lib.types.listOf lib.types.str;
 in {
   options.aos.services = lib.mkOption {
     type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
       options = lib.optionalAttrs (name == "attestationVerifier") {
-        enable = lib.mkOption {
-          type = abilityTypes.boolean;
-          default = false;
-          description = "Provide the standalone AOS package attestation verifier service.";
-        };
-
         eventLog = lib.mkOption {
-          type = serviceTypes.hostPath;
+          type = lib.types.str;
           default = "/var/lib/aos-attestation-verifier/aos-packages.cel";
           description = "Package attestation event log consumed by the verifier.";
         };
 
         quoteDir = lib.mkOption {
-          type = serviceTypes.hostPath;
+          type = lib.types.str;
           default = "/var/lib/aos-attestation-verifier/quote";
           description = "Directory containing the verifier-local quote bundle.";
         };
 
         nonceFile = lib.mkOption {
-          type = serviceTypes.hostPath;
+          type = lib.types.str;
           default = "/var/lib/aos-attestation-verifier/nonce";
           description = "File containing the verifier nonce as hexadecimal text.";
         };
 
         resultFile = lib.mkOption {
-          type = serviceTypes.hostPath;
+          type = lib.types.str;
           default = "/var/lib/aos-attestation-verifier/result.json";
           description = "File atomically replaced with the current JSON verification result.";
         };
 
         pcr15BaselineFile = lib.mkOption {
-          type = abilityTypes.optional serviceTypes.hostPath;
+          type = lib.types.nullOr lib.types.str;
           default = null;
           description = "Optional file containing the expected PCR 15 baseline.";
         };
@@ -222,17 +202,5 @@ in {
     default = {};
   };
 
-  config = lib.mkMerge [
-    {
-      aos.services = {
-        attestationVerifier = {};
-        "service.${serviceName}" = service // {enable = cfg.enable;};
-      };
-    }
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [filesystems];
-      enabled = cfg.enable;
-    })
-  ];
+  config.aos.services.attestationVerifier = service;
 }

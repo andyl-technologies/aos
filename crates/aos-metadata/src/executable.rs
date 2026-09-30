@@ -5,58 +5,45 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context as _, Result, ensure};
-use aos_ability_model::ArtifactReference;
-use serde::Deserialize;
-
-/// Carries one executable from an authenticated package artifact.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExecutableReference {
-    artifact: ArtifactReference,
-    entry_point: String,
-    arguments: Vec<String>,
-}
-
-impl ExecutableReference {
-    /// Resolves and validates the executable path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when preset arguments are present, the artifact is
-    /// mutable, the entry point is not a strict relative path, or the resolved
-    /// file escapes the artifact or is not executable.
-    pub fn resolve(&self) -> Result<PathBuf> {
-        ensure!(
-            self.arguments.is_empty(),
-            "metadata executable carries undeclared arguments"
-        );
-        let root = Path::new(&self.artifact.store_path);
-        ensure!(
-            root.is_absolute() && root.starts_with("/nix/store"),
-            "metadata executable artifact is outside the immutable store"
-        );
-        let entry_point = Path::new(&self.entry_point);
-        ensure!(
-            !self.entry_point.is_empty()
-                && !entry_point.is_absolute()
-                && entry_point
-                    .components()
-                    .all(|component| matches!(component, Component::Normal(_))),
-            "metadata executable entry point is not normalized"
-        );
-
-        let canonical_root = fs::canonicalize(root).context("resolving executable artifact")?;
-        let executable =
-            fs::canonicalize(root.join(entry_point)).context("resolving executable")?;
-        ensure!(
-            executable.starts_with(canonical_root),
-            "metadata executable escapes its artifact"
-        );
-        let metadata = fs::metadata(&executable).context("inspecting executable")?;
-        ensure!(
-            metadata.is_file() && metadata.permissions().mode() & 0o111 != 0,
-            "metadata executable is not an executable regular file"
-        );
-        Ok(executable)
-    }
+/// Resolves a native executable input inside the immutable package store.
+///
+/// # Errors
+/// Returns an error when the path is not normalized, escapes its selected
+/// package output, or is not an executable regular file.
+pub fn resolve_executable(value: &str) -> Result<PathBuf> {
+    let path = Path::new(value);
+    let relative = path
+        .strip_prefix("/nix/store")
+        .context("executable is outside immutable store")?;
+    let mut components = relative.components();
+    let package = components
+        .next()
+        .context("executable has no package root")?;
+    ensure!(
+        matches!(package, Component::Normal(_)),
+        "invalid executable package root"
+    );
+    ensure!(
+        components
+            .clone()
+            .all(|component| matches!(component, Component::Normal(_))),
+        "executable path is not normalized"
+    );
+    let root = Path::new("/nix/store").join(package.as_os_str());
+    let root = fs::canonicalize(root)?;
+    ensure!(
+        root.starts_with("/nix/store"),
+        "executable package escapes immutable store"
+    );
+    let executable = fs::canonicalize(path)?;
+    ensure!(
+        executable.starts_with(root),
+        "executable escapes its package"
+    );
+    let metadata = fs::metadata(&executable)?;
+    ensure!(
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0,
+        "native tool is not executable"
+    );
+    Ok(executable)
 }

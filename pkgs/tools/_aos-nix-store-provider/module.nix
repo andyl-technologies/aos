@@ -1,274 +1,140 @@
-##! Package-owned Nix store database and runtime integration declarations.
+##! Owns native local database convergence and persistent content objects.
 {
-  abilitySelection ? null,
   config,
   lib,
-  packageArtifactFor,
+  package,
   ...
 }: let
-  inherit (lib.abilities) declareInterface interfaceDocumentFromDeclaration interfaceIdentity types;
-
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceInterfaces = serviceManagement.interfaces;
-  serviceTypes = serviceManagement.types;
-  contentObject = lib.abilities.interfaces.contentAddressedArtifacts;
-  contentObjectOperations = contentObject.operationInterface;
-
-  storeDatabase = lib.abilities.interfaces.nixStoreDatabase.interface;
-  inherit (storeDatabase) declaration identity requestType observationType realizationType lifecycle aggregation;
-  methods = storeDatabase.methodDeclarations;
-  interfaceName = identity.name;
-  interfaceAlias = storeDatabase.alias;
-  effectsName = "aos.nix.store-database-effects";
-  effectsAlias = "nix-store-database-effects";
-  providerArtifact = lib.abilities.packageOutput {};
-  runtimeConsumer = "runtime";
-  resultOf = lib.abilities.resultOf;
-
-  coreutilsSelector = lib.abilities.packageOutput {package = "coreutils";};
-  grepSelector = lib.abilities.packageOutput {package = "grep";};
-  nixSelector = lib.abilities.packageOutput {package = "nix";};
-  coreutilsArtifact = packageArtifactFor coreutilsSelector;
-  grepArtifact = packageArtifactFor grepSelector;
-  nixArtifact = packageArtifactFor nixSelector;
-
-  configurationRequest = "nix-configuration";
-  configurationEntryRequest = "nix-configuration-entry";
-  profileStorageRequest = "profile-storage";
-  gcRootDirectoryRequest = "gcroot-directory";
-  gcRootMountRequest = "gcroot-mount";
-
-  effectsDeclaration = declareInterface {
-    name = effectsName;
-    description = "Executes admitted Nix store database operations for one exact controller-owned resource.";
-    abi = 1;
-    inherit requestType methods lifecycle;
-    outputs = {};
-    guarantees = [];
-    aggregation = aggregation // {controllerGroup = effectsAlias;};
-  };
-  effectsIdentity = interfaceIdentity (interfaceDocumentFromDeclaration effectsDeclaration);
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = runtimeConsumer;
-      inherit key interface parameters;
-    };
-  runtimeConfiguration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = runtimeConsumer;
-    declaration = {
-      name = configurationRequest;
-      source = {
-        kind = "inline-text";
-        content = ''
-          # Managed by the selected AOS package-store provider.
-          build-users-group =
-        '';
-      };
-      mode = "0444";
-    };
-  };
-  configurationEntry = producer configurationEntryRequest serviceInterfaces.filesystemEntry {
-    name = configurationEntryRequest;
-    entry = {
-      kind = "copied-file";
-      source = {
-        kind = "execution-path";
-        resource = resultOf configurationRequest "resource";
-        path = resultOf configurationRequest "planned-path";
-      };
-      maximum_size_bytes = types.limits.maxStringLength;
-    };
-    destination = "/etc/nix/nix.conf";
-    owner = "root";
-    group = "root";
-    mode = "0444";
-    prerequisites = [(resultOf configurationRequest "resource")];
-  };
-  profileStorage = producer profileStorageRequest serviceInterfaces.persistentStorageAllocation {
-    name = "aos-profiles";
-    purpose = "state";
-    mode = "0755";
-    requested_path = "/var/lib/profiles";
-    owner = "root";
-    group = "root";
-  };
-  gcRootDirectory = producer gcRootDirectoryRequest serviceInterfaces.filesystemEntry {
-    name = "aos-profile-gcroots";
-    entry.kind = "directory";
-    destination = "/nix/var/nix/gcroots/aos-profiles";
-    owner = "root";
-    group = "root";
-    mode = "0755";
-    prerequisites = [];
-  };
-  gcRootMount = producer gcRootMountRequest serviceInterfaces.mountResource {
-    name = "aos-profile-gcroots";
-    enabled = true;
-    source = resultOf profileStorageRequest "planned-path";
-    destination = resultOf gcRootDirectoryRequest "planned-path";
-    options = ["bind"];
-  };
-  runtimeProducers = [
-    runtimeConfiguration
-    configurationEntry
-    profileStorage
-    gcRootDirectory
-    gcRootMount
-  ];
-  runtimeSelected =
-    config.aos.abilities.environment
-    != null
-    && config.aos.abilities.environment.stage == "host"
-    && abilitySelection != null
-    && abilitySelection.isImplementationSelected interfaceAlias;
+  database = config.aos.abilities.nixStoreDatabase.operations.converge;
+  cfg = config.aos.nixStore;
+  hostRuntime = cfg.enable && (config.aos.boot.stage or "host") == "host";
+  configuration = config.aos.abilities.configuration.operations.file.effects.nix-store;
+  profiles = config.aos.abilities.filesystem.operations.persistentAllocate.effects.nix-profiles;
+  roots = config.aos.abilities.filesystem.operations.directory.effects.nix-profile-gcroots;
+  bridge = config.aos.abilities.mount.operations.ensure.effects.nix-profile-gcroots;
 in {
+  options.aos.nixStore = lib.mkOption {
+    extensible = true;
+    type = lib.types.submodule [
+      database.input
+      {options.enable = lib.mkEnableOption "local Nix store integration";}
+    ];
+    default = {};
+    description = "Merged local package-store configuration.";
+  };
+
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge [
-        {
-          interfaces = {
-            ${interfaceAlias} = declaration;
-            ${effectsAlias} = effectsDeclaration;
+      aos.abilities.nixStoreDatabase.operations.converge = {
+        input.options = {
+          scope = lib.mkOption {
+            type = lib.types.enum ["local"];
+            default = "local";
+            description = "Local Nix store database scope.";
           };
-
-          implementations.${interfaceAlias} = {
-            description = "Converges a local Nix store database through the checked package-owned controller.";
-            interface = interfaceAlias;
-            artifact = providerArtifact;
-            artifacts = [coreutilsSelector grepSelector nixSelector];
-            methods = builtins.attrNames methods;
-            guarantees = [];
-            requirements.effects = {
-              alias = "effects";
-              description = "Invokes the package-owned terminal Nix store database handler.";
-              accepted_interfaces = [effectsIdentity];
-              methods = builtins.attrNames methods;
-              guarantees = [];
-              strength = "required";
-              fallback = null;
-            };
-            providerModule = {
-              artifact = lib.abilities.packageOutput {output = "module";};
-              path = "provider.nix";
-            };
-            desiredType = realizationType;
-            requiredFeatures = [];
+          registration = lib.mkOption {
+            type = lib.types.nullOr (lib.types.submodule {
+              options = {
+                path = lib.mkOption {
+                  type = lib.types.deferred lib.types.str;
+                  description = "Exact registration stream supplied by the image or another operation.";
+                };
+                sha256 = lib.mkOption {
+                  type = lib.types.nullOr (lib.types.deferred lib.types.str);
+                  default = null;
+                  description = "Digest of the exact retained stream; required for mutable image paths.";
+                };
+                required = lib.mkOption {
+                  type = lib.types.bool;
+                  default = true;
+                  description = "Reject convergence when the registration stream is absent.";
+                };
+              };
+            });
+            default = null;
+            description = "Image registration to import into the local database.";
           };
-
-          implementations.${effectsAlias} = {
-            description = "Executes authorized Nix store database operations through the package-owned handler.";
-            interface = effectsAlias;
-            artifact = providerArtifact;
-            methods = builtins.attrNames methods;
-            guarantees = [];
-            handlerDescriptor = {
-              artifact = providerArtifact;
-              entryPoint = "libexec/aos-nix-store-provider";
-              arguments = requestType;
-              result = observationType;
-            };
-            desiredType = null;
-            requiredFeatures = [];
+        };
+        result.options = {
+          resource = lib.mkOption {
+            type = lib.types.str;
+            description = "Converged local database readiness identity.";
           };
-
-          implementations.content-addressed-object = {
-            description = "Owns persistent content-addressed objects committed through the checked Nix-store effects interface.";
-            interface = contentObject.identity;
-            artifact = providerArtifact;
-            methods = contentObject.methods;
-            guarantees = [];
-            requirements.effects = {
-              alias = "effects";
-              description = "Invokes the package-owned terminal content-object handler.";
-              accepted_interfaces = [contentObjectOperations.identity];
-              methods = contentObject.methods;
-              guarantees = [];
-              strength = "required";
-              fallback = null;
-            };
-            providerModule = {
-              artifact = lib.abilities.packageOutput {output = "module";};
-              path = "content-object-provider.nix";
-            };
-            desiredType = contentObject.realizationType;
-            requiredFeatures = [];
+          registration_digest = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            description = "Digest of the exact imported registration stream.";
           };
-
-          implementations.${contentObjectOperations.alias} = {
-            description = "Executes authorized content-object operations through the package-owned Nix-store handler.";
-            interface = contentObjectOperations.identity;
-            artifact = providerArtifact;
-            methods = contentObject.methods;
-            guarantees = [];
-            handlerDescriptor = {
-              artifact = providerArtifact;
-              entryPoint = "libexec/aos-nix-store-provider";
-              arguments = contentObject.methodParameters;
-              result = contentObject.observationType;
-            };
-            desiredType = null;
-            requiredFeatures = [];
+        };
+        handler.program = package;
+      };
+      aos.abilities.contentAddressedObject.operations.commit = {
+        input.options = {
+          name = lib.mkOption {
+            type = lib.types.str;
+            description = "Logical content object name.";
           };
-
-          requirementTemplates.${interfaceAlias} = {
-            description = "Requires convergence and observation of the local Nix store database.";
-            inherit (identity) abi descriptor;
-            interface = identity.name;
-            methods = builtins.attrNames methods;
-            guarantees = [];
-            strength = "required";
-            fallback = null;
+          media_type = lib.mkOption {
+            type = lib.types.str;
+            description = "Canonical media type of the exact content.";
           };
-        }
-        (lib.mkIf runtimeSelected {
-          runtimeChecks.nix-store = {
-            description = "Selected package-store readiness and retention checks";
-            checks = [
-              {
-                name = "database-ready";
-                description = "the selected package store initialized its local database";
-                script = ''
-                  vm.succeed("${coreutilsArtifact}/bin/test -f /nix/var/nix/db/db.sqlite")
-                '';
-              }
-              {
-                name = "managed-config";
-                description = "the selected package store installed its single-user configuration";
-                script = ''
-                  vm.succeed("${grepArtifact}/bin/grep -Fx 'build-users-group =' /etc/nix/nix.conf")
-                '';
-              }
-              {
-                name = "gcroot-bridge";
-                description = "durable AOS profiles are retained by the selected package store";
-                script = ''
-                  vm.succeed(
-                      "${coreutilsArtifact}/bin/test "
-                      "$( ${coreutilsArtifact}/bin/stat -c %d:%i /var/lib/profiles) = "
-                      "$( ${coreutilsArtifact}/bin/stat -c %d:%i /nix/var/nix/gcroots/aos-profiles)"
-                  )
-                '';
-              }
-              {
-                name = "current-system-valid";
-                description = "the selected package store recognizes the booted system closure";
-                script = ''
-                  vm.succeed(
-                      "${nixArtifact}/bin/nix-store --check-validity "
-                      "$( ${coreutilsArtifact}/bin/readlink /run/current-system)"
-                  )
-                '';
-              }
-            ];
+          content = lib.mkOption {
+            type = lib.types.deferred lib.types.str;
+            description = "Exact UTF-8 content retained as an immutable flat object.";
           };
-        })
-      ];
+        };
+        result.options = {
+          path = lib.mkOption {
+            type = lib.types.str;
+            description = "Immutable committed store object path.";
+          };
+          content_sha256 = lib.mkOption {
+            type = lib.types.str;
+            description = "Digest of the exact committed bytes.";
+          };
+        };
+        handler.program = package;
+      };
     }
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = runtimeProducers;
-      enabled = runtimeSelected;
-    })
+    {
+      aos.abilities = {
+        configuration.operations.file.effects.nix-store = lib.mkIf hostRuntime {
+          input = {
+            path = "/etc/nix/nix.conf";
+            content = "# Managed by the selected AOS package-store provider.\nbuild-users-group =\n";
+            mode = "0444";
+          };
+        };
+        filesystem.operations = {
+          persistentAllocate.effects.nix-profiles = lib.mkIf hostRuntime {
+            input = {
+              path = "/var/lib/profiles";
+              mode = "0755";
+              owner = "root";
+              group = "root";
+            };
+          };
+          directory.effects.nix-profile-gcroots = lib.mkIf hostRuntime {
+            input = {
+              path = "/nix/var/nix/gcroots/aos-profiles";
+              mode = "0755";
+              owner = "root";
+              group = "root";
+            };
+          };
+        };
+        mount.operations.ensure.effects.nix-profile-gcroots = lib.mkIf hostRuntime {
+          input = {
+            name = "aos-profile-gcroots";
+            source = profiles.outputs.path;
+            destination = roots.outputs.path;
+            options = ["bind"];
+          };
+        };
+        nixStoreDatabase.operations.converge.effects.runtime = lib.mkIf hostRuntime {
+          input = builtins.removeAttrs cfg ["enable"];
+          after = [configuration.outputs.resource bridge.outputs.resource];
+        };
+      };
+    }
   ];
 }

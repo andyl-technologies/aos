@@ -1,6 +1,10 @@
 ##! SELinux Reference Policy
 {
   lib,
+  service-management,
+  aos-filesystem-provider,
+  aos-configuration-lower,
+  kernel-interface,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -19,8 +23,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -96,7 +111,8 @@ in
     runtimeDeps = [bash coreutils grep policycoreutils libselinux];
     propagatedDeps = [];
 
-    abilities = ./_refpolicy;
+    module = ./_refpolicy;
+    moduleDeps = [service-management aos-filesystem-provider aos-configuration-lower kernel-interface];
 
     phases = [
       {

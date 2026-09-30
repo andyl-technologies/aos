@@ -7,6 +7,7 @@
   aosWorkspaceVendor,
   cmake,
   libssh2,
+  nix,
   openssl,
   pkg-config,
   stdenv,
@@ -52,7 +53,7 @@
     ];
     inherit cargoEnv;
     buildDeps = [buildPkgConfig buildCmake];
-    runtimeDeps = [openssl libssh2 zlib];
+    runtimeDeps = [openssl libssh2 zlib nix];
   };
 in
   mkAosCargoPackage {
@@ -86,16 +87,19 @@ in
     cargoTestFlags = "-p aos-metadata -p aos-metadata-provider";
     doCheck = true;
     buildDeps = [buildPkgConfig buildCmake];
-    runtimeDeps = [openssl libssh2 zlib];
+    runtimeDeps = [openssl libssh2 zlib nix];
 
-    abilities = ./_aos-metadata-provider;
+    module = ./_aos-metadata-provider;
 
     postInstall = ''
+      mkdir -p "$out/libexec"
+      ln -s ${nix}/bin/nix-store "$out/libexec/nix-store"
       test -x "$out/bin/aos-metadata-acquisition-provider"
       test -x "$out/bin/aos-metadata-policy-provider"
     '';
 
     meta = {
+      mainProgram = "aos-metadata-acquisition-provider";
       description = "Typed platform metadata acquisition and provisioning policy provider";
       homepage = "https://github.com/andyl/andyl-os";
       license = "Apache-2.0";

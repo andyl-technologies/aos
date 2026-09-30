@@ -10,6 +10,8 @@
   grep,
   nix,
   patchelf,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "0.1.0";
   cargoDeps = aosWorkspaceVendor;
@@ -76,7 +78,7 @@ in
     pname = "aos-nix-store-provider";
     qualification.packageProbe = lib.qualification.providerExecutableProbe {
       name = "aos-nix-store-provider";
-      entryPoint = "libexec/aos-nix-store-provider";
+      entryPoint = "bin/aos-nix-store-provider";
     };
 
     inherit version cargoDeps cargoArtifacts cargoArtifactContract;
@@ -88,18 +90,16 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [coreutils grep nix];
 
-    abilities = ./_aos-nix-store-provider;
+    module = ./_aos-nix-store-provider;
+    moduleDeps = [service-management aos-filesystem-provider];
 
     preBuild = staticBuildSetup;
 
     postInstall = ''
       mkdir -p "$out/libexec"
-      mv "$out/bin/aos-nix-store-provider" \
-        "$out/libexec/aos-nix-store-provider"
       ln -s ${nix}/bin/nix-store "$out/libexec/nix-store"
-      test -x "$out/libexec/aos-nix-store-provider"
-      test ! -e "$out/bin/aos-nix-store-provider"
-      if patchelf --print-interpreter "$out/libexec/aos-nix-store-provider" \
+      test -x "$out/bin/aos-nix-store-provider"
+      if patchelf --print-interpreter "$out/bin/aos-nix-store-provider" \
           > "$TMPDIR/aos-nix-store-provider.interpreter" 2>/dev/null; then
         printf 'aos-nix-store-provider unexpectedly has ELF interpreter: '
         cat "$TMPDIR/aos-nix-store-provider.interpreter"
@@ -108,6 +108,7 @@ in
     '';
 
     meta = {
+      mainProgram = "aos-nix-store-provider";
       description = "AOS package-owned local Nix store database provider";
       homepage = "https://github.com/andyl/andyl-os";
       license = "Apache-2.0";

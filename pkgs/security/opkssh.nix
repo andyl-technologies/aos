@@ -6,6 +6,8 @@
 ##! verifies these tokens via an AuthorizedKeysCommand.
 {
   lib,
+  service-management,
+  openssh,
   mkGoPackage,
   fetchurl,
   fetchGoModules,
@@ -120,7 +122,8 @@ in
     goOutput = "opkssh";
     ldflags = "-s -w -X main.Version=${version}";
     doCheck = false;
-    abilities = ./_opkssh;
+    module = ./_opkssh;
+    moduleDeps = [service-management openssh];
 
     checks = {
       testing,

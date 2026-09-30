@@ -6,6 +6,8 @@
   bash,
   coreutils,
   cryptsetup,
+  service-management,
+  aos-boot-storage,
   e2fsprogs,
   jq,
   systemd,
@@ -13,13 +15,25 @@
 }:
 mkDerivation {
   platformSupport = {
-    build = [{abi = ["gnu"]; os = ["linux"];}];
-    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+    build = [
+      {
+        abi = ["gnu"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["linux"];
+      }
+    ];
     target = [];
     role = "public-package";
   };
   pname = "aos-systemd-var-policy";
-  abilities = ./_aos-systemd-var-policy;
+  module = ./_aos-systemd-var-policy;
+  moduleDeps = [service-management aos-boot-storage];
   qualification.packageProbe = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];

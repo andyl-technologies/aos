@@ -1,13 +1,9 @@
 ##! Package-owned service declarations for the SELinux base VM check.
-{lib, ...}: let
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  consumerInstance = "selinux-base-test";
-
+{dependencies, ...}: let
   command = entry_point: arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {package = "coreutils";};
-      inherit entry_point arguments;
+      path = "${dependencies.coreutils}/${entry_point}";
+      inherit arguments;
     };
     ignore_failure = false;
   };
@@ -58,43 +54,23 @@
     isolated_identity_mapping = "none";
   };
 
-  service = declaration:
-    serviceManagement.forService {
-      inherit serviceTypes consumerInstance;
-      declaration = builtins.removeAttrs declaration ["hardening"];
-      featureRequests = [
-        (serviceManagement.featureRequest {
-          key = "hardening";
-          requirementAlias = "service-hardening";
-          description = "Requires the selected platform to enforce the service isolation policy.";
-          interface = "aos.service.hardening";
-          abi = 1;
-          parameters = declaration.hardening;
-        })
-      ];
+  service = name: description: model: executable: arguments: {
+    enable = true;
+    autoStart = false;
+    manager_identity = {
+      inherit name;
+      aliases = [];
     };
-
-  serviceFragments = builtins.map service [
-    {
-      service = "selinux-native";
-      enabled = true;
-      lifecycle = lifecycle "Native service provider SELinux domain check" "foreground" [
-        (command "bin/sleep" ["300"])
-      ];
-      hardening = hardening;
-    }
-    {
-      service = "selinux-native-deny";
-      enabled = false;
-      lifecycle = lifecycle "Native service provider SELinux denial check" "oneshot" [
-        (command "bin/touch" ["/tmp/aos-selinux-denied"])
-      ];
-      hardening = hardening;
-    }
-  ];
+    lifecycle = lifecycle description model [(command executable arguments)];
+    policy.hardening = hardening;
+  };
 in {
-  config.aos.abilities = lib.mkMerge (
-    [{instances.${consumerInstance} = {};}]
-    ++ serviceFragments
-  );
+  config.aos.services = {
+    "selinux-base-test.selinux-native" =
+      service "selinux-native"
+      "Native service provider SELinux domain check" "foreground" "bin/sleep" ["300"];
+    "selinux-base-test.selinux-native-deny" =
+      service "selinux-native-deny"
+      "Native service provider SELinux denial check" "oneshot" "bin/touch" ["/tmp/aos-selinux-denied"];
+  };
 }
