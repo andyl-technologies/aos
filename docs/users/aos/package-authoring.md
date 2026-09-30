@@ -264,9 +264,8 @@ manager. Definitions in different files merge through the module fixed point.
 The [runtime abilities guide](runtime-abilities.md) shows the complete interface,
 service option, package configuration, handler composition, and execution path.
 
-Use native `module` and `moduleDeps`, not the superseded `abilities` or
-`configModule` recipe fields. Existing packages still using those fields are
-consumer migration work; they are not examples of the new authoring API.
+Use `module` and `moduleDeps` for native configuration. The builder rejects the
+superseded `abilities` and `configModule` recipe fields.
 
 ## Generate and inspect package documentation
 

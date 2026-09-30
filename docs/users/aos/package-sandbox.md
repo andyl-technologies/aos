@@ -1,33 +1,29 @@
 # Understand native package runtime policy
 
-> The domain consumers on this page are being migrated to the native module
-> runtime. The [current ability API and execution path](runtime-abilities.md)
-> supersede the earlier provider/request authoring forms. Do not copy those
-> earlier forms into new package modules.
-
-AOS activates package services through typed abilities selected in the final
-system module fixed point. A package publishes a checked module and a derived
-package contract. The system selects providers, validates their requests, and
-hands concrete effects to native resource adapters.
+AOS activates package services through typed abilities in the final module
+fixed point. A package publishes its module source, deployment envelope, and
+generated reference documentation. Handler selection is ordinary module
+configuration. Evaluation checks configured effects and produces a deferred
+graph for the package runtime.
 
 Runtime policy is therefore owned by the same declaration that owns the
 resource. There is no separate runtime-policy metadata artifact or generated
 package target. Registry verification authenticates the package and its
-contract; the selected provider and host policy determine the realized units,
+native companions; selected handlers and host policy determine the realized units,
 network rules, credentials, and other effects.
 
 ## Know when runtime policy applies
 
 A package payload by itself is inert. Installing an executable into a profile
 does not start a service or confer access to host resources. Runtime effects
-exist only when the system selects an implementation and a typed request
-contributes desired resources to the final fixed point.
+exist when enabled configuration produces effects in the final fixed point.
+Every enabled effect must have a handler before activation can proceed.
 
-Inspect the selected package contract and the evaluated system before enabling
-a workload. The contract identifies the interfaces, implementations,
-requirements, guarantees, handlers, and artifact selectors that the package
-can contribute. The final system views identify which provider was selected and
-which concrete resources it owns.
+Inspect the package's generated reference and the evaluated transaction before
+enabling a workload. The reference describes declared operation inputs and
+results, handler selection, and configured uses. The transaction identifies the
+exact handlers, inputs, dependencies, owners, and lifetimes selected for that
+scope. See [ability inspection](ability-inspection.md) for the CLI and Hub views.
 
 ## Keep policy with its native owner
 
@@ -55,7 +51,7 @@ package name.
 
 Public configuration is checked against typed options from authenticated
 package modules. Secret values use opaque references and systemd credentials;
-they are not evaluated as Nix values or retained in package contracts.
+they are not evaluated as Nix values or retained in generated documentation or deployment graphs.
 Permission to consume one credential does not imply access to another
 package's credentials or to general secret storage.
 
