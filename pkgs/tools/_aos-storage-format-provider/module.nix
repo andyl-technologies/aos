@@ -1,66 +1,51 @@
-##! Util-linux implementation of the canonical storage-format resource.
-{lib, ...}: let
-  interface = lib.abilities.interfaces.blockStorage.interfaces.storageFormat;
-  artifact = lib.abilities.packageOutput {};
-  effectsAlias = "storage-format-effects";
-  effectsDeclaration = lib.abilities.declareInterface {
-    name = "aos.util-linux.storage-format-effects";
-    description = "Executes admitted storage-format operations.";
-    abi = 1;
-    inherit (interface.declaration) requestType methods lifecycle;
-    outputs = {};
-    guarantees = [];
-    aggregation = interface.declaration.aggregation // {controllerGroup = effectsAlias;};
-  };
-  effectsIdentity = lib.abilities.interfaceIdentity (
-    lib.abilities.interfaceDocumentFromDeclaration effectsDeclaration
-  );
-  realizationType = lib.abilities.types.record {
-    fields = {
-      schema = lib.abilities.types.enum ["aos.storage.format-realization/v1"];
-      mkswap = lib.abilities.types.executableReference;
-      blkid = lib.abilities.types.executableReference;
-    };
-  };
-in {
-  config.aos.abilities = {
-    interfaces.${effectsAlias} = effectsDeclaration;
-    implementations.storage-format = {
-      description = "Converges explicit storage formats through the util-linux controller.";
-      interface = interface.identity;
-      inherit artifact;
-      inherit (interface) methods;
-      guarantees = [];
-      requirements.effects = {
-        alias = "effects";
-        description = "Invokes the package-owned terminal storage-format handler.";
-        accepted_interfaces = [effectsIdentity];
-        inherit (interface) methods;
-        guarantees = [];
-        strength = "required";
-        fallback = null;
+##! Explicit native storage formatting through retained util-linux tools.
+{
+  lib,
+  package,
+  dependencies,
+  ...
+}: {
+  aos.abilities.storageFormat.operations.format = {
+    input.options = {
+      name = lib.mkOption {
+        type = lib.types.str;
+        description = "Stable format operation name.";
       };
-      providerModule = {
-        artifact = lib.abilities.packageOutput {output = "module";};
-        path = "provider.nix";
+      source = lib.mkOption {
+        type = lib.types.deferred lib.types.str;
+        description = "Checked absolute device path to format.";
       };
-      desiredType = realizationType;
-      requiredFeatures = [];
-    };
-    implementations.${effectsAlias} = {
-      description = "Executes authorized storage formatting through util-linux.";
-      interface = effectsAlias;
-      inherit artifact;
-      inherit (interface) methods;
-      guarantees = [];
-      handlerDescriptor = {
-        inherit artifact;
-        entryPoint = "bin/aos-storage-format-provider";
-        arguments = interface.requestType;
-        result = interface.observationType;
+      format = lib.mkOption {
+        type = lib.types.enum ["swap"];
+        default = "swap";
+        description = "Requested device format.";
       };
-      desiredType = null;
-      requiredFeatures = [];
+      policy = lib.mkOption {
+        type = lib.types.enum ["always" "if-absent"];
+        default = "if-absent";
+        description = "Whether to replace an existing format explicitly.";
+      };
+      mkswap = lib.mkOption {
+        type = lib.types.str;
+        default = "${dependencies.util-linux}/sbin/mkswap";
+        description = "Retained immutable formatter executable.";
+      };
+      blkid = lib.mkOption {
+        type = lib.types.str;
+        default = "${dependencies.util-linux}/sbin/blkid";
+        description = "Retained immutable format inspection executable.";
+      };
     };
+    result.options = {
+      path = lib.mkOption {
+        type = lib.types.str;
+        description = "Checked formatted device path.";
+      };
+      resource = lib.mkOption {
+        type = lib.types.str;
+        description = "Logical identity of the formatting effect.";
+      };
+    };
+    handler.program = package;
   };
 }
