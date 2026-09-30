@@ -1256,8 +1256,8 @@ in
     # --- Fetch-specific ---
     depsHash =
       if isDarwinCross
-      then "sha256-Uk3z32gZlcfQUDbaYDJDgniHKPIzU5lNaZwA83XM1Kk="
-      else "sha256-QRqsiL5d3IGl0q9ft1vShpSb/A7qJ+ayYuxQnQ1tOzg=";
+      then "sha256-6/knJlyWgf0AmnzKg/zGECjfQ3zbK5anDIUVJVUHVs0="
+      else "sha256-uydyo4JuyqE1e55HOtM6LidYy9XnAMnFku+1IuEhWag=";
     fetchPostPatch = "";
     bazelFetchFlags = [
       "--extra_toolchains=//bazel/nix:${
