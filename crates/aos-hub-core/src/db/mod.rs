@@ -521,6 +521,7 @@ mod delivery_identity;
 pub use delivery_identity::*;
 mod delivery_workflow;
 mod direct_delivery;
+mod publication_delivery;
 pub use delivery_workflow::*;
 mod egress_nonce;
 mod gc_topology;
@@ -4299,7 +4300,12 @@ impl Database {
                         catalog_artifacts
                             .push(("documentation", documentation.store_path.as_str()));
                     }
-                    for (artifact_kind, store_path) in catalog_artifacts {
+                    // Disk encodings can share metadata, and named outputs can
+                    // repeat the primary output. Project each role/path once.
+                    let distinct_artifacts = catalog_artifacts
+                        .into_iter()
+                        .collect::<std::collections::BTreeSet<_>>();
+                    for (artifact_kind, store_path) in distinct_artifacts {
                         let store_hash = store_hash_component(store_path);
                         let metadata_digest = hex::encode(sha2::Sha256::digest(
                             serde_json::to_vec(&serde_json::json!({
@@ -4326,6 +4332,8 @@ impl Database {
                 }
             }
         }
+        // The statements own each row's parameters. Do not retain a second
+        // complete copy while preparing later projections and remote SQL.
         extend_multirow_insert(
             &mut stmts,
             "INSERT INTO packages
@@ -4333,6 +4341,7 @@ impl Database {
             &package_rows,
             "",
         )?;
+        drop(package_rows);
 
         let mut documentation_rows = Vec::new();
         let mut documentation_search_rows = Vec::new();
@@ -4376,6 +4385,7 @@ impl Database {
             &documentation_rows,
             "",
         )?;
+        drop(documentation_rows);
         extend_multirow_insert(
             &mut stmts,
             "INSERT INTO package_documentation_search
@@ -4384,12 +4394,14 @@ impl Database {
             &documentation_search_rows,
             "",
         )?;
+        drop(documentation_search_rows);
         extend_multirow_insert(
             &mut stmts,
             "INSERT INTO package_versions (id, package_id, version, previous)",
             &version_rows,
             "",
         )?;
+        drop(version_rows);
         extend_multirow_insert(
             &mut stmts,
             "INSERT INTO version_platforms
@@ -4398,6 +4410,7 @@ impl Database {
             &platform_rows,
             "",
         )?;
+        drop(platform_rows);
         extend_multirow_insert(
             &mut stmts,
             "INSERT INTO registry_catalog_artifacts
@@ -4406,6 +4419,7 @@ impl Database {
             &catalog_rows,
             "",
         )?;
+        drop(catalog_rows);
 
         for release in &snapshot.releases {
             if let Some(existing) = self

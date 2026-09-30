@@ -47,6 +47,12 @@ pub(super) fn require_plan(nix: &NixRunner, plan: &ReleasePlanV1) -> Result<()> 
                         image.system_variant, cell.platform
                     )
                 })?;
+            let hub_origin = if plan.staging_only {
+                "https://aos.staging.andyl.org"
+            } else {
+                "https://aos.andyl.org"
+            };
+            profile.require_hub(hub_origin)?;
         }
     }
     Ok(())

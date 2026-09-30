@@ -1251,6 +1251,9 @@
     builtins.derivation (
       {
         inherit name system;
+        # `nix develop` writes the captured environment to every listed
+        # output; without an explicit list it writes none and fails.
+        outputs = ["out"];
         builder = shell;
         args = [
           "-c"

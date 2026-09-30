@@ -9,6 +9,8 @@
 //!   "registry": "andyl/testing",
 //!   "rootEpoch": 1,
 //!   "clientName": "andyl-testing",
+//!   "registryOrigin": "https://cdn.aos.andyl.org",
+//!   "hubUrl": "https://aos.andyl.org",
 //!   "url": "https://cdn.aos.andyl.org/andyl/testing/",
 //!   "channel": "edge",
 //!   "trustKeys": ["andyl-testing:Ed25519:<OpenSSH public-key blob>"],
@@ -40,6 +42,12 @@ pub struct ArtifactProfile {
     pub root_epoch: u64,
     /// Slash-free APM registry alias and trust-key prefix.
     pub client_name: String,
+    /// HTTPS delivery origin of the deployment receiving the artifacts.
+    #[serde(default = "production_registry_origin")]
+    pub registry_origin: String,
+    /// HTTPS control origin of the deployment receiving the artifacts.
+    #[serde(default = "production_hub_url")]
+    pub hub_url: String,
     /// Canonical registry URL installed in the package-manager configuration.
     pub url: String,
     /// Default update channel installed in both artifact forms.
@@ -80,10 +88,13 @@ impl ArtifactProfile {
             RegistryTier::Testing => registry.replace('/', "-"),
         };
         if self.client_name != expected_alias
-            || self.url != format!("https://cdn.aos.andyl.org/{registry}/")
+            || self.url != format!("{}/{registry}/", self.registry_origin)
         {
             bail!("artifact package-manager alias or URL differs from its registry");
         }
+        require_https_origin(&self.registry_origin)?;
+        require_https_origin(&self.hub_url)?;
+
         if self.trust_keys.is_empty() {
             bail!("release artifacts require a baked registry trust key");
         }
@@ -99,6 +110,52 @@ impl ArtifactProfile {
         }
         Ok(())
     }
+
+    /// Requires the baked Hub origin to match the selected publication deployment.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid origin or a different publication destination.
+    pub fn require_hub(&self, origin: &str) -> Result<()> {
+        require_https_origin(&self.hub_url)?;
+        require_https_origin(origin)?;
+        if self.hub_url != origin {
+            bail!("artifact Hub origin differs from the publication deployment");
+        }
+        Ok(())
+    }
+}
+
+fn production_registry_origin() -> String {
+    "https://cdn.aos.andyl.org".into()
+}
+
+fn production_hub_url() -> String {
+    "https://aos.andyl.org".into()
+}
+
+// Match the Nix profile's HTTPS origin grammar without accepting credentials,
+// paths, or query components as part of a deployment identity.
+fn require_https_origin(origin: &str) -> Result<()> {
+    let authority = origin
+        .strip_prefix("https://")
+        .context("release deployment origins require HTTPS")?;
+    let (host, port) = authority
+        .split_once(':')
+        .map_or((authority, None), |(host, port)| (host, Some(port)));
+    if host.is_empty()
+        || !host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+    {
+        bail!("release deployment origin has an invalid hostname");
+    }
+    if let Some(port) = port {
+        let port = port.parse::<u16>().context("invalid release origin port")?;
+        if port == 0 {
+            bail!("release origin port must be positive");
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -119,6 +176,8 @@ mod tests {
             registry: registry.into(),
             root_epoch: registry_policy(registry).unwrap().root_epoch(),
             client_name: alias.clone(),
+            registry_origin: production_registry_origin(),
+            hub_url: production_hub_url(),
             url: format!("https://cdn.aos.andyl.org/{registry}/"),
             channel: if testing { "edge" } else { "stable" }.into(),
             trust_keys: vec![aos_registry_surface::sshsig::trusted_key_line(&alias, &key)],
