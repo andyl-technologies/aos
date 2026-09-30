@@ -12,7 +12,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
 use anyhow::{Context, Result, bail};
-use aos_ability_model::ResourceReference;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -31,7 +30,7 @@ pub struct ProvisioningIntent {
     /// Selects the only supported initialization and divergence behavior.
     pub policy: ProvisioningPolicy,
     /// Lists exact resources that must be ready before provisioning begins.
-    pub prerequisites: Vec<ResourceReference>,
+    pub prerequisites: Vec<String>,
 }
 
 /// Defines the closed storage initialization and divergence policy.
@@ -127,14 +126,14 @@ pub enum ProvisioningTrustMode {
     Signed,
 }
 
-/// Pins one immutable base module library and its ABI schema digest.
+/// Pins one immutable base module library and its NAR content digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BaseLibraryIdentity {
     /// Identifies the exact immutable module-library store path.
     pub store_path: String,
-    /// Authenticates the option schema accepted by the module library.
-    pub abi_hash: String,
+    /// Authenticates the exact retained native module library contents.
+    pub nar_hash: String,
 }
 
 /// Validates the closed fixed-point provisioning intent.
@@ -154,9 +153,10 @@ pub fn validate_provisioning_intent(intent: &ProvisioningIntent) -> Result<()> {
 
     let mut prerequisites = BTreeSet::new();
     for prerequisite in &intent.prerequisites {
-        let encoded = serde_json::to_string(prerequisite)
-            .context("encoding one provisioning prerequisite")?;
-        if !prerequisites.insert(encoded) {
+        if prerequisite.is_empty() || prerequisite.len() > 4096 {
+            bail!("provisioning prerequisite identity is invalid");
+        }
+        if !prerequisites.insert(prerequisite) {
             bail!("provisioning prerequisites must be unique");
         }
     }
@@ -182,9 +182,20 @@ pub fn validate_authorized_provisioning_input(input: &AuthorizedProvisioningInpu
     {
         bail!("metadata signer identity exceeds the interface bound");
     }
-    validate_digest(&input.base_library.abi_hash, "base-library ABI hash")?;
-    if !input.base_library.store_path.starts_with("/nix/store/") {
-        bail!("base library must use an immutable store path");
+    validate_digest(&input.base_library.nar_hash, "base-library NAR hash")?;
+    let library_name = input
+        .base_library
+        .store_path
+        .strip_prefix("/nix/store/")
+        .ok_or_else(|| anyhow::anyhow!("base library must use an immutable store root"))?;
+    if library_name.len() <= 33
+        || library_name.as_bytes()[32] != b'-'
+        || library_name.contains('/')
+        || library_name
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !b"+-._?=".contains(&byte))
+    {
+        bail!("base library must name an exact normalized store root");
     }
     validate_observed_instance_facts(&input.facts)?;
 
@@ -849,7 +860,7 @@ mod tests {
             facts: empty_observed_facts(),
             base_library: BaseLibraryIdentity {
                 store_path: "/nix/store/00000000000000000000000000000000-base-lib".into(),
-                abi_hash: format!("sha256:{}", "a".repeat(64)),
+                nar_hash: format!("sha256:{}", "a".repeat(64)),
             },
         };
 
@@ -871,7 +882,7 @@ mod tests {
             facts: empty_observed_facts(),
             base_library: BaseLibraryIdentity {
                 store_path: "/nix/store/00000000000000000000000000000000-base-lib".into(),
-                abi_hash: format!("sha256:{}", "b".repeat(64)),
+                nar_hash: format!("sha256:{}", "b".repeat(64)),
             },
         };
 
@@ -908,7 +919,7 @@ mod tests {
             .expect("canonical observational facts"),
             base_library: BaseLibraryIdentity {
                 store_path: "/nix/store/00000000000000000000000000000000-base-lib".into(),
-                abi_hash: format!("sha256:{}", "c".repeat(64)),
+                nar_hash: format!("sha256:{}", "c".repeat(64)),
             },
         };
 
