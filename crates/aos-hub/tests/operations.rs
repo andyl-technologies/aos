@@ -13,6 +13,9 @@
 
 mod common;
 
+#[path = "operations/publication_inventory.rs"]
+mod publication_inventory;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
