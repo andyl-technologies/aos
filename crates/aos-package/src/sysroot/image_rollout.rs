@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 
 use crate::types::{ImageGeneration, ImageGenerationState, ImageRollout, ImageRolloutStatus};
 
@@ -19,17 +19,17 @@ mod ability;
 mod boot_commit;
 mod model;
 mod observer;
-mod plan;
 mod provider;
+mod retirement_submission;
+mod submission;
+
+pub(crate) use retirement_submission::retire_expired_image_lease;
+pub(crate) use submission::{preflight_image_selection, submit_image_selection};
 
 pub(crate) use ability::NativeImageRolloutBackend;
 pub use boot_commit::run_from_process as run_boot_commit_from_process;
-pub(crate) use model::{
-    ImageHealthObservation, ImageRolloutRequest, ImageRolloutTerminalRequest, MAX_RETENTION_MILLIS,
-    RolloutImageIdentity,
-};
+pub(crate) use model::{ImageRolloutRequest, MAX_RETENTION_MILLIS, RolloutImageIdentity};
 pub use observer::run_from_process as run_observer_from_process;
-pub(crate) use plan::authenticate_single_image_rollout_fragment;
 pub use provider::run_from_process as run_provider_from_process;
 
 const IMAGE_ROLLOUT_SCHEMA: &str = "aos.image-rollout/v1";
@@ -72,6 +72,21 @@ fn preflight_image_selection_beneath(
     authenticated_running: &ImageGeneration,
 ) -> Result<()> {
     let images = load_image_generation_state_pub(image_profile)?;
+    for candidate in images
+        .generations
+        .iter()
+        .filter(|image| image.toplevel == candidate_toplevel.to_string_lossy())
+    {
+        ensure!(
+            candidate
+                .boot_provider_state
+                .evidence
+                .get("retired")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true),
+            "candidate physical boot artifacts were explicitly retired; restaging is required"
+        );
+    }
     let running = images
         .running_generation()
         .cloned()
@@ -80,25 +95,24 @@ fn preflight_image_selection_beneath(
         serde_json::to_value(&running)? == serde_json::to_value(authenticated_running)?,
         "image state running generation differs from the authenticated booted image"
     );
-    crate::config_eval::materialize::validate_canonical_store_path(&running.toplevel)
-        .context("validating running image toplevel identity")?;
+    validate_store_root(&running.toplevel).context("validating running image toplevel identity")?;
     let running_toplevel =
         immutable_store_path_beneath(immutable_root, Path::new(&running.toplevel))?;
     let immutable_running_state_version = read_toplevel_meta(&running_toplevel, "state-version")?;
     let immutable_running_executor = read_toplevel_meta(&running_toplevel, "native-executor-ref")?;
-    crate::config_eval::materialize::validate_canonical_store_path(&immutable_running_executor)
+    validate_store_root(&immutable_running_executor)
         .context("validating immutable running native executor identity")?;
 
     let candidate_toplevel = candidate_toplevel
         .to_str()
         .context("candidate image toplevel path is not UTF-8")?;
-    crate::config_eval::materialize::validate_canonical_store_path(candidate_toplevel)
+    validate_store_root(candidate_toplevel)
         .context("validating candidate image toplevel identity")?;
     let candidate_toplevel =
         immutable_store_path_beneath(immutable_root, Path::new(candidate_toplevel))?;
     let candidate_state_version = read_toplevel_meta(&candidate_toplevel, "state-version")?;
     let candidate_executor = read_toplevel_meta(&candidate_toplevel, "native-executor-ref")?;
-    crate::config_eval::materialize::validate_canonical_store_path(&candidate_executor)
+    validate_store_root(&candidate_executor)
         .context("validating candidate native executor identity")?;
 
     validate_image_selection_compatibility(
@@ -115,7 +129,10 @@ fn preflight_image_selection_beneath(
         return Ok(());
     }
 
-    ensure_executor_replacement_is_settled(retained_config_generation_paths(system_profile)?)?;
+    ensure!(
+        !crate::profile::deployment::has_pending_deployment(system_profile)?,
+        "native executor replacement requires the authoritative profile deployment to settle"
+    );
     Ok(())
 }
 
@@ -163,67 +180,15 @@ fn validate_image_selection_compatibility(
     Ok(executor_changes)
 }
 
-fn ensure_executor_replacement_is_settled(
-    generations: impl IntoIterator<Item = (u32, PathBuf)>,
-) -> Result<()> {
-    for (number, generation_path) in generations {
-        if crate::config_eval::transaction_store::generation_has_unfinished_transactions(
-            &generation_path,
-        )? {
-            bail!(
-                "native executor replacement requires config generation {number} to settle all ability transactions under the running executor"
-            );
-        }
-    }
+fn validate_store_root(path: impl AsRef<Path>) -> Result<()> {
+    let path = path.as_ref();
+    let (root, suffix) = crate::deployment::nix::store_root_and_suffix(path)?;
+    let value = path.to_str().context("image root is not UTF-8")?;
+    ensure!(
+        suffix.as_os_str().is_empty() && root == path && !value.contains("//"),
+        "image identity is not a canonical immutable store root"
+    );
     Ok(())
-}
-
-fn retained_config_generation_paths(profile: &Path) -> Result<Vec<(u32, PathBuf)>> {
-    let entries = match std::fs::read_dir(profile) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!(
-                    "listing retained config generations in {}",
-                    profile.display()
-                )
-            });
-        }
-    };
-    let mut generations = Vec::new();
-    for entry in entries {
-        let entry = entry.with_context(|| {
-            format!(
-                "reading retained config generations in {}",
-                profile.display()
-            )
-        })?;
-        let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
-            continue;
-        };
-        let Some(number) = name
-            .strip_prefix("gen-")
-            .and_then(|suffix| suffix.parse::<u32>().ok())
-            .filter(|number| name == format!("gen-{number}"))
-        else {
-            continue;
-        };
-        let file_type = entry.file_type().with_context(|| {
-            format!(
-                "inspecting retained config generation {}",
-                entry.path().display()
-            )
-        })?;
-        ensure!(
-            file_type.is_dir() && !file_type.is_symlink(),
-            "retained config generation {} is not a directory",
-            entry.path().display()
-        );
-        generations.push((number, entry.path()));
-    }
-    generations.sort_by_key(|(number, _)| *number);
-    Ok(generations)
 }
 
 pub(super) fn qualified_rollout_record(
@@ -314,9 +279,13 @@ mod tests {
             native_executor_ref: executor.to_string(),
             registry: "test".into(),
             kernel_path: None,
-            evaluator_ref: format!("/nix/store/{}-base-{number}", "1".repeat(32)),
-            module_abi: 1,
-            base_lib_abi_hash: format!("sha256:{}", "0".repeat(64)),
+            module_library: crate::types::ModuleLibraryIdentity {
+                store_path: "/nix/store/11111111111111111111111111111111-module-library".into(),
+                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                nar_size: 1,
+            },
+            evaluation_descriptor:
+                "/nix/store/22222222222222222222222222222222-evaluation/evaluation.json".into(),
             created_at: "2026-09-10T00:00:00Z".into(),
         }
     }
@@ -477,8 +446,7 @@ mod tests {
     #[test]
     fn native_executor_identity_is_a_canonical_store_root() {
         let valid = format!("/nix/store/{}-aos-package-runtime", "4".repeat(32));
-        crate::config_eval::materialize::validate_canonical_store_path(&valid)
-            .expect("canonical executor store root");
+        validate_store_root(&valid).expect("canonical executor store root");
 
         for invalid in [
             format!("{valid}/bin/aos-package-runtime"),
@@ -487,24 +455,10 @@ mod tests {
             format!("/nix/store/{}-bad/name", "4".repeat(32)),
         ] {
             assert!(
-                crate::config_eval::materialize::validate_canonical_store_path(&invalid).is_err(),
+                validate_store_root(&invalid).is_err(),
                 "unexpectedly accepted {invalid:?}"
             );
         }
-    }
-
-    #[test]
-    fn executor_replacement_rejects_an_unfinished_old_generation() {
-        let tmp = TempDir::new().unwrap();
-        let old_generation = tmp.path().join("gen-9");
-        std::fs::create_dir_all(old_generation.join("ability-transactions/old-executor")).unwrap();
-
-        let error = ensure_executor_replacement_is_settled([(9, old_generation)])
-            .expect_err("missing terminal evidence must block executor replacement");
-
-        assert!(error.to_string().contains("config generation 9"));
-        ensure_executor_replacement_is_settled([(10, tmp.path().join("gen-10"))])
-            .expect("a generation with no transactions is settled");
     }
 
     #[test]

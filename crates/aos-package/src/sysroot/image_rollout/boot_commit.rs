@@ -7,16 +7,10 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result, bail, ensure};
-use aos_ability_model::{LocalKey, TransactionId};
-use aos_ability_runtime::execution::TerminalResult;
-use aos_ability_runtime::journal::JournalLimits;
-
-use super::{NativeImageRolloutBackend, authenticate_single_image_rollout_fragment};
-use crate::attestation::{EVAL_MODE_PURE, GEN_ATTESTATION_SCHEMA, GenAttestation};
-use crate::config_eval::RetainedAbilityDiagnosticSource;
-use crate::config_eval::activation::{load_config_manifest, read_stored_activation_record};
+use super::{ImageRolloutRequest, NativeImageRolloutBackend};
+use crate::attestation::native::MeasuredImageEvidence;
 use crate::types::{ImageGenerationState, ImageRolloutStatus};
+use anyhow::{Context as _, Result, bail, ensure};
 
 const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
 const SYSTEM_PROFILE: &str = "/var/lib/profiles/system";
@@ -26,7 +20,10 @@ const REEVALUATION_MARKER: &str = "/run/aos/image-reeval-required";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum BootCommand {
-    Commit { require_attestation_quote: bool },
+    Commit {
+        require_attestation_quote: bool,
+        image_evidence: Option<(PathBuf, PathBuf)>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -57,25 +54,64 @@ pub fn run_from_process() -> Result<()> {
     match parse_command(&arguments)? {
         BootCommand::Commit {
             require_attestation_quote,
-        } => commit(&BootCommitPaths::default(), require_attestation_quote),
+            image_evidence,
+        } => commit(
+            &BootCommitPaths::default(),
+            require_attestation_quote,
+            image_evidence,
+        ),
     }
 }
 
 fn parse_command(arguments: &[String]) -> Result<BootCommand> {
-    match arguments {
-        [command] if command == "commit" => Ok(BootCommand::Commit {
-            require_attestation_quote: false,
-        }),
-        [command, flag] if command == "commit" && flag == "--require-attestation-quote" => {
-            Ok(BootCommand::Commit {
-                require_attestation_quote: true,
-            })
+    ensure!(
+        arguments
+            .first()
+            .is_some_and(|argument| argument == "commit"),
+        "expected image boot commit"
+    );
+    let mut require_attestation_quote = false;
+    let mut executable = None;
+    let mut key = None;
+    let mut remaining = arguments[1..].iter();
+    while let Some(argument) = remaining.next() {
+        match argument.as_str() {
+            "--require-attestation-quote" if !require_attestation_quote => {
+                require_attestation_quote = true
+            }
+            "--image-evidence-executable" if executable.is_none() => {
+                executable = Some(PathBuf::from(
+                    remaining.next().context("evidence executable is missing")?,
+                ));
+            }
+            "--pcr-public-key" if key.is_none() => {
+                key = Some(PathBuf::from(
+                    remaining.next().context("PCR public key is missing")?,
+                ));
+            }
+            _ => bail!("unknown or duplicate image boot commit argument"),
         }
-        _ => bail!("usage: aos-image-rollout-boot commit [--require-attestation-quote]"),
     }
+    let image_evidence = match (executable, key) {
+        (Some(executable), Some(key)) => Some((executable, key)),
+        (None, None) => None,
+        _ => bail!("signed image evidence requires both executable and pinned public key"),
+    };
+    ensure!(
+        !require_attestation_quote || image_evidence.is_some(),
+        "required quote has no selected signed-image evidence verifier"
+    );
+    Ok(BootCommand::Commit {
+        require_attestation_quote,
+        image_evidence,
+    })
 }
 
-fn commit(paths: &BootCommitPaths, require_attestation_quote: bool) -> Result<()> {
+fn commit(
+    paths: &BootCommitPaths,
+    require_attestation_quote: bool,
+    image_evidence: Option<(PathBuf, PathBuf)>,
+) -> Result<()> {
     let state_path = paths.image_profile.join(IMAGE_STATE_FILE);
     let mut images = read_json::<ImageGenerationState>(&state_path)?;
     images
@@ -84,71 +120,84 @@ fn commit(paths: &BootCommitPaths, require_attestation_quote: bool) -> Result<()
     let rollout = validate_boot_rollout(&images)?;
     let qualified = rollout.is_some();
 
-    let configs = crate::sysroot::load_generation_state_pub(&paths.system_profile)?;
-    let generation = configs
+    let authenticated = crate::sysroot::running_image_generation()?;
+    let recorded = images
         .generations
         .iter()
-        .filter(|generation| generation.number == configs.current)
-        .collect::<Vec<_>>();
-    let [generation] = generation.as_slice() else {
-        bail!("running configuration generation is absent or ambiguous");
-    };
-    let generation_root = paths
-        .system_profile
-        .join(format!("gen-{}", generation.number));
-    let manifest_path = generation_root.join("manifest.json");
+        .find(|image| image.number == images.running)
+        .context("running image generation is absent")?;
     ensure!(
-        manifest_path
-            .metadata()
-            .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0),
-        "running configuration generation has no committed manifest"
+        authenticated.toplevel == recorded.toplevel
+            && authenticated.boot_artifact_contract == recorded.boot_artifact_contract,
+        "running image differs from authenticated immutable boot identity"
     );
-
-    let activation_path = generation_root.join("activation.json");
-    let activation = read_stored_activation_record(&activation_path, true)?
-        .context("running configuration generation has no activation proof")?;
-    validate_activation_proof(
-        &activation,
-        generation.number,
-        &generation.manifest_hash,
-        qualified,
+    let profile = crate::profile::Profile::open_at(
+        paths.system_profile.clone(),
+        crate::types::ProfileScope::System,
     )?;
-
-    let manifest = load_config_manifest(&manifest_path)?;
-    if qualified && manifest.inputs.ability_activation.is_some() {
-        let transaction = activation
-            .native_ability_transaction
-            .as_deref()
-            .context("native ability health evidence is missing")?;
-        let transaction = TransactionId(
-            LocalKey::new(transaction.to_string())
-                .context("decoding rollout transaction identity")?,
-        );
-        verify_rollout_transaction(generation.number, &transaction, images.running, paths)?;
+    let generation = profile
+        .current_generation()?
+        .context("native profile has no current generation")?;
+    let committed =
+        crate::profile::deployment::committed_generation(&paths.system_profile, generation.number)?;
+    if qualified {
+        verify_rollout_transaction(&committed, images.running, paths)?;
     }
-
-    let attestation_path = generation_root.join("gen-attestation.json");
-    let attestation = read_json::<GenAttestation>(&attestation_path)?;
-    ensure!(
-        attestation.schema == GEN_ATTESTATION_SCHEMA
-            && attestation.generation_id == generation.manifest_hash
-            && attestation.manifest_hash == generation.manifest_hash
-            && attestation.eval_mode == EVAL_MODE_PURE,
-        "generation attestation is incomplete"
-    );
-    if require_attestation_quote {
-        crate::verify_local_boot_commit(
-            &attestation_path,
-            &generation_root.join("gen-attestation-quote"),
-            None,
-        )?;
-    }
-
-    ensure!(
-        generation.image_gen_parent == images.running,
-        "configuration has not rebound to running image {}",
-        images.running
-    );
+    // Physical expectations are supplied by the signed boot backend. An absent
+    // pin remains unavailable; live PCR values never manufacture expectations.
+    let image = match image_evidence {
+        Some((executable, key)) => {
+            for path in [&executable, &key] {
+                crate::deployment::nix::store_root_and_suffix(path)?;
+                ensure!(
+                    std::fs::canonicalize(path)? == *path
+                        && std::fs::symlink_metadata(path)?.is_file(),
+                    "signed image verifier inputs are not canonical immutable files"
+                );
+            }
+            use std::io::Read as _;
+            let mut child = std::process::Command::new(executable)
+                .env_clear()
+                .arg("--pcr-public-key")
+                .arg(key)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()?;
+            let mut bytes = Vec::new();
+            child
+                .stdout
+                .take()
+                .context("image verifier output is absent")?
+                .take(64 * 1024 + 1)
+                .read_to_end(&mut bytes)?;
+            ensure!(
+                child.wait()?.success() && bytes.len() <= 64 * 1024,
+                "signed image evidence verification failed"
+            );
+            let evidence: MeasuredImageEvidence = serde_json::from_slice(&bytes)?;
+            ensure!(
+                evidence.toplevel == authenticated.toplevel
+                    && evidence.boot_artifact_contract == authenticated.boot_artifact_contract,
+                "signed image evidence differs from authenticated boot identity"
+            );
+            evidence
+        }
+        None => MeasuredImageEvidence {
+            toplevel: authenticated.toplevel,
+            boot_artifact_contract: authenticated.boot_artifact_contract,
+            expected_pcr11: None,
+            root_verity_roothash: None,
+            root_verity_uuid: None,
+        },
+    };
+    crate::attestation::native::persist(
+        &paths.system_profile,
+        generation.number,
+        image,
+        require_attestation_quote,
+        true,
+    )?;
     finalize_state(&mut images, qualified)?;
     crate::sysroot::write_atomic_durable(&state_path, &serde_json::to_vec_pretty(&images)?)?;
     crate::sysroot::remove_file_durable(&paths.image_profile.join(TRANSITION_INTENT_FILE))?;
@@ -172,6 +221,7 @@ fn validate_boot_rollout(
                 ImageRolloutStatus::Staged
                     | ImageRolloutStatus::CandidateBooted
                     | ImageRolloutStatus::HealthFailed
+                    | ImageRolloutStatus::BootFailed
             ),
         "qualified rollout record is invalid"
     );
@@ -195,7 +245,10 @@ fn validate_boot_rollout(
         );
     } else if images.running == rollout.prior {
         ensure!(
-            rollout.status == ImageRolloutStatus::HealthFailed,
+            matches!(
+                rollout.status,
+                ImageRolloutStatus::HealthFailed | ImageRolloutStatus::BootFailed
+            ),
             "rollout fallback lacks failure evidence"
         );
     } else {
@@ -204,50 +257,45 @@ fn validate_boot_rollout(
     Ok(Some(rollout))
 }
 
-fn validate_activation_proof(
-    activation: &crate::config_eval::activation::StoredActivationRecord,
-    generation: u32,
-    manifest_hash: &str,
-    qualified: bool,
-) -> Result<()> {
-    let healthy = if qualified {
-        activation.status == "complete" && activation.activation_exit == 0
-    } else {
-        matches!(activation.status.as_str(), "complete" | "degraded")
-            && matches!(activation.activation_exit, 0 | 5 | 6)
-    };
-    ensure!(
-        activation.schema == "aos.config-activation/v1"
-            && activation.generation == generation
-            && activation.generation_id == manifest_hash
-            && healthy,
-        "configuration activation proof is incomplete"
-    );
-    Ok(())
-}
-
 fn verify_rollout_transaction(
-    generation: u32,
-    transaction: &TransactionId,
+    committed: &crate::deployment::transaction::Generation,
     running: u32,
     paths: &BootCommitPaths,
 ) -> Result<()> {
-    let generation = paths.system_profile.join(format!("gen-{generation}"));
-    let source = RetainedAbilityDiagnosticSource::load(
-        generation,
-        transaction,
-        crate::config_eval::supported_native_ability_features()?,
-    )
-    .context("authenticating retained rollout transaction")?;
-    let request = authenticate_single_image_rollout_fragment(source.plan())
-        .context("authenticating the retained rollout fragment")?;
+    // This binding is written by the OS aggregate, not discovered by searching
+    // graph operation names. The selected result must be in this exact commit.
+    let binding: serde_json::Value =
+        read_json(&paths.image_profile.join("active-native-rollout.json"))?;
+    let effect = binding
+        .get("effect")
+        .and_then(serde_json::Value::as_str)
+        .context("native rollout binding omits effect identity")?;
+    let request: ImageRolloutRequest = serde_json::from_value(
+        binding
+            .get("input")
+            .and_then(|input| input.get("rollout"))
+            .cloned()
+            .context("native rollout binding omits rollout identity")?,
+    )?;
+    let checked = committed
+        .outputs
+        .get(effect)
+        .context("committed native deployment has no selected rollout result")?;
     ensure!(
-        source.terminal_result(JournalLimits::default())? == Some(TerminalResult::Succeeded),
-        "native rollout transaction did not settle successfully"
+        checked.get("rollout") == Some(&serde_json::to_value(&request)?),
+        "checked rollout result differs from OS binding"
     );
-    NativeImageRolloutBackend::new(&paths.image_profile)
+    let backend = NativeImageRolloutBackend::new(&paths.image_profile);
+    ensure!(
+        checked
+            .get("retentionDirectory")
+            .and_then(serde_json::Value::as_str)
+            == backend.execution_directory(&request)?.to_str(),
+        "checked rollout receipt directory differs from OS authority"
+    );
+    backend
         .verify_boot_commit(&request, running)
-        .context("verifying provider-owned rollout health evidence")
+        .context("verifying native rollout health evidence")
 }
 
 fn finalize_state(images: &mut ImageGenerationState, qualified: bool) -> Result<()> {
@@ -260,7 +308,7 @@ fn finalize_state(images: &mut ImageGenerationState, qualified: bool) -> Result<
         rollout.status = if images.running == rollout.candidate {
             ImageRolloutStatus::Succeeded
         } else {
-            ImageRolloutStatus::HealthFailed
+            rollout.status
         };
         images.last_rollout = Some(rollout);
     }
@@ -278,6 +326,19 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
 mod tests {
     use super::*;
     use crate::types::{ImageGeneration, ImageRollout};
+
+    #[test]
+    fn boot_counter_failure_preserves_its_distinct_terminal_reason() {
+        let mut images = state(1, ImageRolloutStatus::BootFailed);
+        validate_boot_rollout(&images).unwrap();
+        finalize_state(&mut images, true).unwrap();
+        assert!(images.active_rollout.is_none());
+        assert!(images.pending.is_none());
+        assert_eq!(
+            images.last_rollout.unwrap().status,
+            ImageRolloutStatus::BootFailed
+        );
+    }
 
     #[test]
     fn finalization_publishes_distinct_rollout_outcomes() {
@@ -322,9 +383,13 @@ mod tests {
             kernel_path: None,
             state_version: "7".to_string(),
             native_executor_ref: format!("/nix/store/{number:032}-executor"),
-            evaluator_ref: format!("/nix/store/{number:032}-evaluator"),
-            module_abi: 1,
-            base_lib_abi_hash: format!("sha256:{}", "0".repeat(64)),
+            module_library: crate::types::ModuleLibraryIdentity {
+                store_path: "/nix/store/11111111111111111111111111111111-module-library".into(),
+                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                nar_size: 1,
+            },
+            evaluation_descriptor:
+                "/nix/store/22222222222222222222222222222222-evaluation/evaluation.json".into(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
         };
         ImageGenerationState {

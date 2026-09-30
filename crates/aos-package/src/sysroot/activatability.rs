@@ -1,19 +1,16 @@
 //! Read-only retained-generation activation probes.
 //!
-//! A probe authenticates the same retained inputs used by rollback while the
-//! caller holds the system switch lock. Cross-ABI checks evaluate retained
-//! source in a temporary workspace, but no probe repairs state, publishes
-//! credentials, opens a transaction journal, or changes boot state.
+//! A probe authenticates the retained native desired state and exact immutable
+//! inputs used by rollback. It does not repair journals, execute handlers, or
+//! change boot state; successful admission does not establish live host health.
 
 use std::path::Path;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Result, bail};
 use serde::Serialize;
 
-use crate::config::ApmConfig;
-use crate::config_eval::activation::ActivateConfigParams;
-use crate::config_eval::materialize::ConfigManifest;
-use crate::types::{ConfigGeneration, ImageGeneration, ReactivationPlan};
+use crate::profile::{Generation, Profile};
+use crate::types::ImageGeneration;
 
 use super::{SystemTransitionMode, image_rollout};
 
@@ -36,10 +33,8 @@ pub enum RetainedTargetKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RetainedActivationMode {
-    /// Reactivates retained configuration under the same module ABI.
-    Direct,
-    /// Re-evaluates retained source inputs under the running module ABI.
-    Reevaluate,
+    /// Reconciles authenticated retained desired state as a new native transaction.
+    Reconcile,
     /// Selects an authenticated image for the next boot.
     BootSelection,
 }
@@ -60,8 +55,6 @@ pub enum ActivatabilityReasonCode {
     CredentialUnavailable,
     /// Retained and running state-format contracts are incompatible.
     StateFormatIncompatible,
-    /// The target cannot be rebound across the current module ABI.
-    ModuleAbiIncompatible,
     /// The authenticated boot artifact is absent or no longer selectable.
     BootArtifactUnavailable,
     /// A current or recoverable transition owns the target resource.
@@ -160,119 +153,21 @@ impl RetainedActivatabilityReport {
 
 /// Authenticates a retained configuration and its current activation inputs.
 pub(super) fn configuration(
-    _config: &ApmConfig,
-    profile: &Path,
-    target: &ConfigGeneration,
-    running: &ImageGeneration,
+    profile: &Profile,
+    target: &Generation,
 ) -> RetainedActivatabilityReport {
     let mut reasons = Vec::new();
-    let mode = match target.reactivation_plan(running.module_abi) {
-        Ok(ReactivationPlan::DirectReactivate) => RetainedActivationMode::Direct,
-        Ok(ReactivationPlan::CrossAbiReEval(_)) => RetainedActivationMode::Reevaluate,
-        Err(error) => {
-            push_reason(
-                &mut reasons,
-                ActivatabilityReasonCode::ModuleAbiIncompatible,
-                error,
-            );
-            RetainedActivationMode::Reevaluate
-        }
-    };
-
-    let source_manifest = load_manifest(profile, target).map_err(|error| {
+    if let Err(error) = crate::install::native::probe_rollback(profile, target) {
         push_reason(
             &mut reasons,
-            ActivatabilityReasonCode::ManifestInvalid,
+            ActivatabilityReasonCode::CurrentAuthorityRejected,
             error,
         );
-    });
-    if mode == RetainedActivationMode::Reevaluate {
-        validate_reevaluation_artifacts(target).unwrap_or_else(|error| {
-            push_reason(
-                &mut reasons,
-                ActivatabilityReasonCode::ArtifactUnavailable,
-                error,
-            );
-        });
     }
-
-    if let Ok(source_manifest) = source_manifest {
-        if source_manifest.module_abi != target.module_abi_pinned
-            || source_manifest.inputs.base_lib.store_path != target.base_lib_ref
-        {
-            reasons.push(ActivatabilityReason {
-                code: ActivatabilityReasonCode::ModuleAbiIncompatible,
-                detail: bounded_detail(format!(
-                    "retained manifest ABI/base-library binding differs from configuration generation {}",
-                    target.number
-                )),
-            });
-        }
-
-        let activation_manifest = if mode == RetainedActivationMode::Reevaluate {
-            match reevaluate_manifest(profile, target, running) {
-                Ok(manifest) => Some(manifest),
-                Err(error) => {
-                    push_reason(
-                        &mut reasons,
-                        ActivatabilityReasonCode::ModuleAbiIncompatible,
-                        error,
-                    );
-                    None
-                }
-            }
-        } else {
-            Some(source_manifest)
-        };
-
-        let Some(manifest) = activation_manifest else {
-            return RetainedActivatabilityReport::new(
-                RetainedTargetKind::Configuration,
-                target.number,
-                mode,
-                reasons,
-            );
-        };
-        if manifest.module_abi != running.module_abi {
-            reasons.push(ActivatabilityReason {
-                code: ActivatabilityReasonCode::ModuleAbiIncompatible,
-                detail: bounded_detail(format!(
-                    "activation manifest ABI {} differs from running ABI {}",
-                    manifest.module_abi, running.module_abi
-                )),
-            });
-        }
-
-        let params = ActivateConfigParams {
-            profile: profile.to_path_buf(),
-            running_image: Some(running.clone()),
-            ..ActivateConfigParams::default()
-        };
-        crate::config_eval::preflight_retained_manifest(&params, &manifest).unwrap_or_else(
-            |error| {
-                let code = match error {
-                    crate::config_eval::RetainedNativePreflightError::CurrentAuthority(_) => {
-                        ActivatabilityReasonCode::CurrentAuthorityRejected
-                    }
-                    crate::config_eval::RetainedNativePreflightError::Artifact(_) => {
-                        ActivatabilityReasonCode::ArtifactUnavailable
-                    }
-                    crate::config_eval::RetainedNativePreflightError::Provider(_) => {
-                        ActivatabilityReasonCode::ProviderUnavailable
-                    }
-                };
-                reasons.push(ActivatabilityReason {
-                    code,
-                    detail: bounded_detail(format!("{error:#}")),
-                });
-            },
-        );
-    }
-
     RetainedActivatabilityReport::new(
         RetainedTargetKind::Configuration,
         target.number,
-        mode,
+        RetainedActivationMode::Reconcile,
         reasons,
     )
 }
@@ -318,62 +213,6 @@ pub(super) fn image(
     )
 }
 
-fn load_manifest(profile: &Path, target: &ConfigGeneration) -> Result<ConfigManifest> {
-    let path = super::validate_generation_manifest(profile, target)?;
-    let manifest = crate::config_eval::activation::load_config_manifest(&path)?;
-    manifest.validate()?;
-    Ok(manifest)
-}
-
-fn reevaluate_manifest(
-    profile: &Path,
-    target: &ConfigGeneration,
-    running: &ImageGeneration,
-) -> Result<ConfigManifest> {
-    let ReactivationPlan::CrossAbiReEval(inputs) = target.reactivation_plan(running.module_abi)?
-    else {
-        bail!("configuration generation does not require cross-ABI reevaluation");
-    };
-    let workspace = tempfile::tempdir().context("creating rollback probe workspace")?;
-    let eval_root = workspace.path().join("eval");
-    let output = workspace.path().join("manifest.json");
-    let source = super::validate_generation_manifest(profile, target)?;
-    let current = super::load_generation_state_readonly(profile)?.current;
-    crate::config_eval::reeval_cross_abi(
-        &inputs,
-        Path::new(&running.evaluator_ref),
-        &source,
-        eval_root,
-        output.clone(),
-        0,
-        Some(current),
-    )?;
-    let manifest = crate::config_eval::activation::load_config_manifest(&output)?;
-    manifest.validate()?;
-    Ok(manifest)
-}
-
-fn validate_reevaluation_artifacts(target: &ConfigGeneration) -> Result<()> {
-    let paths = target
-        .package_modules
-        .iter()
-        .map(|module| module.store_path.as_str())
-        .chain([
-            target.host_nix_ref.as_str(),
-            target.facts_ref.as_str(),
-            target.base_lib_ref.as_str(),
-            target.evaluator_ref.as_str(),
-        ]);
-    for path in paths {
-        crate::config_eval::materialize::validate_canonical_store_path(path)
-            .with_context(|| format!("validating retained input {path}"))?;
-        if !Path::new(path).exists() {
-            bail!("retained activation input is unavailable: {path}");
-        }
-    }
-    Ok(())
-}
-
 fn push_reason(
     reasons: &mut Vec<ActivatabilityReason>,
     code: ActivatabilityReasonCode,
@@ -404,36 +243,12 @@ fn bounded_detail(mut detail: String) -> String {
 mod tests {
     use super::*;
 
-    fn retained_generation() -> ConfigGeneration {
-        ConfigGeneration {
-            number: 7,
-            image_gen_parent: 2,
-            module_abi_pinned: 1,
-            manifest_hash: "sha256:manifest".to_string(),
-            package_modules: vec![crate::types::PackageModule {
-                package: "example".to_string(),
-                document_digest: format!("sha256:{}", "a".repeat(64)),
-                store_path: format!("/nix/store/{}-missing-module", "0".repeat(32)),
-                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-                entrypoint: "module.nix".to_string(),
-                origin: crate::types::PackageModuleOrigin::Registry,
-            }],
-            host_nix_ref: format!("/nix/store/{}-missing-host", "1".repeat(32)),
-            host_nix_commit: None,
-            facts_hash: "sha256:facts".to_string(),
-            facts_ref: format!("/nix/store/{}-missing-facts", "2".repeat(32)),
-            base_lib_ref: format!("/nix/store/{}-missing-base", "3".repeat(32)),
-            evaluator_ref: format!("/nix/store/{}-missing-evaluator", "4".repeat(32)),
-            created_at: "2026-09-11T00:00:00Z".to_string(),
-        }
-    }
-
     #[test]
     fn blocked_reports_preserve_stable_reason_order() {
         let report = RetainedActivatabilityReport::new(
             RetainedTargetKind::Configuration,
             7,
-            RetainedActivationMode::Direct,
+            RetainedActivationMode::Reconcile,
             vec![
                 ActivatabilityReason {
                     code: ActivatabilityReasonCode::ProviderUnavailable,
@@ -476,13 +291,5 @@ mod tests {
         assert!(bounded.is_char_boundary(bounded.len()));
         assert!(bounded.len() <= MAX_REASON_DETAIL_BYTES + 3);
         assert!(bounded.ends_with("..."));
-    }
-
-    #[test]
-    fn reevaluation_requires_every_retained_artifact() {
-        let error = validate_reevaluation_artifacts(&retained_generation())
-            .expect_err("missing retained inputs must block activatability");
-
-        assert!(error.to_string().contains("unavailable"));
     }
 }
