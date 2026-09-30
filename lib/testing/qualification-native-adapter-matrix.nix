@@ -45,7 +45,7 @@
   '';
 in
   assert identity != "";
-  assert matrixSpec.schema == "aos.qualification.native-adapter-matrix-spec/v1";
+  assert matrixSpec.schema == "aos.qualification.native-operation-matrix-spec";
   assert matrixSpec.cells != [];
   assert matrixCheck == "native-adapter-matrix";
     executable

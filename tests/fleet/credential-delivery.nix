@@ -40,43 +40,54 @@ in {
 
       APM = "${pkgs.aos.apm}/bin/apm"
       FIND = "${pkgs.findutils}/bin/find"
-      STATE = "/var/lib/aos-pkg-aos-credential-delivery-test"
+      STATE = "/var/lib/aos-credential-delivery-test"
       ALPHA = "credential-delivery-test-alpha"
       BETA = "credential-delivery-test-beta"
 
 
       def write_host(name, text):
           encoded = base64.b64encode(text.encode()).decode()
-          path = f"/run/credential-delivery-test-{name}.nix"
-          target.succeed(f"printf '%s' {encoded} | base64 -d > {path}")
+          path = f"/run/credential-delivery-test-{name}"
+          target.succeed(f"mkdir -p {path}; chmod 0700 {path}; "
+                         f"printf '%s' {encoded} | base64 -d > {path}/configuration.nix; "
+                         f"chmod 0600 {path}/configuration.nix")
           return path
 
 
       def switch(name, text):
           host = write_host(name, text)
           target.succeed(
-              f"{APM} switch --from {host} --eval-root /run/{name}-eval",
+              f"{APM} switch --worktree {host} --eval-root /run/{name}-eval",
               timeout=300,
           )
 
 
       def delivered_path():
           paths = target.succeed(
-              f"{FIND} /run/aos/credential-views -type f -name join-token"
+              f"{FIND} /run/aos/credential-views -type f -name credential"
           ).split()
           assert len(paths) == 1, paths
           return paths[0]
 
 
       def assert_no_plaintext(*values):
-          manifest = target.succeed("cat /run/aos/manifest.json")
-          parsed = json.loads(manifest)
-          assert "credentials" not in parsed, parsed.keys()
+          current = target.succeed("readlink -f /var/lib/profiles/system/current").strip()
+          documents = {
+              name: target.succeed(f"cat {current}/{name}")
+              for name in ("evaluation.json", "native-deployment.json")
+          }
+          graph = target.succeed(
+              "${pkgs.aos}/bin/aos ability journal "
+              "/var/lib/profiles/system/deployment/effects.journal --format json"
+          )
+          assert json.loads(graph)["liveStateVerified"] is False
           for value in values:
-              assert value not in manifest, "credential bytes leaked into the manifest"
+              assert all(value not in text for text in documents.values())
+              assert value not in graph, "credential bytes leaked into retained native state"
 
 
-      target.wait_for_unit("aos-eval.service", timeout=300)
+
+      target.wait_for_unit("aos-activate.service", timeout=300)
       target.succeed(f"""
           mkdir -p /run/credentials/@system
           printf '%s' {ALPHA} > /run/credentials/@system/bootstrap-token
@@ -84,7 +95,6 @@ in {
       """)
       first = """{
         aos.provisioning.storage.partitions.var.sizeMin = "2G";
-        aos.apm.desiredPackages = [ "aos-credential-delivery-test" ];
         "aos-credential-delivery-test" = {
           enable = true;
           credentialName = "bootstrap-token";
@@ -99,10 +109,10 @@ in {
       )
       source = delivered_path()
       target.succeed(f"test \"$(cat {source})\" = {ALPHA}")
-      target.succeed(f"test \"$(stat -c %a {source})\" = 400")
+      target.succeed(f"test \"$(stat -c %a {source})\" = 600")
       target.succeed(f"test \"$(cat {STATE}/observed)\" = {ALPHA}")
       target.succeed(f"test \"$(cat {STATE}/start-count)\" = 1")
-      assert target.succeed(f"cat {STATE}/delivery-mode").strip() == "400"
+      assert target.succeed(f"cat {STATE}/delivery-mode").strip() == "600"
       assert_no_plaintext(ALPHA)
 
       target.succeed(f"""
@@ -111,7 +121,6 @@ in {
       """)
       second = """{
         aos.provisioning.storage.partitions.var.sizeMin = "2G";
-        aos.apm.desiredPackages = [ "aos-credential-delivery-test" ];
         "aos-credential-delivery-test" = {
           enable = true;
           credentialName = "bootstrap-token";
@@ -130,7 +139,6 @@ in {
 
       removed = """{
         aos.provisioning.storage.partitions.var.sizeMin = "2G";
-        aos.apm.desiredPackages = [ "aos-credential-delivery-test" ];
         "aos-credential-delivery-test".enable = false;
       }
       """
@@ -140,7 +148,7 @@ in {
           timeout=120,
       )
       target.succeed(
-          f"test -z \"$({FIND} /run/aos/credential-views -type f -name join-token -print -quit)\""
+          f"test -z \"$({FIND} /run/aos/credential-views -type f -name credential -print -quit)\""
       )
       target.succeed(f"test \"$(cat {STATE}/start-count)\" = 2")
     '';

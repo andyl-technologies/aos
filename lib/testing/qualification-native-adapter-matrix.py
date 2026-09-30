@@ -21,7 +21,7 @@ REPORT = ROOT / "scenario-report.json"
 SPEC = pathlib.Path(os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_MATRIX_SPEC"])
 EXPECTED_CHECK = os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_MATRIX_CHECK"]
 SCENARIO_REGISTRY = ROOT / "scenario-registry.json"
-APPLICABILITY_SCHEMA = "aos.qualification.native-adapter-matrix-applicability/v1"
+APPLICABILITY_SCHEMA = "aos.qualification.native-operation-matrix-applicability"
 
 
 def canonical(value: Any) -> bytes:

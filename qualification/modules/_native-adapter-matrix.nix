@@ -1,9 +1,10 @@
-##! Derives provider qualification subjects from selected package contracts.
+##! Derives qualification subjects from selected native operations and handlers.
 {
   lib,
-  packages,
+  projection,
   scenarioPolicy ? builtins.fromJSON (builtins.readFile ../native-adapter-scenarios.json),
   regressions,
+  requiredOperations ? null,
 }: let
   expectedPolicyScenarioKeys = ["additional_postconditions" "applicability" "boundary" "candidate" "disposition" "failure" "family" "id" "postcondition_groups" "predecessor"];
   expectedScenarioPolicyKeys = ["invalidation_dimensions" "matrix_schema" "postcondition_groups" "postcondition_kinds" "scenarios"];
@@ -13,177 +14,126 @@
     && builtins.stringLength value <= 96
     && builtins.match "[a-z0-9.-]+" value != null;
   unique = values: builtins.length values == builtins.length (lib.unique values);
-  scenarioFamilies = builtins.sort builtins.lessThan (
-    lib.unique (map (scenario: scenario.family) scenarioPolicy.scenarios)
-  );
-  postconditionsFor = scenario:
-    lib.concatMap (group: scenarioPolicy.postcondition_groups.${group}) scenario.postcondition_groups
-    ++ scenario.additional_postconditions;
-  scenarioFor = scenario:
-    builtins.removeAttrs scenario ["additional_postconditions" "postcondition_groups"]
-    // {
-      postconditions = map (name: {
-        evidence_kind = scenarioPolicy.postcondition_kinds.${name};
-        inherit name;
-      }) (postconditionsFor scenario);
-    };
-  selectedPackages = builtins.filter (package: package ? abilities) packages;
+  normalizedPolicy = import ./_native-operation-policy.nix {
+    inherit lib;
+    policy = scenarioPolicy;
+  };
+  scenarioFamilies = normalizedPolicy.families;
+  postconditionsFor = normalizedPolicy.postconditionsFor;
   selectExact = context: predicate: values: let
     matches = builtins.filter predicate values;
   in
     if builtins.length matches == 1
     then builtins.head matches
     else throw "${context} must resolve exactly once";
-  providerByName = package: name:
-    selectExact "native qualification implementation '${package.pname}:${name}'"
-      (provider: provider.name == name)
-      package.contract.value.implementation.providers;
-  interfaceByIdentity = package: identity:
-    (selectExact "native qualification interface '${identity.descriptor}'"
-      (entry: entry.descriptor == identity.descriptor)
-      package.contract.value.interface_documents).document;
-  qualifiedImplementations = builtins.concatMap (package: let
-    projection = package.contract.value;
-  in
-    map (name: let
-      implementation = providerByName package name;
-    in {
-      inherit package name implementation;
-      qualification = projection.qualification.implementations.${name};
-      interface = interfaceByIdentity package implementation.interface;
-    }) (builtins.attrNames projection.qualification.implementations))
-  selectedPackages;
-  containerExecutionDeclarations =
-    map (entry: let
-    identity = interfaceIdentity entry.interface;
+
+  operationIdentity = node: let
+    length = builtins.length node.identity;
   in {
-    adapter = entry.qualification.adapter;
-    scope = entry.qualification.scope;
-    interface = identity;
-    guarantees = builtins.sort builtins.lessThan (map (guarantee: guarantee.name) entry.implementation.guarantees);
+    ability = builtins.elemAt node.identity (length - 3);
+    name = builtins.elemAt node.identity (length - 2);
+  };
+  scopeFor = node: lib.take ((builtins.length node.identity) - 4) node.identity;
+  allNodes = lib.mapAttrsToList (id: node: node // {inherit id;}) projection.graph.nodes;
+  allTerminalNodes = builtins.filter (node: node.handler.kind == "process") allNodes;
+  operationKey = operation: "${operation.ability}/${operation.name}";
+  required =
+    builtins.sort
+    (left: right: builtins.lessThan (operationKey left) (operationKey right))
+    (
+      if requiredOperations == null
+      then lib.unique (map operationIdentity allTerminalNodes)
+      else requiredOperations
+    );
+  validOperation = operation:
+    builtins.isAttrs operation
+    && builtins.attrNames operation == ["ability" "name"]
+    && builtins.all (value:
+      builtins.isString value
+      && builtins.stringLength value <= 96
+      && builtins.match "[A-Za-z][A-Za-z0-9._-]*" value != null)
+    [operation.ability operation.name];
+  rootsFor = operation: builtins.filter (node: operationIdentity node == operation) allNodes;
+  terminalDescendants = node:
+    if node.handler.kind == "process"
+    then [node]
+    else lib.concatMap (id: terminalDescendants (projection.graph.nodes.${id} // {inherit id;})) node.handler.children;
+  selectedFor = operation: lib.concatMap terminalDescendants (rootsFor operation);
+  selectedNodes = lib.concatMap selectedFor required;
+  terminalNodes = builtins.attrValues (builtins.listToAttrs (map (node: {
+      name = node.id;
+      value = node;
     })
-    qualifiedImplementations;
-  resolvedArtifact = owner: selector: {
-    inherit selector;
-    path = builtins.toString (lib.abilities.authenticatedPackageOutputFor {
-      package = owner;
-      inherit selector;
+    selectedNodes));
+  groupKey = node:
+    builtins.hashString "sha256" (builtins.toJSON {
+      operation = operationIdentity node;
+      inherit (node) handler;
+      scope = scopeFor node;
     });
-  };
-  projectedHandler = owner: handler: {
-    artifact = resolvedArtifact owner handler.artifact;
-    entry_point = handler.entry_point;
-    inherit (handler) arguments result;
-  };
-  interfaceIdentity = interface: lib.abilities.interfaceIdentity interface;
-  stateContractFor = entry: let
-    interface = entry.interface.interface;
-    outputs =
-      builtins.attrValues interface.outputs
-      ++ builtins.concatMap (method: builtins.attrValues method.outputs) (builtins.attrValues interface.methods);
-  in {
-    lifecycle = interface.lifecycle;
-    resource_lifetimes = builtins.sort builtins.lessThan (lib.unique (map (output: output.lifetime) outputs));
-    state_format = entry.implementation.state_format or null;
-  };
-  adapterFor = entry: let
-    implementation = entry.implementation;
-    qualification = entry.qualification;
-    interface = entry.interface;
-    methodNames = builtins.attrNames interface.interface.methods;
-    observer = projectedHandler entry.package qualification.observer;
-    inherit (qualification) adapter scope;
-    identity = interfaceIdentity interface;
+  groupedNodes = builtins.foldl' (groups: node: let
+    key = groupKey node;
   in
-    assert qualification.conformance_families != [];
-    assert unique qualification.conformance_families;
-    assert builtins.all (family: builtins.elem family scenarioFamilies) qualification.conformance_families; {
-      inherit adapter;
-      inherit scope;
-      inherit (qualification) observation_kind;
-      conformance_families = qualification.conformance_families;
-      interface_name = identity.name;
-      interface_abi = identity.abi;
-      interface_descriptor = identity.descriptor;
-      methods =
-        map (methodName: {
-          method = methodName;
-          inherit (interface.interface.methods.${methodName}.semantics) required_target_access;
-        })
-        methodNames;
-      provider_contract = stateContractFor entry;
-      provider_implementation = {
-        contract = builtins.toString entry.package.contract.document;
-        implementation = entry.name;
-        inherit observer;
+    groups // {${key} = (groups.${key} or []) ++ [node];}) {}
+  terminalNodes;
+  adapterFor = key: nodes: let
+    node = builtins.head nodes;
+    identity = operationIdentity node;
+    declaration = projection.operations.${identity.ability}.operations.${identity.name};
+    effects = map (effect: {
+      inherit (effect) id identity revision lifetime dependencies;
+    }) (builtins.sort (left: right: builtins.lessThan left.id right.id) nodes);
+  in
+    assert builtins.all (effect:
+      effect.input_type
+      == declaration.documentation.inputType
+      && effect.results == declaration.documentation.resultType.fields)
+    nodes; {
+      adapter = "operation-${key}";
+      operation =
+        identity
+        // {
+          input_type = declaration.documentation.inputType;
+          result_type = declaration.documentation.resultType;
+        };
+      inherit (node) handler;
+      inherit effects;
+      actions = ["apply" "remove"];
+      scope = scopeFor node;
+      conformance_families = scenarioFamilies;
+      state_contract = {
+        resource_lifetimes = builtins.sort builtins.lessThan (lib.unique (map (effect: effect.lifetime) effects));
+        # A process path is not proof of a compatible receipt format. Until an
+        # actual backend declares that evidence, transfer scenarios stay closed.
+        state_format = null;
       };
     };
   derivedSurface = {
-    schema = "aos.qualification.native-adapter-surface/v1";
+    schema = "aos.qualification.native-operation-matrix-surface";
     matrix_schema = scenarioPolicy.matrix_schema;
     adapters =
       builtins.sort
       (left: right: builtins.lessThan left.adapter right.adapter)
-      (map adapterFor qualifiedImplementations);
+      (lib.mapAttrsToList adapterFor groupedNodes);
     families = scenarioFamilies;
     invalidation_dimensions = scenarioPolicy.invalidation_dimensions;
-    scenarios = map scenarioFor scenarioPolicy.scenarios;
+    scenarios = normalizedPolicy.scenarios;
   };
   selectedSurface = derivedSurface;
-  adapterMethods = builtins.concatMap (adapter:
-    map (method: {
-      inherit adapter method;
-    })
-    adapter.methods)
-  selectedSurface.adapters;
-  cellFor = pair: scenario: {
-    id = "${pair.adapter.adapter}/${pair.adapter.interface_name}/abi-${toString pair.adapter.interface_abi}/${pair.method.method}/${scenario.id}";
-    matrix_schema = selectedSurface.matrix_schema;
-    adapter = pair.adapter.adapter;
-    interface = {
-      name = pair.adapter.interface_name;
-      abi = pair.adapter.interface_abi;
-      descriptor = pair.adapter.interface_descriptor;
-    };
-    method = pair.method.method;
-    required_target_access = pair.method.required_target_access;
-    scope = pair.adapter.scope;
-    boundary = scenario.boundary;
-    failure = scenario.failure;
-    predecessor = scenario.predecessor;
-    candidate = scenario.candidate;
-    disposition = scenario.disposition;
-    applicability = scenario.applicability;
-    postconditions = map (postcondition: postcondition.name) scenario.postconditions;
-    postcondition_kinds = builtins.listToAttrs (map (postcondition: {
-        name = postcondition.name;
-        value = postcondition.evidence_kind;
-      })
-      scenario.postconditions);
-    invalidated_by = selectedSurface.invalidation_dimensions;
-  };
-  expectedCells = builtins.sort (left: right: builtins.lessThan left.id right.id) (
-    builtins.concatMap (
-      pair:
-        map (cellFor pair) (
-          builtins.filter
-          (scenario: builtins.elem scenario.family pair.adapter.conformance_families)
-          selectedSurface.scenarios
-        )
-    )
-    adapterMethods
-  );
+  expectedCells = normalizedPolicy.cellsFor selectedSurface;
   providerContractFor = cell:
     selectExact "native qualification contract '${cell.id}'"
     (adapter:
       adapter.adapter
       == cell.adapter
-      && adapter.interface_descriptor == cell.interface.descriptor)
+      && {inherit (adapter.operation) ability name;} == cell.operation)
     selectedSurface.adapters;
   inapplicableReason = cell: let
-    contract = (providerContractFor cell).provider_contract;
+    contract = (providerContractFor cell).state_contract;
   in
-    if builtins.any (lifetime: !builtins.elem lifetime contract.resource_lifetimes) cell.applicability.required_resource_lifetimes
+    if cell.applicability.required_actions != [] && !builtins.elem cell.action cell.applicability.required_actions
+    then "unsupported-scenario-action"
+    else if builtins.any (lifetime: !builtins.elem lifetime contract.resource_lifetimes) cell.applicability.required_resource_lifetimes
     then "required-resource-lifetime-unavailable"
     else if cell.applicability.requires_state_format && contract.state_format == null
     then "missing-authenticated-state-format"
@@ -204,14 +154,15 @@
   applicableCells = builtins.filter (cell: !builtins.elem cell.id inapplicableCellIds) expectedCells;
   applicableCellIds = map (cell: cell.id) applicableCells;
   canonicalApplicability = {
-    schema = "aos.qualification.native-adapter-matrix-applicability/v1";
+    schema = "aos.qualification.native-operation-matrix-applicability";
     applicable_cell_ids = applicableCellIds;
     inapplicable_cells = inapplicableCells;
   };
   selectedApplicability = canonicalApplicability;
   selectedCells = expectedCells;
   matrixSpec = {
-    schema = "aos.qualification.native-adapter-matrix-spec/v1";
+    schema = "aos.qualification.native-operation-matrix-spec";
+    required_operations = required;
     surface = selectedSurface;
     cells = selectedCells;
     applicability = selectedApplicability;
@@ -233,8 +184,14 @@
     );
   check = "native-adapter-matrix";
 in
-  assert packages != [];
+  assert required != [];
+  assert builtins.all validOperation required;
+  assert unique (map operationKey required);
+  assert builtins.all (operation: selectedFor operation != []) required;
+  assert terminalNodes != [];
   assert builtins.attrNames scenarioPolicy == expectedScenarioPolicyKeys;
+  assert scenarioPolicy.scenarios != [];
+  assert unique (map (scenario: builtins.toJSON [scenario.family scenario.id]) scenarioPolicy.scenarios);
   assert scenarioPolicy.invalidation_dimensions != [];
   assert unique scenarioPolicy.invalidation_dimensions;
   assert builtins.all token scenarioPolicy.invalidation_dimensions;
@@ -247,7 +204,9 @@ in
     == expectedPolicyScenarioKeys
     && builtins.all token [scenario.boundary scenario.candidate scenario.failure scenario.family scenario.id scenario.predecessor]
     && validDisposition scenario.disposition
-    && builtins.attrNames scenario.applicability == ["required_resource_lifetimes" "requires_state_format"]
+    && builtins.attrNames scenario.applicability == ["required_actions" "required_resource_lifetimes" "requires_state_format"]
+    && unique scenario.applicability.required_actions
+    && builtins.all (action: builtins.elem action ["apply" "remove"]) scenario.applicability.required_actions
     && unique scenario.applicability.required_resource_lifetimes
     && builtins.all token scenario.applicability.required_resource_lifetimes
     && builtins.isBool scenario.applicability.requires_state_format
@@ -268,7 +227,12 @@ in
   assert unique (applicableCellIds ++ inapplicableCellIds); {
     spec = matrixSpec;
     canonical_json = builtins.toJSON matrixSpec;
-    container_execution_declarations = containerExecutionDeclarations;
+    container_execution_declarations =
+      map (adapter: {
+        inherit (adapter) adapter handler scope actions;
+        operation = {inherit (adapter.operation) ability name;};
+      })
+      selectedSurface.adapters;
     inherit check;
     requirement = {
       phase = "staging";
@@ -276,7 +240,6 @@ in
       method = "automated";
       production_only = true;
       checks = [check];
-      matrix_spec = matrixSpec;
       inherit regressions;
       invalidated_by = scenarioPolicy.invalidation_dimensions;
     };

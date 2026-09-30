@@ -39,7 +39,7 @@ def main() -> None:
 
     module = load(pathlib.Path(sys.argv[1]))
     cell = {
-        "id": "fixture/aos.fixture/abi-1/apply/adopt-compatible-state",
+        "id": "fixture/fixture/echo/apply/state-transfer/adopt-compatible-state",
         "adapter": "fixture",
         "applicability": {
             "required_resource_lifetimes": ["persistent"],

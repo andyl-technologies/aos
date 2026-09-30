@@ -8,7 +8,7 @@
   providerStateQualification ? false,
 }: let
   packageSet = import ../abilities/reference-nginx/package.nix {
-    inherit (pkgs) bash coreutils mkDerivation nginx python3;
+    inherit (pkgs) bash coreutils mkDerivation nginx python3 service-management;
   };
 
   orderedPackages = [
@@ -42,18 +42,33 @@
     }
   ];
 
-  packageRoots = lib.concatMap (entry: [entry.package entry.package.contract.document]) orderedPackages;
+  packageRoots = lib.concatMap (entry: [entry.package entry.package.deploymentArtifact entry.package.documentationArtifact]) orderedPackages;
 
   runtimeModules = [
     ../../systems/server-test.nix
+    ./_reference-native-configuration.nix
     {
-      environment.systemPackages = [packageSet.runtime-services pkgs.openssl];
+      environment.systemPackages = [pkgs.openssl];
+      aos.packages = lib.listToAttrs (map (entry: {
+          inherit (entry) name;
+          value = {
+            package = entry.package;
+            bundle = true;
+          };
+        })
+        orderedPackages);
     }
   ];
-  runtimeSystem = mkSystem runtimeModules;
-  qualificationSetupBody = ''
-    environment.systemPackages = [ ${packageSet.runtime-services} ];
-  '';
+  selectedFixture = import ./_native-fixture-selection.nix {inherit lib;} {
+    inherit runtimeSystem;
+    scenarioSources = [./_reference-native-configuration.nix];
+  };
+  runtimeSystem = mkSystem (runtimeModules
+    ++ [
+      {
+        aos.activation.stages.host.configuration = selectedFixture.sources;
+      }
+    ]);
   qualificationExtraClosures =
     packageRoots
     ++ [
@@ -71,19 +86,7 @@
       pkgs.python3
       pkgs.util-linux
     ];
-  qualificationCandidateRuntimeCompanions =
-    map (name: let
-      entry = builtins.head (builtins.filter (candidate: candidate.name == name) orderedPackages);
-    in {
-      inherit (entry) name;
-      primary = entry.package;
-      abilities = entry.package.contract.document;
-      originalRuntime = pkgs.aos.packageRuntime;
-    }) [
-      pkgs.nginx.pname
-      pkgs.aos.pname
-      pkgs.systemd.pname
-    ];
+  qualificationCandidateRuntimeCompanions = selectedFixture.qualification.candidateRuntimeCompanions;
 in {
   inherit
     orderedPackages
@@ -91,10 +94,11 @@ in {
     packageSet
     qualificationExtraClosures
     qualificationCandidateRuntimeCompanions
-    qualificationSetupBody
     runtimeModules
     runtimeSystem
     ;
+
+  qualificationSelectedEvaluation = selectedFixture.qualification.selectedEvaluation;
 
   extraClosures =
     if guestTools
@@ -144,186 +148,63 @@ in {
       OPENSSL = "${pkgs.openssl}/bin/openssl"
       PRLIMIT = "${pkgs.util-linux}/bin/prlimit"
 
-      REFERENCE_PACKAGES = ${
-        if guestTools
-        then "runtime.candidate_handler_packages("
-        else ""
-      }${builtins.toJSON (map (entry: {
-          inherit (entry) name;
-          package = builtins.toString entry.package;
-          abilities = builtins.toString entry.package.contract.document;
-        })
-        orderedPackages)}${
-        if guestTools
-        then ")"
-        else ""
-      }
+      PROFILE = "/var/lib/profiles/system"
+      REFERENCE_BUNDLE = "${runtimeSystem.config.system.build.hostDeploymentBundle}"
 
 
-      def publish_reference_packages():
-          package_arguments = " ".join(
-              " ".join(
-                  shlex.quote(value)
-                  for value in (entry["name"], entry["package"], entry["abilities"])
-              )
-              for entry in REFERENCE_PACKAGES
+      def write_reference_worktree(path, settings=None, extra_module=""):
+          """Authors ordinary native operator options for the admitted image closure."""
+          settings = settings or {}
+          source = (
+              "{ lib, ... }: { config = lib.mkMerge [ (builtins.fromJSON "
+              + json.dumps(json.dumps(settings, separators=(",", ":")))
+              + ") { " + extra_module + " } ]; }\n"
           )
-          runtime.succeed(textwrap.dedent(f"""
-              set -eu
-              export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
-              export GIT_AUTHOR_NAME='Ability Fleet Fixture'
-              export GIT_AUTHOR_EMAIL=ability-fleet@example.test
-              export GIT_COMMITTER_NAME='Ability Fleet Fixture'
-              export GIT_COMMITTER_EMAIL=ability-fleet@example.test
-              export NIX_REMOTE=""
-              export NIX_CONF_DIR=/tmp/ability-nix-conf
-              export XDG_CONFIG_HOME=/tmp/ability-user-config
-              export XDG_DATA_HOME=/tmp/ability-user-data
-              mkdir -p "$NIX_CONF_DIR"
-              printf 'experimental-features = nix-command\\nsandbox = false\\n' \\
-                > "$NIX_CONF_DIR/nix.conf"
-
-              {APR} keys generate release --registry ability-reg \\
-                > /tmp/ability-keygen.out 2>&1
-              PUBKEY=$(${pkgs.gawk}/bin/awk \\
-                '/Public key:/ {{print $NF; exit}}' /tmp/ability-keygen.out)
-              KEY="$XDG_CONFIG_HOME/apm/keys/ability-reg-release.key"
-              {APR} create ability-reg \\
-                --trust-key "$PUBKEY" \\
-                --trust-key-id release \\
-                --key "$KEY"
-
-              SOURCE="$XDG_DATA_HOME/apm/registries/ability-reg"
-              BASE_COMMIT=$({GIT} -C "$SOURCE" rev-parse HEAD)
-              {FIXTURE} ability-registry \\
-                "$SOURCE" \\
-                /var/lib/ability-reference-registry \\
-                ability-reg \\
-                reference/ability-reg \\
-                1.0.0 \\
-                sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \\
-                "$BASE_COMMIT" \\
-                release \\
-                "$PUBKEY" \\
-                "$KEY" \\
-                {package_arguments}
-
-              {APM} registry --system add \\
-                file:///var/lib/ability-reference-registry \\
-                --name ability-reg \\
-                --version '=1.0.0' \\
-                --trust-key "$PUBKEY" \\
-                --no-clone
-              printf 'root_owner_signers = ["release"]\\n' \\
-                >> /var/lib/apm/config/registries.d/ability-reg.toml
-              {APM} update --system --registry ability-reg
-
-          """), timeout=1200)
-
-
-      def assert_reference_packages_installed():
-          installed = runtime.succeed(
-              f"{APM} list --system --installed 2>&1"
-          )
-          for entry in REFERENCE_PACKAGES:
-              assert entry["name"] in installed, installed
-              runtime.succeed(
-                  f"{JQ} -se --arg name {shlex.quote(entry['name'])} "
-                  "'map(select(.name == $name)) "
-                  "| length == 1 "
-                  "and .[0].contract != null' "
-                  "/var/lib/profiles/system-packages/current/meta/*.json"
-              )
-
-
-      def generate_activation_fixture(
-          output,
-          primary_response,
-          secondary_response,
-          authority_staging,
-          lifecycle="full",
-          tls_version=None,
-          tls_bundle=None,
-          systemd_manager_method=None,
-          systemd_manager_revision=None,
-          provider_incarnation_revision=None,
-          execution_stage="host",
-      ):
-          assert execution_stage in {"host", "application-container"}, (
-              execution_stage
-          )
-          execution_stage_arguments = (
-              " --execution-stage " + shlex.quote(execution_stage)
-          )
-          tls_arguments = ""
-          if tls_version is not None or tls_bundle is not None:
-              assert tls_version is not None and tls_bundle is not None, (
-                  tls_version,
-                  tls_bundle,
-              )
-              tls_arguments = (
-                  f" --tls-version {shlex.quote(tls_version)}"
-                  f" --tls-bundle {shlex.quote(tls_bundle)}"
-              )
-          systemd_manager_arguments = ""
-          if systemd_manager_method is not None or systemd_manager_revision is not None:
-              assert (
-                  systemd_manager_method is not None
-                  and systemd_manager_revision is not None
-              ), (systemd_manager_method, systemd_manager_revision)
-              systemd_manager_arguments = (
-                  " --systemd-manager-method "
-                  f"{shlex.quote(systemd_manager_method)}"
-                  " --systemd-manager-revision "
-                  f"{shlex.quote(systemd_manager_revision)}"
-              )
-          provider_incarnation_arguments = ""
-          if provider_incarnation_revision is not None:
-              provider_incarnation_arguments = (
-                  " --provider-incarnation-revision "
-                  + shlex.quote(provider_incarnation_revision)
-              )
+          encoded = base64.b64encode(source.encode()).decode()
+          runtime.succeed(f"{COREUTILS}/install -d -m 0700 {shlex.quote(path)}")
           runtime.succeed(
-              f"{COREUTILS}/rm -rf {shlex.quote(output)} "
-              f"{shlex.quote(authority_staging)}"
+              f"printf '%s' {shlex.quote(encoded)} | {COREUTILS}/base64 -d "
+              f"> {shlex.quote(path + '/reference.nix')}"
           )
+          runtime.succeed(f"{COREUTILS}/chmod 0600 {shlex.quote(path + '/reference.nix')}")
+          return path
+
+
+      def apply_reference(worktree, label):
+          """Uses source snapshot admission and the authoritative native profile journal."""
           runtime.succeed(
-              f"{COREUTILS}/mkdir -p {shlex.quote(output)} "
-              f"{shlex.quote(authority_staging)}"
-          )
-          backend_content = {
-              "app-a": primary_response,
-              "app-b": "beta-v1",
-              "app-c": secondary_response,
-          }
-          for application, content in backend_content.items():
-              encoded = base64.b64encode(
-                  f"{application}:{content}\n".encode()
-              ).decode()
-              destination = (
-                  f"/var/lib/aos/ability-reference/backends/{application}/index.html"
-              )
-              runtime.succeed(
-                  f"printf '%s' {shlex.quote(encoded)} | {COREUTILS}/base64 -d > "
-                  f"{shlex.quote(destination)}"
-              )
-          runtime.succeed(
-              f"PATH={NIX_BIN}:{COREUTILS} "
-              f"AOS_NIX_INSTANTIATE={NIX_INSTANTIATE} "
-              f"AOS_PRLIMIT={PRLIMIT} "
-              f"AOS_TEST_ABILITY_CACHE=/var/cache/aos-ability-evaluator-fixture "
-              f"{FIXTURE} ability-activation {shlex.quote(output)} "
-              f"{shlex.quote(primary_response)} "
-              f"{shlex.quote(secondary_response)} --operator-authority-output "
-              f"{shlex.quote(authority_staging)} --lifecycle "
-              f"{shlex.quote(lifecycle)}{tls_arguments}"
-              f"{systemd_manager_arguments}{provider_incarnation_arguments}"
-              f"{execution_stage_arguments}",
+              f"{APM} switch --worktree {shlex.quote(worktree)} "
+              f"--eval-root /var/lib/aos/native-evaluations/{shlex.quote(label)}",
               timeout=1200,
           )
-          return json.loads(runtime.succeed(
-              f"{COREUTILS}/cat {shlex.quote(output + '/activation.json')}"
+
+
+      def current_reference_graph():
+          """Reads the desired graph from the checked committed generation."""
+          target = runtime.succeed(f"{COREUTILS}/readlink {PROFILE}/current").strip()
+          generation = int(target.rsplit('gen-', 1)[1])
+          diagnostic = json.loads(runtime.succeed(
+              f"{AOS} ability diagnostic {PROFILE} {generation} --audience deployment"
           ))
+          assert diagnostic["liveStateVerified"] is False, diagnostic
+          return diagnostic["desired"]["graph"]
+
+
+      def inspect_reference_journal():
+          """Reads checksum-validated native state without repair or dispatch."""
+          return json.loads(runtime.succeed(
+              f"{AOS} ability journal {PROFILE}/deployment/effects.journal --format json"
+          ))
+
+
+      def assert_reference_admission():
+          """Checks the retained native transaction and package metadata are present."""
+          runtime.succeed(f"test -s {PROFILE}/current/native-deployment.json")
+          runtime.succeed(f"test -s {PROFILE}/current/evaluation.json")
+          graph = current_reference_graph()
+          assert graph["schema"] == "aos.activation.graph", graph
+          assert any(node["identity"][-3:-1] == ["referenceNginx", "bind"] for node in graph["nodes"].values()), graph
+          return graph
 
 
       def create_tls_bundle(root, common_name, serial):
@@ -348,53 +229,6 @@ in {
               "-fingerprint -sha256"
           ).strip().split("=", 1)[1].replace(":", "").lower()
           return bundle, certificate, fingerprint
-
-
-      def provision_operator_authority(activation, authority_staging):
-          document_digest = activation[
-              "authenticated_policy_set"
-          ]["document_sha256"]
-          assert document_digest.startswith("sha256:"), document_digest
-          digest_hex = document_digest.removeprefix("sha256:")
-          assert len(digest_hex) == 64 and all(
-              character in "0123456789abcdef" for character in digest_hex
-          ), digest_hex
-          source = f"{authority_staging}/{digest_hex}.json"
-          destination = (
-              "/var/lib/aos/ability-authority/policy-sets/"
-              f"{digest_hex}.json"
-          )
-          runtime.succeed(textwrap.dedent(f"""
-              set -eu
-              {COREUTILS}/install -d -o root -g root -m 0700 \\
-                /var/lib/aos/ability-authority \\
-                /var/lib/aos/ability-authority/policy-sets
-              {FIXTURE} ability-authority-provision {shlex.quote(source)}
-          """))
-          return destination
-
-
-      def write_activation_host(path, activation, extra_module=""):
-          activation_json = json.dumps(activation, separators=(",", ":"))
-          desired_packages = " ".join(
-              json.dumps(entry["name"]) for entry in REFERENCE_PACKAGES
-          )
-          host_module = (
-              "{ lib, ... }: {\n"
-              "  aos.apm.desiredPackages = [ "
-              + desired_packages
-              + " ];\n"
-              "  aos.abilities.activationInput = builtins.fromJSON "
-              + json.dumps(activation_json)
-              + ";\n"
-              + extra_module
-              + "}\n"
-          )
-          encoded = base64.b64encode(host_module.encode()).decode()
-          runtime.succeed(
-              f"printf '%s' {shlex.quote(encoded)} | base64 -d "
-              f"> {shlex.quote(path)}"
-          )
 
 
       def route_body(host, port):
@@ -451,111 +285,5 @@ in {
           ).lower()
 
 
-      def assert_consumer_observation(activation):
-          policy_sidecar = activation["authenticated_policy_set"]
-          policy_path = (
-              f"{policy_sidecar['store_path']}/{policy_sidecar['document']}"
-          )
-          policy = json.loads(runtime.succeed(
-              f"{COREUTILS}/cat {shlex.quote(policy_path)}"
-          ))
-          service_mappings = [
-              mapping
-              for mapping in policy["native_resource_map"]["entries"]
-              if mapping["qualification"]["kind"] == "systemd-service"
-          ]
-          assert len(service_mappings) == 2, service_mappings
-          observations = [
-              mapping["qualification"]["consumer_observation"]
-              for mapping in service_mappings
-          ]
-          assert {
-              observation["endpoint"] for observation in observations
-          } == {"127.0.0.1:18081", "127.0.0.1:18082"}, observations
-
-          for expected in observations:
-              response = runtime.succeed(
-                  f"{CURL} --fail --silent --show-error --http1.0 "
-                  "--dump-header - --output /dev/null "
-                  f"-H {shlex.quote('Host: ' + expected['authority'])} "
-                  f"http://{expected['endpoint']}{expected['path']}"
-              )
-              lines = response.splitlines()
-              assert lines and lines[0].split()[1] == "204", lines
-
-              evidence = {}
-              expected_headers = {
-                  "x-aos-consumer-instance",
-                  "x-aos-consumer-controller-revision",
-                  "x-aos-consumer-content-revision",
-              }
-              for line in lines[1:]:
-                  if not line:
-                      break
-                  name, value = line.split(":", 1)
-                  name = name.lower()
-                  if name in expected_headers:
-                      assert name not in evidence, (name, lines)
-                      evidence[name] = value.strip()
-
-              assert set(evidence) == expected_headers, evidence
-              assert json.loads(evidence["x-aos-consumer-instance"]) == (
-                  expected["expected_instance"]
-              ), (evidence, expected)
-              assert evidence["x-aos-consumer-controller-revision"] == (
-                  expected["expected_controller_revision"]
-              ), (evidence, expected)
-              assert evidence["x-aos-consumer-content-revision"] == (
-                  expected["expected_content_revision"]
-              ), (evidence, expected)
-
-
-      def assert_managed_configuration_selected(activation, instance):
-          policy_sidecar = activation["authenticated_policy_set"]
-          policy_path = (
-              f"{policy_sidecar['store_path']}/{policy_sidecar['document']}"
-          )
-          policy = json.loads(runtime.succeed(
-              f"{COREUTILS}/cat {shlex.quote(policy_path)}"
-          ))
-          destination = f"/var/lib/aos/ability-reference/{instance}.conf"
-          mappings = [
-              mapping
-              for mapping in policy["native_resource_map"]["entries"]
-              if mapping["qualification"]["kind"] == "managed-configuration"
-              and mapping["qualification"]["destination"] == destination
-          ]
-          assert len(mappings) == 1, mappings
-          mapping = mappings[0]
-
-          marker_paths = runtime.succeed(
-              f"{FIND} /var/lib/aos/ability-runtime/managed-configuration/revisions "
-              "-mindepth 1 -maxdepth 1 -type f -print"
-          ).splitlines()
-          markers = [
-              json.loads(runtime.succeed(
-                  f"{COREUTILS}/cat {shlex.quote(path)}"
-              ))
-              for path in marker_paths
-          ]
-          selected = [
-              marker for marker in markers
-              if marker["destination"] == destination
-          ]
-          assert len(selected) == 1, (destination, markers)
-          marker = selected[0]
-          assert marker["schema"] == (
-              "aos.ability.managed-configuration-revision/v1"
-          ), marker
-          assert marker["resource"] == mapping["resource"], (marker, mapping)
-          assert marker["revision"] == mapping["revision"], (marker, mapping)
-          content_digest = runtime.succeed(
-              f"{COREUTILS}/sha256sum {shlex.quote(destination)}"
-          ).split()[0]
-          assert marker["content"] == f"sha256:{content_digest}", marker
-          content = runtime.succeed(
-              f"{COREUTILS}/cat {shlex.quote(destination)}"
-          )
-          return mapping, content
     '';
 }
