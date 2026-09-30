@@ -2,73 +2,46 @@
 {
   config,
   lib,
+  package,
+  dependencies,
   packageName,
   packageVersion,
   ...
 }: let
   cfg = config.aos.filesystems.zfs.autoSnapshot;
-  abilityTypes = lib.abilities.types;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  resultOf = lib.abilities.resultOf;
-  consumerInstance = "zfs-auto-snapshot";
   storageReadiness = config.aos.storage.readinessResources;
-
-  nonEmptyString = abilityTypes.refined {
-    name = "non-empty bounded string";
-    description = "a non-empty bounded string";
-    type = abilityTypes.string {
-      maxLength = 4096;
-      syntax = null;
-    };
-    constraints = [
-      {
-        kind = "minimum-size";
-        minimum = 1;
-      }
-    ];
-  };
-  intervalType = abilityTypes.record {
-    fields = {
-      enable = {
-        type = abilityTypes.boolean;
+  services = config.aos.abilities.serviceManagement.operations.realize;
+  intervalType = lib.types.submodule {
+    options = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
         default = true;
+        description = "Enable this snapshot interval.";
       };
-      calendar = nonEmptyString;
-      keep = abilityTypes.integer {
-        minimum = 0;
-        maximum = abilityTypes.limits.maxSafeInteger;
+      calendar = lib.mkOption {
+        type = lib.types.str;
+        description = "Systemd calendar schedule.";
+      };
+      keep = lib.mkOption {
+        type = lib.types.ints.unsigned;
+        description = "Number of snapshots retained.";
       };
     };
-  };
-  datasetName = abilityTypes.refined {
-    name = "ZFS dataset name";
-    description = "a bounded ZFS dataset name without control characters or whitespace";
-    type = abilityTypes.string {
-      maxLength = 1024;
-      syntax = null;
-    };
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[^[:space:][:cntrl:]]+";
-      }
-    ];
   };
   intervalNames = builtins.attrNames cfg.intervals;
   enabledIntervals = builtins.filter (name: cfg.intervals.${name}.enable) intervalNames;
   activeIntervals = builtins.filter (name: config.aos.services."zfs-auto-snapshot.${name}".enable) enabledIntervals;
   unitName = name: "zfs-auto-snapshot-${name}";
 
-  command = artifact: entry_point: arguments: {
+  command = path: arguments: {
     executable = {
-      inherit artifact entry_point arguments;
+      inherit path arguments;
     };
     ignore_failure = false;
   };
   snapshotCommand = name:
     command
-    (lib.abilities.packageOutput {})
-    "bin/zfs-auto-snapshot"
+    "${package}/bin/zfs-auto-snapshot"
     (
       lib.optional cfg.utc "--utc"
       ++ lib.optional cfg.parallel "--parallel-snapshots"
@@ -76,8 +49,7 @@
     );
   datasetCommand = dataset:
     command
-    (lib.abilities.packageOutput {package = "zfs";})
-    "sbin/zfs"
+    "${dependencies.zfs}/sbin/zfs"
     ["set" "com.sun:auto-snapshot=true" dataset];
   lifecycle = description: start: remain_after_exit: {
     inherit description start remain_after_exit;
@@ -140,8 +112,7 @@
   };
   prepareService = {
     policy.hardening = hardening;
-    inherit consumerInstance;
-    service = "prepare";
+    service = "zfs-auto-snapshot-prepare";
     lifecycle =
       lifecycle
       "Select ZFS datasets for automatic snapshots (${packageName} ${packageVersion})"
@@ -156,38 +127,31 @@
     };
     inherit isolation;
   };
-  schedules = serviceManagement.forProducers {
-    inherit consumerInstance;
-    interface = serviceManagement.interfaces.scheduledActivation;
-    producers =
-      builtins.map (name: {
-        key = "${name}-schedule";
-        parameters = {
-          name = unitName name;
-          enabled = true;
-          schedule = {
-            kind = "calendar";
-            expression = cfg.intervals.${name}.calendar;
-          };
-          persistent = true;
-          accuracy_millis = 60000;
-          randomized_delay_millis = cfg.randomizedDelayMillis;
+  schedules = builtins.listToAttrs (builtins.map (name: {
+      name = "zfs-auto-snapshot-${name}";
+      value.input = {
+        name = unitName name;
+        target = services.effects."zfs-auto-snapshot.${name}".outputs.resource;
+        schedule = {
+          kind = "calendar";
+          expression = cfg.intervals.${name}.calendar;
         };
-      })
-      activeIntervals;
-  };
+        persistent = true;
+        accuracy_millis = 60000;
+        randomized_delay_millis = cfg.randomizedDelayMillis;
+      };
+    })
+    activeIntervals);
   intervalService = name: let
-    scheduleKey = "${name}-schedule";
     dependencies = {
       prerequisites = storageReadiness;
       after = storageReadiness;
       before = [];
-      requires = lib.optional (cfg.datasets != []) (resultOf "prepare-lifecycle" "resource");
+      requires = lib.optional (cfg.datasets != []) services.effects."zfs-auto-snapshot.prepare".outputs.resource;
       wants = storageReadiness;
     };
   in {
     policy.hardening = hardening;
-    inherit consumerInstance;
     service = unitName name;
     autoStart = false;
     lifecycle =
@@ -196,38 +160,21 @@
       [(snapshotCommand name)]
       false;
     inherit dependencies isolation scheduling;
-    activation.bindings = [
-      {
-        name = "schedule";
-        resource = resultOf scheduleKey "resource";
-        relationship = "resource-triggers-service";
-      }
-    ];
   };
 in {
   options.aos.filesystems.zfs.autoSnapshot = {
     enable = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = false;
       description = "Create and expire retained ZFS snapshots on a schedule.";
     };
     datasets = lib.mkOption {
-      type = abilityTypes.list {
-        element = datasetName;
-        maxItems = 1024;
-        unique = true;
-        canonicalOrder = true;
-      };
+      type = lib.types.listOf (lib.types.strMatching "[^[:space:][:cntrl:]]+");
       default = [];
       description = "ZFS datasets marked for automatic snapshots.";
     };
     intervals = lib.mkOption {
-      type = abilityTypes.map {
-        keyMaxLength = 128;
-        keySyntax = "local-key-v1";
-        maxEntries = 64;
-        value = intervalType;
-      };
+      type = lib.types.attrsOf intervalType;
       default = {
         frequent = {
           calendar = "*:0/15";
@@ -253,20 +200,17 @@ in {
       description = "Named snapshot schedules and retention counts.";
     };
     utc = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = true;
       description = "Use UTC in generated snapshot names.";
     };
     parallel = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = false;
       description = "Create independent dataset snapshots concurrently.";
     };
     randomizedDelayMillis = lib.mkOption {
-      type = abilityTypes.integer {
-        minimum = 0;
-        maximum = abilityTypes.limits.maxSafeInteger;
-      };
+      type = lib.types.ints.unsigned;
       default = 300000;
       description = "Maximum randomized delay applied to scheduled snapshot runs.";
     };
@@ -304,10 +248,6 @@ in {
         }
       ];
     })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [schedules];
-      enabled = activeIntervals != [];
-    })
+    {aos.abilities.scheduledActivation.operations.ensure.effects = schedules;}
   ];
 }

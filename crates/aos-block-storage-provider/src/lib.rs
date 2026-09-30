@@ -1,21 +1,22 @@
 //! Checked block-storage resource providers.
 //!
-//! The shared engine validates the command-handler protocol and delegates only
-//! exact device inspection and mutation to the cryptsetup, util-linux, and
-//! OpenZFS backends. Each backend is exposed as a separate package-owned executable.
+//! Native invocation handlers own exact device inspection and mutation through
+//! retained cryptsetup, util-linux, systemd, and OpenZFS executables. Pool imports
+//! and dataset mounts are removable leases; committed disk layouts retain their
+//! durable provenance until an explicit factory reset.
 
 #![forbid(unsafe_code)]
 
 pub mod boot_transaction_storage;
-pub mod cryptsetup;
-pub mod engine;
+pub mod native_provisioning_marker;
+pub mod native_storage_format;
+pub mod native_storage_provisioning;
 pub mod process;
-pub mod provisioning_marker;
-pub mod root_observation;
-pub mod state;
-pub mod storage_format;
-pub mod storage_provisioning;
-pub mod zfs_dataset;
 pub mod zfs_maintenance;
 pub mod zfs_memory;
-pub mod zfs_pool;
+
+pub mod native_cryptsetup;
+pub mod native_state;
+
+pub mod native_zfs_dataset;
+pub mod native_zfs_pool;

@@ -28,7 +28,7 @@ in
     pname = "aos-filesystem-provider";
     qualification.packageProbe = lib.qualification.providerExecutableProbe {
       name = "aos-filesystem-provider";
-      entryPoint = "libexec/aos-filesystem-provider";
+      entryPoint = "bin/aos-filesystem-provider";
     };
 
     inherit version cargoDeps;
@@ -37,16 +37,12 @@ in
     cargoTestFlags = "-p aos-filesystem-provider";
     doCheck = true;
 
-    abilities = ./_aos-filesystem-provider;
-
-    postInstall = ''
-      mkdir -p "$out/libexec"
-      mv "$out/bin/aos-filesystem-provider" "$out/libexec/aos-filesystem-provider"
-    '';
+    module = ./_aos-filesystem-provider;
 
     meta = {
       description = "Authenticated AOS storage and filesystem-entry provider";
       homepage = "https://github.com/andyl/andyl-os";
       license = "Apache-2.0";
+      mainProgram = "aos-filesystem-provider";
     };
   }

@@ -7,6 +7,14 @@
   mkCargoDummySource,
   aosWorkspaceVendor,
   patchelf,
+  systemd,
+  util-linux,
+  aos,
+  aos-metadata-provider,
+  aos-nix-store-provider,
+  service-management,
+  storage-interface,
+  aos-boot-storage,
 }: let
   version = "0.1.0";
   cargoDeps = aosWorkspaceVendor;
@@ -83,9 +91,10 @@ in
     cargoTestFlags = "-p aos-block-storage-provider -p aos-storage-provisioning";
     doCheck = true;
     buildDeps = [patchelf];
-    runtimeDeps = [];
+    runtimeDeps = [systemd util-linux aos];
 
-    abilities = ./_aos-storage-provisioning-provider;
+    module = ./_aos-storage-provisioning-provider;
+    moduleDeps = [aos-metadata-provider aos-nix-store-provider service-management storage-interface aos-boot-storage];
     preBuild = staticBuildSetup;
 
     postInstall = ''
@@ -109,5 +118,6 @@ in
       description = "Checked one-time storage provisioning provider";
       homepage = "https://github.com/andyl/andyl-os";
       license = "Apache-2.0";
+      mainProgram = "aos-storage-provisioning-provider";
     };
   }

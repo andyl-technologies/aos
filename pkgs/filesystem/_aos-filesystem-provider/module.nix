@@ -1,144 +1,162 @@
-##! Native controller and terminal declarations for mutable filesystem resources.
-{lib, ...}: let
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  interfaces = serviceManagement.interfaces;
-  types = lib.abilities.types;
-  artifact = lib.abilities.packageOutput {};
-  moduleArtifact = lib.abilities.packageOutput {output = "module";};
-  providerModule = {
-    artifact = moduleArtifact;
-    path = "provider.nix";
-  };
-  storageRealization = types.record {
-    fields = {
-      schema = types.enum ["aos.filesystem.storage-realization/v1"];
-      path = serviceManagement.types.storagePath;
+##! Package-owned filesystem operations and merged directory declarations.
+{
+  config,
+  lib,
+  package,
+  ...
+}: let
+  inherit (lib) mkOption types;
+  pathOption = description:
+    mkOption {
+      type = types.deferred types.str;
+      inherit description;
     };
-  };
-  viewRealization = types.record {
-    fields = {
-      schema = types.enum ["aos.filesystem.storage-view-realization/v1"];
-      source = types.resourceReference;
-      path = types.deferredResult serviceManagement.types.storagePath;
-      relative_path = {
-        type = types.optional types.relativePath;
-        optional = true;
+  directoryInput = {
+    options = {
+      path = pathOption "Absolute mutable path owned by this effect.";
+      mode = mkOption {
+        type = types.str;
+        default = "0755";
+        description = "Octal permission mode.";
+      };
+      parentResource = mkOption {
+        type = types.nullOr (types.deferred types.str);
+        default = null;
+        description = "Identity of the exact owning parent directory effect, when allocating within one.";
+      };
+      owner = mkOption {
+        type = types.nullOr (types.deferred types.str);
+        default = null;
+        description = "Local user name owning the entry.";
+      };
+      group = mkOption {
+        type = types.nullOr (types.deferred types.str);
+        default = null;
+        description = "Local group name owning the entry.";
       };
     };
   };
-  entryRealization = types.record {
-    fields = {
-      schema = types.enum ["aos.filesystem.entry-realization/v1"];
-      path = serviceManagement.types.executionPath;
-      source_path = {
-        type = types.optional (types.deferredResult serviceManagement.types.executionPath);
-        optional = true;
-      };
+  result.options = {
+    path = mkOption {
+      type = types.str;
+      description = "Realized filesystem path.";
+    };
+    resource = mkOption {
+      type = types.str;
+      description = "Logical identity of the owning effect.";
     };
   };
-  kinds = {
-    storage-allocation = {
-      interface = interfaces.storageAllocation;
-      realization = storageRealization;
-      action = "allocate";
-      description = "Allocates instance-scoped storage through the AOS filesystem controller.";
-    };
-    persistent-storage-allocation = {
-      interface = interfaces.persistentStorageAllocation;
-      realization = storageRealization;
-      action = "allocate";
-      description = "Allocates retained storage through the AOS filesystem controller.";
-    };
-    storage-view = {
-      interface = interfaces.storageView;
-      realization = viewRealization;
-      action = "materialize";
-      description = "Resolves authorized child views through the AOS filesystem controller.";
-    };
-    filesystem-entry = {
-      interface = interfaces.filesystemEntry;
-      realization = entryRealization;
-      action = "materialize";
-      description = "Materializes declared directories and copied files through the AOS filesystem controller.";
-    };
+  directory = {
+    input = directoryInput;
+    inherit result;
+    handler.program = package;
   };
-  effectsAlias = alias: "${alias}-effects";
-  effectsName = alias: "aos.filesystem.${effectsAlias alias}";
-  effectsDeclaration = alias: selected:
-    lib.abilities.declareInterface {
-      name = effectsName alias;
-      description = "Executes checked terminal effects for ${selected.interface.document.interface.name}.";
-      abi = 1;
-      requestType = selected.interface.requestType;
-      outputs = {};
-      methods = builtins.mapAttrs (_: method:
-        method
-        // {
-          targetResource = selected.interface.identity.name;
-        })
-      selected.interface.declaration.methods;
-      lifecycle = selected.interface.declaration.lifecycle;
-      aggregation =
-        selected.interface.declaration.aggregation
-        // {
-          controllerGroup = effectsAlias alias;
-        };
-      configurationType = null;
-      guarantees = [];
-    };
-  effectsIdentity = alias: selected:
-    lib.abilities.interfaceIdentity (
-      lib.abilities.interfaceDocumentFromDeclaration (effectsDeclaration alias selected)
-    );
-  effectsRequirement = alias: selected: {
-    alias = "effects";
-    description = "Selects the checked lower filesystem effect handler for ${selected.interface.identity.name}.";
-    accepted_interfaces = [(effectsIdentity alias selected)];
-    inherit (selected.interface) methods;
-    guarantees = [];
-    strength = "required";
-    fallback = null;
-  };
-  controllerImplementation = alias: selected: {
-    name = alias;
-    value = {
-      inherit (selected) description;
-      interface = selected.interface.identity;
-      inherit artifact providerModule;
-      inherit (selected.interface) methods;
-      guarantees = [];
-      requirements.effects = effectsRequirement alias selected;
-      desiredType = selected.realization;
-      requiredFeatures = [];
-    };
-  };
-  terminalImplementation = alias: selected: {
-    name = effectsAlias alias;
-    value = {
-      description = "Executes checked terminal effects for ${selected.interface.identity.name}.";
-      interface = effectsAlias alias;
-      inherit artifact;
-      inherit (selected.interface) methods;
-      guarantees = [];
-      handlerDescriptor = {
-        inherit artifact;
-        entryPoint = "libexec/aos-filesystem-provider";
-        arguments = selected.interface.requestType;
-        result = selected.interface.observationType;
-      };
-      desiredType = null;
-      requiredFeatures = [];
-    };
-  };
+  enabled = lib.filterAttrs (_: value: value.enable) config.aos.directories;
+  effects = persistent:
+    lib.mapAttrs (_: value: {
+      input = builtins.removeAttrs value ["enable" "persistent"];
+      lifetime =
+        if persistent
+        then "persistent"
+        else "instance";
+    }) (lib.filterAttrs (_: value: value.persistent == persistent) enabled);
 in {
-  config.aos.abilities = {
-    interfaces = builtins.listToAttrs (builtins.map (alias: {
-      name = effectsAlias alias;
-      value = effectsDeclaration alias kinds.${alias};
-    }) (builtins.attrNames kinds));
-    implementations = builtins.listToAttrs (
-      builtins.map (alias: controllerImplementation alias kinds.${alias}) (builtins.attrNames kinds)
-      ++ builtins.map (alias: terminalImplementation alias kinds.${alias}) (builtins.attrNames kinds)
-    );
+  options.aos.directories = mkOption {
+    extensible = true;
+    default = {};
+    description = "Merged filesystem allocations with explicit retention policy.";
+    type = types.attrsOf (types.submodule [
+      directoryInput
+      {
+        options.enable = lib.mkEnableOption "this filesystem allocation";
+        options.persistent = mkOption {
+          type = types.bool;
+          default = false;
+          description = "Retain allocation after its declaring package is removed.";
+        };
+      }
+    ]);
+  };
+  config.aos.abilities.filesystem.operations = {
+    directory = directory;
+    allocate = directory // {effects = effects false;};
+    persistentAllocate = directory // {effects = effects true;};
+    view = {
+      input.options = {
+        sourcePath = pathOption "Previously realized storage root.";
+        relativePath = mkOption {
+          type = types.nullOr (types.deferred types.str);
+          default = null;
+          description = "Normalized child path within the storage root.";
+        };
+      };
+      inherit result;
+      handler.program = package;
+    };
+    symlinkTree = {
+      input = {
+        imports = [{options = builtins.removeAttrs directoryInput.options ["mode"];}];
+        options = {
+          mode = lib.mkOption {
+            type = lib.types.str;
+            default = "0777";
+            description = "Symlink mode; source tree keeps its immutable file modes.";
+          };
+          sourcePath = pathOption "Retained immutable directory exposed by this owned link.";
+        };
+      };
+      inherit result;
+      handler.program = package;
+    };
+    privilegedExecutable = {
+      input.options = {
+        name = mkOption {
+          type = types.str;
+          description = "Executable basename under /run/wrappers/bin.";
+        };
+        source = pathOption "Retained executable copied into the privileged wrapper directory.";
+        mode = mkOption {
+          type = types.str;
+          default = "4755";
+          description = "Octal privileged executable permission mode.";
+        };
+        owner = mkOption {
+          type = types.str;
+          default = "root";
+          description = "Local user owning the privileged executable.";
+        };
+        group = mkOption {
+          type = types.str;
+          default = "root";
+          description = "Local group owning the privileged executable.";
+        };
+      };
+      inherit result;
+      handler.program = package;
+    };
+    entry = {
+      input = {
+        imports = [directoryInput];
+        options = {
+          kind = mkOption {
+            type = types.enum ["directory" "copied-file"];
+            default = "directory";
+            description = "Filesystem entry kind.";
+          };
+          sourcePath = mkOption {
+            type = types.nullOr (types.deferred types.str);
+            default = null;
+            description = "Retained source file for a copied entry.";
+          };
+          maxBytes = mkOption {
+            type = types.int;
+            default = 16777216;
+            description = "Maximum number of source bytes copied.";
+          };
+        };
+      };
+      inherit result;
+      handler.program = package;
+    };
   };
 }

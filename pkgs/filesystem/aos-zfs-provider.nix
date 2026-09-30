@@ -8,6 +8,10 @@
   aosWorkspaceVendor,
   patchelf,
   zfs,
+  service-management,
+  storage-interface,
+  kmod,
+  aos-kernel-tunable-provider,
 }: let
   version = "0.1.0";
   cargoDeps = aosWorkspaceVendor;
@@ -87,7 +91,8 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [zfs];
 
-    abilities = ./_aos-zfs-provider;
+    module = ./_aos-zfs-provider;
+    moduleDeps = [service-management storage-interface kmod aos-kernel-tunable-provider];
     preBuild = staticBuildSetup;
 
     postInstall = ''
@@ -106,5 +111,6 @@ in
       description = "Checked OpenZFS pool and dataset provider";
       homepage = "https://github.com/andyl/andyl-os";
       license = "Apache-2.0";
+      mainProgram = "aos-zfs-pool-provider";
     };
   }

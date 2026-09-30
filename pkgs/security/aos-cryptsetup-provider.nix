@@ -85,7 +85,7 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [];
 
-    abilities = ./_aos-cryptsetup-provider;
+    module = ./_aos-cryptsetup-provider;
 
     preBuild = staticBuildSetup;
 
