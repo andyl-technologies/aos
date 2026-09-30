@@ -8,8 +8,8 @@ license.workspace = true
 anyhow.workspace = true
 aos-ability-model.workspace = true
 aos-contract.workspace = true
-aos-package-store-model = { workspace = true }
-aos-provider-protocol.workspace = true
+aos-ability-runtime.workspace = true
+tempfile.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -5,10 +5,12 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+aos-core.workspace = true
+aos-ability-plan.workspace = true
 aos-ability-model = { workspace = true }
+aos-ability-runtime.workspace = true
 aos-contract = { workspace = true }
 aos-net = { workspace = true, features = ["transfer"] }
-aos-provider-protocol = { workspace = true }
 aos-storage-provisioning = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }

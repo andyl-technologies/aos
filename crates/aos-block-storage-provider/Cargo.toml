@@ -7,9 +7,10 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 aos-ability-model.workspace = true
+aos-ability-runtime.workspace = true
 aos-contract.workspace = true
-aos-provider-protocol.workspace = true
 aos-storage-provisioning.workspace = true
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
@@ -48,3 +49,6 @@ path = "src/bin/storage_provisioning_marker.rs"
 [[bin]]
 name = "aos-boot-transaction-storage-provider"
 path = "src/bin/boot_transaction_storage.rs"
+
+[dev-dependencies]
+tempfile.workspace = true
