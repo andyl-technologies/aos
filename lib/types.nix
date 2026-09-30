@@ -21,7 +21,10 @@
 ##! type checking runs). When `null` (only during bootstrap, before the
 ##! modules engine is available), submodules fall back to a permissive deep
 ##! merge that preserves the definitions but skips option processing.
-{evalSubmodule ? null}: let
+{
+  evalSubmodule ? null,
+  projectOptionType ? type: type._aosDocType,
+}: let
   # Helper: take the last definition's value (last-writer-wins semantics).
   lastValue = _loc: defs: let
     last = builtins.elemAt defs (builtins.length defs - 1);
@@ -426,6 +429,7 @@ in rec {
   ## # Type
   ## `type -> type`
   listOf = elemType: {
+    _nestedType = elemType;
     name = "listOf(${elemType.name})";
     description = "list of ${elemType.description}";
     check = v: builtins.isList v;
@@ -610,6 +614,7 @@ in rec {
   ## # Type
   ## `type -> type`
   nullOr = elemType: {
+    _nestedType = elemType;
     name = "nullOr(${elemType.name})";
     description = "${elemType.description} or null";
     check = v: v == null || elemType.check v;
@@ -794,7 +799,7 @@ in rec {
       && builtins.attrNames value == ["_type" "identity" "output" "schema"]
       && value._type == "aos-effect-output"
       && builtins.isList value.identity
-      && builtins.length value.identity == 3
+      && builtins.length value.identity >= 3
       && builtins.all builtins.isString value.identity
       && builtins.isString value.output
       && builtins.isAttrs value.schema;
@@ -804,11 +809,13 @@ in rec {
   ## Accepts an ordinary value or a deferred output of the same declared type.
   ## This wraps an option type; it does not construct graph expressions.
   deferred = valueType: {
+    _nestedType = valueType;
+    _deferred = true;
     name = "deferred(${valueType.name})";
     description = "${valueType.description} or its deferred result";
     check = value:
       if builtins.isAttrs value && (value._type or null) == "aos-effect-output"
-      then effectOutput.check value && value.schema == valueType._aosDocType
+      then effectOutput.check value && value.schema == projectOptionType valueType
       else valueType.check value;
     merge = loc: definitions:
       if
@@ -818,10 +825,7 @@ in rec {
         definitions
       then mergeEqualOption loc definitions
       else valueType.merge loc definitions;
-    _aosDocType = {
-      kind = "deferred";
-      value = valueType._aosDocType;
-    };
+    _aosDocType = valueType._aosDocType;
   };
 
   ## Wrap a type with an additional check predicate. The inner type's
@@ -833,6 +837,7 @@ in rec {
   addCheck = type: check:
     type
     // {
+      _portable = false;
       check = v: type.check v && check v;
       # The module engine delegates validation to merge. Retain the extra
       # predicate there as well, including when this type is nested in a list
@@ -891,6 +896,7 @@ in rec {
   ## # Type
   ## `type -> (a -> b) -> type -> type`
   coercedTo = fromType: coercion: toType: {
+    _projectionType = toType;
     name = "coercedTo(${fromType.name},${toType.name})";
     description = "${fromType.description} convertible to ${toType.description}";
     check = v: fromType.check v || toType.check v;
@@ -932,6 +938,7 @@ in rec {
   ## # Type
   ## `type -> type`
   uniq = elemType: {
+    _projectionType = elemType;
     name = "uniq(${elemType.name})";
     description = "unique ${elemType.description}";
     check = elemType.check;

@@ -45,7 +45,10 @@
   # submodules, per-option type checking) without tearing the lib into
   # two bootstrap phases.
 
-  types = import ./types.nix {inherit evalSubmodule;};
+  types = import ./types.nix {
+    inherit evalSubmodule;
+    projectOptionType = import ./type-schema.nix {lib = finalLib;};
+  };
   modules = import ./modules.nix {
     inherit
       trivial

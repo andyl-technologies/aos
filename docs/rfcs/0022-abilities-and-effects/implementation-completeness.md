@@ -1,5 +1,8 @@
 # Implementation scope and completion evidence
 
+> This audit describes the superseded registry implementation. It is not a
+> completeness claim for the module cutover. See [current migration status](infrastructure-cutover.md).
+
 This checklist distinguishes the complete RFC from its first vertical slice.
 The [implementation phases](09-implementation-and-validation.md) order delivery;
 finishing nginx alone does not finish the broader consumption, platform,

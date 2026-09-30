@@ -53,34 +53,14 @@
   hostPackageModules ? [],
   ## Stage-specific host modules selected by the image graph.
   hostConfigurationModules ? [],
-  ## Exact authenticated provider modules selected by host bindings.
-  hostProviderModules ? [],
-  ## Resolver-produced host provider instances.
-  hostAbilityInstances ? {},
-  ## Exact source-composed host bindings.
-  hostAbilityBindings ? {},
-  ## Concrete host child requests retained across bounded resolution rounds.
-  hostAbilityRequests ? {},
-  ## Exact host child requirements retained across bounded resolution rounds.
-  hostAbilityRequirements ? {},
-  ## Typed host ability environment.
-  hostAbilityEnvironment,
+  ## Logical identity scope for host effects.
+  hostScope,
   ## Exact authenticated package modules selected for the initrd graph.
   initrdPackageModules ? [],
   ## Stage-specific initrd modules selected by the image graph.
   initrdConfigurationModules ? [],
-  ## Exact authenticated provider modules selected by initrd bindings.
-  initrdProviderModules ? [],
-  ## Resolver-produced initrd provider instances.
-  initrdAbilityInstances ? {},
-  ## Exact source-composed initrd bindings.
-  initrdAbilityBindings ? {},
-  ## Concrete initrd child requests retained across bounded resolution rounds.
-  initrdAbilityRequests ? {},
-  ## Exact initrd child requirements retained across bounded resolution rounds.
-  initrdAbilityRequirements ? {},
-  ## Typed initrd ability environment.
-  initrdAbilityEnvironment,
+  ## Logical identity scope for early-boot effects.
+  initrdScope,
   ## Exact static contract projected by the complete initrd fixed point.
   initrdStaticAbilityContract,
   ## Option declarations from the converged host and initrd fixed points.
@@ -89,19 +69,13 @@
 }: let
   freeze = import ./freeze-pkgs.nix {inherit lib;};
 
-  checkedHostPackageModules = lib.abilities.canonicalizeAuthenticatedModuleRecords hostPackageModules;
-  checkedHostProviderModules = lib.abilities.canonicalizeAuthenticatedModuleRecords hostProviderModules;
-  checkedInitrdPackageModules = lib.abilities.canonicalizeAuthenticatedModuleRecords initrdPackageModules;
-  checkedInitrdProviderModules = lib.abilities.canonicalizeAuthenticatedModuleRecords initrdProviderModules;
+  packageModuleLib = import ./package-modules.nix {};
+  checkedHostPackageModules = packageModuleLib.canonicalize hostPackageModules;
+  checkedInitrdPackageModules = packageModuleLib.canonicalize initrdPackageModules;
 
   evaluationFor = {
-    environment,
+    scope,
     packageModules,
-    selectedProviderModules,
-    abilityInstances,
-    abilityBindings,
-    abilityRequests,
-    abilityRequirements,
     extraModules ? [],
     evaluationSpecialArgs ? {},
   }:
@@ -112,33 +86,11 @@
         ++ fixtureModules
         ++ [
           {aos.system.moduleAbi = lib.mkForce moduleAbi;}
-          {aos.abilities.environment = environment;}
+          {aos.activation.scope = scope;}
         ]
-        ++ extraModules
-        ++ lib.optional (abilityInstances != {} || abilityBindings != {}) {
-          aos.abilities = {
-            instances = abilityInstances;
-            bindings = abilityBindings;
-          };
-        };
-      inherit
-        pkgs
-        lib
-        operatorModules
-        runtimeModules
-        packageModules
-        selectedProviderModules
-        ;
-      enableAbilitySelection = true;
-      specialArgs =
-        {
-          abilityResolution = {
-            bindings = abilityBindings;
-            requests = abilityRequests;
-            requirements = abilityRequirements;
-          };
-        }
-        // evaluationSpecialArgs;
+        ++ extraModules;
+      inherit pkgs lib operatorModules runtimeModules packageModules;
+      specialArgs = evaluationSpecialArgs;
     };
 
   checkedInitrdStaticContract = {
@@ -147,13 +99,8 @@
   };
 
   initrdSchemaEval = evaluationFor {
-    environment = initrdAbilityEnvironment;
+    scope = initrdScope;
     packageModules = checkedInitrdPackageModules;
-    selectedProviderModules = checkedInitrdProviderModules;
-    abilityInstances = initrdAbilityInstances;
-    abilityBindings = initrdAbilityBindings;
-    abilityRequests = initrdAbilityRequests;
-    abilityRequirements = initrdAbilityRequirements;
     extraModules =
       initrdConfigurationModules
       ++ [
@@ -191,13 +138,8 @@
   baseLibOut = builtins.placeholder "out";
   placeholderBaseLibDigest = builtins.hashString "sha256" baseLibOut;
   realEval = evaluationFor {
-    environment = hostAbilityEnvironment;
+    scope = hostScope;
     packageModules = checkedHostPackageModules;
-    selectedProviderModules = checkedHostProviderModules;
-    abilityInstances = hostAbilityInstances;
-    abilityBindings = hostAbilityBindings;
-    abilityRequests = hostAbilityRequests;
-    abilityRequirements = hostAbilityRequirements;
     extraModules =
       hostConfigurationModules
       ++ [
@@ -291,22 +233,12 @@
       })
     records;
   initrdPackageModulesFile = plainJson "initrd-package-modules.json" (frozenModuleRecords checkedInitrdPackageModules);
-  initrdProviderModulesFile = plainJson "initrd-provider-modules.json" (frozenModuleRecords checkedInitrdProviderModules);
   hostPackageModulesFile = plainJson "host-package-modules.json" (frozenModuleRecords checkedHostPackageModules);
-  hostProviderModulesFile = plainJson "host-provider-modules.json" (frozenModuleRecords checkedHostProviderModules);
   hostEvaluationInputsFile = plainJson "host-evaluation-inputs.json" {
-    environment = hostAbilityEnvironment;
-    abilityInstances = hostAbilityInstances;
-    abilityBindings = hostAbilityBindings;
-    abilityRequests = hostAbilityRequests;
-    abilityRequirements = hostAbilityRequirements;
+    scope = hostScope;
   };
   initrdEvaluationInputsFile = plainJson "initrd-evaluation-inputs.json" {
-    environment = initrdAbilityEnvironment;
-    abilityInstances = initrdAbilityInstances;
-    abilityBindings = initrdAbilityBindings;
-    abilityRequests = initrdAbilityRequests;
-    abilityRequirements = initrdAbilityRequirements;
+    scope = initrdScope;
     staticContractIdentity = builtins.toString initrdStaticAbilityContract + "/contract.json";
   };
   # Module sources and the static contract are replay roots. Package outputs
@@ -314,7 +246,7 @@
   # metadata alone cannot pull an unused CLI or toolchain into early boot.
   initrdAuthenticatedRoots = lib.unique (builtins.concatMap
     (record: [record.configRoot])
-    (checkedInitrdPackageModules ++ checkedInitrdProviderModules)
+    checkedInitrdPackageModules
     ++ [initrdStaticAbilityContract]);
   checkedInitrdAuthenticatedRoots =
     builtins.map
@@ -327,7 +259,7 @@
   # explicit roots because their paths are replayed during host evaluation.
   hostModuleRoots = lib.unique (builtins.map
     (record: record.configRoot)
-    (checkedHostPackageModules ++ checkedHostProviderModules));
+    checkedHostPackageModules);
   checkedHostAuthenticatedRoots =
     builtins.map
     (root:
@@ -424,10 +356,8 @@
     cp ${frozenPkgsFile} "$out/frozen-pkgs.json"
     cp ${frozenArtifactsFile} "$out/frozen-artifacts.json"
     cp ${hostPackageModulesFile} "$out/host-package-modules.json"
-    cp ${hostProviderModulesFile} "$out/host-provider-modules.json"
     cp ${hostEvaluationInputsFile} "$out/host-evaluation-inputs.json"
     cp ${initrdPackageModulesFile} "$out/initrd-package-modules.json"
-    cp ${initrdProviderModulesFile} "$out/initrd-provider-modules.json"
     cp ${initrdEvaluationInputsFile} "$out/initrd-evaluation-inputs.json"
     cp ${systemModulesFile} "$out/system-modules.nix"
     cp ${moduleAbiFile} "$out/module-abi.nix"
