@@ -37,6 +37,7 @@
     attrPath = "${attrPath}.haltedPartialRrTurn";
     taskIds = [];
   };
+  qemuRuntimeSemantics = import ./phase2-qemu-runtime-semantics.nix {inherit pkgs lib qemuPackage;};
   qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
     inherit pkgs lib qemuPackage;
     patchStackRepository = qemuPatchStackRepository;
@@ -1543,6 +1544,21 @@
             ${patchDir}/0116-crucible-qemu-11-api-port.patch
           grep -Fq 'qemu_plugin_register_vcpu_tb_trans_cb(id, vcpu_tb_trans, NULL);' \
             ${patchDir}/0116-crucible-qemu-11-api-port.patch
+        '';
+      };
+    }
+    {
+      patch = "0117-crucible-qemu-11-runtime-semantics.patch";
+      check = certifyExactPatch {
+        patchName = "0117-crucible-qemu-11-runtime-semantics.patch";
+        liveCheck = qemuRuntimeSemantics;
+        evidenceName = "qemu-11-runtime-semantics";
+        liveEvidence = ''
+          grep -Fxq 'ordinary_tcg_aarch64_boot=true' "$live_result"
+          grep -Fxq 'seeded_aarch64_fingerprint=true' "$live_result"
+          grep -Fxq 'aarch64_hardware_error_dispatch=true' "$live_result"
+          grep -Fxq 'terminal_vmstate_stream_header=true' "$live_result"
+          grep -Fxq 'vcpu_service_trajectories=true' "$live_result"
         '';
       };
     }
