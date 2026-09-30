@@ -1,5 +1,11 @@
 //! Exact Source companion keys, complete graph checks and before-image witnesses.
 
+// Cold DATA vectors live here only to reuse the unchanged private held graph
+// fixtures. Production cold ownership remains in native_completion.
+#[cfg(test)]
+#[path = "../native_completion/pre_requested_cold/tests.rs"]
+mod pre_requested_cold_tests;
+
 use super::{SourceNativeHeldCompletionRecordV1 as Record, corrupt, evidence};
 use crate::ledger::{
     LedgerFormatErrorV1, format,
@@ -211,7 +217,7 @@ pub(super) fn pending_retirement_rows(
     };
     use native_completion::NativeAcquireCompletionStateV2 as Outer;
 
-    let mut rows = Companions::read(before, previous)?;
+    let rows = Companions::read(before, previous)?;
     cold_unleased_original(previous, &rows)?;
     TerminalHeldArchive::read(next)?;
     if previous.suffix.phase() != 9
@@ -231,26 +237,44 @@ pub(super) fn pending_retirement_rows(
     {
         return Err(corrupt("held exact pending retirement before cut"));
     }
-    rows.attempt.revision = next_revision(rows.attempt.revision)?;
-    rows.attempt.state = Attempt::Retired;
-    rows.acquisition.revision = next_revision(rows.acquisition.revision)?;
-    rows.acquisition.state = Acquisition::Faulted;
-    rows.holder.revision = next_revision(rows.holder.revision)?;
-    rows.holder.pending_attempt_digest = None;
 
+    let values = retire_pending_quartet(&rows.attempt, &rows.acquisition, &rows.holder)?;
     let mut result = before.clone();
-    result.insert(rows.keys[1].clone(), format::encode_attempt(&rows.attempt));
-    result.insert(
-        rows.keys[2].clone(),
-        format::encode_acquisition(&rows.acquisition),
-    );
-    result.insert(rows.keys[3].clone(), format::encode_session(&rows.holder));
-    result.insert(
-        rows.keys[4].clone(),
-        format::encode_session_history(&rows.holder),
-    );
+    for (key, value) in rows.keys[1..5].iter().zip(values) {
+        result.insert(key.clone(), value);
+    }
     result.insert(rows.keys[5].clone(), next.to_canonical_bytes()?);
     Ok(result)
+}
+
+// Callers establish their own exact before cut. This shared transformation
+// preserves every unrelated field and never constructs a native carrier.
+pub(crate) fn retire_pending_quartet(
+    attempt: &AttemptRecordV1,
+    acquisition: &AcquisitionRecordV1,
+    holder: &HolderSessionHeadRecordV1,
+) -> Result<[Vec<u8>; 4], LedgerFormatErrorV1> {
+    use crate::ledger::model::{
+        ProviderAcquisitionStateV1 as Acquisition, ProviderAttemptStateV1 as Attempt,
+    };
+
+    let mut attempt = attempt.clone();
+    let mut acquisition = acquisition.clone();
+    let mut holder = holder.clone();
+
+    attempt.revision = next_revision(attempt.revision)?;
+    attempt.state = Attempt::Retired;
+    acquisition.revision = next_revision(acquisition.revision)?;
+    acquisition.state = Acquisition::Faulted;
+    holder.revision = next_revision(holder.revision)?;
+    holder.pending_attempt_digest = None;
+
+    Ok([
+        format::encode_attempt(&attempt),
+        format::encode_acquisition(&acquisition),
+        format::encode_session(&holder),
+        format::encode_session_history(&holder),
+    ])
 }
 
 pub(super) fn validate_pending_retirement(

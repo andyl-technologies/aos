@@ -16,6 +16,7 @@ use aos_sandbox_source_provider_protocol::{
     },
 };
 
+use super::pre_requested_cold::OriginalSourcePreRequestedRetirementV1;
 use super::{NativeAcquireCompletionStateV2, OriginalSourceProvenanceV5};
 use crate::ledger::{
     LedgerFormatErrorV1, format,
@@ -238,6 +239,55 @@ struct OriginalRows {
     holder: HolderSessionHeadRecordV1,
     authority: AuthorityHeadRecordV1,
     catalog: CatalogHeadRecordV1,
+}
+
+/// Derives only the four original retirement candidate PUTs as comparison DATA.
+///
+/// The semantic Attempt, Acquisition, Holder and History order permits the
+/// existing Source transaction-identity preparation before the closure embeds
+/// that identity. The quartet alone is not a valid prospective Faulted graph.
+///
+/// # Errors
+///
+/// Rejects any before graph other than exact original Applying, changed
+/// provenance/configuration, exhausted revisions or invalid mutation bounds.
+pub fn derive_original_source_pre_requested_retirement_v1<'record>(
+    before: impl IntoIterator<Item = (&'record [u8], &'record [u8])>,
+    provenance: &OriginalSourceProvenanceV5,
+    configuration: ObjectDigest,
+) -> Result<OriginalSourcePreRequestedRetirementV1, LedgerFormatErrorV1> {
+    let before = crate::collect_bounded_records(before)?;
+    let (rows, original) = classify(&before, provenance, configuration)?;
+    if original.prefix != OriginalSourceOwnerPrefixV5::Applying {
+        return Err(corrupt("original Source retirement requires Applying"));
+    }
+
+    let keys = original_keys(provenance);
+    let values = graph::retire_pending_quartet(&rows.attempt, &rows.acquisition, &rows.holder)?;
+    let mut candidates = before.clone();
+    for (key, value) in keys.iter().zip(values) {
+        candidates.insert(key.clone(), value);
+    }
+
+    let expected = keys.iter().cloned().collect();
+    let mutations = transition::exact_mutations(&before, &candidates, &expected)?;
+    let semantic: Vec<_> = keys
+        .iter()
+        .map(|key| {
+            mutations
+                .iter()
+                .find(|mutation| mutation.key() == key.as_slice())
+                .cloned()
+                .ok_or(corrupt("original Source retirement quartet"))
+        })
+        .collect::<Result<_, _>>()?;
+    let semantic = semantic
+        .try_into()
+        .map_err(|_| corrupt("original Source retirement quartet width"))?;
+
+    Ok(OriginalSourcePreRequestedRetirementV1::from_parts(
+        original, semantic,
+    ))
 }
 
 fn classify(
@@ -539,7 +589,11 @@ fn validate_reservation_head(
             return Err(corrupt("original Source initial absent Holder"));
         }
 
+        let cold_archives = super::pre_requested_cold::graph::validated_archives(before)?;
         for (key, bytes) in before {
+            if cold_archives.contains_key(key) {
+                continue;
+            }
             if let DecodedRecordV1::SessionHistory(history) = crate::decode_current_record(key, bytes)?
                 && history.provider.authority_id() == after.provider.authority_id()
                 && history.holder.authority_id() == after.holder.authority_id()
@@ -552,7 +606,7 @@ fn validate_reservation_head(
     Ok(())
 }
 
-fn apply_exact_puts<'change>(
+pub(super) fn apply_exact_puts<'change>(
     before: &Records,
     changes: impl IntoIterator<Item = (&'change [u8], Option<&'change [u8]>)>,
     expected: &BTreeSet<Vec<u8>>,
