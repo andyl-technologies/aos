@@ -17,37 +17,6 @@ const STORE_VERIFY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const STORE_VERIFY_ERROR_LIMIT: u64 = 64 * 1024;
 const STORE_VERIFY_OUTPUT_LIMIT: u64 = 16 * 1024 * 1024;
 
-/// Checks one authenticated NAR identity using the packaged store executable.
-pub(crate) fn verify_store_object(
-    store_path: &str,
-    expected_hash: Sha256Digest,
-    expected_size: u64,
-    expected_references: &[String],
-) -> anyhow::Result<()> {
-    verify_store_object_in(
-        store_path,
-        expected_hash,
-        expected_size,
-        expected_references,
-        None,
-    )
-}
-
-pub(crate) fn run_store_check(store_path: &str, arguments: &[&str]) -> anyhow::Result<()> {
-    run_store_check_in(store_path, arguments, None)
-}
-
-pub(crate) fn query_store_paths(
-    arguments: &[&str],
-    store_path: &str,
-) -> anyhow::Result<Vec<String>> {
-    query_store_paths_in(arguments, store_path, None)
-}
-
-pub(crate) fn query_reference_hashes(store_path: &str) -> anyhow::Result<Vec<String>> {
-    query_reference_hashes_in(store_path, None)
-}
-
 pub(crate) fn dump_store_path_identity(store_path: &str) -> anyhow::Result<(Sha256Digest, u64)> {
     dump_store_path_identity_in(store_path, None)
 }

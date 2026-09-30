@@ -1220,26 +1220,6 @@ pub(crate) fn current_pcr11() -> Result<String> {
     current_pcr_value(11)
 }
 
-/// Reads the live SHA-256 PCR 12 boot-input value.
-///
-/// # Errors
-///
-/// Returns an error when the trusted TPM reader cannot run or its output does
-/// not contain a canonical PCR 12 value.
-pub(crate) fn current_pcr12() -> Result<String> {
-    current_pcr_value(12)
-}
-
-/// Reads the live SHA-256 PCR 7 Secure Boot policy value.
-///
-/// # Errors
-///
-/// Returns an error when the trusted TPM reader cannot run or its output does
-/// not contain a canonical PCR 7 value.
-pub(crate) fn current_pcr7() -> Result<String> {
-    current_pcr_value(7)
-}
-
 fn current_pcr_value(index: u8) -> Result<String> {
     let pcrread = trusted_tpm2_tool_path(TPM2_PCRREAD_ENV, "tpm2_pcrread")?;
     let tcti = tpm2_tcti()?;
