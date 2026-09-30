@@ -9,8 +9,10 @@ name = "terrane"
 path = "src/main.rs"
 
 [dependencies]
-terrane = { workspace = true, features = ["tokio"] }
+terrane = { workspace = true, features = ["tokio", "surface-sdk"] }
+terrane-core.workspace = true
 clap.workspace = true
+tokio.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 terrane-fs.workspace = true

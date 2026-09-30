@@ -6309,7 +6309,9 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "terrane",
+ "terrane-core",
  "terrane-fs",
+ "tokio",
 ]
 
 [[package]]
