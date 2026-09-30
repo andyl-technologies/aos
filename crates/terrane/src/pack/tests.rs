@@ -664,18 +664,163 @@ fn index_tombstones_allow_only_a_newly_published_replacement_pack() -> Result<()
     let tombstone = MergedShard::rebuild(
         hash[0],
         2,
-        &[old_index],
+        std::slice::from_ref(&old_index),
         &BTreeSet::from([old.header().id()]),
         None,
         &BTreeSet::new(),
     )?;
     let mut catalog = IndexCatalog::new();
-    catalog.refresh(vec![tombstone])?;
+    catalog.refresh(vec![tombstone.clone()])?;
+    catalog.add_pack(PackIndexSnapshot::decode(old.index_object(), 3)?)?;
+    assert_eq!(
+        catalog.lookup(EntryKind::Chunk, &hash),
+        Lookup::Tombstone(old.header().id())
+    );
+
     let replacement_index = PackIndexSnapshot::decode(replacement.index_object(), 3)?;
-    catalog.add_pack(replacement_index)?;
+    catalog.add_pack(replacement_index.clone())?;
     match catalog.lookup(EntryKind::Chunk, &hash) {
         Lookup::Live(record) => assert_eq!(record.pack(), replacement.header().id()),
         other => panic!("replacement must be live, got {other:?}"),
+    }
+
+    let rebuilt = MergedShard::rebuild(
+        hash[0],
+        3,
+        &[replacement_index, old_index],
+        &BTreeSet::new(),
+        Some(&tombstone),
+        &BTreeSet::new(),
+    )?;
+    assert_eq!(rebuilt.entries()[0].state(), RecordState::Live);
+    assert_eq!(rebuilt.entries()[0].pack(), replacement.header().id());
+
+    let old_only = MergedShard::rebuild(
+        hash[0],
+        3,
+        &[PackIndexSnapshot::decode(old.index_object(), 1)?],
+        &BTreeSet::new(),
+        Some(&tombstone),
+        &BTreeSet::new(),
+    )?;
+    assert_eq!(old_only.entries()[0].state(), RecordState::Tombstone);
+    Ok(())
+}
+
+#[test]
+fn index_tombstones_quarantine_blocks_newer_fallback_without_retiring_neighbors()
+-> Result<(), PackError> {
+    let pack = data_pack(22, &[b"quarantined", b"unrelated"])?;
+    let index = PackIndexSnapshot::decode(pack.index_object(), 1)?;
+    let hash = digest(EntryKind::Chunk, b"quarantined")?;
+    let neighbor = digest(EntryKind::Chunk, b"unrelated")?;
+    let mut shards = Vec::new();
+    for prefix in BTreeSet::from([hash[0], neighbor[0]]) {
+        let shard = MergedShard::rebuild(
+            prefix,
+            2,
+            std::slice::from_ref(&index),
+            &BTreeSet::new(),
+            None,
+            &BTreeSet::new(),
+        )?;
+        let mut bytes = shard.encode();
+        if prefix == hash[0] {
+            let position = shard
+                .entries()
+                .iter()
+                .position(|record| record.entry().hash() == &hash)
+                .expect("fixture identity");
+            bytes[12 + position * 72 + 66] = 2;
+        }
+        shards.push(MergedShard::decode(&bytes, 2, prefix)?);
+    }
+    let replacement = data_pack(23, &[b"quarantined"])?;
+    let mut catalog = IndexCatalog::new();
+    catalog.refresh(shards)?;
+    catalog.add_pack(index)?;
+    catalog.add_pack(PackIndexSnapshot::decode(replacement.index_object(), 3)?)?;
+
+    for kind in [EntryKind::Chunk, EntryKind::Attribute] {
+        assert_eq!(
+            catalog.lookup(kind, &hash),
+            Lookup::Quarantine(pack.header().id())
+        );
+    }
+    match catalog.lookup(EntryKind::Chunk, &neighbor) {
+        Lookup::Live(record) => assert_eq!(record.pack(), pack.header().id()),
+        other => panic!("unrelated identity must remain live, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn index_rebuild_quarantine_survives_newer_live_packs_and_recorded_pack_deletion()
+-> Result<(), PackError> {
+    let pack = data_pack(24, &[b"quarantined"])?;
+    let index = PackIndexSnapshot::decode(pack.index_object(), 1)?;
+    let hash = *index.entries()[0].hash();
+    let live = MergedShard::rebuild(
+        hash[0],
+        2,
+        std::slice::from_ref(&index),
+        &BTreeSet::new(),
+        None,
+        &BTreeSet::new(),
+    )?;
+    let mut bytes = live.encode();
+    bytes[12 + 66] = 2;
+    let quarantine = MergedShard::decode(&bytes, 2, hash[0])?;
+    assert_eq!(quarantine.entries()[0].state(), RecordState::Quarantine);
+    assert_eq!(quarantine.encode(), bytes);
+
+    let replacement = data_pack(25, &[b"quarantined"])?;
+    let packs = [
+        index,
+        PackIndexSnapshot::decode(replacement.index_object(), 3)?,
+    ];
+    let retired = BTreeSet::from([pack.header().id()]);
+    for deleted in [BTreeSet::new(), retired.clone()] {
+        let rebuilt =
+            MergedShard::rebuild(hash[0], 3, &packs, &retired, Some(&quarantine), &deleted)?;
+        assert_eq!(rebuilt.entries(), quarantine.entries());
+
+        let empty_inventory =
+            MergedShard::rebuild(hash[0], 4, &[], &retired, Some(&rebuilt), &retired)?;
+        assert_eq!(empty_inventory.entries(), quarantine.entries());
+        let mut catalog = IndexCatalog::new();
+        catalog.refresh(vec![empty_inventory])?;
+        assert_eq!(
+            catalog.lookup(EntryKind::Chunk, &hash),
+            Lookup::Quarantine(pack.header().id())
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn index_tombstones_reject_reserved_identity_states() -> Result<(), PackError> {
+    let pack = data_pack(26, &[b"reserved"])?;
+    let index = PackIndexSnapshot::decode(pack.index_object(), 1)?;
+    let hash = *index.entries()[0].hash();
+    let shard = MergedShard::rebuild(
+        hash[0],
+        1,
+        &[index],
+        &BTreeSet::new(),
+        None,
+        &BTreeSet::new(),
+    )?;
+    let mut bytes = shard.encode();
+
+    for state in 3..=255 {
+        bytes[12 + 66] = state;
+        assert_error!(
+            MergedShard::decode(&bytes, 1, hash[0]),
+            Err(PackError::Format(
+                terrane_core::pack_format::Error::Reserved
+            ))
+        );
     }
     Ok(())
 }
@@ -737,7 +882,7 @@ fn index_rebuild_rejects_conflicting_pack_ids_and_malformed_shard_records() -> R
         None,
         &BTreeSet::new(),
     )?;
-    for (offset, byte) in [(12 + 64, 3), (12 + 65, 7), (12 + 66, 2), (12 + 67, 1)] {
+    for (offset, byte) in [(12 + 64, 3), (12 + 65, 7), (12 + 66, 3), (12 + 67, 1)] {
         let mut malformed = shard.encode();
         malformed[offset] = byte;
         assert!(MergedShard::decode(&malformed, 1, hash[0]).is_err());

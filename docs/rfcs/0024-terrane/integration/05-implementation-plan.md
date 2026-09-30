@@ -222,7 +222,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.pack-self-describing`,
   `checks.terrane.gates.pack-single-writer`.
 - [x] **T-PACK-2** Merged index shards by generation, tombstones, rebuild
-  from per-pack indexes, and bundles. Narrowed to trunk scope: filters are
+  from per-pack indexes, and bundles. D-71 distinguishes GC-retired placements
+  from sticky identity quarantine; newer fallback and rebuild preserve
+  quarantine, while a fresh verified placement may supersede GC retirement.
+  Narrowed to trunk scope: filters are
   T-PACK-3 on B-bandwidth. Authoritative generation-manifest publication
   is completed jointly with T-BKT-1. — satisfies PACK-17 to PACK-20, PACK-24 to
   PACK-28; `checks.terrane.gates.index-shard-generations`,

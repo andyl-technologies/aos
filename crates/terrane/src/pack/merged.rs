@@ -66,6 +66,8 @@ pub enum RecordState {
     Live = 0,
     /// Content must not be served from this tombstoned pack.
     Tombstone = 1,
+    /// The identity must not be served until explicit verified repair.
+    Quarantine = 2,
 }
 
 /// One validated 72-byte merged index entry.
@@ -90,7 +92,7 @@ impl MergedEntry {
         &self.entry
     }
 
-    /// Returns whether this location is live or tombstoned.
+    /// Returns whether this location is live, GC-retired, or quarantined.
     pub const fn state(&self) -> RecordState {
         self.state
     }
@@ -111,6 +113,8 @@ impl MergedShard {
     /// deterministic tie-breaker. A live replacement is preferred to an older
     /// tombstoned location. Previous tombstones persist unless a later generation
     /// explicitly confirms that pack's bytes were deleted.
+    /// Identity quarantine persists independently of recorded-pack deletion;
+    /// inventory and fresh placements are not evidence of verified repair.
     ///
     /// # Errors
     /// Rejects stale generations, conflicting copies of the same immutable pack,
@@ -126,6 +130,7 @@ impl MergedShard {
         if previous.is_some_and(|prior| prior.shard != shard || prior.generation >= generation) {
             return Err(PackError::Generation);
         }
+
         let mut retired = tombstoned.clone();
         if let Some(prior) = previous {
             retired.extend(
@@ -136,15 +141,19 @@ impl MergedShard {
                     .map(|record| record.pack),
             );
         }
+
         let mut seen = BTreeMap::new();
         let mut records: BTreeMap<Digest, MergedEntry> = BTreeMap::new();
         if let Some(prior) = previous {
             for record in &prior.entries {
-                if record.state == RecordState::Tombstone && !deleted.contains(&record.pack) {
+                if record.state == RecordState::Quarantine
+                    || (record.state == RecordState::Tombstone && !deleted.contains(&record.pack))
+                {
                     records.insert(record.entry.hash, record.clone());
                 }
             }
         }
+
         let mut ordered: Vec<_> = packs.iter().collect();
         ordered.sort_by_key(|pack| (pack.generation, pack.header.id));
         for pack in ordered {
@@ -159,19 +168,21 @@ impl MergedShard {
             if deleted.contains(&pack.header.id) {
                 continue;
             }
+
             let state = if retired.contains(&pack.header.id) {
                 RecordState::Tombstone
             } else {
                 RecordState::Live
             };
             for entry in pack.entries.iter().filter(|entry| entry.hash[0] == shard) {
-                if state == RecordState::Tombstone
-                    && records
-                        .get(&entry.hash)
-                        .is_some_and(|existing| existing.state == RecordState::Live)
-                {
+                // Quarantine fences the identity, while GC retires only a placement.
+                if records.get(&entry.hash).is_some_and(|existing| {
+                    existing.state == RecordState::Quarantine
+                        || (state == RecordState::Tombstone && existing.state == RecordState::Live)
+                }) {
                     continue;
                 }
+
                 let mut entry = entry.clone();
                 entry.dictionary_id = 0;
                 records.insert(
@@ -184,6 +195,7 @@ impl MergedShard {
                 );
             }
         }
+
         Ok(Self {
             generation,
             shard,
@@ -233,10 +245,11 @@ impl MergedShard {
                 Ok(MergedEntry {
                     pack: PackId::from_random_bytes(record.pack),
                     entry: native_record(&record.record)?,
-                    state: if record.state == 0 {
-                        RecordState::Live
-                    } else {
-                        RecordState::Tombstone
+                    state: match record.state {
+                        0 => RecordState::Live,
+                        1 => RecordState::Tombstone,
+                        2 => RecordState::Quarantine,
+                        _ => return Err(PackError::Reserved),
                     },
                 })
             })
@@ -249,13 +262,15 @@ impl MergedShard {
     }
 }
 
-/// A catalog lookup that distinguishes absence from a newest tombstone.
+/// A catalog lookup that distinguishes absence, GC retirement, and quarantine.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Lookup {
     /// A checked live content location.
     Live(MergedEntry),
     /// A current tombstone that forbids falling back to an older index.
     Tombstone(PackId),
+    /// An identity quarantine that blocks every ordinary content placement.
+    Quarantine(PackId),
     /// No loaded shard or newer per-pack index contains this content.
     Missing,
 }
@@ -323,6 +338,8 @@ impl IndexCatalog {
     /// A tombstone never falls back to a stale per-pack index; an independently
     /// published replacement after the shard generation can supersede it. The caller
     /// must still verify the returned body and its kind before serving it.
+    /// Quarantine is checked before fallback and applies to the identity regardless
+    /// of the requested kind; only explicit verified repair can clear it.
     pub fn lookup(&self, kind: EntryKind, hash: &Digest) -> Lookup {
         let shard = self.shards.get(&hash[0]);
         let generation = shard.map_or(0, |shard| shard.generation);
@@ -333,10 +350,22 @@ impl IndexCatalog {
                 .ok()
                 .map(|position| &shard.entries[position])
         });
+
+        if let Some(record) = merged
+            && record.state == RecordState::Quarantine
+        {
+            return Lookup::Quarantine(record.pack);
+        }
+
         let fallback = self
             .newer_packs
             .values()
             .filter(|pack| shard.is_none() || pack.generation > generation)
+            .filter(|pack| {
+                merged.is_none_or(|record| {
+                    record.state != RecordState::Tombstone || record.pack != pack.header.id
+                })
+            })
             .filter_map(|pack| {
                 pack.entries
                     .binary_search_by_key(hash, |entry| entry.hash)

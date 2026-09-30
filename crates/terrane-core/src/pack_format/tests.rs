@@ -143,6 +143,52 @@ fn core_reader_rejects_crc_reserved_header_and_truncated_tail() -> Result<(), Er
 }
 
 #[test]
+fn shard_states_preserve_legacy_bytes_and_register_identity_quarantine() -> Result<(), Error> {
+    let (_, record, _) = fixture()?;
+    // Independent fixed layout: empty-chunk digest, pack 2a..2a, offset 24,
+    // one stored codec byte, zero plaintext bytes, and zero reserved bytes.
+    let live_bytes = unhex(concat!(
+        "545249580100000000000000",
+        "b8c424f844a636a1baddbc5fbc1fe533739c7399de74eae490e9f6d50a120dc0",
+        "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+        "1800000000000000",
+        "01000000",
+        "00000000",
+        "0000000000000000"
+    ))?;
+
+    for state in 0..=2 {
+        let merged = MergedRecord {
+            pack: [42; 16],
+            record: record.clone(),
+            state,
+        };
+        let mut expected = live_bytes.clone();
+        expected[PREAMBLE_SIZE + 66] = state;
+
+        assert_eq!(encode_shard(core::slice::from_ref(&merged)), expected);
+        assert_eq!(decode_shard(&expected, record.hash[0])?, vec![merged]);
+    }
+    Ok(())
+}
+
+#[test]
+fn shard_states_reject_every_reserved_value() -> Result<(), Error> {
+    let (_, record, _) = fixture()?;
+    let mut bytes = encode_shard(&[MergedRecord {
+        pack: [42; 16],
+        record: record.clone(),
+        state: 0,
+    }]);
+
+    for state in 3..=255 {
+        bytes[PREAMBLE_SIZE + 66] = state;
+        assert_eq!(decode_shard(&bytes, record.hash[0]), Err(Error::Reserved));
+    }
+    Ok(())
+}
+
+#[test]
 fn pure_shard_and_bundle_codecs_verify_and_round_trip() -> Result<(), Error> {
     let (_, record, _) = fixture()?;
     let merged = MergedRecord {
