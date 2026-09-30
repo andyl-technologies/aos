@@ -14,7 +14,7 @@ use aos_contract::Sha256Digest;
 
 use super::handler::HandlerArtifacts;
 use super::model::Deployment;
-use super::process::{FixedBudgetControl, run_bounded};
+use super::process::{FixedBudgetControl, ProcessOutput, run_bounded};
 use super::transaction::DeploymentStore;
 
 /// Admits exact output roots using authenticated registry or retained-generation evidence.
@@ -63,34 +63,42 @@ impl<A: ArtifactAdmission> NixStore<A> {
         let link = self
             .directory
             .join(Sha256Digest::of_bytes(key.as_bytes()).hex());
+        // Query the selected store's database, not the evaluator process's
+        // filesystem: a rooted store can use different physical paths.
+        let mut validity = Command::new(&self.executable);
+        validity.args(["--check-validity", root]);
+        let checked = run_store_command(&mut validity)?;
+        ensure!(
+            checked.status.success(),
+            "deployment artifact has not been realized: {}",
+            String::from_utf8_lossy(&checked.stderr)
+        );
+
         if let Ok(existing) = std::fs::read_link(&link) {
             ensure!(
                 existing == Path::new(root),
                 "retention key already names another artifact"
             );
-            ensure!(
-                Path::new(root).exists(),
-                "retained store artifact disappeared"
-            );
             return Ok(());
         }
-        ensure!(
-            Path::new(root).exists(),
-            "deployment artifact has not been realized"
-        );
         let mut command = Command::new(&self.executable);
         command
             .args(["--add-root"])
             .arg(&link)
             .args(["--indirect", "--realise", root]);
-        let output = run_bounded(
-            &mut command,
-            None,
-            64 * 1024,
-            &FixedBudgetControl::new(60_000),
-            &[],
-        )
-        .context("retaining deployment artifact in Nix store")?;
+        // Retention may register an existing path, but cannot fetch or build it.
+        command.args([
+            "--option",
+            "substitute",
+            "false",
+            "--option",
+            "max-jobs",
+            "0",
+            "--option",
+            "builders",
+            "",
+        ]);
+        let output = run_store_command(&mut command)?;
         ensure!(
             output.status.success(),
             "store retention command failed: {}",
@@ -154,6 +162,22 @@ impl<A: ArtifactAdmission> DeploymentStore for NixStore<A> {
         }
         Ok(())
     }
+}
+
+fn run_store_command(command: &mut Command) -> Result<ProcessOutput> {
+    aos_core::nix::configure_aos_nix_store(command)?;
+    let environment = command
+        .get_envs()
+        .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value.to_owned())))
+        .collect::<Vec<_>>();
+    run_bounded(
+        command,
+        None,
+        64 * 1024,
+        &FixedBudgetControl::new(60_000),
+        &environment,
+    )
+    .context("accessing the selected Nix store for deployment retention")
 }
 
 fn generation_roots(deployment: &Deployment) -> BTreeSet<&str> {
