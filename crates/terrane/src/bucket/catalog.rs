@@ -251,9 +251,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                             && (entry.get().state == RecordState::Tombstone as u8
                                 || self.physically_excluded(&catalog, &entry.get().pack)) =>
                     {
-                        // Unknown legacy completeness cannot discard the final
-                        // exact evidence that the previous physical pack retired.
-                        if catalog.exclusions.is_none() {
+                        // Replacing legacy state1 requires a binding that keeps
+                        // exact physical retirement evidence for that old pack.
+                        if !self.has_active_exclusion(&catalog, &entry.get().pack) {
                             return Err(StoreFailure::new(
                                 crate::store::StoreErrorKind::Unsupported,
                             ));

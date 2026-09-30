@@ -525,6 +525,30 @@ async fn legacy_state1_without_inventory_blocks_opaque_index_aliases_even_with_e
             .kind(),
         StoreErrorKind::Unsupported
     ));
+    let before = bucket.catalog().await.unwrap().capabilities.generation;
+    let body_identity = chunk_identity(body);
+    assert!(matches!(
+        bucket.exclude(&body_identity).await.unwrap_err().kind(),
+        StoreErrorKind::Unsupported
+    ));
+    assert!(matches!(
+        bucket
+            .put(upload(
+                &raw(body),
+                &body_identity,
+                body.len(),
+                &bucket.inner.config.chunk_profile,
+                ChunkPosition::Final
+            ))
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Unsupported
+    ));
+    assert_eq!(
+        bucket.catalog().await.unwrap().capabilities.generation,
+        before
+    );
     let reopened = FileBucket::open(
         config(bucket.root().to_owned()),
         TokioLocalFs,

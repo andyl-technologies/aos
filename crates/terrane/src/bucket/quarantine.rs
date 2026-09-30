@@ -53,16 +53,33 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .any(|entry| entry.state() == RecordState::Tombstone && entry.pack().as_bytes() == pack)
     }
 
+    /// Tests whether an exact active incarnation preserves physical retirement evidence.
+    pub(super) fn has_active_exclusion(&self, catalog: &Catalog, pack: &[u8; 16]) -> bool {
+        catalog.exclusions.as_ref().is_some_and(|entries| {
+            entries
+                .binary_search_by_key(pack, |entry| entry.pack_id)
+                .is_ok()
+        })
+    }
+
     /// Requires complete retirement authority and identities for every retired index.
     pub(super) fn index_retirement_known(&self, catalog: &Catalog) -> bool {
+        let inventoried = |pack: &[u8; 16]| {
+            catalog
+                .inventory
+                .as_ref()
+                .is_some_and(|entries| entries.iter().any(|entry| &entry.pack_id == pack))
+        };
         catalog.exclusions.as_ref().is_some_and(|exclusions| {
-            exclusions.iter().all(|exclusion| {
-                catalog.inventory.as_ref().is_some_and(|entries| {
-                    entries
-                        .iter()
-                        .any(|entry| entry.pack_id == exclusion.pack_id)
-                })
-            })
+            exclusions
+                .iter()
+                .all(|exclusion| inventoried(&exclusion.pack_id))
+                && catalog
+                    .shards
+                    .iter()
+                    .flat_map(|shard| shard.entries())
+                    .filter(|entry| entry.state() == RecordState::Tombstone)
+                    .all(|entry| inventoried(entry.pack().as_bytes()))
         })
     }
 
@@ -123,16 +140,24 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         if self.is_quarantined(&catalog, identity)? {
             return Ok(());
         }
-        if catalog.exclusions.is_none()
-            && self.selected_state(&catalog, identity)? == Some(RecordState::Tombstone)
-        {
-            // Identity quarantine cannot erase the last legacy evidence of
-            // physical retirement before a complete exclusion migration.
-            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-        }
         let hash = identity
             .terrane_v1_digest()
             .map_err(|_| files::malformed())?;
+        if catalog
+            .shards
+            .iter()
+            .flat_map(|shard| shard.entries())
+            .any(|entry| {
+                entry.entry().hash() == &hash
+                    && entry.entry().kind().identity_kind() == identity.kind()
+                    && entry.state() == RecordState::Tombstone
+                    && !self.has_active_exclusion(&catalog, entry.pack().as_bytes())
+            })
+        {
+            // Quarantine cannot erase a legacy pack's final exact physical
+            // retirement evidence, even when key6 claims an empty set.
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+        }
         let generation = self.next_generation(&catalog).await?;
         let mut shards = Vec::new();
         let mut found = false;
