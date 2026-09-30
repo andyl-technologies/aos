@@ -390,7 +390,7 @@ pub enum RefCasOutcome {
 pub enum RefLogAppendOutcome {
     /// The record was written exactly once.
     Appended,
-    /// The `(name, seq)` key already existed and was not changed.
+    /// The exact legacy or candidate key already existed and was not changed.
     Exists,
 }
 
@@ -410,7 +410,9 @@ pub trait RefWatch {
 ///
 /// Implementations must provide whole-record atomic CAS or report
 /// `single-writer` at open time (STORE-7, STORE-9). Appends are create-if-absent
-/// on `(name, seq)` (STORE-8); reads and watches preserve sequence order.
+/// on `(name, seq, candidate_id)` for new proposals or `(name, seq)` for
+/// legacy records (STORE-8); reads and watches expose committed history in
+/// sequence order.
 #[cfg_attr(feature = "send", async_trait::async_trait)]
 #[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
 pub trait RefStore: CapabilityReport {
@@ -431,7 +433,9 @@ pub trait RefStore: CapabilityReport {
     ///
     /// Returns `Invalid(MalformedRequest)` for a non-successor record, or
     /// another specified failure if the CAS cannot be attempted.
-    /// A mismatch is `Conflict(current)`, not a transport error. An authority
+    /// A mismatch is `Conflict(current)`, not a transport error. A branch
+    /// authority validates the exact selected proposal against `expect` and
+    /// `new` before publication (REF-12). An authority
     /// validates sequence, epoch, and home transitions at this write boundary
     /// with [`RefRecord::validate_successor`], even if the caller constructed
     /// `new` directly.
@@ -442,7 +446,7 @@ pub trait RefStore: CapabilityReport {
         new: &RefRecord,
     ) -> Result<RefCasOutcome, StoreFailure>;
 
-    /// Creates a reflog entry at `(name, seq)` without replacing one.
+    /// Creates an immutable reflog proposal without replacing its exact key.
     ///
     /// # Errors
     ///

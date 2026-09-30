@@ -17,7 +17,9 @@ pub mod domain;
 pub mod gc;
 pub mod guard;
 pub mod pack;
+#[cfg(feature = "std")]
 pub mod ref_advance;
+#[cfg(feature = "std")]
 pub mod repository;
 pub mod role;
 pub mod store;
