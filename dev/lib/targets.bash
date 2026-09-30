@@ -66,8 +66,8 @@ aos_dev_target_attr() {
       local prefix="containerImages.$variant"
       # The testing image is assembled by its system module, whereas release
       # containers are exposed by the top-level containerImages attrset.
-      if [[ $variant == aos-testing ]]; then
-        prefix='systems.aos-testing.build.defaultContainer'
+      if [[ $variant == aos-testing || $variant == aos-testing-staging ]]; then
+        prefix="systems.$variant.build.defaultContainer"
       fi
       case $kind in
         oci) printf '%s.platforms.%s.ociLayout' "$prefix" "$aos_dev_system" ;;
