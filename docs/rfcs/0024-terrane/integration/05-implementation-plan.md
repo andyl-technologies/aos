@@ -304,6 +304,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   native selection of that retained history remains joint work.
   The portable history, snapshot and pointer payload keys have registered
   mutability; protected publication control remains outside ordinary key I/O.
+  The shared private handoff includes a final operation check after staging.
+  Existing-only coordination and complete profile access support genuine
+  read-only startup verification. Actual producer integration, submitted-effect
+  retention and full crash/copy qualification remain incomplete.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,

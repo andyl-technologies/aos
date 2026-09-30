@@ -319,6 +319,18 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .map(|control| control.operator_uid)
     }
 
+    /// Borrows the opened backend's complete configured chunk profile.
+    ///
+    /// These inputs establish no physical binding or publication permission.
+    /// A held Guard installation independently checks their name, seed and all
+    /// profile parameters against its actual trusted configuration.
+    pub(crate) fn publication_profile(&self) -> (&str, &ChunkProfile) {
+        (
+            &self.inner.config.chunk_profile_name,
+            &self.inner.config.chunk_profile,
+        )
+    }
+
     fn path(&self, key: &BucketKey) -> PathBuf {
         self.inner.config.root.join(key.as_str())
     }

@@ -729,6 +729,27 @@ pub trait LocalFs {
     /// when the platform cannot supply the required exclusion.
     async fn lock_exclusive(&self, path: &std::path::Path) -> std::io::Result<Self::Lock>;
 
+    /// Locks an existing stable coordination inode without creating a file.
+    ///
+    /// Existing-state inspection uses this primitive so a missing or replaced
+    /// lock cannot silently initialize a namespace. Implementations open without
+    /// following symlinks, require a single-link regular file, and verify that
+    /// the locked descriptor still names the same inode after any lock wait.
+    /// The default refuses unsupported bindings without filesystem effects.
+    ///
+    /// # Errors
+    /// Returns `NotFound` for missing coordination, an I/O error for unsafe or
+    /// replaced inodes or failed locking, and `Unsupported` when unavailable.
+    async fn lock_existing_exclusive(
+        &self,
+        _path: &std::path::Path,
+    ) -> std::io::Result<Self::Lock> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "existing-only coordination locking unavailable",
+        ))
+    }
+
     /// Reads a complete file.
     ///
     /// # Errors

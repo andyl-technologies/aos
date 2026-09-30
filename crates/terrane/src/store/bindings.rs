@@ -104,6 +104,51 @@ pub struct TokioFileLock {
     _file: std::fs::File,
 }
 
+/// Distinguishes new namespace setup from read-only existing-state inspection.
+#[cfg(feature = "tokio")]
+enum LockOpenMode {
+    Create,
+    Existing,
+}
+
+/// Opens coordination with the requested creation policy and verifies its lock.
+#[cfg(feature = "tokio")]
+async fn native_file_lock(
+    path: &std::path::Path,
+    mode: LockOpenMode,
+) -> std::io::Result<TokioFileLock> {
+    let path = path.to_owned();
+
+    // Kernel lock waits run outside the executor. An abandoned result owns
+    // its descriptor until it is dropped, and existing-only opens never create.
+    tokio::task::spawn_blocking(move || {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(matches!(mode, LockOpenMode::Create))
+                .truncate(false)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(&path)?;
+            lock_opened(&path, file)
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = (path, mode);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "nofollow coordination locking unavailable",
+            ))
+        }
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
 /// Locks the opened regular inode and verifies that its pathname still names it.
 #[cfg(all(feature = "tokio", unix))]
 fn lock_opened(path: &std::path::Path, file: std::fs::File) -> std::io::Result<TokioFileLock> {
@@ -169,35 +214,11 @@ impl LocalFs for TokioLocalFs {
     }
 
     async fn lock_exclusive(&self, path: &std::path::Path) -> std::io::Result<Self::Lock> {
-        let path = path.to_owned();
+        native_file_lock(path, LockOpenMode::Create).await
+    }
 
-        // Waiting for the kernel lock must not block an async executor thread.
-        tokio::task::spawn_blocking(move || {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-
-                let file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(true)
-                    .truncate(false)
-                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                    .open(&path)?;
-                lock_opened(&path, file)
-            }
-
-            #[cfg(not(unix))]
-            {
-                let _ = path;
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Unsupported,
-                    "nofollow coordination locking unavailable",
-                ))
-            }
-        })
-        .await
-        .map_err(std::io::Error::other)?
+    async fn lock_existing_exclusive(&self, path: &std::path::Path) -> std::io::Result<Self::Lock> {
+        native_file_lock(path, LockOpenMode::Existing).await
     }
 
     async fn read(&self, path: &std::path::Path) -> std::io::Result<Vec<u8>> {
@@ -550,6 +571,55 @@ mod tests {
             for path in [link, retained, path] {
                 fs.remove_file(&path).await.unwrap();
             }
+            fs.remove_dir(&root).await.unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_existing_lock_never_creates_missing_coordination() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let fs = TokioLocalFs;
+            let entropy = fs.random_bytes(16).await.unwrap();
+            let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+            let root = std::env::temp_dir().join(format!("terrane-existing-lock-{suffix}"));
+            fs.create_dir_new(&root).await.unwrap();
+            let path = root.join("coordination");
+            let alias = root.join("alias");
+            let link = root.join("symlink");
+
+            assert_eq!(
+                fs.lock_existing_exclusive(&path).await.unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+            assert!(!path.exists());
+
+            fs.write_new(&path, b"registered coordination")
+                .await
+                .unwrap();
+            let guard = fs.lock_existing_exclusive(&path).await.unwrap();
+            assert_eq!(fs.read(&path).await.unwrap(), b"registered coordination");
+            drop(guard);
+            fs.symlink(&path, &link).await.unwrap();
+            assert!(fs.lock_existing_exclusive(&link).await.is_err());
+            assert!(fs.lock_existing_exclusive(&root).await.is_err());
+            fs.hard_link(&path, &alias).await.unwrap();
+            assert!(fs.lock_existing_exclusive(&path).await.is_err());
+            fs.remove_file(&alias).await.unwrap();
+            fs.remove_file(&path).await.unwrap();
+
+            // Existing-state inspection after removal must not recreate the
+            // coordination inode, even when a symlink still names its old path.
+            assert_eq!(
+                fs.lock_existing_exclusive(&path).await.unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+            assert!(!path.exists());
+            fs.remove_file(&link).await.unwrap();
             fs.remove_dir(&root).await.unwrap();
         });
     }
