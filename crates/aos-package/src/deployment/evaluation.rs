@@ -40,9 +40,19 @@ pub fn resolve_packages(
     resolver: &mut impl PackageResolver,
 ) -> Result<ResolvedPackages> {
     ensure!(!system.is_empty(), "target platform must be explicit");
+    let mut artifacts = BTreeMap::new();
+    for root in &roots {
+        if let Some(previous) = artifacts.insert(root.package.path.clone(), root.package.clone()) {
+            ensure!(
+                previous == root.package,
+                "one selected output has conflicting artifact identities"
+            );
+        }
+    }
     let mut pending = roots;
     let mut selected: BTreeMap<String, Envelope> = BTreeMap::new();
-    while let Some(package) = pending.pop() {
+    while let Some(mut package) = pending.pop() {
+        package.package = package.package.canonical_catalog();
         ensure!(
             package.system == system,
             "package closure contains another target platform"
@@ -68,19 +78,6 @@ pub fn resolve_packages(
         }
         selected.insert(package.package.name.clone(), package);
     }
-    let mut artifacts = BTreeMap::new();
-    for package in selected.values() {
-        for artifact in
-            std::iter::once(&package.package).chain(package.runtime_dependencies.values())
-        {
-            if let Some(previous) = artifacts.insert(artifact.path.clone(), artifact.clone()) {
-                ensure!(
-                    previous == *artifact,
-                    "one output has conflicting artifact identities"
-                );
-            }
-        }
-    }
     Ok(ResolvedPackages {
         system: system.to_owned(),
         modules: selected
@@ -101,17 +98,35 @@ pub struct Evaluation {
     pub packages: ResolvedPackages,
     /// Lists immutable operator module files in their intended merge order.
     pub configuration: Vec<PathBuf>,
+    /// Retains immutable envelope, documentation, and other caller-admitted artifacts.
+    /// These inputs are rooted with the generation but are not imported as modules.
+    pub retained_inputs: Vec<PathBuf>,
+    /// Supplies an admitted immutable descriptor of the pre-evaluation inputs.
+    pub evaluation_input: Option<PathBuf>,
 }
 
 impl Evaluation {
-    /// Renders an expression whose only output is a generated package transaction.
+    /// Renders a native transaction or generated reference expression.
     ///
     /// # Errors
     /// Returns an error if source inputs cannot be retained by fixed NAR identity
     /// or if the evaluation context cannot be serialized.
     pub fn expression(&self, documentation: bool) -> Result<String> {
+        self.expression_for(if documentation {
+            "evaluated.documentation"
+        } else {
+            "evaluated.deployment"
+        })
+    }
+
+    fn expression_for(&self, output: &str) -> Result<String> {
+        let store = evaluator_store()?;
         let lock = |path: &Path| {
-            locked_evaluator_input_in(&EvaluatorInput::canonical(path.to_path_buf()), None, None)
+            locked_evaluator_input_in(
+                &EvaluatorInput::canonical(path.to_path_buf()),
+                None,
+                store.as_deref(),
+            )
         };
         let library = lock(&self.library)?;
         let roots: BTreeSet<_> = self
@@ -142,21 +157,23 @@ impl Evaluation {
         let artifacts = nix_string(&serde_json::to_string(&self.packages.artifacts)?);
         let system = nix_string(&self.packages.system);
         let inputs = nix_string(&serde_json::to_string(&self.inputs()?)?);
-        let output = if documentation {
-            "documentation"
-        } else {
-            "deployment"
-        };
+        let evaluation_input = self
+            .evaluation_input
+            .as_ref()
+            .map(|path| lock(path))
+            .transpose()?
+            .unwrap_or_else(|| "null".into());
         Ok(format!(
             "let lib = import {library} {{ system = {system}; }};\n\
-             in (lib.evalPackageModules {{\n\
+             evaluated = lib.evalPackageModules {{\n\
                scope = builtins.fromJSON {scope};\n\
                evaluationInputs = builtins.fromJSON {inputs};\n\
+               evaluationInput = {evaluation_input};\n\
                packageModules = builtins.fromJSON {packages};\n\
                packageArtifacts = builtins.fromJSON {artifacts};\n\
                packageImportRoots = {{ {sources} }};\n\
                operatorModules = [ {configuration} ];\n\
-             }}).{output}\n"
+             }}; in {output}\n"
         ))
     }
 
@@ -174,8 +191,35 @@ impl Evaluation {
         let value = self.run(staging, timeout_ms, cancellation, false)?;
         let deployment = Deployment::decode(&serde_json::to_vec(&value)?, &self.packages)?;
         ensure!(
-            deployment.inputs() == self.inputs()?,
-            "evaluation changed its retained source inputs"
+            self.inputs()?
+                .iter()
+                .all(|root| deployment.inputs().contains(root)),
+            "evaluation removed a retained source input"
+        );
+        let available: BTreeSet<_> = self
+            .packages
+            .modules
+            .iter()
+            .flat_map(|package| {
+                std::iter::once(&package.artifacts.package)
+                    .chain(package.artifacts.dependencies.values())
+            })
+            .chain(self.packages.artifacts.iter())
+            .flat_map(|artifact| artifact.outputs.values())
+            .chain(
+                self.packages
+                    .modules
+                    .iter()
+                    .map(|package| &package.config_root),
+            )
+            .collect();
+        let source_inputs = self.inputs()?;
+        ensure!(
+            deployment
+                .inputs()
+                .iter()
+                .all(|root| source_inputs.contains(root) || available.contains(root)),
+            "evaluation added a retained root outside its authenticated catalogs"
         );
         Ok(deployment)
     }
@@ -193,9 +237,63 @@ impl Evaluation {
         self.run(staging, timeout_ms, cancellation, true)
     }
 
+    /// Projects one configuration path from the same immutable module fixed point.
+    ///
+    /// Path segments are serialized as data; callers cannot supply Nix expressions.
+    /// The domain owning the selected value must validate its application contract.
+    ///
+    /// # Errors
+    /// Returns an error for an empty path, evaluation failure, cancellation, timeout,
+    /// a missing attribute, or a value that cannot cross the bounded JSON boundary.
+    pub fn project(
+        &self,
+        path: &[String],
+        staging: &Path,
+        timeout_ms: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<Value> {
+        ensure!(
+            !path.is_empty() && path.iter().all(|part| !part.is_empty()),
+            "configuration projection requires nonempty path segments"
+        );
+        let path = nix_string(&serde_json::to_string(path)?);
+        let expression = self.expression_for(&format!(
+            "builtins.foldl' (value: key: builtins.getAttr key value) evaluated.config (builtins.fromJSON {path})"
+        ))?;
+        self.run_expression(staging, timeout_ms, cancellation, &expression)
+    }
+
+    /// Projects an optional configuration path from the immutable module fixed point.
+    ///
+    /// A missing attribute yields JSON null. Evaluation and type errors remain
+    /// errors, so callers can distinguish an absent feature from a broken module.
+    ///
+    /// # Errors
+    /// Returns an error for empty path segments, evaluation failure, cancellation,
+    /// timeout, or a value that cannot cross the bounded JSON boundary.
+    pub fn project_optional(
+        &self,
+        path: &[String],
+        staging: &Path,
+        timeout_ms: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<Value> {
+        ensure!(
+            !path.is_empty() && path.iter().all(|part| !part.is_empty()),
+            "configuration projection requires nonempty path segments"
+        );
+        let path = nix_string(&serde_json::to_string(path)?);
+        let expression = self.expression_for(&format!(
+            "builtins.foldl' (value: key: if builtins.isAttrs value && builtins.hasAttr key value then builtins.getAttr key value else null) evaluated.config (builtins.fromJSON {path})"
+        ))?;
+        self.run_expression(staging, timeout_ms, cancellation, &expression)
+    }
+
     fn inputs(&self) -> Result<Vec<String>> {
         std::iter::once(&self.library)
             .chain(self.configuration.iter())
+            .chain(self.retained_inputs.iter())
+            .chain(self.evaluation_input.iter())
             .map(|path| {
                 let (root, _) = store_root_and_suffix(path)?;
                 Ok(root
@@ -214,9 +312,20 @@ impl Evaluation {
         cancellation: &CancellationToken,
         documentation: bool,
     ) -> Result<Value> {
-        ensure!(!cancellation.is_cancelled(), "package evaluation cancelled");
         let expression = self.expression(documentation)?;
-        let mut command = pure_eval_command_in(None, None, staging)?;
+        self.run_expression(staging, timeout_ms, cancellation, &expression)
+    }
+
+    fn run_expression(
+        &self,
+        staging: &Path,
+        timeout_ms: u64,
+        cancellation: &CancellationToken,
+        expression: &str,
+    ) -> Result<Value> {
+        ensure!(!cancellation.is_cancelled(), "package evaluation cancelled");
+        let store = evaluator_store()?;
+        let mut command = pure_eval_command_in(store.as_deref(), None, staging)?;
         command.arg("-");
         let control = EvaluationBudget {
             cancellation,
@@ -263,4 +372,15 @@ impl aos_ability_runtime::adapter::RuntimeControl for EvaluationBudget<'_> {
     fn recovery_remaining_millis(&self) -> u64 {
         self.budget.recovery_remaining_millis()
     }
+}
+
+/// Selects the same explicit store for source hashing and pure evaluation.
+/// Ambient Nix store variables remain scrubbed by the subprocess boundary.
+fn evaluator_store() -> Result<Option<std::ffi::OsString>> {
+    let store = std::env::var_os("AOS_NIX_EVAL_STORE");
+    ensure!(
+        store.as_ref().is_none_or(|value| !value.is_empty()),
+        "AOS_NIX_EVAL_STORE must not be empty"
+    );
+    Ok(store)
 }

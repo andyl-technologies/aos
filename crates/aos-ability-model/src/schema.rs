@@ -43,6 +43,11 @@ pub enum ExcludedCharacterClass {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ValueConstraint {
+    /// Restricts the root Boolean to one exact value.
+    BooleanValue {
+        /// The accepted Boolean value.
+        value: bool,
+    },
     /// Requires the root string to match the complete regular expression.
     StringPattern {
         /// Portable regular expression matched against the entire string.
@@ -121,6 +126,7 @@ impl ValueConstraint {
         use serde_json::Value;
 
         match self {
+            Self::BooleanValue { value: expected } => value.as_bool() == Some(*expected),
             Self::StringPattern { pattern } => value
                 .as_str()
                 .is_some_and(|text| complete_pattern_matches(pattern, text)),
@@ -195,6 +201,7 @@ impl ValueConstraint {
     #[must_use]
     pub const fn kind(&self) -> &'static str {
         match self {
+            Self::BooleanValue { .. } => "boolean-value",
             Self::StringPattern { .. } => "string-pattern",
             Self::MinimumSize { .. } => "minimum-size",
             Self::IntegerSet { .. } => "integer-set",
@@ -216,6 +223,7 @@ impl ValueConstraint {
     pub fn is_compatible_with(&self, base_schema: &ValueSchema) -> bool {
         let base_schema = refined_base(base_schema);
         match self {
+            Self::BooleanValue { .. } => matches!(base_schema, ValueSchema::Boolean),
             Self::StringPattern { .. } | Self::StringExcludes { .. } => {
                 is_string_schema(base_schema)
             }
@@ -283,6 +291,7 @@ impl ValueConstraint {
     #[must_use]
     pub fn is_within_limits(&self, max_string_bytes: u64, max_items: u64) -> bool {
         let strings_and_items = match self {
+            Self::BooleanValue { .. } => return max_items > 0,
             Self::StringPattern { pattern } | Self::MapKeysPattern { pattern } => {
                 return pattern.len() as u64 <= max_string_bytes;
             }
@@ -1004,6 +1013,32 @@ impl ValueSchema {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boolean_literal_refinement_preserves_the_exact_value() {
+        for expected in [false, true] {
+            let constraint = ValueConstraint::BooleanValue { value: expected };
+            assert!(constraint.admits(&serde_json::json!(expected)));
+            assert!(!constraint.admits(&serde_json::json!(!expected)));
+            assert!(!constraint.admits(&serde_json::json!(expected.to_string())));
+            assert!(constraint.is_compatible_with(&ValueSchema::Boolean));
+            assert!(!constraint.is_compatible_with(&ValueSchema::Integer {
+                minimum: 0,
+                maximum: 1
+            }));
+            assert!(constraint.is_within_limits(64, 1));
+            let encoded = serde_json::to_value(&constraint).expect("boolean constraint serializes");
+            assert_eq!(
+                encoded,
+                serde_json::json!({"kind":"boolean-value", "value":expected})
+            );
+            assert_eq!(
+                serde_json::from_value::<ValueConstraint>(encoded)
+                    .expect("boolean constraint decodes"),
+                constraint
+            );
+        }
+    }
 
     #[test]
     fn singleton_string_field_uses_the_canonical_record_schema() {

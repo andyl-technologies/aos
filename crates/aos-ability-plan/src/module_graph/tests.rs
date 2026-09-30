@@ -157,3 +157,19 @@ fn composed_children_must_outlive_their_parent() {
     child["lifetime"] = "transaction".into();
     assert!(decode(&document(vec![child, parent])).is_err());
 }
+
+#[test]
+fn explicit_retirement_rejects_duplicate_empty_and_configured_identities() {
+    let configured = effect("active");
+    let configured_id = key(&configured);
+    let graph = decode(&document(vec![configured])).unwrap();
+    let retired = "retained-instance".to_string();
+
+    assert_eq!(
+        check_retirement(&graph, &[retired.clone()]).unwrap(),
+        BTreeSet::from([retired.clone()])
+    );
+    assert!(check_retirement(&graph, &[retired.clone(), retired]).is_err());
+    assert!(check_retirement(&graph, &[String::new()]).is_err());
+    assert!(check_retirement(&graph, &[configured_id]).is_err());
+}

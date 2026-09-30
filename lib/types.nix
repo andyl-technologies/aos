@@ -484,6 +484,20 @@ in rec {
           })
           allowedValues;
       }
+      else if builtins.all builtins.isBool allowedValues
+      then
+        if builtins.all (value: value == builtins.head allowedValues) allowedValues
+        then {
+          kind = "refined";
+          value = {kind = "bool";};
+          constraints = [
+            {
+              kind = "boolean-value";
+              value = builtins.head allowedValues;
+            }
+          ];
+        }
+        else {kind = "bool";}
       else {
         kind = "opaque";
         signature = "one of ${builtins.toJSON allowedValues}";

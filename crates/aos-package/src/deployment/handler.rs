@@ -16,7 +16,9 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
 use aos_ability_plan::module_graph::{Effect, Handler};
-use aos_ability_runtime::activation::{Action, ActivationAdapter, Invocation, Observation};
+use aos_ability_runtime::activation::{
+    Action, ActivationAdapter, BoundaryEvent, BoundaryObserver, Invocation, Observation,
+};
 use aos_ability_runtime::adapter::{CancellationToken, RuntimeControl};
 use aos_contract::limits::{BoundedWriter, JsonLimits};
 use serde::Deserialize;
@@ -53,12 +55,24 @@ pub trait HandlerArtifacts {
 /// Executes admitted module handlers with bounded pipes and process lifetimes.
 pub struct ProcessAdapter<A> {
     artifacts: A,
+    observer: Option<Box<dyn BoundaryObserver>>,
 }
 
 impl<A: HandlerArtifacts> ProcessAdapter<A> {
     /// Constructs a transport backed by the host's artifact admission policy.
     pub const fn new(artifacts: A) -> Self {
-        Self { artifacts }
+        Self {
+            artifacts,
+            observer: None,
+        }
+    }
+
+    /// Installs or removes an explicitly selected execution observer.
+    ///
+    /// The caller authenticates any endpoint configuration before installation.
+    /// Observer errors stop execution with the durable intent available for recovery.
+    pub fn set_observer(&mut self, observer: Option<Box<dyn BoundaryObserver>>) {
+        self.observer = observer;
     }
 
     /// Borrows the owning package store for generation retention.
@@ -104,6 +118,13 @@ impl<A: HandlerArtifacts> ProcessAdapter<A> {
 }
 
 impl<A: HandlerArtifacts> ActivationAdapter for ProcessAdapter<A> {
+    fn boundary(&mut self, event: &BoundaryEvent, cancellation: &CancellationToken) -> Result<()> {
+        if let Some(observer) = &mut self.observer {
+            observer.boundary(event, cancellation)?;
+        }
+        Ok(())
+    }
+
     fn retain(&mut self, effect: &Effect) -> Result<()> {
         if matches!(effect.handler, Handler::Process { .. }) {
             self.artifacts.retain(effect)?;

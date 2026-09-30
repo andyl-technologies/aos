@@ -52,7 +52,9 @@ The builder exposes these derived values:
 | `documentationArtifact` | Derivation containing `options.json` |
 
 Payload construction does not force deployment evaluation. The JSON companions
-are separate derivations and retain the store references they publish. No host
+are separate derivations. Available output locators remain authenticated catalog
+metadata; selected payloads, module sources, and graph-used artifacts determine
+runtime retention. No host
 configuration, service-specific lowering, or authored documentation schema is
 injected by `mkDerivation`. Legacy `abilities` and `configModule` inputs fail when
 the native deployment envelope is requested.
@@ -136,7 +138,8 @@ lib.evalPackageModules {
 Deployment callers pass resolved `packageModules`, `packageArtifacts`, and locked
 source roots instead. Both entry points use the same evaluator. The returned
 `deployment` contains the scope, target platform, retained evaluation inputs,
-payload artifacts, exact module contexts, and generated graph. The returned
+payload artifacts, exact module contexts, explicit `aos.activation.retire`
+decisions, and generated graph. The returned
 `documentation` projects options and operation declarations, including declaration
 owners, handler availability, and configured effects. Its evaluation is lazy with
 respect to graph execution and handler selection.
@@ -189,6 +192,12 @@ The effect journal distinguishes three lifetimes:
 - `instance`: retained across generations and removed when configuration disappears.
 - `persistent`: retained until explicitly retired, including after package removal.
 
+`aos.activation.retire` holds the exact retained identities to release. The
+canonical deployment carries this decision; frontends do not supply a second
+retirement list to `Transactions::apply`. Configured or unknown identities are
+rejected before preparation. Already completed retirements remain valid across
+later generations; durable removal outcomes supply that history.
+
 Artifact release is separately journaled. Old implementations remain available
 until their update or teardown has durably completed.
 
@@ -200,6 +209,9 @@ and commits only after all checked results are available. The effect runtime
 retains the most recent caller transaction receipt, closing the crash window
 between effect completion and generation commit without repeating one-shot work.
 Recovery resumes pending work before accepting a new generation.
+`transaction::inspect` uses the same generation decoder and replay state machine
+under a shared lock. Its snapshot cannot create or repair journals and retains
+the lock while callers inspect associated profile publications.
 
 Committed generations retain their documents and results for inspection and
 rollback. Rollback applies a retained desired document as a new transaction;

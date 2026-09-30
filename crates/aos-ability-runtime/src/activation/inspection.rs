@@ -5,7 +5,7 @@
 //! outcomes as current observations of live resources. The native journal
 //! decoder validates framing and the activation state machine checks ordering.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::Result;
@@ -84,6 +84,8 @@ pub struct ActivationInspection {
     pub desired: Option<Value>,
     /// Contains checked retained outcomes, including persistent orphaned state.
     pub retained_outputs: BTreeMap<String, Value>,
+    /// Identifies durably removed effects with no subsequent application.
+    pub retired_effects: BTreeSet<String>,
     /// Lists complete frames in journal order without exposing handler arguments.
     pub records: Vec<InspectionRecord>,
 }
@@ -140,6 +142,7 @@ pub fn inspect(path: impl AsRef<Path>, limits: JournalLimits) -> Result<Activati
     }
 
     Ok(ActivationInspection {
+        retired_effects: state.retired.clone(),
         schema: "aos.activation.inspection",
         live_state_verified: false,
         incomplete_tail_bytes: snapshot.incomplete_tail_bytes(),

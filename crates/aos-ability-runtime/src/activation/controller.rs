@@ -128,7 +128,7 @@ impl Activation {
                 "cannot retire an effect that remains configured"
             );
             ensure!(
-                self.state.retained.contains_key(id),
+                self.state.retained.contains_key(id) || self.state.retired.contains(id),
                 "cannot retire an unknown effect"
             );
         }
@@ -141,6 +141,15 @@ impl Activation {
             retire: retire.iter().cloned().collect(),
         })?;
         self.run(desired, adapter, cancellation)
+    }
+
+    /// Returns identities with a durable removal outcome and no later application.
+    ///
+    /// This inventory makes declarative retirement repeatable across generations
+    /// without treating an unknown identity as successfully removed.
+    #[must_use]
+    pub fn retired(&self) -> &BTreeSet<String> {
+        &self.state.retired
     }
 
     /// Lists currently retained resources, including persistent orphaned state.

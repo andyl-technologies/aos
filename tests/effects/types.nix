@@ -94,6 +94,20 @@ let
   };
   documentedEntries = builtins.head (builtins.filter (entry: entry.pathStr == "entries") documented._optionDecls);
 in {
+  booleanEnumPortable = assert (project (lib.types.enum [true]))
+  == {
+    kind = "refined";
+    value.kind = "bool";
+    constraints = [
+      {
+        kind = "boolean-value";
+        value = true;
+      }
+    ];
+  };
+  assert (project (lib.types.enum [false true])).kind == "bool";
+  assert evaluate (lib.types.enum [false]) [false] == false;
+  assert rejects (lib.types.enum [false]) [true]; true;
   namedSubmoduleDocumentation = assert (project (lib.types.submodule ({name, ...}: {
     options.label = lib.mkOption {
       type = lib.types.str;

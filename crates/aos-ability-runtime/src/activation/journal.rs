@@ -4,7 +4,7 @@
 //! `begin` retains the graph, `started` retains an exact invocation, `finished`
 //! retains checked results, and `commit` closes the active transaction.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use anyhow::{Result, ensure};
 use aos_ability_plan::module_graph::{CheckedModuleGraph, Effect, Handler, Lifetime, resolve};
@@ -79,6 +79,7 @@ pub(super) struct State {
     pub pending: Option<Invocation>,
     pub retained: BTreeMap<String, Retained>,
     pub established: Vec<String>,
+    pub retired: BTreeSet<String>,
     pub transaction_results: BTreeMap<String, Value>,
     pub releases: VecDeque<Effect>,
 }
@@ -106,9 +107,10 @@ impl State {
                     "duplicate retirement identity"
                 );
                 ensure!(
-                    retire.iter().all(|id| self.retained.contains_key(id)
+                    retire.iter().all(|id| (self.retained.contains_key(id)
+                        || self.retired.contains(id))
                         && !desired.graph().nodes.contains_key(id)),
-                    "retirement must name retained, unconfigured state"
+                    "retirement must name retained or already retired, unconfigured state"
                 );
             }
             Event::Started { invocation } => {
@@ -276,6 +278,7 @@ impl State {
                                 self.releases.push_back(previous.invocation.effect.clone());
                             }
                         }
+                        self.retired.remove(&invocation.id);
                         self.retained.insert(
                             invocation.id.clone(),
                             Retained {
@@ -293,6 +296,7 @@ impl State {
                             self.releases.push_back(invocation.effect.clone());
                         }
                         self.retained.remove(&invocation.id);
+                        self.retired.insert(invocation.id.clone());
                         self.established.retain(|id| id != &invocation.id);
                     }
                 }

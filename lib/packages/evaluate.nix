@@ -10,10 +10,7 @@ in
     scope,
     packages ? [],
     packageModules ? moduleLib.closure packages,
-    packageArtifacts ?
-      if packages == []
-      then artifactLib.unique (builtins.concatLists (builtins.map (record: [record.artifacts.package] ++ builtins.attrValues record.artifacts.dependencies) packageModules))
-      else moduleLib.payloads packages,
+    packageArtifacts ? moduleLib.payloads packages,
     modules ? [],
     operatorModules ? [],
     runtimeModules ? [],
@@ -46,6 +43,17 @@ in
     declarations = builtins.map (declaration: {
       inherit (declaration) path owner description type visibility readOnly extensible;
     }) (builtins.filter (declaration: declaration.path != [] && builtins.head declaration.path != "_module") evaluated._optionDecls);
+    graph = evaluated._withoutProvenance evaluated.config.aos.activation.graph;
+    inputs = artifactLib.graphInputs {
+      inherit graph packageArtifacts evaluationInputs;
+      packageModules = records;
+    };
+    selectedArtifacts = builtins.map (artifact:
+      (artifactLib.metadata artifact)
+      // {
+        path = (artifactLib.value artifact).outPath;
+      })
+    packageArtifacts;
   in
     evaluated
     // {
@@ -58,16 +66,25 @@ in
           if result ? ${artifact.name} && result.${artifact.name} != identity
           then throw "Package '${artifact.name}' has conflicting documentation identities."
           else result // {${artifact.name} = identity;}) {}
-        packageArtifacts);
+        (packageArtifacts ++ builtins.map (record: record.artifacts.package) records));
         options = declarations;
         abilities = documentation.abilities evaluated.config.aos.abilities;
       };
       deployment = {
         schema = "aos.package.transaction";
         inherit scope system;
-        artifacts = packageArtifacts;
-        inputs = evaluationInputs;
-        packages = records;
-        graph = evaluated.config.aos.activation.graph;
+        artifacts = selectedArtifacts;
+        inherit inputs;
+        packages = builtins.map (record:
+          record
+          // {
+            artifacts = {
+              package = artifactLib.metadata record.artifacts.package;
+              dependencies = builtins.mapAttrs (_: artifactLib.metadata) record.artifacts.dependencies;
+            };
+          })
+        records;
+        inherit graph;
+        retire = evaluated.config.aos.activation.retire;
       };
     }
