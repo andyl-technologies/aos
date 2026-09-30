@@ -18,22 +18,20 @@ impl NixStartAdmissionCarrierV2 {
         if step != 0 || self.operation() != operation_id {
             return Err(ReconcilerError::CorruptLedger("unexpected retained Start step"));
         }
-        let original = accepted_nix_start_admission_v2(journal, operation_id)?
+        let readback = accepted_nix_start_readback_v2(journal, operation_id)?
             .ok_or(ReconcilerError::CorruptLedger("missing retained Start admission"))?;
-        if &original != self {
+        let original = readback.context.nix_start()
+            .ok_or(ReconcilerError::CorruptLedger("missing retained Start admission"))?;
+        if original != self {
             return Err(ReconcilerError::CorruptLedger("retained Start original changed"));
         }
 
-        let operation = journal.get(RecordNamespace::Operation, operation_id.as_bytes())
-            .ok_or(ReconcilerError::OperationNotFound).and_then(decode_operation)?;
-        let effect = journal.get(RecordNamespace::Effect, &effect_key(operation_id, step))
-            .ok_or(ReconcilerError::CorruptLedger("missing retained Start effect"))
-            .and_then(decode_effect)?;
-        require_pending_states(operation.state, &effect.state)?;
+        // Later custody cuts read afresh; reuse is confined to this immutable phase.
+        require_pending_states(readback.operation.state, &readback.effect.state)?;
         let (desired_key, desired_value) = self.desired();
-        if &effect.plan != expected_plan
-            || effect.dispatch.is_some()
-            || effect.project_admission.is_some()
+        if &readback.effect.plan != expected_plan
+            || readback.effect.dispatch.is_some()
+            || readback.effect.project_admission.is_some()
             || journal.get(RecordNamespace::DesiredState, desired_key) != Some(desired_value)
         {
             return Err(ReconcilerError::CorruptLedger("retained Start effect or Desired changed"));

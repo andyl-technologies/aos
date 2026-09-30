@@ -9,10 +9,26 @@ use crate::production_operation_compiler::NixStartAdmissionCarrierV2;
 
 mod continuation;
 
+/// Keeps decoded ledger data within one immutable readback, not a custody permit.
+struct DecodedNixStartLedgerV2 {
+    operation: OperationRecord,
+    effect: EffectLedgerRecord,
+    context: PublicMutationEffectV1,
+}
+
 pub(crate) fn accepted_nix_start_admission_v2(
     journal: &Journal,
     operation_id: OperationId,
 ) -> Result<Option<NixStartAdmissionCarrierV2>, ReconcilerError> {
+    let readback = accepted_nix_start_readback_v2(journal, operation_id)?;
+    Ok(readback.and_then(|readback| readback.context.nix_start().cloned()))
+}
+
+/// Retains decoded records only after the full original admission checks.
+fn accepted_nix_start_readback_v2(
+    journal: &Journal,
+    operation_id: OperationId,
+) -> Result<Option<DecodedNixStartLedgerV2>, ReconcilerError> {
     journal.validate_held_protected_names()?;
     let Some(operation_bytes) = journal.get(RecordNamespace::Operation, operation_id.as_bytes()) else {
         return Ok(None);
@@ -58,7 +74,11 @@ pub(crate) fn accepted_nix_start_admission_v2(
     // accept_inner does not compare every nonlocal Effect on replay. This exact
     // readback does so before the compiler is permitted to reconstruct a plan.
     journal.validate_held_protected_names()?;
-    Ok(Some(carrier.clone()))
+    Ok(Some(DecodedNixStartLedgerV2 {
+        operation,
+        effect,
+        context,
+    }))
 }
 
 pub(super) fn require_exact_nix_replay_plan_v2(
