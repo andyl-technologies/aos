@@ -39,7 +39,12 @@ never leak a private byte.
   default so that dedup and kernel-object sharing never cross users, a
   boundary that POSIX mode bits alone do not give. A tree with no
   explicit `domain` on any ancestor MUST be treated as `private:<root
-  identity>`. *Gate:* `gate:dom-default-private`.
+  identity>`. When editing such an existing root, a writer MUST preserve
+  its effective private domain by materializing that exact inherited/default
+  label as an explicit `domain` property before encoding the new root. A new
+  unrelated root receives its own default; an edit MUST NOT silently change
+  ownership merely because its content identity changes. *Gate:*
+  `gate:dom-default-private`.
 - **[DOM-2]** `domain` inherits to descendant roots. A descendant MAY set
   a more closed domain than its ancestor. A descendant MUST NOT set a more
   open domain; an attempt MUST fail at commit. The ordering from open to

@@ -65,10 +65,20 @@ data.
   every bundle or profile object the commit references, every resolved
   introducing commit, and every source commit referenced by entry,
   attribute-origin, or reintroduction receipts. Receipt source edges MUST
-  be retained independently of ordinary parent retention. *Gate:*
+  be retained independently of ordinary parent retention. Metadata needed
+  to verify introducing commits, inline/side attribute producers and receipt
+  history MUST remain reachable even after ordinary parent retention expires.
+  A witness-only traversal retains commit, node, manifest and attribute
+  metadata and their proof dependencies, but MUST NOT make unrelated old
+  chunks live or read data-pack chunk bodies. Excluded retained-log policy
+  evidence uses `retention-witness` roots so future collections can evaluate
+  its actual timestamp and retention policy without inventing them. *Gate:*
   `gate:gc-mark-reachability`.
 - **[GC-6]** Marking MUST skip any tree node, manifest, or root already
-  marked in this collection. Because trees are history-independent
+  expanded in this collection under the same traversal context. A prior
+  witness-only expansion does not suppress a later full expansion; a broader
+  ordinary parent cutoff must expand newly eligible edges. Because trees are
+  history-independent
   ([`06-tree-format.md`](06-tree-format.md)), identical subtrees in
   different commits share nodes, and the cost of marking is proportional to
   distinct content, not to the number of refs.
@@ -81,9 +91,9 @@ data.
   Each checkpoint pointer is raw BLAKE3-256 over its exact canonical GcMark
   bytes; it is an integrity pointer to a record, not an immutable Index
   identity. Final shards may also use `gc/<cycle>/mark/<shard>`. Commit
-  expansion contexts
-  retain the least restrictive parent cutoff already visited; reaching a commit
-  with a broader cutoff must still traverse newly eligible parent edges. Null
+  expansion contexts retain the least restrictive parent cutoff already
+  visited; reaching a commit with a broader cutoff must still traverse newly
+  eligible parent edges. Null
   denotes unbounded retention, and receipt/source edges bypass the ordinary
   parent-edge age test. All collector records use the CDDL version-one schemas;
   shard and revision key segments are canonical decimal unsigned integers.
@@ -95,7 +105,13 @@ data.
   membership. Checkpoint pointers are strictly ordered by distinct shard
   numbers (0 to 255); expanded contexts are strictly ordered by distinct
   commit hashes. A pending item retains its traversal flags and cutoff.
-  Phase progress is a strictly sorted, unique list of pack IDs.
+  Phase progress is a strictly sorted, unique list of pack IDs. State key 9
+  persists distinct `(kind, hash, flags)` metadata expansion contexts in
+  unsigned lexicographic order. Its flags contain only root-node, index-tree
+  and witness-only bits; full commit cutoff visits are governed by key 7.
+  Witness-only contexts cannot name a data chunk. The `retention-witness`
+  reason starts witness-only marking; its cutoff is not an unbounded full
+  content-retention request.
 - **[GC-8]** Marking MUST run over the union of all regions before any
   region sweeps, because a pack may exist only in the region that wrote it
   while a commit in another region already references it (§Cross-region

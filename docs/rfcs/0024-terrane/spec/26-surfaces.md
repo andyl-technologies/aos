@@ -112,7 +112,13 @@ refs/heads/main@strict-trust
 - **[SURF-6]** A view whose target is a ref MUST resolve the ref through the
   repository at the time of each read according to the exposure's reader mode
   ([`20-consistency.md`](20-consistency.md) `pinned` or `follow`). A view
-  whose target is a commit MUST NOT resolve any ref.
+  whose target is a commit MUST NOT resolve a ref to choose its target tree.
+  Its immutable target stays fixed. Separate current-authority lookups for
+  ACL, revocation and domain-deletion checks remain required by AUTH-30;
+  they MUST NOT replace the selected commit with a current head. The
+  instance binds that policy authority; without another trusted binding,
+  the original authoring ref in the verified commit context supplies it.
+  Missing or unverifiable current policy MUST fail closed.
 - **[SURF-7]** A view with a `subtree` MUST present the named subtree as the
   root of what the surface shows. Paths outside the subtree MUST be invisible
   to the surface's consumers, including through `..` traversal, symlink

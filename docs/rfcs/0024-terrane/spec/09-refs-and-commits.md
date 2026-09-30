@@ -170,7 +170,11 @@ under concurrent garbage collection ([`17-garbage-collection.md`](17-garbage-col
 - **[REF-20]** An **annotated tag** MAY carry, in its record's `policy`, a
   snapshot envelope: a signed statement binding the tag name, the commit, and
   arbitrary attestation data. The envelope format is `SnapshotEnvelope` in
-  `reference/terrane-v1.cddl`.
+  `reference/terrane-v1.cddl`. For a new envelope its signer identifier is
+  the lowercase 64-character terminal Ed25519 public key, authenticated by
+  the tagging principal's capability chain. Its preimage is the canonical
+  envelope map with key 5 absent, without an additional prefix. Verification
+  MUST bind the expected tag name and commit as well as that terminal key.
 
 ## Reflog
 

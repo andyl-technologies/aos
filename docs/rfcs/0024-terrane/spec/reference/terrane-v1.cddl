@@ -215,8 +215,8 @@ SnapshotEnvelope = {
   1 => tstr,                            ; tag name
   2 => digest32,                        ; commit
   3 => { * tstr => any },               ; attestation data
-  4 => tstr,                            ; signer key identifier
-  5 => bstr .size 64,                   ; Ed25519 signature over keys 1..4
+  4 => tstr,                            ; terminal Ed25519 public key, lowercase hex
+  5 => bstr .size 64,                   ; Ed25519 signature over canonical map keys 1..4
 }
 
 ; ---------------------------------------------------------------------------
@@ -326,7 +326,7 @@ GcRoots = {
 gc-root = [ ref-name: tstr, commit: digest32,
             parent-cutoff: timestamp / null, reason: gc-root-reason ]
 gc-root-reason = "current" / "reflog-gc" / "reflog-ttl" / "lease"
-               / "forever" / "tag" / "job"
+               / "forever" / "tag" / "job" / "retention-witness"
 
 GcMark = {
   0 => 1,
@@ -338,8 +338,13 @@ GcMark = {
 }
 gc-pending = [ kind: pack-kind, hash: digest32,
                parent-cutoff: timestamp / null, flags: uint ]
-; Flags: bit 0 ordinary-parent edge, bit 1 root node, bit 2 index tree;
-; all other bits are reserved and zero. Receipt/source roots omit bit 0.
+; Flags: bit 0 ordinary-parent edge, bit 1 root node, bit 2 index tree,
+; bit 3 witness-only metadata traversal. Other bits are reserved and zero.
+; Witness-only is forbidden for data-chunk kind 0. Receipt/source proof
+; edges use witness-only; they omit ordinary-parent age filtering.
+gc-expanded-object = [ kind: pack-kind, hash: digest32, flags: uint ]
+; Expansion flags may contain only bits 1, 2 and 3. Full commit cutoff
+; visits use GcState key 7, not this context set.
 
 GcState = {
   0 => 1,
@@ -352,6 +357,7 @@ GcState = {
   7 => [ * [ commit: digest32, parent-cutoff: timestamp / null ] ],
                                         ; least restrictive expanded contexts
   8 => [ * pack-id ],                   ; phase progress, sorted uniquely
+  9 => [ * gc-expanded-object ],        ; sorted unique typed expansion contexts
 }
 
 ; trash/<cycle>/<pack-id> (GC-15).

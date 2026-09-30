@@ -985,6 +985,58 @@ is added rather than editing history.
   - **Affects:** GC-7, GC-24 and GcState CDDL semantics. No field, existing
     identity domain or requirement ID changes; this precedes T1's freeze.
 
+- **[D-61] Preserve implicit private ownership across root edits.**
+  - **Status:** Decided
+  - **Decision:** An edit materializes the previous effective private label
+    as an ordinary explicit domain property before encoding its new root.
+    Unrelated roots still receive distinct implicit private defaults.
+  - **Rationale:** Hashing a changed root changes its implicit label; treating
+    that as a new incomparable owner makes ordinary private edits unusable.
+    Preserving the already effective property keeps the boundary unchanged
+    without a stable-ID field, a hash cycle or cross-domain deduplication.
+  - **Affects:** DOM-1 to DOM-4 and PROP inheritance. No new encoding or key;
+    this clarification precedes T1's freeze.
+
+- **[D-62] Retain provenance metadata without retaining unrelated old data.**
+  - **Status:** Decided
+  - **Decision:** Witness-only traversal keeps the metadata dependencies used
+    by verified entry/attribute history. Pending bit 3 and GcState key 9
+    distinguish witness-only and full expansion; ordinary commit cutoffs
+    remain in key 7. Retention-witness roots preserve excluded log policy
+    evidence for later collections.
+  - **Rationale:** Dropping old parent metadata can destroy live introduction
+    proofs. Treating every proof commit as an unbounded full root instead
+    retains unrelated old chunks. A marked digest alone also cannot prove
+    that its children were expanded in both modes after a crash.
+  - **Affects:** GC-3, GC-5 to GC-7, GC-24, GC-28, PROV-7, PROV-9 and
+    PROV-10. These collector record additions precede T1's encoding freeze;
+    existing identity domains and requirement IDs remain stable.
+
+- **[D-63] Separate immutable target selection from live read policy.**
+  - **Status:** Decided
+  - **Decision:** A commit-target view stays on its exact immutable commit.
+    Separate current-authority lookups still enforce live ACL, revocation
+    and deletion policy, using a trusted instance binding or the verified
+    original authoring ref as the default authority.
+  - **Rationale:** SURF-6's blanket ban on any ref lookup conflicted with
+    AUTH-30's immediate ACL revocation. Historical immutable ACLs are proof
+    of prior policy, not a substitute for current authority. Policy lookup
+    must not move a pinned target to a new head.
+  - **Affects:** SURF-6, AUTH-26, AUTH-30 and PROV-23. No target, record or
+    selector grammar changes; this precedes T2's surface freeze.
+
+- **[D-64] Identify annotated tag signers by their terminal public key.**
+  - **Status:** Decided
+  - **Decision:** A new SnapshotEnvelope names the lowercase hexadecimal
+    terminal Ed25519 public key and signs its canonical keys 1 through 4 map.
+    Verification binds that key to the tagging capability and expected name
+    and commit; no extra signature prefix is introduced.
+  - **Rationale:** The prior signer identifier was unspecified. An issuer
+    rotation key ID cannot identify an attenuated subject key. The terminal
+    identifier matches signed-by-key and the existing CDDL preimage.
+  - **Affects:** REF-20 and SnapshotEnvelope. Existing field numbers and
+    preimage layout remain unchanged; this precedes T1's encoding freeze.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
