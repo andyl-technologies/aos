@@ -60,6 +60,29 @@ impl<T> JournalSnapshot<T> {
     }
 }
 
+/// Holds a verified read-only prefix and its shared filesystem lock.
+///
+/// Retaining this guard prevents a writer from changing the journal while a
+/// caller reads related state protected by the same journal ownership order.
+pub struct JournalReader<T> {
+    _file: LockedFile,
+    snapshot: JournalSnapshot<T>,
+}
+
+impl<T> JournalReader<T> {
+    /// Returns the verified prefix while retaining the shared lock.
+    #[must_use]
+    pub fn snapshot(&self) -> &JournalSnapshot<T> {
+        &self.snapshot
+    }
+
+    /// Releases the shared lock and returns the verified prefix.
+    #[must_use]
+    pub fn into_snapshot(self) -> JournalSnapshot<T> {
+        self.snapshot
+    }
+}
+
 /// A single-writer durable journal stored in one append-only file.
 ///
 /// Opening holds a nonblocking exclusive filesystem lock for this value's
@@ -143,9 +166,7 @@ where
         path: impl AsRef<Path>,
         limits: JournalLimits,
     ) -> Result<JournalSnapshot<T>, JournalError> {
-        let path = path.as_ref().to_path_buf();
-        let file = open_read_only(&path)?;
-        Self::read_only_snapshot_file(file, path, limits)
+        Ok(Self::read_only(path, limits)?.into_snapshot())
     }
 
     /// Reads a verified prefix from an already opened file without modifying it.
@@ -165,21 +186,52 @@ where
         path: impl AsRef<Path>,
         limits: JournalLimits,
     ) -> Result<JournalSnapshot<T>, JournalError> {
+        Ok(Self::read_only_file(file, path, limits)?.into_snapshot())
+    }
+
+    /// Opens a verified read-only prefix under a lifetime-bound shared lock.
+    ///
+    /// # Errors
+    /// Returns an error for missing or insecure files, contention, corrupt
+    /// complete frames, invalid bodies, or exceeded limits. Torn tails remain.
+    pub fn read_only(
+        path: impl AsRef<Path>,
+        limits: JournalLimits,
+    ) -> Result<JournalReader<T>, JournalError> {
+        let path = path.as_ref();
+        Self::read_only_file(open_read_only(path)?, path, limits)
+    }
+
+    /// Verifies an opened descriptor while retaining its shared lock.
+    ///
+    /// The path is diagnostic only; callers can anchor parent traversal to
+    /// their own directory descriptors. The file must be private and regular.
+    ///
+    /// # Errors
+    /// Returns an error for insecure files, contention, corrupt complete
+    /// frames, invalid bodies, or exceeded limits. No bytes are changed.
+    pub fn read_only_file(
+        file: File,
+        path: impl AsRef<Path>,
+        limits: JournalLimits,
+    ) -> Result<JournalReader<T>, JournalError> {
         let path = path.as_ref();
         rustix::fs::flock(&file, FlockOperation::NonBlockingLockShared)
             .map_err(|source| io_error("acquire shared lock", path, source.into()))?;
         let mut file = LockedFile(file);
         validate_private_regular_file(&file, path)?;
-
         let RecoveryReport {
             records,
             valid_bytes,
             discarded_torn_bytes,
         } = recover::<T>(&mut file, path, limits)?;
-        Ok(JournalSnapshot {
-            records,
-            verified_bytes: valid_bytes,
-            incomplete_tail_bytes: discarded_torn_bytes,
+        Ok(JournalReader {
+            _file: file,
+            snapshot: JournalSnapshot {
+                records,
+                verified_bytes: valid_bytes,
+                incomplete_tail_bytes: discarded_torn_bytes,
+            },
         })
     }
 

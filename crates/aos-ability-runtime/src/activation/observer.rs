@@ -16,6 +16,11 @@ use crate::adapter::CancellationToken;
 pub enum Boundary {
     /// The exact invocation has been durably recorded before dispatch.
     IntentDurable,
+    /// Dispatch is about to be attempted for the exact durable intent.
+    ///
+    /// Acknowledgement precedes the call and does not prove that the handler
+    /// ran: interruption can occur between this boundary and dispatch.
+    DispatchStarted,
     /// A handler returned, but its outcome has not been recorded.
     DispatchReturned,
     /// The checked outcome has been durably recorded.

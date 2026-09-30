@@ -248,6 +248,13 @@ impl Activation {
         adapter: &mut impl ActivationAdapter,
         cancellation: &CancellationToken,
     ) -> Result<serde_json::Value> {
+        self.boundary(
+            invocation,
+            sequence,
+            Boundary::DispatchStarted,
+            adapter,
+            cancellation,
+        )?;
         let outputs = adapter.invoke(invocation, cancellation)?;
         self.boundary(
             invocation,

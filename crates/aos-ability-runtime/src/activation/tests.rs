@@ -492,3 +492,91 @@ fn observer_failure_after_durable_outcome_does_not_repeat_dispatch() {
         .unwrap();
     assert_eq!(host.mutations.len(), 1);
 }
+
+#[test]
+fn dispatch_attempt_boundary_precedes_handler_and_survives_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("activation.journal");
+    let desired = graph(Some("value"), "instance");
+    let cancellation = CancellationToken::default();
+    let mut host = Host {
+        halt_boundary: Some(Boundary::DispatchStarted),
+        ..Host::default()
+    };
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    assert!(
+        activation
+            .activate_once(
+                "first",
+                &desired,
+                &BTreeSet::new(),
+                &mut host,
+                &cancellation
+            )
+            .is_err()
+    );
+    assert!(host.mutations.is_empty());
+    let intent = host.boundaries.last().unwrap().journal_sequence;
+    assert_eq!(
+        host.boundaries.last().unwrap().boundary,
+        Boundary::DispatchStarted
+    );
+    drop(activation);
+
+    host.halt_boundary = None;
+    let mut recovered = Activation::open(&path, JournalLimits::default()).unwrap();
+    assert!(
+        recovered
+            .activate_once(
+                "first",
+                &desired,
+                &BTreeSet::new(),
+                &mut host,
+                &cancellation
+            )
+            .is_err()
+    );
+    assert!(host.mutations.is_empty());
+    assert!(
+        host.boundaries
+            .iter()
+            .all(|event| event.journal_sequence == intent)
+    );
+
+    // A failed handler call still emits its attempt boundary, without a return.
+    let mut failed = Host {
+        interrupt: true,
+        ..Host::default()
+    };
+    let mut fresh = Activation::open(
+        directory.path().join("failed.journal"),
+        JournalLimits::default(),
+    )
+    .unwrap();
+    assert!(
+        fresh
+            .activate_once(
+                "second",
+                &desired,
+                &BTreeSet::new(),
+                &mut failed,
+                &cancellation
+            )
+            .is_err()
+    );
+    assert_eq!(failed.mutations.len(), 1);
+    assert_eq!(
+        failed
+            .boundaries
+            .iter()
+            .filter(|event| event.boundary == Boundary::DispatchStarted)
+            .count(),
+        1
+    );
+    assert!(
+        !failed
+            .boundaries
+            .iter()
+            .any(|event| event.boundary == Boundary::DispatchReturned)
+    );
+}
