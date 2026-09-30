@@ -404,10 +404,7 @@ impl LiveWhiteboxState {
         Ok(())
     }
 
-    fn read_register_u64(
-        &self,
-        handle: *mut QemuPluginRegister,
-    ) -> Result<u64, LiveWhiteboxError> {
+    fn read_register_u64(&self, handle: *mut QemuPluginRegister) -> Result<u64, LiveWhiteboxError> {
         let array = (self.apis.g_byte_array_new)();
         let Some(array) = NonNull::new(array) else {
             return Err(LiveWhiteboxError::ByteArrayAllocation);
