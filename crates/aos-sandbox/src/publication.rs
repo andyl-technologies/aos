@@ -1303,15 +1303,57 @@ pub(crate) fn validate_historical_output_publication_v1(
     expected_digest: ObjectDigest,
     expected_lease: Option<(&[u8], &[u8])>,
 ) -> Result<(), AuthorityPublicationError> {
-    let (_, artifacts) = format::decode_prepared_with_artifacts(bytes, expected_digest)?;
+    let decoded = decode_historical_output_publication_v1(bytes, expected_digest)?;
     if let Some((lease, signature)) = expected_lease {
-        if artifacts.lease.canonical_lease() != lease
-            || artifacts.lease.canonical_signature() != signature
+        decoded.require_expected_lease(lease, signature)?;
+    }
+    Ok(())
+}
+
+/// Retains a fully decoded historical publication's exact lease for comparison.
+///
+/// Private fields prevent alternate construction or conversion into current
+/// publication, signature trust, funding or privileged effect authority.
+pub(crate) struct DecodedHistoricalOutputPublicationV1 {
+    lease: RecoveredOwnershipLeaseV1,
+}
+
+impl DecodedHistoricalOutputPublicationV1 {
+    /// Checks the exact lease preimages without decoding the publication again.
+    ///
+    /// # Errors
+    ///
+    /// Returns corruption when either expected canonical preimage differs.
+    pub(crate) fn require_expected_lease(
+        &self,
+        lease: &[u8],
+        signature: &[u8],
+    ) -> Result<(), AuthorityPublicationError> {
+        if self.lease.canonical_lease() != lease
+            || self.lease.canonical_signature() != signature
         {
             return Err(AuthorityPublicationError::CorruptCurrent);
         }
+        Ok(())
     }
-    Ok(())
+}
+
+/// Retains comparison DATA from the existing complete historical decoder.
+///
+/// This structural readback authenticates no signature or current owner. The
+/// complete decode precedes any later supported-carrier classification.
+///
+/// # Errors
+///
+/// Preserves the decoder's bounds, digest, canonical and cross-link errors.
+pub(crate) fn decode_historical_output_publication_v1(
+    bytes: &[u8],
+    expected_digest: ObjectDigest,
+) -> Result<DecodedHistoricalOutputPublicationV1, AuthorityPublicationError> {
+    let (_, artifacts) = format::decode_prepared_with_artifacts(bytes, expected_digest)?;
+    Ok(DecodedHistoricalOutputPublicationV1 {
+        lease: artifacts.lease,
+    })
 }
 
 fn publication_digest(bytes: &[u8]) -> ObjectDigest {
@@ -1462,6 +1504,131 @@ fn take_bytes<'a>(
 ) -> Result<&'a [u8], AuthorityPublicationError> {
     let length = take_u32(bytes, cursor)?;
     take(bytes, cursor, length)
+}
+
+#[cfg(test)]
+mod historical_output_readback_tests {
+    use super::*;
+
+    #[test]
+    fn historical_readback_preserves_exact_lease_comparison_and_unit_validation() {
+        let (_, prepared) = tests::activation_fixture(1);
+        let bytes = prepared.canonical_bytes();
+        let (_, artifacts) = format::decode_prepared_with_artifacts(bytes, prepared.digest()).unwrap();
+        let lease = artifacts.lease.canonical_lease();
+        let signature = artifacts.lease.canonical_signature();
+
+        let decoded = decode_historical_output_publication_v1(bytes, prepared.digest()).unwrap();
+
+        assert!(decoded.require_expected_lease(lease, signature).is_ok());
+        assert!(decoded.require_expected_lease(lease, signature).is_ok());
+        assert!(validate_historical_output_publication_v1(bytes, prepared.digest(), None).is_ok());
+        assert!(validate_historical_output_publication_v1(
+            bytes,
+            prepared.digest(),
+            Some((lease, signature)),
+        ).is_ok());
+    }
+
+    #[test]
+    fn historical_readback_and_unit_wrapper_reject_each_changed_lease_preimage() {
+        let (_, prepared) = tests::activation_fixture(1);
+        let bytes = prepared.canonical_bytes();
+        let (_, artifacts) = format::decode_prepared_with_artifacts(bytes, prepared.digest()).unwrap();
+        let lease = artifacts.lease.canonical_lease();
+        let signature = artifacts.lease.canonical_signature();
+        let mut changed_lease = lease.to_vec();
+        changed_lease[0] ^= 1;
+        let mut changed_signature = signature.to_vec();
+        changed_signature[0] ^= 1;
+        let substitutions: [(&[u8], &[u8]); 4] = [
+            (&changed_lease, signature),
+            (lease, &changed_signature),
+            (b"", signature),
+            (lease, b""),
+        ];
+        let decoded = decode_historical_output_publication_v1(bytes, prepared.digest()).unwrap();
+
+        for (lease, signature) in substitutions {
+            assert!(matches!(
+                decoded.require_expected_lease(lease, signature),
+                Err(AuthorityPublicationError::CorruptCurrent),
+            ));
+            assert!(matches!(
+                validate_historical_output_publication_v1(
+                    bytes,
+                    prepared.digest(),
+                    Some((lease, signature)),
+                ),
+                Err(AuthorityPublicationError::CorruptCurrent),
+            ));
+        }
+    }
+
+    #[test]
+    fn resealed_malformed_artifacts_still_fail_the_complete_first_decode() {
+        let (_, prepared) = tests::activation_fixture(1);
+        let bytes = prepared.canonical_bytes();
+        let mut cursor = 10;
+        let mut offsets = vec![0, 8];
+        for _ in 0..5 {
+            let field = take_bytes(bytes, &mut cursor).unwrap();
+            offsets.push(cursor - field.len());
+        }
+        let audiences = take_u32(bytes, &mut cursor).unwrap();
+        take(bytes, &mut cursor, audiences).unwrap();
+        assert!(take_u32(bytes, &mut cursor).unwrap() > 0);
+        take(bytes, &mut cursor, 33).unwrap();
+        let plan = take_bytes(bytes, &mut cursor).unwrap();
+        offsets.push(cursor - plan.len());
+
+        for offset in offsets {
+            let mut changed = bytes.to_vec();
+            changed[offset] ^= 0xff;
+            let digest = publication_digest(&changed);
+
+            assert!(matches!(
+                decode_historical_output_publication_v1(&changed, digest),
+                Err(AuthorityPublicationError::CorruptCurrent),
+            ), "decoded malformed artifact at {offset}");
+            assert!(matches!(
+                validate_historical_output_publication_v1(&changed, digest, None),
+                Err(AuthorityPublicationError::CorruptCurrent),
+            ), "unit wrapper accepted malformed artifact at {offset}");
+            assert!(matches!(
+                decode_prepared(&changed, digest),
+                Err(AuthorityPublicationError::CorruptCurrent),
+            ), "original decoder accepted malformed artifact at {offset}");
+        }
+    }
+
+    #[test]
+    fn historical_readback_preserves_digest_length_and_trailing_byte_refusals() {
+        let (_, prepared) = tests::activation_fixture(1);
+        let bytes = prepared.canonical_bytes();
+        let mut trailing = bytes.to_vec();
+        trailing.push(0);
+        let truncated = &bytes[..bytes.len() - 1];
+        let oversized = vec![0; MAXIMUM_PUBLICATION_BYTES + 1];
+        let malformed = [
+            (bytes, ObjectDigest::from_bytes([0; 32])),
+            (truncated, publication_digest(truncated)),
+            (trailing.as_slice(), publication_digest(&trailing)),
+            (oversized.as_slice(), prepared.digest()),
+            (b"".as_slice(), prepared.digest()),
+        ];
+
+        for (bytes, digest) in malformed {
+            assert!(matches!(
+                decode_historical_output_publication_v1(bytes, digest),
+                Err(AuthorityPublicationError::CorruptCurrent),
+            ));
+            assert!(matches!(
+                validate_historical_output_publication_v1(bytes, digest, None),
+                Err(AuthorityPublicationError::CorruptCurrent),
+            ));
+        }
+    }
 }
 
 #[cfg(test)]
