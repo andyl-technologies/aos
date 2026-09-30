@@ -12,12 +12,12 @@ use aos_release::digest::Sha256Digest;
 use aos_release::manifest::{
     MANIFEST_DOMAIN, MANIFEST_ENVELOPE_V1, ManifestEnvelopeV1, ManifestSignature, ReleaseManifestV1,
 };
-use aos_release::plan::ReleasePlanV1;
+use aos_release::plan::ReleasePlan;
 use aos_release::signing::{
-    SIGNING_REQUEST_DOMAIN, SignerRole, SigningContext, SigningOperation, SigningRequestV1,
+    SIGNING_REQUEST_DOMAIN, SignerRole, SigningContext, SigningOperation, SigningRequest,
     TrustedEd25519Key,
 };
-use aos_release::state::{JournalEntryV1, ReleaseState, parse_journal};
+use aos_release::state::{JournalEntry, ReleaseState, parse_journal};
 use aos_release::verify::CapturedFile;
 
 use crate::cli::ReleaseFinalizeArgs;
@@ -40,7 +40,7 @@ pub(super) async fn run(
     }
 
     let plan_bytes = read_canonical(&args.plan, "release plan")?;
-    let plan: ReleasePlanV1 = canonical::from_slice(&plan_bytes, "release plan")?;
+    let plan: ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
     plan.validate()?;
     let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
     let manifest_bytes = read_canonical(&args.manifest_payload, "manifest payload")?;
@@ -52,7 +52,7 @@ pub(super) async fn run(
 
     let journal_bytes = capture::control_file(&args.journal, "release journal")?;
     let mut journal = parse_journal(&journal_bytes)?;
-    if aos_release::verify::verify_journal(&journal)? != ReleaseState::Built
+    if aos_release::verify::verify_journal(&journal)?.global != ReleaseState::Built
         || journal.last().map(|entry| entry.plan_digest) != Some(plan_digest)
     {
         bail!("release finalization requires the matching Built-state journal");
@@ -92,7 +92,7 @@ pub(super) async fn run(
     let mut nonces = BTreeSet::new();
     for key in &trusted_keys {
         let nonce = fresh_nonce(&mut nonces)?;
-        let request = SigningRequestV1 {
+        let request = SigningRequest {
             schema_version: SIGNING_REQUEST_DOMAIN.to_string(),
             request_id: format!("manifest-{}", &nonce[..24]),
             nonce,
@@ -229,7 +229,7 @@ fn parse_identities(values: &[String]) -> Result<BTreeMap<String, String>> {
 }
 
 fn release_requirement<'a>(
-    plan: &'a ReleasePlanV1,
+    plan: &'a ReleasePlan,
     keys: &[TrustedEd25519Key],
     identities: &BTreeMap<String, String>,
 ) -> Result<&'a aos_release::signing::SignerRequirement> {
@@ -260,16 +260,16 @@ fn fresh_nonce(seen: &mut BTreeSet<String>) -> Result<String> {
 }
 
 fn append_finalized_journal(
-    journal: &mut Vec<JournalEntryV1>,
+    journal: &mut Vec<JournalEntry>,
     plan_digest: Sha256Digest,
     manifest_digest: Sha256Digest,
     recorded_at: &str,
     envelope: &ManifestEnvelopeV1,
 ) -> Result<()> {
     let previous = journal.last().context("release journal is empty")?;
-    let previous_digest = Sha256Digest::of_canonical("aos.release.journal-entry/v1", previous)?;
-    let entry = JournalEntryV1 {
-        schema_version: aos_release::RELEASE_JOURNAL_ENTRY_V1.to_string(),
+    let previous_digest = previous.digest()?;
+    let entry = JournalEntry {
+        schema_version: previous.schema_version.clone(),
         sequence: u64::try_from(journal.len())?
             .checked_add(1)
             .context("journal sequence overflow")?,
@@ -278,6 +278,7 @@ fn append_finalized_journal(
         manifest_digest: Some(manifest_digest),
         prior_state: Some(ReleaseState::Built),
         new_state: ReleaseState::Finalized,
+        destination: None,
         operation_ids: envelope
             .signatures
             .iter()
@@ -298,7 +299,7 @@ fn append_finalized_journal(
     Ok(())
 }
 
-fn encode_journal(entries: &[JournalEntryV1]) -> Result<Vec<u8>> {
+fn encode_journal(entries: &[JournalEntry]) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     for entry in entries {
         bytes.extend(canonical::to_vec(entry)?);

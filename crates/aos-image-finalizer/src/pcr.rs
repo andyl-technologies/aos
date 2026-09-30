@@ -8,7 +8,7 @@ use anyhow::{Context as _, Result, bail};
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::signing::{
-    SignatureAlgorithm, SignatureResponseV1, SignerRole, SigningContext, SigningOperation,
+    SignatureAlgorithm, SignatureResponse, SignerRole, SigningContext, SigningOperation,
     verify_response_binding,
 };
 use base64::Engine as _;
@@ -53,7 +53,7 @@ pub struct SignedPcrPolicyV1 {
     /// Ready-phase expected PCR 11, serialized as `sha256:<hex>`.
     pub expected_ready_pcr11: Sha256Digest,
     /// Audited external provider response.
-    pub signing_operation: SignatureResponseV1,
+    pub signing_operation: SignatureResponse,
 }
 
 /// Signed ready-phase PCR evidence for one finalized normal UKI.
@@ -64,7 +64,7 @@ pub struct UkiMeasurementV1 {
     /// Raw SHA-256 signature over the measurement document.
     pub signature: PathBuf,
     /// Audited detached-signature provider response.
-    pub signing_operation: SignatureResponseV1,
+    pub signing_operation: SignatureResponse,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
