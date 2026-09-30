@@ -512,6 +512,7 @@ fn local_closure(package: &LocalRuntimePackage) -> Result<Vec<RuntimeClosurePin>
         roots.push(&artifact.store_path);
     }
     let output = Command::new("nix-store")
+        .envs(aos_core::nix::aos_management_nix_env())
         .args(["--query", "--requisites"])
         .args(&roots)
         .output()
@@ -577,6 +578,7 @@ pub(crate) fn immutable_lower_store_path(path: &str) -> Result<std::path::PathBu
 
 pub(crate) fn local_store_identity_at(identity: &str, read_path: &Path) -> Result<(String, u64)> {
     let dump = Command::new("nix-store")
+        .envs(aos_core::nix::aos_management_nix_env())
         .arg("--dump")
         .arg(read_path)
         .output()

@@ -116,6 +116,7 @@
         --arg version "$package_version" \
         --arg expose_path ${lib.escapeShellArg (builtins.toString package.package.expose)} \
         --arg config_output "$config_output" \
+        --argjson config_dependency_outputs ${lib.escapeShellArg (builtins.toJSON (package.package.configModuleDependencies or {}))} \
         --slurpfile config_meta "$config_meta" \
         --arg root_hash "$root_hash" \
         --arg root_hash_sig "$root_hash_sig" \
@@ -161,6 +162,7 @@
                 owns_roots: $config_meta[0].owns_roots,
                 contributes: $config_meta[0].contributes,
                 provides_capabilities: $config_meta[0].provides_capabilities,
+                dependency_outputs: $config_dependency_outputs,
                 artifacts: ($config_meta[0].artifacts // {})
               }
               end
@@ -339,7 +341,9 @@ in {
                 '';
               }
               {
-                assertion = package.package ? expose;
+                # Frozen evaluation retains the image's exact artifact path
+                # as evidence without exposing image-only builder metadata.
+                assertion = package.package ? expose || (package.package.frozenExposeArtifact or null) != null;
                 message = ''
                   aos.packages."${name}" must point at a derivation with an
                   `expose` artifact.

@@ -29,6 +29,7 @@ let
   # The target system is frozen into the base library at image build time.
   # Stage 2 must not consult the evaluator host's ambient currentSystem.
   system = "@system@";
+  systemName = lib.removeSuffix "\n" (builtins.readFile ./system-name);
 
   # `bash = null`: the on-host eval never invokes a builder (frozen pkgs), so
   # the derivation-building helpers in `lib` that would use bash are never
@@ -43,7 +44,13 @@ let
   # Frozen `pkgs`: every package is a string-coercible record carrying its
   # already-built store path. No derivation, so the eval never enters the
   # from-source build graph.
-  frozenPkgs = freeze.frozenFromJSON (builtins.readFile ./frozen-pkgs.json);
+  frozenPkgs =
+    (freeze.frozenFromJSON (builtins.readFile ./frozen-pkgs.json))
+    // {
+      # Platform assertions need immutable image metadata, never a runtime
+      # package named stdenv or a route back into the source build graph.
+      stdenv.hostPlatform = lib.platform;
+    };
 
   # Stage-1-captured store paths for image-fixed config artifacts
   # Layer 2). Injected as `aos.config.frozenArtifacts` so modules read the
@@ -146,6 +153,7 @@ in {
     factsModules ? [],
   }:
     lib.evalModules {
+      specialArgs = {inherit systemName;};
       modules =
         baseModules
         ++ systemModules
