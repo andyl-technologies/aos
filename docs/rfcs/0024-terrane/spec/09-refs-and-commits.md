@@ -127,8 +127,16 @@ under concurrent garbage collection ([`17-garbage-collection.md`](17-garbage-col
   pack the commit needs and its per-pack index; (2) write the commit object;
   (3) write the reflog record `logs/refs/heads/<path>/<seq+1>` by
   put-if-absent; (4) compare-and-swap `refs/heads/<path>` from the record it
-  read to the new record. A failure at any step MUST leave the ref
-  unchanged. *Gate:* `gate:ref-advance-ordering`.
+  read to the new record. A failure before step (4), or a compare-and-swap
+  conflict at step (4), MUST leave the ref unchanged by this writer. An
+  unavailable storage or transport result at step (4) can be indeterminate:
+  the atomic write may already have applied even though its acknowledgement
+  or durability confirmation failed. Such a result MUST NOT be reported as
+  success or as a confirmed rejection. The writer MUST stop its session and
+  re-read the authoritative ref after the backend becomes available before
+  any further advance; it MUST NOT blindly retry the same transaction. A
+  failed re-read remains indeterminate and MUST NOT be interpreted as ref
+  absence. *Gate:* `gate:ref-advance-ordering`.
 - **[REF-13]** Step (3) MUST use put-if-absent on the exact sequence number.
   A conflict at step (3) or (4) means another writer advanced the ref; the
   writer MUST re-read the ref, and then either fail (single-writer mode) or

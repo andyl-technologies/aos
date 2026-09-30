@@ -924,6 +924,23 @@ is added rather than editing history.
     keys remain under `gc/<cycle>/`; existing keys and IDs remain stable.
     This draft correction precedes T1's encoding and bucket-key freeze.
 
+- **[D-57] Distinguish a rejected CAS from an indeterminate storage result.**
+  - **Status:** Decided
+  - **Decision:** Prepublication failures and compare mismatches preserve the
+    ref against this writer. An unavailable result from the final atomic CAS
+    may have applied; stop the writer session, preserve the error, and require
+    an authoritative re-read before another advance. A failed re-read is not
+    absence and an uncertain durability result is not an acknowledgement.
+  - **Rationale:** REF-12 promised an unchanged ref on every failure, while
+    STORE-30 permits backend failures. An atomic rename may succeed before
+    its directory sync fails, and a remote CAS may apply before its response
+    is lost. Rollback or a poison marker can suffer the same storage failure;
+    neither can prove universal rollback. Atomicity still holds, but outcome
+    certainty cannot be inferred from an unavailable response.
+  - **Affects:** REF-12, STORE-7 and STORE-30. The closed error taxonomy,
+    record bytes, ordering, mismatch semantics and requirement IDs remain
+    unchanged. This correction precedes T1's store-interface freeze.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

@@ -99,8 +99,12 @@ ranges inside packs and for partial object reads.
 
 - **[STORE-7]** `ref_cas` MUST be atomic compare-and-swap on the whole ref
   record: it succeeds only if the current record equals `expect` (or is
-  absent when `expect` is absent), and on failure MUST return the current
-  record. *Gate:* `gate:store-ref-cas`.
+  absent when `expect` is absent). A mismatch MUST return `conflict(current)`
+  without modifying the ref. A backend or transport failure MUST use the
+  registered store error taxonomy; an `unavailable` result after submission
+  does not establish whether the atomic write applied (REF-12). It MUST NOT
+  be disguised as a mismatch, an absent ref, or success. *Gate:*
+  `gate:store-ref-cas`.
 - **[STORE-8]** `ref_log_append` MUST be create-if-absent on `(name, seq)`.
   A second append to the same `(name, seq)` MUST fail and MUST NOT modify the
   existing record. *Gate:* `gate:store-ref-log-append-once`.
