@@ -77,6 +77,7 @@ pub(super) async fn fixture() -> Bucket {
 pub(super) fn config(root: PathBuf) -> FileBucketConfig {
     FileBucketConfig {
         root,
+        publication_control: None,
         chunk_profile_name: "cdc-1m".into(),
         chunk_profile: ChunkProfile::cdc_1m([0; 32]),
         locality: Locality::default(),
@@ -351,6 +352,50 @@ async fn probe_revalidates_persisted_layout_and_profile_each_open() {
             .await
             .is_err()
     );
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
+
+#[tokio::test]
+async fn registered_publication_marker_cannot_authorize_legacy_probe_writes() {
+    let bucket = fixture().await;
+    let root = bucket.root().to_owned();
+    let path = root.join("CAPABILITIES");
+    let mut record = BucketCapabilities::decode(&tokio::fs::read(&path).await.unwrap()).unwrap();
+    record.publication_protocol = Some(1);
+    let registered = record.encode().unwrap();
+    tokio::fs::write(&path, &registered).await.unwrap();
+
+    let error = FileBucket::open(config(root.clone()), TokioLocalFs, TokioClock, Validator)
+        .await
+        .err()
+        .unwrap();
+
+    assert_eq!(error.kind(), &StoreErrorKind::Unsupported);
+    assert_eq!(tokio::fs::read(&path).await.unwrap(), registered);
+
+    let proposed = RefRecord::first([1; 32], 1, Locality::default()).selected();
+    assert_eq!(
+        bucket
+            .prepared_cas("refs/heads/_/main", None, &proposed)
+            .await
+            .unwrap_err()
+            .kind(),
+        &StoreErrorKind::Unsupported
+    );
+    assert_eq!(
+        bucket
+            .ref_get("refs/heads/_/main")
+            .await
+            .unwrap_err()
+            .kind(),
+        &StoreErrorKind::Unsupported
+    );
+    assert!(
+        !tokio::fs::try_exists(root.join("refs/heads/_/main:record"))
+            .await
+            .unwrap()
+    );
+    assert_eq!(tokio::fs::read(&path).await.unwrap(), registered);
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
 

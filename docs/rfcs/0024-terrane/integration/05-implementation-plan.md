@@ -296,6 +296,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   delegation checks remain joint with these admission gates. D-79's exact
   selected publication, complete Guard inputs and absent-name recreation
   history remain pending implementation and actual competing-writer checks.
+  The shared CAPABILITIES key-11 codec and explicit protected-operator
+  configuration are present. Legacy handles refuse registered markers;
+  checked activation, selected reads and transitions remain joint work.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,

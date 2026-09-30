@@ -15,6 +15,7 @@ mod files;
 pub(crate) mod held;
 #[cfg(all(test, feature = "tokio", unix))]
 mod held_tests;
+pub(crate) mod publication;
 mod quarantine;
 mod retirement;
 
@@ -79,6 +80,22 @@ pub struct FileBucketConfig {
     pub chunk_profile: ChunkProfile,
     /// The placement labels reported to callers.
     pub locality: Locality,
+    /// Independently configured protected publication control, when supported.
+    /// Configuration alone grants no fresh registration or publication authority.
+    pub publication_control: Option<FileBucketPublicationConfig>,
+}
+
+/// Configures the protected owner and location of file-bucket publication control.
+///
+/// Native registration separately verifies the opened physical binding and
+/// complete selected evidence. These fields do not establish those facts.
+#[derive(Clone, Debug)]
+pub struct FileBucketPublicationConfig {
+    /// The independently configured operator's Unix user identifier.
+    pub operator_uid: u32,
+    /// An explicit protected control directory outside the portable payload.
+    /// Absence selects the registered external sibling location.
+    pub control: Option<PathBuf>,
 }
 
 /// Holds a file bucket with explicitly configured portable I/O bindings.
@@ -310,6 +327,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             probed_at: timestamp,
             generation,
             ref_names,
+            publication_protocol: None,
             profile: self.profile(),
         };
         let bytes = record.encode().map_err(|_| files::malformed())?;

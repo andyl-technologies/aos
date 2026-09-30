@@ -41,7 +41,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     ) -> Result<(), StoreFailure> {
         if capabilities.layout_version != self.inner.access.version()
             || capabilities.profile != self.profile()
+            || capabilities.publication_protocol.is_some()
         {
+            // Registered state requires the selected-chain resolver, including
+            // for already-open handles. Legacy caches and probes cannot select it.
             return Err(StoreFailure::new(StoreErrorKind::Unsupported));
         }
         Ok(())

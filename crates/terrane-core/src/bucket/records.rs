@@ -76,6 +76,9 @@ pub struct BucketCapabilities {
     /// Complete sorted, unique registered ref names; absence means unknown completeness.
     /// Names remain after losing publication attempts or ref deletion.
     pub ref_names: Option<Vec<String>>,
+    /// The checked publication protocol marker; absence denotes legacy authority.
+    /// A decoded marker never establishes a trusted selected publication chain.
+    pub publication_protocol: Option<u64>,
 }
 
 impl BucketCapabilities {
@@ -89,13 +92,22 @@ impl BucketCapabilities {
             return Err(RecordError::Schema);
         }
 
+        if self
+            .publication_protocol
+            .is_some_and(|version| version != 1)
+        {
+            return Err(RecordError::Schema);
+        }
+
         if let Some(names) = &self.ref_names {
             validate_ref_names(names)?;
         }
         let mut bytes = Vec::new();
         cbor::write_map(
             &mut bytes,
-            8 + usize::from(self.generation.is_some()) + usize::from(self.ref_names.is_some()),
+            8 + usize::from(self.generation.is_some())
+                + usize::from(self.ref_names.is_some())
+                + usize::from(self.publication_protocol.is_some()),
         );
         uint_field(&mut bytes, 1, self.layout_version);
         for (key, value) in [
@@ -131,6 +143,9 @@ impl BucketCapabilities {
                 cbor::write_text(&mut bytes, name);
             }
         }
+        if let Some(version) = self.publication_protocol {
+            uint_field(&mut bytes, 11, version);
+        }
         Ok(bytes)
     }
 
@@ -141,8 +156,8 @@ impl BucketCapabilities {
     /// noncanonical encoding, or trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, RecordError> {
         let mut decoder = Decoder::new(bytes);
-        let fields = decoder.map(10)?;
-        if !(8..=10).contains(&fields) {
+        let fields = decoder.map(11)?;
+        if !(8..=11).contains(&fields) {
             return Err(RecordError::Schema);
         }
         key(&mut decoder, 1)?;
@@ -181,6 +196,7 @@ impl BucketCapabilities {
         let seed = digest(&mut decoder)?;
         let mut generation = None;
         let mut ref_names = None;
+        let mut publication_protocol = None;
         let mut previous_key = 8;
         for _ in 8..fields {
             let field = decoder.uint()?;
@@ -199,6 +215,12 @@ impl BucketCapabilities {
                     validate_ref_names(&names)?;
                     ref_names = Some(names);
                 }
+                11 => {
+                    if decoder.uint()? != 1 {
+                        return Err(RecordError::Schema);
+                    }
+                    publication_protocol = Some(1);
+                }
                 _ => return Err(RecordError::Schema),
             }
         }
@@ -214,6 +236,7 @@ impl BucketCapabilities {
             probed_at,
             generation,
             ref_names,
+            publication_protocol,
             profile: StoreProfile {
                 identity,
                 algorithm,
@@ -609,6 +632,7 @@ mod tests {
             probed_at: 7,
             generation: Some(8),
             ref_names: Some(alloc::vec!["refs/heads/_/main".into()]),
+            publication_protocol: None,
             profile: StoreProfile {
                 identity: "terrane-v1".into(),
                 algorithm: "blake3".into(),
@@ -650,6 +674,7 @@ mod tests {
             probed_at: 1,
             generation: None,
             ref_names: Some(Vec::new()),
+            publication_protocol: None,
             profile: StoreProfile {
                 identity: "terrane-v1".into(),
                 algorithm: "blake3".into(),
@@ -683,6 +708,39 @@ mod tests {
         nullable.pop();
         nullable.push(0xf6);
         assert!(BucketCapabilities::decode(&nullable).is_err());
+    }
+
+    #[test]
+    fn capability_publication_marker_preserves_legacy_bytes_and_rejects_unknown_versions() {
+        // Independently spell the eight-field legacy record, including its
+        // complete profile. Its absence marker must survive byte-for-byte.
+        let mut legacy = [
+            b"\xa8\x01\x02\x02\xf5\x03\xf5\x04\xf5\x05\xf4\x06\x01\x07\x01\x08\xa4\x01\x6a"
+                .as_slice(),
+            b"terrane-v1",
+            b"\x02\x66blake3\x03\x66cdc-1m\x04\x58\x20",
+        ]
+        .concat();
+        legacy.extend_from_slice(&[0; 32]);
+
+        let decoded = BucketCapabilities::decode(&legacy).unwrap();
+        assert_eq!(decoded.publication_protocol, None);
+        assert_eq!(decoded.encode().unwrap(), legacy);
+
+        let mut registered = legacy;
+        registered[0] = 0xa9;
+        registered.extend_from_slice(&[11, 1]);
+        let mut decoded = BucketCapabilities::decode(&registered).unwrap();
+        assert_eq!(decoded.publication_protocol, Some(1));
+        assert_eq!(decoded.encode().unwrap(), registered);
+
+        for invalid in [0, 2, 0xf4, 0xf6] {
+            *registered.last_mut().unwrap() = invalid;
+            assert!(BucketCapabilities::decode(&registered).is_err());
+        }
+
+        decoded.publication_protocol = Some(2);
+        assert!(decoded.encode().is_err());
     }
 
     #[test]
