@@ -356,6 +356,7 @@ impl NativeHeldCapacitySuffixV3 {
                 final_append: append.step.is_final(),
             }),
             limits,
+            NATIVE_HELD_CAPACITY_VALUE_BYTES_V3,
         )
     }
 }
@@ -372,6 +373,7 @@ fn measure_appends<'a>(
     purpose: NativeHeldCapacityPurposeV3,
     appends: impl IntoIterator<Item = MeasurementAppend<'a>>,
     limits: JournalLimits,
+    floor_value_bytes: usize,
 ) -> Result<NativeHeldCapacityGeometryV3, JournalError> {
     let namespace = purpose.owner_namespace();
     let mut states = BTreeMap::<Vec<u8>, Option<Vec<u8>>>::new();
@@ -427,7 +429,7 @@ fn measure_appends<'a>(
             records.push(JournalRecord::put(
                 RecordNamespace::GlobalCapacityReservation,
                 reservation_key([2; 32]),
-                vec![0; NATIVE_HELD_CAPACITY_VALUE_BYTES_V3],
+                vec![0; floor_value_bytes],
             ));
         }
         let transaction = JournalTransaction::new(append.transaction_id, records)?;
