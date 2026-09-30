@@ -9,7 +9,10 @@
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   observedStateTest = builtins.readFile ../../crates/crucible/tests/observed_state_materialization.rs;
   deterministicConditionTest = builtins.readFile ../../crates/crucible/tests/deterministic_condition_evaluation.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
@@ -208,16 +211,16 @@
         needle = "pub fn ordering_facts(self) -> &'log [ObservedOrderingFact]";
       }
       {
-        label = "fault facts view";
-        needle = "pub fn fault_facts(self) -> &'log [ObservedFaultFact]";
+        label = "typed fault evidence folded separately";
+        needle = "SchedulerEventLogPayload::FaultObservation(_)";
       }
       {
         label = "ordering fact enum";
         needle = "pub enum ObservedOrderingFact";
       }
       {
-        label = "fault fact enum";
-        needle = "pub enum ObservedFaultFact";
+        label = "private observed-state storage";
+        needle = "pub(super) observable_events:";
       }
       {
         label = "checked prefix constructor";
@@ -288,8 +291,8 @@
         needle = "ObservedOrderingFact";
       }
       {
-        label = "observed fault fact export";
-        needle = "ObservedFaultFact";
+        label = "checked prefix export";
+        needle = "ConditionEventLogPrefix";
       }
       {
         label = "test typed payload constructor";
@@ -297,6 +300,10 @@
       }
     ]
     ++ failuresFor "crates/crucible/tests/observed_state_materialization.rs" observedStateTest [
+      {
+        label = "internal fault evidence does not enter assertion state";
+        needle = "fault_evidence_does_not_expose_internal_state_to_assertion_predicates";
+      }
       {
         label = "checked prefix materialization test";
         needle = "observed_state_materializes_only_checked_event_log_prefix";

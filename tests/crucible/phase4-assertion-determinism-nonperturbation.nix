@@ -43,8 +43,8 @@
         needle = "ordering_facts: &'log [ObservedOrderingFact]";
       }
       {
-        label = "read-only fault facts";
-        needle = "fault_facts: &'log [ObservedFaultFact]";
+        label = "typed fault evidence handled without exposing internal fault state";
+        needle = "SchedulerEventLogPayload::FaultObservation(_)";
       }
       {
         label = "stable outcome sort";

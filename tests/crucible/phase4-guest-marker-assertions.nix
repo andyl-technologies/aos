@@ -8,9 +8,14 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  propertiesModel = builtins.readFile ../../crates/crucible/src/model/plan_properties.rs;
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
-  guestMarkerAssertionsTest = builtins.readFile ../../crates/crucible/tests/guest_marker_assertions.rs;
+  guestAssertion = builtins.readFile ../../crates/crucible/src/model/guest_assertion.rs;
+  crateRoot = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
+  guestMarkerAssertionsTest =
+    builtins.readFile ../../crates/crucible/tests/guest_marker_assertions.rs
+    + builtins.readFile ../../crates/crucible/tests/guest_assertion_declarations.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -293,7 +298,7 @@
         needle = "GuestAssertionDetail";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model/plan_properties.rs" propertiesModel [
+    ++ failuresFor "crates/crucible/src/model/guest_assertion.rs" guestAssertion [
       {
         label = "declared guest sometimes assertion constructor";
         needle = "pub fn guest_sometimes";
@@ -470,6 +475,7 @@ in
               --target-dir "$TMPDIR/crucible-guest-marker-assertions-target" \
               -p crucible \
               --test guest_marker_assertions \
+              --test guest_assertion_declarations \
               --test guest_marker_condition_leaf \
               --test host_side_assertions \
               -- --test-threads=1
