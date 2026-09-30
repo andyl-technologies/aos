@@ -11,17 +11,39 @@
 //! - [`digest`] defines typed, domain-separated SHA-256 identities.
 //! - [`platform`] defines the closed package and image matrix.
 //! - [`artifact`] defines immutable bundle members and relationships.
-//! - [`plan`] freezes release intent before build effects begin.
+//! - [`registry`] classifies registry identities, tiers, and channel kinds.
+//! - [`plan`] freezes release intent, publication surfaces, and destinations
+//!   before build effects begin.
 //! - [`artifact_profile`] binds baked client settings to the release registry.
 //! - [`manifest`] binds finalized artifacts to the frozen plan.
 //! - [`evidence`] records public gate and qualification results.
-//! - [`qualification`] defines typed scopes, built capabilities and assurance obligations.
-//! - [`qualification_evidence`] expands cases and derives assurance from observations.
+//! - [`qualification`] defines the shared contract: typed scopes, assurance
+//!   claims, destination profiles, change scope, and fixed admission limits.
+//! - [`qualification_evidence`] expands per-destination cases and derives
+//!   assurance from observations.
+//! - [`qualification_admission`] binds rollout and completion decisions and
+//!   independent reviews to one destination.
+//! - [`fitness`] validates signed environment-exercise attestations.
+//! - [`profile_override`] validates threshold-signed soak and ring relaxations.
 //! - [`inventory`] validates the Nix-derived four-target package inventory.
 //! - [`signing`] defines role-bound signing requests and responses.
-//! - [`state`] defines the append-only release journal state machine.
-//! - [`receipt`] binds staging, production, and channel operations.
-//! - [`verify`] verifies complete release values and captured bundle bytes.
+//! - [`state`] defines the append-only, per-destination release journal.
+//! - [`receipt`] binds publication, qualification, and channel operations on
+//!   Hub and static surfaces.
+//! - [`verify`] verifies complete release values, captured bundle bytes, and
+//!   journals.
+//!
+//! # How the pieces fit
+//!
+//! A release starts from a [`plan::ReleasePlan`] that embeds the
+//! [`qualification::QualificationContract`]. The contract's destination table
+//! selects a profile for each `<surface>/<channel>` destination; the plan
+//! freezes each destination's gates, soak, and rollout rings. The build
+//! produces a [`manifest::ReleaseManifestV1`]; publication, qualification, and
+//! channel operations append [`state::JournalEntry`] records whose
+//! per-destination state [`verify::verify_journal`] recomputes. Fitness
+//! attestations and profile overrides are separately signed inputs checked
+//! against the destination's profile at publication time.
 
 #![forbid(unsafe_code)]
 
@@ -42,10 +64,12 @@ pub mod build;
 pub mod canonical;
 pub mod digest;
 pub mod evidence;
+pub mod fitness;
 pub mod inventory;
 pub mod manifest;
 pub mod plan;
 pub mod platform;
+pub mod profile_override;
 pub mod qualification;
 pub mod qualification_admission;
 pub mod qualification_evidence;
@@ -60,14 +84,11 @@ pub mod verify;
 
 pub use digest::Sha256Digest;
 
-/// Schema identifier for the first frozen release-plan contract.
-pub const RELEASE_PLAN_V1: &str = "aos.release.plan/v1";
-
-/// Schema for release plans with the shared qualification contract.
-pub const RELEASE_PLAN_V2: &str = "aos.release.plan/v2";
+/// Schema for release plans with surfaces, destinations, and profiles.
+pub const RELEASE_PLAN: &str = "aos.release.plan/v1";
 
 /// Schema identifier for the first finalized release-manifest contract.
 pub const RELEASE_MANIFEST_V1: &str = "aos.release.manifest/v1";
 
-/// Schema identifier for the first hash-chained journal-entry contract.
-pub const RELEASE_JOURNAL_ENTRY_V1: &str = "aos.release.journal-entry/v1";
+/// Schema identifier for per-destination journal entries.
+pub const RELEASE_JOURNAL_ENTRY: &str = "aos.release.journal-entry/v1";

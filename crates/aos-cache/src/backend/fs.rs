@@ -1,4 +1,8 @@
 //! Filesystem (`file://`) cache backend.
+//!
+//! Conditional writes compare the SHA-256 of the current file under an
+//! exclusive `.<name>.lock` sibling and replace it with a temp file +
+//! `rename`; see [`super::conditional`].
 
 use std::io::Read as _;
 use std::path::PathBuf;
@@ -7,10 +11,17 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
+use aos_net::protocol::conditional::content_version;
 use aos_net::{TransferEngine, TransferRequest};
 use sha2::{Digest as _, Sha256};
 
-use super::{CacheBackend, StaticFileIdentity, add_static_metadata_headers};
+use super::conditional::{
+    outcome_with_reported_versions, read_small_object, send_conditional_put, validate_relative_path,
+};
+use super::{
+    CacheBackend, ConditionalOutcome, Expectation, ObjectVersion, StaticFileIdentity,
+    add_static_metadata_headers,
+};
 
 /// Filesystem cache backend.
 ///
@@ -218,5 +229,43 @@ impl CacheBackend for FsBackend {
             .await
             .with_context(|| format!("writing static file {url}"))?;
         Ok(())
+    }
+
+    async fn get_static_object(
+        &self,
+        relative_path: &str,
+        max_bytes: usize,
+    ) -> Result<Option<(Vec<u8>, ObjectVersion)>> {
+        validate_relative_path(relative_path)?;
+        let url = self.file_url(relative_path);
+
+        let object = read_small_object(&self.engine, &url, max_bytes).await?;
+        Ok(object.map(|object| {
+            let version = ObjectVersion(content_version(&object.bytes));
+            (object.bytes, version)
+        }))
+    }
+
+    async fn put_static_file_conditional(
+        &self,
+        relative_path: &str,
+        source: &std::path::Path,
+        content_type: Option<&str>,
+        cache_control: Option<&str>,
+        expect: Expectation,
+    ) -> Result<ConditionalOutcome> {
+        validate_relative_path(relative_path)?;
+        let url = self.file_url(relative_path);
+
+        let response = send_conditional_put(
+            &self.engine,
+            &url,
+            source,
+            content_type,
+            cache_control,
+            &expect,
+        )
+        .await?;
+        outcome_with_reported_versions(&url, response)
     }
 }

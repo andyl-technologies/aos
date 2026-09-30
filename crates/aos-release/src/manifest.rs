@@ -13,12 +13,12 @@ use crate::RELEASE_MANIFEST_V1;
 use crate::artifact::{ArtifactKind, ArtifactRecord, require_identifier};
 use crate::digest::Sha256Digest;
 use crate::evidence::EvidenceRecord;
-use crate::plan::{PlatformCell, ReleaseClass, ReleasePlanV1};
+use crate::plan::{PlatformCell, ReleaseClass, ReleasePlan};
 use crate::platform::{
     MatrixCell, require_complete_image_platforms, require_complete_package_platforms,
 };
 use crate::registry::registry_policy;
-use crate::signing::{SignatureResponseV1, SigningRequestV1};
+use crate::signing::{SignatureResponse, SigningRequest};
 
 /// Signature domain for the final manifest payload.
 pub const MANIFEST_DOMAIN: &str = "aos.release.manifest/v1";
@@ -86,6 +86,12 @@ pub struct ReleaseManifestV1 {
 }
 
 impl ReleaseManifestV1 {
+    /// Returns whether the plan demands the production supply-chain and image
+    /// artifact set: any destination profile that requires a complete matrix.
+    fn requires_production_supply_chain(&self, plan: &ReleasePlan) -> bool {
+        plan.requires_complete_matrix()
+    }
+
     /// Validates the finalized manifest against its frozen plan.
     ///
     /// # Errors
@@ -94,7 +100,7 @@ impl ReleaseManifestV1 {
     /// unresolved or mismatched artifacts, extra/missing planned cells,
     /// duplicate ids/paths, dangling relationships, failed required evidence,
     /// or a missing exact `release-plan.json` artifact.
-    pub fn validate(&self, plan: &ReleasePlanV1) -> Result<()> {
+    pub fn validate(&self, plan: &ReleasePlan) -> Result<()> {
         if self.schema_version != RELEASE_MANIFEST_V1 {
             bail!(
                 "unsupported release manifest schema: {}",
@@ -159,18 +165,16 @@ impl ReleaseManifestV1 {
             validate_final_cells(&image.platforms, &planned.platforms, true, &artifacts)?;
         }
 
-        let required_gates: BTreeSet<_> = plan
-            .gates
+        // Plans carry gates per destination; build evidence must satisfy the
+        // union, since one bundle serves every destination.
+        let planned_gates = plan.all_gates();
+        let required_gates: BTreeSet<_> = planned_gates
             .iter()
             .filter(|gate| {
-                if let Some(contract) = &plan.qualification {
-                    contract.requirements.iter().any(|requirement| {
-                        requirement.id == gate.policy_id
-                            && requirement.phase == crate::qualification::QualificationPhase::Build
-                    })
-                } else {
-                    gate.required_for_stable || !plan.release_class.requires_complete_matrix()
-                }
+                plan.qualification.requirements.iter().any(|requirement| {
+                    requirement.id == gate.policy_id
+                        && requirement.phase == crate::qualification::QualificationPhase::Build
+                })
             })
             .map(|gate| (&gate.policy_id, gate.policy_digest))
             .collect();
@@ -199,29 +203,31 @@ impl ReleaseManifestV1 {
         if !required_gates.is_subset(&passed_gates) {
             bail!("manifest lacks passing evidence for every selected required gate");
         }
-        if plan.qualification.is_some() {
-            let admitted_at = self
-                .evidence
-                .iter()
-                .map(|record| record.finished_at.as_str())
-                .max()
-                .ok_or_else(|| anyhow::anyhow!("missing build evidence"))?;
-            crate::qualification_evidence::validate_observations(
-                plan,
-                self,
-                crate::qualification::QualificationPhase::Build,
-                &self.evidence,
-                admitted_at,
-            )?;
-            // Expanding staging cases also rejects absent required image/OCI
-            // subjects before signing, without demanding future staging results.
-            crate::qualification_evidence::cases(
-                plan,
-                self,
-                crate::qualification::QualificationPhase::Staging,
-            )?;
-        }
-        if plan.release_class.requires_complete_matrix() {
+
+        let admitted_at = self
+            .evidence
+            .iter()
+            .map(|record| record.finished_at.as_str())
+            .max()
+            .ok_or_else(|| anyhow::anyhow!("missing build evidence"))?;
+        crate::qualification_evidence::validate_observations(
+            plan,
+            self,
+            None,
+            crate::qualification::QualificationPhase::Build,
+            &self.evidence,
+            admitted_at,
+            None,
+        )?;
+        // Expanding staging cases also rejects absent required image/OCI
+        // subjects before signing, without demanding future staging results.
+        crate::qualification_evidence::cases(
+            plan,
+            self,
+            None,
+            crate::qualification::QualificationPhase::Staging,
+        )?;
+        if self.requires_production_supply_chain(plan) {
             validate_production_supply_chain(self, &artifacts)?;
             validate_production_images(self, &artifacts)?;
         }
@@ -318,9 +324,9 @@ fn validate_production_images(
 #[serde(deny_unknown_fields)]
 pub struct ManifestSignature {
     /// Complete request authorized by the external signer.
-    pub request: SigningRequestV1,
+    pub request: SigningRequest,
     /// Public response returned by the signer.
-    pub response: SignatureResponseV1,
+    pub response: SignatureResponse,
 }
 
 /// Signed root file stored as `release-manifest.json`.

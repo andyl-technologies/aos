@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::digest::Sha256Digest;
-use crate::plan::ReleasePlanV1;
+use crate::plan::ReleasePlan;
 use crate::platform::Platform;
 
 /// Schema identifier for a complete build report.
@@ -95,7 +95,7 @@ impl BuildReportV1 {
     /// Returns an error for identity drift, missing, extra, reordered, or
     /// duplicate outputs, a planned Nix identity mismatch, malformed NAR
     /// facts, unsorted references, or an empty completion time.
-    pub fn validate(&self, plan: &ReleasePlanV1, plan_digest: Sha256Digest) -> Result<()> {
+    pub fn validate(&self, plan: &ReleasePlan, plan_digest: Sha256Digest) -> Result<()> {
         if self.schema_version != BUILD_REPORT_V1
             || self.plan_digest != plan_digest
             || self.source_commit != plan.source.commit
@@ -196,7 +196,7 @@ pub struct PlannedNixOutput<'a> {
 ///
 /// Returns an error when the plan repeats an artifact id or contains no Nix
 /// outputs.
-pub fn planned_nix_outputs(plan: &ReleasePlanV1) -> Result<BTreeMap<&str, PlannedNixOutput<'_>>> {
+pub fn planned_nix_outputs(plan: &ReleasePlan) -> Result<BTreeMap<&str, PlannedNixOutput<'_>>> {
     let mut expected = BTreeMap::new();
     for package in &plan.packages {
         let Some(publication) = package.publication.as_ref() else {

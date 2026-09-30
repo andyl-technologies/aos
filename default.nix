@@ -361,16 +361,6 @@
     identity = qualificationExecutorIdentity;
     reportRoot = "/run/aos-release/qualification-reports/${hostPlatform.system}";
   };
-  operatorRecoveryScenario = testing.mkQualificationReportScenario {
-    name = "aos-qualification-operator-recovery";
-    identity = qualificationExecutorIdentity;
-    reportPath = "/run/aos-release/qualification-reports/operator-recovery.json";
-  };
-  productionRecoveryScenario = testing.mkQualificationReportScenario {
-    name = "aos-qualification-production-recovery";
-    identity = qualificationExecutorIdentity;
-    reportPath = "/run/aos-release/qualification-reports/production-recovery.json";
-  };
   qualificationPackageScenario = testing.mkQualificationPackageScenario {
     name = "aos-qualification-${hostPlatform.system}-package-function";
     identity = qualificationExecutorIdentity;
@@ -470,13 +460,7 @@
     name = "aos-qualification-${hostPlatform.system}";
     platform = hostPlatform.system;
     identity = qualificationExecutorIdentity;
-    scenarios =
-      qualificationReportScenarios
-      // qualificationAutomatedScenarios
-      // lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
-        operator-recovery = "${operatorRecoveryScenario}/bin/aos-qualification-operator-recovery";
-        production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";
-      };
+    scenarios = qualificationReportScenarios // qualificationAutomatedScenarios;
     caseScenarios =
       k3sPackageScenarios
       // lib.optionalAttrs hostPlatform.isLinux {

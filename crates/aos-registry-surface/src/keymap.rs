@@ -4,16 +4,20 @@
 //! ordering, consistency planning, and HTTP responses use one path contract.
 
 /// The machine-surface directory prefixes (also valid as bare paths).
-const MACHINE_DIRS: [&str; 8] = [
+const MACHINE_DIRS: [&str; 9] = [
     "info",
     "objects",
     "channels",
     "releases",
     "publication-receipts",
     "nar",
+    "tuf",
     "web",
     "browse",
 ];
+
+/// The only replaceable TUF object; every versioned metadata file is immutable.
+const TUF_TIMESTAMP_PATH: &str = "tuf/timestamp.json";
 
 /// Cache-control for content-addressed payloads.
 pub const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
@@ -43,6 +47,10 @@ pub fn cache_control(path: &str) -> &'static str {
             && !is_git_pack_index_path(path)
     } else if let Some(rest) = path.strip_prefix("web/") {
         rest != "config.json" && rest != "index.json" && !rest.starts_with("packages/")
+    } else if path.starts_with("tuf/") {
+        // Root, targets, delegated, and snapshot metadata are versioned by
+        // filename and never change; the timestamp pointer is renewed in place.
+        path != TUF_TIMESTAMP_PATH
     } else {
         (path.starts_with("releases/")
             && !is_release_object_info_path(path)
@@ -252,6 +260,7 @@ mod tests {
             "web/config.json",
             "web/index.json",
             "web/packages/aos.json",
+            "tuf/timestamp.json",
             "releases/1/0/0/objects/info/packs",
             "objects/ab/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             "objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx",
@@ -267,6 +276,10 @@ mod tests {
             "releases/1/0/0/objects/pack/pack-demo.pack",
             "objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pack",
             "nar/aos.nar.zst",
+            "tuf/1.root.json",
+            "tuf/43.targets.json",
+            "tuf/19.stable.json",
+            "tuf/44.snapshot.json",
             "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aos.qcow2",
         ] {
             assert!(is_machine_path(path), "{path}");
@@ -274,6 +287,16 @@ mod tests {
             assert_eq!(cache_control(path), IMMUTABLE_CACHE_CONTROL, "{path}");
         }
         assert!(!is_mutable_path("not/a/machine/path"));
+    }
+
+    #[test]
+    fn tuf_metadata_is_machine_surface_with_one_mutable_pointer() {
+        assert!(is_machine_path("tuf"));
+        assert!(is_mutable_path("tuf/timestamp.json"));
+        assert!(!is_mutable_path("tuf/12.root.json"));
+        assert!(!is_mutable_path("tuf/timestamp.json.bak"));
+        assert_eq!(content_type("tuf/44.snapshot.json"), "application/json");
+        assert!(!is_machine_path("tufs/timestamp.json"));
     }
 
     #[test]

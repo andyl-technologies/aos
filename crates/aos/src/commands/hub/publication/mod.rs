@@ -720,4 +720,4 @@ fn publication_manifest_chunk_digest(
     ))
 }
 
-mod inventory;
+pub(crate) mod inventory;

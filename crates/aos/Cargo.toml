@@ -76,6 +76,7 @@ ed25519-dalek = { workspace = true }
 url = { workspace = true }
 zeroize = { workspace = true }
 tempfile = { workspace = true }
+toml = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 

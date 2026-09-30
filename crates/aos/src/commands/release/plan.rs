@@ -11,8 +11,11 @@ use aos_core::output::Printer;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::inventory::{DerivationInventoryV1, PackageInventoryV1};
-use aos_release::plan::{PlanningSource, ReleaseClass, ReleasePlanRequestV1, SourceIdentity};
+use aos_release::manifest::ReleaseManifestV1;
+use aos_release::plan::{PlanningSource, ReleasePlan, ReleasePlanRequest, SourceIdentity};
 use aos_release::platform::Platform;
+use aos_release::profile_override::{AcceptedOverride, verify_overrides};
+use aos_release::qualification::{ChangeScope, QualificationContract};
 
 use crate::cli::ReleasePlanArgs;
 
@@ -21,8 +24,17 @@ use super::capture;
 /// Evaluates immutable source and package intent and writes one new plan.
 pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) -> Result<()> {
     let request_bytes = capture::control_file(&args.request, "release plan request")?;
-    let request: ReleasePlanRequestV1 =
+    let mut request: ReleasePlanRequest =
         canonical::from_slice(&request_bytes, "release plan request")?;
+    if request.schema_version != aos_release::plan::PLAN_REQUEST {
+        bail!(
+            "release plans require an {} request",
+            aos_release::plan::PLAN_REQUEST
+        );
+    }
+    for destination in &request.destinations {
+        aos_release::registry::channel_kind(&destination.channel)?;
+    }
 
     let authorization = capture::control_file(
         &args.contributor_authorization,
@@ -37,21 +49,17 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
     let inventory: PackageInventoryV1 = serde_json::from_value(inventory_value)
         .context("decoding Nix release package inventory")?;
     inventory.validate()?;
-    let qualification: aos_release::qualification::QualificationContract =
+    let qualification: QualificationContract =
         serde_json::from_value(nix.eval_json("releaseQualification")?)
             .context("decoding the shared Nix qualification contract")?;
     qualification.validate()?;
-    if qualification.schema_version != aos_release::qualification::CONTRACT_V2 {
-        bail!("new release plans require the typed v2 qualification contract");
-    }
-    let expected_policy = qualification.digest()?;
-    if request.public_evidence_policy_digest != expected_policy
-        || request.gates != qualification.gates(&request.registry, request.release_class)?
-    {
+    if request.public_evidence_policy_digest != qualification.digest()? {
         bail!(
-            "reviewed request must select the complete shared qualification policy; inspect aos release contract"
+            "reviewed request must bind the complete shared qualification policy; inspect aos release step contract"
         );
     }
+    let accepted = apply_overrides(args, &qualification, &mut request)?;
+
     let mut derivations = Vec::with_capacity(Platform::ALL.len());
     for platform in Platform::ALL {
         let value =
@@ -66,14 +74,26 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
     }
     let source = derive_source_identity(
         nix.root(),
-        request.release_class,
+        !accepted.is_empty(),
         &request.source,
         authorization_digest,
     )?;
-    let mut plan = request.materialize(&inventory, &derivations, source)?;
-    plan.schema_version = aos_release::RELEASE_PLAN_V2.to_owned();
-    plan.qualification = Some(qualification);
-    plan.validate()?;
+    let predecessor = args
+        .predecessor_manifest
+        .as_deref()
+        .map(read_manifest)
+        .transpose()?;
+    let plan = materialize_with_scope(
+        request,
+        &inventory,
+        &derivations,
+        source,
+        qualification,
+        predecessor.as_ref(),
+    )?;
+    for accepted in &accepted {
+        accepted.validate_for(&plan)?;
+    }
     super::artifact_profiles::require_plan(nix, &plan)?;
     let bytes = canonical::to_vec(&plan)?;
     write_new_file(&args.output, &bytes)?;
@@ -84,22 +104,165 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
         "version": plan.version,
         "plan_digest": Sha256Digest::of_bytes(&bytes),
         "package_count": plan.packages.len(),
+        "destinations": plan.destinations.iter().map(|destination| &destination.name).collect::<Vec<_>>(),
+        "change_scope": plan.change_scope,
+        "profile_overrides": plan.profile_overrides,
         "output": args.output,
     })) {
         return Ok(());
     }
     printer.success(&format!(
-        "Wrote release plan {} with {} package matrices to {}",
+        "Wrote release plan {} with {} package matrices and {} destinations to {}",
         plan.release_id,
         plan.packages.len(),
+        plan.destinations.len(),
         args.output.display()
     ));
     Ok(())
 }
 
+/// Materializes the plan with a change scope derived from the plan itself.
+///
+/// Planning precedes building, so the scope compares planned store paths
+/// with the predecessor manifest. The first pass freezes the package matrix
+/// under a fail-closed provisional scope; the second binds the derived scope,
+/// which may narrow change-scoped gates. A scope already present in the
+/// request must equal the derived one.
+fn materialize_with_scope(
+    request: ReleasePlanRequest,
+    inventory: &PackageInventoryV1,
+    derivations: &[DerivationInventoryV1],
+    source: SourceIdentity,
+    qualification: QualificationContract,
+    predecessor: Option<&ReleaseManifestV1>,
+) -> Result<ReleasePlan> {
+    let requested_scope = request.change_scope.clone();
+    let mut provisional = request.clone();
+    provisional.change_scope = Some(ChangeScope {
+        schema_version: aos_release::qualification::change_scope::CHANGE_SCOPE.to_owned(),
+        predecessor_manifest_digest: None,
+        image_affecting: true,
+        container_affecting: true,
+        changed_package_cells: Vec::new(),
+        reason: "provisional scope before change classification".to_owned(),
+    });
+    let first = provisional.materialize(
+        inventory,
+        derivations,
+        source.clone(),
+        qualification.clone(),
+    )?;
+    let scope = aos_release::qualification::change_scope::classify_plan(&first, predecessor)?;
+    if requested_scope
+        .as_ref()
+        .is_some_and(|requested| requested != &scope)
+    {
+        bail!("requested change scope differs from the scope derived from the predecessor");
+    }
+    let mut request = request;
+    request.change_scope = Some(scope);
+    request.materialize(inventory, derivations, source, qualification)
+}
+
+/// Verifies signed profile overrides and applies them to the request.
+///
+/// Each `--override` directory holds the approvals (`*.json` envelopes) of one
+/// override; they must reach the release-evidence threshold. The accepted
+/// soak and rings replace the requested destination's, and the override
+/// reference is bound into the plan.
+fn apply_overrides(
+    args: &ReleasePlanArgs,
+    contract: &QualificationContract,
+    request: &mut ReleasePlanRequest,
+) -> Result<Vec<AcceptedOverride>> {
+    if args.overrides.is_empty() {
+        if !request.profile_overrides.is_empty() {
+            bail!("the request references profile overrides; supply them with --override");
+        }
+        return Ok(Vec::new());
+    }
+    let keys = super::verify::load_trusted_keys(&args.override_keys)?;
+    let mut accepted = Vec::with_capacity(args.overrides.len());
+    let mut references = Vec::new();
+    for directory in &args.overrides {
+        let envelopes = override_envelopes(directory)?;
+        let approval = verify_overrides(
+            contract,
+            &request.registry,
+            &request.release_id,
+            &request.signers,
+            &envelopes,
+            &keys,
+        )
+        .with_context(|| format!("verifying profile override {}", directory.display()))?;
+        let wanted = approval.requested_destination()?;
+        let destination = request
+            .destinations
+            .iter_mut()
+            .find(|destination| {
+                destination.surface == wanted.surface && destination.channel == wanted.channel
+            })
+            .with_context(|| {
+                format!(
+                    "profile override names unrequested destination {}",
+                    approval.payload.destination
+                )
+            })?;
+        if destination.effective.is_some() {
+            bail!(
+                "destination {} has more than one override",
+                approval.payload.destination
+            );
+        }
+        destination.effective = wanted.effective;
+        references.push(approval.reference.clone());
+        accepted.push(approval);
+    }
+    if !request.profile_overrides.is_empty() && request.profile_overrides != references {
+        bail!("the request's override references differ from the supplied overrides");
+    }
+    request.profile_overrides = references;
+    Ok(accepted)
+}
+
+fn override_envelopes(directory: &Path) -> Result<Vec<Vec<u8>>> {
+    let mut paths = std::fs::read_dir(directory)
+        .with_context(|| format!("reading profile override {}", directory.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+        .iter()
+        .map(|path| capture::control_file(path, "profile override approval"))
+        .collect()
+}
+
+/// Reads a manifest payload or signed manifest envelope.
+fn read_manifest(path: &Path) -> Result<ReleaseManifestV1> {
+    let bytes = capture::control_file(path, "predecessor manifest")?;
+    let value: serde_json::Value = canonical::from_slice(&bytes, "predecessor manifest")?;
+    if value.get("payload").is_some() {
+        Ok(
+            canonical::from_slice::<aos_release::manifest::ManifestEnvelopeV1>(
+                &bytes,
+                "predecessor manifest envelope",
+            )?
+            .payload,
+        )
+    } else {
+        canonical::from_slice(&bytes, "predecessor manifest payload")
+    }
+}
+
 fn derive_source_identity(
     root: &Path,
-    release_class: ReleaseClass,
+    overridden: bool,
     source_policy: &PlanningSource,
     authorization_digest: Sha256Digest,
 ) -> Result<SourceIdentity> {
@@ -111,7 +274,7 @@ fn derive_source_identity(
         bail!("release planning requires a clean source tree");
     }
     let branch = git_text(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
-    validate_source_branch(release_class, &branch, &source_policy.protected_branch)?;
+    let hotfix = validate_source_branch(overridden, &branch, &source_policy.protected_branch)?;
     let object_format = git_text(root, &["rev-parse", "--show-object-format"])?;
     if !matches!(object_format.as_str(), "sha1" | "sha256") {
         bail!("source repository uses an unsupported Git object format");
@@ -130,7 +293,7 @@ fn derive_source_identity(
     if !reachable.status.success() {
         bail!("source commit is not reachable from the protected branch");
     }
-    if release_class != ReleaseClass::Emergency {
+    if !hotfix {
         let protected_head = git_text(
             root,
             &["rev-parse", "--verify", &source_policy.protected_branch],
@@ -183,18 +346,24 @@ fn source_tree_digest(root: &Path) -> Result<Sha256Digest> {
     ))
 }
 
-fn validate_source_branch(class: ReleaseClass, branch: &str, protected_branch: &str) -> Result<()> {
+/// Checks the checked-out branch and returns whether it is a hotfix branch.
+///
+/// A `dplecki/hotfix-*` head may be planned only when the plan carries an
+/// accepted profile override; every other plan builds the local master head.
+fn validate_source_branch(overridden: bool, branch: &str, protected_branch: &str) -> Result<bool> {
     if !matches!(protected_branch, "master" | "origin/master") {
         bail!("release planning requires the protected master branch");
     }
-    if class == ReleaseClass::Emergency {
-        if !branch.starts_with("dplecki/hotfix-") {
-            bail!("emergency release planning requires a dplecki/hotfix-* branch");
+    if branch.starts_with("dplecki/hotfix-") {
+        if !overridden {
+            bail!("only a plan with an accepted profile override may build a hotfix branch");
         }
-    } else if branch != "master" {
-        bail!("normal release planning requires the local master branch");
+        return Ok(true);
     }
-    Ok(())
+    if branch != "master" {
+        bail!("release planning requires the local master branch or an overridden hotfix branch");
+    }
+    Ok(false)
 }
 
 fn git_text(root: &Path, arguments: &[&str]) -> Result<String> {
@@ -269,19 +438,18 @@ mod tests {
     }
 
     #[test]
-    fn branch_policy_separates_normal_and_emergency_sources() {
-        assert!(validate_source_branch(ReleaseClass::Edge, "master", "origin/master").is_ok());
-        assert!(
-            validate_source_branch(
-                ReleaseClass::Emergency,
-                "dplecki/hotfix-2026-9-1",
-                "origin/master"
-            )
-            .is_ok()
-        );
-        assert!(
-            validate_source_branch(ReleaseClass::Stable, "dplecki/topic", "origin/master").is_err()
-        );
+    fn branch_policy_keys_hotfix_heads_on_an_override() {
+        assert!(matches!(
+            validate_source_branch(false, "master", "origin/master"),
+            Ok(false)
+        ));
+        assert!(matches!(
+            validate_source_branch(true, "dplecki/hotfix-2026-9-1", "origin/master"),
+            Ok(true)
+        ));
+        assert!(validate_source_branch(false, "dplecki/hotfix-2026-9-1", "origin/master").is_err());
+        assert!(validate_source_branch(true, "dplecki/topic", "origin/master").is_err());
+        assert!(validate_source_branch(false, "master", "main").is_err());
     }
 
     #[test]
@@ -321,12 +489,8 @@ mod tests {
             source_tag: "release/test-v1".to_owned(),
             contributor_authorization_digest: authorization_digest,
         };
-        let identity = derive_source_identity(
-            directory.path(),
-            ReleaseClass::Edge,
-            &source,
-            authorization_digest,
-        )?;
+        let identity =
+            derive_source_identity(directory.path(), false, &source, authorization_digest)?;
         assert_eq!(identity.commit.len(), 40);
         require_planned_source(directory.path(), &identity)?;
 
@@ -341,13 +505,7 @@ mod tests {
         fs::write(directory.path().join("source.txt"), b"source-v2")?;
         assert!(require_planned_source(directory.path(), &identity).is_err());
         assert!(
-            derive_source_identity(
-                directory.path(),
-                ReleaseClass::Edge,
-                &source,
-                authorization_digest,
-            )
-            .is_err()
+            derive_source_identity(directory.path(), false, &source, authorization_digest).is_err()
         );
         Ok(())
     }

@@ -1,9 +1,15 @@
 //! Regression coverage for staged K3s companion, image, and OCI case bindings.
 
-use super::*;
-use crate::qualification::{K3sTopology, PackageRole, PackageRule};
+use anyhow::Result;
 
-fn fixture(topology: K3sTopology) -> Result<(ReleasePlanV1, ReleaseManifestV1)> {
+use super::*;
+use crate::artifact::ArtifactKind;
+use crate::manifest::ReleaseManifestV1;
+use crate::plan::ReleasePlan;
+use crate::platform::MatrixCell;
+use crate::qualification::{K3sTopology, PackageExecution, PackageRole, PackageRule};
+
+fn fixture(topology: K3sTopology) -> Result<(ReleasePlan, ReleaseManifestV1)> {
     let (mut plan, mut manifest) = crate::verify::tests::qualification_fixture()?;
     let template = manifest.packages[0].clone();
     let planned_template = plan.packages[0].clone();
@@ -70,7 +76,7 @@ fn fixture(topology: K3sTopology) -> Result<(ReleasePlanV1, ReleaseManifestV1)> 
         manifest.packages.push(package);
     }
 
-    let policy = plan.qualification.as_mut().unwrap();
+    let policy = &mut plan.qualification;
     for name in topology.packages() {
         policy.package_rules.push(PackageRule {
             name: name.into(),
@@ -82,16 +88,20 @@ fn fixture(topology: K3sTopology) -> Result<(ReleasePlanV1, ReleaseManifestV1)> 
             }),
         });
     }
-    plan.gates = policy.gates(&plan.registry, plan.release_class)?;
-    plan.public_evidence_policy_digest = policy.digest()?;
+    crate::verify::tests::rebind(&mut plan)?;
     Ok((plan, manifest))
 }
 
-fn fleet_case(plan: &ReleasePlanV1, manifest: &ReleaseManifestV1) -> Result<QualificationCase> {
-    cases(plan, manifest, QualificationPhase::Staging)?
-        .into_iter()
-        .find(|case| case.id == "package-function/k3s/x86_64-linux")
-        .ok_or_else(|| anyhow::anyhow!("fixture did not expand its K3s case"))
+fn fleet_case(plan: &ReleasePlan, manifest: &ReleaseManifestV1) -> Result<QualificationCase> {
+    cases(
+        plan,
+        manifest,
+        Some(crate::verify::tests::STABLE),
+        QualificationPhase::Staging,
+    )?
+    .into_iter()
+    .find(|case| case.id == "package-function/k3s/x86_64-linux")
+    .ok_or_else(|| anyhow::anyhow!("fixture did not expand its K3s case"))
 }
 
 #[test]
@@ -203,7 +213,7 @@ fn k3s_missing_or_ambiguous_inputs_fail_closed() -> Result<()> {
 #[test]
 fn k3s_policy_rejects_missing_role_and_unrelated_subject() -> Result<()> {
     let (plan, _) = fixture(K3sTopology::CombinedWorker)?;
-    let policy = plan.qualification.unwrap();
+    let policy = plan.qualification;
     policy.validate()?;
 
     let mut missing = policy.clone();

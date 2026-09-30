@@ -42,12 +42,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::canonical;
 use crate::digest::Sha256Digest;
-use crate::evidence::{GateResult, QualificationReportV1};
+use crate::evidence::{GateResult, QualificationReport};
 use crate::manifest::ReleaseManifestV1;
-use crate::plan::{ReleaseClass, ReleasePlanV1};
+use crate::plan::{ReleaseClass, ReleasePlan};
 use crate::qualification::QualificationPhase;
 use crate::qualification::claims::ClaimOutcome;
-use crate::receipt::QualificationReceiptV1;
+use crate::receipt::QualificationReceipt;
 
 /// Exact record schema identifier.
 pub const RECORD_V1: &str = "aos.release-record/v1";
@@ -143,12 +143,12 @@ impl ReleaseRecordV1 {
     /// manifest, when the envelope digest does not match the receipt, or when
     /// the version has no train.
     pub fn compose(
-        plan: &ReleasePlanV1,
+        plan: &ReleasePlan,
         manifest: &ReleaseManifestV1,
         manifest_digest: Sha256Digest,
-        receipt: &QualificationReceiptV1,
+        receipt: &QualificationReceipt,
         signed_qualification: &[u8],
-        report: &QualificationReportV1,
+        report: &QualificationReport,
     ) -> Result<Self> {
         if receipt.manifest_digest != manifest_digest || report.manifest_digest != manifest_digest {
             bail!("qualification evidence does not describe the release manifest");
@@ -162,9 +162,9 @@ impl ReleaseRecordV1 {
         let train = format!("{}.{}", parsed.major, parsed.minor);
         let support = plan
             .qualification
-            .as_ref()
-            .and_then(|contract| contract.support.as_ref())
-            .and_then(|policy| policy.trains.get(&train))
+            .support
+            .trains
+            .get(&train)
             .map(|entry| ReleaseSupportV1 {
                 kind: entry.kind,
                 supported_until: entry.supported_until.clone(),
@@ -187,8 +187,8 @@ impl ReleaseRecordV1 {
                 authority_id: receipt.authority_id.clone(),
                 receipt_digest: envelope_digest,
                 report_digest: receipt.report_digest,
-                phase: report.phase,
-                claims: report.claims.clone().unwrap_or_default(),
+                phase: Some(report.phase),
+                claims: report.claims.clone(),
             },
             support,
             signed_qualification: String::from_utf8(signed_qualification.to_vec())
@@ -203,7 +203,7 @@ impl ReleaseRecordV1 {
     /// Returns an error for an unknown schema, a version that is not in the
     /// stated train, an envelope whose digest or payload disagrees with the
     /// summary, or a summary whose class does not match its served path.
-    pub fn validate(&self) -> Result<QualificationReceiptV1> {
+    pub fn validate(&self) -> Result<QualificationReceipt> {
         if self.schema_version != RECORD_V1 {
             bail!("unsupported release record schema");
         }
@@ -215,9 +215,9 @@ impl ReleaseRecordV1 {
         if Sha256Digest::of_bytes(envelope_bytes) != self.qualification.receipt_digest {
             bail!("release record envelope digest does not match its summary");
         }
-        let envelope: crate::receipt::SignedReceiptEnvelopeV1 =
+        let envelope: crate::receipt::SignedReceiptEnvelope =
             canonical::from_slice(envelope_bytes, "signed qualification envelope")?;
-        let receipt: QualificationReceiptV1 = serde_json::from_value(envelope.payload)
+        let receipt: QualificationReceipt = serde_json::from_value(envelope.payload)
             .context("decoding qualification receipt payload")?;
         receipt.validate()?;
         if receipt.manifest_digest != self.manifest_digest
@@ -244,39 +244,39 @@ impl ReleaseRecordV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::receipt::{RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT_V1, SignedReceiptEnvelopeV1};
+    use crate::receipt::{RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope};
     use base64::Engine as _;
     use ed25519_dalek::{Signer as _, SigningKey};
 
     #[test]
     fn composed_records_bind_their_evidence_and_round_trip() -> anyhow::Result<()> {
         let (mut plan, manifest) = crate::verify::tests::qualification_fixture()?;
-        let mut contract = plan.qualification.clone().unwrap();
+        let mut contract = plan.qualification.clone();
         let train = {
             let parsed = semver::Version::parse(&manifest.version)?;
             format!("{}.{}", parsed.major, parsed.minor)
         };
-        let policy = contract.support.get_or_insert_with(Default::default);
-        policy.trains.insert(
+        contract.support.trains.insert(
             train.clone(),
             aos_registry_surface::support::SupportTrain {
                 kind: aos_registry_surface::support::SupportKind::Lts,
                 supported_until: Some("2030-01-31".into()),
             },
         );
-        plan.qualification = Some(contract);
+        plan.qualification = contract;
         let manifest_digest = Sha256Digest::of_bytes(canonical::to_vec(&manifest)?);
-        let report = QualificationReportV1 {
-            claims: Some(Vec::new()),
-            phase: Some(QualificationPhase::Staging),
-            admitted_at: Some("2026-09-05T12:00:00Z".into()),
-            schema_version: "aos.release.qualification-report/v3".into(),
+        let report = QualificationReport {
+            destination: crate::verify::tests::STABLE.into(),
+            claims: Vec::new(),
+            phase: QualificationPhase::Staging,
+            admitted_at: "2026-09-05T12:00:00Z".into(),
+            schema_version: crate::evidence::QUALIFICATION_REPORT.into(),
             staging_receipt_digest: Sha256Digest::of_bytes(b"staging"),
             manifest_digest,
             evidence: Vec::new(),
         };
-        let receipt = QualificationReceiptV1 {
-            schema_version: crate::receipt::QUALIFICATION_RECEIPT_V1.into(),
+        let receipt = QualificationReceipt {
+            schema_version: crate::receipt::QUALIFICATION_RECEIPT.into(),
             staging_receipt_digest: Sha256Digest::of_bytes(b"staging"),
             manifest_digest,
             policy_id: "full-release-qualification".into(),
@@ -291,8 +291,8 @@ mod tests {
         let payload = canonical::to_vec(&receipt)?;
         let signature =
             key.sign(Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, &payload).as_bytes());
-        let envelope = canonical::to_vec(&SignedReceiptEnvelopeV1 {
-            schema_version: SIGNED_RECEIPT_V1.into(),
+        let envelope = canonical::to_vec(&SignedReceiptEnvelope {
+            schema_version: SIGNED_RECEIPT.into(),
             key_id: "qualification-authority".into(),
             payload: serde_json::from_slice(&payload)?,
             signature_base64: base64::engine::general_purpose::STANDARD
@@ -352,8 +352,8 @@ mod tests {
             "releases/stable/2026.9.1/release-record.json"
         );
         assert_eq!(
-            record_path(ReleaseClass::Emergency, "2026.9.2"),
-            "releases/stable/2026.9.2/release-record.json"
+            record_path(ReleaseClass::Edge, "2026.9.2-dev.20260902.1"),
+            "releases/edge/2026.9.2-dev.20260902.1/release-record.json"
         );
         assert_eq!(
             record_path(ReleaseClass::Candidate, "2026.10.0-rc.1"),
