@@ -480,9 +480,23 @@ reconstructing an interface or provider catalog. A package probe proves only
 its declared package-function claim. It does not establish a whole-system
 activation or recovery claim.
 
-Native operation matrices use
-`aos.qualification.native-operation-matrix-spec`. A selected operation retains
-its checked desired graph and exact graph digest. Each dispatched attempt is
+The release policy carries `aos.qualification.native-operation-spec`, with an
+explicit required operation set and independently checked cohorts. Each cohort
+has its own `aos.qualification.native-operation-matrix-spec` and selected
+baseline or scenario evaluation. The complete scenario registry, including
+interruption, cancellation, rejection, and teardown cases, defines coverage;
+a focused subset cannot satisfy the release requirement.
+
+A scenario retains the original authored modules and its immutable evaluation
+descriptor. The configured executor registry commits the exact fixture archive,
+original store inventory, and evaluation selections at build time. Its executor
+identity binds those commitments. The runner verifies them before replaying the
+scenario against admitted candidate inputs. These are executor-authorized
+scenario inputs; they are distinct from the candidate's signed boot baseline.
+Ambient store paths or a fixture's self-reported inventory do not supply that
+authority.
+
+A selected operation retains its checked desired graph and exact graph digest. Each dispatched attempt is
 identified by transaction, effect, semantic revision, action, and durable
 journal sequence. Invocation and recovery observations must match that exact
 attempt. An observation for another revision, backend, action, or sequence

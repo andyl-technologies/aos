@@ -151,6 +151,31 @@ baseline/operator sources, never the output graph. Package modules receive its
 path as an ordinary argument and may use it in typed effect inputs. This avoids
 self-references when an operation performs a further authorized evaluation.
 
+The descriptor also retains `supplementalInputs`: immutable source receipts or
+other provenance needed by the caller across reconfiguration. They retain exact
+source identities without becoming installed payload packages or executable
+operations. Reconfiguration preserves these inputs together with their original
+source roles.
+
+`aos-package::native_deployment::evaluate_input` replays a descriptor without
+building payloads or applying effects. It temporarily roots the descriptor and
+its sources, checks the library NAR identity, invokes the restricted evaluator,
+and returns a checked desired deployment. The caller supplies a staging directory,
+a Nix store executable, a timeout, and cancellation. The API creates no generation,
+effect journal, or persistent deployment root. Callers authenticate the source
+before using its result; integrity checking alone does not grant source authority.
+
+The same path is available for inspection:
+
+```console
+aos ability evaluate /nix/store/…-evaluation-input.json \
+  --nix-store /nix/store/…-nix/bin/nix-store --timeout-ms 60000
+```
+
+Successful output is the canonical deployment JSON. Diagnostics go to stderr.
+The selected store resolves immutable documents and sources, including stores
+whose canonical identities differ from the host's readable filesystem view.
+
 `lib.packageModuleLibrary` is an immutable source bundle for this evaluator. It
 does not contain an image baseline. The Rust `deployment::evaluation` module
 resolves the module closure through `PackageResolver`, then invokes stock Nix with
@@ -225,6 +250,14 @@ roots to the owning package manager's authenticated resolution or retained
 receipts. It requires already-realized artifacts. Registry authentication and
 profile-link publication remain responsibilities of the calling consumers; the
 generation journal is the authoritative committed pointer.
+
+Boot may adopt an original provisioning receipt into the first host generation.
+The image's retained policy selects whether that receipt is required, and the
+bridge checks the exact committed initrd result before admitting its source.
+Subsequent package generations preserve that original provenance. Independent
+attestation uses externally established proof and root identities; a signer name
+inside a receipt, or expectations copied from the quote being checked, cannot
+establish original source authority.
 
 Journals use the existing framing, exclusive locking, checksums, and configured
 size limits. They stop at their capacity limits; pruning releases store roots but
