@@ -50,6 +50,7 @@ in
     text = builtins.toJSON {
       library = lib.packageModuleLibrary;
       inherit configuration;
+      selectedRoots = map builtins.toString packages;
       envelopes = builtins.map (package: package.deployment) (packages ++ [interface]);
       publications =
         builtins.map (package: {
