@@ -7,6 +7,7 @@
   system,
   configuration ? [],
   runtimeConfiguration ? [],
+  supplementalInputs ? [],
   retainPayloads ? true,
 }: let
   modules = lib.packageModules;
@@ -38,6 +39,13 @@
     };
     configuration = map builtins.toString configuration;
     runtimeConfiguration = map builtins.toString runtimeConfiguration;
+    supplementalInputs = map (input: let
+      path = builtins.toString input;
+    in
+      if builtins.match "/nix/store/[^/]+" path == null
+      then throw "Supplemental evaluation inputs must name immutable store roots."
+      else path)
+    supplementalInputs;
   };
   buildPackages = pkgs.buildPackages;
   libraryClosure = (lib.build.closureInfo {pkgs = buildPackages;}) {
@@ -70,6 +78,6 @@ in
     # Exposes the original inputs for build-time replay checks without reading
     # the generated descriptor or treating this metadata as runtime authority.
     nativeEvaluationInputs = {
-      inherit packages scope configuration runtimeConfiguration;
+      inherit packages scope configuration runtimeConfiguration supplementalInputs;
     };
   }

@@ -47,14 +47,16 @@
     builtins.foldl' (prior: build: let
       additions = build {
         inherit scope;
-        inherit (prior) packages configuration;
+        inherit (prior) packages configuration supplementalInputs;
       };
     in {
       packages = prior.packages ++ additions.packages;
       configuration = prior.configuration ++ additions.configuration;
+      supplementalInputs = prior.supplementalInputs ++ (additions.supplementalInputs or []);
     }) {
       inherit packages;
       configuration = authored;
+      supplementalInputs = selectionEvaluation.config.aos.activation.stages.${stage}.supplementalInputs or [];
     }
     builders;
   hostStage = buildStage "host" initialHostPackages hostScope;
@@ -67,12 +69,14 @@
     packages = hostPackages;
     scope = hostScope;
     configuration = hostConfigurationSources;
+    inherit (hostStage) supplementalInputs;
     runtimeConfiguration = runtimeModules;
   };
   initrdStageSpecialArgs = stageSpecialArgsFor {
     packages = initrdPackages;
     scope = initrdScope;
     configuration = initrdConfigurationSources;
+    inherit (initrdStage) supplementalInputs;
     runtimeConfiguration = [];
   };
   evaluate = scope: packages: configurationSources: stageSpecialArgs:

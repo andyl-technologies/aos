@@ -175,6 +175,11 @@ Image stages retain their ordered policy files through
 `aos.activation.stages.<stage>.configuration`. Package modules and these sources
 participate in both image evaluation and later replay. There is no separate
 inline stage-module channel whose configuration disappears from the descriptor.
+`aos.activation.stages.<stage>.supplementalInputs` retains additional immutable
+store roots without importing them. For example, qualification can admit a future
+scenario source while adopting an inactive baseline. The descriptor, deployment
+inputs, and admission catalog retain the same roots; custody does not execute
+that source.
 
 `aos-package::native_deployment::evaluate_input` replays a descriptor without
 building payloads or applying effects. It temporarily roots the descriptor and

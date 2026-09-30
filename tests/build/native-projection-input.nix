@@ -29,10 +29,14 @@
       }
     ];
   };
+  custodySource = builtins.toFile "native-projection-custody.nix" ''
+    throw "Retained source custody must not execute configuration."
+  '';
   descriptor = retainPayloads:
     lib.build.evaluationInput {
       inherit lib pkgs retainPayloads;
       packages = [package];
+      supplementalInputs = [custodySource];
       scope = ["projection-check"];
       system = pkgs.stdenv.hostPlatform.system;
     };
@@ -64,11 +68,13 @@ in
             --arg schemaSource ${lib.escapeShellArg (toString schema.module)} \
             --arg envelope ${lib.escapeShellArg (toString package.deploymentArtifact)} \
             --arg schemaEnvelope ${lib.escapeShellArg (toString schema.deploymentArtifact)} \
+            --arg custody ${lib.escapeShellArg (toString custodySource)} \
             'all(.paths[]; .path != $payload and .path != $unused and .path != $schemaPayload)
               and any(.paths[]; .path == $source)
               and any(.paths[]; .path == $schemaSource)
               and any(.paths[]; .path == $envelope)
-              and any(.paths[]; .path == $schemaEnvelope)' \
+              and any(.paths[]; .path == $schemaEnvelope)
+              and any(.paths[]; .path == $custody)' \
             ${projectionInventory}/inventory.json >/dev/null
           mkdir -p "$out"
           echo PASS > "$out/result"

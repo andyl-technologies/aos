@@ -28,8 +28,12 @@ let
     path = ./stage-initrd.nix;
     name = "initrd-stage-policy.nix";
   };
+  custodySource = builtins.toFile "stage-custody.nix" ''
+    throw "Supplemental inputs must never be imported."
+  '';
   stageConfiguration = {
     host.configuration = [hostSource];
+    host.supplementalInputs = [custodySource];
     initrd.configuration = [initrdSource];
   };
   base = {lib, ...}: {
@@ -62,6 +66,7 @@ let
       runtimeModules = [];
       moduleSpecialArgs = {};
       systemName = "fixture";
+      stageSpecialArgsFor = stage: {retainedStageInputs = stage.supplementalInputs;};
     };
   evaluate = evaluateSelection selectionEvaluation;
   result = evaluate [];
@@ -79,9 +84,11 @@ let
                   (_: {
                     packages = [payload];
                     configuration = [];
+                    supplementalInputs = [custodySource];
                   })
                   (prior:
-                    assert builtins.elem payload prior.packages; {
+                    assert builtins.elem payload prior.packages;
+                    assert prior.supplementalInputs == [custodySource]; {
                       packages = [];
                       configuration = [];
                     })
@@ -97,6 +104,10 @@ let
 in {
   stageIsolation = assert result.hostAbilityEvaluation.config.marker == "host";
   assert result.initrdAbilityEvaluation.config.marker == "initrd"; true;
+  supplementalInputsAreNotImported = assert result.hostStageSpecialArgs.retainedStageInputs == [custodySource];
+  assert result.hostAbilityEvaluation.config.marker == "host";
+  assert result.initrdStageSpecialArgs.retainedStageInputs == []; true;
+  supplementalBuilderInputs = assert builtStage.hostStageSpecialArgs.retainedStageInputs == [custodySource]; true;
   retainedStageSources = assert result.hostConfigurationSources == [hostSource];
   assert result.initrdConfigurationSources == [initrdSource]; true;
   identityScopes = assert result.hostAbilityEvaluation.config.aos.activation.scope == ["profile" "system"];

@@ -106,7 +106,8 @@
     else builtins.substring 0 (builtins.stringLength (builtins.elemAt match 0)) file;
   configurationRoots = map storeRoot (configuration ++ runtimeConfiguration);
   moduleEnvelopeRoots = builtins.attrValues evaluationFile.nativeModuleEnvelopes;
-  retainedInputs = lib.uniqueBy builtins.toString (inputs ++ profileRoots ++ moduleEnvelopeRoots ++ configurationRoots ++ [(storeRoot evaluationFile)]);
+  supplementalRoots = evaluationFile.nativeEvaluationInputs.supplementalInputs;
+  retainedInputs = lib.uniqueBy builtins.toString (inputs ++ profileRoots ++ moduleEnvelopeRoots ++ supplementalRoots ++ configurationRoots ++ [(storeRoot evaluationFile)]);
   evaluationFile =
     if evaluationInput != null
     then evaluationInput
