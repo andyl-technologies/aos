@@ -42,6 +42,15 @@ effects; it provides no evidence that those effects ran.
 
 ## Browse declarations and desired effects
 
+Versioned native references distinguish each ability's contract version from its
+owner's package version. Text and HTML also show which owner requires a module,
+the required ability version ranges, and any separate package-version range.
+Owner and ability links stay within the same reference. Omitted version metadata
+is valid for unversioned modules; displayed requirements do not select or verify
+a compatible dependency.
+Reference comparison includes ability contract version/owner changes and module
+requirement changes, even when option and operation schemas stay identical.
+
 The same reader accepts generated `aos.module.documentation` and
 `aos.package.transaction` documents:
 

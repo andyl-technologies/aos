@@ -5,7 +5,9 @@ use std::fmt::Write as _;
 
 use aos_ability_plan::module_graph::Handler;
 
-use super::{DefinitionSource, ModuleReference, NativeOption, Source};
+use super::{
+    AbilityContract, DefinitionSource, ModuleReference, ModuleRequirement, NativeOption, Source,
+};
 use crate::OptionType;
 
 pub(super) fn type_label(option: &OptionType) -> String {
@@ -50,6 +52,34 @@ pub(super) fn plain(source: &Source) -> String {
                 .push_str("Declarations and configured uses; no live runtime state.\n\nPackages\n");
             for package in &reference.packages {
                 let _ = writeln!(output, "  {} {}", package.name, package.version);
+            }
+            if !reference.ability_contracts.is_empty() {
+                output.push_str("\nAbility contract versions (independent of package versions)\n");
+                for (name, contract) in &reference.ability_contracts {
+                    let _ = writeln!(
+                        output,
+                        "  {name}: {} (declared by {})",
+                        contract.version, contract.owner
+                    );
+                }
+            }
+            if !reference.module_requirements.is_empty() {
+                output.push_str(
+                    "\nModule requirements (declared constraints; not a resolution result)\n",
+                );
+                for requirement in &reference.module_requirements {
+                    let _ = writeln!(
+                        output,
+                        "  {} requires {}",
+                        requirement.owner, requirement.package
+                    );
+                    if let Some(range) = &requirement.package_version {
+                        let _ = writeln!(output, "    Package version requirement: {range}");
+                    }
+                    for (name, range) in &requirement.abilities {
+                        let _ = writeln!(output, "    Ability {name} version requirement: {range}");
+                    }
+                }
             }
             for (ability, operations) in &reference.abilities {
                 for (operation, contract) in operations {
@@ -198,6 +228,13 @@ fn owner_relations(reference: &ModuleReference) -> BTreeMap<&str, BTreeSet<(&str
     {
         owners.entry(&option.owner).or_default();
     }
+    for contract in reference.ability_contracts.values() {
+        owners.entry(&contract.owner).or_default();
+    }
+    for requirement in &reference.module_requirements {
+        owners.entry(&requirement.owner).or_default();
+        owners.entry(&requirement.package).or_default();
+    }
     for (ability, operations) in &reference.abilities {
         for (name, operation) in operations {
             for (role, definitions) in [
@@ -301,6 +338,25 @@ pub(super) fn html(source: &Source) -> String {
                     .or_default()
                     .push(option);
             }
+            let mut contracts_by_owner = BTreeMap::<&str, Vec<(&str, &AbilityContract)>>::new();
+            for (name, contract) in &reference.ability_contracts {
+                contracts_by_owner
+                    .entry(&contract.owner)
+                    .or_default()
+                    .push((name, contract));
+            }
+            let mut requirements_by_owner = BTreeMap::<&str, Vec<&ModuleRequirement>>::new();
+            let mut requesters_by_package = BTreeMap::<&str, Vec<&ModuleRequirement>>::new();
+            for requirement in &reference.module_requirements {
+                requirements_by_owner
+                    .entry(&requirement.owner)
+                    .or_default()
+                    .push(requirement);
+                requesters_by_package
+                    .entry(&requirement.package)
+                    .or_default()
+                    .push(requirement);
+            }
             html.push_str("<h3>Packages and environment</h3><p>Exposed contracts come from input/result declarations; consumed operations come from configured effects. Handler definitions link implementation ownership; Handler selected records availability in this fixed point. Configured instances may be disabled; only a checked transaction identifies the selected execution path.</p>");
             for (owner, relations) in owner_relations(reference) {
                 let _ = write!(
@@ -325,6 +381,31 @@ pub(super) fn html(source: &Source) -> String {
                         escape(&option.path.join("."))
                     );
                 }
+                for (name, contract) in contracts_by_owner.get(owner).into_iter().flatten() {
+                    let _ = write!(
+                        html,
+                        "<li>Declares ability <a href=\"#{}\">{}</a> contract version <code>{}</code></li>",
+                        scoped_anchor(namespace, "runtime-ability", name),
+                        escape(name),
+                        escape(&contract.version)
+                    );
+                }
+                for requirement in requirements_by_owner.get(owner).into_iter().flatten() {
+                    let _ = write!(
+                        html,
+                        "<li>Requires module <a href=\"#{}\">{}</a></li>",
+                        scoped_anchor(namespace, "runtime-owner", &requirement.package),
+                        escape(&requirement.package)
+                    );
+                }
+                for requirement in requesters_by_package.get(owner).into_iter().flatten() {
+                    let _ = write!(
+                        html,
+                        "<li>Required by <a href=\"#{}\">{}</a></li>",
+                        scoped_anchor(namespace, "runtime-owner", &requirement.owner),
+                        escape(&requirement.owner)
+                    );
+                }
                 html.push_str("</ul>");
                 if owner == "@base" {
                     html.push_str("<p>Base module declarations.</p>");
@@ -336,8 +417,73 @@ pub(super) fn html(source: &Source) -> String {
                 }
                 html.push_str("</details>");
             }
-            for (ability, operations) in &reference.abilities {
-                for (name, operation) in operations {
+            if !reference.module_requirements.is_empty() {
+                html.push_str("<h3>Module requirements</h3><p>Declared constraints; not a dependency resolution result. Ability contract and package version requirements are independent.</p><table><thead><tr><th>Requester</th><th>Dependency package</th><th>Required ability versions</th><th>Required package version</th></tr></thead><tbody>");
+                for requirement in &reference.module_requirements {
+                    let _ = write!(
+                        html,
+                        "<tr><td><a href=\"#{}\">{}</a></td><td><a href=\"#{}\">{}</a></td><td>",
+                        scoped_anchor(namespace, "runtime-owner", &requirement.owner),
+                        escape(&requirement.owner),
+                        scoped_anchor(namespace, "runtime-owner", &requirement.package),
+                        escape(&requirement.package)
+                    );
+                    if requirement.abilities.is_empty() {
+                        html.push_str("Unconstrained");
+                    }
+                    for (name, range) in &requirement.abilities {
+                        let _ = write!(
+                            html,
+                            "<p><a href=\"#{}\">{}</a>: <code>{}</code></p>",
+                            scoped_anchor(namespace, "runtime-ability", name),
+                            escape(name),
+                            escape(range)
+                        );
+                    }
+                    let _ = write!(
+                        html,
+                        "</td><td>{}</td></tr>",
+                        requirement
+                            .package_version
+                            .as_deref()
+                            .map(escape)
+                            .unwrap_or_else(|| "Unconstrained".into())
+                    );
+                }
+                html.push_str("</tbody></table>");
+            }
+            let ability_names: BTreeSet<_> = reference
+                .abilities
+                .keys()
+                .chain(reference.ability_contracts.keys())
+                .chain(
+                    reference
+                        .module_requirements
+                        .iter()
+                        .flat_map(|requirement| requirement.abilities.keys()),
+                )
+                .collect();
+            for ability in ability_names {
+                let _ = write!(
+                    html,
+                    "<section id=\"{}\"><h3>Ability {}</h3>",
+                    scoped_anchor(namespace, "runtime-ability", ability),
+                    escape(ability)
+                );
+                if let Some(contract) = reference.ability_contracts.get(ability) {
+                    let _ = write!(
+                        html,
+                        "<p>Ability contract version: <code>{}</code>. Declared by <a href=\"#{}\">{}</a>. This version is independent of the declaring package version.</p>",
+                        escape(&contract.version),
+                        scoped_anchor(namespace, "runtime-owner", &contract.owner),
+                        escape(&contract.owner)
+                    );
+                } else {
+                    html.push_str(
+                        "<p>No ability contract version is declared in this reference.</p>",
+                    );
+                }
+                for (name, operation) in reference.abilities.get(ability).into_iter().flatten() {
                     let anchor = operation_anchor(namespace, ability, name);
                     let name = format!("{ability}.{name}");
                     let _ = write!(
@@ -389,6 +535,7 @@ pub(super) fn html(source: &Source) -> String {
                     }
                     html.push_str("</article>");
                 }
+                html.push_str("</section>");
             }
             html.push_str("<h3>Generated options</h3><table><thead><tr><th>Option</th><th>Owner</th><th>Type</th><th>Read-only</th><th>Extensible</th><th>Description</th></tr></thead><tbody>");
             for option in reference
@@ -605,6 +752,43 @@ mod tests {
         assert!(first_ids.is_disjoint(&second_ids));
         require_fragment_links_resolve(&first);
         require_fragment_links_resolve(&second);
+    }
+
+    #[test]
+    fn independent_contract_versions_and_requester_requirements_link_the_same_reference() {
+        let mut value = reference("web-server").value().clone();
+        value["packages"] = json!([{"name":"web-server","version":"42"},
+            {"name":"interface-package","version":"7.4.0"}]);
+        value["abilityContracts"] =
+            json!({"network":{"version":"1.2.3","owner":"interface-package"}});
+        value["moduleRequirements"] = json!([{"owner":"web-server","package":"interface-package",
+            "abilities":{"network":"^1.2","service":"<2.0"},"packageVersion":"^7"}]);
+        let document = document(value);
+        let plain = document.render_plain();
+        for text in [
+            "network: 1.2.3 (declared by interface-package)",
+            "web-server requires interface-package",
+            "Package version requirement: ^7",
+            "Ability network version requirement: ^1.2",
+        ] {
+            assert!(plain.contains(text), "missing {text}");
+        }
+        let html = document.render_html();
+        for text in [
+            "Ability contract version: <code>1.2.3</code>",
+            "Package version: 7.4.0",
+            "Declared constraints; not a dependency resolution result",
+            "Required by",
+            "&lt;2.0",
+            "No ability contract version is declared in this reference",
+        ] {
+            assert!(html.contains(text), "missing {text}");
+        }
+        require_fragment_links_resolve(&html);
+        assert_eq!(
+            document.reference().unwrap().module_requirements[0].owner,
+            "web-server"
+        );
     }
 
     #[test]

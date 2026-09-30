@@ -18,10 +18,12 @@ use serde_json::Value;
 use crate::{DocumentationError, OptionType, Result};
 
 mod comparison;
+mod contracts;
 pub mod deployment;
 mod render;
 
 pub use comparison::{NativeComparison, ReferenceChanges};
+pub use contracts::{AbilityContract, ModuleRequirement};
 
 /// Serializes the complete portable option type as a stable signature.
 ///
@@ -154,6 +156,20 @@ pub struct ModuleReference {
     pub options: Vec<NativeOption>,
     /// Groups operation references by ability and operation names.
     pub abilities: BTreeMap<String, BTreeMap<String, OperationReference>>,
+    /// Records independent semantic versions declared by ability interface owners.
+    #[serde(
+        rename = "abilityContracts",
+        default,
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub ability_contracts: BTreeMap<String, AbilityContract>,
+    /// Records ranged module dependencies projected from the same source declarations.
+    #[serde(
+        rename = "moduleRequirements",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub module_requirements: Vec<ModuleRequirement>,
 }
 
 #[derive(Clone, Debug)]
@@ -261,6 +277,7 @@ impl RuntimeDocument {
             return Err(invalid("scope and target system must be explicit"));
         }
         if let Source::ModuleReference(reference) = &source {
+            contracts::validate(reference)?;
             for option in &reference.options {
                 crate::validate_option_type(&option.option_type)?;
             }

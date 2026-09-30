@@ -348,10 +348,13 @@ required.
 
 `package` renders the same native reference as the browser, including complete
 recursive input/result contracts and each operation's declaring, handling, and
-consuming owners. `option` lists typed native declarations, with optional owner,
-prefix, portable type JSON, and extensibility filters. Comparisons cover option
+consuming owners. When declared, it also shows independent ability contract
+versions and requester-qualified module requirements. These requirements are
+source declarations, not a solver result. `option` lists typed native declarations,
+with optional owner, prefix, portable type JSON, and extensibility filters. Comparisons cover option
 types and mutability/extension policy, operation inputs/results, handler
-availability, and configured instances. They exclude prose and do not report live runtime state.
+availability, configured instances, ability contract versions/owners, and module
+requirements. They exclude prose and do not report live runtime state.
 
 
 ## Inspect release operations and report a deployment
