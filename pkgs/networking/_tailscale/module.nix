@@ -2,37 +2,23 @@
 {
   config,
   lib,
+  package,
+  dependencies,
   packageName,
   packageVersion,
   ...
 }: let
   cfg = config.aos.services.tailscale;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  abilityTypes = lib.abilities.types;
-  resultOf = lib.abilities.resultOf;
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "service";
-      inherit key interface parameters;
-    };
+  network = config.aos.abilities.network.operations.ready.effects.tailscale;
+  tunnel = config.aos.abilities.device.operations.present.effects.tailscale;
   command = arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "bin/tailscaled";
+      path = "${package}/bin/tailscaled";
       inherit arguments;
     };
     ignore_failure = false;
   };
-  networkReadiness = producer "network-readiness" serviceManagement.interfaces.networkReadiness {
-    scope = "stack-prepared";
-    address_families = ["ipv4" "ipv6"];
-  };
-  tunnelDevice = producer "tunnel-device" serviceManagement.interfaces.devicePresence {
-    name = "tunnel";
-    device = "/dev/net/tun";
-  };
   serviceDefinition = {
-    consumerInstance = "service";
     service = "tailscaled";
     policy.hardening = {
       allow_privilege_escalation = false;
@@ -87,10 +73,10 @@
       stop_timeout_millis = 90000;
     };
     dependencies = {
-      after = [(resultOf "network-readiness" "resource")];
+      after = [network.outputs.resource];
       before = [];
       requires = [];
-      wants = [(resultOf "network-readiness" "resource")];
+      wants = [network.outputs.resource];
     };
     supervision = {
       startup_protocol = "notification";
@@ -105,7 +91,7 @@
       variables = {};
       search_path =
         builtins.map
-        (package: lib.abilities.packageOutput {inherit package;})
+        (name: dependencies.${name}.path)
         ["getent" "iproute2" "iptables" "procps-ng"];
     };
     directories.managed = [
@@ -137,7 +123,7 @@
       temporary_directory = "private";
       devices = [
         {
-          source = resultOf "tunnel-device" "device-node";
+          source = tunnel.outputs.resource;
           read = true;
           write = true;
           create_node = false;
@@ -147,31 +133,18 @@
       permit_core_dumps = false;
     };
   };
-  producers = [networkReadiness tunnelDevice];
 in {
   options.aos.services = lib.mkOption {
     type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
       options = lib.optionalAttrs (name == "tailscale") {
-        enable = lib.mkOption {
-          type = abilityTypes.boolean;
-          default = false;
-          description = "Run the Tailscale mesh VPN daemon.";
-        };
-
         port = lib.mkOption {
-          type = abilityTypes.integer {
-            minimum = 0;
-            maximum = 65535;
-          };
+          type = lib.types.ints.between 0 65535;
           default = 41641;
           description = "UDP port used for direct WireGuard peer connections.";
         };
 
         extraArgs = lib.mkOption {
-          type = abilityTypes.list {
-            element = abilityTypes.runtimeString;
-            maxItems = 256;
-          };
+          type = lib.types.listOf lib.types.str;
           default = [];
           description = "Additional command-line arguments passed to tailscaled.";
         };
@@ -181,28 +154,15 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.services.tailscale = serviceDefinition;}
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = cfg.enable;
-    })
+    {aos.services.tailscale = lib.mkDefault serviceDefinition;}
     (lib.mkIf cfg.enable {
-      aos.abilities.runtimeChecks.tailscale = {
-        description = "Tailscale service checks";
-        checks = [
-          {
-            name = "tailscale-local-api";
-            description = "tailscaled creates its protected local API socket";
-            script = ''
-              vm.succeed("test -S /run/tailscale/tailscaled.sock")
-              vm.wait_until_succeeds(
-                  "tailscale --socket=/run/tailscale/tailscaled.sock debug prefs "
-                  "| grep -F '\"LoggedOut\": true'",
-                  timeout=30,
-              )
-            '';
-          }
-        ];
+      system.checks.tailscale = import ./runtime-tests.nix {inherit cfg;};
+      aos.abilities = {
+        network.operations.ready.effects.tailscale.input = {
+          scope = "stack-prepared";
+          families = ["ipv4" "ipv6"];
+        };
+        device.operations.present.effects.tailscale.input.path = "/dev/net/tun";
       };
     })
   ];

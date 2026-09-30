@@ -11,6 +11,7 @@
 {
   config,
   lib,
+  package,
   packageName,
   packageVersion,
   ...
@@ -20,19 +21,14 @@
   statePath = "/var/lib/chrony";
   logPath = "/var/log/chrony";
   runtimePath = "/run/chrony";
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  abilityTypes = lib.abilities.types;
-  resultOf = lib.abilities.resultOf;
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "service";
-      inherit key interface parameters;
-    };
+  groups = config.aos.abilities.identity.operations.group.effects;
+  principals = config.aos.abilities.identity.operations.principal.effects;
+  network = config.aos.abilities.network.operations.ready.effects.chrony;
+  configuration = config.aos.abilities.configuration.operations.file.effects.chrony;
+
   command = arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "sbin/chronyd";
+      path = "${package}/sbin/chronyd";
       inherit arguments;
     };
     ignore_failure = false;
@@ -86,35 +82,6 @@
     # Disable IPv6 if not available (avoids log spam).
     # bindaddress 0.0.0.0
   '';
-  group = producer "chrony-group" serviceManagement.interfaces.groupResolution {
-    name = principalName;
-    allocation = "managed";
-  };
-  principal = producer "chrony-principal" serviceManagement.interfaces.principalResolution {
-    name = principalName;
-    allocation = "managed";
-    description = "chrony NTP daemon";
-    home_directory = statePath;
-    login_access = "disabled";
-    primary_group = resultOf "chrony-group" "group-name";
-    supplementary_groups = [];
-  };
-  networkReadiness = producer "chrony-network-readiness" serviceManagement.interfaces.networkReadiness {
-    scope = "configured-connectivity";
-    address_families = ["ipv4" "ipv6"];
-  };
-  configuration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "service";
-    declaration = {
-      name = "chrony-configuration";
-      source = {
-        kind = "inline-text";
-        content = chronyConf;
-      };
-      mode = "0444";
-    };
-  };
   service = {
     policy.runtimeConditions.privileges = [
       {
@@ -176,7 +143,6 @@
       operation_profile = "system-service";
       isolated_identity_mapping = "none";
     };
-    consumerInstance = "service";
     service = "chronyd";
     lifecycle = {
       description = "NTP Time Synchronization (${packageName} ${packageVersion})";
@@ -184,7 +150,7 @@
       environment_files = [];
       condition = [];
       pre_start = [];
-      start = [(command ["-n" "-u" principalName "-f" (resultOf "chrony-configuration" "planned-path")])];
+      start = [(command ["-n" "-u" principalName "-f" configuration.outputs.path])];
       post_start = [];
       stop = [];
       post_stop = [];
@@ -195,10 +161,10 @@
       stop_timeout_millis = 90000;
     };
     dependencies = {
-      after = [(resultOf "chrony-network-readiness" "resource")];
+      after = [network.outputs.resource];
       before = [];
       requires = [];
-      wants = [(resultOf "chrony-network-readiness" "resource")];
+      wants = [network.outputs.resource];
     };
     supervision = {
       startup_protocol = "notification";
@@ -221,30 +187,30 @@
         purpose = "state";
         mode = "0750";
         retention = "persistent";
-        owner = resultOf "chrony-principal" "principal-name";
-        group = resultOf "chrony-group" "group-name";
+        owner = principals.chrony.outputs.name;
+        group = groups.chrony.outputs.name;
       }
       {
         path = "chrony";
         purpose = "logs";
         mode = "0750";
         retention = "persistent";
-        owner = resultOf "chrony-principal" "principal-name";
-        group = resultOf "chrony-group" "group-name";
+        owner = principals.chrony.outputs.name;
+        group = groups.chrony.outputs.name;
       }
       {
         path = "chrony";
         purpose = "runtime";
         mode = "0750";
         retention = "restart";
-        owner = resultOf "chrony-principal" "principal-name";
-        group = resultOf "chrony-group" "group-name";
+        owner = principals.chrony.outputs.name;
+        group = groups.chrony.outputs.name;
       }
     ];
     configuration.views = [
       {
         name = "chrony";
-        source = resultOf "chrony-configuration" "planned-path";
+        source = configuration.outputs.path;
         optional = false;
       }
     ];
@@ -280,40 +246,12 @@
       permit_core_dumps = false;
     };
   };
-  producers = [group principal networkReadiness configuration];
-  boundedString = abilityTypes.refined {
-    name = "non-empty chrony value";
-    description = "a non-empty chrony configuration value";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "minimum-size";
-        minimum = 1;
-      }
-    ];
-  };
-  boundedStrings = abilityTypes.list {
-    element = boundedString;
-    maxItems = 256;
-  };
+  boundedString = lib.types.strMatching ".+";
+  boundedStrings = lib.types.listOf boundedString;
 in {
   options.aos.services = lib.mkOption {
     type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
       options = lib.optionalAttrs (name == "chrony") {
-        ## Enable chronyd NTP time synchronization.
-        ##
-        ## # See Also
-        ## - `aos.services.chrony.servers`, `aos.services.chrony.makestep`
-        enable = lib.mkOption {
-          type = abilityTypes.boolean;
-          default = true;
-          description = ''
-            Enable chronyd NTP time synchronization. Essential for servers,
-            especially in Kubernetes clusters where certificate validation
-            and distributed consensus depend on accurate time.
-          '';
-        };
-
         ## NTP server hostnames or IP addresses.
         ##
         ## # Examples
@@ -345,7 +283,7 @@ in {
 
         ## Network Time Security (NTS, RFC 8915) for NTP sources.
         nts.enable = lib.mkOption {
-          type = abilityTypes.boolean;
+          type = lib.types.bool;
           default = true;
           description = ''
             Authenticate the configured `servers` with Network Time Security
@@ -393,40 +331,28 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.services.chrony = service;}
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = cfg.enable;
-    })
+    {aos.services.chrony = lib.mkDefault service;}
     (lib.mkIf cfg.enable {
-      aos.abilities.runtimeChecks.chrony = {
-        description = "NTP time sync checks";
-        checks =
-          [
-            {
-              name = "chronyd-responsive";
-              description = "chronyd accepts control queries";
-              script = ''
-                vm.wait_until_succeeds("chronyc tracking", timeout=30)
-              '';
-            }
-            {
-              name = "chrony-sources";
-              description = "chronyd exposes its configured time sources";
-              script = ''
-                vm.succeed("chronyc sources")
-              '';
-            }
-          ]
-          ++ lib.optionals cfg.nts.enable [
-            {
-              name = "chrony-authentication-data";
-              description = "chronyd exposes source authentication state";
-              script = ''
-                vm.succeed("chronyc authdata")
-              '';
-            }
-          ];
+      system.checks.chrony = import ./runtime-tests.nix {inherit cfg lib;};
+      aos.abilities = {
+        identity.operations = {
+          group.effects.chrony.input.name = principalName;
+          principal.effects.chrony.input = {
+            name = principalName;
+            primary_group = groups.chrony.outputs.name;
+            home_directory = statePath;
+            description = "chrony NTP daemon";
+          };
+        };
+        network.operations.ready.effects.chrony.input = {
+          scope = "address-configured";
+          families = ["ipv4" "ipv6"];
+        };
+        configuration.operations.file.effects.chrony.input = {
+          path = "/etc/chrony.conf";
+          content = chronyConf;
+          mode = "0444";
+        };
       };
     })
   ];

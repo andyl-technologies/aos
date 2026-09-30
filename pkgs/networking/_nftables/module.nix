@@ -1,119 +1,90 @@
-##! Provider-neutral host firewall policy contributed by the nftables package.
+##! Owns the host firewall configuration and its native ruleset contract.
 {
   config,
   lib,
   ...
 }: let
-  cfg = config.aos.firewall;
-  abilityTypes = lib.abilities.types;
-  networkPolicy = lib.abilities.interfaces.networkPolicy;
-  consumerInstance = "firewall";
-  ruleset = lib.abilities.interfaces.serviceManagement.forProducer {
-    inherit consumerInstance;
-    key = "ruleset";
-    interface = networkPolicy.interfaces.ruleset;
-    parameters = {
-      base = {
-        input_policy = cfg.defaultPolicy;
-        forward_policy = cfg.forwardPolicy;
-        trusted_interfaces = cfg.trustedInterfaces;
-        prerequisites = [];
-      };
-      ingress.firewall-defaults = {
-        endpoints =
-          builtins.map (port: {
-            transport = "tcp";
-            inherit port;
-          })
-          cfg.allowedTCP
-          ++ builtins.map (port: {
-            transport = "udp";
-            inherit port;
-          })
-          cfg.allowedUDP;
-        prerequisites = [];
-      };
-      forwarding = {};
-    };
-  };
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  port = abilityTypes.integer {
-    minimum = 1;
-    maximum = 65535;
-  };
-  ports = abilityTypes.list {
-    element = port;
-    maxItems = 4096;
-    unique = true;
-    canonicalOrder = true;
-  };
-  interfaceName = abilityTypes.string {
-    maxLength = 64;
-    syntax = null;
-  };
+  inherit (lib) mkOption types;
+  operation = config.aos.abilities.networkPolicy.operations.ruleset;
+  cfg = config.aos.networkPolicy;
 in {
-  options.aos.firewall = {
-    enable = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = true;
-      description = "Enable the provider-neutral host firewall policy.";
-    };
-
-    defaultPolicy = lib.mkOption {
-      type = abilityTypes.enum ["accept" "drop"];
-      default = "drop";
-      description = "Default policy for inbound traffic.";
-    };
-
-    allowedTCP = lib.mkOption {
-      type = ports;
-      default = [];
-      description = "TCP ports to allow inbound.";
-    };
-
-    allowedUDP = lib.mkOption {
-      type = ports;
-      default = [];
-      description = "UDP ports to allow inbound.";
-    };
-
-    forwardPolicy = lib.mkOption {
-      type = abilityTypes.enum ["accept" "drop"];
-      default = "drop";
-      description = "Default policy for forwarded traffic.";
-    };
-
-    trustedInterfaces = lib.mkOption {
-      type = abilityTypes.list {
-        element = interfaceName;
-        maxItems = 256;
-        unique = true;
-        canonicalOrder = true;
-      };
-      default = ["lo"];
-      description = "Network interfaces where all traffic is accepted unconditionally.";
-    };
+  config.system.checks.firewall = lib.mkIf cfg.enable (import ./runtime-tests.nix {});
+  options.aos.networkPolicy = mkOption {
+    type = types.submodule [
+      operation.input
+      {options.enable = (lib.mkEnableOption "the host firewall policy") // {extensible = true;};}
+    ];
+    default = {};
+    extensible = true;
+    description = "Merged host network policy enforced by the selected ruleset backend.";
   };
 
-  config = lib.mkMerge [
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [ruleset];
-      enabled = cfg.enable;
-    })
-    (lib.mkIf cfg.enable {
-      aos.abilities.runtimeChecks.firewall = {
-        description = "nftables firewall checks";
-        checks = [
-          {
-            name = "ruleset-loaded";
-            description = "nftables ruleset is loaded";
-            script = ''
-              vm.succeed("nft list ruleset")
-            '';
-          }
-        ];
+  config.aos.abilities.networkPolicy.operations.ruleset = {
+    input.options = {
+      defaultPolicy = mkOption {
+        type = types.enum ["accept" "drop"];
+        default = "drop";
+        description = "Default policy for inbound traffic.";
       };
-    })
-  ];
+      forwardPolicy = mkOption {
+        type = types.enum ["accept" "drop"];
+        default = "drop";
+        description = "Default policy for forwarded traffic.";
+      };
+      trustedInterfaces = mkOption {
+        type = types.listOf types.str;
+        default = ["lo"];
+        description = "Network interfaces accepting all traffic.";
+      };
+      allowedTCP = mkOption {
+        type = types.listOf (types.ints.between 1 65535);
+        default = [];
+        description = "TCP ports allowed inbound.";
+      };
+      allowedUDP = mkOption {
+        type = types.listOf (types.ints.between 1 65535);
+        default = [];
+        description = "UDP ports allowed inbound.";
+      };
+    };
+    input.options.ingress = mkOption {
+      type = types.attrsOf (types.submodule {
+        options.endpoints = mkOption {
+          type = types.listOf (types.submodule {
+            options = {
+              transport = mkOption {
+                type = types.enum ["tcp" "udp"];
+                description = "Transport receiving the contributed allowance.";
+              };
+              port = mkOption {
+                type = types.ints.between 1 65535;
+                description = "Inbound port allowed by this contribution.";
+              };
+            };
+          });
+          default = [];
+          description = "Additional inbound endpoints allowed by this package.";
+        };
+      });
+      default = {};
+      description = "Named inbound policy contributions merged before ruleset rendering.";
+    };
+    input.options.forwarding = mkOption {
+      type = types.attrsOf (types.submodule {
+        options.policy = mkOption {
+          type = types.enum ["accept" "drop"];
+          description = "Forwarding policy contributed by this package; drop takes priority.";
+        };
+      });
+      default = {};
+      description = "Named forwarding contributions enforced together with the base policy.";
+    };
+    result.options.resource = mkOption {
+      type = types.str;
+      description = "Installed ruleset identity returned by the backend.";
+    };
+    effects = lib.mkIf cfg.enable {
+      host.input = builtins.removeAttrs cfg ["enable"];
+    };
+  };
 }

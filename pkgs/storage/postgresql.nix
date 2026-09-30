@@ -42,6 +42,8 @@
   stdenv,
   buildPackages,
   darwin-sdk,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "18.6";
   isDarwin = stdenv.hostPlatform.isDarwin;
@@ -185,9 +187,36 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       role = "public-package";
     };
     pname = "postgresql";
@@ -329,7 +358,8 @@ in
         ++ [bash coreutils control];
     propagatedDeps = [];
 
-    abilities = ./_postgresql;
+    module = ./_postgresql;
+    moduleDeps = [service-management aos-filesystem-provider];
 
     phases = [
       {
@@ -652,7 +682,18 @@ in
       self,
       pkgs,
       ...
-    }: {
+    }: let
+      nativeTests = import ./_postgresql/native-tests.nix {inherit lib self;};
+    in {
+      native-module-contract =
+        if builtins.all (value: value) (builtins.attrValues nativeTests)
+        then
+          pkgs.runCommand "postgresql-native-module-contract" {} ''
+            mkdir -p "$out"
+            printf '%s\n' PASS > "$out/result"
+          ''
+        else throw "PostgreSQL native module contract checks failed";
+
       version = testing.mkToolCheck {
         pname = "storage-postgresql";
         tool = self;

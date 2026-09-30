@@ -1,277 +1,100 @@
-##! Typed package-owned MIT Kerberos KDC services.
+##! Package-owned MIT Kerberos KDC services and configuration.
 {
   config,
   lib,
+  package,
+  dependencies,
   ...
 }: let
-  cfg = config.krb5Kdc;
+  cfg = config.aos.krb5Kdc;
   administrationEnabled = config.aos.services."krb5.administration".enable;
   anyServiceEnabled =
     config.aos.services."krb5.initialize".enable
     || config.aos.services."krb5.kdc".enable
     || administrationEnabled;
   inherit (lib) mkOption;
-  inherit (lib.abilities) resultOf;
-  abilityTypes = lib.abilities.types;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-
-  realmName = abilityTypes.refined {
-    name = "Kerberos realm";
-    description = "an uppercase Kerberos realm name";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[A-Z0-9][A-Z0-9.-]*";
-      }
-    ];
-  };
-  hostName = abilityTypes.refined {
-    name = "Kerberos server name";
-    description = "a DNS host name or address without whitespace";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[A-Za-z0-9][A-Za-z0-9.:-]*";
-      }
-    ];
-  };
-  duration = abilityTypes.refined {
-    name = "Kerberos duration";
-    description = "a positive duration with an s, m, h, or d suffix";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[1-9][0-9]*[smhd]";
-      }
-    ];
-  };
-  aclEntry = abilityTypes.refined {
-    name = "Kerberos ACL entry";
-    description = "a non-empty single-line kadmind ACL entry";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "minimum-size";
-        minimum = 1;
-      }
-      {
-        kind = "string-excludes";
-        classes = ["line-break"];
-      }
-    ];
-  };
-  hostNames = abilityTypes.list {
-    element = hostName;
-    maxItems = 256;
-    unique = true;
-    canonicalOrder = true;
-  };
-  aclEntries = abilityTypes.list {
-    element = aclEntry;
-    maxItems = 4096;
-  };
-
+  types = lib.types;
+  operations = config.aos.abilities;
+  directories = operations.filesystem.operations.directory.effects;
+  accounts = operations.identity.operations;
+  files = operations.configuration.operations.file.effects;
+  statePath = directories.krb5-state.outputs.path;
+  runtimePath = directories.krb5-runtime.outputs.path;
+  logPath = directories.krb5-logs.outputs.path;
+  clientConfigurationPath = files.krb5-client.outputs.path;
+  kdcConfigurationPath = files.krb5-kdc.outputs.path;
+  aclConfigurationPath = files.krb5-acl.outputs.path;
+  passwordPath = operations.credential.operations.deliver.effects.krb5-master.outputs.path;
+  initializeResource = operations.serviceManagement.operations.realize.effects."krb5.initialize".outputs.resource;
+  firewallResource = operations.networkPolicy.operations.ruleset.effects.host.outputs.resource;
+  realmName = types.strMatching "[A-Z0-9][A-Z0-9.-]*";
+  hostName = types.strMatching "[A-Za-z0-9][A-Za-z0-9.:-]*";
+  duration = types.strMatching "[1-9][0-9]*[smhd]";
+  aclEntry = types.strMatching "[^\n\r]+";
+  hostNames = types.listOf hostName;
+  aclEntries = types.listOf aclEntry;
   kdcPort = 88;
   administrationPort = 749;
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "krb5";
-      inherit key interface parameters;
-    };
   command = entryPoint: arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = entryPoint;
+      path = "${package}/${entryPoint}";
       inherit arguments;
     };
     ignore_failure = false;
   };
-  literal = text: {
-    kind = "literal";
-    inherit text;
+  directory = path: mode: {
+    inherit path mode;
+    owner = accounts.principal.effects.krb5.outputs.name;
+    group = accounts.group.effects.krb5.outputs.name;
   };
-  executionPath = value: {
-    kind = "execution-path";
-    inherit value;
-  };
+  clientContent = ''
+    [libdefaults]
+      default_realm = ${cfg.realm}
+      dns_lookup_kdc = false
+      dns_lookup_realm = false
+      rdns = false
 
-  statePath = resultOf "state-storage" "planned-path";
-  runtimePath = resultOf "runtime-storage" "planned-path";
-  logPath = resultOf "log-storage" "planned-path";
-  clientConfigurationPath = resultOf "client-configuration" "planned-path";
-  kdcConfigurationPath = resultOf "kdc-profile" "planned-path";
-  aclConfigurationPath = resultOf "administration-acl" "planned-path";
-  passwordPath = resultOf "master-password" "credential-path";
-
-  persistentStorage = producer "state-storage" serviceManagement.interfaces.persistentStorageAllocation {
-    name = "state";
-    purpose = "state";
-    mode = "0700";
-  };
-  runtimeStorage = producer "runtime-storage" serviceManagement.interfaces.storageAllocation {
-    name = "runtime";
-    purpose = "runtime";
-    mode = "0750";
-  };
-  logStorage = producer "log-storage" serviceManagement.interfaces.persistentStorageAllocation {
-    name = "logs";
-    purpose = "logs";
-    mode = "0750";
-  };
-  serviceGroup = producer "service-group" serviceManagement.interfaces.groupResolution {
-    name = "krb5-kdc";
-    allocation = "managed";
-  };
-  servicePrincipal = producer "service-principal" serviceManagement.interfaces.principalResolution {
-    name = "krb5-kdc";
-    allocation = "managed";
-    description = "MIT Kerberos KDC service";
-    home_directory = statePath;
-    login_access = "disabled";
-    primary_group = resultOf "service-group" "group-name";
-    supplementary_groups = [];
-  };
-  networkReadiness = producer "network-readiness" serviceManagement.interfaces.networkReadiness {
-    scope = "configured-connectivity";
-    address_families = ["ipv4" "ipv6"];
-  };
-  passwordResolution = serviceManagement.forProducers {
-    consumerInstance = "krb5";
-    interface = serviceManagement.interfaces.namedCredential;
-    producers = lib.optional (cfg.masterPassword.name != null) {
-      key = "master-password-source";
-      parameters = {
-        name = cfg.masterPassword.name;
-        scope = "system";
-      };
-    };
-  };
-  passwordDelivery = serviceManagement.forProducers {
-    consumerInstance = "krb5";
-    interface = serviceManagement.interfaces.credentialDelivery;
-    producers = lib.optional (cfg.masterPassword.name != null) {
-      key = "master-password";
-      parameters = {
-        name = "master-password";
-        source = resultOf "master-password-source" "resource";
-        encrypted = cfg.masterPassword.encrypted;
-      };
-    };
-  };
-
-  clientConfiguration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "krb5";
-    declaration = {
-      name = "client-configuration";
-      source = {
-        kind = "inline-text";
-        content = ''
-          [libdefaults]
-            default_realm = ${cfg.realm}
-            dns_lookup_kdc = false
-            dns_lookup_realm = false
-            rdns = false
-
-          [realms]
-            ${cfg.realm} = {
-              ${lib.concatMapStringsSep "\n    " (server: "kdc = ${server}:${toString kdcPort}") cfg.kdcServers}
-              admin_server = ${cfg.adminServer}:${toString administrationPort}
-            }
-
-          [domain_realm]
-            .${lib.toLower cfg.realm} = ${cfg.realm}
-            ${lib.toLower cfg.realm} = ${cfg.realm}
-        '';
-      };
-      mode = "0444";
-    };
-  };
-  administrationAcl = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "krb5";
-    declaration = {
-      name = "administration-acl";
-      source = {
-        kind = "inline-text";
-        content = lib.concatStringsSep "\n" cfg.acl + "\n";
-      };
-      mode = "0444";
-    };
-  };
-  kdcConfiguration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "krb5";
-    declaration = {
-      name = "kdc-profile";
-      source = {
-        kind = "interpolated-text";
-        fragments = [
-          (literal ''
-            [kdcdefaults]
-              kdc_ports = ${toString kdcPort}
-              kdc_tcp_ports = ${toString kdcPort}
-
-            [realms]
-              ${cfg.realm} = {
-                database_name =
-          '')
-          (executionPath statePath)
-          (literal "/principal\n    key_stash_file = ")
-          (executionPath statePath)
-          (literal "/.k5.${cfg.realm}\n    acl_file = ")
-          (executionPath aclConfigurationPath)
-          (literal ''
-
-                max_life = ${cfg.maxLife}
-                max_renewable_life = ${cfg.maxRenewableLife}
-              }
-
-            [logging]
-              kdc = FILE:
-          '')
-          (executionPath logPath)
-          (literal "/kdc.log\n    admin_server = FILE:")
-          (executionPath logPath)
-          (literal "/kadmind.log\n")
-        ];
-        maximum_size_bytes = abilityTypes.limits.maxDocumentBytes;
-      };
-      mode = "0444";
-    };
-  };
-
-  kdcIngress = producer "kdc-ingress" lib.abilities.interfaces.networkPolicy.interfaces.ingress {
-    endpoints = [
-      {
-        transport = "tcp";
-        port = kdcPort;
+    [realms]
+      ${cfg.realm} = {
+        ${lib.concatMapStringsSep "\n    " (server: "kdc = ${server}:${toString kdcPort}") cfg.kdcServers}
+        admin_server = ${cfg.adminServer}:${toString administrationPort}
       }
-      {
-        transport = "udp";
-        port = kdcPort;
-      }
-    ];
-    prerequisites = [(resultOf "network-readiness" "resource")];
-  };
-  administrationIngress = producer "administration-ingress" lib.abilities.interfaces.networkPolicy.interfaces.ingress {
-    endpoints = [
-      {
-        transport = "tcp";
-        port = administrationPort;
-      }
-    ];
-    prerequisites = [(resultOf "network-readiness" "resource")];
-  };
 
-  runtimeSearchPath =
-    builtins.map
-    (package: lib.abilities.packageOutput {inherit package;})
-    ["self" "bash" "coreutils"];
+    [domain_realm]
+      .${lib.toLower cfg.realm} = ${cfg.realm}
+      ${lib.toLower cfg.realm} = ${cfg.realm}
+  '';
+  kdcFragments = [
+    ''
+      [kdcdefaults]
+        kdc_ports = ${toString kdcPort}
+        kdc_tcp_ports = ${toString kdcPort}
+
+      [realms]
+        ${cfg.realm} = {
+          database_name =
+    ''
+    statePath
+    "/principal\n    key_stash_file = "
+    statePath
+    "/.k5.${cfg.realm}\n    acl_file = "
+    aclConfigurationPath
+    ''
+
+          max_life = ${cfg.maxLife}
+          max_renewable_life = ${cfg.maxRenewableLife}
+        }
+
+      [logging]
+        kdc = FILE:
+    ''
+    logPath
+    "/kdc.log\n    admin_server = FILE:"
+    logPath
+    "/kadmind.log\n"
+  ];
+
+  runtimeSearchPath = [package.path dependencies.bash.path dependencies.coreutils.path];
   commonEnvironment = {
     variables = {
       KRB5_CONFIG = clientConfigurationPath;
@@ -317,8 +140,8 @@
     }
   ];
   commonIdentity = {
-    principal = resultOf "service-principal" "principal-name";
-    primary_group = resultOf "service-group" "group-name";
+    principal = accounts.principal.effects.krb5.outputs.name;
+    primary_group = accounts.group.effects.krb5.outputs.name;
     supplementary_groups = [];
     ephemeral = false;
     file_creation_mask = "0077";
@@ -383,7 +206,6 @@
 
   initializeService = {
     policy.hardening = (hardening []) // {network_families = ["local"];};
-    consumerInstance = "krb5";
     service = "initialize";
     lifecycle =
       (lifecycle "Initialize the Kerberos KDC database" [
@@ -416,15 +238,15 @@
   };
   kdcService = {
     policy.hardening = hardening ["bind-privileged-network-port"];
-    consumerInstance = "krb5";
     service = "kdc";
+    activationAfter = [operations.network.operations.ready.effects.krb5.outputs.resource];
     lifecycle = lifecycle "Kerberos key distribution center" [
       (command "bin/krb5-kdc-control" ["run-kdc" runtimePath])
     ];
     dependencies = {
-      prerequisites = [(resultOf "kdc-ingress" "resource")];
-      after = [(resultOf "initialize-lifecycle" "resource")];
-      requires = [(resultOf "initialize-lifecycle" "resource")];
+      prerequisites = [firewallResource];
+      after = [initializeResource];
+      requires = [initializeResource];
       before = [];
       wants = [];
     };
@@ -447,15 +269,15 @@
   };
   administrationService = {
     policy.hardening = hardening [];
-    consumerInstance = "krb5";
     service = "administration";
+    activationAfter = [operations.network.operations.ready.effects.krb5.outputs.resource];
     lifecycle = lifecycle "Kerberos administration daemon" [
       (command "bin/krb5-kdc-control" ["run-administration" runtimePath])
     ];
     dependencies = {
-      prerequisites = [(resultOf "administration-ingress" "resource")];
-      after = [(resultOf "initialize-lifecycle" "resource")];
-      requires = [(resultOf "initialize-lifecycle" "resource")];
+      prerequisites = [firewallResource];
+      after = [initializeResource];
+      requires = [initializeResource];
       before = [];
       wants = [];
     };
@@ -476,31 +298,15 @@
     identity = commonIdentity;
     isolation = commonIsolation;
   };
-
-  producers = [
-    persistentStorage
-    runtimeStorage
-    logStorage
-    serviceGroup
-    servicePrincipal
-    networkReadiness
-    passwordResolution
-    passwordDelivery
-    clientConfiguration
-    administrationAcl
-    kdcConfiguration
-    kdcIngress
-    administrationIngress
-  ];
 in {
-  options.krb5Kdc = {
+  options.aos.krb5Kdc = {
     enable = mkOption {
-      type = abilityTypes.boolean;
+      type = types.bool;
       default = false;
       description = "Enable the package-owned Kerberos KDC.";
     };
     enableAdminServer = mkOption {
-      type = abilityTypes.boolean;
+      type = types.bool;
       default = false;
       description = "Enable the kadmind remote administration service.";
     };
@@ -534,17 +340,10 @@ in {
       default = ["*/admin@${cfg.realm} *"];
       description = "Ordered kadmind ACL entries.";
     };
-    masterPassword = {
-      name = mkOption {
-        type = abilityTypes.optional abilityTypes.localKey;
-        default = null;
-        description = "Logical system credential name containing the initial KDC database master password.";
-      };
-      encrypted = mkOption {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Whether the master password requires encrypted credential delivery.";
-      };
+    masterPassword = mkOption {
+      type = types.submodule operations.credential.operations.deliver.input;
+      default = {};
+      description = "Credential containing the initial KDC database master password.";
     };
   };
 
@@ -553,31 +352,89 @@ in {
       assertions = [
         {
           assertion = !anyServiceEnabled || cfg.kdcServers != [];
-          message = "krb5Kdc.enable requires at least one krb5Kdc.kdcServers entry";
+          message = "aos.krb5Kdc requires at least one KDC server";
         }
         {
-          assertion = !anyServiceEnabled || cfg.masterPassword.name != null;
-          message = "krb5Kdc.enable requires krb5Kdc.masterPassword.name";
+          assertion = !anyServiceEnabled || ((cfg.masterPassword.name != null) != (cfg.masterPassword.resource != null));
+          message = "aos.krb5Kdc requires exactly one master password credential name or resource";
         }
         {
           assertion = !cfg.enableAdminServer || cfg.enable;
-          message = "krb5Kdc.enableAdminServer requires krb5Kdc.enable";
+          message = "aos.krb5Kdc.enableAdminServer requires aos.krb5Kdc.enable";
         }
       ];
       aos.services = {
-        "krb5.initialize" = initializeService // {enable = cfg.enable;};
-        "krb5.kdc" = kdcService // {enable = cfg.enable;};
-        "krb5.administration" = administrationService // {enable = cfg.enable && cfg.enableAdminServer;};
+        "krb5.initialize" = lib.mkDefault (initializeService // {enable = lib.mkDefault cfg.enable;});
+        "krb5.kdc" = lib.mkDefault (kdcService // {enable = lib.mkDefault cfg.enable;});
+        "krb5.administration" = lib.mkDefault (administrationService // {enable = lib.mkDefault (cfg.enable && cfg.enableAdminServer);});
       };
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = anyServiceEnabled;
+    (lib.mkIf anyServiceEnabled {
+      aos.abilities = {
+        identity.operations = {
+          group.effects.krb5.input.name = "krb5-kdc";
+          principal.effects.krb5.input = {
+            name = "krb5-kdc";
+            primary_group = accounts.group.effects.krb5.outputs.name;
+            home_directory = "/var/lib/aos-pkg-krb5-kdc";
+            description = "MIT Kerberos KDC service";
+          };
+        };
+        filesystem.operations.directory.effects = {
+          krb5-state = {
+            lifetime = "persistent";
+            input = directory "/var/lib/aos-pkg-krb5-kdc" "0700";
+          };
+          krb5-runtime.input = directory "/run/aos-pkg-krb5-kdc" "0750";
+          krb5-logs = {
+            lifetime = "persistent";
+            input = directory "/var/log/krb5-kdc" "0750";
+          };
+        };
+        configuration.operations.file.effects = {
+          krb5-client.input = {
+            path = "/etc/aos/packages/krb5-kdc/krb5.conf";
+            content = clientContent;
+            mode = "0444";
+          };
+          krb5-acl.input = {
+            path = "/etc/aos/packages/krb5-kdc/kadm5.acl";
+            content = lib.concatStringsSep "\n" cfg.acl + "\n";
+            mode = "0444";
+          };
+          krb5-kdc.input = {
+            path = "/etc/aos/packages/krb5-kdc/kdc.conf";
+            fragments = kdcFragments;
+            mode = "0444";
+          };
+        };
+        credential.operations.deliver.effects.krb5-master.input = cfg.masterPassword;
+        network.operations.ready.effects.krb5.input = {
+          scope = "address-configured";
+          families = ["ipv4" "ipv6"];
+        };
+      };
+      aos.networkPolicy = {
+        enable = lib.mkDefault true;
+        ingress.krb5-kdc.endpoints = [
+          {
+            transport = "tcp";
+            port = kdcPort;
+          }
+          {
+            transport = "udp";
+            port = kdcPort;
+          }
+        ];
+      };
     })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [administrationIngress];
-      enabled = administrationEnabled;
+    (lib.mkIf administrationEnabled {
+      aos.networkPolicy.ingress.krb5-administration.endpoints = [
+        {
+          transport = "tcp";
+          port = administrationPort;
+        }
+      ];
     })
   ];
 }

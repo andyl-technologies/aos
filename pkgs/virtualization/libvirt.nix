@@ -2,6 +2,8 @@
 {
   lib,
   mkDerivation,
+  aos-runtime-checks,
+  aos-configuration-lower,
   fetchurl,
   stdenv,
   meson,
@@ -58,6 +60,8 @@
   zfs,
   json-c,
   buildPackages,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "12.7.0";
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
@@ -224,7 +228,8 @@ in
     runtimeDeps = runtimeLibraries;
     propagatedDeps = [libxml2];
 
-    abilities = ./_libvirt;
+    module = ./_libvirt;
+    moduleDeps = [aos-configuration-lower aos-runtime-checks service-management aos-filesystem-provider dbus polkit];
 
     phases = [
       {
@@ -458,63 +463,10 @@ in
       testing,
       self,
       pkgs,
-      mkSystem,
       ...
     }: let
-      evaluated = mkSystem {
-        systemName = "libvirt-package-check";
-        modules = [
-          ../../systems/_artifact-backend.nix
-          ../../systems/_base-packages.nix
-          ../../systems/_system-manager.nix
-          {
-            aos.kernel.packageRoot = pkgs.linux;
-            aos.virtualization.libvirt = {
-              enable = true;
-              allowedUsers = ["operator"];
-            };
-          }
-        ];
-      };
-      requests = evaluated.config.aos.abilities.requests;
-      bindings = builtins.attrValues evaluated.config.aos.abilities.bindings;
-      libvirtRequests = lib.filterAttrs (name: _: lib.hasPrefix "libvirt:" name) requests;
-      sockets = requests."libvirt:libvirtd-socket_activation".parameters.sockets;
-      socketModes = builtins.listToAttrs (
-        builtins.map (socket: lib.nameValuePair socket.manager_name socket.mode) sockets
-      );
-      socketDependencies =
-        requests."libvirt:libvirtd-socket_activation".parameters.service_dependencies;
-      requestsHaveAutomaticIdentities =
-        builtins.all
-        (request: !(request.parameters ? requested_id))
-        (builtins.attrValues libvirtRequests);
-      contractChecks = {
-        libvirtd = requests ? "libvirt:libvirtd-lifecycle";
-        virtlogd = requests ? "libvirt:virtlogd-lifecycle";
-        virtlockd = requests ? "libvirt:virtlockd-lifecycle";
-        accessMembership = requests ? "libvirt:access-membership";
-        authorizationRequest = requests ? "libvirt:authorization-service-availability";
-        polkitActivated = requests ? "polkit:polkit-lifecycle";
-        authorizationBound =
-          lib.any
-          (binding:
-            binding.request
-            == "libvirt:authorization-service-availability"
-            && binding.implementation == "polkit:authorization-service-availability")
-          bindings;
-        socketModes =
-          socketModes
-          == {
-            libvirtd = "0660";
-            "libvirtd-admin" = "0600";
-            "libvirtd-ro" = "0660";
-          };
-        socketAfter = socketDependencies.after == ["libvirtd" "libvirtd-admin" "libvirtd-ro"];
-        socketWants = socketDependencies.wants == ["libvirtd" "libvirtd-admin" "libvirtd-ro"];
-        automaticIdentities = requestsHaveAutomaticIdentities;
-      };
-      contractHolds = lib.all (value: value) (builtins.attrValues contractChecks);
+      nativeTests = import ./_libvirt/native-tests.nix {inherit lib self;};
+      contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
     in {
       link = testing.mkLinkCheck {
         pname = "libvirt";
@@ -533,10 +485,10 @@ in
         tool = self;
         command = "virsh --version && virt-xml-validate --help";
       };
-      ability-module-contract =
+      native-module-contract =
         if contractHolds
         then
-          pkgs.runCommand "libvirt-ability-module-contract" {} ''
+          pkgs.runCommand "libvirt-native-module-contract" {} ''
             mkdir -p "$out"
             printf '%s\n' PASS > "$out/result"
           ''

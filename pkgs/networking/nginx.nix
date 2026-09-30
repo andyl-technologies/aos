@@ -8,6 +8,8 @@
   pcre2,
   zlib,
   stdenv,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "1.31.5";
   linkerOptions =
@@ -221,7 +223,8 @@ in
       }
     ];
 
-    abilities = ./_nginx;
+    module = ./_nginx;
+    moduleDeps = [service-management aos-filesystem-provider];
 
     meta = {
       description = "nginx — high-performance HTTP and reverse proxy server";
@@ -234,38 +237,14 @@ in
       testing,
       self,
       pkgs,
-      mkSystem,
       ...
     }: let
-      serviceManagement = lib.abilities.interfaces.serviceManagement;
-      environmentId = lib.abilities.environmentId {
-        authority = "system-image";
-        key = "nginx-package-check";
-        stage = "host";
-      };
-      credentialProvider = lib.abilities.instanceId {
-        environment = environmentId;
-        key = "credential-provider";
-      };
-      credential = name:
-        lib.abilities.resourceReference {
-          interface = serviceManagement.interfaces.credentialDelivery.identity;
-          resource = {
-            provider = credentialProvider;
-            key = name;
-          };
-          operations = ["observe"];
-          lifetime = "persistent";
-        };
-      evaluate = nginxConfig:
-        mkSystem {
-          systemName = "nginx-package-check";
-          modules = [
-            {
-              environment.systemPackages = [self];
-              aos.services.nginx = nginxConfig;
-            }
-          ];
+      credential = name: name;
+      evaluate = settings:
+        lib.evalPackageModules {
+          scope = ["test" "nginx"];
+          packages = [self];
+          operatorModules = [{aos.services.nginx = settings;}];
         };
       disabled = evaluate {};
       cleartext = evaluate {
@@ -285,67 +264,12 @@ in
           tls.enable = true;
         };
         tlsCredentials = {
-          certificate.resource = credential "tls-certificate";
-          privateKey.resource = credential "tls-private-key";
+          certificate.name = credential "tls-certificate";
+          privateKey.name = credential "tls-private-key";
         };
       };
-      assertionsHold = evaluation:
-        builtins.all (assertion: assertion.assertion) evaluation.config.assertions;
-      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
-      disabledAbilities = disabled.config.aos.abilities;
-      cleartextAbilities = cleartext.config.aos.abilities;
-      tlsAbilities = tls.config.aos.abilities;
-      cleartextRequests = builtins.attrNames cleartextAbilities.requests;
-      tlsRequests = builtins.attrNames tlsAbilities.requests;
-      source = cleartextAbilities.requests."nginx:server-configuration".parameters.source;
-      mainStorage = cleartextAbilities.requests."nginx:main-storage".parameters.mounts;
-      nginxOptions = lib.submoduleOptions cleartext.options.aos.services.type._elementType ["aos" "services" "nginx"];
-      publicOptionSchemas =
-        builtins.map
-        (option: option.type._abilitySchema)
-        [
-          nginxOptions.upstreams
-          nginxOptions.virtualHosts
-          nginxOptions.tlsCredentials.certificate
-          nginxOptions.tlsCredentials.privateKey
-        ];
-      expectedRequestOutput = localKey: output: {
-        authority = {
-          kind = "package";
-          package = self.pname;
-        };
-        inherit localKey output;
-      };
-      contractHolds =
-        builtins.deepSeq publicOptionSchemas true
-        && assertionsHold cleartext
-        && assertionsHold tls
-        && ownedValues disabledAbilities.instances == {}
-        && ownedValues disabledAbilities.requests == {}
-        && builtins.elem "nginx:configuration-materialization" (builtins.attrNames disabledAbilities.requirementTemplates)
-        && builtins.elem "nginx:main-service-lifecycle" (builtins.attrNames disabledAbilities.requirementTemplates)
-        && builtins.elem "nginx:main-lifecycle" cleartextRequests
-        && !(builtins.elem "nginx:main-credentials" cleartextRequests)
-        && builtins.elem "nginx:main-credentials" tlsRequests
-        && builtins.elem "nginx:credential-tls-certificate" tlsRequests
-        && builtins.elem "nginx:credential-tls-private-key" tlsRequests
-        && source.kind == "interpolated-text"
-        && builtins.any (fragment: fragment.kind == "artifact-file-path") source.fragments
-        && builtins.any (fragment: fragment.kind == "execution-path") source.fragments
-        && builtins.map
-        (mount:
-          lib.abilities.requestOutputIdentity {
-            requests = cleartextAbilities.requests;
-            reference = mount.source;
-          })
-        mainStorage
-        == [
-          (expectedRequestOutput "runtime-storage" "planned-path")
-          (expectedRequestOutput "state-storage" "planned-path")
-          (expectedRequestOutput "log-storage" "planned-path")
-        ]
-        && !(lib.hasInfix "/etc/nginx" (builtins.toJSON cleartextAbilities.requests))
-        && !(lib.hasInfix "/run/credentials" (builtins.toJSON tlsAbilities.requests));
+      nativeTests = import ./_nginx/native-tests.nix {inherit lib disabled cleartext tls;};
+      contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
     in
       {
         version = testing.mkToolCheck {
@@ -354,14 +278,14 @@ in
           command = "nginx -V 2>&1";
         };
 
-        ability-contract =
+        native-contract =
           if contractHolds
           then
-            pkgs.runCommand "nginx-production-ability-contract" {} ''
+            pkgs.runCommand "nginx-production-native-contract" {} ''
               mkdir -p "$out"
               printf '%s\n' PASS >"$out/result"
             ''
-          else throw "the nginx ability module contract checks failed";
+          else throw "the nginx native module contract checks failed";
       }
       // lib.optionalAttrs (
         pkgs.stdenv.hostPlatform.isLinux

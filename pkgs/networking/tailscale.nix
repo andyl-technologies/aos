@@ -2,6 +2,7 @@
 {
   lib,
   mkDerivation,
+  aos-runtime-checks,
   fetchurl,
   fetchGoModules,
   buildPackages,
@@ -9,6 +10,7 @@
   iproute2,
   iptables,
   procps-ng,
+  service-management,
 }: let
   # Newer releases require a Go patch release newer than the self-hosted AOS
   # compiler. Keep the newest release whose declared toolchain floor is met.
@@ -24,8 +26,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -82,7 +95,8 @@ in
 
     inherit version src;
 
-    abilities = ./_tailscale;
+    module = ./_tailscale;
+    moduleDeps = [aos-runtime-checks service-management];
 
     buildDeps = [buildPackages.go];
     runtimeDeps = [getent iproute2 iptables procps-ng];

@@ -39,6 +39,8 @@
   coreutils,
   sed,
   writeShellScriptBin,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "12.3.3";
   isDarwin = stdenv.hostPlatform.isDarwin;
@@ -390,7 +392,8 @@ in
         ]
         ++ [bash coreutils sed control];
     propagatedDeps = [];
-    abilities = ./_mariadb;
+    module = ./_mariadb;
+    moduleDeps = [service-management aos-filesystem-provider];
 
     phases = [
       {
@@ -718,37 +721,14 @@ in
       testing,
       self,
       pkgs,
-      mkSystem,
+      ...
     }: let
-      serviceManagement = lib.abilities.interfaces.serviceManagement;
-      environmentId = lib.abilities.environmentId {
-        authority = "system-image";
-        key = "mariadb-package-check";
-        stage = "host";
-      };
-      credentialProvider = lib.abilities.instanceId {
-        environment = environmentId;
-        key = "credential-provider";
-      };
-      secret = name:
-        lib.abilities.resourceReference {
-          interface = serviceManagement.interfaces.credentialDelivery.identity;
-          resource = {
-            provider = credentialProvider;
-            key = name;
-          };
-          operations = ["observe"];
-          lifetime = "persistent";
-        };
-      evaluate = mariadbConfig:
-        mkSystem {
-          systemName = "mariadb-package-check";
-          modules = [
-            {
-              environment.systemPackages = [self];
-              mariadb = mariadbConfig;
-            }
-          ];
+      secret = name: name;
+      evaluate = settings:
+        lib.evalPackageModules {
+          scope = ["package-check" "mariadb"];
+          packages = [self];
+          operatorModules = [{aos.mariadb = settings;}];
         };
       variants = [
         {
@@ -831,18 +811,18 @@ in
         tls =
           {enable = variant.tls;}
           // lib.optionalAttrs variant.tls {
-            certificate.resource = secret "tls-certificate";
-            privateKey.resource = secret "tls-private-key";
+            certificate.name = secret "tls-certificate";
+            privateKey.name = secret "tls-private-key";
           }
           // lib.optionalAttrs variant.ca {
-            ca.resource = secret "tls-ca";
+            ca.name = secret "tls-ca";
           };
         bootstrap =
           lib.optionalAttrs variant.admin {
-            adminSql.resource = secret "admin-bootstrap-sql";
+            adminSql.name = secret "admin-bootstrap-sql";
           }
           // lib.optionalAttrs variant.replication {
-            replicationSql.resource = secret "replication-bootstrap-sql";
+            replicationSql.name = secret "replication-bootstrap-sql";
           };
       };
       evaluations = builtins.map (variant: evaluate (configFor variant)) variants;
@@ -851,64 +831,24 @@ in
       disabled = evaluate {};
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
-      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
       invalidTls = evaluate {
         enable = true;
         tls = {
           enable = true;
-          certificate.resource = secret "tls-certificate";
+          certificate.name = secret "tls-certificate";
         };
       };
       disabledTlsCredentials = evaluate {
-        tls.certificate.resource = secret "tls-certificate";
+        tls.certificate.name = secret "tls-certificate";
       };
       disabledIncompleteTls = evaluate {
         tls.enable = true;
       };
-      enabledAbilityConfig = evaluated.config.aos.abilities;
-      plainAbilityConfig = plainEvaluated.config.aos.abilities;
-      disabledAbilityConfig = disabled.config.aos.abilities;
-      requests = builtins.attrNames enabledAbilityConfig.requests;
-      plainRequests = builtins.attrNames plainAbilityConfig.requests;
-      disabledRequirements = builtins.attrNames disabledAbilityConfig.requirementTemplates;
-      serverSource = enabledAbilityConfig.requests."mariadb:server-configuration".parameters.source;
-      bootstrapSource = enabledAbilityConfig.requests."mariadb:bootstrap-configuration".parameters.source;
-      serverLiteralText = lib.concatStringsSep "" (builtins.map
-        (fragment:
-          if fragment.kind == "literal"
-          then fragment.text
-          else "")
-        serverSource.fragments);
-      mainLifecycle = enabledAbilityConfig.requests."mariadb:main-lifecycle".parameters;
-      mainDependencies = enabledAbilityConfig.requests."mariadb:main-dependencies".parameters;
-      mainStorage = enabledAbilityConfig.requests."mariadb:main-storage".parameters;
-      servicePrincipal = enabledAbilityConfig.requests."mariadb:service-principal".parameters;
-      expectedRequestOutput = localKey: output: {
-        authority = {
-          kind = "package";
-          package = self.pname;
-        };
-        inherit localKey output;
-      };
-      configurationUsesPath = localKey: let
-        expectedIdentity = expectedRequestOutput localKey "planned-path";
-        executionPathIdentities =
-          builtins.map
-          (fragment:
-            lib.abilities.requestOutputIdentity {
-              requests = enabledAbilityConfig.requests;
-              reference = fragment.value;
-            })
-          (builtins.filter
-            (fragment: fragment.kind == "execution-path")
-            serverSource.fragments);
-      in
-        builtins.elem expectedIdentity executionPathIdentities;
       lifecycleConfig = pkgs.writeTextFile {
         name = "mariadb-lifecycle-config";
         destination = "/my.cnf";
         # This fixture exercises the packaged binary. Production paths come
-        # only from typed provider outputs in the ability module above.
+        # only from typed operation outputs in the package module.
         text = ''
           [client]
           socket=/run/mariadb/mariadb.sock
@@ -929,69 +869,8 @@ in
           skip-ssl
         '';
       };
-      allVariantsEvaluate = builtins.all assertionsHold evaluations;
-      contractHolds =
-        allVariantsEvaluate
-        && lib.abilities.types.isPortableOptionTree evaluated.options.mariadb
-        && assertionsHold disabledTlsCredentials
-        && assertionsHold disabledIncompleteTls
-        && !assertionsHold invalidTls
-        && ownedValues disabledAbilityConfig.instances == {}
-        && ownedValues disabledAbilityConfig.requests == {}
-        && builtins.elem "mariadb:credential-delivery" disabledRequirements
-        && builtins.elem "mariadb:main-service-credentials" disabledRequirements
-        && builtins.elem "mariadb:main-service-lifecycle" disabledRequirements
-        && builtins.elem "mariadb:initialize-lifecycle" requests
-        && builtins.elem "mariadb:main-lifecycle" requests
-        && builtins.elem "mariadb:credential-tls-certificate" requests
-        && builtins.elem "mariadb:credential-tls-private-key" requests
-        && builtins.elem "mariadb:credential-tls-ca" requests
-        && builtins.elem "mariadb:credential-admin-bootstrap-sql" requests
-        && builtins.elem "mariadb:credential-replication-bootstrap-sql" requests
-        && !(builtins.elem "mariadb:credential-tls-certificate" plainRequests)
-        && !(builtins.elem "mariadb:bootstrap-configuration" plainRequests)
-        && !(builtins.elem "mariadb:main-credentials" plainRequests)
-        && serverSource.kind == "interpolated-text"
-        && bootstrapSource.kind == "interpolated-text"
-        && bootstrapSource.maximum_size_bytes == lib.abilities.types.limits.maxDocumentBytes
-        && lib.hasInfix "bind-address=127.0.0.1" serverLiteralText
-        && lib.hasInfix "max-connections=200" serverLiteralText
-        && lib.hasInfix "ssl-cert=" serverLiteralText
-        && lib.hasInfix "ssl-key=" serverLiteralText
-        && lib.hasInfix "ssl-ca=" serverLiteralText
-        && !(lib.hasInfix "/etc/" (builtins.toJSON serverSource))
-        && !(lib.hasInfix "/var/lib/" (builtins.toJSON serverSource))
-        && !(lib.hasInfix "MARIADB_CONFIG_GENERATION" (builtins.toJSON enabledAbilityConfig.requests))
-        && mainLifecycle.restart == "on-failure"
-        && mainLifecycle.configuration_change_action == "restart"
-        && lib.abilities.requestOutputIdentity {
-          requests = enabledAbilityConfig.requests;
-          reference = servicePrincipal.home_directory;
-        }
-        == expectedRequestOutput "state-storage" "planned-path"
-        && builtins.map
-        (mount:
-          lib.abilities.requestOutputIdentity {
-            requests = enabledAbilityConfig.requests;
-            reference = mount.source;
-          })
-        mainStorage.mounts
-        == [
-          (expectedRequestOutput "state-storage" "planned-path")
-          (expectedRequestOutput "runtime-storage" "planned-path")
-          (expectedRequestOutput "log-storage" "planned-path")
-        ]
-        && configurationUsesPath "state-storage"
-        && configurationUsesPath "runtime-storage"
-        && configurationUsesPath "log-storage"
-        && (builtins.elemAt mainLifecycle.start 0).executable.entry_point == "bin/mariadb-control"
-        && lib.abilities.requestOutputIdentity {
-          requests = enabledAbilityConfig.requests;
-          reference = builtins.elemAt mainDependencies.after 0;
-        }
-        == expectedRequestOutput "initialize-lifecycle" "resource"
-        && !(enabledAbilityConfig.requests."mariadb:service-group".parameters ? requested_id)
-        && !(enabledAbilityConfig.requests."mariadb:service-principal".parameters ? requested_id);
+      nativeTests = import ./_mariadb/native-tests.nix {inherit lib evaluations evaluated plainEvaluated disabled invalidTls disabledTlsCredentials disabledIncompleteTls;};
+      contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
     in {
       version = testing.mkToolCheck {
         pname = "storage-mariadb";
@@ -1027,14 +906,14 @@ in
         '';
       };
 
-      ability-module-contract =
+      native-module-contract =
         if contractHolds
         then
-          pkgs.runCommand "storage-mariadb-ability-module-contract" {} ''
+          pkgs.runCommand "storage-mariadb-native-module-contract" {} ''
             mkdir -p "$out"
             printf '%s\n' PASS >"$out/result"
           ''
-        else throw "the MariaDB ability module contract checks failed";
+        else throw "the MariaDB native module contract checks failed";
 
       lifecycle = import ./_mariadb-tests/lifecycle.nix {
         inherit testing self;

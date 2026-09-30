@@ -2,6 +2,8 @@
 {
   lib,
   mkDerivation,
+  service-management,
+  storage-interface,
   fetchurl,
   gnumake,
   patch,
@@ -19,8 +21,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -91,7 +109,8 @@ in
       else [];
     propagatedDeps = [];
 
-    abilities = ./_smartmontools;
+    module = ./_smartmontools;
+    moduleDeps = [service-management storage-interface];
 
     # Guard: keep the autotools build toolchain out of smartctl/smartd's
     # `--version` strings (which previously pinned xz-5.6.4 and the entire

@@ -2,25 +2,17 @@
 {
   config,
   lib,
+  package,
   packageName,
   packageVersion,
   ...
 }: let
   cfg = config.aos.monitoring.hardware;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  abilityTypes = lib.abilities.types;
-  resultOf = lib.abilities.resultOf;
-  managerWatchdog = lib.abilities.interfaces.managerWatchdog.interface;
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "service";
-      inherit key interface parameters;
-    };
+  operations = config.aos.abilities;
+  configurationPath = operations.configuration.operations.file.effects.smartd.outputs.path;
   command = arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "sbin/smartd";
+      path = "${package.path}/sbin/smartd";
       inherit arguments;
     };
     ignore_failure = false;
@@ -38,23 +30,7 @@
     # -m root: mail alerts to root
     DEVICESCAN -a -o on -S on -n standby,q -W 5,45,55 -m root
   '';
-  filesystems = producer "local-filesystems" serviceManagement.interfaces.filesystemReadiness {
-    scope = "local-filesystems";
-  };
-  configuration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "service";
-    declaration = {
-      name = "configuration-file";
-      source = {
-        kind = "inline-text";
-        content = smartdConfiguration;
-      };
-      mode = "0444";
-    };
-  };
   serviceDefinition = {
-    consumerInstance = "service";
     service = "smartd";
     policy.hardening = {
       allow_privilege_escalation = false;
@@ -88,7 +64,7 @@
       environment_files = [];
       condition = [];
       pre_start = [];
-      start = [(command ["-c" (resultOf "configuration-file" "planned-path")])];
+      start = [(command ["-c" configurationPath])];
       post_start = [];
       stop = [];
       post_stop = [];
@@ -100,7 +76,7 @@
       stop_timeout_millis = 90000;
     };
     dependencies = {
-      after = [(resultOf "local-filesystems" "resource")];
+      after = [];
       before = [];
       requires = [];
       wants = [];
@@ -123,7 +99,7 @@
     configuration.views = [
       {
         name = "smartd";
-        source = resultOf "configuration-file" "planned-path";
+        source = configurationPath;
         optional = false;
       }
     ];
@@ -146,45 +122,29 @@
       permit_core_dumps = true;
     };
   };
-  producers = [filesystems configuration];
-  watchdog = serviceManagement.forProducer {
-    consumerInstance = "watchdog";
-    key = "manager-watchdog";
-    interface = managerWatchdog;
-    inherit (managerWatchdog) methods;
-    parameters = {
-      enabled = cfg.watchdog;
-      runtime_timeout_millis = cfg.watchdogTimeout * 1000;
-      reboot_timeout_millis = cfg.watchdogTimeout * 2000;
-      kexec_timeout_millis = cfg.watchdogTimeout * 2000;
-    };
-  };
 in {
   options.aos.monitoring.hardware = {
     enable = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = false;
       description = "Enable hardware health monitoring.";
     };
 
     watchdog = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = true;
       description = "Enable the selected service manager's hardware watchdog.";
     };
 
     watchdogTimeout = lib.mkOption {
-      type = abilityTypes.integer {
-        minimum = 1;
-        maximum = 86400;
-      };
+      type = lib.types.ints.between 1 86400;
       default = 30;
       description = "Watchdog timeout in seconds before hardware recovery.";
     };
 
     ## Enable S.M.A.R.T. disk health monitoring via smartd.
     smartd = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = true;
       description = ''
         Enable S.M.A.R.T. disk health monitoring via smartd. Monitors
@@ -197,19 +157,22 @@ in {
   config = lib.mkMerge [
     {
       aos.monitoring.hardware.enable = lib.mkDefault config.aos.storage.hardwareMonitoringRecommended;
-      aos.services.smartd = serviceDefinition // {enable = cfg.enable && cfg.smartd;};
+      aos.services.smartd = lib.mkDefault (serviceDefinition // {enable = lib.mkDefault (cfg.enable && cfg.smartd);});
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = config.aos.services.smartd.enable;
+    (lib.mkIf config.aos.services.smartd.enable {
+      aos.abilities.configuration.operations.file.effects.smartd.input = {
+        path = "/etc/aos/packages/smartmontools/smartd.conf";
+        content = smartdConfiguration;
+        mode = "0444";
+      };
     })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [watchdog];
-      enabled =
-        cfg.enable
-        && config.aos.abilities.environment != null
-        && config.aos.abilities.environment.stage == "host";
+    (lib.mkIf (cfg.enable && (config.aos.boot.stage or "host") == "host") {
+      aos.abilities.managerWatchdog.operations.ensure.effects.smartmontools.input = {
+        enabled = cfg.watchdog;
+        runtime_timeout_millis = cfg.watchdogTimeout * 1000;
+        reboot_timeout_millis = cfg.watchdogTimeout * 2000;
+        kexec_timeout_millis = cfg.watchdogTimeout * 2000;
+      };
     })
   ];
 }

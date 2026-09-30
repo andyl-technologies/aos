@@ -5,6 +5,7 @@
 {
   config,
   lib,
+  package,
   ...
 }: let
   cfg = config.aos.services.docker;
@@ -12,38 +13,15 @@
   runtimeRoot = "/run/docker";
   socketPath = "${builtins.dirOf runtimeRoot}/docker.sock";
   processIdPath = "${runtimeRoot}/docker.pid";
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  abilityTypes = lib.abilities.types;
-  resultOf = lib.abilities.resultOf;
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "docker";
-      inherit key interface parameters;
-    };
+  directories = config.aos.abilities.filesystem.operations.directory.effects;
+  network = config.aos.abilities.network.operations.ready.effects;
+
   command = arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "bin/dockerd";
+      path = "${package}/bin/dockerd";
       inherit arguments;
     };
     ignore_failure = false;
-  };
-  dataStorage = producer "docker-data-storage" serviceManagement.interfaces.persistentStorageAllocation {
-    name = "docker-data";
-    purpose = "state";
-    mode = "0710";
-    requested_path = dataRoot;
-  };
-  runtimeStorage = producer "docker-runtime-storage" serviceManagement.interfaces.storageAllocation {
-    name = "docker-runtime";
-    purpose = "runtime";
-    mode = "0755";
-    requested_path = runtimeRoot;
-  };
-  networkReadiness = producer "docker-network-readiness" serviceManagement.interfaces.networkReadiness {
-    scope = "stack-prepared";
-    address_families = ["ipv4" "ipv6"];
   };
   service = {
     policy.hardening = {
@@ -103,16 +81,16 @@
     };
     dependencies = {
       after = [
-        (resultOf "docker-network-readiness" "resource")
-        (resultOf "docker-data-storage" "resource")
-        (resultOf "docker-runtime-storage" "resource")
+        network.docker.outputs.resource
+        directories.docker-data.outputs.resource
+        directories.docker-runtime.outputs.resource
       ];
       before = [];
       requires = [
-        (resultOf "docker-data-storage" "resource")
-        (resultOf "docker-runtime-storage" "resource")
+        directories.docker-data.outputs.resource
+        directories.docker-runtime.outputs.resource
       ];
-      wants = [(resultOf "docker-network-readiness" "resource")];
+      wants = [network.docker.outputs.resource];
     };
     supervision = {
       startup_protocol = "notification";
@@ -143,12 +121,12 @@
     storage.mounts = [
       {
         name = "data";
-        source = resultOf "docker-data-storage" "planned-path";
+        source = directories.docker-data.outputs.path;
         access = "read-write";
       }
       {
         name = "runtime";
-        source = resultOf "docker-runtime-storage" "planned-path";
+        source = directories.docker-runtime.outputs.path;
         access = "read-write";
       }
     ];
@@ -170,43 +148,30 @@
       permit_core_dumps = true;
     };
   };
-  producers = [dataStorage runtimeStorage networkReadiness];
 in {
   options.aos.services = lib.mkOption {
     type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
       options = lib.optionalAttrs (name == "docker") {
-        enable = lib.mkOption {
-          type = abilityTypes.boolean;
-          default = false;
-          description = "Run the Docker container engine.";
-        };
-
         dataRoot = lib.mkOption {
-          type = serviceTypes.executionPath;
+          type = lib.types.strMatching "/.*";
           default = "/var/lib/docker";
           description = "Absolute directory used for persistent Docker data.";
         };
 
         storageDriver = lib.mkOption {
-          type = abilityTypes.enum ["overlay2" "btrfs" "fuse-overlayfs"];
+          type = lib.types.enum ["overlay2" "btrfs" "fuse-overlayfs"];
           default = "overlay2";
           description = "Storage driver used for container layers.";
         };
 
         liveRestore = lib.mkOption {
-          type = abilityTypes.boolean;
+          type = lib.types.bool;
           default = true;
           description = "Keep containers running while the daemon is unavailable.";
         };
 
         extraOptions = lib.mkOption {
-          type = abilityTypes.list {
-            element = abilityTypes.string {
-              maxLength = abilityTypes.limits.maxStringLength;
-              syntax = null;
-            };
-            maxItems = abilityTypes.limits.maxCollectionItems;
-          };
+          type = lib.types.listOf lib.types.str;
           default = [];
           description = "Additional command-line options passed to dockerd.";
         };
@@ -216,28 +181,27 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.services.docker = service;}
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = cfg.enable;
-    })
+    {aos.services.docker = lib.mkDefault service;}
     (lib.mkIf cfg.enable {
-      aos.abilities.runtimeChecks.docker = {
-        description = "Docker service checks";
-        checks = [
-          {
-            name = "docker-api";
-            description = "The Docker CLI reaches the local daemon and plugins";
-            script = ''
-              vm.wait_until_succeeds(
-                  "docker version --format '{{.Server.Version}}'", timeout=60
-              )
-              vm.succeed("docker info --format '{{.Driver}}' | grep -Fx '${cfg.storageDriver}'")
-              vm.succeed("docker buildx version")
-              vm.succeed("docker compose version")
-            '';
-          }
-        ];
+      system.checks.docker = import ./runtime-tests.nix {inherit cfg;};
+      aos.abilities = {
+        filesystem.operations.directory.effects = {
+          docker-data = {
+            lifetime = "persistent";
+            input = {
+              path = dataRoot;
+              mode = "0710";
+            };
+          };
+          docker-runtime.input = {
+            path = runtimeRoot;
+            mode = "0755";
+          };
+        };
+        network.operations.ready.effects.docker.input = {
+          scope = "stack-prepared";
+          families = ["ipv4" "ipv6"];
+        };
       };
     })
   ];

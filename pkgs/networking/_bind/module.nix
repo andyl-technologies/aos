@@ -1,74 +1,35 @@
-##! Package-owned BIND DNS service and configuration declarations.
+##! Package-owned DNS service and native runtime prerequisites.
 {
   config,
   lib,
+  package,
   ...
 }: let
   cfg = config.aos.services.bind;
-  inherit (lib.abilities) resultOf;
-  abilityTypes = lib.abilities.types;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceListener = lib.abilities.interfaces.serviceListener;
-  serviceTypes = serviceManagement.types;
-
-  port = abilityTypes.integer {
-    minimum = 1;
-    maximum = 65535;
-  };
-  address = abilityTypes.refined {
-    name = "BIND listen address";
-    description = "a host name or address without configuration delimiters";
-    type = abilityTypes.string {
-      maxLength = 255;
-      syntax = null;
-    };
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[A-Za-z0-9:.%_-]+";
-      }
-    ];
-  };
-  addresses = abilityTypes.list {
-    element = address;
-    maxItems = 256;
-    unique = true;
-    canonicalOrder = true;
-  };
-  configurationText = abilityTypes.string {
-    maxLength = abilityTypes.limits.maxStringLength;
-    syntax = null;
-  };
-
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "service";
-      inherit key interface parameters;
-    };
+  types = lib.types;
+  operations = config.aos.abilities;
+  port = types.ints.between 1 65535;
+  address = types.strMatching "[A-Za-z0-9:.%_-]+";
+  addresses = types.listOf address;
+  server = types.strMatching "[^\n\r]+";
+  dhcpRange = server;
+  servers = types.listOf server;
+  dhcpRanges = types.listOf dhcpRange;
+  configurationText = types.str;
   command = entryPoint: arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = entryPoint;
+      path = "${package}/${entryPoint}";
       inherit arguments;
     };
     ignore_failure = false;
   };
-  literal = text: {
-    kind = "literal";
-    inherit text;
-  };
-  executionPath = value: {
-    kind = "execution-path";
-    inherit value;
-  };
+  statePath = operations.filesystem.operations.directory.effects.bind-state.outputs.path;
+  runtimePath = operations.filesystem.operations.directory.effects.bind-runtime.outputs.path;
+  configurationPath = operations.configuration.operations.file.effects.bind.outputs.path;
   renderAddresses = values:
     if values == []
     then "none"
     else lib.concatStringsSep "; " values;
-
-  statePath = resultOf "state-storage" "planned-path";
-  runtimePath = resultOf "runtime-storage" "planned-path";
-  configurationPath = resultOf "server-configuration" "planned-path";
   listenerEndpoints = [
     {
       transport = "tcp";
@@ -79,84 +40,43 @@
       inherit (cfg) port;
     }
   ];
-  listenerRequestKey = endpoint: "listener-${serviceListener.slotFor endpoint}";
-  listenerRequests = builtins.listToAttrs (builtins.map (endpoint: {
-      name = listenerRequestKey endpoint;
-      value = {
-        requirement = "listener-claim";
-        consumer = "service";
-        scope = ["listener" (serviceListener.slotFor endpoint)];
-        parameters = endpoint;
-      };
-    })
-    listenerEndpoints);
   listenerPrerequisites =
     builtins.map (
-      endpoint: resultOf (listenerRequestKey endpoint) "resource"
+      endpoint:
+        operations.listener.operations.claim.effects."${endpoint.transport}-${toString endpoint.port}".outputs.resource
     )
     listenerEndpoints;
-
-  stateStorage = producer "state-storage" serviceManagement.interfaces.persistentStorageAllocation {
-    name = "state";
-    purpose = "state";
-    mode = "0750";
-  };
-  runtimeStorage = producer "runtime-storage" serviceManagement.interfaces.storageAllocation {
-    name = "runtime";
-    purpose = "runtime";
-    mode = "0750";
-  };
-  networkReadiness = producer "network-readiness" serviceManagement.interfaces.networkReadiness {
-    scope = "local-connectivity";
-    address_families = ["ipv4" "ipv6"];
-  };
-  configuration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "service";
-    declaration = {
-      name = "server-configuration";
-      source = {
-        kind = "interpolated-text";
-        fragments = [
-          (literal ''
-            // Generated from the package-owned BIND module.
-            options {
-              directory "'')
-          (executionPath statePath)
-          (literal "\";\n  pid-file \"")
-          (executionPath runtimePath)
-          (literal "/named.pid\";\n  session-keyfile \"")
-          (executionPath runtimePath)
-          (literal "/session.key\";\n  managed-keys-directory \"")
-          (executionPath statePath)
-          (literal ''
-            ";
-              listen-on port ${toString cfg.port} { ${renderAddresses cfg.listenIPv4}; };
-              listen-on-v6 port ${toString cfg.port} { ${renderAddresses cfg.listenIPv6}; };
-              recursion ${
-              if cfg.recursion
-              then "yes"
-              else "no"
-            };
-              dnssec-validation auto;
-              empty-zones-enable yes;
-              ${lib.optionalString (cfg.forwarders != []) "forwarders { ${lib.concatStringsSep "; " cfg.forwarders}; };"}
-            };
-
-            ${cfg.extraConfig}
-          '')
-        ];
-        maximum_size_bytes = abilityTypes.limits.maxDocumentBytes;
+  configurationFragments = [
+    ''
+      // Generated from the package-owned BIND module.
+      options {
+        directory "''
+    statePath
+    "\";\n  pid-file \""
+    runtimePath
+    "/named.pid\";\n  session-keyfile \""
+    runtimePath
+    "/session.key\";\n  managed-keys-directory \""
+    statePath
+    ''
+      ";
+        listen-on port ${toString cfg.port} { ${renderAddresses cfg.listenIPv4}; };
+        listen-on-v6 port ${toString cfg.port} { ${renderAddresses cfg.listenIPv6}; };
+        recursion ${
+        if cfg.recursion
+        then "yes"
+        else "no"
       };
-      mode = "0444";
-    };
-  };
-  ingress = producer "dns-ingress" lib.abilities.interfaces.networkPolicy.interfaces.ingress {
-    endpoints = listenerEndpoints;
-    prerequisites = [(resultOf "network-readiness" "resource")];
-  };
+        dnssec-validation auto;
+        empty-zones-enable yes;
+        ${lib.optionalString (cfg.forwarders != []) "forwarders { ${lib.concatStringsSep "; " cfg.forwarders}; };"}
+      };
+
+      ${cfg.extraConfig}
+    ''
+  ];
+
   serviceDefinition = {
-    consumerInstance = "service";
     service = "named";
     policy.hardening = {
       allow_privilege_escalation = false;
@@ -205,8 +125,9 @@
       start_timeout_millis = 90000;
       stop_timeout_millis = 90000;
     };
+    activationAfter = [operations.network.operations.ready.effects.bind.outputs.resource];
     dependencies = {
-      prerequisites = [(resultOf "dns-ingress" "resource")] ++ listenerPrerequisites;
+      prerequisites = [operations.networkPolicy.operations.ruleset.effects.host.outputs.resource] ++ listenerPrerequisites;
       after = [];
       before = [];
       requires = [];
@@ -270,23 +191,10 @@
       permit_core_dumps = false;
     };
   };
-
-  producers = [
-    stateStorage
-    runtimeStorage
-    networkReadiness
-    configuration
-    ingress
-  ];
 in {
   options.aos.services = lib.mkOption {
     type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
       options = lib.optionalAttrs (name == "bind") {
-        enable = lib.mkOption {
-          type = abilityTypes.boolean;
-          default = false;
-          description = "Run the BIND DNS server.";
-        };
         port = lib.mkOption {
           type = port;
           default = 53;
@@ -303,7 +211,7 @@ in {
           description = "Canonical IPv6 addresses on which named listens.";
         };
         recursion = lib.mkOption {
-          type = abilityTypes.boolean;
+          type = types.bool;
           default = true;
           description = "Answer recursive DNS queries.";
         };
@@ -324,45 +232,48 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.services.bind = serviceDefinition;
+      aos.services.bind = lib.mkDefault serviceDefinition;
       assertions = [
         {
           assertion = cfg.listenIPv4 != [] || cfg.listenIPv6 != [];
-          message = "BIND must listen on at least one IPv4 or IPv6 address";
+          message = "bind must listen on at least one address";
         }
       ];
-      aos.abilities.requirementTemplates.listener-claim = {
-        interface = serviceListener.interface.identity.name;
-        inherit (serviceListener.interface.identity) abi descriptor;
-        description = "Requires exclusive ownership of each host listener used by named.";
-        methods = ["observe"];
-        guarantees = [];
-        strength = "required";
-        fallback = null;
-      };
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = cfg.enable;
-    })
     (lib.mkIf cfg.enable {
+      system.checks.bind = import ./runtime-tests.nix {inherit cfg;};
       aos.abilities = {
-        requests = listenerRequests;
-        runtimeChecks.bind = {
-          description = "BIND DNS service checks";
-          checks = [
-            {
-              name = "dns-query";
-              description = "named answers a DNS request through its configured listener";
-              script = ''
-                vm.wait_until_succeeds(
-                    "dig -p ${toString cfg.port} @127.0.0.1 version.bind TXT CH +short",
-                    timeout=30,
-                )
-              '';
-            }
-          ];
+        filesystem.operations.directory.effects = {
+          bind-state = {
+            lifetime = "persistent";
+            input = {
+              path = "/var/lib/aos-pkg-bind";
+              mode = "0750";
+            };
+          };
+          bind-runtime.input = {
+            path = "/run/aos-pkg-bind";
+            mode = "0750";
+          };
         };
+        configuration.operations.file.effects.bind.input = {
+          path = "/etc/aos/packages/bind/named.conf";
+          fragments = configurationFragments;
+          mode = "0444";
+        };
+        network.operations.ready.effects.bind.input = {
+          scope = "stack-prepared";
+          families = ["ipv4" "ipv6"];
+        };
+        listener.operations.claim.effects = builtins.listToAttrs (builtins.map (endpoint: {
+            name = "${endpoint.transport}-${toString endpoint.port}";
+            value.input = endpoint;
+          })
+          listenerEndpoints);
+      };
+      aos.networkPolicy = {
+        enable = lib.mkDefault true;
+        ingress.bind.endpoints = listenerEndpoints;
       };
     })
   ];

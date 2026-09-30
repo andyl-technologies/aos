@@ -14,6 +14,8 @@
   stdenv,
   bash,
   coreutils,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "2.7.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -21,8 +23,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -124,7 +142,8 @@ in
     runtimeDeps = [cyrus-sasl krb5 openssl libtool bash coreutils];
     propagatedDeps = [];
 
-    abilities = ./_openldap;
+    module = ./_openldap;
+    moduleDeps = [service-management aos-filesystem-provider];
 
     phases = [
       {
@@ -243,80 +262,34 @@ in
       testing,
       self,
       pkgs,
-      mkSystem,
       ...
     }: let
-      serviceManagement = lib.abilities.interfaces.serviceManagement;
-      environmentId = lib.abilities.environmentId {
-        authority = "system-image";
-        key = "openldap-package-check";
-        stage = "host";
-      };
-      credentialProvider = lib.abilities.instanceId {
-        environment = environmentId;
-        key = "credential-provider";
-      };
-      credential = key:
-        lib.abilities.resourceReference {
-          interface = serviceManagement.interfaces.credentialDelivery.identity;
-          resource = {
-            provider = credentialProvider;
-            inherit key;
-          };
-          operations = ["observe"];
-          lifetime = "persistent";
-        };
-      evaluate = openldapConfig:
-        mkSystem {
-          systemName = "openldap-package-check";
-          modules = [
-            {
-              environment.systemPackages = [self];
-              openldap = openldapConfig;
-            }
-          ];
+      credential = name: name;
+      evaluate = settings:
+        lib.evalPackageModules {
+          scope = ["test" "openldap"];
+          packages = [self];
+          operatorModules = [{aos.openldap = settings;}];
         };
       valid = evaluate {
         enable = true;
         suffix = "dc=aos,dc=test";
         rootDn = "cn=admin,dc=aos,dc=test";
-        rootPassword.resource = credential "root-password";
+        rootPassword.name = credential "root-password";
       };
       tls = evaluate {
         enable = true;
-        rootPassword.resource = credential "root-password";
+        rootPassword.name = credential "root-password";
         tls = {
           enable = true;
-          certificate.resource = credential "tls-certificate";
-          privateKey.resource = credential "tls-private-key";
-          trustedCa.resource = credential "tls-ca";
+          certificate.name = credential "tls-certificate";
+          privateKey.name = credential "tls-private-key";
+          trustedCa.name = credential "tls-ca";
         };
       };
       missingPassword = evaluate {enable = true;};
-      assertionsHold = result:
-        builtins.all (assertion: assertion.assertion) result.config.assertions;
-      requests = valid.config.aos.abilities.requests;
-      tlsRequests = tls.config.aos.abilities.requests;
-      configuration = requests."openldap:server-configuration".parameters;
-      fragmentKinds = builtins.map (fragment: fragment.kind) configuration.source.fragments;
-      modulePathFragments =
-        builtins.filter
-        (fragment: fragment.kind == "artifact-directory-path")
-        configuration.source.fragments;
-      contractHolds =
-        assertionsHold valid
-        && lib.abilities.types.isPortableOptionTree valid.options.openldap
-        && assertionsHold tls
-        && !assertionsHold missingPassword
-        && builtins.hasAttr "openldap:main-lifecycle" requests
-        && !(builtins.hasAttr "openldap:main-credentials" requests)
-        && builtins.hasAttr "openldap:main-credentials" tlsRequests
-        && builtins.elem "artifact-file-path" fragmentKinds
-        && builtins.length modulePathFragments == 1
-        && (builtins.head modulePathFragments).reference.path == "libexec/openldap"
-        && builtins.elem "credential-content" fragmentKinds
-        && configuration.mode == "0600"
-        && !(lib.hasInfix "/nix/store/" (builtins.toJSON configuration));
+      nativeTests = import ./_openldap/native-tests.nix {inherit lib valid tls missingPassword;};
+      contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
       testConfiguration = builtins.toFile "openldap-test.conf" ''
         include ${self}/etc/openldap/schema/core.schema
         include ${self}/etc/openldap/schema/cosine.schema
@@ -343,10 +316,10 @@ in
         libs = ["libldap.so" "liblber.so"];
       };
 
-      ability-module-contract =
+      native-module-contract =
         if contractHolds
         then
-          pkgs.runCommand "openldap-ability-module-contract" {} ''
+          pkgs.runCommand "openldap-native-module-contract" {} ''
             mkdir -p "$out"
             printf '%s\n' PASS > "$out/result"
           ''

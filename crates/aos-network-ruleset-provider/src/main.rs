@@ -1,11 +1,15 @@
-//! Process entry point for the package-owned network-ruleset provider.
+//! Bounded process entry point for native host firewall reconciliation.
+//!
+//! The runtime passes one action and a resolved JSON invocation. This process
+//! emits the operation's outputs or a native observation on standard output.
 
 use std::io::{self, Read as _, Write as _};
 
-use anyhow::{Context as _, Result, bail};
-use aos_ability_model::ABILITY_LIMITS_V1;
+use anyhow::{Context as _, Result, ensure};
 use aos_network_ruleset_provider::NetworkRulesetProvider;
-use aos_provider_protocol::{HANDLER_ABI_ARGUMENT, MAX_HANDLER_RESULT_BYTES};
+
+const MAX_INVOCATION_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_RESULT_BYTES: usize = 1024 * 1024;
 
 fn main() {
     if let Err(error) = run() {
@@ -15,28 +19,30 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if arguments.len() != 2 || arguments[0] != HANDLER_ABI_ARGUMENT {
-        bail!(
-            "usage: aos-network-ruleset-provider {HANDLER_ABI_ARGUMENT} \
-             <admit|effect|reconcile|cancel|compensate|reconcile-compensation>"
-        );
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if arguments.as_slice() == ["--version"] {
+        println!("aos-network-ruleset-provider {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
     }
 
+    ensure!(
+        arguments.len() == 1,
+        "usage: aos-network-ruleset-provider <apply|remove|observe>"
+    );
     let mut input = Vec::new();
     io::stdin()
-        .take(ABILITY_LIMITS_V1.max_document_bytes + 1)
+        .take(MAX_INVOCATION_BYTES + 1)
         .read_to_end(&mut input)
-        .context("reading bounded invocation")?;
-    if u64::try_from(input.len()).unwrap_or(u64::MAX) > ABILITY_LIMITS_V1.max_document_bytes {
-        bail!("invocation exceeds the canonical ability document bound");
-    }
+        .context("reading bounded native invocation")?;
+    ensure!(
+        u64::try_from(input.len())? <= MAX_INVOCATION_BYTES,
+        "invocation exceeds bound"
+    );
 
-    let output = NetworkRulesetProvider::production().handle(&arguments[1], &input)?;
-    if output.len() > MAX_HANDLER_RESULT_BYTES {
-        bail!("response exceeds the command-handler result bound");
-    }
+    let purpose = arguments[0].to_str().context("action is not UTF-8")?;
+    let output = NetworkRulesetProvider::production().handle(purpose, &input)?;
+    ensure!(output.len() <= MAX_RESULT_BYTES, "response exceeds bound");
     io::stdout()
         .write_all(&output)
-        .context("writing command-handler response")
+        .context("writing native handler response")
 }

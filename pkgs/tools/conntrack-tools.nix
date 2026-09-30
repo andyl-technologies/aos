@@ -14,6 +14,8 @@
   libnetfilter_cttimeout,
   libnetfilter_queue,
   libtirpc,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "1.4.9";
 in
@@ -112,7 +114,8 @@ in
     ];
     propagatedDeps = [];
 
-    abilities = ./_conntrackd;
+    module = ./_conntrackd;
+    moduleDeps = [service-management aos-filesystem-provider];
 
     phases = [
       {
@@ -155,24 +158,13 @@ in
       testing,
       self,
       pkgs,
-      mkSystem,
+      ...
     }: let
-      expectedRequestOutput = localKey: output: {
-        authority = {
-          kind = "package";
-          package = self.pname;
-        };
-        inherit localKey output;
-      };
-      evaluate = conntrackdConfig:
-        mkSystem {
-          systemName = "conntrack-tools-package-check";
-          modules = [
-            {
-              environment.systemPackages = [self];
-              conntrackd = conntrackdConfig;
-            }
-          ];
+      evaluate = settings:
+        lib.evalPackageModules {
+          scope = ["package-check" "conntrackd"];
+          packages = [self];
+          operatorModules = [{aos.conntrackd = settings;}];
         };
       evaluated = evaluate {
         enable = true;
@@ -188,60 +180,16 @@ in
         hashSize = 8192;
         hashLimit = 4096;
       };
-      assertionsHold = result:
-        builtins.all (assertion: assertion.assertion) result.config.assertions;
-      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
-      requests = evaluated.config.aos.abilities.requests;
-      disabledAbilities = disabled.config.aos.abilities;
-      disabledRequirements = builtins.attrNames disabledAbilities.requirementTemplates;
-      source = requests."conntrack-tools:daemon-configuration".parameters.source;
-      lifecycle = requests."conntrack-tools:main-lifecycle".parameters;
-      identity = requests."conntrack-tools:main-identity".parameters;
-      storageMounts = requests."conntrack-tools:main-storage".parameters.mounts;
-      literalText = builtins.concatStringsSep "" (builtins.map
-        (fragment:
-          if fragment.kind == "literal"
-          then fragment.text
-          else "")
-        source.fragments);
-      contractHolds =
-        assertionsHold evaluated
-        && lib.abilities.types.isPortableOptionTree evaluated.options.conntrackd
-        && !assertionsHold invalidHashRange
-        && ownedValues disabledAbilities.instances == {}
-        && ownedValues disabledAbilities.requests == {}
-        && builtins.elem "conntrack-tools:configuration-materialization" disabledRequirements
-        && builtins.elem "conntrack-tools:main-service-lifecycle" disabledRequirements
-        && source.kind == "interpolated-text"
-        && lib.hasInfix "Mode FTFW" literalText
-        && lib.hasInfix "IPv4_address 192.0.2.10" literalText
-        && lib.hasInfix "IPv4_Destination_Address 192.0.2.11" literalText
-        && builtins.elem "conntrack-tools:main-lifecycle" (builtins.attrNames requests)
-        && builtins.elem "conntrack-tools:main-reload" (builtins.attrNames requests)
-        && builtins.elem "conntrack-tools:runtime-storage" (builtins.attrNames requests)
-        && requests."conntrack-tools:log-storage".requirement
-        == "conntrack-tools:persistent-storage-allocation"
-        && lifecycle.configuration_change_action == "restart"
-        && identity.file_creation_mask == "0027"
-        && builtins.map
-        (mount:
-          lib.abilities.requestOutputIdentity {
-            inherit requests;
-            reference = mount.source;
-          })
-        storageMounts
-        == [
-          (expectedRequestOutput "runtime-storage" "planned-path")
-          (expectedRequestOutput "log-storage" "planned-path")
-        ];
+      nativeTests = import ./_conntrackd/native-tests.nix {inherit lib evaluated disabled invalidHashRange;};
+      contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
     in {
       config =
         if contractHolds
         then
-          pkgs.runCommand "conntrackd-ability-module" {} ''
+          pkgs.runCommand "conntrackd-native-module" {} ''
             test -x ${self}/sbin/conntrackd
             touch "$out"
           ''
-        else throw "the conntrackd ability module contract checks failed";
+        else throw "the conntrackd native module contract checks failed";
     };
   }

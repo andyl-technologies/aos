@@ -44,6 +44,8 @@
   m4,
   patchelf,
   bootstrapTools,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "1.37.0";
   isCross = stdenv.isCross;
@@ -1154,7 +1156,8 @@ in
 
     bazel = buildBazel;
     jdk = buildJdk;
-    abilities = ./_envoy;
+    module = ./_envoy;
+    moduleDeps = [service-management aos-filesystem-provider];
 
     inherit tools;
     caCertificates = buildCaCertificates;
@@ -1823,43 +1826,16 @@ in
       testing,
       self,
       pkgs,
-      mkSystem,
     }: let
-      serviceManagement = lib.abilities.interfaces.serviceManagement;
-      environmentId = lib.abilities.environmentId {
-        authority = "system-image";
-        key = "envoy-package-check";
-        stage = "host";
-      };
-      credentialProvider = lib.abilities.instanceId {
-        environment = environmentId;
-        key = "credential-provider";
-      };
-      credential = key:
-        lib.abilities.resourceReference {
-          interface = serviceManagement.interfaces.credentialDelivery.identity;
-          resource = {
-            provider = credentialProvider;
-            inherit key;
-          };
-          operations = ["observe"];
-          lifetime = "persistent";
+      credential = name: name;
+      evalConfig = settings:
+        lib.evalPackageModules {
+          scope = ["test" "envoy"];
+          packages = [self];
+          operatorModules = [{aos.envoy = settings;}];
         };
-      evalConfig = envoyConfig:
-        mkSystem {
-          systemName = "envoy-package-check";
-          modules = [
-            {
-              environment.systemPackages = [self];
-              envoy = envoyConfig;
-            }
-          ];
-        };
-      assertionsHoldFor = result:
-        builtins.all (assertion: assertion.assertion) result.config.assertions;
-      bootstrapSourceFor = result:
-        result.config.aos.abilities.requests."envoy:bootstrap-configuration".parameters.source;
-      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
+      assertionsHoldFor = result: builtins.all (value: value.assertion) result.assertions;
+      bootstrapSourceFor = result: result.config.aos.abilities.configuration.operations.file.effects.envoy.input.value;
       disabledConfig = evalConfig {};
       evaluatedConfig = evalConfig {
         enable = true;
@@ -1932,9 +1908,10 @@ in
         admin.address = "0.0.0.0";
       };
       invalidAdminLog = builtins.tryEval (builtins.deepSeq
-        (serviceManagement.valueFromStructuredSource (bootstrapSourceFor (evalConfig {
+        (evalConfig {
+          enable = true;
           admin.accessLog = "stderr";
-        })))
+        }).config.aos.envoy
         true);
       validSds = evalConfig {
         enable = true;
@@ -1963,8 +1940,8 @@ in
       validCredentialTls = evalConfig {
         enable = true;
         credentials = {
-          tls-certificate.resource = credential "tls-certificate";
-          tls-private-key.resource = credential "tls-private-key";
+          tls-certificate.name = credential "tls-certificate";
+          tls-private-key.name = credential "tls-private-key";
         };
         listeners.https = {
           port = 10443;
@@ -1977,181 +1954,17 @@ in
           };
         };
       };
-      credentialTlsAbilityConfig = validCredentialTls.config.aos.abilities;
-      plainAbilityConfig = evaluatedConfig.config.aos.abilities;
-      disabledAbilityConfig = disabledConfig.config.aos.abilities;
-      requests = builtins.attrNames credentialTlsAbilityConfig.requests;
-      plainRequests = builtins.attrNames plainAbilityConfig.requests;
-      disabledRequirements = builtins.attrNames disabledAbilityConfig.requirementTemplates;
-      configuration = (credentialTlsAbilityConfig.requests."envoy:bootstrap-configuration" or {parameters = {};}).parameters;
-      evaluatedConfiguration = bootstrapSourceFor evaluatedConfig;
-      mainLifecycle = (credentialTlsAbilityConfig.requests."envoy:main-lifecycle" or {parameters = {};}).parameters;
-      mainStorage = (credentialTlsAbilityConfig.requests."envoy:main-storage" or {parameters = {};}).parameters;
-      mainResources = (credentialTlsAbilityConfig.requests."envoy:main-resources" or {parameters = {};}).parameters;
-      expectedRequestOutput = localKey: output: {
-        authority = {
-          kind = "package";
-          package = self.pname;
-        };
-        inherit localKey output;
+      nativeTests = import ./_envoy/native-tests.nix {
+        inherit lib evaluatedConfig disabledConfig validSds validCredentialTls invalidRoute invalidTls invalidAdmin invalidAdminLog;
       };
-      contractChecks = [
-        {
-          name = "valid configuration assertions";
-          value = assertionsHoldFor evaluatedConfig;
-        }
-        {
-          name = "portable options";
-          value = lib.abilities.types.isPortableOptionTree evaluatedConfig.options.envoy;
-        }
-        {
-          name = "valid SDS assertions";
-          value = assertionsHoldFor validSds;
-        }
-        {
-          name = "valid credential TLS assertions";
-          value = assertionsHoldFor validCredentialTls;
-        }
-        {
-          name = "invalid route rejected";
-          value = !assertionsHoldFor invalidRoute;
-        }
-        {
-          name = "invalid TLS rejected";
-          value = !assertionsHoldFor invalidTls;
-        }
-        {
-          name = "invalid admin endpoint rejected";
-          value = !assertionsHoldFor invalidAdmin;
-        }
-        {
-          name = "invalid admin log rejected";
-          value = !invalidAdminLog.success;
-        }
-        {
-          name = "disabled instances absent";
-          value = ownedValues disabledAbilityConfig.instances == {};
-        }
-        {
-          name = "disabled requests absent";
-          value = ownedValues disabledAbilityConfig.requests == {};
-        }
-        {
-          name = "credential requirement declared";
-          value = builtins.elem "envoy:credential-delivery" disabledRequirements;
-        }
-        {
-          name = "service credentials requirement declared";
-          value = builtins.elem "envoy:main-service-credentials" disabledRequirements;
-        }
-        {
-          name = "service lifecycle requirement declared";
-          value = builtins.elem "envoy:main-service-lifecycle" disabledRequirements;
-        }
-        {
-          name = "certificate credential requested";
-          value = builtins.elem "envoy:credential-tls-certificate" requests;
-        }
-        {
-          name = "private key credential requested";
-          value = builtins.elem "envoy:credential-tls-private-key" requests;
-        }
-        {
-          name = "unused CA credential absent";
-          value = !(builtins.elem "envoy:credential-validation-ca" requests);
-        }
-        {
-          name = "plain configuration has no TLS credential";
-          value = !(builtins.elem "envoy:credential-tls-certificate" plainRequests);
-        }
-        {
-          name = "main lifecycle requested";
-          value = builtins.elem "envoy:main-lifecycle" requests;
-        }
-        {
-          name = "bootstrap configuration requested";
-          value = builtins.elem "envoy:bootstrap-configuration" requests;
-        }
-        {
-          name = "structured bootstrap source";
-          value = configuration.source.kind == "structured-value";
-        }
-        {
-          name = "JSON bootstrap source";
-          value = configuration.source.format == "json";
-        }
-        {
-          name = "typed extension key retained";
-          value = builtins.any (node:
-            node.kind
-            == "string"
-            && builtins.any (segment: segment.kind == "key" && segment.value == "@type") node.path)
-          configuration.source.document;
-        }
-        {
-          name = "failure restart policy";
-          value = mainLifecycle.restart == "on-failure";
-        }
-        {
-          name = "restart delay";
-          value = mainLifecycle.restart_delay_millis == 2000;
-        }
-        {
-          name = "storage mounts use planned paths";
-          value =
-            builtins.map
-            (mount:
-              lib.abilities.requestOutputIdentity {
-                requests = credentialTlsAbilityConfig.requests;
-                reference = mount.source;
-              })
-            mainStorage.mounts
-            == [
-              (expectedRequestOutput "state-storage" "planned-path")
-              (expectedRequestOutput "log-storage" "planned-path")
-            ];
-        }
-        {
-          name = "pre-start validates generated configuration";
-          value = let
-            arguments = (builtins.head mainLifecycle.pre_start).executable.arguments;
-            configurationArgument = builtins.elemAt arguments 3;
-          in
-            builtins.length arguments
-            == 4
-            && builtins.elemAt arguments 0 == "--mode"
-            && builtins.elemAt arguments 1 == "validate"
-            && builtins.elemAt arguments 2 == "--config-path"
-            && lib.abilities.requestOutputIdentity {
-              requests = credentialTlsAbilityConfig.requests;
-              reference = configurationArgument;
-            }
-            == expectedRequestOutput "bootstrap-configuration" "planned-path";
-        }
-        {
-          name = "open file limit";
-          value = mainResources.open_files.value == 1048576;
-        }
-        {
-          name = "legacy configuration path absent";
-          value = !(lib.hasInfix "/etc/aos/packages/envoy" (builtins.toJSON credentialTlsAbilityConfig.requests));
-        }
-        {
-          name = "legacy log path absent";
-          value = !(lib.hasInfix "/var/log/aos-pkg-envoy" (builtins.toJSON credentialTlsAbilityConfig.requests));
-        }
-      ];
-      failedContractChecks = builtins.map (check: check.name) (
-        builtins.filter (check: !check.value) contractChecks
-      );
-      contractHolds = failedContractChecks == [];
+      contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
       renderedBootstrap =
         if assertionsHoldFor evaluatedConfig
         then
-          builtins.toFile "envoy-ability-check.json" (
-            builtins.toJSON (serviceManagement.valueFromStructuredSource evaluatedConfiguration)
+          builtins.toFile "envoy-native-check.json" (
+            builtins.toJSON (bootstrapSourceFor evaluatedConfig)
           )
-        else throw "the Envoy ability fixture has a failing assertion";
+        else throw "the Envoy native fixture has a failing assertion";
     in {
       version = testing.mkVMTest {
         name = "networking-envoy-version";
@@ -2221,24 +2034,24 @@ in
         '';
       };
 
-      ability-config = testing.mkVMTest {
-        name = "networking-envoy-ability-config";
+      native-config = testing.mkVMTest {
+        name = "networking-envoy-native-config";
         rootfsDeps = [self renderedBootstrap pkgs.grep];
         testScript = ''
           envoy --mode validate --config-path ${renderedBootstrap}
           ${pkgs.grep}/bin/grep -q 'envoy-check' ${renderedBootstrap}
           ${pkgs.grep}/bin/grep -q 'envoy.reloadable_features.check' ${renderedBootstrap}
-          echo "==> envoy ability config: PASS"
+          echo "==> envoy native config: PASS"
         '';
       };
 
-      ability-module-contract =
+      native-module-contract =
         if contractHolds
         then
-          pkgs.runCommand "networking-envoy-ability-module-contract" {} ''
+          pkgs.runCommand "networking-envoy-native-module-contract" {} ''
             mkdir -p "$out"
             printf '%s\n' PASS > "$out/result"
           ''
-        else throw "the Envoy native ability checks failed: ${builtins.toJSON failedContractChecks}";
+        else throw "the Envoy native ability checks failed: ${builtins.toJSON (builtins.attrNames nativeTests)}";
     };
   }

@@ -1,52 +1,22 @@
-##! Package-owned nginx options and provider-neutral service declarations.
-##!
-##! The package owns the shared `nginx.*` root. Other authenticated packages
-##! may contribute named virtual hosts and upstreams, but global policy and
-##! service enablement remain operator/owner-only. TLS key material is never
-##! accepted as a Nix string. Typed credential requests appear only when a TLS
-##! virtual host uses them, so an HTTP-only service has no credential binding.
+##! Package-owned nginx virtual hosts, upstreams, TLS, and native lifecycle.
 {
   config,
   lib,
+  package,
   ...
 }: let
   cfg = config.aos.services.nginx;
-
-  inherit (lib.abilities) pathWithin resultOf;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  abilityTypes = lib.abilities.types;
-  positiveInt = abilityTypes.integer {
-    minimum = 1;
-    maximum = abilityTypes.limits.maxSafeInteger;
-  };
-  nonNegativeInt = abilityTypes.integer {
-    minimum = 0;
-    maximum = abilityTypes.limits.maxSafeInteger;
-  };
-  httpStatus = abilityTypes.integer {
-    minimum = 100;
-    maximum = 599;
-  };
-  port = abilityTypes.integer {
-    minimum = 1;
-    maximum = 65535;
-  };
-  boundedText = maximum:
-    abilityTypes.string {
-      maxLength = maximum;
-      syntax = null;
-    };
+  types = lib.types;
+  operations = config.aos.abilities;
+  positiveInt = types.ints.between 1 9007199254740991;
+  nonNegativeInt = types.ints.between 0 9007199254740991;
+  httpStatus = types.ints.between 100 599;
+  port = types.ints.between 1 65535;
+  boundedText = maximum: types.strWith {maxLength = maximum;};
   checkedString = name: description: pattern: maximum:
-    abilityTypes.refined {
-      inherit name description;
-      type = boundedText maximum;
-      constraints = [
-        {
-          kind = "string-pattern";
-          pattern = pattern;
-        }
-      ];
+    types.strWith {
+      maxLength = maximum;
+      inherit pattern;
     };
   size = checkedString "nginx size" "an nginx byte size" "[0-9]+[kKmMgG]?" 64;
   duration = checkedString "nginx duration" "an nginx duration" "[0-9]+(ms|s|m|h|d)" 64;
@@ -55,9 +25,133 @@
   upstreamAddress = checkedString "nginx upstream address" "a whitespace-free nginx upstream address" "[^{};[:space:]]+" 4096;
   upstreamUri = checkedString "nginx upstream URI" "an absolute upstream URI" "[A-Za-z][A-Za-z0-9+.-]*://[^;[:space:]]+" 4096;
   confinedDirectives = checkedString "confined nginx directives" "nginx directives without braces" "[^{}]*" 1048576;
-  documentRoot = abilityTypes.relativePath;
-  credentialReference = serviceTypes.credentialReference;
-
+  documentRoot = types.strMatching "[^/].*";
+  credentialReference = types.submodule operations.credential.operations.deliver.input;
+  credentialConfigured = value: (value.name != null) != (value.resource != null);
+  upstreamServerType = types.submodule {
+    options = {
+      address = lib.mkOption {type = upstreamAddress;};
+      weight = lib.mkOption {
+        type = types.nullOr positiveInt;
+        default = null;
+      };
+      maxFails = lib.mkOption {
+        type = nonNegativeInt;
+        default = 1;
+      };
+      failTimeout = lib.mkOption {
+        type = duration;
+        default = "10s";
+      };
+      backup = lib.mkOption {
+        type = types.bool;
+        default = false;
+      };
+      down = lib.mkOption {
+        type = types.bool;
+        default = false;
+      };
+    };
+  };
+  upstreamType = types.submodule {
+    options = {
+      servers = lib.mkOption {type = types.listOf upstreamServerType;};
+      keepalive = lib.mkOption {
+        type = types.nullOr positiveInt;
+        default = null;
+      };
+      extraConfig = lib.mkOption {
+        type = confinedDirectives;
+        default = "";
+      };
+    };
+  };
+  returnType = types.submodule {
+    options = {
+      code = lib.mkOption {type = httpStatus;};
+      body = lib.mkOption {
+        type = boundedText 65536;
+        default = "";
+      };
+    };
+  };
+  orderedTokens = types.listOf token;
+  proxyHeaders = types.attrsOf (boundedText 4096);
+  locationType = types.submodule {
+    options = {
+      proxyPass = lib.mkOption {
+        type = types.nullOr upstreamUri;
+        default = null;
+      };
+      root = lib.mkOption {
+        type = types.nullOr documentRoot;
+        default = null;
+      };
+      "return" = lib.mkOption {
+        type = types.nullOr returnType;
+        default = null;
+      };
+      tryFiles = lib.mkOption {
+        type = orderedTokens;
+        default = [];
+      };
+      proxySetHeaders = lib.mkOption {
+        type = proxyHeaders;
+        default = {};
+      };
+      extraConfig = lib.mkOption {
+        type = confinedDirectives;
+        default = "";
+      };
+    };
+  };
+  locationMap = types.attrsOf locationType;
+  tlsType = types.submodule {
+    options = {
+      enable = lib.mkOption {
+        type = types.bool;
+        default = false;
+      };
+      protocols = lib.mkOption {
+        type = types.listOf (types.enum ["TLSv1.2" "TLSv1.3"]);
+        default = ["TLSv1.2" "TLSv1.3"];
+      };
+    };
+  };
+  virtualHostType = types.submodule {
+    options = {
+      listen = lib.mkOption {
+        type = types.listOf port;
+        default = [80];
+      };
+      serverNames = lib.mkOption {
+        type = types.listOf serverName;
+        default = [];
+      };
+      root = lib.mkOption {
+        type = documentRoot;
+        default = "www";
+      };
+      index = lib.mkOption {
+        type = orderedTokens;
+        default = ["index.html"];
+      };
+      locations = lib.mkOption {
+        type = locationMap;
+        default = {};
+      };
+      tls = lib.mkOption {
+        type = tlsType;
+        default = {};
+      };
+      extraConfig = lib.mkOption {
+        type = confinedDirectives;
+        default = "";
+      };
+    };
+  };
+  upstreamMap = types.attrsOf upstreamType;
+  virtualHostMap = types.attrsOf virtualHostType;
   quote = value: ''"${builtins.replaceStrings ["\\" "\"" "\n" "\r"] ["\\\\" "\\\"" "\\n" ""] value}"'';
   indent = prefix: text:
     prefix + builtins.replaceStrings ["\n"] ["\n${prefix}"] text;
@@ -69,138 +163,24 @@
     if condition
     then value
     else "";
-  literal = text: {
-    kind = "literal";
-    inherit text;
-  };
-  executionPath = value: {
-    kind = "execution-path";
-    inherit value;
-  };
+  literal = text: text;
+  executionPath = value: value;
   optionalFragments = condition: fragments:
     if condition
     then fragments
     else [];
-  runtimePath = resultOf "runtime-storage" "planned-path";
-  statePath = resultOf "state-storage" "planned-path";
-  logPath = resultOf "log-storage" "planned-path";
+  statePath = operations.filesystem.operations.directory.effects.nginx-state.outputs.path;
+  viewName = base: relativePath: "nginx-${base}-${builtins.substring 0 16 (builtins.hashString "sha256" relativePath)}";
+  pathWithin = {
+    base,
+    relativePath,
+  }:
+    operations.filesystem.operations.view.effects.${viewName base relativePath}.outputs.path;
   documentPath = relativePath:
     pathWithin {
-      base = statePath;
+      base = "state";
       inherit relativePath;
     };
-
-  upstreamServerType = abilityTypes.record {
-    fields = {
-      address = upstreamAddress;
-      weight = positiveInt;
-      maxFails = nonNegativeInt;
-      failTimeout = duration;
-      backup = abilityTypes.boolean;
-      down = abilityTypes.boolean;
-    };
-    optional = ["weight" "maxFails" "failTimeout" "backup" "down"];
-  };
-  upstreamServers = abilityTypes.list {
-    element = upstreamServerType;
-    maxItems = 1024;
-    unique = false;
-    canonicalOrder = false;
-  };
-  upstreamType = abilityTypes.record {
-    fields = {
-      servers = upstreamServers;
-      keepalive = positiveInt;
-      extraConfig = confinedDirectives;
-    };
-    optional = ["keepalive" "extraConfig"];
-  };
-  returnType = abilityTypes.record {
-    fields = {
-      code = httpStatus;
-      body = boundedText 65536;
-    };
-    optional = ["body"];
-  };
-  orderedTokens = abilityTypes.list {
-    element = token;
-    maxItems = 256;
-    unique = false;
-    canonicalOrder = false;
-  };
-  proxyHeaders = abilityTypes.map {
-    keyMaxLength = 256;
-    keySyntax = null;
-    maxEntries = 256;
-    value = boundedText 4096;
-  };
-  locationType = abilityTypes.record {
-    fields = {
-      proxyPass = upstreamUri;
-      root = documentRoot;
-      "return" = returnType;
-      tryFiles = orderedTokens;
-      proxySetHeaders = proxyHeaders;
-      extraConfig = confinedDirectives;
-    };
-    optional = ["proxyPass" "root" "return" "tryFiles" "proxySetHeaders" "extraConfig"];
-  };
-  locationMap = abilityTypes.map {
-    keyMaxLength = 1024;
-    keySyntax = null;
-    maxEntries = 1024;
-    value = locationType;
-  };
-  tlsProtocols = abilityTypes.list {
-    element = abilityTypes.enum ["TLSv1.2" "TLSv1.3"];
-    maxItems = 2;
-    unique = true;
-    canonicalOrder = true;
-  };
-  tlsType = abilityTypes.record {
-    fields = {
-      enable = abilityTypes.boolean;
-      protocols = tlsProtocols;
-    };
-    optional = ["enable" "protocols"];
-  };
-  listenPorts = abilityTypes.list {
-    element = port;
-    maxItems = 256;
-    unique = true;
-    canonicalOrder = true;
-  };
-  serverNames = abilityTypes.list {
-    element = serverName;
-    maxItems = 256;
-    unique = true;
-    canonicalOrder = true;
-  };
-  virtualHostType = abilityTypes.record {
-    fields = {
-      listen = listenPorts;
-      serverNames = serverNames;
-      root = documentRoot;
-      index = orderedTokens;
-      locations = locationMap;
-      tls = tlsType;
-      extraConfig = confinedDirectives;
-    };
-    optional = ["listen" "serverNames" "root" "index" "locations" "tls" "extraConfig"];
-  };
-  upstreamMap = abilityTypes.map {
-    keyMaxLength = 128;
-    keySyntax = null;
-    maxEntries = 256;
-    value = upstreamType;
-  };
-  virtualHostMap = abilityTypes.map {
-    keyMaxLength = 253;
-    keySyntax = null;
-    maxEntries = 1024;
-    value = virtualHostType;
-  };
-
   normalizeUpstreamServer = server: {
     inherit (server) address;
     weight = server.weight or null;
@@ -298,9 +278,9 @@
     ++ optionalFragments (host.index != []) [(literal "    index ${builtins.concatStringsSep " " host.index};\n")]
     ++ optionalFragments host.tls.enable [
       (literal "    ssl_certificate ")
-      (executionPath (resultOf "credential-tls-certificate" "credential-path"))
+      (executionPath (operations.credential.operations.deliver.effects.nginx-tls-certificate.outputs.path))
       (literal ";\n    ssl_certificate_key ")
-      (executionPath (resultOf "credential-tls-private-key" "credential-path"))
+      (executionPath (operations.credential.operations.deliver.effects.nginx-tls-private-key.outputs.path))
       (literal ";\n    ssl_protocols ${builtins.concatStringsSep " " host.tls.protocols};\n")
     ]
     ++ lib.concatLists (lib.mapAttrsToList renderLocation host.locations)
@@ -347,7 +327,7 @@
         pid
       '')
       (executionPath (pathWithin {
-        base = runtimePath;
+        base = "runtime";
         relativePath = "nginx.pid";
       }))
       (literal ''
@@ -361,13 +341,7 @@
         http {
           include
       '')
-      {
-        kind = "artifact-file-path";
-        reference = {
-          artifact = lib.abilities.packageOutput {};
-          path = "share/nginx/mime.types";
-        };
-      }
+      "${package}/share/nginx/mime.types"
       (literal ";\n    default_type application/octet-stream;\n    sendfile on;\n    client_max_body_size ${cfg.clientMaxBodySize};\n    gzip ${
         if cfg.gzip
         then "on"
@@ -378,7 +352,7 @@
       if cfg.accessLog
       then [
         (executionPath (pathWithin {
-          base = logPath;
+          base = "logs";
           relativePath = "access.log";
         }))
       ]
@@ -388,7 +362,7 @@
     ++ builtins.concatMap
     (entry: [
       (executionPath (pathWithin {
-        base = statePath;
+        base = "state";
         relativePath = entry.path;
       }))
       (literal ";\n    ${entry.directive} ")
@@ -412,7 +386,7 @@
     ]
     ++ [
       (executionPath (pathWithin {
-        base = statePath;
+        base = "state";
         relativePath = "scgi";
       }))
       (literal ";\n\n")
@@ -421,80 +395,34 @@
     ]
     ++ lib.concatLists (lib.mapAttrsToList renderVirtualHost virtualHosts)
     ++ [(literal "}\n")];
+  documentRoots = lib.unique (
+    builtins.map (host: host.root) (builtins.attrValues virtualHosts)
+    ++ lib.concatMap (host: builtins.filter (value: value != null) (builtins.map (location: location.root) (builtins.attrValues host.locations))) (builtins.attrValues virtualHosts)
+  );
+  viewRequests =
+    [
+      {
+        base = "runtime";
+        relativePath = "nginx.pid";
+      }
+      {
+        base = "logs";
+        relativePath = "access.log";
+      }
+    ]
+    ++ builtins.map (relativePath: {
+      base = "state";
+      inherit relativePath;
+    }) (lib.unique (documentRoots ++ ["client_body" "proxy" "fastcgi" "uwsgi" "scgi"]));
   command = arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "bin/nginx";
+      path = "${package}/bin/nginx";
       inherit arguments;
     };
     ignore_failure = false;
   };
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "nginx";
-      inherit key interface parameters;
-    };
-  storage = serviceManagement.forProducers {
-    consumerInstance = "nginx";
-    interface = serviceManagement.interfaces.persistentStorageAllocation;
-    producers = [
-      {
-        key = "state-storage";
-        parameters = {
-          name = "state";
-          purpose = "state";
-          mode = "0750";
-        };
-      }
-      {
-        key = "log-storage";
-        parameters = {
-          name = "logs";
-          purpose = "logs";
-          mode = "0750";
-        };
-      }
-    ];
-  };
-  runtimeStorage = producer "runtime-storage" serviceManagement.interfaces.storageAllocation {
-    name = "runtime";
-    purpose = "runtime";
-    mode = "0750";
-  };
-  configuredCredentials = lib.optionals usesTls [
-    {
-      name = "tls-certificate";
-      reference = tlsCredentials.certificate;
-    }
-    {
-      name = "tls-private-key";
-      reference = tlsCredentials.privateKey;
-    }
-  ];
-  credentialRequests = serviceManagement.forCredentialReferences {
-    consumerInstance = "nginx";
-    references =
-      builtins.map (credential: {
-        key = "credential-${credential.name}";
-        inherit (credential) name reference;
-      })
-      configuredCredentials;
-  };
-  configuration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "nginx";
-    declaration = {
-      name = "server-configuration";
-      source = {
-        kind = "interpolated-text";
-        fragments = nginxConfigFragments;
-        maximum_size_bytes = abilityTypes.limits.maxDocumentBytes;
-      };
-      mode = "0444";
-    };
-  };
   service = let
-    configurationPath = resultOf "server-configuration" "planned-path";
+    configurationPath = operations.configuration.operations.file.effects.nginx.outputs.path;
   in {
     policy.hardening = {
       allow_privilege_escalation = false;
@@ -526,7 +454,6 @@
       operation_profile = "system-service";
       isolated_identity_mapping = "none";
     };
-    consumerInstance = "nginx";
     service = "main";
     lifecycle = {
       description = "nginx HTTP and reverse proxy server";
@@ -539,7 +466,6 @@
       stop = [(command ["-c" configurationPath "-s" "quit"])];
       post_stop = [];
       restart = "on-failure";
-      restart_token = cfg.restartToken;
       restart_delay_millis = 2000;
       configuration_change_action = "reload";
       remain_after_exit = false;
@@ -573,17 +499,17 @@
     storage.mounts = [
       {
         name = "runtime";
-        source = resultOf "runtime-storage" "planned-path";
+        source = operations.filesystem.operations.directory.effects.nginx-runtime.outputs.path;
         access = "read-write";
       }
       {
         name = "state";
-        source = resultOf "state-storage" "planned-path";
+        source = operations.filesystem.operations.directory.effects.nginx-state.outputs.path;
         access = "read-write";
       }
       {
         name = "logs";
-        source = resultOf "log-storage" "planned-path";
+        source = operations.filesystem.operations.directory.effects.nginx-logs.outputs.path;
         access = "read-write";
       }
     ];
@@ -614,7 +540,6 @@
       value = 65536;
     };
   };
-  producers = [storage runtimeStorage credentialRequests configuration];
 in {
   options.aos.services = lib.mkOption {
     type = lib.types.lazyAttrsOf (lib.types.submodule ({
@@ -625,13 +550,8 @@ in {
       serviceUsesTls = usesTlsFor config.virtualHosts;
     in {
       options = lib.optionalAttrs (name == "nginx") {
-        enable = lib.mkOption {
-          type = abilityTypes.boolean;
-          default = false;
-          description = "Enable the nginx HTTP and reverse proxy service.";
-        };
         workerProcesses = lib.mkOption {
-          type = abilityTypes.disjointUnion [positiveInt (abilityTypes.enum ["auto"])];
+          type = types.oneOf [positiveInt (types.enum ["auto"])];
           default = "auto";
           description = "Number of nginx worker processes, or `auto`.";
         };
@@ -646,19 +566,14 @@ in {
           description = "Maximum accepted HTTP request body size.";
         };
         gzip = lib.mkOption {
-          type = abilityTypes.boolean;
+          type = types.bool;
           default = true;
           description = "Enable gzip response compression.";
         };
         accessLog = lib.mkOption {
-          type = abilityTypes.boolean;
+          type = types.bool;
           default = true;
           description = "Write the HTTP access log to nginx's managed log directory.";
-        };
-        restartToken = lib.mkOption {
-          type = abilityTypes.optional serviceTypes.restartToken;
-          default = null;
-          description = "Operator-controlled token whose change requests a service restart.";
         };
         upstreams = lib.mkOption {
           type = upstreamMap;
@@ -698,13 +613,13 @@ in {
               {
                 name = "tls-certificate";
                 inherit (config.tlsCredentials.certificate) encrypted;
-                reference = resultOf "credential-tls-certificate" "credential-path";
+                reference = operations.credential.operations.deliver.effects.nginx-tls-certificate.outputs.path;
                 optional = false;
               }
               {
                 name = "tls-private-key";
                 inherit (config.tlsCredentials.privateKey) encrypted;
-                reference = resultOf "credential-tls-private-key" "credential-path";
+                reference = operations.credential.operations.deliver.effects.nginx-tls-private-key.outputs.path;
                 optional = false;
               }
             ];
@@ -717,7 +632,7 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.services.nginx = service;
+      aos.services.nginx = lib.mkDefault service;
 
       assertions = [
         {
@@ -728,14 +643,14 @@ in {
           assertion =
             !cfg.enable
             || !usesTls
-            || serviceManagement.credentialReferenceConfigured tlsCredentials.certificate;
+            || credentialConfigured tlsCredentials.certificate;
           message = "TLS-enabled nginx virtual hosts require a certificate credential reference";
         }
         {
           assertion =
             !cfg.enable
             || !usesTls
-            || serviceManagement.credentialReferenceConfigured tlsCredentials.privateKey;
+            || credentialConfigured tlsCredentials.privateKey;
           message = "TLS-enabled nginx virtual hosts require a private-key credential reference";
         }
         {
@@ -756,9 +671,46 @@ in {
         }
       ];
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = cfg.enable;
+    (lib.mkIf cfg.enable {
+      aos.abilities = {
+        filesystem.operations.directory.effects = {
+          nginx-runtime.input = {
+            path = "/run/aos-pkg-nginx";
+            mode = "0750";
+          };
+          nginx-state = {
+            lifetime = "persistent";
+            input = {
+              path = "/var/lib/aos-pkg-nginx";
+              mode = "0750";
+            };
+          };
+          nginx-logs = {
+            lifetime = "persistent";
+            input = {
+              path = "/var/log/aos-pkg-nginx";
+              mode = "0750";
+            };
+          };
+        };
+        filesystem.operations.view.effects = builtins.listToAttrs (builtins.map (view: {
+            name = viewName view.base view.relativePath;
+            value.input = {
+              sourcePath = operations.filesystem.operations.directory.effects."nginx-${view.base}".outputs.path;
+              inherit (view) relativePath;
+            };
+          })
+          viewRequests);
+        credential.operations.deliver.effects = lib.optionalAttrs usesTls {
+          nginx-tls-certificate.input = tlsCredentials.certificate;
+          nginx-tls-private-key.input = tlsCredentials.privateKey;
+        };
+        configuration.operations.file.effects.nginx.input = {
+          path = "/etc/aos/packages/nginx/nginx.conf";
+          fragments = nginxConfigFragments;
+          mode = "0444";
+        };
+      };
     })
   ];
 }
