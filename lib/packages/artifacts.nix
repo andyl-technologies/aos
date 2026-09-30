@@ -1,5 +1,6 @@
 ##! Explicit realized artifacts shared by package builds and deployment evaluation.
 {}: let
+  moduleDependencies = import ./module-dependencies.nix;
   nameFor = package: package.catalogName or package.pname or package.name;
   reference = package: {
     name = nameFor package;
@@ -108,7 +109,7 @@
       then moduleReference package
       else null;
     runtimeDependencies = builtins.mapAttrs (_: metadata) (keyed (package.runtimeDeps or []));
-    moduleDependencies = builtins.map moduleReference (package.moduleDeps or []);
+    moduleDependencies = moduleDependencies.references moduleReference (package.moduleDeps or []);
   };
   valid = reference:
     builtins.isAttrs reference

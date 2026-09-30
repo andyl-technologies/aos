@@ -25,28 +25,31 @@
       };
     }) (modules.closure packages);
   moduleEnvelopes = builtins.mapAttrs (_: builtins.toString) (modules.envelopes packages);
-  descriptor = {
-    schema = "aos.package.evaluation-input";
-    library = "${library}/default.nix";
-    inherit scope;
-    # Envelope payload catalogs discard contexts; these companions retain only
-    # module sources, including schema dependencies absent from selected payloads.
-    inherit moduleEnvelopes;
-    packages = {
-      inherit system;
-      artifacts = map selectedArtifact (modules.payloads packages);
-      modules = packageRecords;
-    };
-    configuration = map builtins.toString configuration;
-    runtimeConfiguration = map builtins.toString runtimeConfiguration;
-    supplementalInputs = map (input: let
-      path = builtins.toString input;
-    in
-      if builtins.match "/nix/store/[^/]+" path == null
-      then throw "Supplemental evaluation inputs must name immutable store roots."
-      else path)
-    supplementalInputs;
-  };
+  resolutionLock = import ../packages/resolution-lock.nix {inherit packages;};
+  descriptor =
+    {
+      schema = "aos.package.evaluation-input";
+      library = "${library}/default.nix";
+      inherit scope;
+      # Envelope payload catalogs discard contexts; these companions retain only
+      # module sources, including schema dependencies absent from selected payloads.
+      inherit moduleEnvelopes;
+      packages = {
+        inherit system;
+        artifacts = map selectedArtifact (modules.payloads packages);
+        modules = packageRecords;
+      };
+      configuration = map builtins.toString configuration;
+      runtimeConfiguration = map builtins.toString runtimeConfiguration;
+      supplementalInputs = map (input: let
+        path = builtins.toString input;
+      in
+        if builtins.match "/nix/store/[^/]+" path == null
+        then throw "Supplemental evaluation inputs must name immutable store roots."
+        else path)
+      supplementalInputs;
+    }
+    // lib.optionalAttrs (resolutionLock != null) {inherit resolutionLock;};
   buildPackages = pkgs.buildPackages;
   libraryClosure = (lib.build.closureInfo {pkgs = buildPackages;}) {
     rootPaths = [library];

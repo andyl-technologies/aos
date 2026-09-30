@@ -5,12 +5,14 @@
 }: let
   moduleLib = import ../build/package-modules.nix {};
   artifactLib = import ./artifacts.nix {};
+  contracts = import ./ability-contracts.nix {inherit lib;};
 in
   {
     scope,
     packages ? [],
     packageModules ? moduleLib.closure packages,
     packageArtifacts ? moduleLib.payloads packages,
+    moduleRequirements ? contracts.requirements packages,
     modules ? [],
     operatorModules ? [],
     runtimeModules ? [],
@@ -55,36 +57,42 @@ in
       })
     packageArtifacts;
   in
-    evaluated
-    // {
-      documentation = {
-        schema = "aos.module.documentation";
-        inherit scope system;
-        packages = builtins.attrValues (builtins.foldl' (result: artifact: let
-          identity = {inherit (artifact) name version;};
-        in
-          if result ? ${artifact.name} && result.${artifact.name} != identity
-          then throw "Package '${artifact.name}' has conflicting documentation identities."
-          else result // {${artifact.name} = identity;}) {}
-        (packageArtifacts ++ builtins.map (record: record.artifacts.package) records));
-        options = declarations;
-        abilities = documentation.abilities evaluated.config.aos.abilities;
-      };
-      deployment = {
-        schema = "aos.package.transaction";
-        inherit scope system;
-        artifacts = selectedArtifacts;
-        inherit inputs;
-        packages = builtins.map (record:
-          record
-          // {
-            artifacts = {
-              package = artifactLib.metadata record.artifacts.package;
-              dependencies = builtins.mapAttrs (_: artifactLib.metadata) record.artifacts.dependencies;
-            };
-          })
-        records;
-        inherit graph;
-        retire = evaluated.config.aos.activation.retire;
-      };
-    }
+    assert contracts.checkRecords records evaluated.config;
+      evaluated
+      // {
+        documentation = {
+          schema = "aos.module.documentation";
+          inherit scope system;
+          packages = builtins.attrValues (builtins.foldl' (result: artifact: let
+            identity = {inherit (artifact) name version;};
+          in
+            if result ? ${artifact.name} && result.${artifact.name} != identity
+            then throw "Package '${artifact.name}' has conflicting documentation identities."
+            else result // {${artifact.name} = identity;}) {}
+          (packageArtifacts ++ builtins.map (record: record.artifacts.package) records));
+          options = declarations;
+          abilities = documentation.abilities evaluated.config.aos.abilities;
+          abilityContracts = contracts.fromConfig evaluated.config;
+          moduleRequirements = lib.unique (moduleRequirements
+            ++ builtins.concatLists (map (record:
+              map (requirement: requirement // {owner = record.name;}) (record.moduleRequirements or []))
+            records));
+        };
+        deployment = {
+          schema = "aos.package.transaction";
+          inherit scope system;
+          artifacts = selectedArtifacts;
+          inherit inputs;
+          packages = builtins.map (record:
+            record
+            // {
+              artifacts = {
+                package = artifactLib.metadata record.artifacts.package;
+                dependencies = builtins.mapAttrs (_: artifactLib.metadata) record.artifacts.dependencies;
+              };
+            })
+          records;
+          inherit graph;
+          retire = evaluated.config.aos.activation.retire;
+        };
+      }

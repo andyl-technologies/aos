@@ -860,7 +860,7 @@
       validatedPackageModules = builtins.map (record: let
         keys =
           if builtins.isAttrs record
-          then builtins.attrNames record
+          then builtins.attrNames (builtins.removeAttrs record ["abilityExports" "moduleRequirements"])
           else [];
         configRoot = record.configRoot or null;
         artifacts = record.artifacts or null;
