@@ -515,9 +515,25 @@ before its first login. Files declared under `aos.homes.skel` are rendered to
 Leave homes disabled on single-purpose servers: `/home` then stays an empty
 read-only directory and accounts keep the placeholder home `/`. Enable them on
 workstations and shared servers. To put homes on their own volume or dataset,
-mount that volume at `aos.homes.directory`; the bind mount follows it. A
-factory reset or reimage that recreates `/var` removes every home directory,
-so back them up like any other host state.
+mount that volume at `aos.homes.directory`; the bind mount follows it. On a
+measured-boot image that volume can be sealed to the TPM like `/var`:
+
+```nix
+{
+  aos.homes.enable = true;
+  aos.provisioning.storage.partitions.home = {
+    sizeMin = "64G";
+    sizeMax = "64G";
+    encryption = "tpm2";
+  };
+  aos.filesystems.volumes.home.mountPoint = "/var/home";
+}
+```
+
+The sealed volume protects homes at rest against removal of the disk; it does
+not separate one user's data from root or from other users on the running
+host. A factory reset or reimage that recreates `/var` removes every home
+directory, so back them up like any other host state.
 
 ## Know when the plan becomes immutable
 
