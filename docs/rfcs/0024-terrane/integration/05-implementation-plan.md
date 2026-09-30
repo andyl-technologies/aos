@@ -236,11 +236,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   PACK-28; `checks.terrane.gates.index-shard-generations`,
   `checks.terrane.gates.index-rebuild`,
   `checks.terrane.gates.bundle-verify`.
-- [ ] **T-BKT-1** `bucket` backend over `file://`: key layout, mutability
+- [x] **T-BKT-1** `bucket` backend over `file://`: key layout, mutability
   classes, atomic writes, filesystem CAS, generation manifests, startup
   probe. D-77's version-2 ref and migrated-log leaves preserve nested ref names;
   version-1 compatibility is read-only and qualified migration may be refused.
-  Implementation and actual collision/reopen qualification remain pending.
+  Actual nested-name collisions, migrated-log coexistence, independent reopen,
+  whole-record CAS and cancellation are qualified by the local backend gates.
+  Protected deletion-intent key classification grants no ordinary-write authority;
+  physical deletion and current-root fencing remain joint work with T-GC-1.
   Narrowed to trunk scope: S3-compatible and GCS backends are
   T-BKT-2 and T-BKT-3 at T3. The backend implements OBJ-5's idempotent
   writes and verified reads; T-HOST-1 completes its cache-admission rule.
