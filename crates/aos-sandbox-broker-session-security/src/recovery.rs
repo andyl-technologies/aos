@@ -49,7 +49,7 @@ pub(crate) use journal::{
     HistoricalSessionCheckpointV1, ProtectedBrokerReceivedRequestAdmissionV1,
     ProtectedBrokerSessionOwnerV1, ProtectedPendingBrokerRequestCutV1,
     ProtectedPriorAtomicStorageHistoryV1, ProtectedPriorTerminalExchangeV1,
-    ProtectedVerifiedAtomicStorageHistoryV1,
+    ProtectedVerifiedAtomicStorageHistoryV1, RetainedFailedCreateOriginalsDataV3,
 };
 pub(crate) use journal::{FixedEndpointCustodyV1, ProtectedBrokerSessionJournalV1};
 pub use journal::{

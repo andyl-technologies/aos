@@ -1316,6 +1316,21 @@ impl DormantAuthenticatedBrokerSessionV1 {
         Ok(joined)
     }
 
+    /// Copies the complete original pair under the retained session's live peer.
+    ///
+    /// This is historical DATA, not a request reservation or a live Root grant.
+    pub(super) fn capture_failed_create_originals_v3(
+        &mut self,
+        source: &ControllerExecutionArgumentAttemptV1,
+    ) -> Result<crate::recovery::RetainedFailedCreateOriginalsDataV3, BrokerSessionSecurityError> {
+        self.owner
+            .revalidate_transport(&self.transcript, self.socket.peer())?;
+        let originals = self.owner.capture_failed_create_originals_v3(source)?;
+        self.owner
+            .revalidate_transport(&self.transcript, self.socket.peer())?;
+        Ok(originals)
+    }
+
     pub(super) fn current_storage_session_binding(
         &mut self,
     ) -> Result<[u8; 32], BrokerSessionSecurityError> {
