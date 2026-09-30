@@ -9,6 +9,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::os::fd::{AsRawFd as _, BorrowedFd};
 use std::os::unix::ffi::OsStrExt as _;
+use std::os::unix::ffi::OsStringExt as _;
 
 use crate::{Error, Result, uapi};
 
@@ -71,19 +72,53 @@ pub fn require_guarded_startup() -> Result<()> {
 /// Returns an error when procfs cannot identify the descriptor or when the
 /// descriptor is an io_uring ring.
 pub fn reject_io_uring_descriptor(descriptor: BorrowedFd<'_>) -> Result<()> {
+    inspect_received_descriptor_data_v1(descriptor)
+        .map(drop)
+        .map_err(|failure| failure.source)
+}
+
+/// Retains one sampled target as bounded historical DATA, never an FD role.
+pub(crate) enum ReceivedDescriptorLinkDataV1 {
+    Exact(Box<[u8]>),
+    Unavailable { observed_length: usize },
+}
+
+pub(crate) struct ReceivedDescriptorInspectionFailureV1 {
+    pub(crate) source: Error,
+    pub(crate) target: Option<ReceivedDescriptorLinkDataV1>,
+}
+
+pub(crate) fn inspect_received_descriptor_data_v1(
+    descriptor: BorrowedFd<'_>,
+) -> std::result::Result<ReceivedDescriptorLinkDataV1, ReceivedDescriptorInspectionFailureV1> {
     let path = format!("/proc/self/fd/{}", descriptor.as_raw_fd());
-    let target = fs::read_link(path).map_err(|source| Error::Syscall {
-        operation: "inspect received descriptor",
-        source,
+    let target = fs::read_link(path).map_err(|source| ReceivedDescriptorInspectionFailureV1 {
+        source: Error::Syscall { operation: "inspect received descriptor", source },
+        target: None,
     })?;
-    if is_io_uring_link(target.as_os_str()) {
-        return Err(Error::invalid(
-            "received descriptor",
-            "io_uring ring descriptor is forbidden",
-        ));
+    let forbidden = is_io_uring_link(target.as_os_str());
+    let target = bounded_received_target_data(target.into_os_string().into_vec());
+
+    if forbidden {
+        return Err(ReceivedDescriptorInspectionFailureV1 {
+            source: Error::invalid("received descriptor", "io_uring ring descriptor is forbidden"),
+            target: Some(target),
+        });
     }
 
-    Ok(())
+    Ok(target)
+}
+
+fn bounded_received_target_data(bytes: Vec<u8>) -> ReceivedDescriptorLinkDataV1 {
+    if bytes.len() <= 4096 {
+        ReceivedDescriptorLinkDataV1::Exact(bytes.into_boxed_slice())
+    } else {
+        // The bound applies to retained DATA, not to read_link's allocation.
+        // Drop the oversize allocation rather than retaining its capacity.
+        let observed_length = bytes.len();
+        drop(bytes);
+        ReceivedDescriptorLinkDataV1::Unavailable { observed_length }
+    }
 }
 
 fn require_guard_value(value: i32) -> Result<()> {
@@ -107,6 +142,16 @@ fn is_io_uring_link(target: &OsStr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn received_target_data_has_an_exact_finite_ceiling() {
+        match bounded_received_target_data(vec![b'x'; 4096]) {
+            ReceivedDescriptorLinkDataV1::Exact(bytes) => assert_eq!(bytes.len(), 4096),
+            _ => panic!("bounded exact sample was lost"),
+        }
+        assert!(matches!(bounded_received_target_data(vec![b'x'; 4097]),
+            ReceivedDescriptorLinkDataV1::Unavailable { observed_length: 4097 }));
+    }
 
     #[test]
     fn only_installed_guard_is_accepted() {
