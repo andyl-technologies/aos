@@ -39,6 +39,8 @@ pub struct PcrSections<'a> {
     pub sbat: &'a Path,
     /// Captured PCR public key embedded in the UKI.
     pub pcrpkey: &'a Path,
+    /// Kernel release section detected and embedded by ukify, when present.
+    pub uname: Option<&'a Path>,
 }
 
 /// Signed `.pcrsig` plus independently derived ready-phase PCR 11.
@@ -329,7 +331,7 @@ async fn verify_signed_policy(
 }
 
 fn measure_arguments(sections: &PcrSections<'_>) -> Result<Vec<std::ffi::OsString>> {
-    Ok([
+    let mut arguments: Vec<_> = [
         ("--linux=", sections.linux),
         ("--osrel=", sections.osrel),
         ("--cmdline=", sections.cmdline),
@@ -343,7 +345,15 @@ fn measure_arguments(sections: &PcrSections<'_>) -> Result<Vec<std::ffi::OsStrin
         value.push(path);
         value
     })
-    .collect())
+    .collect();
+
+    if let Some(uname) = sections.uname {
+        let mut argument = std::ffi::OsString::from("--uname=");
+        argument.push(uname);
+        arguments.push(argument);
+    }
+
+    Ok(arguments)
 }
 
 fn validate_policy(policy: &PolicyDocument) -> Result<()> {

@@ -427,6 +427,29 @@ async fn build_normal_uki(
 )> {
     let operation = scratch.join(name);
     fs::create_dir(&operation)?;
+
+    // ukify detects the kernel release and adds .uname even without an explicit
+    // --uname argument. Measure those exact bytes alongside the supplied inputs;
+    // otherwise the signed policy cannot match the UKI's live PCR 11.
+    let measurement_input = operation.join("measurement-input.efi");
+    build_uki(
+        ukify,
+        stub,
+        kernel,
+        initrd,
+        os_release,
+        cmdline,
+        sbat,
+        Some(pcr_public_key),
+        None,
+        &measurement_input,
+        maximum_bytes,
+    )
+    .await?;
+    let uname = operation.join("uname");
+    extract_section(objcopy, &measurement_input, "uname", &uname).await?;
+    let uname = (uname.metadata()?.len() != 0).then_some(uname);
+
     let pcr = sign_pcr_policy(
         assembly,
         &PcrSections {
@@ -436,6 +459,7 @@ async fn build_normal_uki(
             initrd,
             sbat: expected_sbat,
             pcrpkey: pcr_public_key,
+            uname: uname.as_deref(),
         },
         &operation.join("pcr"),
         measure,
@@ -459,10 +483,14 @@ async fn build_normal_uki(
         maximum_bytes,
     )
     .await?;
+    let mut expected_sections = vec![("sbat", expected_sbat), ("pcrsig", &pcr.signed_policy)];
+    if let Some(uname) = uname.as_ref() {
+        expected_sections.push(("uname", uname));
+    }
     verify_uki_sections(
         objcopy,
         &unsigned,
-        &[("sbat", expected_sbat), ("pcrsig", &pcr.signed_policy)],
+        &expected_sections,
         &operation.join("verify-unsigned"),
     )
     .await?;
