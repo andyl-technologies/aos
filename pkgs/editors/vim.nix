@@ -85,6 +85,10 @@ in
         done
       sed -i "1s|^#!.*|#!${python3}/bin/python3|" \
         "$out/share/vim/vim92/tools/demoserver.py"
+      # This non-executable helper escapes the generic shebang pass. It must
+      # name the target interpreter even when configure found a native awk.
+      sed -i "1s|^#!.*|#!${gawk}/bin/gawk -f|" \
+        "$out/share/vim/vim92/tools/mve.awk"
 
       cat > "$out/share/vim/vim92/tools/vim132" <<'EOF'
       #!${bash}/bin/bash
