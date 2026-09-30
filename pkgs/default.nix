@@ -212,8 +212,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       };
     });
 
+  artifactLib = import ../lib/packages/artifacts.nix {};
   nativeArtifactsFor = package: let
-    artifactLib = import ../lib/packages/artifacts.nix {};
     deploymentLib = import ../lib {system = stdenv.hostPlatform.system;};
     packageName = artifactLib.nameFor package;
     deployment = artifactLib.envelope package;
@@ -455,13 +455,13 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
             qualification = checkedQualification;
             inherit moduleDeps;
             buildDeps = args.buildDeps or [];
-            runtimeDeps = args.runtimeDeps or [];
+            runtimeDeps = artifactLib.dependencyValues (args.runtimeDeps or []);
             propagatedDeps = args.propagatedDeps or [];
           });
     nativeArtifacts =
       if args ? abilities || args ? configModule
       then throw "Package '${packageName}' must migrate to module/moduleDeps."
-      else nativeArtifactsFor result;
+      else nativeArtifactsFor (result // {runtimeDeps = args.runtimeDeps or [];});
     crossFixupPhase =
       if stdenv.hostPlatform.objectFormat == "macho"
       then phases.darwinCrossFixupPhase
@@ -494,7 +494,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       roots =
         [stdenv.cc]
         ++ builtins.map spliceBuildDependency (args.buildDeps or [])
-        ++ (args.runtimeDeps or [])
+        ++ artifactLib.dependencyValues (args.runtimeDeps or [])
         ++ (args.propagatedDeps or []);
       cacheDir = sharedAccacheDir;
       stateDir = sharedAccacheStateDir;
@@ -514,6 +514,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         buildDeps =
           builtins.map spliceBuildDependency (args.buildDeps or [])
           ++ [resolvedBuildPackages.nuke-references];
+        runtimeDeps = artifactLib.dependencyValues (args.runtimeDeps or []);
         passthru = args.passthru or {};
       }
       // lib.optionalAttrs (
@@ -563,7 +564,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
               // platformAttrs
               // secondaryOutputAttrs
               // {${drv.outputName} = result;}
-              // nativeArtifactsFor selected
+              // nativeArtifactsFor (selected // {runtimeDeps = args.runtimeDeps or [];})
             );
         in
           selected;
@@ -900,7 +901,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           (dep: builtins.unsafeDiscardStringContext (toString dep))
           (
             builtins.map spliceBuildDependency (args.buildDeps or [])
-            ++ (args.runtimeDeps or [])
+            ++ artifactLib.dependencyValues (args.runtimeDeps or [])
           );
       }
       // (args.cargoArtifactContract or {});
@@ -959,7 +960,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       roots =
         [cargoBuildTool]
         ++ builtins.map spliceBuildDependency (args.buildDeps or [])
-        ++ (args.runtimeDeps or []);
+        ++ artifactLib.dependencyValues (args.runtimeDeps or []);
       cacheDir = sharedAccacheDir;
       stateDir = sharedAccacheStateDir;
       llvmOptions = args.accacheLlvmOptions or {};

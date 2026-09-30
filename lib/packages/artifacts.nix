@@ -42,22 +42,45 @@
   canonicalReference = package:
     canonical (sourceContexts
       (package.deployment.package or (reference package)) (reference package));
-  canonicalDependencies = package: let
-    source = keyed (package.runtimeDeps or []);
-    declared = package.deployment.runtimeDependencies or source;
-  in
-    builtins.mapAttrs (name: dependency:
-      sourceContexts dependency (source.${name} or dependency))
-    declared;
+  # Runtime bindings may name roles independently of the artifact's identity.
+  # Builders consume the values; retained modules consume the same named map.
+  dependencyValues = packages:
+    if builtins.isList packages
+    then packages
+    else if builtins.isAttrs packages && !(packages ? type && packages.type == "derivation")
+    then builtins.attrValues packages
+    else throw "Runtime dependencies must be a list or a named attribute set.";
   keyed = packages:
-    builtins.foldl' (result: package: let
-      name = nameFor package;
-      value = reference package;
+    if builtins.isAttrs packages
+    then
+      builtins.mapAttrs (name: package:
+        if name == ""
+        then throw "Runtime dependency binding names must not be empty."
+        else reference package)
+      packages
+    else
+      builtins.foldl' (result: package: let
+        name = nameFor package;
+        value = reference package;
+      in
+        if result ? ${name} && result.${name} != value
+        then throw "Package dependency '${name}' resolves to conflicting artifacts; use explicit runtime dependency binding names."
+        else result // {${name} = value;}) {}
+      (dependencyValues packages);
+  canonicalDependencies = package: let
+    dependencies = package.runtimeDeps or [];
+    source = builtins.map reference (dependencyValues dependencies);
+    declared = package.deployment.runtimeDependencies or (keyed dependencies);
+  in
+    builtins.mapAttrs (_: dependency: let
+      matches = builtins.filter (candidate: metadata candidate == metadata dependency) source;
     in
-      if result ? ${name} && result.${name} != value
-      then throw "Package dependency '${name}' resolves to conflicting artifacts."
-      else result // {${name} = value;}) {}
-    packages;
+      sourceContexts dependency (
+        if matches == []
+        then dependency
+        else builtins.head matches
+      ))
+    declared;
   unique = references:
     builtins.attrValues (builtins.foldl' (result: artifact: let
       path = builtins.unsafeDiscardStringContext artifact.path;
@@ -177,4 +200,4 @@
     if invalidRoots != []
     then throw "Effect graph references artifacts outside its authenticated package catalogs: ${builtins.concatStringsSep ", " invalidRoots}"
     else inputs;
-in {inherit nameFor reference metadata canonical canonicalReference canonicalDependencies keyed unique moduleReference envelope value valid graphInputs;}
+in {inherit nameFor reference metadata canonical canonicalReference canonicalDependencies dependencyValues keyed unique moduleReference envelope value valid graphInputs;}

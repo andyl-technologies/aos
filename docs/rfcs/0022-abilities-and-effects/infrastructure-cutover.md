@@ -61,6 +61,11 @@ the native deployment envelope is requested.
 
 A deployment module receives ordinary evaluator arguments: `lib`, `config`,
 `options`, its own `package` artifact, and its named runtime `dependencies`.
+`runtimeDeps` accepts either a package list, bound by package name, or a named
+attribute set. Named bindings can distinguish two artifacts of the same package
+without changing their identities. The builder normalizes dependency values for
+compilation; the deployment envelope preserves the binding names.
+
 Artifacts have explicit `name`, `version`, `path`, `outputs`, and `mainProgram`
 fields. String interpolation, `lib.getOutput`, and `lib.getExe` operate on these
 values without reconstructing derivations or making builders available.

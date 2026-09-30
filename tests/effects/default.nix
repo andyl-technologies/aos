@@ -40,6 +40,7 @@
     selectedOutputContexts = builtins.isString (import ./selected-output-fixture.nix {inherit pkgs lib;}).drvPath;
     selectedQualificationContexts = builtins.isString (import ./selected-qualification-fixture.nix {inherit pkgs lib;}).drvPath;
     pki = import ./pki.nix {inherit lib pkgs;};
+    runtimeDependencyBindings = import ./runtime-dependency-bindings.nix {inherit lib pkgs;};
     qualificationIdentity = import ./qualification-identity.nix {inherit pkgs;};
     configurationLower = import ./configuration-lower.nix {inherit lib pkgs;};
   };
