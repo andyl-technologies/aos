@@ -198,9 +198,12 @@ under concurrent garbage collection ([`17-garbage-collection.md`](17-garbage-col
   the complete expected previous RefRecord, or null for the first write;
   its previous-commit field MUST agree with that record. The new RefRecord
   MUST carry the candidate ID that selects this proposal.
-- **[REF-22]** Reflog records are garbage-collection roots for as long as
-  the branch's `reflog_retain` property keeps them
-  ([`08-properties.md`](08-properties.md)). Expiry removes the record from
+- **[REF-22]** Reflog records are garbage-collection roots under the
+  effective `retain` mode. For `retain=gc`, the effective `reflog_retain`
+  property selects a duration or the newest committed record count; `lease`,
+  `ttl` and `forever` use their respective rules
+  ([`17-garbage-collection.md`](17-garbage-collection.md)). Expiry removes
+  the record from
   retained content roots; its commit becomes unreachable unless another root
   reaches it. Candidate metadata still required to traverse a selected
   chain or an active collection snapshot MUST remain readable. Preserving

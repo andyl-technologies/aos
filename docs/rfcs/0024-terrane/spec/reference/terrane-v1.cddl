@@ -329,8 +329,11 @@ GcRoots = {
   4 => [ * gc-root ],
 }
 gc-root = [ ref-name: tstr, commit: digest32,
-            parent-cutoff: timestamp / null, reason: gc-root-reason ]
-gc-root-reason = "current" / "reflog-gc" / "reflog-ttl" / "lease"
+            parent-cutoff: gc-parent-cutoff, reason: gc-root-reason ]
+gc-parent-cutoff = timestamp / null / false
+; false makes ordinary parents witness-only; independently selected roots
+; still expand fully. null is unbounded; a timestamp is an age cutoff.
+gc-root-reason = "current" / "reflog-gc" / "reflog-count" / "reflog-ttl" / "lease"
                / "forever" / "tag" / "job" / "retention-witness"
 
 GcMark = {
@@ -342,7 +345,7 @@ GcMark = {
   5 => bstr .size 2048,                 ; GC-7 reconstructed membership hint
 }
 gc-pending = [ kind: pack-kind, hash: digest32,
-               parent-cutoff: timestamp / null, flags: uint ]
+               parent-cutoff: gc-parent-cutoff, flags: uint ]
 ; Flags: bit 0 ordinary-parent edge, bit 1 root node, bit 2 index tree,
 ; bit 3 witness-only metadata traversal. Other bits are reserved and zero.
 ; Witness-only is forbidden for data-chunk kind 0. Receipt/source proof
@@ -359,7 +362,7 @@ GcState = {
   4 => timestamp,                       ; root snapshot time
   5 => [ * [ shard: uint, revision: uint, checkpoint-hash: digest32 ] ],
   6 => [ * gc-pending ],                ; exact unexpanded frontier
-  7 => [ * [ commit: digest32, parent-cutoff: timestamp / null ] ],
+  7 => [ * [ commit: digest32, parent-cutoff: gc-parent-cutoff ] ],
                                         ; least restrictive expanded contexts
   8 => [ * pack-id ],                   ; phase progress, sorted uniquely
   9 => [ * gc-expanded-object ],        ; sorted unique typed expansion contexts

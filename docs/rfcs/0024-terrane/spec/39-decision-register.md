@@ -1111,6 +1111,24 @@ is added rather than editing history.
   - **Affects:** ALG-32 and AUTH-22 to AUTH-24. Encodings, verb bit values
     and requirement IDs remain unchanged.
 
+- **[D-69] Separate ordinary reflog selection from storage retention.**
+  - **Status:** Decided
+  - **Decision:** `retain` selects GC, lease, TTL or forever content retention.
+    GC uses `reflog_retain` duration or newest committed sequence count.
+    A counted record contributes its new commit, not an extra previous value.
+    Count contexts use `false` parent cutoffs: ordinary parents are metadata
+    witnesses, while independently selected snapshot roots expand fully.
+    Existing timestamp and null cutoffs retain their encodings and meaning.
+  - **Rationale:** REF-22 named a duration/count property but GC-3 treated
+    `retain=gc` as if it contained a duration. Ignoring either property loses
+    an explicit policy. Timestamps are advisory and cannot represent sequence
+    rank; unbounded parent traversal would silently turn count retention into
+    complete-history content retention. Separate full roots and witness edges
+    preserve exact counted content and the proofs needed to verify it.
+  - **Affects:** REF-22, GC-3, GC-5, GC-6, GC-28, GcRoot/Pending/State cutoff
+    unions and the registered reflog-count reason. Existing unaffected bytes
+    remain valid. This correction precedes T1's encoding freeze.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

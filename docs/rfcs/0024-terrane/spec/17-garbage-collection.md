@@ -47,12 +47,16 @@ data.
   `CAPABILITIES` and read its exact names. Unknown inventory completeness
   MUST fail collection as `unsupported`; a partial name list is not proof
   that other roots are absent.
-- **[GC-3]** Retention of reflog entries is set by the `retain` property of
-  [`08-properties.md`](08-properties.md) on the ref's root: `gc` keeps
-  entries for the property's duration, `lease` keeps them while a lease is
-  held, `ttl` keeps them for a fixed time from creation. A root with no
-  retention property inherits it. The default for `refs/heads/` is a
-  duration of at least the grace window plus the maximum commit duration.
+- **[GC-3]** Retention of reflog content MUST use the effective `retain`
+  property on the ref's root, including a ref-policy retention override.
+  Under `gc`, `reflog_retain` selects either unsigned seconds from log time
+  or `["count", n]`, the newest `n` candidate-selected committed records by
+  sequence. Count zero selects none; the current ref remains a separate root.
+  Only each selected record's new commit is a full content root; its previous
+  commit is not an extra counted value. Pending proposals never count.
+  `lease`, `ttl` and `forever` override ordinary GC retention with their
+  respective rules. Inheritance follows PROP-2. The default GC duration is
+  the registered 90 days, raised if necessary to at least `G + C`.
 - **[GC-4]** The root set MUST be snapshotted at the start of a collection
   and recorded in the collection's own object under `gc/` so that a resumed
   collection marks from the same roots. A ref moved after the snapshot is
@@ -84,11 +88,20 @@ data.
   evidence uses `retention-witness` roots so future collections can evaluate
   its actual timestamp and retention policy without inventing them. *Gate:*
   `gate:gc-mark-reachability`.
+
+  A count context MUST make ordinary parent edges witness-only. Its selected
+  commit values expand fully through their independent snapshot roots, even
+  when timestamps are out of order. The registered `false` parent cutoff
+  encodes this rule; it never means unbounded ancestry. Metadata needed to
+  verify previous commits remains retained without adding their unrelated
+  content to the count. Duration contexts use timestamp cutoffs and `null`
+  represents unbounded full ancestry.
 - **[GC-6]** Marking MUST skip any tree node, manifest, or root already
   expanded in this collection under the same traversal context. A prior
   witness-only expansion does not suppress a later full expansion; a broader
-  ordinary parent cutoff must expand newly eligible edges. Because trees are
-  history-independent
+  ordinary parent cutoff must expand newly eligible edges. A `false` cutoff
+  is narrower than every timestamp cutoff; `null` is the broadest.
+  Because trees are history-independent
   ([`06-tree-format.md`](06-tree-format.md)), identical subtrees in
   different commits share nodes, and the cost of marking is proportional to
   distinct content, not to the number of refs.
@@ -233,15 +246,16 @@ promisor pattern: the commit records where its packs were written.
 
 | Property value | Meaning |
 | --- | --- |
-| `retain=gc` | reflog entries kept for the store's default duration; unreachable content collected after `G` |
+| `retain=gc` | reflog content selected by effective `reflog_retain` duration or committed-record count; unreachable content collected after `G` |
 | `retain=lease` | the root is a root only while a lease is held; on expiry its ref is removed and its content becomes unreachable |
 | `retain=ttl:<duration>` | each commit is a root for `<duration>` from its timestamp regardless of the ref moving on |
 | `retain=forever` | every commit ever pointed at by the ref remains a root |
 
 - **[GC-28]** A root's retention property MUST be evaluated against the
   commit timestamp for `ttl`, the lease expiry for `lease`, and the reflog
-  entry time for `gc`, and the collector MUST be able to explain, for any
-  swept object, which rule made it unreachable
+  entry time for duration-based `gc`, or selected sequence rank for
+  count-based `gc`, and the collector MUST be able to explain, for any swept
+  object, which rule made it unreachable
   ([`34-observability.md`](34-observability.md)).
 
 ## Safety (informative)
