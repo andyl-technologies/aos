@@ -8,6 +8,8 @@
 //! [root, path, 0]
 //! [root, path, [source_commit, source_root, source_path], {name: 0}]
 //! [root, path, 0, null, [source_commit, source_root, source_path]]
+//! [root, path, 0, null, [source_commit, source_root, source_path],
+//!  {1: authority_key_hex, 2: source_domain, 3: observed_at, 4: signature}]
 //! ```
 
 use super::{RecordError, read_digest};
@@ -36,6 +38,23 @@ pub enum EntryOrigin {
     Source(EntrySource),
 }
 
+/// Carries an unverified source-authority disclosure certificate.
+///
+/// Encoding checks its schema only. Its key does not establish authority;
+/// provenance must verify the scoped historical key, complete destination
+/// commitment and canonical entry witness before accepting a disclosure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisclosureProof {
+    /// Lowercase 64-character hexadecimal Ed25519 source-authority public key.
+    pub authority_key: String,
+    /// Canonical effective disclosure domain of the selected source root.
+    pub source_domain: String,
+    /// Issue time observed by the source authority, in unsigned Unix seconds.
+    pub observed_at: u64,
+    /// Ed25519 signature over the registered disclosure statement preimage.
+    pub signature: [u8; 64],
+}
+
 /// A signed introduction receipt for one root and opaque entry key.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EntryReceipt {
@@ -49,6 +68,8 @@ pub struct EntryReceipt {
     pub attributes: Option<Vec<(String, EntryOrigin)>>,
     /// Original source explicitly reintroduced by the current commit.
     pub reintroduced_from: Option<EntrySource>,
+    /// Optional raw disclosure certificate; presence alone grants no authority.
+    pub disclosure_proof: Option<DisclosureProof>,
 }
 
 fn validate_path(path: &[u8]) -> Result<(), RecordError> {
@@ -75,6 +96,34 @@ fn encode_origin(origin: &EntryOrigin, output: &mut Vec<u8>) -> Result<(), Recor
     Ok(())
 }
 
+fn validate_proof(proof: &DisclosureProof) -> Result<(), RecordError> {
+    if proof.authority_key.len() != 64
+        || !proof
+            .authority_key
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || crate::properties::Domain::parse(&proof.source_domain).is_err()
+    {
+        return Err(RecordError::Schema);
+    }
+    Ok(())
+}
+
+fn encode_proof(proof: &DisclosureProof, output: &mut Vec<u8>) -> Result<(), RecordError> {
+    validate_proof(proof)?;
+
+    cbor::write_map(output, 4);
+    cbor::write_uint(output, 1);
+    cbor::write_text(output, &proof.authority_key);
+    cbor::write_uint(output, 2);
+    cbor::write_text(output, &proof.source_domain);
+    cbor::write_uint(output, 3);
+    cbor::write_uint(output, proof.observed_at);
+    cbor::write_uint(output, 4);
+    cbor::write_bytes(output, &proof.signature);
+    Ok(())
+}
+
 pub(super) fn encode_into(
     receipts: &[EntryReceipt],
     output: &mut Vec<u8>,
@@ -92,10 +141,14 @@ pub(super) fn encode_into(
     cbor::write_array(output, ordered.len());
     for receipt in ordered {
         validate_path(&receipt.path)?;
-        if receipt.reintroduced_from.is_some() && receipt.origin != EntryOrigin::Current {
+        if receipt.reintroduced_from.is_some() && receipt.origin != EntryOrigin::Current
+            || receipt.disclosure_proof.is_some() && receipt.reintroduced_from.is_none()
+        {
             return Err(RecordError::Schema);
         }
-        let count = if receipt.reintroduced_from.is_some() {
+        let count = if receipt.disclosure_proof.is_some() {
+            6
+        } else if receipt.reintroduced_from.is_some() {
             5
         } else if receipt.attributes.is_some() {
             4
@@ -129,11 +182,14 @@ pub(super) fn encode_into(
                 output.extend_from_slice(&key);
                 encode_origin(origin, output)?;
             }
-        } else if count == 5 {
+        } else if count >= 5 {
             output.push(0xf6);
         }
         if let Some(source) = &receipt.reintroduced_from {
             encode_source(source, output)?;
+        }
+        if let Some(proof) = &receipt.disclosure_proof {
+            encode_proof(proof, output)?;
         }
     }
     Ok(())
@@ -164,6 +220,36 @@ fn decode_origin(decoder: &mut Decoder<'_>) -> Result<EntryOrigin, RecordError> 
     }
 }
 
+fn decode_proof(decoder: &mut Decoder<'_>) -> Result<DisclosureProof, RecordError> {
+    if decoder.map(4)? != 4 || decoder.uint()? != 1 {
+        return Err(RecordError::Schema);
+    }
+    let authority_key = decoder.text(64)?.to_string();
+    if decoder.uint()? != 2 {
+        return Err(RecordError::Schema);
+    }
+    let source_domain = decoder.text(decoder.remaining().len())?.to_string();
+    if decoder.uint()? != 3 {
+        return Err(RecordError::Schema);
+    }
+    let observed_at = decoder.uint()?;
+    if decoder.uint()? != 4 {
+        return Err(RecordError::Schema);
+    }
+    let signature = decoder
+        .bytes(64)?
+        .try_into()
+        .map_err(|_| RecordError::Schema)?;
+    let proof = DisclosureProof {
+        authority_key,
+        source_domain,
+        observed_at,
+        signature,
+    };
+    validate_proof(&proof)?;
+    Ok(proof)
+}
+
 fn decode_attributes(decoder: &mut Decoder<'_>) -> Result<Vec<(String, EntryOrigin)>, RecordError> {
     let count = decoder.map(256)?;
     let mut attributes = Vec::with_capacity(count);
@@ -189,8 +275,8 @@ pub(super) fn decode_from(decoder: &mut Decoder<'_>) -> Result<Vec<EntryReceipt>
     let count = decoder.array(decoder.remaining().len())?;
     let mut receipts: Vec<EntryReceipt> = Vec::with_capacity(count);
     for _ in 0..count {
-        let fields = decoder.array(5)?;
-        if !(3..=5).contains(&fields) {
+        let fields = decoder.array(6)?;
+        if !(3..=6).contains(&fields) {
             return Err(RecordError::Schema);
         }
         let root = read_digest(decoder)?;
@@ -203,7 +289,7 @@ pub(super) fn decode_from(decoder: &mut Decoder<'_>) -> Result<Vec<EntryReceipt>
         }
         let origin = decode_origin(decoder)?;
         let attributes = if fields >= 4 {
-            if fields == 5 && decoder.peek_major()? == 7 {
+            if fields >= 5 && decoder.peek_major()? == 7 {
                 if decoder.simple()? != 0xf6 {
                     return Err(RecordError::Schema);
                 }
@@ -214,11 +300,16 @@ pub(super) fn decode_from(decoder: &mut Decoder<'_>) -> Result<Vec<EntryReceipt>
         } else {
             None
         };
-        let reintroduced_from = if fields == 5 {
+        let reintroduced_from = if fields >= 5 {
             if origin != EntryOrigin::Current {
                 return Err(RecordError::Schema);
             }
             Some(decode_source(decoder)?)
+        } else {
+            None
+        };
+        let disclosure_proof = if fields == 6 {
+            Some(decode_proof(decoder)?)
         } else {
             None
         };
@@ -228,6 +319,7 @@ pub(super) fn decode_from(decoder: &mut Decoder<'_>) -> Result<Vec<EntryReceipt>
             origin,
             attributes,
             reintroduced_from,
+            disclosure_proof,
         });
     }
     Ok(receipts)
@@ -246,6 +338,7 @@ mod tests {
             origin: EntryOrigin::Current,
             attributes: None,
             reintroduced_from: None,
+            disclosure_proof: None,
         }
     }
 
@@ -254,6 +347,15 @@ mod tests {
             commit: [2; 32],
             root: [3; 32],
             path: vec![0xfe],
+        }
+    }
+
+    fn proof() -> DisclosureProof {
+        DisclosureProof {
+            authority_key: "ab".repeat(32),
+            source_domain: "private:source".into(),
+            observed_at: 42,
+            signature: [0; 64],
         }
     }
 
@@ -290,6 +392,82 @@ mod tests {
         let mut trailing = bytes;
         trailing.push(0);
         assert!(decode(&trailing).is_err());
+    }
+
+    #[test]
+    fn entry_receipts_disclosure_codec_preserves_legacy_and_rejects_malformed_proofs() {
+        let legacy = receipt();
+        let legacy_bytes = encode(core::slice::from_ref(&legacy));
+        assert_eq!(legacy_bytes[1], 0x83);
+        assert_eq!(decode(&legacy_bytes).unwrap()[0].disclosure_proof, None);
+
+        let mut disclosed = legacy.clone();
+        disclosed.reintroduced_from = Some(source());
+        disclosed.disclosure_proof = Some(proof());
+        for attributes in [None, Some(Vec::new())] {
+            disclosed.attributes = attributes;
+            let bytes = encode(core::slice::from_ref(&disclosed));
+            assert_eq!(bytes[1], 0x86);
+            assert_eq!(decode(&bytes).unwrap(), vec![disclosed.clone()]);
+            for length in 0..bytes.len() {
+                assert!(decode(&bytes[..length]).is_err(), "truncation {length}");
+            }
+        }
+
+        disclosed.attributes = None;
+        let bytes = encode(core::slice::from_ref(&disclosed));
+        let proof_start = bytes
+            .windows(4)
+            .position(|part| part == [0xa4, 1, 0x78, 64])
+            .unwrap();
+        for (offset, replacement) in [
+            (proof_start, 0xa5),
+            (proof_start + 1, 2),
+            (proof_start + 4, b'G'),
+        ] {
+            let mut malformed = bytes.clone();
+            malformed[offset] = replacement;
+            assert!(decode(&malformed).is_err(), "mutation {offset}");
+        }
+        let domain_start = bytes
+            .windows(14)
+            .position(|part| part == b"private:source")
+            .unwrap();
+        let mut unknown_domain = bytes.clone();
+        unknown_domain[domain_start] = b'x';
+        assert!(decode(&unknown_domain).is_err());
+
+        let signature_start = bytes
+            .windows(3)
+            .position(|part| part == [4, 0x58, 64])
+            .unwrap();
+        let mut duplicate_key = bytes.clone();
+        duplicate_key[signature_start] = 3;
+        assert!(decode(&duplicate_key).is_err());
+        let mut short_signature = bytes;
+        short_signature[signature_start + 2] = 63;
+        short_signature.pop();
+        assert!(decode(&short_signature).is_err());
+
+        for authority_key in [
+            "a".repeat(63),
+            "a".repeat(65),
+            "A".repeat(64),
+            "g".repeat(64),
+        ] {
+            let mut invalid = disclosed.clone();
+            invalid.disclosure_proof.as_mut().unwrap().authority_key = authority_key;
+            assert!(encode_into(&[invalid], &mut Vec::new()).is_err());
+        }
+        for source_domain in ["", "private:", "unknown:source"] {
+            let mut invalid = disclosed.clone();
+            invalid.disclosure_proof.as_mut().unwrap().source_domain = source_domain.into();
+            assert!(encode_into(&[invalid], &mut Vec::new()).is_err());
+        }
+        disclosed.reintroduced_from = None;
+        assert!(encode_into(&[disclosed], &mut Vec::new()).is_err());
+
+        assert_eq!(encode(&[legacy]), legacy_bytes);
     }
 
     #[test]

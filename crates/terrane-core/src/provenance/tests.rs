@@ -285,6 +285,7 @@ fn receipt(
         origin,
         attributes: None,
         reintroduced_from: None,
+        disclosure_proof: None,
     }
 }
 
@@ -495,31 +496,49 @@ fn prov_fold_reintroduction_records_verified_original_introduction() {
         root: original_root,
         path: b"file".to_vec(),
     });
-    let commit = signed_record(root, vec![introducing], Some(vec![reintroduction]), true);
-    let view = commit.identity();
-    let mut history = VerifiedHistory::new(MIN_CHUNK);
-    history
-        .insert_tree(original_root, &[(original_root, original_bytes)])
-        .unwrap();
-    history.insert_tree(root, &[(root, bytes)]).unwrap();
-    history.insert_commit(introduced).unwrap();
-    history.insert_commit(commit).unwrap();
-    let location = EntryLocation {
-        commit: view,
-        root,
-        path: b"file".to_vec(),
-    };
+    for (proof, accepted) in [
+        (None, true),
+        (
+            Some(crate::refs::DisclosureProof {
+                authority_key: "ab".repeat(32),
+                source_domain: "private:source".to_string(),
+                observed_at: 100,
+                signature: [0; 64],
+            }),
+            false,
+        ),
+    ] {
+        let mut candidate = reintroduction.clone();
+        candidate.disclosure_proof = proof;
+        let commit = signed_record(root, vec![introducing], Some(vec![candidate]), true);
+        let view = commit.identity();
+        let mut history = VerifiedHistory::new(MIN_CHUNK);
+        history
+            .insert_tree(original_root, &[(original_root, original_bytes.clone())])
+            .unwrap();
+        history.insert_tree(root, &[(root, bytes.clone())]).unwrap();
+        history.insert_commit(introduced.clone()).unwrap();
+        history.insert_commit(commit).unwrap();
+        let location = EntryLocation {
+            commit: view,
+            root,
+            path: b"file".to_vec(),
+        };
 
-    assert_eq!(history.introducing_commit(&location), Ok(view));
-    let context = TrustContext::new(
-        &history,
-        view,
-        Selector::preset(Preset::Strict),
-        "private",
-        Some("baseline"),
-    )
-    .unwrap();
-    assert!(context.accepts(root, b"file"));
+        assert_eq!(history.introducing_commit(&location).is_ok(), accepted);
+        if accepted {
+            assert_eq!(history.introducing_commit(&location), Ok(view));
+        }
+        let context = TrustContext::new(
+            &history,
+            view,
+            Selector::preset(Preset::Strict),
+            "private",
+            Some("baseline"),
+        )
+        .unwrap();
+        assert_eq!(context.accepts(root, b"file"), accepted);
+    }
 }
 
 #[test]

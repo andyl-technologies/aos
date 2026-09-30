@@ -258,6 +258,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 - [ ] **T-REF-2** Ref advance protocol (packs, indexes, log, CAS), epochs,
   single-writer default, tags, reflog, rollback, watch, and commit-set entry
   provenance. Durable disclosure certificate verification and publication are
+  incomplete: the shared receipt codec accepts the registered raw shape, but
+  unchecked certificates cannot replace verified history. These checks are
   joint with T-PROV-1 and T-DOM-1; they remain unqualified until destination-only
   reopen, private erasure and current-authority race checks pass. — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-30, DOM-24;

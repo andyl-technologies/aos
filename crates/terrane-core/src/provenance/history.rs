@@ -385,6 +385,12 @@ impl VerifiedHistory {
             .iter()
             .find(|receipt| receipt.root == location.root && receipt.path == location.path);
         if let Some(receipt) = receipt {
+            // A raw certificate cannot replace verified source history. A
+            // disclosure-aware verifier must install an authenticated boundary
+            // before this entry can resolve through its attested introduction.
+            if receipt.disclosure_proof.is_some() {
+                return Err(Rejected);
+            }
             match &receipt.origin {
                 EntryOrigin::Current => {
                     if entry.provenance.is_some() {

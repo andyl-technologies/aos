@@ -22,7 +22,7 @@ pub use codec::{
     Provenance,
 };
 
-pub use entry_receipts::{EntryOrigin, EntryReceipt, EntrySource};
+pub use entry_receipts::{DisclosureProof, EntryOrigin, EntryReceipt, EntrySource};
 
 /// A canonical ref or commit record could not be encoded or decoded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

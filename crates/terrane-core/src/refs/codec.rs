@@ -714,6 +714,7 @@ mod tests {
             origin: EntryOrigin::Current,
             attributes: None,
             reintroduced_from: None,
+            disclosure_proof: None,
         }]);
 
         let extended = commit.encode().unwrap();
