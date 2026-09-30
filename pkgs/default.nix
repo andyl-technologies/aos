@@ -165,7 +165,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     version = (builtins.parseDrvName bootstrap.name).version;
   in
     assert version == package.version;
-      (withDistributionMeta package.meta bootstrap) // {inherit version;};
+      (withDistributionMeta package.meta bootstrap)
+      // {
+        inherit (package) pname;
+        inherit version;
+      };
 
   exposeRenderer = import ./build-support/_expose-renderer.nix {
     inherit lib;
