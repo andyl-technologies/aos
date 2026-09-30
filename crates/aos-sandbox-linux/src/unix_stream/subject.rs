@@ -8,12 +8,13 @@
 
 use super::RetainedUnixStream;
 use crate::seqpacket::{
-    KernelAuthorizedRecordSubject, SeqpacketError, map_kernel_error, validate_record_subject,
+    KernelAuthorizedRecordSubject, SeqpacketError, map_kernel_error,
 };
+use crate::seqpacket::receive_custody::{self, ReceiveAttemptV1, SubjectProfileV1};
+use crate::seqpacket::RetainedSeqpacketReceiveErrorV1;
 use crate::uapi::{self, RawAncillary};
 
 const MAXIMUM_CHUNK_BYTES: usize = 4096;
-const MAXIMUM_SECURITY_CONTEXT_BYTES: usize = 256;
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum StreamSubjectState {
@@ -79,6 +80,79 @@ impl RetainedUnixStream {
         result
     }
 
+    /// Receives one strict chunk while retaining partial lower-layer custody.
+    ///
+    /// Every fatal attempt shuts down this same original socket before staged
+    /// ordinary descriptors and subjects can drop. The legacy method above
+    /// retains its original poisoning behavior without this shutdown policy.
+    ///
+    /// # Errors
+    /// Returns an opaque owning error for incomplete evidence, changed options,
+    /// invalid bounds, subject failure or kernel failure. Only an initial
+    /// nonconsuming recvmsg EAGAIN/EINTR permits retry; later errno does not.
+    pub fn try_receive_subject_chunk_retaining(
+        &mut self, maximum: usize,
+    ) -> Result<UnixStreamSubjectChunk, RetainedSeqpacketReceiveErrorV1> {
+        let mut result = self.receive_chunk_retaining(maximum);
+        if let Err(error) = &mut result {
+            if !error.is_nonconsuming_would_block() && !error.is_nonconsuming_interrupted() {
+                self.subject_state = StreamSubjectState::Poisoned;
+                let failure = rustix::net::shutdown(self.as_fd(), rustix::net::Shutdown::Both)
+                    .err().map(std::io::Error::from);
+                error.record_shutdown_failure(failure);
+            }
+        }
+        result
+    }
+
+    fn receive_chunk_retaining(&self, maximum: usize) -> Result<UnixStreamSubjectChunk, RetainedSeqpacketReceiveErrorV1> {
+        if self.subject_state != StreamSubjectState::Ready {
+            return Err(RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::Closed));
+        }
+        if maximum == 0 || maximum > MAXIMUM_CHUNK_BYTES {
+            return Err(RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::InvalidMaximum));
+        }
+        let mut attempt = ReceiveAttemptV1::capture(self.as_fd(), self.socket_cookie)?;
+        if let Err(source) = uapi::require_stream_subject(self.as_fd()) {
+            return Err(attempt.reject(source.into()));
+        }
+        let actual = match attempt.receive(maximum, 0) {
+            Ok(bytes) => bytes,
+            Err(failure) => return Err(attempt.syscall_failure(failure)),
+        };
+        let message = &mut attempt.messages[0];
+        let validated = (|| {
+            if message.raw.flags & libc::MSG_CTRUNC != 0 {
+                return Err(SeqpacketError::Ancillary("stream control data truncated"));
+            }
+            if message.raw.flags & libc::MSG_TRUNC != 0 || actual > maximum {
+                return Err(SeqpacketError::PayloadTruncated);
+            }
+            if actual == 0 { return Err(SeqpacketError::Closed); }
+            message.validate(SubjectProfileV1::Stream, uapi::ReceiveCustodyPolicyV1::Retaining)?;
+            // The complete subject is staged before this final option read.
+            uapi::require_stream_subject(self.as_fd())?;
+            Ok(())
+        })();
+        if let Err(source) = validated { return Err(attempt.reject(source)); }
+        let message = &mut attempt.messages[0];
+        if message.subject.is_none() || message.socket_context.is_none() {
+            return Err(attempt.reject(SeqpacketError::Ancillary("incomplete stream subject")));
+        }
+        let Some(subject) = message.subject.take() else {
+            return Err(attempt.reject(SeqpacketError::Ancillary("missing SCM_PIDFD")));
+        };
+        // The shape check above establishes this field without a fallible
+        // observation after removing the subject from its guarded staging.
+        let socket_context = message.socket_context.take().unwrap_or_default();
+        message.payload.truncate(actual);
+        let chunk = UnixStreamSubjectChunk {
+            payload: std::mem::take(&mut message.payload), subject, socket_context,
+        };
+        attempt.disarm();
+        Ok(chunk)
+    }
+
     fn receive_chunk(&self, maximum: usize) -> Result<UnixStreamSubjectChunk, SeqpacketError> {
         let fd = self.as_fd();
         uapi::require_stream_subject(fd)?;
@@ -139,29 +213,8 @@ impl UnixStreamSubjectChunk {
 fn validate_stream_subject(
     ancillary: Vec<RawAncillary>,
 ) -> Result<(KernelAuthorizedRecordSubject, Vec<u8>), SeqpacketError> {
-    let mut identity = Vec::new();
-    let mut security = None;
-    for item in ancillary {
-        match item {
-            RawAncillary::SecurityContext(mut context) => {
-                if security.is_some()
-                    || context.len() < 2
-                    || context.len() > MAXIMUM_SECURITY_CONTEXT_BYTES
-                    || context.last() != Some(&0)
-                    || context[..context.len() - 1]
-                        .iter()
-                        .any(|byte| !byte.is_ascii_graphic())
-                {
-                    return Err(SeqpacketError::Ancillary("inexact SCM_SECURITY context"));
-                }
-                context.pop();
-                security = Some(context);
-            }
-            other => identity.push(other),
-        }
-    }
-    let security = security.ok_or(SeqpacketError::Ancillary("missing SCM_SECURITY"))?;
-    Ok((validate_record_subject(identity)?, security))
+    let (subject, _, context) = receive_custody::validate_legacy(ancillary, SubjectProfileV1::Stream)?;
+    Ok((subject, context.ok_or(SeqpacketError::Ancillary("missing SCM_SECURITY"))?))
 }
 
 #[cfg(test)]

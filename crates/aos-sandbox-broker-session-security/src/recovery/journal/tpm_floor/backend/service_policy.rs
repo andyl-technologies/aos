@@ -42,7 +42,7 @@ const SERVICE_PROPERTIES: &[&str] = &[
 ];
 const UNIT_PROPERTIES: &[&str] = &["FragmentPath", "DropInPaths", "Transient", "InvocationID"];
 
-pub(super) struct RetainedFloorServicePolicyV1 {
+pub(crate) struct RetainedFloorServicePolicyV1 {
     endpoint: FloorEndpointV1,
     parent: PidFd,
     parent_identity: PidFdProcessIdentity,
@@ -60,7 +60,7 @@ struct PolicyObservationV1 {
 }
 
 impl RetainedFloorServicePolicyV1 {
-    pub(super) fn open(
+    pub(crate) fn open(
         endpoint: FloorEndpointV1,
         launch_image: &crate::production_startup::Pid1LaunchImageV1,
     ) -> Result<Self, FloorErrorV1> {
@@ -112,7 +112,7 @@ impl RetainedFloorServicePolicyV1 {
         Ok(retained)
     }
 
-    pub(super) fn revalidate(&mut self) -> Result<(), FloorErrorV1> {
+    pub(crate) fn revalidate(&mut self) -> Result<(), FloorErrorV1> {
         self.manager.revalidate()?;
         self.fragment.revalidate()?;
         let observed = observe(self.endpoint, &self.launch_image)?;
@@ -139,7 +139,7 @@ impl RetainedFloorServicePolicyV1 {
         self.manager.revalidate().map_err(Into::into)
     }
 
-    pub(super) fn require_child(&self, child: &PidFd) -> Result<(), FloorErrorV1> {
+    pub(crate) fn require_child(&self, child: &PidFd) -> Result<(), FloorErrorV1> {
         self.cgroup
             .verify_exact_membership(&self.parent)
             .map_err(|_| FloorErrorV1::Unavailable)?;

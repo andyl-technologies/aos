@@ -1,13 +1,15 @@
 //! Private shared TPM carrier mechanics, not provisioning or role authority.
 //!
 //! Fixed callers supply a closed endpoint. Two lock loans, exact version-two
-//! frames, bounded waits and owned child teardown are shared. Physical record-
-//! subject checks, protected journal schemas, reconciliation, credential/image/
-//! MAC/service policy and NV scope remain in their purpose-owning modules.
+//! frames, bounded waits and owned child teardown are shared. The single
+//! retained physical owner keeps its complete Broker custody binding; purpose
+//! modules still own credential/image/MAC/service checks, protected journal
+//! schemas, reconciliation and NV scope.
 //! No public or injected transport factory exists here.
 
 pub(crate) mod framing;
 pub(crate) mod child;
+pub(crate) mod physical;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NvCustodyEndpointV1 {

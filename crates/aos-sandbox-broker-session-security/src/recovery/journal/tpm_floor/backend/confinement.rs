@@ -34,7 +34,7 @@ pub(super) const fn helper_context(endpoint: FloorEndpointV1) -> &'static str {
     }
 }
 
-pub(in crate::recovery::journal::tpm_floor) fn require_owner(
+pub(crate) fn require_owner(
     endpoint: FloorEndpointV1,
 ) -> Result<(), FloorErrorV1> {
     let enforcement = read_bounded("/sys/fs/selinux/enforce", SELINUXFS_MAGIC, 2)?;
@@ -44,7 +44,7 @@ pub(in crate::recovery::journal::tpm_floor) fn require_owner(
     require_context("/proc/self/attr/current", owner_context(endpoint))
 }
 
-pub(super) fn require_helper(endpoint: FloorEndpointV1, pid: u32) -> Result<(), FloorErrorV1> {
+pub(crate) fn require_helper(endpoint: FloorEndpointV1, pid: u32) -> Result<(), FloorErrorV1> {
     require_owner(endpoint)?;
     if pid == 0 || pid == std::process::id() {
         return Err(FloorErrorV1::Provisioning);

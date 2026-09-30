@@ -24,7 +24,6 @@ use std::path::{Component, Path};
 use super::socket_binding::ReceivedSocketOrigin;
 use super::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError, map_kernel_error,
-    validate_record_subject,
 };
 use crate::Error;
 use crate::uapi::{self, RawAncillary};
@@ -449,7 +448,8 @@ impl DescriptorSubjectSocket {
         ConnectionBoundReceivedDescriptorRecord<'socket>,
         (super::RecordBindingError, ReceivedDescriptorRecord),
     > {
-        if let Err(error) = self.validate_received_origin(&record) {
+        if let Err(error) = self.require_record_origin(&record) {
+            self.fd.take();
             return Err((error, record));
         }
 
@@ -767,28 +767,9 @@ pub(super) fn validate_ancillary(
     expected: usize,
     allow_empty: bool,
 ) -> Result<(KernelAuthorizedRecordSubject, Vec<OwnedFd>), SeqpacketError> {
-    let mut identity = Vec::new();
-    let mut descriptors = None;
-    for item in ancillary {
-        match item {
-            RawAncillary::Rights(rights) => {
-                if descriptors.is_some() || rights.len() != expected || expected == 0 {
-                    return Err(SeqpacketError::Ancillary(
-                        "inexact SCM_RIGHTS descriptor table",
-                    ));
-                }
-                descriptors = Some(rights);
-            }
-            other => identity.push(other),
-        }
-    }
-    let descriptors = descriptors.unwrap_or_default();
-    if descriptors.len() != expected && !(allow_empty && descriptors.is_empty()) {
-        return Err(SeqpacketError::Ancillary(
-            "missing SCM_RIGHTS descriptor table",
-        ));
-    }
-    Ok((validate_record_subject(identity)?, descriptors))
+    super::receive_custody::validate_legacy(ancillary,
+        super::receive_custody::SubjectProfileV1::Descriptors { expected, allow_empty })
+        .map(|(subject, descriptors, _)| (subject, descriptors))
 }
 
 #[cfg(test)]

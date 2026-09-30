@@ -45,9 +45,16 @@ impl PidFd {
     /// Returns an error if the descriptor is not a live pidfd supported by the
     /// Linux 6.18 pidfs UAPI.
     pub fn from_owned(fd: OwnedFd) -> Result<Self> {
-        uapi::ensure_cloexec(fd.as_fd())?;
-        match uapi::pidfd_info(fd.as_fd()) {
-            Ok(info) if info.mask & PidFdInfo::PID_PRESENT != 0 => Ok(Self { fd }),
+        Self::validate_owned_kind(fd.as_fd())?;
+        Ok(Self { fd })
+    }
+
+    // Both callers use this sole checker and its original error precedence.
+    // The retaining caller leaves ownership in its guarded received slot.
+    fn validate_owned_kind(fd: BorrowedFd<'_>) -> Result<()> {
+        uapi::ensure_cloexec(fd)?;
+        match uapi::pidfd_info(fd) {
+            Ok(info) if info.mask & PidFdInfo::PID_PRESENT != 0 => Ok(()),
             Ok(_) => Err(Error::MalformedKernelResponse {
                 object: "pidfd info",
                 message: "kernel omitted mandatory PID information".to_string(),
@@ -58,6 +65,26 @@ impl PidFd {
                 Err(Error::WrongDescriptorType { expected: "pidfd" })
             }
             Err(error) => Err(error),
+        }
+    }
+
+    /// Adopts only an actual staged kernel slot after the same borrowed check.
+    pub(crate) fn adopt_received_slot(
+        slot: &mut Option<uapi::RawAncillary>,
+    ) -> Result<Self> {
+        let Some(uapi::RawAncillary::PidFd(fd)) = slot.as_ref() else {
+            return Err(Error::WrongDescriptorType { expected: "pidfd" });
+        };
+        Self::validate_owned_kind(fd.as_fd())?;
+
+        // No fallible operation follows removal. The caller installs the
+        // resulting typed pin directly in the same receive-attempt owner.
+        match slot.take() {
+            Some(uapi::RawAncillary::PidFd(fd)) => Ok(Self { fd }),
+            other => {
+                *slot = other;
+                Err(Error::WrongDescriptorType { expected: "pidfd" })
+            }
         }
     }
 

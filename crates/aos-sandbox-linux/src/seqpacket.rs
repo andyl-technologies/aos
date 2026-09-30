@@ -42,6 +42,9 @@ use socket_binding::{ConnectedSocketBinding, ReceivedSocketOrigin};
 pub mod bounded;
 pub mod descriptor_subject;
 
+pub(crate) mod receive_custody;
+pub use receive_custody::RetainedSeqpacketReceiveErrorV1;
+
 #[cfg(test)]
 mod process_tests;
 
@@ -284,6 +287,86 @@ impl SeqpacketSocket {
         result
     }
 
+    /// Receives one record while retaining all captured lower-layer failure custody.
+    ///
+    /// Unlike the legacy receive, every failed original attempt permanently
+    /// shuts down this socket except an initial nonconsuming recvmsg EAGAIN or
+    /// EINTR. Preview samples remain explicitly incomplete evidence.
+    ///
+    /// # Errors
+    /// Returns an opaque owning error for framing, subject, kernel or capture
+    /// failures. It exposes no descriptor, body, raw control or retry factory.
+    pub fn receive_retaining(
+        &mut self, maximum_bytes: usize,
+    ) -> Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1> {
+        let mut attempt = self.receive_retaining_attempt(maximum_bytes, receive_custody::SubjectProfileV1::Ordinary)?;
+        let message = &mut attempt.messages[1];
+        let Some(subject) = message.subject.take() else {
+            let error = attempt.reject(SeqpacketError::Ancillary("missing SCM_PIDFD"));
+            self.fd.take();
+            return Err(error);
+        };
+        let record = ReceivedRecord {
+            payload: std::mem::take(&mut message.payload), subject,
+            origin: self.peer.binding.received_origin(),
+        };
+        attempt.disarm();
+        Ok(record)
+    }
+
+    /// Receives an exact descriptor table with original lower-failure custody.
+    ///
+    /// # Errors
+    /// Returns the owning strict receive error for invalid bounds, an inexact
+    /// one-to-five-entry table, subject failure or any partial original attempt.
+    pub fn receive_with_descriptors_retaining(
+        &mut self, maximum_bytes: usize, expected_descriptors: usize,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
+        if expected_descriptors == 0 || expected_descriptors > 5 {
+            let mut error = RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::InvalidMaximum);
+            error.record_shutdown_failure(self.shutdown_retaining_failure());
+            return Err(error);
+        }
+        let profile = receive_custody::SubjectProfileV1::Descriptors { expected: expected_descriptors, allow_empty: false };
+        let mut attempt = self.receive_retaining_attempt(maximum_bytes, profile)?;
+        let message = &mut attempt.messages[1];
+        let Some(subject) = message.subject.take() else {
+            let error = attempt.reject(SeqpacketError::Ancillary("missing SCM_PIDFD"));
+            self.fd.take();
+            return Err(error);
+        };
+        let record = descriptor_subject::ReceivedDescriptorRecord::from_parts(
+            std::mem::take(&mut message.payload), subject, message.take_descriptors(),
+            self.peer.binding.received_origin(),
+        );
+        attempt.disarm();
+        Ok(record)
+    }
+
+    fn receive_retaining_attempt(
+        &mut self, maximum: usize, profile: receive_custody::SubjectProfileV1,
+    ) -> Result<receive_custody::ReceiveAttemptV1, RetainedSeqpacketReceiveErrorV1> {
+        let mut result = (|| {
+            if maximum == 0 { return Err(RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::InvalidMaximum)); }
+            let fd = self.borrow_fd().map_err(RetainedSeqpacketReceiveErrorV1::before_receive)?;
+            let attempt = receive_custody::ReceiveAttemptV1::capture(fd, self.peer.socket_cookie())?;
+            receive_custody::receive_packet(attempt, maximum, profile)
+        })();
+        if let Err(error) = &mut result {
+            if !error.is_nonconsuming_would_block() && !error.is_nonconsuming_interrupted() {
+                error.record_shutdown_failure(self.shutdown_retaining_failure());
+            }
+        }
+        result
+    }
+
+    fn shutdown_retaining_failure(&mut self) -> Option<std::io::Error> {
+        let failure = self.fd.as_ref().and_then(|fd|
+            rustix::net::shutdown(fd, rustix::net::Shutdown::Both).err().map(std::io::Error::from));
+        self.fd.take();
+        failure
+    }
+
     /// Receives one record carrying either no descriptor or exactly one descriptor.
     ///
     /// This profile lets a higher-level authenticated envelope select between
@@ -322,11 +405,32 @@ impl SeqpacketSocket {
         descriptor_subject::ConnectionBoundReceivedDescriptorRecord<'socket>,
         RecordBindingError,
     > {
-        let result = self.require_descriptor_record_origin(&record);
-        if let Err(error) = result {
+        self.bind_received_descriptors_retaining(record)
+            .map_err(|(error, _record)| error)
+    }
+
+    /// Binds a descriptor record while retaining its complete custody on error.
+    ///
+    /// The same original-socket validation and fatal-close behavior applies as
+    /// in [`Self::bind_received_descriptors`]. No subject or descriptor is
+    /// duplicated, and the failed record is never a current connection proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns the binding error and original complete received record after
+    /// closing this socket if its current binding or record origin is invalid.
+    pub fn bind_received_descriptors_retaining<'socket>(
+        &'socket mut self,
+        record: descriptor_subject::ReceivedDescriptorRecord,
+    ) -> Result<
+        descriptor_subject::ConnectionBoundReceivedDescriptorRecord<'socket>,
+        (RecordBindingError, descriptor_subject::ReceivedDescriptorRecord),
+    > {
+        if let Err(error) = self.require_descriptor_record_origin(&record) {
             self.fd.take();
-            return Err(error);
+            return Err((error, record));
         }
+
         Ok(descriptor_subject::ConnectionBoundReceivedDescriptorRecord::new(record, &self.peer))
     }
 
@@ -348,10 +452,27 @@ impl SeqpacketSocket {
         &'socket mut self,
         record: ReceivedRecord,
     ) -> Result<ConnectionBoundReceivedRecord<'socket>, RecordBindingError> {
-        let result = self.require_record_origin(&record);
-        if let Err(error) = result {
+        self.bind_received_retaining(record)
+            .map_err(|(error, _record)| error)
+    }
+
+    /// Binds a received record while retaining its complete custody on error.
+    ///
+    /// This preserves [`Self::bind_received`]'s original-socket checks and
+    /// fatal-close behavior. The returned failure record remains historical
+    /// data, not writer authentication or a current connection proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns the binding error and original received record after closing
+    /// this socket if its current binding or record origin is invalid.
+    pub fn bind_received_retaining<'socket>(
+        &'socket mut self,
+        record: ReceivedRecord,
+    ) -> Result<ConnectionBoundReceivedRecord<'socket>, (RecordBindingError, ReceivedRecord)> {
+        if let Err(error) = self.require_record_origin(&record) {
             self.fd.take();
-            return Err(error);
+            return Err((error, record));
         }
 
         Ok(ConnectionBoundReceivedRecord {
@@ -1014,58 +1135,8 @@ pub(crate) fn map_kernel_error(error: Error) -> SeqpacketError {
 pub(crate) fn validate_record_subject(
     ancillary: Vec<RawAncillary>,
 ) -> Result<KernelAuthorizedRecordSubject, SeqpacketError> {
-    let mut credentials = None;
-    let mut pidfd = None;
-    for item in ancillary {
-        match item {
-            RawAncillary::Credentials(raw) if credentials.is_none() => {
-                let pid = checked_pid(raw.pid)
-                    .ok_or(SeqpacketError::Ancillary("invalid SCM_CREDENTIALS pid"))?;
-                credentials = Some(RecordCredentials {
-                    pid,
-                    uid: raw.uid,
-                    gid: raw.gid,
-                });
-            }
-            RawAncillary::Credentials(_) => {
-                return Err(SeqpacketError::Ancillary("duplicate SCM_CREDENTIALS"));
-            }
-            RawAncillary::PidFd(fd) if pidfd.is_none() => pidfd = Some(PidFd::from_owned(fd)?),
-            RawAncillary::PidFd(_) => {
-                return Err(SeqpacketError::Ancillary("duplicate SCM_PIDFD"));
-            }
-            RawAncillary::Rights(descriptors) => {
-                drop(descriptors);
-                return Err(SeqpacketError::Ancillary("SCM_RIGHTS is forbidden"));
-            }
-            RawAncillary::SecurityContext(_) => {
-                return Err(SeqpacketError::Ancillary(
-                    "SCM_SECURITY is forbidden by this record profile",
-                ));
-            }
-            RawAncillary::Unknown { level, kind } => {
-                let _ = (level, kind);
-                return Err(SeqpacketError::Ancillary("unknown control message"));
-            }
-            RawAncillary::Malformed(descriptors) => {
-                drop(descriptors);
-                return Err(SeqpacketError::Ancillary("malformed control message"));
-            }
-        }
-    }
-    let credentials = credentials.ok_or(SeqpacketError::Ancillary("missing SCM_CREDENTIALS"))?;
-    let pidfd = pidfd.ok_or(SeqpacketError::Ancillary("missing SCM_PIDFD"))?;
-    let initial_info = pidfd.info()?;
-    if initial_info.pid() != credentials.pid().get() {
-        return Err(SeqpacketError::Ancillary(
-            "SCM_CREDENTIALS and SCM_PIDFD identify different processes",
-        ));
-    }
-    Ok(KernelAuthorizedRecordSubject {
-        credentials,
-        pidfd,
-        initial_info,
-    })
+    receive_custody::validate_legacy(ancillary, receive_custody::SubjectProfileV1::Ordinary)
+        .map(|(subject, _, _)| subject)
 }
 
 fn checked_pid(pid: i32) -> Option<NonZeroU32> {
@@ -1249,6 +1320,51 @@ mod tests {
             RecordBindingError::origin_mismatch().to_string(),
             "received record socket binding failed: record origin mismatch"
         );
+    }
+
+    #[test]
+    fn retaining_foreign_record_returns_exact_payload_and_subject_after_fatal_close() {
+        let (mut sender, mut receiver) = pair();
+        let (_other_sender, mut other_receiver) = pair();
+        receiver.enable_record_subjects().expect("enable subjects");
+        sender.send(b"retained foreign body").expect("send body");
+        let record = receiver.receive(64).expect("receive original body");
+        let original_subject = record.subject().initial_info();
+
+        let (error, retained) = other_receiver
+            .bind_received_retaining(record)
+            .expect_err("reject foreign origin while retaining record");
+
+        assert_eq!(error.category(), RecordBindingErrorCategory::OriginMismatch);
+        assert_eq!(retained.payload(), b"retained foreign body");
+        assert_eq!(retained.subject().initial_info(), original_subject);
+        assert!(matches!(other_receiver.as_fd(), Err(SeqpacketError::Closed)));
+    }
+
+    #[test]
+    fn retaining_foreign_descriptor_record_keeps_exact_received_fd_after_fatal_close() {
+        let (mut sender, mut receiver) = pair();
+        let (_other_sender, mut other_receiver) = pair();
+        receiver.enable_record_subjects().expect("enable subjects");
+        let file = tempfile::tempfile().expect("create private test descriptor");
+        let expected = rustix::fs::fstat(file.as_fd()).expect("observe original descriptor");
+        sender.send_with_descriptors(b"retained descriptor body", &[file.as_fd()])
+            .expect("send descriptor body");
+        let record = receiver.receive_with_descriptors(64, 1).expect("receive descriptor body");
+        let original_subject = record.subject().initial_info();
+
+        let (error, retained) = other_receiver
+            .bind_received_descriptors_retaining(record)
+            .expect_err("reject foreign descriptor origin while retaining record");
+
+        assert_eq!(error.category(), RecordBindingErrorCategory::OriginMismatch);
+        assert_eq!(retained.payload(), b"retained descriptor body");
+        assert_eq!(retained.subject().initial_info(), original_subject);
+        assert_eq!(retained.descriptors().len(), 1);
+        let observed = rustix::fs::fstat(retained.descriptors()[0].as_fd())
+            .expect("original received descriptor remains open");
+        assert_eq!((observed.st_dev, observed.st_ino), (expected.st_dev, expected.st_ino));
+        assert!(matches!(other_receiver.as_fd(), Err(SeqpacketError::Closed)));
     }
 
     #[test]

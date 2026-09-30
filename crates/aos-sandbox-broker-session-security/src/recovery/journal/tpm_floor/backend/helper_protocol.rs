@@ -11,7 +11,7 @@ use super::super::format::FloorEndpointV1;
 use crate::tpm_nv_custody::{NvCustodyEndpointV1, NvCustodyErrorV1};
 use crate::tpm_nv_custody::framing;
 
-pub(super) use framing::{
+pub(crate) use framing::{
     AUTH_BYTES, HELLO_BYTES, LOCK_ACK_BYTES, REQUEST_BYTES, RESPONSE_BYTES,
     HelperObservationV1, HelperOperationV1,
 };
@@ -31,7 +31,7 @@ fn floor_error(error: NvCustodyErrorV1) -> FloorErrorV1 {
     }
 }
 
-pub(super) fn encode_hello_v2(
+pub(crate) fn encode_hello_v2(
     role: FloorEndpointV1,
     nonce: [u8; 32],
     salt_name: [u8; 34],
@@ -40,11 +40,11 @@ pub(super) fn encode_hello_v2(
     framing::encode_hello_v2(endpoint(role), nonce, salt_name, locks).map_err(floor_error)
 }
 
-pub(super) fn require_lock_ack_v2(bytes: &[u8], nonce: [u8; 32]) -> Result<(), FloorErrorV1> {
+pub(crate) fn require_lock_ack_v2(bytes: &[u8], nonce: [u8; 32]) -> Result<(), FloorErrorV1> {
     framing::require_lock_ack_v2(bytes, nonce).map_err(floor_error)
 }
 
-pub(super) fn encode_auth_v2(
+pub(crate) fn encode_auth_v2(
     role: FloorEndpointV1,
     nonce: [u8; 32],
     auth: &[u8; 32],
@@ -57,7 +57,7 @@ pub(super) fn salt_handle_v1(role: FloorEndpointV1) -> u32 {
     framing::salt_handle_v1(endpoint(role))
 }
 
-pub(super) fn encode_request_v2(
+pub(crate) fn encode_request_v2(
     operation: HelperOperationV1,
     nonce: [u8; 32],
     sequence: u64,
@@ -66,7 +66,7 @@ pub(super) fn encode_request_v2(
     framing::encode_request_v2(operation, nonce, sequence, input).map_err(floor_error)
 }
 
-pub(super) fn decode_response_v2(
+pub(crate) fn decode_response_v2(
     bytes: &[u8],
     operation: HelperOperationV1,
     nonce: [u8; 32],
