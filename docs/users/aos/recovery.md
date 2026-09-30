@@ -270,6 +270,15 @@ Do not move a registry channel backward; registry
 consumers enforce a monotonic release floor. Stop the rollout and publish a
 higher corrected release.
 
+## Hosts with a mirrored `/var`
+
+The recovery console authenticates and mounts the root-disk `var` partition.
+When `host.nix` places `/var` on an MD array, that partition carries only an
+MD superblock and the console refuses it rather than treating a member as the
+volume. Recover such a host from a separate maintenance environment that can
+assemble the array (`mdadm --assemble --scan`) and, on a measured-boot image,
+open `/dev/md/var` with the escrowed recovery key.
+
 ## Recover from a full `/var`
 
 Find the consumer before deleting anything:

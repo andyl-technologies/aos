@@ -30,6 +30,7 @@
 //! - [`stash`] — the `/run/aos-metadata` stash format.
 //! - [`provisioning`] — whole-input authorization and host extraction.
 //! - [`repart`] — typed storage validation and transient repart rendering.
+//! - [`topology`] — MD array and volume resolution above the partition layer.
 //! - [`state`] — durable provisioning evidence and last-known-good input.
 //!
 //! # Testability
@@ -52,6 +53,7 @@ pub mod repart;
 pub mod stash;
 pub mod state;
 pub mod staticnet;
+pub mod topology;
 mod yaml;
 
 #[cfg(test)]

@@ -185,6 +185,10 @@ Two partitions exist in the default intent:
 | `swap` | Fixed 2 GiB, swap type and format |
 | `var` | 4 GiB minimum, grows into remaining space |
 
+Partitions are the only layer most hosts need. Hosts with more than one disk
+can additionally bind partitions into MD arrays and, on a measured-boot image,
+seal any ext4 volume to the TPM; those layers are described below.
+
 `device = null` selects the disk containing `root-a`. Every explicit device
 must use a stable `/dev/disk/by-id/...` path.
 
@@ -298,6 +302,178 @@ boots.
 Use a unique GPT partition UUID for each partition. Omit `uuid` to let AOS
 derive and record a stable value for the committed plan.
 
+### Prepare an additional disk
+
+AOS seeds each disk's partition UUIDs from that disk's GPT identifier, so a
+disk named by the plan must already carry a GUID partition table when the host
+first boots. A blank table is enough:
+
+```sh
+sudo sgdisk --clear /dev/disk/by-id/REPLACE_WITH_DISK
+```
+
+Provisioning stops before any mutation when a referenced disk has no partition
+table.
+
+### Mirror the system state
+
+`/var` can live on a Linux MD RAID1 array instead of a single partition. The
+root disk always contributes the `var` member; every other member is a
+partition on another disk. Members keep `format = null`, because the array
+carries the ext4 filesystem, and MD sizes the mirror from its smallest member:
+
+```nix
+{
+  aos.provisioning.storage = {
+    partitions = {
+      var = {
+        sizeMin = "64G";
+        sizeMax = "64G";
+        grow = false;
+      };
+
+      var-mirror = {
+        device = "/dev/disk/by-id/nvme-REPLACE_ME_2";
+        sizeMin = "64G";
+        sizeMax = "64G";
+      };
+    };
+
+    arrays.var = {
+      level = "raid1";
+      members = [ "var" "var-mirror" ];
+    };
+  };
+}
+```
+
+The array is exposed as `/dev/md/var` and its filesystem carries the label
+`var`; the initrd prefers the array over the member partition that still
+answers to the `var` partlabel. On a measured-boot image the array is
+LUKS2-sealed exactly as a plain `/var` partition would be. The recovery console
+does not yet open a mirrored `/var`; see [recovery](recovery.md#hosts-with-a-mirrored-var). The immutable image slots and the
+EFI System Partition stay on the boot disk; a mirror protects state, not the
+ability to boot from a second disk.
+
+### Create a data mirror
+
+Any array other than `var` is a data volume. Declare its members, the level,
+and where to mount it:
+
+```nix
+{
+  aos.provisioning.storage = {
+    partitions = {
+      data-a = {
+        device = "/dev/disk/by-id/nvme-REPLACE_ME_3";
+        sizeMin = "1T";
+        grow = true;
+      };
+
+      data-b = {
+        device = "/dev/disk/by-id/nvme-REPLACE_ME_4";
+        sizeMin = "1T";
+        grow = true;
+      };
+    };
+
+    arrays.data = {
+      level = "raid1";
+      members = [ "data-a" "data-b" ];
+    };
+  };
+
+  aos.filesystems.volumes.data.mountPoint = "/srv/data";
+}
+```
+
+| Level | Minimum members |
+| --- | --- |
+| `raid0` | 2 |
+| `raid1` | 2 |
+| `raid10` | 3 |
+| `raid5` | 3 |
+| `raid6` | 4 |
+
+Arrays use MD metadata 1.2 with homehost `aos`; a disk from another machine
+still assembles but never claims a declared array name. An array name is the
+array's filesystem label and must not equal any partition label. Set
+`format = null` on an array to leave it raw for an operator-managed consumer.
+
+### Choose a filesystem
+
+| Filesystem | Where | Label limit | Notes |
+| --- | --- | --- | --- |
+| `ext4` | `/var` and data volumes; the default | 16 bytes | Stable tier. General purpose; the only filesystem for `/var`, which the initrd, sealing, and recovery paths format and repair as ext4 |
+| `xfs` | Data volumes | 12 bytes | Supported tier. Many parallel writers, very large files, `reflink`; cannot shrink |
+| `vfat` | Plain partitions | 11 bytes | Exchange partitions readable by firmware and other systems |
+
+ZFS is not a `format` value; it is selected by the image through
+`aos.profiles.bareMetalZfs` and sits at a lower
+[support tier](support-status.md#filesystem-support-tiers).
+
+Both ext4 and xfs are created with their tools' defaults, which detect the
+stripe geometry of an MD array. Set `format = "xfs"` on a partition or array:
+
+```nix
+{
+  aos.provisioning.storage.arrays.data = {
+    level = "raid1";
+    members = [ "data-a" "data-b" ];
+    format = "xfs";
+  };
+}
+```
+
+### Encrypt a data volume
+
+On a measured-boot image, a partition or array with an ext4 or xfs filesystem
+can be sealed to the TPM the same way `/var` is:
+
+```nix
+{
+  aos.provisioning.storage.arrays.data = {
+    level = "raid1";
+    members = [ "data-a" "data-b" ];
+    encryption = "tpm2";
+  };
+}
+```
+
+`encryption = "tpm2"` is rejected on an image without measured boot, and
+`encryption = "none"` is rejected for `/var` on an image with it. A sealed
+volume is created raw in the first-boot transaction and formatted inside its
+LUKS2 container by the first boot with Secure Boot enforcing; until then its
+mount unit is inactive and the host boots without it. The recovery key for each
+sealed data volume is written to `/run/aos-volume-recovery/<name>.key` on that
+boot and must be escrowed off the machine, exactly like the `/var` key.
+
+### Mount a data volume
+
+`aos.filesystems.volumes.<name>` names a partition or array from the storage
+plan and creates a stage-2 mount unit for it:
+
+```nix
+{
+  aos.filesystems.volumes.data = {
+    mountPoint = "/srv/data";
+    mountOptions = [ "nosuid" "nodev" "noatime" ];
+  };
+}
+```
+
+The volume is mounted by filesystem label (`/dev/disk/by-label/<label>`), so
+the same declaration works for a plain partition, an array, or a sealed
+container. The unit is wanted by `local-fs.target` rather than required, so a
+volume that is absent, degraded beyond assembly, or not yet sealed leaves the
+mount inactive without blocking boot. `var` is mounted by the initrd and cannot
+be listed here.
+
+Mount points must lie under `/srv` or `/var`. The image root is read-only and
+is built without `host.nix`, so it cannot carry per-host directories; `/srv`
+is a bind mount of the persistent `/var/srv` that every host provides, and the
+mount unit creates the final directory beneath it.
+
 ## Know when the plan becomes immutable
 
 On a fresh disk, AOS creates a provenance marker only after it has authorized,
@@ -311,7 +487,9 @@ On later boots:
   or an error;
 - `unavailable` means no valid current plan was available;
 - missing current metadata does not erase the committed operator plan;
-- a detected interrupted `pending` marker is not replayed automatically.
+- a detected interrupted `pending` marker is not replayed automatically;
+- a declared array that is not running after assembly is reported as
+  `divergent`; arrays declared after the commit are never created.
 
 A changed input can remain coherent if it describes the same final partition
 table. AOS reports on the resulting disk plan, not whether the source text
