@@ -25,6 +25,7 @@ let
     "xorg-util-macros"
     "libglvnd-headers"
     "virglrenderer-headers"
+    "mathjax"
     "xtrans"
     "vulkan-headers"
     "docbook-xml-4-2"
@@ -304,6 +305,7 @@ let
   # Linux compiler/interpreter package set distinct from Darwin target outputs.
   targetWave3 = [
     "bindgen"
+    "cbindgen"
     "python3-pyyaml"
     "spirv-tools"
     "spirv-llvm-translator"
@@ -512,6 +514,16 @@ let
     "libxxf86vm"
     "libxshmfence"
     "libdrm"
+    "libxfixes"
+    "libglvnd"
+    "libepoxy"
+    "libva"
+    "vulkan-loader"
+    "llvm-graphics"
+    "spirv-llvm-translator-graphics"
+    "glslang"
+    "mesa"
+    "virglrenderer"
     "aos-hub-cloudflare"
     # WebAssembly and Cargo developer tools for downstream project dev shells.
     # They are portable, but their Darwin cross builds are not yet qualified.
