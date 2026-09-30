@@ -66,8 +66,11 @@ in
       {
         name = "install";
         script = ''
-          mkdir -p "$out/bin"
+          mkdir -p "$out/bin" "$out/nix-support"
           ln -s ${control}/bin/aos-nix-daemon-control "$out/bin/aos-nix-daemon-control"
+          # The configuration module authenticates this shell as a direct
+          # dependency; the control script retains it only transitively.
+          printf '%s\n' '${bash}' > "$out/nix-support/config-shell"
         '';
       }
     ];
@@ -208,12 +211,7 @@ in
         groups = ["nixbld"];
         units = [];
       };
-      documentation = {
-        summary = "Root multi-user Nix daemon with isolated build accounts";
-        sections.lifecycle = lib.aosDoc.section "Build and identity lifecycle" [
-          (lib.aosDoc.paragraph "The package retains its fixed build account pool while disabled. Disable before uninstalling, then wait for surviving workers to leave the package slice. Build identities remain permanently reserved. Listener restart permits existing connections to continue; there is no automatic drain.")
-        ];
-      };
+      documentation = import ./_nix-daemon-config/documentation.nix {inherit lib;};
     };
 
     checks = {

@@ -247,7 +247,10 @@ in
                     | select(.kind? == "note")
                     | (.blocks | type == "array")
                   ] | all)
-                ' ${package.config}/config-meta.json >/dev/null
+                ' ${package.config}/config-meta.json >/dev/null || {
+                  echo 'Invalid documentation metadata for ${package.pname}' >&2
+                  exit 1
+                }
               '')
               configurablePackages}
 
@@ -260,7 +263,10 @@ in
                     | map(select(.path == $package))
                     | length == 1
                       and (.[0].references | index($dependency) != null)' \
-                  "$NIX_ATTRS_JSON_FILE" >/dev/null
+                  "$NIX_ATTRS_JSON_FILE" >/dev/null || {
+                    echo 'Missing direct configuration dependency ${builtins.toString dependency} for ${package.pname}' >&2
+                    exit 1
+                  }
               '') (builtins.attrValues (package.configModuleDependencies or {})))
             configurablePackages}
 
