@@ -166,6 +166,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         if identity == &empty_chunk()? {
             return Ok(vec![0]);
         }
+        if self.is_excluded(catalog, identity)? {
+            return Err(StoreFailure::new(StoreErrorKind::Absent(identity.clone())));
+        }
         if let Some(bytes) = self.container(catalog, identity).await? {
             return Ok(bytes);
         }

@@ -24,6 +24,9 @@ mod content_tests;
 #[cfg(all(test, feature = "tokio"))]
 mod manifest_tests;
 
+#[cfg(all(test, feature = "tokio"))]
+mod container_tests;
+
 use crate::store::{
     Capabilities, CapabilityReport, Clock, ContentValidator, Durability, LocalFs, RangeCapability,
     RefCapability, StoreErrorKind, StoreFailure,

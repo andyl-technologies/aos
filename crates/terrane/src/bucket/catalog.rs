@@ -313,11 +313,12 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                     _ => None,
                 };
                 if let Some(hash) = hash {
-                    identities.push(
-                        TERRANE_V1
-                            .from_digest(kind, &hash)
-                            .map_err(|_| files::layout_corrupt())?,
-                    );
+                    let identity = TERRANE_V1
+                        .from_digest(kind, &hash)
+                        .map_err(|_| files::layout_corrupt())?;
+                    if !self.is_excluded(catalog, &identity)? {
+                        identities.push(identity);
+                    }
                 }
             }
         }
