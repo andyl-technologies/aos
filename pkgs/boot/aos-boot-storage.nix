@@ -1,6 +1,8 @@
 ##! aos-boot-storage - EFI System Partition and initrd ZFS helpers
 {
   bash,
+  service-management,
+  aos-boot-transaction-storage-provider,
   coreutils,
   jq,
   lib,
@@ -13,8 +15,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -96,7 +109,8 @@ in
       util-linux
     ];
     propagatedDeps = [];
-    abilities = ./_aos-boot-storage;
+    module = ./_aos-boot-storage;
+    moduleDeps = [service-management aos-boot-transaction-storage-provider];
 
     phases = [
       {
