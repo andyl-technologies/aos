@@ -141,14 +141,18 @@
   src = import ./_workspace-source.nix {inherit lib;};
   applicationTestPackages = [
     "aos"
+    "aos-boot-identity"
     "aos-cache"
     "aos-contract"
     "aos-core"
     "aos-doc"
     "aos-doc-model"
     "aos-hub"
+    "aos-hub-console"
+    "aos-hub-console-contract"
     "aos-hub-core"
     "aos-hub-worker"
+    "aos-image-finalizer"
     "aos-maintain"
     "aos-net"
     "aos-oci"
@@ -157,6 +161,7 @@
     "aos-profile"
     "aos-proto"
     "aos-proto-types"
+    "aos-recovery"
     "aos-registry-spa"
     "aos-registry-surface"
     "aos-release"
@@ -322,6 +327,12 @@ in
     # exercises them exactly as the dev `cargo test` / `aos test` path does,
     # preserving full coverage without weakening the release security posture.
     checkType = "debug";
+
+    # Nextest runs ordinary tests only. Keep public documentation examples in
+    # the same application gate so switching runners does not drop coverage.
+    postBuild = lib.optionalString (!isCross) ''
+      cargo test --doc --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}
+    '';
 
     # Install each Cargo binary into its own output behind a thin wrapper. The
     # programs have independent parsers and entry points; none derives
