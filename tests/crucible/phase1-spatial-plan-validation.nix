@@ -7,260 +7,41 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  model = import ./_crucible-model-source.nix {inherit lib;};
-  crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
-  defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
+  signalTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/model/fault_signal/plan_test.rs;
+  };
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "crates/crucible/src/model/fault_signal/plan_test.rs" signalTests [
       {
-        label = "T-SPAT-20 completion names focused test";
-        needle = "`plan_validation_reports_precise_fault_heal_and_time_errors`";
+        label = "duplicate identity admission";
+        needle = "one_plan_level_graph_is_required_and_duplicates_fail_closed";
       }
       {
-        label = "T-SPAT-20 completion names gate";
-        needle = "`checks.crucible.phase1.spatialPlanValidation`";
+        label = "complete signal layer identity";
+        needle = "outer_plan_identity_commits_to_the_complete_fault_layer";
       }
       {
-        label = "T-SPAT-20 completion names localized errors";
-        needle = "localized `EngineError` payloads";
+        label = "closed TOML contracts";
+        needle = "singleton_signal_alias_canonicalizes_and_closed_tables_reject_unknowns";
       }
       {
-        label = "T-SPAT-20 completion names unsupported fault params";
-        needle = "unsupported fault-parameter fields";
-      }
-    ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
-      {
-        label = "typed unsigned virtual time";
-        needle = "pub struct VirtualTime";
+        label = "world target validation";
+        needle = "compact_plan_rejects_resolved_targets_absent_from_decode_world";
       }
       {
-        label = "virtual time tick is u64";
-        needle = "pub ticks: u64";
-      }
-      {
-        label = "crash fault params";
-        needle = "Crash {";
-      }
-      {
-        label = "partition fault params";
-        needle = "Partition {";
-      }
-      {
-        label = "isolate fault params";
-        needle = "Isolate {";
-      }
-      {
-        label = "not-yet-joined fault params";
-        needle = "NotYetJoined {";
-      }
-      {
-        label = "plan entry enum";
-        needle = "pub enum PlanEntry";
-      }
-      {
-        label = "world-validated plan constructor";
-        needle = "pub fn from_entries_for_world(";
-      }
-      {
-        label = "plan validation pass";
-        needle = "fn validate_plan_entries_for_world(";
-      }
-      {
-        label = "fault parameter validation";
-        needle = "fn validate_membership_fault_for_world(";
-      }
-      {
-        label = "heal tag validation";
-        needle = "fn validate_plan_heal(";
-      }
-      {
-        label = "node target validation";
-        needle = "validate_plan_node(node, node_ids)?;";
-      }
-      {
-        label = "localized unknown node error";
-        needle = "PlanFaultUnknownNode { node: node.clone() }";
-      }
-      {
-        label = "localized unknown link error";
-        needle = "PlanFaultUnknownLink {";
-      }
-      {
-        label = "unknown link preserves endpoint a";
-        needle = "endpoint_a: endpoint_a.clone()";
-      }
-      {
-        label = "unknown link preserves endpoint b";
-        needle = "endpoint_b: endpoint_b.clone()";
-      }
-      {
-        label = "localized unknown heal tag";
-        needle = "PlanHealUnknownTag { tag: tag.clone() }";
-      }
-      {
-        label = "localized heal timing error";
-        needle = "PlanHealBeforeActivate";
-      }
-      {
-        label = "heal must follow activation";
-        needle = "activate_at < *heal_at";
-      }
-      {
-        label = "localized not-yet-joined time error";
-        needle = "PlanNotYetJoinedAfterStart";
-      }
-      {
-        label = "localized negative serialized time error";
-        needle = "PlanNegativeTime";
-      }
-      {
-        label = "localized unknown direction error";
-        needle = "PlanFaultUnknownDirection";
-      }
-      {
-        label = "localized unsupported fault param error";
-        needle = "PlanFaultUnsupportedParam";
-      }
-      {
-        label = "not-yet-joined is start-only";
-        needle = "if at != VirtualTime::default()";
-      }
-      {
-        label = "plan TOML pre-validation";
-        needle = "fn validate_plan_entries_in_toml(";
-      }
-      {
-        label = "negative TOML time rejection";
-        needle = "at_ticks < 0";
-      }
-      {
-        label = "serialized partition direction validation";
-        needle = "fn validate_partition_direction_toml_value(";
-      }
-      {
-        label = "supported partition direction spellings";
-        needle = "\"endpoint_a_to_endpoint_b\" | \"endpoint_b_to_endpoint_a\"";
-      }
-      {
-        label = "serialized unsupported fault param validation";
-        needle = "PlanFaultUnsupportedParam {";
-      }
-      {
-        label = "partition params canonicalized";
-        needle = "fn canonical_membership_fault(";
-      }
-      {
-        label = "partition direction inversion";
-        needle = "fn inverted_partition_direction(";
+        label = "complete binding codec";
+        needle = "plan_binary_round_trips_a_complete_binding_contract";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
       {
-        label = "focused plan validation test";
-        needle = "fn plan_validation_reports_precise_fault_heal_and_time_errors()";
-      }
-      {
-        label = "crash target coverage";
-        needle = "unknown_crash_target";
-      }
-      {
-        label = "isolate target coverage";
-        needle = "unknown_isolate_target";
-      }
-      {
-        label = "partition link coverage";
-        needle = "unknown_partition_link";
-      }
-      {
-        label = "unknown heal coverage";
-        needle = "unknown_heal_tag";
-      }
-      {
-        label = "heal time coverage";
-        needle = "heal_before_activate";
-      }
-      {
-        label = "not-yet-joined time coverage";
-        needle = "not_yet_joined_after_start";
-      }
-      {
-        label = "start-time not-yet-joined accepted";
-        needle = "start_time_not_yet_joined";
-      }
-      {
-        label = "direction params canonicalized";
-        needle = "direction_a_to_b.content_hash()";
-      }
-      {
-        label = "unknown node exact error asserted";
-        needle = "Err(EngineError::PlanFaultUnknownNode { node })";
-      }
-      {
-        label = "unknown link exact error asserted";
-        needle = "Err(EngineError::PlanFaultUnknownLink {";
-      }
-      {
-        label = "unknown heal exact error asserted";
-        needle = "Err(EngineError::PlanHealUnknownTag { tag })";
-      }
-      {
-        label = "heal-before-activate exact error asserted";
-        needle = "Err(EngineError::PlanHealBeforeActivate {";
-      }
-      {
-        label = "not-yet-joined exact error asserted";
-        needle = "Err(EngineError::PlanNotYetJoinedAfterStart { node, at })";
-      }
-      {
-        label = "negative time TOML coverage";
-        needle = "negative_time_toml";
-      }
-      {
-        label = "unknown direction TOML coverage";
-        needle = "unknown_direction_toml";
-      }
-      {
-        label = "unsupported fault param TOML coverage";
-        needle = "unsupported_fault_param_toml";
-      }
-      {
-        label = "full scenario TOML negative time coverage";
-        needle = "scenario_negative_time_toml";
-      }
-      {
-        label = "negative time exact error asserted";
-        needle = "Err(EngineError::PlanNegativeTime { entry, at_ticks })";
-      }
-      {
-        label = "unknown direction exact error asserted";
-        needle = "Err(EngineError::PlanFaultUnknownDirection { entry, direction })";
-      }
-      {
-        label = "unsupported param exact error asserted";
-        needle = "Err(EngineError::PlanFaultUnsupportedParam { entry, field })";
-      }
-      {
-        label = "activation time payload asserted";
-        needle = "activate_at.ticks == 20";
-      }
-      {
-        label = "heal time payload asserted";
-        needle = "heal_at.ticks == 10";
-      }
-      {
-        label = "late not-yet-joined time payload asserted";
-        needle = "at.ticks == 1";
-      }
-    ]
-    ++ failuresFor "tests/crucible/default.nix" defaultChecks [
-      {
-        label = "phase1 exposes spatial plan validation check";
-        needle = "spatialPlanValidation = import ./phase1-spatial-plan-validation.nix";
+        label = "current signal admission specification";
+        needle = "undeclared targets, incompatible mapping types";
       }
     ];
 in
@@ -318,7 +99,7 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible \
               --lib \
-              plan_validation_reports_precise_fault_heal_and_time_errors \
+              model::fault_signal::plan_test:: \
               -- --test-threads=1
           '';
         }
@@ -332,10 +113,10 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             component=plan-validation
-            fault_params=localized
-            unsupported_fault_params=rejected
-            heal_tags=localized
-            plan_times=localized
+            signal_plan_admission=validated
+            unknown_fields=rejected
+            world_targets=validated
+            canonical_binding_codecs=validated
             RESULT
           '';
         }

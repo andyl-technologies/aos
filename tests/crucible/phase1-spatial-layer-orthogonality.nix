@@ -43,8 +43,8 @@
         needle = "plan: Option<Plan>";
       }
       {
-        label = "builder stores plan entries separately";
-        needle = "plan_entries: Vec<PlanEntry>";
+        label = "builder stores the complete event-graph plan";
+        needle = "plan: Option<Plan>";
       }
       {
         label = "builder stores properties separately";
@@ -75,8 +75,8 @@
         needle = "pub fn plan(mut self, plan: Plan) -> Self";
       }
       {
-        label = "plan-entry layer entry point";
-        needle = "pub fn plan_entry(mut self, entry: PlanEntry) -> Self";
+        label = "complete event-graph plan entry point";
+        needle = "pub fn plan(mut self, plan: Plan) -> Self";
       }
       {
         label = "properties layer entry point";
@@ -108,7 +108,7 @@
       }
       {
         label = "plan validation uses world";
-        needle = "Plan::from_entries_for_world(world, self.plan_entries.clone())";
+        needle = "world.scenario_def_with_plan_properties_and_seed(&plan, &properties, self.seed)";
       }
       {
         label = "properties validation uses world";
@@ -153,23 +153,23 @@
       }
       {
         label = "test checks serialized world layer";
-        needle = "toml.contains(\"[[world.link]]\")";
+        needle = "world_layer.contains_key(\"link\")";
       }
       {
         label = "test checks serialized plan layer";
-        needle = "toml.contains(\"[[plan.entry]]\")";
+        needle = "plan_layer.contains_key(\"event\")";
       }
       {
         label = "test checks serialized properties layer";
-        needle = "toml.contains(\"[[properties.assertion]]\")";
+        needle = "properties_layer.contains_key(\"assertion\")";
       }
       {
         label = "test checks serialized seed layer";
         needle = "toml.contains(\"seed = \\\"0x\")";
       }
       {
-        label = "test rejects missing-link fault";
-        needle = "Err(EngineError::PlanFaultUnknownLink";
+        label = "test rejects incompatible plan targets";
+        needle = "incompatible_world";
       }
       {
         label = "test rejects assertion-declared topology";
