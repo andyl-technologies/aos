@@ -12,6 +12,22 @@
 }: let
   failClosedSystem = mkSystem [
     ../../systems/server.nix
+    ({
+      lib,
+      initrdAbilityEvaluation ? null,
+      ...
+    }: {
+      options.aos.tests.bootIdentityGraph = lib.mkOption {
+        type = lib.types.raw;
+        internal = true;
+        readOnly = true;
+        description = "Native initrd graph inspected by this image acceptance fixture.";
+      };
+      aos.tests.bootIdentityGraph =
+        if initrdAbilityEvaluation == null
+        then {nodes = {};}
+        else initrdAbilityEvaluation._withoutProvenance initrdAbilityEvaluation.config.aos.activation.graph;
+    })
     {
       # Keep PID1 on its normal target so the identity guard actually runs.
       aos.boot.kernelParams = [
@@ -35,30 +51,28 @@
       };
     }
   ];
-  initrdRequests = failClosedSystem.config.system.build.initrdAbilityGraph.requests;
-  request = name: initrdRequests."aos-verity-root-guard:${name}".parameters;
-  output = name: {
-    _type = "aos-request-output-reference";
-    request = "aos-verity-root-guard:${name}";
-    output = "resource";
-  };
-  rootVerifyLifecycle = request "aos-verity-root-verify-lifecycle";
-  rootVerifyDependencies = request "aos-verity-root-verify-dependencies";
-  rootVerifyFailure = request "aos-verity-root-verify-failure_policy";
-  mountVarDependencies = initrdRequests."aos-boot-preparations:mount-var-dependencies".parameters;
+  nodes = builtins.attrValues failClosedSystem.config.aos.tests.bootIdentityGraph.nodes;
+  service = instance: name: let
+    selected = builtins.filter (node:
+      node.owner
+      == "service-management"
+      && builtins.elem instance node.identity
+      && (node.input.service or null) == name)
+    nodes;
+  in
+    if builtins.length selected == 1
+    then (builtins.head selected).input
+    else throw "The native initrd graph must contain exactly one ${instance}/${name} service.";
+  verification = service "verity-root-verification.aos-verity-root-verify" "aos-verity-root-verify";
+  mountVar = service "boot-preparations.mount-var" "mount-var";
 in
-  assert builtins.elem {
-    _type = "aos-request-output-reference";
-    request = "aos-boot-preparations:boot-identity";
-    output = "resource";
-  }
-  mountVarDependencies.requires;
-  assert (builtins.head rootVerifyLifecycle.start).executable.entry_point == "bin/aos-verity-root-verify";
-  assert builtins.elem (output "boot-identity") rootVerifyDependencies.requires;
-  assert builtins.elem (output "persistent-state") rootVerifyDependencies.required_by;
-  assert builtins.elem (output "initrd-filesystems") rootVerifyDependencies.required_by;
-  assert rootVerifyFailure.handlers == [(output "integrity-failure")];
-  assert rootVerifyFailure.dispatch == "isolate-active-goal"; {
+  assert builtins.elem "aos-boot-identity-guard.service" mountVar.dependencies.requires;
+  assert (builtins.head verification.lifecycle.start).executable.path == "${pkgs.aos-verity-root-guard}/bin/aos-verity-root-verify";
+  assert builtins.elem "aos-boot-identity-guard.service" verification.dependencies.requires;
+  assert builtins.elem "mount-var.service" verification.dependencies.required_by;
+  assert builtins.elem "initrd-fs.target" verification.dependencies.required_by;
+  assert verification.failure_policy.handlers == ["aos-boot-integrity-failure.target"];
+  assert verification.failure_policy.dispatch == "isolate-active-goal"; {
     name = "boot-identity-fail-closed";
     timeout = 600;
     bootTimeout = 120;
