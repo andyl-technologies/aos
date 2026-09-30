@@ -1,6 +1,8 @@
 ##! aos-verity-root-guard — Require a service RootImage to mount through dm-verity
 {
   lib,
+  service-management,
+  aos-boot-storage,
   mkDerivation,
   bash,
   coreutils,
@@ -9,13 +11,25 @@
 }:
 mkDerivation {
   platformSupport = {
-    build = [{abi = ["gnu"]; os = ["linux"];}];
-    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+    build = [
+      {
+        abi = ["gnu"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["linux"];
+      }
+    ];
     target = [];
     role = "public-package";
   };
   pname = "aos-verity-root-guard";
-  abilities = ./_aos-verity-root-guard;
+  module = ./_aos-verity-root-guard;
+  moduleDeps = [service-management aos-boot-storage];
   qualification.packageProbe = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
