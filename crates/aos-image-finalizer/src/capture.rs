@@ -551,7 +551,7 @@ mod tests {
             "artifacts":[],"inputs":["/nix/store/00000000000000000000000000000000-library"],"packages":[],"retire":[],
             "graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}});
         let evaluation = json!({"schema":"aos.package.evaluation-input","library":library,
-            "libraryNarHash":format!("sha256:{}", "a".repeat(64)),"scope":scope,"packages":packages,"configuration":[]});
+            "libraryNarHash":format!("sha256:{}", "a".repeat(64)),"scope":scope,"packages":packages,"moduleEnvelopes":{},"configuration":[]});
         let admission = canonical::to_vec(
             &json!({"schema":"aos.package.admission","roots":[{"storePath":"/nix/store/00000000000000000000000000000000-library","narHash":format!("sha256:{}", "a".repeat(64)),"narSize":1,"references":[]}]}),
         )?;
