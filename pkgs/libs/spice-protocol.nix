@@ -35,6 +35,10 @@ in
         script = ''
           tar xf "$src"
           cd spice-protocol-${version}
+          # Preserve wire prefixes while allowing real variable-length tails
+          # under strict flexible-array bounds checking. Empty records and
+          # nested variable-length display records retain their special layout.
+          patch --batch -p1 < ${./spice-protocol-flexible-arrays.patch}
         '';
       }
       {
@@ -45,6 +49,19 @@ in
             --prefix="$out" \
             --libdir=lib \
             --buildtype=release
+        '';
+      }
+      {
+        name = "check";
+        script = ''
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -fstrict-flex-arrays=3 \
+            -I. ${./tests/spice-protocol-layout.c} \
+            -o spice-protocol-layout
+          ${
+            if stdenv.isCross
+            then ""
+            else "./spice-protocol-layout"
+          }
         '';
       }
       {
