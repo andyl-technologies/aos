@@ -142,13 +142,16 @@
   src = builtins.path {
     path = repoRoot;
     name = "aos-hub-worker-workspace-src";
-    filter = path: _type: let
+    filter = path: type: let
       pathString = toString path;
       base = baseNameOf path;
     in
       base
       != "target"
       && base != ".git"
+      # Failed native tests retain custody fixtures beside their crate. Their
+      # evidence stays on disk without entering the deployable source identity.
+      && !(type == "directory" && lib.hasPrefix ".tmp" base)
       && (
         pathString
         == repoRootString
