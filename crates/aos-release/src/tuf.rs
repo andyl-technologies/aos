@@ -5,6 +5,23 @@
 //! repository metadata rather than targets and therefore remain outside the
 //! manifest payload closure they authorize. Timestamp metadata is verified as
 //! an independently renewable pointer to the already-authorized snapshot.
+//!
+//! # Timestamp continuity
+//!
+//! Each surface serves one mutable `tuf/timestamp.json`. A new timestamp
+//! continues the one it replaces in one of two [`TimestampContinuity`] modes:
+//!
+//! - [`TimestampContinuity::SameSnapshot`] renews freshness: the prior
+//!   timestamp names exactly the snapshot being refreshed.
+//! - [`TimestampContinuity::NewSnapshot`] moves the surface to the snapshot
+//!   of a later release: the prior timestamp names an older snapshot.
+//!
+//! Both modes keep TUF rollback protection: the prior timestamp must verify
+//! under the trusted root's timestamp policy at its own issuance instant, the
+//! timestamp version increases by exactly one, and a new snapshot's version
+//! must exceed the prior snapshot's version, so neither pointer can move
+//! backwards. Root verification against the independently supplied bootstrap
+//! trust is unchanged by either mode.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,7 +34,7 @@ use crate::digest::Sha256Digest;
 use crate::plan::ReleaseClass;
 use crate::registry::registry_policy;
 use crate::signing::{
-    SignatureResponseV1, SignerRole, SigningContext, SigningOperation, SigningRequestV1,
+    SignatureResponse, SignerRole, SigningContext, SigningOperation, SigningRequest,
     TrustedEd25519Key, verify_ed25519_response,
 };
 
@@ -42,7 +59,7 @@ pub enum TufRole {
     Root,
     /// Top-level targets and delegations.
     Targets,
-    /// Stable and emergency release authorization.
+    /// Stable release authorization, including overridden emergency releases.
     Stable,
     /// Release-candidate authorization.
     Candidate,
@@ -89,7 +106,7 @@ impl TufRole {
         match class {
             ReleaseClass::Edge => Self::Edge,
             ReleaseClass::Candidate => Self::Candidate,
-            ReleaseClass::Stable | ReleaseClass::Emergency => Self::Stable,
+            ReleaseClass::Stable => Self::Stable,
         }
     }
 }
@@ -464,9 +481,9 @@ pub struct TimestampMetadataV1 {
 #[serde(deny_unknown_fields)]
 pub struct TufSignatureV1 {
     /// Complete external-signer request.
-    pub request: SigningRequestV1,
+    pub request: SigningRequest,
     /// Public external-signer response.
-    pub response: SignatureResponseV1,
+    pub response: SignatureResponse,
 }
 
 /// Signed TUF envelope with a canonical payload.
@@ -723,10 +740,12 @@ pub fn verify_timestamp(
 
 /// Verifies a prior timestamp for monotonic refresh even after its expiry.
 ///
-/// The prior envelope is checked at its own issuance instant, including its
-/// signature threshold, ≤48-hour validity window, and exact snapshot binding.
-/// This permits recovery from an expired freshness pointer without permitting
-/// rollback or authorizing a different snapshot.
+/// This is [`verify_prior_timestamp_for_continuity`] in
+/// [`TimestampContinuity::SameSnapshot`] mode. The prior envelope is checked
+/// at its own issuance instant, including its signature threshold, 48-hour
+/// validity window, and exact snapshot binding. This permits recovery from an
+/// expired freshness pointer without permitting rollback or authorizing a
+/// different snapshot.
 ///
 /// # Errors
 ///
@@ -736,6 +755,76 @@ pub fn verify_prior_timestamp_for_refresh(
     timestamp: &TufEnvelopeV1<TimestampMetadataV1>,
     root: &RootMetadataV1,
     snapshot: &TufEnvelopeV1<SnapshotMetadataV1>,
+) -> Result<()> {
+    verify_prior_timestamp_for_continuity(
+        timestamp,
+        root,
+        snapshot,
+        TimestampContinuity::SameSnapshot,
+    )
+}
+
+/// How a new timestamp continues the timestamp a surface currently serves.
+///
+/// The mode is selected by [`TimestampContinuity::between`] from the prior
+/// timestamp and the snapshot the new timestamp will name; callers never
+/// choose it freely.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TimestampContinuity {
+    /// Freshness renewal: the prior timestamp names exactly this snapshot.
+    SameSnapshot,
+    /// Release succession: the prior timestamp names a snapshot with a lower
+    /// version, and the new timestamp moves the surface forward to this one.
+    NewSnapshot,
+}
+
+impl TimestampContinuity {
+    /// Selects the continuity mode of a timestamp over `snapshot`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the prior timestamp names a snapshot whose
+    /// version is not lower than `snapshot`'s without naming `snapshot`
+    /// exactly (a snapshot rollback or a conflicting snapshot at the same
+    /// version), or when `snapshot` cannot be canonically described.
+    pub fn between(
+        previous: &TimestampMetadataV1,
+        snapshot: &TufEnvelopeV1<SnapshotMetadataV1>,
+    ) -> Result<Self> {
+        if previous.snapshot == snapshot_description(snapshot)? {
+            return Ok(Self::SameSnapshot);
+        }
+        if snapshot.signed.version > previous.snapshot.version {
+            return Ok(Self::NewSnapshot);
+        }
+        bail!(
+            "TUF snapshot version {} does not advance past the prior timestamp's snapshot {}",
+            snapshot.signed.version,
+            previous.snapshot.version
+        )
+    }
+}
+
+/// Verifies a prior timestamp as the continuity anchor for a new timestamp.
+///
+/// The prior envelope is checked at its own issuance instant, including its
+/// registry, signature threshold under the trusted root's timestamp policy,
+/// and 48-hour validity window, so an expired pointer can still anchor a
+/// monotonic successor. `mode` then fixes what it must name:
+///
+/// - [`TimestampContinuity::SameSnapshot`]: exactly `snapshot`;
+/// - [`TimestampContinuity::NewSnapshot`]: a snapshot whose version is lower
+///   than `snapshot`'s.
+///
+/// # Errors
+///
+/// Returns an error for malformed time, a registry mismatch, signature or
+/// role-policy failure, or a snapshot binding that violates `mode`.
+pub fn verify_prior_timestamp_for_continuity(
+    timestamp: &TufEnvelopeV1<TimestampMetadataV1>,
+    root: &RootMetadataV1,
+    snapshot: &TufEnvelopeV1<SnapshotMetadataV1>,
+    mode: TimestampContinuity,
 ) -> Result<()> {
     let issued = parse_utc(&timestamp.signed.issued_at, "TUF timestamp issuance")?;
     validate_root(root)?;
@@ -752,15 +841,80 @@ pub fn verify_prior_timestamp_for_refresh(
         issued,
     )?;
     verify_declared_identities(timestamp, root)?;
-    let expected = metadata_description(
+    require_snapshot_binding(&timestamp.signed, snapshot, mode)
+}
+
+/// Verifies that `next` is the exact successor of `previous` over `snapshot`.
+///
+/// In both modes the version increases by exactly one and `next` names
+/// `snapshot` exactly. [`TimestampContinuity::NewSnapshot`] additionally
+/// requires `next` to be issued no earlier than `previous` and `snapshot`'s
+/// version to exceed the prior snapshot's version.
+///
+/// # Errors
+///
+/// Returns an error for a skipped or repeated version, a registry mismatch,
+/// a malformed or regressing issuance time, or a snapshot binding that
+/// violates `mode`.
+pub fn verify_timestamp_succession(
+    previous: &TimestampMetadataV1,
+    next: &TimestampMetadataV1,
+    snapshot: &TufEnvelopeV1<SnapshotMetadataV1>,
+    mode: TimestampContinuity,
+) -> Result<()> {
+    if next.registry != previous.registry {
+        bail!("TUF timestamp succession crosses registry trust domains");
+    }
+    if Some(next.version) != previous.version.checked_add(1) {
+        bail!("TUF timestamp version must increase by exactly one");
+    }
+    if next.snapshot != snapshot_description(snapshot)? {
+        bail!("TUF timestamp does not name the exact authorized snapshot");
+    }
+    require_snapshot_binding(previous, snapshot, mode)?;
+    if mode == TimestampContinuity::NewSnapshot
+        && parse_utc(&next.issued_at, "TUF timestamp issuance")?
+            < parse_utc(&previous.issued_at, "prior TUF timestamp issuance")?
+    {
+        bail!("TUF timestamp for a new snapshot is issued before its predecessor");
+    }
+    Ok(())
+}
+
+/// Requires the prior timestamp's snapshot binding that `mode` demands.
+fn require_snapshot_binding(
+    previous: &TimestampMetadataV1,
+    snapshot: &TufEnvelopeV1<SnapshotMetadataV1>,
+    mode: TimestampContinuity,
+) -> Result<()> {
+    match mode {
+        TimestampContinuity::SameSnapshot => {
+            if previous.snapshot != snapshot_description(snapshot)? {
+                bail!("prior TUF timestamp does not name the exact snapshot");
+            }
+        }
+        TimestampContinuity::NewSnapshot => {
+            if snapshot.signed.version <= previous.snapshot.version {
+                bail!(
+                    "TUF snapshot version {} does not exceed the prior snapshot version {}",
+                    snapshot.signed.version,
+                    previous.snapshot.version
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Returns the canonical timestamp description of one snapshot envelope.
+fn snapshot_description(
+    snapshot: &TufEnvelopeV1<SnapshotMetadataV1>,
+) -> Result<TufMetadataDescriptionV1> {
+    metadata_description(
         format!("{}.snapshot.json", snapshot.signed.version),
         snapshot.signed.version,
         snapshot,
-    )?;
-    if timestamp.signed.snapshot != expected {
-        bail!("prior TUF timestamp does not name the exact snapshot");
-    }
-    Ok(())
+    )
 }
 
 fn validate_root(root: &RootMetadataV1) -> Result<()> {
@@ -1326,6 +1480,143 @@ mod tests {
                 error
                     .to_string()
                     .contains("registry does not match the release plan")
+            );
+        }
+        Ok(())
+    }
+
+    /// Returns an unsigned snapshot envelope at `version` over one stable release.
+    fn snapshot_at(version: u64, release_id: &str) -> Result<TufEnvelopeV1<SnapshotMetadataV1>> {
+        let root = TufEnvelopeV1 {
+            signed: production_root(),
+            signatures: vec![],
+        };
+        let targets = TufEnvelopeV1 {
+            signed: canonical_targets_metadata(
+                MAIN_REGISTRY,
+                version,
+                "2030-01-01T00:00:00Z".to_owned(),
+            )?,
+            signatures: vec![],
+        };
+        let delegated = TufEnvelopeV1 {
+            signed: delegated_release_metadata(
+                MAIN_REGISTRY,
+                version,
+                "2030-01-01T00:00:00Z".to_owned(),
+                TufReleaseTargetV1 {
+                    path: format!("releases/stable/{release_id}/release-manifest.json"),
+                    release_id: release_id.to_owned(),
+                    release_class: ReleaseClass::Stable,
+                    manifest_digest: Sha256Digest::of_bytes(release_id),
+                    length: 123,
+                    record: None,
+                },
+            )?,
+            signatures: vec![],
+        };
+        Ok(TufEnvelopeV1 {
+            signed: immutable_snapshot_metadata(
+                MAIN_REGISTRY,
+                version,
+                "2030-01-01T00:00:00Z".to_owned(),
+                &root,
+                &targets,
+                &delegated,
+            )?,
+            signatures: vec![],
+        })
+    }
+
+    /// Returns timestamp metadata at `version` over `snapshot`, issued at `issued_at`.
+    fn timestamp_at(
+        version: u64,
+        issued_at: &str,
+        snapshot: &TufEnvelopeV1<SnapshotMetadataV1>,
+    ) -> Result<TimestampMetadataV1> {
+        let issued = humantime::parse_rfc3339(issued_at)?;
+        let expires = humantime::format_rfc3339_seconds(
+            issued + std::time::Duration::from_secs(24 * 60 * 60),
+        )
+        .to_string();
+        timestamp_metadata(
+            MAIN_REGISTRY,
+            version,
+            issued_at.to_owned(),
+            expires,
+            snapshot,
+        )
+    }
+
+    #[test]
+    fn same_snapshot_refresh_keeps_its_exact_binding() -> Result<()> {
+        let snapshot = snapshot_at(7, "release-2030.1.0")?;
+        let previous = timestamp_at(40, "2029-12-01T00:00:00Z", &snapshot)?;
+        let mode = TimestampContinuity::between(&previous, &snapshot)?;
+        assert_eq!(mode, TimestampContinuity::SameSnapshot);
+
+        let next = timestamp_at(41, "2029-12-02T00:00:00Z", &snapshot)?;
+        verify_timestamp_succession(&previous, &next, &snapshot, mode)?;
+
+        // Same-snapshot refresh cannot be used to name a different snapshot.
+        let other = snapshot_at(8, "release-2030.2.0")?;
+        assert!(require_snapshot_binding(&previous, &other, mode).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn new_snapshot_continuity_moves_the_timestamp_to_a_later_release() -> Result<()> {
+        let older = snapshot_at(7, "release-2030.1.0")?;
+        let newer = snapshot_at(8, "release-2030.2.0")?;
+        let previous = timestamp_at(40, "2029-12-01T00:00:00Z", &older)?;
+        let mode = TimestampContinuity::between(&previous, &newer)?;
+        assert_eq!(mode, TimestampContinuity::NewSnapshot);
+
+        let next = timestamp_at(41, "2029-12-01T06:00:00Z", &newer)?;
+        verify_timestamp_succession(&previous, &next, &newer, mode)?;
+
+        // A successor issued before its predecessor is a rollback signal.
+        let backdated = timestamp_at(41, "2029-11-30T00:00:00Z", &newer)?;
+        assert!(verify_timestamp_succession(&previous, &backdated, &newer, mode).is_err());
+
+        // The successor must name the new snapshot, not the old one.
+        assert!(verify_timestamp_succession(&previous, &next, &older, mode).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_version_regression_is_rejected() -> Result<()> {
+        let current = snapshot_at(8, "release-2030.2.0")?;
+        let previous = timestamp_at(40, "2029-12-01T00:00:00Z", &current)?;
+
+        // An older snapshot, or a different snapshot at the served version,
+        // selects no continuity mode.
+        let older = snapshot_at(7, "release-2030.1.0")?;
+        assert!(TimestampContinuity::between(&previous, &older).is_err());
+        let conflicting = snapshot_at(8, "release-2030.1.0")?;
+        assert!(TimestampContinuity::between(&previous, &conflicting).is_err());
+
+        // Forcing the new-snapshot mode does not bypass the version rule.
+        let next = timestamp_at(41, "2029-12-02T00:00:00Z", &older)?;
+        assert!(
+            verify_timestamp_succession(&previous, &next, &older, TimestampContinuity::NewSnapshot)
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn timestamp_version_skips_and_repeats_are_rejected() -> Result<()> {
+        let older = snapshot_at(7, "release-2030.1.0")?;
+        let newer = snapshot_at(8, "release-2030.2.0")?;
+        let previous = timestamp_at(40, "2029-12-01T00:00:00Z", &older)?;
+        let mode = TimestampContinuity::between(&previous, &newer)?;
+
+        for version in [40, 42, 100] {
+            let next = timestamp_at(version, "2029-12-02T00:00:00Z", &newer)?;
+            assert!(
+                verify_timestamp_succession(&previous, &next, &newer, mode).is_err(),
+                "{version}"
             );
         }
         Ok(())

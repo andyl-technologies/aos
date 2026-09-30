@@ -2872,11 +2872,14 @@ message ReleasePublicationState {
 message CommitReleasePublicationRequest {
   string registry = 1;
   string bundle_digest = 2;
-  // staging | production
+  // Always "staging"; production publications use PromoteReleasePublication.
   string environment = 3;
   string publication_id = 4;
   string expected_deployment_id = 5;
+  // Must be empty: a staging publication has no predecessor receipt.
   string staging_receipt_digest = 6;
+  // Planned staging destination the receipt names, `staging/<channel>`.
+  string destination = 7;
 }
 
 // Canonical signed receipt envelope produced by the deployment authority.
@@ -2913,11 +2916,14 @@ message PromoteReleasePublicationRequest {
   string qualification_receipt_json = 8;
   // Exact qualification envelope verified against a pinned authority key.
   string signed_qualification_json = 9;
+  // Planned production destination the receipt names, `production/<channel>`.
+  string destination = 10;
 }
 
 message GetReleaseReceiptRequest {
   string bundle_digest = 1;
-  // Public callers may read only production receipts.
+  // "production" reads the production receipt wherever it is stored;
+  // "staging" is served only by the bundle's pinned staging deployment.
   string environment = 2;
 }
 
@@ -2948,7 +2954,14 @@ message AdvanceReleaseChannelRequest {
   int64 first_partition = 4;
   int64 last_partition = 5;
   string manifest_digest = 6;
-  string production_receipt_digest = 7;
+  // This deployment's publication receipt for the release: the promoted
+  // production receipt on the production deployment, or the committed
+  // staging receipt on a distinct staging deployment.
+  string publication_receipt_digest = 7;
+  // Planned destination whose channel advances, `<role>/<channel>`.
+  string destination = 8;
+  // One-based rollout ring of the destination.
+  int64 ring = 9;
 }
 
 // -- Webhooks (phase 4) ----------------------------------------------------

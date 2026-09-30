@@ -24,7 +24,7 @@ in
       # scenario starts. Drain stdin so large requests cannot block its writer.
       ${pkgs.coreutils}/bin/cat >/dev/null
 
-      exec ${pkgs.aos}/bin/aos release qualification respond \
+      exec ${pkgs.aos}/bin/aos release step qualification respond \
         --request request.json \
         --scenarios scenario-registry.json \
         ${reportArgument} \

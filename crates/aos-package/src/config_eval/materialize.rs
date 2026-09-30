@@ -504,6 +504,7 @@ impl ConfigManifest {
             )?;
         }
         self.validate_config_projections()?;
+        super::unit_policy::validate_package_unit_policy(self)?;
         for path in self.etc.keys() {
             let mut ancestor = path.as_str();
             while let Some((parent, _)) = ancestor.rsplit_once('/') {

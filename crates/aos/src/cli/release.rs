@@ -1,4 +1,24 @@
 //! Command-line contract for canonical AOS release operations.
+//!
+//! The porcelain operates one release from the maintainer configuration and
+//! a work directory:
+//!
+//! ```text
+//! aos release new --registry R --version V --images PATH [--release-id ID] [--override DIR] [--work DIR] [--config PATH]
+//! aos release advance --to <destination> [--ring N] [--override DIR] [--accept-transaction] [--work DIR] [--config PATH]
+//! aos release status [--work DIR] [--config PATH]
+//! aos release explain --to <destination> [--work DIR] [--config PATH]
+//! aos release review [--reject --reason TEXT] [--work DIR] [--config PATH]
+//! aos release fitness run <kind> [--report PATH] [--config PATH]
+//! aos release fitness status [--config PATH]
+//! ```
+//!
+//! `aos release step <command>` exposes each leaf operation with explicit
+//! inputs: planning, build and signing, publication to one destination
+//! (`<surface>/<channel>`, such as `production/stable`), per-destination
+//! qualification, ring-by-ring channel rollout, and inspection. Every
+//! effectful step verifies what it consumes and writes new outputs without
+//! replacing existing paths.
 
 use std::path::PathBuf;
 
@@ -6,16 +26,172 @@ use clap::{Args, Subcommand};
 
 #[derive(Subcommand)]
 pub enum ReleaseCommand {
+    /// Derive a release's plan request from the maintainer configuration and freeze the plan
+    New(ReleaseNewArgs),
+    /// Run every automated step toward a destination until it completes or needs a person
+    Advance(ReleaseAdvanceArgs),
+    /// Show the release state, each destination's state, and the next step
+    Status(ReleaseWorkArgs),
+    /// List a destination's obligations and whether each is met
+    Explain(ReleaseExplainArgs),
+    /// Sign the pending qualification review or completion approval
+    Review(ReleaseReviewArgs),
+    /// Record and inspect environment fitness attestations
+    Fitness {
+        #[command(subcommand)]
+        command: ReleaseFitnessCommand,
+    },
+    /// Run one explicit release operation
+    Step {
+        #[command(subcommand)]
+        command: ReleaseStepCommand,
+    },
+}
+
+#[derive(Args)]
+pub struct ReleaseNewArgs {
+    /// Registry to release; must equal the configuration's registry
+    #[arg(long)]
+    pub registry: String,
+
+    /// Calendar release version, such as 2026.9.0-dev.20260929.1
+    #[arg(long)]
+    pub version: String,
+
+    /// Release identity [default: release-<version>]
+    #[arg(long)]
+    pub release_id: Option<String>,
+
+    /// Reviewed Linux image decisions (JSON array of image plans)
+    #[arg(long)]
+    pub images: PathBuf,
+
+    /// Directory of signed profile-override envelopes to plan with
+    #[arg(long = "override", value_name = "DIR")]
+    pub override_dir: Option<PathBuf>,
+
+    /// Work directory [default: <work_root>/<release-id>]
+    #[arg(long)]
+    pub work: Option<PathBuf>,
+
+    /// Maintainer configuration [default: $AOS_RELEASE_CONFIG or the standard search]
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ReleaseAdvanceArgs {
+    /// Destination to advance, such as staging/edge or production/stable
+    #[arg(long)]
+    pub to: String,
+
+    /// Stop after this one-based rollout ring
+    #[arg(long)]
+    pub ring: Option<u16>,
+
+    /// Re-freeze the unbuilt plan with the signed override envelopes in DIR
+    #[arg(long = "override", value_name = "DIR")]
+    pub override_dir: Option<PathBuf>,
+
+    /// Accept the reviewed isolated registry transaction and continue
+    #[arg(long)]
+    pub accept_transaction: bool,
+
+    /// Work directory [default: newest release under work_root]
+    #[arg(long)]
+    pub work: Option<PathBuf>,
+
+    /// Maintainer configuration [default: $AOS_RELEASE_CONFIG or the standard search]
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ReleaseWorkArgs {
+    /// Work directory [default: newest release under work_root]
+    #[arg(long)]
+    pub work: Option<PathBuf>,
+
+    /// Maintainer configuration [default: $AOS_RELEASE_CONFIG or the standard search]
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ReleaseExplainArgs {
+    /// Destination to explain, such as production/stable
+    #[arg(long)]
+    pub to: String,
+
+    /// Work directory [default: newest release under work_root]
+    #[arg(long)]
+    pub work: Option<PathBuf>,
+
+    /// Maintainer configuration [default: $AOS_RELEASE_CONFIG or the standard search]
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ReleaseReviewArgs {
+    /// Sign a rejection instead of an approval
+    #[arg(long, requires = "reason")]
+    pub reject: bool,
+
+    /// Reason recorded beside a rejection
+    #[arg(long, requires = "reject")]
+    pub reason: Option<String>,
+
+    /// Work directory [default: newest release under work_root]
+    #[arg(long)]
+    pub work: Option<PathBuf>,
+
+    /// Maintainer configuration [default: $AOS_RELEASE_CONFIG or the standard search]
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+pub enum ReleaseFitnessCommand {
+    /// Sign and record an attestation from one exercise report
+    Run(ReleaseFitnessRunArgs),
+    /// Show each fitness kind's newest attestation, age, and bindings
+    Status(ReleaseFitnessStatusArgs),
+}
+
+#[derive(Args)]
+pub struct ReleaseFitnessRunArgs {
+    /// Fitness kind, such as storage-restore or hub-restore
+    pub kind: String,
+
+    /// Exercise report (aos.release.fitness-report/v1) [default: standard input]
+    #[arg(long)]
+    pub report: Option<PathBuf>,
+
+    /// Maintainer configuration [default: $AOS_RELEASE_CONFIG or the standard search]
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ReleaseFitnessStatusArgs {
+    /// Maintainer configuration [default: $AOS_RELEASE_CONFIG or the standard search]
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+pub enum ReleaseStepCommand {
     /// Inspect cases or execute an exact qualification request
     Qualification {
         #[command(subcommand)]
         command: ReleaseQualificationCommand,
     },
-    /// Inspect the shared qualification contract and required release gates
+    /// Print the destination table, or one destination's profile and gates
     Contract(ReleaseContractArgs),
     /// Derive and freeze a release plan from Git and the Nix inventory
     Plan(ReleasePlanArgs),
-    /// Realize every planned Nix output and record its build identity
+    /// Realize and repeat-check every planned Nix output
     Build(ReleaseBuildArgs),
     /// Assemble finalized release inputs into a closed unsigned payload
     Assemble(ReleaseAssembleArgs),
@@ -36,28 +212,24 @@ pub enum ReleaseCommand {
     Finalize(ReleaseFinalizeArgs),
     /// Generate and externally sign the complete static Nix cache
     FinalizeCache(ReleaseFinalizeCacheArgs),
-    /// Renew short-lived metadata without changing authorized content
+    /// Renew or publish short-lived TUF timestamp metadata
     Timestamp {
         #[command(subcommand)]
         command: ReleaseTimestampCommand,
     },
     /// Construct immutable role-separated TUF repository metadata
     Tuf(ReleaseTufArgs),
-    /// Compose verified registry, release target, and TUF bytes atomically
+    /// Compose registry, release target, and TUF bytes for one destination
     ComposeSurface(ReleaseComposeSurfaceArgs),
-    /// Upload an exact finalized bundle to the canonical staging Hub
-    Stage(ReleaseStageArgs),
-    /// Admit signed qualification of the exact staged public release
-    Qualify(ReleaseQualifyArgs),
-    /// Execute every planned gate against exact public staging bytes
+    /// Publish the finalized bundle to one destination's surface
+    Publish(ReleasePublishArgs),
+    /// Execute and sign one destination's qualification phase
     QualifyRun(ReleaseQualifyRunArgs),
-    /// Import the exact qualified release into the canonical production Hub
-    Promote(ReleasePromoteArgs),
-    /// Compose the public release record from admitted qualification evidence
+    /// Compose the public release record from signed staging qualification
     Record(ReleaseRecordArgs),
-    /// Install one explicitly approved first registry base in an empty Hub
+    /// Install one approved first registry base on an empty surface
     Bootstrap(ReleaseBootstrapArgs),
-    /// Advance or complete planned production channel rollout
+    /// Advance a rollout ring or complete a destination's rollout
     Channel {
         #[command(subcommand)]
         command: ReleaseChannelCommand,
@@ -78,6 +250,10 @@ pub enum ReleaseQualificationCommand {
 
 #[derive(Args)]
 pub struct ReleaseQualificationCasesArgs {
+    /// Destination whose profile selects the cases; omit for every destination
+    #[arg(long)]
+    pub to: Option<String>,
+
     /// Canonical frozen release plan
     #[arg(long)]
     pub plan: PathBuf,
@@ -130,13 +306,13 @@ pub struct ReleaseQualificationRespondArgs {
 
 #[derive(Args)]
 pub struct ReleaseContractArgs {
-    /// Select the registry whose pipeline assurance is required
+    /// Registry whose destination table is displayed
     #[arg(long, default_value = "andyl/main")]
     pub registry: String,
 
-    /// Select the release class whose obligations are displayed
-    #[arg(long = "class", default_value = "edge", value_parser = ["edge", "candidate", "stable", "emergency"])]
-    pub release_class: String,
+    /// Show one destination's profile and gates, such as production/stable
+    #[arg(long)]
+    pub to: Option<String>,
 
     /// Read an exported contract offline instead of evaluating Nix
     #[arg(long)]
@@ -157,7 +333,7 @@ pub struct ReleaseBootstrapArgs {
     #[arg(long)]
     pub registry_surface: PathBuf,
 
-    /// Isolated destination: staging or production
+    /// Surface receiving the base
     #[arg(long, value_parser = ["staging", "production"])]
     pub environment: String,
 
@@ -169,9 +345,13 @@ pub struct ReleaseBootstrapArgs {
     #[arg(long = "approval-key", value_name = "KEY_ID=PATH", required = true)]
     pub approval_keys: Vec<String>,
 
-    /// Short-lived environment-specific Hub access token
+    /// Short-lived access token for a Hub surface
     #[arg(long, env = "AOS_TOKEN", hide_env_values = true)]
     pub token: Option<String>,
+
+    /// Maintainer configuration with static-surface credentials
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 
     /// New bootstrap evidence directory; existing paths are never replaced
     #[arg(long)]
@@ -188,6 +368,10 @@ pub enum ReleaseTimestampCommand {
 
 #[derive(Args)]
 pub struct ReleaseTimestampPublishArgs {
+    /// Destination whose surface receives the timestamp
+    #[arg(long)]
+    pub to: String,
+
     /// Canonical release plan governing the timestamp publication
     #[arg(long)]
     pub plan: PathBuf,
@@ -220,9 +404,13 @@ pub struct ReleaseTimestampPublishArgs {
     #[arg(long)]
     pub registry_surface: PathBuf,
 
-    /// Short-lived production-only Hub access token
+    /// Short-lived access token for a Hub surface
     #[arg(long, env = "AOS_TOKEN", hide_env_values = true)]
     pub token: Option<String>,
+
+    /// Maintainer configuration with static-surface credentials
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 
     /// New timestamp publication evidence directory
     #[arg(long)]
@@ -231,6 +419,10 @@ pub struct ReleaseTimestampPublishArgs {
 
 #[derive(Args)]
 pub struct ReleaseTimestampRefreshArgs {
+    /// Destination whose surface will serve the timestamp
+    #[arg(long)]
+    pub to: String,
+
     /// Canonical release plan governing the timestamp signer
     #[arg(long)]
     pub plan: PathBuf,
@@ -243,7 +435,7 @@ pub struct ReleaseTimestampRefreshArgs {
     #[arg(long)]
     pub snapshot: PathBuf,
 
-    /// Previous timestamp for this snapshot, when one exists
+    /// Timestamp the surface serves now, over this or an older snapshot
     #[arg(long)]
     pub previous_timestamp: Option<PathBuf>,
 
@@ -373,6 +565,10 @@ pub struct ReleaseTufArgs {
 
 #[derive(Args)]
 pub struct ReleaseComposeSurfaceArgs {
+    /// Destination whose surface is composed
+    #[arg(long)]
+    pub to: String,
+
     /// Public release record authorized by the delegated targets
     #[arg(long)]
     pub release_record: Option<PathBuf>,
@@ -665,21 +861,48 @@ pub struct ReleaseFinalizeCacheArgs {
     pub output: PathBuf,
 }
 
+#[derive(Args, Clone, Debug, Default)]
+pub struct ReleaseFitnessInputArgs {
+    /// Directory of signed fitness attestations, as <kind>/<performed_at>.json
+    #[arg(long)]
+    pub fitness: Option<PathBuf>,
+
+    /// Live tooling-closure digest bound by tooling fitness
+    #[arg(long)]
+    pub tooling_digest: Option<String>,
+
+    /// Live alert-configuration digest bound by alert-config fitness
+    #[arg(long)]
+    pub alert_config_digest: Option<String>,
+
+    /// Live Hub schema version bound by hub-schema fitness
+    #[arg(long)]
+    pub hub_schema: Option<String>,
+}
+
 #[derive(Args)]
-pub struct ReleaseStageArgs {
-    /// Closed finalized bundle and registry surface
+pub struct ReleasePublishArgs {
+    /// Destination to publish, such as staging/edge or production/stable
+    #[arg(long)]
+    pub to: String,
+
+    /// Closed finalized bundle
     #[arg(long)]
     pub bundle: PathBuf,
 
-    /// Composed bundle surface with its independently verified TUF metadata
-    #[arg(long, requires = "trusted_root_keys")]
-    pub publication_surface: Option<PathBuf>,
+    /// Current append-only journal
+    #[arg(long)]
+    pub journal: PathBuf,
 
-    /// Independently trusted TUF root key as KEY_ID=PATH
+    /// Composed surface (TUF metadata, release record) to publish with the bundle
+    #[arg(long, requires = "trusted_root_keys")]
+    pub surface: Option<PathBuf>,
+
+    /// Independently trusted TUF root key as KEY_ID=PATH, verifying --surface
     #[arg(
         long = "trusted-root-key",
         value_name = "KEY_ID=PATH",
-        requires = "publication_surface"
+        requires = "surface"
     )]
     pub trusted_root_keys: Vec<String>,
 
@@ -687,76 +910,51 @@ pub struct ReleaseStageArgs {
     #[arg(long, default_value_t = 2)]
     pub trusted_root_threshold: u16,
 
-    /// Finalized append-only journal captured before staging
-    #[arg(long)]
-    pub journal: PathBuf,
-
     /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
     #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
     pub trusted_keys: Vec<String>,
 
-    /// Independently trusted staging Hub receipt key as KEY_ID=PATH
-    #[arg(long = "hub-receipt-key", value_name = "KEY_ID=PATH", required = true)]
-    pub hub_receipt_keys: Vec<String>,
+    /// Destination surface receipt key as KEY_ID=PATH
+    #[arg(long = "receipt-key", value_name = "KEY_ID=PATH", required = true)]
+    pub receipt_keys: Vec<String>,
 
-    /// Short-lived staging-only Hub access token
+    /// Staging publication receipt, required for production destinations
+    #[arg(long)]
+    pub predecessor_receipt: Option<PathBuf>,
+
+    /// Staging surface receipt key as KEY_ID=PATH
+    #[arg(long = "predecessor-receipt-key", value_name = "KEY_ID=PATH")]
+    pub predecessor_receipt_keys: Vec<String>,
+
+    /// Signed staging-phase qualification directory; repeatable
+    #[arg(long = "evidence")]
+    pub evidence: Vec<PathBuf>,
+
+    /// Qualification authority key as KEY_ID=PATH
+    #[arg(long = "qualification-key", value_name = "KEY_ID=PATH")]
+    pub qualification_keys: Vec<String>,
+
+    #[command(flatten)]
+    pub fitness: ReleaseFitnessInputArgs,
+
+    /// Short-lived access token for a Hub surface
     #[arg(long, env = "AOS_TOKEN", hide_env_values = true)]
     pub token: Option<String>,
+
+    /// Maintainer configuration with static-surface credentials and signers
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 
     /// New receipt-and-journal directory; existing paths are never replaced
     #[arg(long)]
     pub output: PathBuf,
 }
 
-#[derive(Args)]
-pub struct ReleaseQualifyArgs {
-    /// Closed finalized bundle whose staged bytes were qualified
-    #[arg(long)]
-    pub bundle: PathBuf,
-
-    /// Staged append-only journal
-    #[arg(long)]
-    pub journal: PathBuf,
-
-    /// Exact signed staging receipt returned by the Hub
-    #[arg(long)]
-    pub staging_receipt: PathBuf,
-
-    /// Signed qualification envelope returned by the qualification authority
-    #[arg(long)]
-    pub signed_qualification: PathBuf,
-
-    /// Canonical complete gate/platform qualification report
-    #[arg(long)]
-    pub qualification_report: PathBuf,
-
-    /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
-    #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
-    pub trusted_keys: Vec<String>,
-
-    /// Independently trusted staging Hub receipt key as KEY_ID=PATH
-    #[arg(long = "hub-receipt-key", value_name = "KEY_ID=PATH", required = true)]
-    pub hub_receipt_keys: Vec<String>,
-
-    /// Independently trusted qualification key as KEY_ID=PATH
-    #[arg(
-        long = "qualification-key",
-        value_name = "KEY_ID=PATH",
-        required = true
-    )]
-    pub qualification_keys: Vec<String>,
-
-    /// Short-lived staging-only Hub access token
-    #[arg(long, env = "AOS_TOKEN", hide_env_values = true)]
-    pub token: Option<String>,
-
-    /// New qualification evidence directory; existing paths are never replaced
-    #[arg(long)]
-    pub output: PathBuf,
-}
-
 #[derive(Args, Clone)]
 pub struct ReleaseQualifyRunArgs {
+    /// Destination whose profile selects the cases
+    #[arg(long)]
+    pub to: String,
     /// Collect a report for independent review without invoking the signer
     #[arg(long, conflicts_with = "report_input")]
     pub prepare_only: bool,
@@ -768,9 +966,13 @@ pub struct ReleaseQualifyRunArgs {
     #[arg(long, default_value = "staging", value_parser = ["staging", "rollout", "complete"])]
     pub phase: String,
 
-    /// Canonical channel/generation/partition intent, required for rollout signing
-    #[arg(long)]
-    pub rollout_intent: Option<PathBuf>,
+    /// Rollout ring being admitted, required for the rollout phase
+    #[arg(long, required_if_eq("phase", "rollout"))]
+    pub ring: Option<u16>,
+
+    /// Expected channel generation before the ring, required for the rollout phase
+    #[arg(long, required_if_eq("phase", "rollout"))]
+    pub prior_generation: Option<u64>,
 
     /// Current journal, required for rollout and completion qualification
     #[arg(long)]
@@ -783,7 +985,7 @@ pub struct ReleaseQualifyRunArgs {
     #[arg(long)]
     pub bundle: PathBuf,
 
-    /// Exact signed staging receipt returned by the Hub
+    /// Publication receipt of the surface under test
     #[arg(long, alias = "publication-receipt")]
     pub staging_receipt: PathBuf,
 
@@ -795,8 +997,13 @@ pub struct ReleaseQualifyRunArgs {
     #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
     pub trusted_keys: Vec<String>,
 
-    /// Independently trusted staging Hub receipt key as KEY_ID=PATH
-    #[arg(long = "hub-receipt-key", value_name = "KEY_ID=PATH", required = true)]
+    /// Receipt key of the surface under test as KEY_ID=PATH
+    #[arg(
+        long = "hub-receipt-key",
+        alias = "receipt-key",
+        value_name = "KEY_ID=PATH",
+        required = true
+    )]
     pub hub_receipt_keys: Vec<String>,
 
     /// Executor as PLATFORM=ABSOLUTE_PATH for each applicable platform
@@ -850,23 +1057,23 @@ pub struct ReleaseQualifyRunArgs {
 
 #[derive(Args)]
 pub struct ReleaseRecordArgs {
+    /// Production destination whose staging qualification is recorded
+    #[arg(long)]
+    pub to: String,
+
     /// Closed finalized bundle already qualified in staging
     #[arg(long)]
     pub bundle: PathBuf,
-
-    /// Canonical qualification receipt payload
-    #[arg(long)]
-    pub qualification_receipt: PathBuf,
 
     /// Exact signed qualification envelope
     #[arg(long)]
     pub signed_qualification: PathBuf,
 
-    /// Canonical complete gate/platform qualification report
+    /// Canonical staging-phase qualification report
     #[arg(long)]
     pub qualification_report: PathBuf,
 
-    /// Exact signed staging receipt the qualification binds
+    /// Exact staging publication receipt the qualification binds
     #[arg(long)]
     pub staging_receipt: PathBuf,
 
@@ -887,69 +1094,6 @@ pub struct ReleaseRecordArgs {
     pub output: PathBuf,
 }
 
-#[derive(Debug, Args)]
-pub struct ReleasePromoteArgs {
-    /// Closed finalized bundle already qualified in staging
-    #[arg(long)]
-    pub bundle: PathBuf,
-
-    /// Qualified append-only journal
-    #[arg(long)]
-    pub journal: PathBuf,
-
-    /// Exact signed staging receipt
-    #[arg(long)]
-    pub staging_receipt: PathBuf,
-
-    /// Canonical qualification receipt payload
-    #[arg(long)]
-    pub qualification_receipt: PathBuf,
-
-    /// Exact signed qualification envelope
-    #[arg(long)]
-    pub signed_qualification: PathBuf,
-
-    /// Canonical complete gate/platform qualification report
-    #[arg(long)]
-    pub qualification_report: PathBuf,
-
-    /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
-    #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
-    pub trusted_keys: Vec<String>,
-
-    /// Independently trusted staging Hub receipt key as KEY_ID=PATH
-    #[arg(
-        long = "staging-receipt-key",
-        value_name = "KEY_ID=PATH",
-        required = true
-    )]
-    pub staging_receipt_keys: Vec<String>,
-
-    /// Independently trusted qualification key as KEY_ID=PATH
-    #[arg(
-        long = "qualification-key",
-        value_name = "KEY_ID=PATH",
-        required = true
-    )]
-    pub qualification_keys: Vec<String>,
-
-    /// Independently trusted production Hub receipt key as KEY_ID=PATH
-    #[arg(
-        long = "production-receipt-key",
-        value_name = "KEY_ID=PATH",
-        required = true
-    )]
-    pub production_receipt_keys: Vec<String>,
-
-    /// Short-lived production-only Hub access token
-    #[arg(long, env = "AOS_TOKEN", hide_env_values = true)]
-    pub token: Option<String>,
-
-    /// New production evidence directory; existing paths are never replaced
-    #[arg(long)]
-    pub output: PathBuf,
-}
-
 #[derive(Subcommand)]
 pub enum ReleaseChannelCommand {
     /// Compare-and-swap one planned channel partition range
@@ -960,64 +1104,64 @@ pub enum ReleaseChannelCommand {
 
 #[derive(Args)]
 pub struct ReleaseChannelAdvanceArgs {
-    /// Signed current rollout qualification directory
+    /// Destination whose channel advances
+    #[arg(long)]
+    pub to: String,
+
+    /// One-based rollout ring to advance
+    #[arg(long)]
+    pub ring: u16,
+
+    /// Expected channel generation; read from a static surface when omitted
+    #[arg(long)]
+    pub prior_generation: Option<u64>,
+
+    /// Signed rollout qualification directory for this ring
     #[arg(long)]
     pub qualification: Option<PathBuf>,
 
-    /// Planned qualification authority public key as KEY_ID=PATH
-    #[arg(long = "qualification-key")]
+    /// Qualification authority key as KEY_ID=PATH
+    #[arg(long = "qualification-key", value_name = "KEY_ID=PATH")]
     pub qualification_keys: Vec<String>,
+
     /// Closed finalized bundle whose manifest is being rolled out
     #[arg(long)]
     pub bundle: PathBuf,
 
-    /// Promoted or rolling append-only journal
+    /// Current append-only journal
     #[arg(long)]
     pub journal: PathBuf,
 
-    /// Exact signed production publication receipt
-    #[arg(long)]
-    pub production_receipt: PathBuf,
+    /// Destination surface publication receipt
+    #[arg(long, alias = "production-receipt")]
+    pub publication_receipt: PathBuf,
 
-    /// Planned channel name
-    #[arg(long)]
-    pub channel: String,
-
-    /// Expected prior channel generation
-    #[arg(long)]
-    pub prior_generation: u64,
-
-    /// Inclusive first planned partition
-    #[arg(long)]
-    pub first_partition: u16,
-
-    /// Inclusive final planned partition
-    #[arg(long)]
-    pub last_partition: u16,
+    /// Channel receipt of an earlier ring of this destination; repeatable
+    #[arg(long = "channel-receipt")]
+    pub channel_receipts: Vec<PathBuf>,
 
     /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
     #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
     pub trusted_keys: Vec<String>,
 
-    /// Independently trusted production Hub receipt key as KEY_ID=PATH
-    #[arg(
-        long = "production-receipt-key",
-        value_name = "KEY_ID=PATH",
-        required = true
-    )]
-    pub production_receipt_keys: Vec<String>,
+    /// Destination surface receipt key as KEY_ID=PATH
+    #[arg(long = "receipt-key", value_name = "KEY_ID=PATH", required = true)]
+    pub receipt_keys: Vec<String>,
 
-    /// Independently trusted channel receipt key as KEY_ID=PATH
-    #[arg(
-        long = "channel-receipt-key",
-        value_name = "KEY_ID=PATH",
-        required = true
-    )]
+    /// Channel receipt key as KEY_ID=PATH; defaults to the receipt keys
+    #[arg(long = "channel-receipt-key", value_name = "KEY_ID=PATH")]
     pub channel_receipt_keys: Vec<String>,
 
-    /// Short-lived production-only Hub access token
+    #[command(flatten)]
+    pub fitness: ReleaseFitnessInputArgs,
+
+    /// Short-lived access token for a Hub surface
     #[arg(long, env = "AOS_TOKEN", hide_env_values = true)]
     pub token: Option<String>,
+
+    /// Maintainer configuration with static-surface credentials and signers
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 
     /// New channel evidence directory; existing paths are never replaced
     #[arg(long)]
@@ -1026,26 +1170,31 @@ pub struct ReleaseChannelAdvanceArgs {
 
 #[derive(Args)]
 pub struct ReleaseChannelCompleteArgs {
-    /// Signed current completion qualification directory
+    /// Destination whose rollout completes
+    #[arg(long)]
+    pub to: String,
+
+    /// Signed completion qualification directory
     #[arg(long)]
     pub qualification: Option<PathBuf>,
 
-    /// Planned qualification authority public key as KEY_ID=PATH
-    #[arg(long = "qualification-key")]
+    /// Qualification authority key as KEY_ID=PATH
+    #[arg(long = "qualification-key", value_name = "KEY_ID=PATH")]
     pub qualification_keys: Vec<String>,
+
     /// Closed finalized bundle whose rollout is completing
     #[arg(long)]
     pub bundle: PathBuf,
 
-    /// Rolling append-only journal containing every channel operation
+    /// Rolling append-only journal containing every ring
     #[arg(long)]
     pub journal: PathBuf,
 
-    /// Exact signed production publication receipt
-    #[arg(long)]
-    pub production_receipt: PathBuf,
+    /// Destination surface publication receipt
+    #[arg(long, alias = "production-receipt")]
+    pub publication_receipt: PathBuf,
 
-    /// Signed channel receipt; repeat for every planned range
+    /// Signed channel receipt; repeat for every planned ring
     #[arg(long = "channel-receipt", required = true)]
     pub channel_receipts: Vec<PathBuf>,
 
@@ -1057,20 +1206,12 @@ pub struct ReleaseChannelCompleteArgs {
     #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]
     pub trusted_keys: Vec<String>,
 
-    /// Independently trusted production Hub receipt key as KEY_ID=PATH
-    #[arg(
-        long = "production-receipt-key",
-        value_name = "KEY_ID=PATH",
-        required = true
-    )]
-    pub production_receipt_keys: Vec<String>,
+    /// Destination surface receipt key as KEY_ID=PATH
+    #[arg(long = "receipt-key", value_name = "KEY_ID=PATH", required = true)]
+    pub receipt_keys: Vec<String>,
 
-    /// Independently trusted channel receipt key as KEY_ID=PATH
-    #[arg(
-        long = "channel-receipt-key",
-        value_name = "KEY_ID=PATH",
-        required = true
-    )]
+    /// Channel receipt key as KEY_ID=PATH; defaults to the receipt keys
+    #[arg(long = "channel-receipt-key", value_name = "KEY_ID=PATH")]
     pub channel_receipt_keys: Vec<String>,
 
     /// Release-evidence key as KEY_ID=PATH; repeat for the planned threshold
@@ -1124,6 +1265,10 @@ pub struct ReleaseStatusArgs {
     /// Canonical append-only release journal
     #[arg(long)]
     pub journal: PathBuf,
+
+    /// Frozen plan, to list destinations not yet published
+    #[arg(long)]
+    pub plan: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -1206,6 +1351,18 @@ pub struct ReleasePlanArgs {
     #[arg(long = "contributor-authorization")]
     pub contributor_authorization: PathBuf,
 
+    /// Predecessor manifest (payload or envelope) used to compute the change scope
+    #[arg(long)]
+    pub predecessor_manifest: Option<PathBuf>,
+
+    /// Directory of signed profile-override envelopes; repeatable
+    #[arg(long = "override")]
+    pub overrides: Vec<PathBuf>,
+
+    /// Release-evidence key as KEY_ID=PATH that may approve overrides
+    #[arg(long = "override-key", value_name = "KEY_ID=PATH")]
+    pub override_keys: Vec<String>,
+
     /// New canonical release-plan path; existing files are never replaced
     #[arg(long)]
     pub output: PathBuf,
@@ -1226,450 +1383,5 @@ pub struct ReleaseVerifyArgs {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use clap::Parser as _;
-
-    use super::ReleaseCommand;
-    use crate::cli::{Cli, Commands};
-
-    #[test]
-    fn assembler_accepts_repeatable_image_sets_and_optional_container() {
-        let Ok(parsed) = Cli::try_parse_from([
-            "aos",
-            "release",
-            "assemble",
-            "--plan",
-            "plan.json",
-            "--build-report",
-            "build.json",
-            "--sbom",
-            "sbom.json",
-            "--contributor-authorization",
-            "authorization.json",
-            "--advisory-disposition",
-            "advisories.json",
-            "--cache",
-            "cache",
-            "--cache-key",
-            "cache-1=cache-1.pub",
-            "--registry",
-            "registry",
-            "--registry-result",
-            "registry-result.json",
-            "--image-set",
-            "images/amd64",
-            "--image-set",
-            "images/arm64",
-            "--container",
-            "container",
-            "--completed-at",
-            "2026-09-03T14:00:00Z",
-            "--output",
-            "assembled",
-        ]) else {
-            panic!("release assemble arguments should parse");
-        };
-        let Commands::Release {
-            command: ReleaseCommand::Assemble(args),
-        } = parsed.command
-        else {
-            panic!("expected release assemble command");
-        };
-        assert_eq!(args.image_sets.len(), 2);
-        assert_eq!(args.container, Some(PathBuf::from("container")));
-        assert_eq!(args.output, PathBuf::from("assembled"));
-    }
-
-    #[test]
-    fn verifier_requires_explicit_trust_input() {
-        assert!(Cli::try_parse_from(["aos", "release", "verify", "bundle"]).is_err());
-
-        let Ok(parsed) = Cli::try_parse_from([
-            "aos",
-            "release",
-            "verify",
-            "bundle",
-            "--trusted-key",
-            "release=/keys/release.pub",
-        ]) else {
-            panic!("release verifier arguments should parse");
-        };
-        assert!(matches!(parsed.command, Commands::Release { .. }));
-    }
-
-    #[test]
-    fn planner_requires_review_and_authorization_inputs() {
-        assert!(
-            Cli::try_parse_from([
-                "aos",
-                "release",
-                "plan",
-                "--request",
-                "request.json",
-                "--contributor-authorization",
-                "authorization.json",
-                "--output",
-                "release-plan.json",
-            ])
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn build_captures_its_completion_time() {
-        let command = [
-            "aos",
-            "release",
-            "build",
-            "--plan",
-            "release-plan.json",
-            "--output",
-            "release-build",
-            "--started-at",
-            "2026-09-03T10:00:00Z",
-        ];
-        assert!(Cli::try_parse_from(command).is_ok());
-
-        let supplied_completion = command
-            .into_iter()
-            .chain(["--completed-at", "2026-09-03T12:00:00Z"]);
-        assert!(Cli::try_parse_from(supplied_completion).is_err());
-    }
-
-    #[test]
-    fn image_finalization_requires_explicit_role_keys() {
-        assert!(
-            Cli::try_parse_from([
-                "aos",
-                "release",
-                "finalize-image",
-                "--plan",
-                "release-plan.json",
-                "--assembly",
-                "/nix/store/example-assembly",
-                "--signer-executable",
-                "/opt/aos/signer",
-                "--work",
-                "/var/lib/aos-release/work",
-            ])
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn registry_preparation_requires_provenance_role_key() {
-        let base = [
-            "aos",
-            "release",
-            "prepare-registry",
-            "--plan",
-            "release-plan.json",
-            "--build-report",
-            "build-report.json",
-            "--source-registry",
-            "registry",
-            "--output",
-            "isolated-registry",
-            "--transaction",
-            "registry-transaction.json",
-            "--signer-executable",
-            "/opt/aos/signer",
-            "--provenance-key",
-            "provenance=provenance.pub",
-            "--provenance-verification-identity",
-            "provider-provenance",
-        ];
-        assert!(Cli::try_parse_from(base).is_ok());
-
-        let with_container = base
-            .into_iter()
-            .chain([
-                "--container-release",
-                "container-release.json",
-                "--container-signature-input",
-                "signature-input.json",
-            ])
-            .collect::<Vec<_>>();
-        assert!(Cli::try_parse_from(with_container).is_ok());
-
-        let unpaired = base
-            .into_iter()
-            .chain(["--container-release", "container-release.json"])
-            .collect::<Vec<_>>();
-        assert!(Cli::try_parse_from(unpaired).is_err());
-    }
-
-    #[test]
-    fn registry_finalization_requires_reviewed_tree_and_registry_key() {
-        let base = [
-            "aos",
-            "release",
-            "finalize-registry",
-            "--plan",
-            "release-plan.json",
-            "--build-report",
-            "build-report.json",
-            "--transaction",
-            "registry-transaction.json",
-            "--prepared-registry",
-            "isolated-registry",
-            "--result",
-            "registry-result.json",
-            "--signer-executable",
-            "/opt/aos/signer",
-            "--registry-key",
-            "registry=registry.pub",
-            "--registry-verification-identity",
-            "provider-registry",
-            "--git-name",
-            "AOS Release",
-            "--git-email",
-            "release@example.invalid",
-            "--git-unix-seconds",
-            "1",
-        ];
-        assert!(Cli::try_parse_from(base).is_ok());
-
-        let with_container = base
-            .into_iter()
-            .chain([
-                "--container-release",
-                "container-release.json",
-                "--container-signature-input",
-                "signature-input.json",
-            ])
-            .collect::<Vec<_>>();
-        assert!(Cli::try_parse_from(with_container).is_ok());
-
-        let unpaired = base
-            .into_iter()
-            .chain(["--container-release", "container-release.json"])
-            .collect::<Vec<_>>();
-        assert!(Cli::try_parse_from(unpaired).is_err());
-    }
-
-    #[test]
-    fn bundle_finalization_requires_provider_identity_for_signers() {
-        assert!(
-            Cli::try_parse_from([
-                "aos",
-                "release",
-                "finalize",
-                "--plan",
-                "release-plan.json",
-                "--payload",
-                "payload",
-                "--manifest-payload",
-                "manifest-payload.json",
-                "--journal",
-                "release-journal.jsonl",
-                "--signing-key",
-                "release-1=release-1.pub",
-                "--verification-identity",
-                "release-1=provider-slot-1",
-                "--signer-executable",
-                "/opt/aos/signer",
-                "--recorded-at",
-                "2026-09-03T12:00:00Z",
-                "--output",
-                "finalized",
-            ])
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn tuf_construction_requires_each_online_release_role() {
-        assert!(
-            Cli::try_parse_from([
-                "aos",
-                "release",
-                "tuf",
-                "--plan",
-                "release-plan.json",
-                "--bundle",
-                "bundle",
-                "--manifest-key",
-                "release=release.pub",
-                "--root",
-                "1.root.json",
-                "--trusted-root-key",
-                "root-1=root-1.pub",
-                "--targets-key",
-                "targets-1=targets-1.pub",
-                "--delegated-key",
-                "stable-1=stable-1.pub",
-                "--snapshot-key",
-                "snapshot-1=snapshot-1.pub",
-                "--signer-executable",
-                "/opt/aos/signer",
-                "--targets-version",
-                "1",
-                "--delegated-version",
-                "1",
-                "--snapshot-version",
-                "1",
-                "--targets-expires",
-                "2027-01-01T00:00:00Z",
-                "--delegated-expires",
-                "2027-01-01T00:00:00Z",
-                "--snapshot-expires",
-                "2027-01-01T00:00:00Z",
-                "--now",
-                "2026-09-03T12:00:00Z",
-                "--output",
-                "tuf",
-            ])
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn cache_finalization_requires_external_key_and_provider_identity() {
-        assert!(
-            Cli::try_parse_from([
-                "aos",
-                "release",
-                "finalize-cache",
-                "--plan",
-                "release-plan.json",
-                "--build-report",
-                "build-report.json",
-                "--registry",
-                "registry",
-                "--cache-key",
-                "cache-1=cache-1.pub",
-                "--verification-identity",
-                "provider-cache-slot",
-                "--signer-executable",
-                "/opt/aos/signer",
-                "--output",
-                "cache",
-            ])
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn qualification_run_requires_native_matrix_and_authority_inputs() {
-        assert!(
-            Cli::try_parse_from([
-                "aos",
-                "release",
-                "qualify-run",
-                "--bundle",
-                "bundle",
-                "--staging-receipt",
-                "staging.json",
-                "--trusted-key",
-                "release=release.pub",
-                "--hub-receipt-key",
-                "staging=staging.pub",
-                "--executor",
-                "x86_64-linux=/opt/aos/qualify-linux-x86",
-                "--executor",
-                "aarch64-linux=/opt/aos/qualify-linux-arm",
-                "--executor",
-                "x86_64-darwin=/opt/aos/qualify-darwin-x86",
-                "--executor",
-                "aarch64-darwin=/opt/aos/qualify-darwin-arm",
-                "--executor-identity",
-                "x86_64-linux=linux-x86-v1",
-                "--executor-identity",
-                "aarch64-linux=linux-arm-v1",
-                "--executor-identity",
-                "x86_64-darwin=darwin-x86-v1",
-                "--executor-identity",
-                "aarch64-darwin=darwin-arm-v1",
-                "--authority-executable",
-                "/opt/aos/signer",
-                "--authority-key",
-                "qualification=qualification.pub",
-                "--authority-verification-identity",
-                "qualification-provider-v1",
-                "--executor-nonce",
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                "--authority-nonce",
-                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-                "--qualified-at",
-                "2026-09-03T12:00:00Z",
-                "--output",
-                "qualification",
-            ])
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn qualification_response_requires_one_report_source() {
-        let base = [
-            "aos",
-            "release",
-            "qualification",
-            "respond",
-            "--request",
-            "request.json",
-            "--scenarios",
-            "scenarios.json",
-            "--identity",
-            "linux-x86-v1",
-        ];
-
-        assert!(Cli::try_parse_from(base.into_iter().chain(["--report", "report.json"])).is_ok());
-        assert!(
-            Cli::try_parse_from(
-                base.into_iter()
-                    .chain(["--report-root", "/run/aos-release/reports"])
-            )
-            .is_ok()
-        );
-        assert!(Cli::try_parse_from(base).is_err());
-        assert!(
-            Cli::try_parse_from(base.into_iter().chain([
-                "--report",
-                "report.json",
-                "--report-root",
-                "/run/aos-release/reports",
-            ]))
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn surface_composition_requires_the_complete_tuf_set() {
-        assert!(
-            Cli::try_parse_from([
-                "aos",
-                "release",
-                "compose-surface",
-                "--plan",
-                "release-plan.json",
-                "--bundle",
-                "bundle",
-                "--manifest-key",
-                "release=release.pub",
-                "--base-surface",
-                "registry-surface",
-                "--root",
-                "12.root.json",
-                "--targets",
-                "43.targets.json",
-                "--delegated",
-                "19.stable.json",
-                "--snapshot",
-                "44.snapshot.json",
-                "--timestamp",
-                "87.timestamp.json",
-                "--trusted-root-key",
-                "root-1=root-1.pub",
-                "--now",
-                "2026-09-03T12:00:00Z",
-                "--output",
-                "complete-surface",
-            ])
-            .is_ok()
-        );
-    }
-}
+#[path = "release_tests.rs"]
+mod tests;

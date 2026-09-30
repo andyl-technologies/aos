@@ -49,8 +49,8 @@ in {
       then throw ("Invalid qualification policy: " + lib.concatStringsSep "; " (map (check: check.message) failures))
       else
         data {
-          schema_version = "aos.release.qualification-contract/v2";
-          inherit (cfg) id promises exclusions thresholds;
+          schema_version = "aos.release.qualification-contract/v1";
+          inherit (cfg) id promises exclusions;
           targets = named "id" (builtins.mapAttrs (_: target:
             target
             // {
@@ -76,6 +76,11 @@ in {
           support = {
             inherit (cfg.support) default trains;
           };
+          profiles = named "name" cfg.profiles;
+          # Destination keys are derived from the row, so the list carries no
+          # separate identity field; attribute order keeps it sorted by key.
+          destinations = builtins.attrValues cfg.destinations;
+          fitness = named "kind" cfg.fitness;
         };
   };
 }
