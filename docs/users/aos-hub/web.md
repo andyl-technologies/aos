@@ -17,6 +17,8 @@ named `cdn` in the `acme` organization:
 | Registry home | `/acme/cdn/` |
 | Packages | `/acme/cdn/-/packages` |
 | Package detail | `/acme/cdn/-/packages/<name>` |
+| Native documentation | `/acme/cdn/-/docs` |
+| Native reference detail | `/acme/cdn/-/docs/<name>/<version>/<platform>?release=<release>&digest=<sha256>` |
 | Channels | `/acme/cdn/-/channels` |
 | Channel detail | `/acme/cdn/-/channels/<name>` |
 | Releases | `/acme/cdn/-/releases` |
@@ -31,14 +33,18 @@ redirects to the exact version, so a copied link never drifts when a channel
 moves. Unknown releases are not found rather than falling back to another
 release.
 
-The Docs page is a configuration browser. The tree on the left is the scope:
-expand branches lazily or filter the loaded labels. The reader lists the
-current scope's children with their types and descriptions, or every option
-beneath it as dotted paths with **Options**, fifty per page.
-Opening a documented option shows its type, default, example, allowed values,
-activation, and declaration. With JavaScript enabled, choosing a scope swaps
-the reader in place and keeps the tree expanded; every link also works as an
-ordinary page load.
+The Docs page lists native package, option, and operation references generated
+from ordinary module declarations. Search by text or select a kind; the page
+shows up to 1,000 matching entries from the selected release. Each result opens
+its exact package version and platform with the release and document digest in
+the URL. Detail pages show option types, descriptions, and mutability, together
+with operation inputs/results and links between operations and their owning
+packages. The package detail page embeds the same native reference.
+
+Hub verifies the signed documentation directory and exact `options.json` bytes
+before rendering a detail page. A package without a native documentation
+artifact has no reference to browse. Private registry documentation requires
+the same access as the registry's other published data.
 
 The `/-/` segment keeps human-facing routes separate from the machine facade at
 the registry root. Git objects, AOS releases and channels, Nix cache metadata,
@@ -248,7 +254,14 @@ owners and the operations they declare, handle, or configure. Import an
 links, implementation programs, owners, and lifetimes.
 
 These are evaluated declarations and desired execution paths, not live state.
-Imported documents do not authenticate a publisher. Existing release ability
-pages link to this viewer; release ingest/search still uses its previous format
-until the consumer migration. See the [full guide](../aos/runtime-abilities.md)
+Imported documents do not authenticate a publisher. Published native references
+also appear in the release Docs and package pages, where Hub verifies their
+signed publication identity. See the [full guide](../aos/runtime-abilities.md)
 and [inspection API](api.md#inspect-a-native-runtime-document).
+
+
+Published release ability pages aggregate authenticated native declarations and
+link each reference with its exact release and document digest. They show
+operation contracts and definition owners. These pages describe release
+declarations; they do not show an executed deployment graph or verify live
+runtime state.

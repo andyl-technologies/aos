@@ -1087,38 +1087,40 @@ impl std::fmt::Display for RpcError {
 
 impl std::error::Error for RpcError {}
 
-fn package_documentation_identity(
-    locator: &crate::db::PackageDocumentationLocator,
+
+/// Projects authenticated native locator coordinates into the release identity envelope.
+fn native_documentation_identity(
+    locator: &crate::db::NativeDocumentationLocator,
 ) -> pb::PackageDocumentationIdentity {
     pb::PackageDocumentationIdentity {
-        registry_commit: locator.indexed_commit.clone(),
-        package: locator.package_name.clone(),
-        version: locator.package_version.clone(),
+        registry_commit: locator.commit.clone(),
+        package: locator.package.clone(),
+        version: locator.version.clone(),
         platform: locator.platform.clone(),
-        format: locator.artifact.format.clone(),
+        format: aos_doc_model::runtime::MODULE_DOCUMENTATION_SCHEMA.into(),
         store_path: locator.artifact.store_path.clone(),
         nar_hash: locator.artifact.nar_hash.clone(),
         nar_size: locator.artifact.nar_size,
         document_sha256: locator.artifact.document_sha256.clone(),
         document_size: locator.artifact.document_size,
-        semantic_schema_sha256: locator.artifact.semantic_schema_sha256.clone(),
-        release: locator.release.clone().unwrap_or_default(),
-        verified_tag_oid: locator.verified_tag_oid.clone().unwrap_or_default(),
-        release_snapshot_id: locator.release_snapshot_id.clone().unwrap_or_default(),
+        release: locator.release.clone(),
+        verified_tag_oid: locator.tag_oid.clone(),
+        release_snapshot_id: locator.snapshot_id.clone(),
     }
 }
 
 fn package_ability_reference_identity(
-    locator: &crate::db::PackageDocumentationLocator,
-    reference: &aos_doc_model::PackageAbilityReference,
+    locator: &crate::db::NativeDocumentationLocator,
 ) -> pb::PackageAbilityReferenceIdentity {
     pb::PackageAbilityReferenceIdentity {
-        registry_commit: locator.indexed_commit.clone(),
-        package: locator.package_name.clone(),
-        version: locator.package_version.clone(),
+        registry_commit: locator.commit.clone(),
+        package: locator.package.clone(),
+        version: locator.version.clone(),
         platform: locator.platform.clone(),
-        manifest_sha256: reference.manifest_sha256.to_string(),
-        package_digest: reference.package_digest.to_string(),
+        document_sha256: locator.artifact.document_sha256.clone(),
+        release: locator.release.clone(),
+        verified_tag_oid: locator.tag_oid.clone(),
+        release_snapshot_id: locator.snapshot_id.clone(),
     }
 }
 
@@ -1139,70 +1141,57 @@ fn stored_ability_deployment_response(
 
 fn decode_stored_package_ability_deployment(
     stored: &crate::db::StoredAbilityDeploymentOverlay,
-    locator: &crate::db::PackageDocumentationLocator,
-    projection: &aos_doc_model::PackageDocumentationProjection,
-) -> anyhow::Result<aos_doc_model::PackageAbilityDeploymentOverlay> {
-    let overlay = aos_doc_model::PackageAbilityDeploymentOverlay::from_canonical_json(
-        &stored.canonical_json,
-    )?;
+    reference: &aos_doc_model::runtime::deployment::ReleasedReference,
+) -> anyhow::Result<aos_doc_model::runtime::deployment::NativeDeploymentReport> {
+    let report =
+        aos_doc_model::runtime::deployment::NativeDeploymentReport::decode(&stored.canonical_json)?;
     anyhow::ensure!(
-        overlay.deployment.as_str() == stored.deployment && overlay.sequence == stored.sequence,
-        "stored package ability deployment identity mismatch"
+        report.deployment == stored.deployment && report.sequence == stored.sequence,
+        "stored native report identity differs"
     );
-    overlay.validate_against_reference(
-        &locator.indexed_commit,
-        &locator.platform,
-        &projection.ability_reference,
-    )?;
-    Ok(overlay)
+    let validity = i64::try_from(report.valid_for_seconds)?;
+    let reported_at = i64::try_from(report.reported_at_unix_seconds)?;
+    anyhow::ensure!(
+        stored.expires_at
+            == stored
+                .received_at
+                .saturating_add(validity)
+                .min(reported_at.saturating_add(validity))
+            && reported_at
+                <= stored
+                    .received_at
+                    .saturating_add(ABILITY_DEPLOYMENT_MAX_FUTURE_SKEW_SECS),
+        "stored native report freshness differs from its assertion and receipt"
+    );
+    report.validate_reference(reference)?;
+    Ok(report)
 }
 
-fn package_option_view(
+fn native_option_view(
     identity: &pb::PackageDocumentationIdentity,
-    option: &aos_doc_model::OptionDocument,
+    option: &aos_doc_model::runtime::NativeOption,
 ) -> anyhow::Result<pb::PackageOptionView> {
     Ok(pb::PackageOptionView {
         identity: Some(identity.clone()),
         path: option
             .path
             .iter()
-            .map(|segment| pb::DocumentationPathSegment {
-                segment: Some(match segment {
-                    aos_doc_model::PathSegment::Literal { value } => {
-                        pb::documentation_path_segment::Segment::Literal(value.clone())
-                    }
-                    aos_doc_model::PathSegment::Wildcard { name } => {
-                        pb::documentation_path_segment::Segment::Wildcard(name.clone())
-                    }
-                }),
+            .map(|value| pb::DocumentationPathSegment {
+                segment: Some(pb::documentation_path_segment::Segment::Literal(
+                    value.clone(),
+                )),
             })
             .collect(),
-        display_path: option.display_path.clone(),
-        r#type: option.type_signature.clone(),
-        owner_package: option.owner.package.clone(),
-        owner_root: option.owner.root.clone(),
+        display_path: option.path.join("."),
+        r#type: aos_doc_model::runtime::type_signature(&option.option_type)?,
+        owner_package: option.owner.clone(),
+        owner_root: String::new(),
         extensible: option.extensible,
         canonical_option_json: serde_json::to_vec(option)?,
     })
 }
 
-fn proto_documentation_path(
-    path: &[pb::DocumentationPathSegment],
-) -> Result<Vec<aos_doc_model::PathSegment>, RpcError> {
-    path.iter()
-        .map(|segment| match segment.segment.as_ref() {
-            Some(pb::documentation_path_segment::Segment::Literal(value)) if !value.is_empty() => {
-                Ok(aos_doc_model::PathSegment::Literal {
-                    value: value.clone(),
-                })
-            }
-            Some(pb::documentation_path_segment::Segment::Wildcard(name)) if !name.is_empty() => {
-                Ok(aos_doc_model::PathSegment::Wildcard { name: name.clone() })
-            }
-            _ => Err(RpcError::invalid("option path contains an empty segment")),
-        })
-        .collect()
-}
+
 
 fn is_sha256_digest(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|hex| {
@@ -11560,33 +11549,38 @@ impl RpcService {
         self.require_read(auth, &registry).await?;
         let locator = self
             .db
-            .resolve_package_documentation_locator(
+            .native_documentation_locator(
                 registry.id,
                 &req.package,
                 &req.version,
                 &req.platform,
+                (!req.release.is_empty()).then_some(req.release.as_str()),
             )
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("package documentation"))?;
-        let document = self
-            .load_package_documentation_locator(registry.id, &locator)
+            .ok_or_else(|| RpcError::not_found("native package documentation"))?;
+        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry.id));
+        let (canonical_json, _) =
+            crate::indexer::native_documentation::fetch_native_documentation_content(
+                fetch.as_ref(),
+                &locator.package,
+                &locator.version,
+                &locator.platform,
+                &locator.artifact,
+            )
             .await
             .map_err(RpcError::internal)?;
-        let canonical_json = document.canonical_json().map_err(RpcError::internal)?;
-        let identity = package_documentation_identity(&locator);
-        let artifact = locator.artifact;
         Ok(pb::GetPackageDocumentationResponse {
-            identity: Some(identity),
+            identity: Some(native_documentation_identity(&locator)),
             canonical_json,
-            etag: artifact.document_sha256,
+            etag: locator.artifact.document_sha256,
         })
     }
 
-    /// Returns the ability view derived from the signed package reference.
+    /// Returns exact native declarations retained by a completed signed release.
     ///
-    /// The response keeps the release contract's manifest and semantic package
-    /// identities separate from package-authored documentation identity.
+    /// The response pins the native documentation digest, release, commit, tag,
+    /// and completed snapshot. It does not authenticate observed live state.
     /// Empty version/platform selectors use the same deterministic package
     /// selection rules as documentation reads. A release selector additionally
     /// requires the indexed reference commit to equal that release's commit.
@@ -11602,48 +11596,37 @@ impl RpcService {
     ) -> Result<pb::GetPackageAbilityReferenceResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
-        let documentation_locator = if req.release.is_empty() {
-            self.db
-                .resolve_package_documentation_locator(
-                    registry.id,
-                    &req.package,
-                    &req.version,
-                    &req.platform,
-                )
-                .await
-                .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("package reference"))?
-        } else {
-            self.db
-                .package_documentation_locator_at_release(
-                    registry.id,
-                    &req.release,
-                    &req.package,
-                    &req.version,
-                    &req.platform,
-                )
-                .await
-                .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("package reference"))?
-        };
-        let projection = self
-            .load_package_documentation_locator(registry.id, &documentation_locator)
+        let locator = self
+            .db
+            .native_documentation_locator(
+                registry.id,
+                &req.package,
+                &req.version,
+                &req.platform,
+                (!req.release.is_empty()).then_some(req.release.as_str()),
+            )
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("native package reference"))?;
+        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry.id));
+        let (canonical_json, _) =
+            crate::indexer::native_documentation::fetch_native_documentation_content(
+                fetch.as_ref(),
+                &locator.package,
+                &locator.version,
+                &locator.platform,
+                &locator.artifact,
+            )
             .await
             .map_err(RpcError::internal)?;
-        let reference = projection.ability_reference;
-        let canonical_json = reference.canonical_json().map_err(RpcError::internal)?;
-        let etag = hex::encode(Sha256::digest(&canonical_json));
         Ok(pb::GetPackageAbilityReferenceResponse {
-            identity: Some(package_ability_reference_identity(
-                &documentation_locator,
-                &reference,
-            )),
+            identity: Some(package_ability_reference_identity(&locator)),
+            etag: locator.artifact.document_sha256,
             canonical_json,
-            etag,
         })
     }
 
-    /// Returns the release-wide ability graph derived from signed package references.
+    /// Returns exact native operation declarations across one completed release.
     ///
     /// An empty release selects the registry's configured browsing release. An
     /// empty platform selects the first indexed platform in lexical order.
@@ -11669,20 +11652,107 @@ impl RpcService {
             req.release
         };
         let graph = self
-            .db
-            .release_ability_graph(registry.id, &release, &req.platform)
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("release ability graph"))?;
+            .native_release_graph_for_registry(registry.id, &release, &req.platform)
+            .await?;
+        let registry_commit = graph.registry_commit.clone();
+        let platform = graph.platform.clone();
+        let canonical_json = graph.canonical_bytes().map_err(RpcError::internal)?;
+        let etag = aos_contract::Sha256Digest::of_bytes(&canonical_json).to_string();
         Ok(pb::GetReleaseAbilityGraphResponse {
             identity: Some(pb::ReleaseAbilityGraphIdentity {
-                registry_commit: graph.source_commit,
-                release: graph.release,
-                platform: graph.platform,
-                graph_sha256: graph.content_digest.clone(),
+                registry_commit,
+                release,
+                platform,
+                graph_sha256: etag.clone(),
             }),
-            canonical_json: graph.canonical_json,
-            etag: graph.content_digest,
+            canonical_json,
+            etag,
+        })
+    }
+
+    /// Loads native desired declarations after the caller authorizes registry visibility.
+    ///
+    /// # Errors
+    /// Returns an error for incomplete releases, unavailable artifacts, or invalid native identities.
+    pub(crate) async fn native_release_graph_for_registry(
+        &self,
+        registry_id: i64,
+        release: &str,
+        selected_platform: &str,
+    ) -> Result<aos_doc_model::runtime::deployment::NativeReleaseGraph, RpcError> {
+        use aos_doc_model::runtime::deployment::{
+            NativePackageIdentity, NativeReleaseGraph, ReleasedReference,
+        };
+        let documents = self
+            .db
+            .native_documentation_at_release(registry_id, &release)
+            .await
+            .map_err(RpcError::internal)?;
+        let platform = if selected_platform.is_empty() {
+            documents
+                .iter()
+                .map(|document| document.platform.clone())
+                .min()
+                .ok_or_else(|| RpcError::not_found("native release references"))?
+        } else {
+            selected_platform.to_owned()
+        };
+        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry_id));
+        let mut references = Vec::new();
+        let mut commit = None;
+        for document in documents
+            .iter()
+            .filter(|document| document.platform == platform)
+        {
+            let locator = self
+                .db
+                .native_documentation_locator(
+                    registry_id,
+                    &document.package,
+                    &document.version,
+                    &platform,
+                    Some(&release),
+                )
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("native release reference"))?;
+            let (bytes, _) =
+                crate::indexer::native_documentation::fetch_native_documentation_content(
+                    fetch.as_ref(),
+                    &locator.package,
+                    &locator.version,
+                    &platform,
+                    &locator.artifact,
+                )
+                .await
+                .map_err(RpcError::internal)?;
+            commit = Some(locator.commit.clone());
+            references.push(ReleasedReference {
+                identity: NativePackageIdentity {
+                    registry_commit: locator.commit,
+                    package: locator.package,
+                    version: locator.version,
+                    platform: platform.clone(),
+                    document_sha256: aos_contract::Sha256Digest::parse(
+                        &locator.artifact.document_sha256,
+                    )
+                    .map_err(RpcError::internal)?,
+                },
+                reference_json: String::from_utf8(bytes).map_err(RpcError::internal)?,
+            });
+        }
+        references.sort_by(|left, right| {
+            (&left.identity.package, &left.identity.version)
+                .cmp(&(&right.identity.package, &right.identity.version))
+        });
+        let registry_commit =
+            commit.ok_or_else(|| RpcError::not_found("native release references"))?;
+        Ok(NativeReleaseGraph {
+            schema: "aos.module.release-graph".into(),
+            release: release.to_owned(),
+            registry_commit: registry_commit.clone(),
+            platform: platform.clone(),
+            references,
         })
     }
 
@@ -11906,7 +11976,7 @@ impl RpcService {
     ///
     /// Hub authenticates the bearer and exact package reference, records its own
     /// receipt time, bounds expiry, and performs the enrollment/sequence update
-    /// atomically. The assertion carries no executable operation.
+    /// atomically. Hub does not invoke handlers from the assertion.
     ///
     /// # Errors
     ///
@@ -11948,30 +12018,25 @@ impl RpcService {
                 "active deployment reporter enrollment required".into(),
             ));
         }
-        let overlay = aos_doc_model::PackageAbilityDeploymentOverlay::from_canonical_json(
-            &req.canonical_json,
-        )
-        .map_err(|error| RpcError::invalid(error.to_string()))?;
-        if overlay.deployment.as_str() != req.deployment {
+        let overlay =
+            aos_doc_model::runtime::deployment::NativeDeploymentReport::decode(&req.canonical_json)
+                .map_err(|error| RpcError::invalid(error.to_string()))?;
+        if overlay.deployment != req.deployment || overlay.valid_for_seconds > 300 {
             return Err(RpcError::invalid(
-                "deployment overlay does not match its reporter slot",
+                "native report slot differs or validity exceeds 300 seconds",
             ));
         }
-        let (locator, projection) = self
+        let (locator, reference) = self
             .load_exact_package_ability_reference(
                 registry.id,
                 &overlay.package.registry_commit,
-                overlay.package.package.as_str(),
+                &overlay.package.package,
                 &overlay.package.version,
                 &overlay.package.platform,
             )
             .await?;
         overlay
-            .validate_against_reference(
-                &locator.indexed_commit,
-                &locator.platform,
-                &projection.ability_reference,
-            )
+            .validate_reference(&reference)
             .map_err(|error| RpcError::invalid(error.to_string()))?;
 
         let now = clock::now_unix_secs();
@@ -11993,9 +12058,11 @@ impl RpcService {
             ));
         }
 
-        let reference = &projection.ability_reference;
-        let manifest_sha256 = reference.manifest_sha256.to_string();
-        let package_digest = reference.package_digest.to_string();
+        let document_sha256 = reference.identity.document_sha256.to_string();
+        let transaction_sha256 = aos_contract::Sha256Digest::of_bytes(
+            aos_contract::canonical::to_vec(&overlay.graph).map_err(RpcError::internal)?,
+        )
+        .to_string();
         self.db
             .accept_package_ability_deployment_overlay(
                 registry.id,
@@ -12004,12 +12071,12 @@ impl RpcService {
                 principal.id,
                 req.reporter_resource_version,
                 overlay.sequence,
-                &locator.indexed_commit,
-                &locator.package_name,
-                &locator.package_version,
+                &locator.commit,
+                &locator.package,
+                &locator.version,
                 &locator.platform,
-                &manifest_sha256,
-                &package_digest,
+                &document_sha256,
+                &transaction_sha256,
                 &req.canonical_json,
                 overlay.reported_at_unix_seconds,
                 now,
@@ -12030,7 +12097,7 @@ impl RpcService {
         })
     }
 
-    /// Returns one exact fresh private deployment overlay.
+    /// Returns one exact fresh private native deployment assertion.
     ///
     /// The caller must hold `audit.read` at the registry scope. The read
     /// rechecks enrollment, principal liveness, expiry, canonical bytes, and the
@@ -12054,7 +12121,7 @@ impl RpcService {
             .map_err(RpcError::internal)?;
         self.require_permission(&claims, Permission::AuditRead, &Scope::parse(&scope_key))
             .await?;
-        let (locator, projection) = self
+        let (locator, reference) = self
             .load_exact_package_ability_reference(
                 registry.id,
                 &req.registry_commit,
@@ -12068,16 +12135,16 @@ impl RpcService {
             .package_ability_deployment_overlay(
                 registry.id,
                 &req.deployment,
-                &locator.indexed_commit,
-                &locator.package_name,
-                &locator.package_version,
+                &locator.commit,
+                &locator.package,
+                &locator.version,
                 &locator.platform,
                 clock::now_unix_secs(),
             )
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("fresh package ability deployment overlay"))?;
-        self.verify_stored_package_ability_deployment(&stored, &locator, &projection)
+        self.verify_stored_package_ability_deployment(&stored, &reference)
             .await?;
         Ok(stored_ability_deployment_response(stored))
     }
@@ -12091,35 +12158,69 @@ impl RpcService {
         platform: &str,
     ) -> Result<
         (
-            crate::db::PackageDocumentationLocator,
-            aos_doc_model::PackageDocumentationProjection,
+            crate::db::NativeDocumentationLocator,
+            aos_doc_model::runtime::deployment::ReleasedReference,
         ),
         RpcError,
     > {
-        let documentation_locator = self
+        use aos_doc_model::runtime::deployment::{NativePackageIdentity, ReleasedReference};
+        let releases = self
             .db
-            .package_documentation_locator_at_release(
-                registry_id,
-                registry_commit,
-                package,
-                version,
-                platform,
-            )
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("exact package reference"))?;
-        let projection = self
-            .load_package_documentation_locator(registry_id, &documentation_locator)
+            .list_releases(registry_id)
             .await
             .map_err(RpcError::internal)?;
-        Ok((documentation_locator, projection))
+        for release in releases
+            .iter()
+            .filter(|release| release.commit_oid == registry_commit)
+        {
+            let Some(locator) = self
+                .db
+                .native_documentation_locator(
+                    registry_id,
+                    package,
+                    version,
+                    platform,
+                    Some(&release.semver),
+                )
+                .await
+                .map_err(RpcError::internal)?
+            else {
+                continue;
+            };
+            let fetch =
+                self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry_id));
+            let (bytes, _) =
+                crate::indexer::native_documentation::fetch_native_documentation_content(
+                    fetch.as_ref(),
+                    package,
+                    version,
+                    platform,
+                    &locator.artifact,
+                )
+                .await
+                .map_err(RpcError::internal)?;
+            let reference = ReleasedReference {
+                identity: NativePackageIdentity {
+                    registry_commit: locator.commit.clone(),
+                    package: package.into(),
+                    version: version.into(),
+                    platform: platform.into(),
+                    document_sha256: aos_contract::Sha256Digest::parse(
+                        &locator.artifact.document_sha256,
+                    )
+                    .map_err(RpcError::internal)?,
+                },
+                reference_json: String::from_utf8(bytes).map_err(RpcError::internal)?,
+            };
+            return Ok((locator, reference));
+        }
+        Err(RpcError::not_found("exact native package reference"))
     }
 
     pub(crate) async fn verify_stored_package_ability_deployment(
         &self,
         stored: &crate::db::StoredAbilityDeploymentOverlay,
-        locator: &crate::db::PackageDocumentationLocator,
-        projection: &aos_doc_model::PackageDocumentationProjection,
+        reference: &aos_doc_model::runtime::deployment::ReleasedReference,
     ) -> Result<(), RpcError> {
         if !self
             .db
@@ -12127,116 +12228,56 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
         {
-            return Err(RpcError::not_found(
-                "fresh package ability deployment overlay",
-            ));
+            return Err(RpcError::not_found("fresh native deployment assertion"));
         }
-        decode_stored_package_ability_deployment(stored, locator, projection)
+        decode_stored_package_ability_deployment(stored, reference)
             .map(|_| ())
             .map_err(RpcError::internal)
     }
 
-    /// Loads fresh overlays for an already authorized browser reference.
-    ///
-    /// The browser must first require `audit.read`; this helper then rechecks
-    /// each reporter's liveness and exact reference identity.
+    /// Resolves and rechecks one native reference through a completed signed release.
     ///
     /// # Errors
-    ///
-    /// Returns an error for database or retained-overlay integrity failures.
-    pub(crate) async fn load_package_ability_deployments_for_browser(
-        &self,
-        registry_id: i64,
-        locator: &crate::db::PackageDocumentationLocator,
-        projection: &aos_doc_model::PackageDocumentationProjection,
-    ) -> anyhow::Result<
-        Vec<(
-            crate::db::StoredAbilityDeploymentOverlay,
-            aos_doc_model::PackageAbilityDeploymentOverlay,
-        )>,
-    > {
-        let stored = self
-            .db
-            .package_ability_deployment_overlays(
-                registry_id,
-                &locator.indexed_commit,
-                &locator.package_name,
-                &locator.package_version,
-                &locator.platform,
-                clock::now_unix_secs(),
-            )
-            .await?;
-        let mut overlays = Vec::with_capacity(stored.len());
-        for item in stored {
-            if !self
-                .db
-                .principal_is_live(&item.principal_kind, item.principal_id)
-                .await?
-            {
-                continue;
-            }
-            let overlay = decode_stored_package_ability_deployment(&item, locator, projection)?;
-            overlays.push((item, overlay));
-        }
-        Ok(overlays)
-    }
-
-    /// Loads one checked package documentation view after authorization.
-    ///
-    /// The caller must already have authorized access to `registry_id`. The
-    /// signed metadata document supplies package identity. Option rows are
-    /// then derived from the exact checked PackageDocument reference selected
-    /// for the same package coordinate. The result is a transient view; callers
-    /// that return canonical artifact bytes use [`Self::load_package_documentation_locator`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for database, placement, transport, NAR, or canonical
-    /// document verification failures.
-    pub(crate) async fn load_package_documentation_for_registry(
+    /// Returns an error for unavailable selections, corrupt catalogs, placement failures,
+    /// or signed artifact mismatches. Callers must authorize registry reads first.
+    pub(crate) async fn load_native_documentation_for_registry(
         &self,
         registry_id: i64,
         package: &str,
         version: &str,
         platform: &str,
-    ) -> anyhow::Result<
-        Option<(
-            crate::db::PackageDocumentationLocator,
-            aos_doc_model::PackageDocumentationProjection,
-        )>,
+        release: Option<&str>,
+    ) -> Result<
+        (
+            crate::db::NativeDocumentationLocator,
+            aos_doc_model::runtime::RuntimeDocument,
+        ),
+        RpcError,
     > {
-        let Some(locator) = self
+        let locator = self
             .db
-            .resolve_package_documentation_locator(registry_id, package, version, platform)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let projection = self
-            .load_package_documentation_locator(registry_id, &locator)
-            .await?;
-        Ok(Some((locator, projection)))
+            .native_documentation_locator(registry_id, package, version, platform, release)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("native package documentation"))?;
+        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry_id));
+        let document = crate::indexer::native_documentation::fetch_native_documentation(
+            fetch.as_ref(),
+            &locator.package,
+            &locator.version,
+            &locator.platform,
+            &locator.artifact,
+        )
+        .await
+        .map_err(RpcError::internal)?;
+        Ok((locator, document))
     }
 
     /// Fetches and verifies a previously authorized indexed documentation reference.
     ///
     /// # Errors
     /// Returns an error for missing objects, placement failures, or invalid document integrity.
-    pub(crate) async fn load_package_documentation_locator(
-        &self,
-        registry_id: i64,
-        locator: &crate::db::PackageDocumentationLocator,
-    ) -> anyhow::Result<aos_doc_model::PackageDocumentationProjection> {
-        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry_id));
-        crate::indexer::fetch_package_documentation(
-            fetch.as_ref(),
-            &locator.package_name,
-            &locator.package_version,
-            &locator.platform,
-            &locator.artifact,
-        )
-        .await
-    }
+
 
     /// `DocumentationService.SearchPackageDocumentation` — ranked index search.
     ///
@@ -12251,36 +12292,79 @@ impl RpcService {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
         let kind = (!req.kind.is_empty()).then_some(req.kind.as_str());
-        if kind.is_some_and(|kind| !matches!(kind, "package" | "option" | "capability")) {
-            return Err(RpcError::invalid("unsupported documentation result kind"));
+        if kind.is_some_and(|kind| !matches!(kind, "package" | "option" | "operation")) {
+            return Err(RpcError::invalid(
+                "native documentation kind must be package, option, or operation",
+            ));
         }
-        let results = if req.query.trim().is_empty() {
-            self.db
-                .browse_package_documentation(registry.id, kind, MAX_DOCUMENTATION_RESULTS)
+        let terms = aos_doc_model::tokenize(&req.query);
+        let mut results = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for release in self
+            .db
+            .list_releases(registry.id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            let documents = self
+                .db
+                .native_documentation_at_release(registry.id, &release.semver)
                 .await
-        } else {
-            self.db
-                .search_package_documentation(
-                    registry.id,
-                    &req.query,
-                    kind,
-                    MAX_DOCUMENTATION_RESULTS,
+                .map_err(RpcError::internal)?;
+            for document in documents {
+                if !seen.insert((
+                    document.package.clone(),
+                    document.version.clone(),
+                    document.platform.clone(),
+                    document.document_sha256.clone(),
+                )) {
+                    continue;
+                }
+                for row in document.search {
+                    if kind.is_some_and(|kind| row.kind != kind)
+                        || !terms.iter().all(|term| row.terms.contains_key(term))
+                    {
+                        continue;
+                    }
+                    let score = terms
+                        .iter()
+                        .map(|term| u64::from(row.terms.get(term).copied().unwrap_or_default()))
+                        .sum();
+                    results.push(pb::PackageDocumentationSearchResult {
+                        package: document.package.clone(),
+                        version: document.version.clone(),
+                        platform: document.platform.clone(),
+                        kind: row.kind,
+                        key: row.key,
+                        title: row.title,
+                        summary: row.summary,
+                        score,
+                        release: release.semver.clone(),
+                        registry_commit: release.commit_oid.clone(),
+                        document_sha256: document.document_sha256.clone(),
+                    });
+                }
+            }
+        }
+        results.sort_by(|left, right| {
+            right.score.cmp(&left.score).then_with(|| {
+                (
+                    &left.package,
+                    &left.version,
+                    &left.platform,
+                    &left.kind,
+                    &left.key,
                 )
-                .await
-        }
-        .map_err(RpcError::internal)?
-        .into_iter()
-        .map(|result| pb::PackageDocumentationSearchResult {
-            package: result.package_name,
-            version: result.package_version,
-            platform: result.platform,
-            kind: result.kind,
-            key: result.key,
-            title: result.title,
-            summary: result.summary,
-            score: result.score,
-        })
-        .collect();
+                    .cmp(&(
+                        &right.package,
+                        &right.version,
+                        &right.platform,
+                        &right.kind,
+                        &right.key,
+                    ))
+            })
+        });
+        results.truncate(MAX_DOCUMENTATION_RESULTS);
         let (results, next_page_token) = paginate(results, req.page_size, &req.page_token)?;
         Ok(pb::SearchPackageDocumentationResponse {
             results,
@@ -12301,37 +12385,39 @@ impl RpcService {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
         let (locator, document) = self
-            .load_package_documentation_for_registry(
+            .load_native_documentation_for_registry(
                 registry.id,
                 &req.package,
                 &req.version,
                 &req.platform,
+                None,
             )
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("package documentation"))?;
-        let identity = package_documentation_identity(&locator);
+            .await?;
+        let identity = native_documentation_identity(&locator);
         let mut options = Vec::new();
-        for option in &document.options() {
-            if !req.prefix.is_empty() && !option.display_path.starts_with(&req.prefix) {
+        for option in document.options() {
+            let path = option.path.join(".");
+            let signature = aos_doc_model::runtime::type_signature(&option.option_type)
+                .map_err(RpcError::internal)?;
+            if !req.prefix.is_empty() && !path.starts_with(&req.prefix) {
                 continue;
             }
-            if !req.owner.is_empty()
-                && option.owner.package != req.owner
-                && option.owner.root != req.owner
-            {
+            if !req.owner.is_empty() && option.owner != req.owner {
                 continue;
             }
-            if !req.r#type.is_empty() && option.type_signature != req.r#type {
+            if !req.r#type.is_empty() && signature != req.r#type {
                 continue;
             }
             if req
                 .extensible
-                .is_some_and(|extensible| option.extensible != extensible)
+                .is_some_and(|value| option.extensible != value)
             {
                 continue;
             }
-            options.push(package_option_view(&identity, option).map_err(RpcError::internal)?);
+            if option.visibility == aos_doc_model::Visibility::Hidden {
+                continue;
+            }
+            options.push(native_option_view(&identity, option).map_err(RpcError::internal)?);
         }
         let (options, next_page_token) = paginate(options, req.page_size, &req.page_token)?;
         Ok(pb::ListPackageOptionsResponse {
@@ -12352,28 +12438,40 @@ impl RpcService {
     ) -> Result<pb::GetPackageOptionResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
-        let requested = proto_documentation_path(&req.path)?;
+        let requested = req
+            .path
+            .iter()
+            .map(|segment| match &segment.segment {
+                Some(pb::documentation_path_segment::Segment::Literal(value))
+                    if !value.is_empty() =>
+                {
+                    Ok(value.clone())
+                }
+                _ => Err(RpcError::invalid(
+                    "native option paths require exact nonempty literal segments",
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         if requested.is_empty() {
             return Err(RpcError::invalid("option path must not be empty"));
         }
         let (locator, document) = self
-            .load_package_documentation_for_registry(
+            .load_native_documentation_for_registry(
                 registry.id,
                 &req.package,
                 &req.version,
                 &req.platform,
+                None,
             )
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("package documentation"))?;
-        let options = document.options();
-        let option = options
+            .await?;
+        let option = document
+            .options()
             .iter()
             .find(|option| option.path == requested)
-            .ok_or_else(|| RpcError::not_found("package option"))?;
+            .ok_or_else(|| RpcError::not_found("native package option"))?;
         Ok(pb::GetPackageOptionResponse {
             option: Some(
-                package_option_view(&package_documentation_identity(&locator), option)
+                native_option_view(&native_documentation_identity(&locator), option)
                     .map_err(RpcError::internal)?,
             ),
         })
@@ -12391,37 +12489,35 @@ impl RpcService {
     ) -> Result<pb::ComparePackageDocumentationResponse, RpcError> {
         if req.from_version.is_empty() || req.to_version.is_empty() || req.platform.is_empty() {
             return Err(RpcError::invalid(
-                "comparison requires from_version, to_version, and platform",
+                "comparison requires exact source and target versions and platform",
             ));
         }
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
         let (from_locator, from_document) = self
-            .load_package_documentation_for_registry(
+            .load_native_documentation_for_registry(
                 registry.id,
                 &req.package,
                 &req.from_version,
                 &req.platform,
+                None,
             )
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("source package documentation"))?;
+            .await?;
         let (to_locator, to_document) = self
-            .load_package_documentation_for_registry(
+            .load_native_documentation_for_registry(
                 registry.id,
                 &req.package,
                 &req.to_version,
                 &req.platform,
+                None,
             )
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("destination package documentation"))?;
+            .await?;
         let comparison = from_document
             .compare(&to_document)
             .map_err(|error| RpcError::invalid(error.to_string()))?;
         Ok(pb::ComparePackageDocumentationResponse {
-            from: Some(package_documentation_identity(&from_locator)),
-            to: Some(package_documentation_identity(&to_locator)),
+            from: Some(native_documentation_identity(&from_locator)),
+            to: Some(native_documentation_identity(&to_locator)),
             canonical_comparison_json: serde_json::to_vec(&comparison)
                 .map_err(RpcError::internal)?,
         })
@@ -12438,29 +12534,57 @@ impl RpcService {
         req: pb::GetDocumentationArtifactRequest,
     ) -> Result<pb::GetPackageDocumentationResponse, RpcError> {
         if !is_sha256_digest(&req.document_sha256) {
-            return Err(RpcError::invalid("invalid documentation SHA-256 digest"));
+            return Err(RpcError::invalid("invalid documentation digest"));
         }
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
-        let locator = self
+        for release in self
             .db
-            .package_documentation_locator_by_digest(registry.id, &req.document_sha256)
+            .list_releases(registry.id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("documentation artifact"))?;
-        let document = self
-            .load_package_documentation_locator(registry.id, &locator)
-            .await
-            .map_err(RpcError::internal)?;
-        let canonical_json = document.canonical_json().map_err(RpcError::internal)?;
-        Ok(pb::GetPackageDocumentationResponse {
-            identity: Some(package_documentation_identity(&locator)),
-            canonical_json,
-            etag: locator.artifact.document_sha256.clone(),
-        })
+        {
+            let documents = self
+                .db
+                .native_documentation_at_release(registry.id, &release.semver)
+                .await
+                .map_err(RpcError::internal)?;
+            if let Some(document) = documents
+                .iter()
+                .find(|document| document.document_sha256 == req.document_sha256)
+            {
+                let (locator, _) = self
+                    .load_native_documentation_for_registry(
+                        registry.id,
+                        &document.package,
+                        &document.version,
+                        &document.platform,
+                        Some(&release.semver),
+                    )
+                    .await?;
+                let fetch =
+                    self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry.id));
+                let (canonical_json, _) =
+                    crate::indexer::native_documentation::fetch_native_documentation_content(
+                        fetch.as_ref(),
+                        &locator.package,
+                        &locator.version,
+                        &locator.platform,
+                        &locator.artifact,
+                    )
+                    .await
+                    .map_err(RpcError::internal)?;
+                return Ok(pb::GetPackageDocumentationResponse {
+                    identity: Some(native_documentation_identity(&locator)),
+                    canonical_json,
+                    etag: locator.artifact.document_sha256,
+                });
+            }
+        }
+        Err(RpcError::not_found("native documentation artifact"))
     }
 
-    /// Returns the checked package-specific schema projection used by tooling.
+    /// Returns the exact checked native package reference used by tooling.
     ///
     /// # Errors
     ///
@@ -12473,44 +12597,34 @@ impl RpcService {
     ) -> Result<pb::GetPackageDocumentationSchemaResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
-
-        let documentation_locator = if req.release.is_empty() {
-            self.db
-                .resolve_package_documentation_locator(
-                    registry.id,
-                    &req.package,
-                    &req.version,
-                    &req.platform,
-                )
-                .await
-                .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("package documentation"))?
-        } else {
-            self.db
-                .package_documentation_locator_at_release(
-                    registry.id,
-                    &req.release,
-                    &req.package,
-                    &req.version,
-                    &req.platform,
-                )
-                .await
-                .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::not_found("package documentation"))?
-        };
-        let projection = self
-            .load_package_documentation_locator(registry.id, &documentation_locator)
+        let locator = self
+            .db
+            .native_documentation_locator(
+                registry.id,
+                &req.package,
+                &req.version,
+                &req.platform,
+                (!req.release.is_empty()).then_some(req.release.as_str()),
+            )
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("native package documentation"))?;
+        let fetch = self.topology_surface_fetcher(crate::db::SurfaceTarget::Registry(registry.id));
+        let (canonical_json, _) =
+            crate::indexer::native_documentation::fetch_native_documentation_content(
+                fetch.as_ref(),
+                &locator.package,
+                &locator.version,
+                &locator.platform,
+                &locator.artifact,
+            )
             .await
             .map_err(RpcError::internal)?;
-        let canonical_json = projection.canonical_json().map_err(RpcError::internal)?;
         Ok(pb::GetPackageDocumentationSchemaResponse {
-            documentation_identity: Some(package_documentation_identity(&documentation_locator)),
-            ability_reference_identity: Some(package_ability_reference_identity(
-                &documentation_locator,
-                &projection.ability_reference,
-            )),
-            etag: projection.response_sha256().map_err(RpcError::internal)?,
+            documentation_identity: Some(native_documentation_identity(&locator)),
+            ability_reference_identity: None,
             canonical_json,
+            etag: locator.artifact.document_sha256,
         })
     }
 

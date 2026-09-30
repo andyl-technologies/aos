@@ -328,9 +328,9 @@ service PackageService {
   rpc GetPackage(GetPackageRequest) returns (GetPackageResponse);
 }
 
-// Authenticated package documentation and tooling schema. Canonical document
-// bytes remain sourced from the signed Nix object; search rows are disposable
-// projections rebuilt by registry indexing.
+// Authenticated native package references and typed option tooling. Document
+// bytes retain their exact signed options.json identity; search rows are disposable
+// projections generated from native declarations during release indexing.
 service DocumentationService {
   rpc GetPackageDocumentation(GetPackageDocumentationRequest) returns (GetPackageDocumentationResponse);
   rpc GetPackageAbilityReference(GetPackageAbilityReferenceRequest) returns (GetPackageAbilityReferenceResponse);
@@ -601,6 +601,7 @@ message GetPackageDocumentationRequest {
   string package = 2;
   string version = 3;
   string platform = 4;
+  string release = 5;
 }
 
 message PackageDocumentationIdentity {
@@ -614,7 +615,8 @@ message PackageDocumentationIdentity {
   uint64 nar_size = 8;
   string document_sha256 = 9;
   uint64 document_size = 10;
-  string semantic_schema_sha256 = 11;
+  reserved 11;
+  reserved "semantic_schema_sha256";
   string release = 12;
   string verified_tag_oid = 13;
   string release_snapshot_id = 14;
@@ -639,8 +641,12 @@ message PackageAbilityReferenceIdentity {
   string package = 2;
   string version = 3;
   string platform = 4;
-  string manifest_sha256 = 5;
-  string package_digest = 6;
+  reserved 5, 6;
+  reserved "manifest_sha256", "package_digest";
+  string document_sha256 = 7;
+  string release = 8;
+  string verified_tag_oid = 9;
+  string release_snapshot_id = 10;
 }
 
 message GetPackageAbilityReferenceResponse {
@@ -728,6 +734,9 @@ message PackageDocumentationSearchResult {
   string title = 6;
   string summary = 7;
   uint64 score = 8;
+  string release = 9;
+  string registry_commit = 10;
+  string document_sha256 = 11;
 }
 
 message SearchPackageDocumentationResponse {

@@ -8,15 +8,13 @@ use crate::commands::hub::mutation::topology_read;
 use crate::commands::hub::output::print_hub_json;
 use crate::commands::input::read_bounded_file;
 use anyhow::{Context as _, Result};
-use aos_ability_inspect::{
-    DeploymentReportContext, INSPECTION_BUNDLE_MAX_BYTES, InspectionBundle,
-    planned_deployment_overlay,
-};
-use aos_ability_model::LocalKey;
 use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
-use aos_doc_model::{PackageAbilityReference, ability_reference_supported_features};
+use aos_doc_model::runtime::deployment::{
+    NativeDeploymentReport, NativePackageIdentity, NativeReleaseGraph, ReleasedReference,
+};
 use aos_remote::{hub_rpc as HubTopologyMethod, hub_types};
+#[cfg(test)]
 use sha2::{Digest as _, Sha256};
 
 /// Handles the hub documentation command family through the public API.
@@ -59,13 +57,14 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
                     "graph": graph,
                 }));
             } else {
-                print_ability_graph(&graph, identity);
+                print_ability_graph(&graph, identity)?;
             }
             Ok(())
         }
         HubDocumentationCmd::Report {
             access,
-            bundle,
+            transaction,
+            outputs,
             expected_digest,
             registry,
             release,
@@ -77,21 +76,25 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
             reporter_resource_version,
             valid_for_seconds,
         } => {
-            let bundle_bytes = read_bounded_file(
-                bundle,
-                u64::try_from(INSPECTION_BUNDLE_MAX_BYTES)?,
-                "inspection bundle",
+            let bytes = read_bounded_file(
+                transaction,
+                aos_doc_model::runtime::MAX_RUNTIME_DOCUMENT_BYTES as u64,
+                "native desired transaction",
             )?;
-            let expected_digest = expected_digest
-                .as_deref()
-                .map(Sha256Digest::parse)
-                .transpose()
-                .context("parsing expected inspection-bundle digest")?;
-            let checked = InspectionBundle::decode(&bundle_bytes)
-                .context("decoding canonical ability inspection bundle")?
-                .check(expected_digest)
-                .context("checking ability inspection bundle semantics")?;
-
+            if let Some(expected) = expected_digest {
+                anyhow::ensure!(
+                    Sha256Digest::of_bytes(&bytes) == Sha256Digest::parse(expected)?,
+                    "native transaction differs from its independent digest"
+                );
+            }
+            let document = aos_doc_model::runtime::RuntimeDocument::from_json(&bytes)?;
+            let graph = document
+                .transaction_graph()
+                .context("report requires a native desired package transaction")?;
+            anyhow::ensure!(
+                document.value()["system"] == platform.as_str(),
+                "transaction platform differs from reporter selection"
+            );
             let client = hub_client(&access.hub, access.token.as_deref()).await?;
             let response: hub_types::GetPackageAbilityReferenceResponse = client
                 .call_topology(
@@ -108,44 +111,53 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
             let identity = response
                 .identity
                 .as_ref()
-                .context("Hub omitted package ability reference identity")?;
-            let reference = PackageAbilityReference::from_canonical_json(
-                &response.canonical_json,
-                &ability_reference_supported_features()?,
-            )
-            .context("Hub returned an invalid canonical package ability reference")?;
-            let digest = hex::encode(Sha256::digest(&response.canonical_json));
+                .context("Hub omitted native reference identity")?;
             anyhow::ensure!(
-                digest == response.etag
-                    && identity.package == *package
-                    && identity.package == reference.package.as_str()
+                identity.package == *package
                     && identity.version == *version
-                    && identity.version == reference.version
                     && identity.platform == *platform
-                    && identity.manifest_sha256 == reference.manifest_sha256.to_string()
-                    && identity.package_digest == reference.package_digest.to_string(),
-                "Hub package ability reference identity does not match canonical bytes"
+                    && release
+                        .as_ref()
+                        .is_none_or(|release| *release == identity.release)
+                    && !identity.release_snapshot_id.is_empty()
+                    && Sha256Digest::of_bytes(&response.canonical_json)
+                        == Sha256Digest::parse(&identity.document_sha256)?
+                    && response.etag == identity.document_sha256,
+                "Hub native reference differs from selected signed identity"
             );
-
-            let reported_at_unix_seconds = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .context("system clock precedes the Unix epoch")?
-                .as_secs();
-            let overlay = planned_deployment_overlay(
-                checked.plan(),
-                &reference,
-                DeploymentReportContext {
+            let reference = ReleasedReference {
+                identity: NativePackageIdentity {
                     registry_commit: identity.registry_commit.clone(),
-                    platform: platform.clone(),
-                    deployment: LocalKey::new(deployment.clone())
-                        .context("invalid deployment reporter slot")?,
-                    sequence: *sequence,
-                    reported_at_unix_seconds,
-                    valid_for_seconds: *valid_for_seconds,
+                    package: identity.package.clone(),
+                    version: identity.version.clone(),
+                    platform: identity.platform.clone(),
+                    document_sha256: Sha256Digest::parse(&identity.document_sha256)?,
                 },
-            )
-            .context("projecting checked planned deployment")?;
-            let canonical_json = overlay.canonical_json()?;
+                reference_json: String::from_utf8(response.canonical_json)?,
+            };
+            let reported_outputs = match outputs {
+                Some(path) => serde_json::from_slice(&read_bounded_file(
+                    path,
+                    aos_doc_model::runtime::MAX_RUNTIME_DOCUMENT_BYTES as u64,
+                    "reported native outputs",
+                )?)?,
+                None => Default::default(),
+            };
+            let report = NativeDeploymentReport {
+                schema: "aos.module.deployment-report".into(),
+                deployment: deployment.clone(),
+                sequence: *sequence,
+                package: reference.identity.clone(),
+                graph: serde_json::to_value(graph.graph())?,
+                reported_outputs,
+                reported_at_unix_seconds: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .context("system clock precedes Unix epoch")?
+                    .as_secs(),
+                valid_for_seconds: *valid_for_seconds,
+            };
+            report.validate_reference(&reference)?;
+            let canonical_json = report.canonical_bytes()?;
             let accepted: hub_types::PackageAbilityDeploymentResponse = client
                 .call_topology(
                     HubTopologyMethod::ReportPackageAbilityDeployment,
@@ -159,25 +171,9 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
                 .await?;
             anyhow::ensure!(
                 accepted.canonical_json == canonical_json,
-                "Hub returned different deployment overlay bytes"
+                "Hub changed native reporter assertion bytes"
             );
-            if printer.mode() == OutputMode::Json {
-                printer.json(&serde_json::json!({
-                    "overlay": overlay,
-                    "authority": accepted.authority,
-                    "received_at": accepted.received_at,
-                    "expires_at": accepted.expires_at,
-                    "reporter_resource_version": accepted.reporter_resource_version,
-                }));
-            } else {
-                println!(
-                    "Reported {} planned ability exports for {} in deployment {} (sequence {})",
-                    overlay.plan.exports.len(),
-                    package,
-                    deployment,
-                    sequence
-                );
-            }
+            printer.json(&serde_json::json!({"report":report,"authority":accepted.authority,"receivedAt":accepted.received_at,"expiresAt":accepted.expires_at,"liveStateVerified":false}));
             Ok(())
         }
         HubDocumentationCmd::Search {
@@ -272,9 +268,18 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
                     },
                 )
                 .await?;
-            let comparison: serde_json::Value =
+            let comparison: aos_doc_model::runtime::NativeComparison =
                 serde_json::from_slice(&response.canonical_comparison_json)
-                    .context("Hub returned invalid canonical comparison JSON")?;
+                    .context("Hub returned invalid native comparison JSON")?;
+            anyhow::ensure!(
+                comparison.schema == "aos.module.documentation.comparison"
+                    && comparison.package == *package
+                    && comparison.from_version == *from
+                    && comparison.to_version == *to
+                    && comparison.platform == *platform,
+                "Hub comparison differs from the selected native coordinates"
+            );
+            let comparison = serde_json::to_value(comparison)?;
             if print_hub_json(printer, "documentation_comparison", comparison.clone()) {
                 return Ok(());
             }
@@ -329,13 +334,17 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
                 access.hub.as_deref(),
                 access.token.as_deref(),
             )?;
-            let url = documentation_browser_url(
+            verify_documentation_response(&response)?;
+            let mut url = documentation_browser_url(
                 &origin,
                 registry,
                 &identity.package,
                 &identity.version,
                 &identity.platform,
             )?;
+            url.query_pairs_mut()
+                .append_pair("release", &identity.release)
+                .append_pair("digest", &identity.document_sha256);
             if print_hub_json(
                 printer,
                 "documentation_url",
@@ -351,91 +360,41 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
 
 fn verify_ability_graph_response(
     response: &hub_types::GetReleaseAbilityGraphResponse,
-) -> Result<aos_doc_model::ReleaseAbilityGraph> {
+) -> Result<NativeReleaseGraph> {
     let identity = response
         .identity
         .as_ref()
-        .context("Hub omitted release ability graph identity")?;
-    let graph = aos_doc_model::ReleaseAbilityGraph::from_canonical_json(&response.canonical_json)
-        .context("Hub returned an invalid canonical release ability graph")?;
-    let digest = hex::encode(Sha256::digest(&response.canonical_json));
+        .context("Hub omitted native release reference identity")?;
+    let graph = NativeReleaseGraph::decode(&response.canonical_json)?;
     anyhow::ensure!(
         graph.platform == identity.platform
-            && digest == identity.graph_sha256
+            && graph.registry_commit == identity.registry_commit
+            && graph.release == identity.release
+            && Sha256Digest::of_bytes(&response.canonical_json)
+                == Sha256Digest::parse(&identity.graph_sha256)?
             && response.etag == identity.graph_sha256,
-        "Hub release ability graph identity does not match canonical bytes"
+        "Hub native release graph identity differs from its exact bytes"
     );
     Ok(graph)
 }
 
 fn print_ability_graph(
-    graph: &aos_doc_model::ReleaseAbilityGraph,
+    graph: &NativeReleaseGraph,
     identity: &hub_types::ReleaseAbilityGraphIdentity,
-) {
+) -> Result<()> {
     println!(
-        "Ability graph for release {} on {}",
-        identity.release, graph.platform
+        "Native declarations for release {} on {} (commit {})",
+        identity.release, graph.platform, identity.registry_commit
     );
-    println!("Registry commit: {}", identity.registry_commit);
-    println!(
-        "{} packages, {} interfaces, {} providers, {} requirements",
-        graph.packages.len(),
-        graph.interfaces.len(),
-        graph.providers.len(),
-        graph.requirements.len()
-    );
-
-    for interface in &graph.interfaces {
-        let providers = graph
-            .providers
-            .iter()
-            .filter(|provider| provider.interface == interface.key)
-            .collect::<Vec<_>>();
-        let consumers = graph
-            .requirements
-            .iter()
-            .filter(|requirement| requirement.matching_interfaces.contains(&interface.key))
-            .collect::<Vec<_>>();
+    for reference in &graph.references {
         println!(
-            "\n{} ABI {} ({} providers, {} consumers)",
-            interface.key.name,
-            interface.key.abi,
-            providers.len(),
-            consumers.len()
+            "\n{} {}",
+            reference.identity.package, reference.identity.version
         );
-        for provider in providers {
-            println!(
-                "  provides: {}@{}/{}",
-                provider.id.package.name, provider.id.package.version, provider.id.export
-            );
-        }
-        for consumer in consumers {
-            let scope = consumer
-                .id
-                .implementation
-                .as_ref()
-                .map_or_else(|| "package".to_string(), ToString::to_string);
-            println!(
-                "  consumes: {}@{} ({scope})/{}",
-                consumer.id.package.name, consumer.id.package.version, consumer.id.alias
-            );
-        }
+        let document = reference.check()?;
+        print!("{}", document.render_plain());
     }
-
-    let unresolved = graph
-        .requirements
-        .iter()
-        .filter(|requirement| requirement.matching_providers.is_empty())
-        .collect::<Vec<_>>();
-    if !unresolved.is_empty() {
-        println!("\nUnresolved requirements");
-        for requirement in unresolved {
-            println!(
-                "  {}@{}/{}",
-                requirement.id.package.name, requirement.id.package.version, requirement.id.alias
-            );
-        }
-    }
+    Ok(())
 }
 
 fn documentation_browser_url(
@@ -472,41 +431,64 @@ async fn fetch_documentation(
     version: Option<&str>,
     platform: Option<&str>,
 ) -> Result<hub_types::GetPackageDocumentationResponse> {
-    hub_client(&access.hub, access.token.as_deref())
-        .await?
-        .call_topology(
-            HubTopologyMethod::GetPackageDocumentation,
-            &hub_types::GetPackageDocumentationRequest {
-                registry: registry.to_string(),
-                package: package.to_string(),
-                version: version.unwrap_or_default().to_string(),
-                platform: platform.unwrap_or_default().to_string(),
-            },
-        )
-        .await
-}
-
-fn verify_documentation_response(
-    response: &hub_types::GetPackageDocumentationResponse,
-) -> Result<aos_doc_model::PackageDocumentationProjection> {
+    let response: hub_types::GetPackageDocumentationResponse =
+        hub_client(&access.hub, access.token.as_deref())
+            .await?
+            .call_topology(
+                HubTopologyMethod::GetPackageDocumentation,
+                &hub_types::GetPackageDocumentationRequest {
+                    registry: registry.to_string(),
+                    package: package.to_string(),
+                    version: version.unwrap_or_default().to_string(),
+                    platform: platform.unwrap_or_default().to_string(),
+                    release: String::new(),
+                },
+            )
+            .await?;
+    verify_documentation_response(&response)?;
     let identity = response
         .identity
         .as_ref()
         .context("Hub omitted package documentation identity")?;
-    let projection = aos_doc_model::PackageDocumentationProjection::from_canonical_json(
-        &response.canonical_json,
-    )
-    .context("Hub returned an invalid canonical package reference")?;
-    let document = &projection.document;
     anyhow::ensure!(
-        document.package.name == identity.package
-            && document.package.version == identity.version
-            && document.package.platform == identity.platform
-            && projection.document_sha256()? == identity.document_sha256
-            && response.etag == identity.document_sha256,
-        "Hub documentation identity does not match canonical bytes"
+        identity.package == package
+            && version.is_none_or(|selected| selected == identity.version)
+            && platform.is_none_or(|selected| selected == identity.platform),
+        "Hub returned a different package documentation selection"
     );
-    Ok(projection)
+    Ok(response)
+}
+
+fn verify_documentation_response(
+    response: &hub_types::GetPackageDocumentationResponse,
+) -> Result<aos_doc_model::runtime::RuntimeDocument> {
+    let identity = response
+        .identity
+        .as_ref()
+        .context("Hub omitted package documentation identity")?;
+    anyhow::ensure!(
+        identity.format == aos_doc_model::runtime::MODULE_DOCUMENTATION_SCHEMA
+            && !identity.release.is_empty()
+            && !identity.release_snapshot_id.is_empty()
+            && matches!(identity.registry_commit.len(), 40 | 64)
+            && identity
+                .registry_commit
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+            && matches!(identity.verified_tag_oid.len(), 40 | 64)
+            && identity
+                .verified_tag_oid
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+            && response.canonical_json.len() as u64 == identity.document_size
+            && Sha256Digest::of_bytes(&response.canonical_json)
+                == Sha256Digest::parse(&identity.document_sha256)?
+            && response.etag == identity.document_sha256,
+        "Hub documentation identity does not match exact native bytes"
+    );
+    let document = aos_doc_model::runtime::RuntimeDocument::from_json(&response.canonical_json)?;
+    document.verify_package_identity(&identity.package, &identity.version, &identity.platform)?;
+    Ok(document)
 }
 
 fn print_documentation_response(
@@ -525,6 +507,36 @@ fn print_documentation_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_documentation_verification_preserves_exact_signed_bytes() {
+        let bytes = br#"{"schema":"aos.module.documentation","scope":["package","sample"],"system":"x86_64-linux","packages":[{"name":"sample","version":"1"}],"options":[],"abilities":{}}"#.to_vec();
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+        let mut response = hub_types::GetPackageDocumentationResponse {
+            identity: Some(hub_types::PackageDocumentationIdentity {
+                registry_commit: "a".repeat(40),
+                package: "sample".into(),
+                version: "1".into(),
+                platform: "x86_64-linux".into(),
+                format: aos_doc_model::runtime::MODULE_DOCUMENTATION_SCHEMA.into(),
+                document_sha256: digest.clone(),
+                document_size: bytes.len() as u64,
+                release: "1.0.0".into(),
+                verified_tag_oid: "b".repeat(40),
+                release_snapshot_id: "verified".into(),
+                ..Default::default()
+            }),
+            canonical_json: bytes,
+            etag: digest,
+        };
+
+        assert!(verify_documentation_response(&response).is_ok());
+        response.canonical_json.push(b' ');
+        assert!(verify_documentation_response(&response).is_err());
+        response.canonical_json.pop();
+        response.identity.as_mut().unwrap().platform = "aarch64-linux".into();
+        assert!(verify_documentation_response(&response).is_err());
+    }
 
     #[test]
     fn documentation_browser_urls_preserve_registry_path_segments() {
@@ -555,30 +567,32 @@ mod tests {
 
     #[test]
     fn release_ability_graph_response_binds_identity_to_canonical_bytes() {
-        let graph = aos_doc_model::ReleaseAbilityGraph {
-            schema: aos_doc_model::RELEASE_ABILITY_GRAPH_SCHEMA.to_string(),
-            platform: "x86_64-linux".to_string(),
-            packages: Vec::new(),
-            interfaces: Vec::new(),
-            providers: Vec::new(),
-            requirements: Vec::new(),
+        let graph = NativeReleaseGraph {
+            schema: "aos.module.release-graph".into(),
+            release: "1.0.0".into(),
+            registry_commit: "a".repeat(40),
+            platform: "x86_64-linux".into(),
+            references: Vec::new(),
         };
-        let canonical_json = graph.canonical_json().expect("canonical graph");
-        let digest = hex::encode(Sha256::digest(&canonical_json));
+        let canonical_json = graph.canonical_bytes().expect("native graph");
+        let digest = Sha256Digest::of_bytes(&canonical_json).to_string();
         let mut response = hub_types::GetReleaseAbilityGraphResponse {
             identity: Some(hub_types::ReleaseAbilityGraphIdentity {
-                registry_commit: "commit".to_string(),
+                registry_commit: graph.registry_commit.clone(),
                 release: "1.0.0".to_string(),
                 platform: graph.platform.clone(),
                 graph_sha256: digest.clone(),
             }),
-            canonical_json,
+            canonical_json: canonical_json.clone(),
             etag: digest,
         };
 
         assert_eq!(
-            verify_ability_graph_response(&response).expect("verified graph"),
-            graph
+            verify_ability_graph_response(&response)
+                .expect("verified graph")
+                .canonical_bytes()
+                .unwrap(),
+            canonical_json
         );
         response.etag = "tampered".to_string();
         assert!(verify_ability_graph_response(&response).is_err());

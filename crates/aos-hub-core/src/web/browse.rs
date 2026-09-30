@@ -270,18 +270,6 @@ async fn bearer_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope
     bearer_allows(svc, headers, scope, Permission::Read).await
 }
 
-async fn can_read_ability_deployments(
-    svc: &RpcService,
-    registry: &RegistryRecord,
-    headers: &HeaderMap,
-) -> bool {
-    let Ok(scope_key) = svc.db.registry_authorization_scope(registry.id).await else {
-        return false;
-    };
-    let scope = Scope::parse(&scope_key);
-    session_allows(svc, headers, &scope, Permission::AuditRead).await
-        || bearer_allows(svc, headers, &scope, Permission::AuditRead).await
-}
 
 /// Whether the caller in `headers` may see `registry` at all (the session-aware
 /// visibility filter; see the module-level "Visibility" docs for the matrix).
@@ -773,54 +761,49 @@ pub async fn abilities(
     let Some(release) = context.selected() else {
         return Rendered::NotFound;
     };
-    let projection = match svc
-        .db
-        .release_ability_graph(
+    let graph = match svc
+        .native_release_graph_for_registry(
             registry.id,
             release,
             query.platform.as_deref().unwrap_or_default(),
         )
         .await
     {
-        Ok(Some(projection)) => projection,
-        Ok(None) if query.platform.is_some() => return Rendered::NotFound,
-        Ok(None) => {
-            return Rendered::Html(super::release_browse::unavailable_page(
-                &registry,
-                status.as_ref(),
-                &context,
-                "abilities",
-                "The ability graph for this release is still indexing or has no published package references.",
-                started,
-                &session_indicator(svc, headers).await,
-            ));
-        }
+        Ok(graph) => graph,
+        Err(crate::service::RpcError::NotFound(_)) => return Rendered::NotFound,
         Err(_) => return Rendered::ServiceUnavailable,
     };
-    let graph =
-        match aos_doc_model::ReleaseAbilityGraph::from_canonical_json(&projection.canonical_json) {
-            Ok(graph) => graph,
-            Err(_) => return Rendered::ServiceUnavailable,
-        };
     let platforms = match svc
         .db
-        .release_ability_graph_platforms(registry.id, release)
+        .native_documentation_at_release(registry.id, release)
         .await
     {
-        Ok(platforms) => platforms,
+        Ok(documents) => documents
+            .into_iter()
+            .map(|document| document.platform)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>(),
+        Err(_) => return Rendered::ServiceUnavailable,
+    };
+    let digest = match graph.canonical_bytes() {
+        Ok(bytes) => aos_contract::Sha256Digest::of_bytes(bytes).to_string(),
         Err(_) => return Rendered::ServiceUnavailable,
     };
     let session = session_indicator(svc, headers).await;
-    Rendered::Html(super::ability_graph_page::page(
+    match super::ability_graph_page::page(
         &registry,
         status.as_ref(),
         &context,
         &graph,
         &platforms,
-        &projection.content_digest,
+        &digest,
         started,
         &session,
-    ))
+    ) {
+        Ok(body) => Rendered::Html(body),
+        Err(_) => Rendered::ServiceUnavailable,
+    }
 }
 
 /// The signed system-image catalog and direct-download page.
@@ -1454,17 +1437,11 @@ pub async fn package(
     };
     let detail = super::release_browse::package_detail(package);
     let closures = super::release_browse::package_closures(&catalog, &detail, REVERSE_DEP_CAP);
-    let (session, caches, external, package_reference_result) = futures_util::future::join4(
+    let (session, caches, external, native_reference) = futures_util::future::join4(
         session_indicator(svc, headers),
         svc.db.registry_cache_stack_entries(registry.id),
         svc.registry_setup_url(&registry),
-        package_reference_projection(
-            svc,
-            registry.id,
-            &detail,
-            release,
-            context.selected_commit(),
-        ),
+        native_package_reference_projection(svc, registry.id, &detail, release),
     )
     .await;
     let caches = resolved_cache_urls(caches.unwrap_or_default());
@@ -1474,54 +1451,8 @@ pub async fn package(
         external.ok().as_deref(),
         &caches,
     );
-    let package_reference_unavailable = package_reference_result.is_err();
-    let (documentation, ability_reference) = package_reference_result
-        .ok()
-        .flatten()
-        .map(|(documentation, ability_reference)| {
-            (
-                Some(pages::PackageDocumentationReference::from(documentation)),
-                Some(ability_reference),
-            )
-        })
-        .unwrap_or((None, None));
-    let deployment_access = can_read_ability_deployments(svc, &registry, headers).await;
-    let (ability_deployments, ability_deployments_unavailable) = if deployment_access {
-        match &ability_reference {
-            Some(panel) => match svc
-                .load_package_ability_deployments_for_browser(
-                    registry.id,
-                    &panel.locator,
-                    &panel.projection,
-                )
-                .await
-            {
-                Ok(overlays) => (
-                    Some(
-                        overlays
-                            .into_iter()
-                            .map(|(stored, overlay)| {
-                                super::ability_reference_page::PackageAbilityDeploymentPanel {
-                                    overlay,
-                                    authority: format!(
-                                        "reporter-bearer:{}:{}",
-                                        stored.principal_kind, stored.principal_ref
-                                    ),
-                                    received_at: stored.received_at,
-                                    expires_at: stored.expires_at,
-                                }
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
-                    false,
-                ),
-                Err(_) => (Some(Vec::new()), true),
-            },
-            None => (Some(Vec::new()), package_reference_unavailable),
-        }
-    } else {
-        (None, false)
-    };
+    let unavailable = native_reference.is_err();
+    let native_reference = native_reference.ok().flatten();
     let body = pages::package_page(
         &registry,
         status.as_ref(),
@@ -1529,33 +1460,26 @@ pub async fn package(
         &closures,
         &setup,
         &context,
-        documentation.as_ref(),
-        package_reference_unavailable,
-        ability_reference.as_ref(),
-        package_reference_unavailable,
-        ability_deployments.as_deref(),
-        ability_deployments_unavailable,
+        native_reference.as_ref().map(|(locator, _)| locator),
+        unavailable,
+        native_reference.as_ref().map(|(_, document)| document),
+        unavailable,
         started,
         &session,
     );
-    if deployment_access {
-        Rendered::PrivateHtml(body)
-    } else {
-        Rendered::Html(body)
-    }
+    Rendered::Html(body)
 }
 
-/// Loads the one signed package reference selected by the exact release.
-async fn package_reference_projection(
+/// Loads the exact native package reference selected by the completed release.
+async fn native_package_reference_projection(
     svc: &RpcService,
     registry_id: i64,
     detail: &crate::db::PackageDetail,
     release: &str,
-    release_commit: Option<&str>,
 ) -> anyhow::Result<
     Option<(
-        crate::db::PackageDocumentationLocator,
-        super::ability_reference_page::PackageAbilityReferencePanel,
+        pages::PackageDocumentationReference,
+        aos_doc_model::runtime::RuntimeDocument,
     )>,
 > {
     let Some(version) = detail.versions.first() else {
@@ -1564,80 +1488,43 @@ async fn package_reference_projection(
     let Some(platform) = version.platforms.first() else {
         return Ok(None);
     };
-    let Some(release_commit) = release_commit else {
-        anyhow::bail!("selected package release has no authenticated source commit");
-    };
-    let Some(documentation_locator) = svc
+    let Some(locator) = svc
         .db
-        .package_documentation_locator_at_release(
+        .native_documentation_locator(
             registry_id,
-            release_commit,
             &detail.name,
             &version.version,
             &platform.platform,
+            Some(release),
         )
         .await?
     else {
         return Ok(None);
     };
-
-    if documentation_locator.indexed_commit != release_commit {
-        anyhow::bail!("package reference is unavailable for the selected release commit");
-    }
-    let projection = svc
-        .load_package_documentation_locator(registry_id, &documentation_locator)
-        .await?;
-
+    let fetch = crate::placement_read::TopologySurfaceFetch::new(
+        std::sync::Arc::clone(&svc.db),
+        std::sync::Arc::clone(&svc.surface),
+        crate::db::SurfaceTarget::Registry(registry_id),
+    );
+    let document = crate::indexer::native_documentation::fetch_native_documentation(
+        &fetch,
+        &locator.package,
+        &locator.version,
+        &locator.platform,
+        &locator.artifact,
+    )
+    .await?;
     Ok(Some((
-        documentation_locator.clone(),
-        super::ability_reference_page::PackageAbilityReferencePanel {
-            release: release.to_string(),
-            projection,
-            locator: documentation_locator,
+        pages::PackageDocumentationReference {
+            package: locator.package,
+            version: locator.version,
+            platform: locator.platform,
+            store_path: locator.artifact.store_path,
+            document_sha256: locator.artifact.document_sha256,
+            nar_hash: locator.artifact.nar_hash,
         },
+        document,
     )))
-}
-
-/// Resolves only the signed reference for the package selection already shown.
-///
-/// Taking a database rather than a service keeps this path independent of
-/// object storage. The exact docs page remains responsible for fetching and
-/// verifying the document bytes. Never use empty selectors here: a release
-/// selection without documentation must not silently link to newer content.
-#[cfg(test)]
-async fn package_documentation_reference(
-    db: &crate::db::Database,
-    registry_id: i64,
-    detail: &crate::db::PackageDetail,
-    release: Option<&str>,
-) -> anyhow::Result<Option<crate::db::PackageDocumentationLocator>> {
-    let Some(version) = detail.versions.first() else {
-        return Ok(None);
-    };
-    let Some(platform) = version.platforms.first() else {
-        return Ok(None);
-    };
-    match release {
-        Some(release) => {
-            db.package_documentation_locator_at_release(
-                registry_id,
-                release,
-                &detail.name,
-                &version.version,
-                &platform.platform,
-            )
-            .await
-        }
-        None => {
-            db.package_documentation_locator(
-                registry_id,
-                &detail.name,
-                &version.version,
-                &platform.platform,
-            )
-            .await
-        }
-    }
 }
 
 /// The searchable structured package-documentation index (HTML).
@@ -1662,35 +1549,6 @@ pub async fn documentation(
 ) -> Rendered {
     super::documentation_browser::legacy(svc, headers, slug, package, version, platform, query)
         .await
-}
-
-/// Resolves a human documentation URL to its exact signed identity.
-///
-/// Digest links may address retained releases, but must still match every
-/// identity segment in the URL and remain inside the authorized registry.
-pub(super) async fn documentation_locator_for_page(
-    db: &crate::db::Database,
-    registry_id: i64,
-    package: &str,
-    version: &str,
-    platform: &str,
-    digest: Option<&str>,
-) -> anyhow::Result<Option<crate::db::PackageDocumentationLocator>> {
-    let locator = match digest {
-        Some(digest) => {
-            db.package_documentation_locator_by_digest(registry_id, digest)
-                .await?
-        }
-        None => {
-            db.resolve_package_documentation_locator(registry_id, package, version, platform)
-                .await?
-        }
-    };
-    Ok(locator.filter(|locator| {
-        locator.package_name == package
-            && locator.package_version == version
-            && locator.platform == platform
-    }))
 }
 
 fn resolved_cache_urls(
@@ -2301,6 +2159,7 @@ pub async fn api_documentation(
                 package: package.to_string(),
                 version: version.to_string(),
                 platform: platform.to_string(),
+                release: String::new(),
             },
         )
         .await,
@@ -2328,6 +2187,7 @@ pub async fn api_package_documentation(
                 package: package.to_string(),
                 version: query.version.clone().unwrap_or_default(),
                 platform: query.platform.clone().unwrap_or_default(),
+                release: query.release.clone().unwrap_or_default(),
             },
         )
         .await,
@@ -2446,27 +2306,29 @@ pub async fn api_package_option(
     let Some(registry) = svc.db.registry_by_slug(slug).await.ok().flatten() else {
         return Rendered::NotFound;
     };
-    let Some((_locator, document)) = svc
-        .load_package_documentation_for_registry(
+    let Ok((_locator, document)) = svc
+        .load_native_documentation_for_registry(
             registry.id,
             package,
             query.version.as_deref().unwrap_or(""),
             query.platform.as_deref().unwrap_or(""),
+            query.release.as_deref(),
         )
         .await
-        .ok()
-        .flatten()
     else {
         return Rendered::NotFound;
     };
-    match document
+    let mut options = document
         .options()
-        .into_iter()
-        .find(|option| option.display_path == display_path)
-    {
-        Some(option) => json(&option),
-        None => Rendered::NotFound,
+        .iter()
+        .filter(|option| option.path.join(".") == display_path);
+    let Some(option) = options.next() else {
+        return Rendered::NotFound;
+    };
+    if options.next().is_some() {
+        return Rendered::NotFound;
     }
+    json(&option)
 }
 
 /// `GET /{slug}/-/api/v1/packages/{package}/compare` — semantic comparison.
@@ -2532,7 +2394,7 @@ pub async fn api_documentation_schema(svc: &RpcService, slug: &str) -> Rendered 
     if registry(svc, slug).await.is_none() {
         return Rendered::NotFound;
     }
-    let Ok(schema) = aos_doc_model::documentation_metadata_json_schema() else {
+    let Ok(schema) = aos_doc_model::runtime::module_documentation_json_schema() else {
         return Rendered::ServiceUnavailable;
     };
     match String::from_utf8(schema) {
@@ -2578,204 +2440,6 @@ pub async fn api_releases(svc: &RpcService, slug: &str) -> Rendered {
     ) {
         Some(resp) => json(&resp.releases),
         None => Rendered::NotFound,
-    }
-}
-
-#[cfg(test)]
-mod package_documentation_reference_tests {
-    use super::*;
-    use crate::db::{Database, PackageDetail, PlatformDetail, VersionDetail};
-    use crate::value::Value;
-    use std::sync::atomic::Ordering;
-
-    fn selection(version: &str, platform: &str) -> PackageDetail {
-        PackageDetail {
-            name: "package-docs".into(),
-            description: String::new(),
-            homepage: None,
-            license: String::new(),
-            maintainer: String::new(),
-            sysroot: false,
-            versions: vec![VersionDetail {
-                version: version.into(),
-                previous: None,
-                platforms: vec![PlatformDetail {
-                    platform: platform.into(),
-                    store_path: String::new(),
-                    nar_hash: String::new(),
-                    nar_size: 0,
-                    closure_size: 0,
-                    refs: Vec::new(),
-                    images: Vec::new(),
-                    source_drv: String::new(),
-                }],
-            }],
-        }
-    }
-
-    #[tokio::test]
-    async fn package_reference_pins_displayed_selection_without_object_storage() {
-        let db = Database::open_in_memory().await.unwrap();
-        let org = db.create_org("package-docs", "Package docs").await.unwrap();
-        let registry = db
-            .create_managed_registry(org, "", "main", "public", &[], false)
-            .await
-            .unwrap();
-        // There are deliberately no placements or document bytes in this fixture.
-        // Both an old release selection and current HEAD must still offer their
-        // own signed reference, without attempting to open the NAR.
-        for (version, platform) in [
-            ("1.0.0", "x86_64-linux"),
-            ("2.0.0", "aarch64-linux"),
-            ("2.0.0", "x86_64-linux"),
-        ] {
-            db.backend.execute("INSERT INTO package_documentation
-                (registry_id, indexed_commit, package_name, package_version, platform, format,
-                 store_path, nar_hash, nar_size, document_sha256, document_size, semantic_schema_sha256)
-                VALUES (?1, 'commit', 'package-docs', ?2, ?3, 'aos.package-reference/v1+json',
-                 '/nix/store/missing-document', 'signed-nar', 1, 'signed-document', 1, 'signed-schema')",
-                &[Value::Int(registry), Value::Text(version.into()), Value::Text(platform.into())]).await.unwrap();
-        }
-        let (db, queries) = crate::db::surface_topology::tests::count_queries(db);
-        for (version, platform) in [("1.0.0", "x86_64-linux"), ("2.0.0", "aarch64-linux")] {
-            queries.store(0, Ordering::Relaxed);
-            let locator =
-                package_documentation_reference(&db, registry, &selection(version, platform), None)
-                    .await
-                    .unwrap()
-                    .unwrap();
-            assert_eq!(queries.load(Ordering::Relaxed), 1);
-            assert_eq!(
-                (locator.package_version.as_str(), locator.platform.as_str()),
-                (version, platform)
-            );
-        }
-        assert!(
-            package_documentation_reference(
-                &db,
-                registry,
-                &selection("1.0.0", "aarch64-linux"),
-                None,
-            )
-            .await
-            .unwrap()
-            .is_none()
-        );
-        assert!(
-            package_documentation_reference(
-                &db,
-                registry,
-                &selection("0.1.0", "x86_64-linux"),
-                None,
-            )
-            .await
-            .unwrap()
-            .is_none()
-        );
-        assert!(
-            documentation_locator_for_page(
-                &db,
-                registry,
-                "package-docs",
-                "1.0.0",
-                "x86_64-linux",
-                Some("signed-document")
-            )
-            .await
-            .unwrap()
-            .is_some()
-        );
-        assert!(
-            documentation_locator_for_page(
-                &db,
-                registry,
-                "other-package",
-                "1.0.0",
-                "x86_64-linux",
-                Some("signed-document")
-            )
-            .await
-            .unwrap()
-            .is_none()
-        );
-        assert!(
-            documentation_locator_for_page(
-                &db,
-                registry,
-                "package-docs",
-                "9.0.0",
-                "x86_64-linux",
-                Some("signed-document")
-            )
-            .await
-            .unwrap()
-            .is_none()
-        );
-        assert!(
-            documentation_locator_for_page(
-                &db,
-                registry,
-                "package-docs",
-                "1.0.0",
-                "aarch64-linux",
-                Some("signed-document")
-            )
-            .await
-            .unwrap()
-            .is_none()
-        );
-        assert!(
-            documentation_locator_for_page(
-                &db,
-                registry,
-                "package-docs",
-                "1.0.0",
-                "x86_64-linux",
-                Some("unknown-document")
-            )
-            .await
-            .unwrap()
-            .is_none()
-        );
-        // Digest navigation may resolve retained identities outside the current
-        // catalog; unpinned legacy URLs still require current package membership.
-        assert!(
-            documentation_locator_for_page(
-                &db,
-                registry,
-                "package-docs",
-                "1.0.0",
-                "x86_64-linux",
-                None
-            )
-            .await
-            .unwrap()
-            .is_none()
-        );
-        let mut empty = selection("1.0.0", "x86_64-linux");
-        empty.versions.clear();
-        queries.store(0, Ordering::Relaxed);
-        assert!(
-            package_documentation_reference(&db, registry, &empty, None)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(queries.load(Ordering::Relaxed), 0);
-        db.backend
-            .execute("DROP TABLE package_documentation", &[])
-            .await
-            .unwrap();
-        assert!(
-            package_documentation_reference(
-                &db,
-                registry,
-                &selection("1.0.0", "x86_64-linux"),
-                None,
-            )
-            .await
-            .is_err()
-        );
     }
 }
 

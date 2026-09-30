@@ -1127,19 +1127,6 @@ pub struct PackageDocumentationReference {
     pub nar_hash: String,
 }
 
-impl From<crate::db::PackageDocumentationLocator> for PackageDocumentationReference {
-    fn from(locator: crate::db::PackageDocumentationLocator) -> Self {
-        Self {
-            package: locator.package_name,
-            version: locator.package_version,
-            platform: locator.platform,
-            store_path: locator.artifact.store_path,
-            document_sha256: locator.artifact.document_sha256,
-            nar_hash: locator.artifact.nar_hash,
-        }
-    }
-}
-
 /// Renders package metadata, artifacts, documentation, and dependency neighborhoods.
 ///
 /// Each architecture has its own forward and reverse dependency lists for
@@ -1160,10 +1147,8 @@ pub fn package_page(
     context: &ReleaseContext,
     documentation: Option<&PackageDocumentationReference>,
     documentation_unavailable: bool,
-    ability_reference: Option<&super::ability_reference_page::PackageAbilityReferencePanel>,
+    ability_reference: Option<&aos_doc_model::runtime::RuntimeDocument>,
     ability_reference_unavailable: bool,
-    ability_deployments: Option<&[super::ability_reference_page::PackageAbilityDeploymentPanel]>,
-    ability_deployments_unavailable: bool,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -1343,13 +1328,17 @@ pub fn package_page(
     }
     body.push_str("</section>");
 
-    body.push_str(&super::ability_reference_page::section(
-        slug,
-        ability_reference,
-        ability_reference_unavailable,
-        ability_deployments,
-        ability_deployments_unavailable,
-    ));
+    body.push_str("<section id=\"abilities\"><h2>Abilities</h2>");
+    if let Some(reference) = ability_reference {
+        body.push_str(&reference.render_html());
+    } else if ability_reference_unavailable {
+        body.push_str("<p class=\"warn\">Native reference is temporarily unavailable.</p>");
+    } else {
+        body.push_str(
+            "<p class=\"dim\">No native module reference was published for this package.</p>",
+        );
+    }
+    body.push_str("</section>");
 
     body.push_str(
         "<h2 id=\"dependencies\">Dependencies</h2>\n<div class=\"package-dependencies\">",
@@ -1502,107 +1491,7 @@ pub fn package_page(
     )
 }
 
-/// Renders the searchable package-documentation index.
-pub fn documentation_index_page(
-    registry: &RegistryRecord,
-    status: Option<&IndexStatus>,
-    results: &[crate::db::PackageDocumentationSearchResult],
-    query: Option<&str>,
-    kind: Option<&str>,
-    page_number: usize,
-    total_results: usize,
-    started: Instant,
-    session: &SessionIndicator,
-) -> String {
-    let slug = &registry.slug;
-    let mut body = registry_nav(slug, "docs");
-    let _ = write!(
-        body,
-        "<form method=\"get\" class=\"docs-search\" role=\"search\">\
-         <label><span>Search documentation</span><input autofocus type=\"search\" name=\"q\" value=\"{}\" placeholder=\"TLS, option path, or capability…\"></label>\
-         <label><span>Kind</span><select name=\"kind\">",
-        escape(query.unwrap_or("")),
-    );
-    for (value, label) in [
-        ("", "Everything"),
-        ("package", "Packages"),
-        ("option", "Options"),
-        ("capability", "Capabilities"),
-    ] {
-        let selected = (kind == Some(value)).then_some(" selected").unwrap_or("");
-        let _ = write!(
-            body,
-            "<option value=\"{}\"{}>{}</option>",
-            value, selected, label
-        );
-    }
-    body.push_str("</select></label><button>Search</button></form>");
 
-    if query.is_some_and(|query| !query.trim().is_empty()) {
-        let _ = write!(
-            body,
-            "<p class=\"dim\">{} ranked result{} for <strong>{}</strong></p>",
-            total_results,
-            if total_results == 1 { "" } else { "s" },
-            escape(query.unwrap_or_default()),
-        );
-    } else if results.is_empty() {
-        body.push_str("<p class=\"dim\">No indexed package documentation is available.</p>");
-    } else {
-        let _ = write!(
-            body,
-            "<p class=\"dim\">Browse {} indexed documentation entr{}.</p>",
-            total_results,
-            if total_results == 1 { "y" } else { "ies" },
-        );
-    }
-
-    let mut params = Vec::new();
-    if let Some(query) = query.filter(|query| !query.trim().is_empty()) {
-        params.push(format!("q={}", urlencode(query)));
-    }
-    if let Some(kind) = kind {
-        params.push(format!("kind={}", urlencode(kind)));
-    }
-    let pager = Pager::new(page_number, PACKAGES_PER_PAGE, total_results);
-    let navigation = pager.nav(&format!("/{slug}/-/docs"), &params.join("&"));
-    body.push_str(&navigation);
-
-    if !results.is_empty() {
-        body.push_str("<ol class=\"docs-results\">");
-        for result in results {
-            let _ = write!(
-                body,
-                "<li><a href=\"/{}/-/docs/{}/{}/{}#{}\"><span class=\"doc-kind\">{}</span><strong>{}</strong><span>{}</span><code>{} {} · {}</code></a></li>",
-                escape(slug),
-                escape(&result.package_name),
-                escape(&result.package_version),
-                escape(&result.platform),
-                aos_doc_model::documentation_anchor(&result.kind, &result.key),
-                escape(&result.kind),
-                escape(&result.title),
-                escape(&result.summary),
-                escape(&result.package_name),
-                escape(&result.package_version),
-                escape(&result.platform),
-            );
-        }
-        body.push_str("</ol>");
-    }
-    body.push_str(&navigation);
-    let _ = write!(
-        body,
-        "<p class=\"docs-tools\"><a href=\"/{}/-/api/docs/schema\">Package metadata JSON Schema</a> · <code>apm docs search &lt;query&gt;</code> · editor completion via <code>apm docs lsp</code></p>",
-        escape(slug),
-    );
-    page_with_session(
-        "Package documentation",
-        &registry_crumbs(slug, &[(format!("/{slug}/-/docs"), "documentation".into())]),
-        &body,
-        &state_line(status, started),
-        session,
-    )
-}
 
 /// Assign a grid glyph index to each release a channel targets,
 /// frontier-first, so the newest release is always glyph `0` (`■`).
@@ -3446,8 +3335,6 @@ mod tests {
             false,
             None,
             false,
-            None,
-            false,
             Instant::now(),
             &anon(),
         );
@@ -3465,8 +3352,6 @@ mod tests {
             std::slice::from_ref(&closure),
             &setup,
             &release_context("1.0.0"),
-            None,
-            false,
             None,
             false,
             None,
@@ -3524,8 +3409,6 @@ mod tests {
             std::slice::from_ref(&closure),
             &setup,
             &release_context("1.0.0"),
-            None,
-            false,
             None,
             false,
             None,
@@ -3605,8 +3488,6 @@ mod tests {
             false,
             None,
             false,
-            None,
-            false,
             Instant::now(),
             &anon(),
         );
@@ -3646,8 +3527,6 @@ mod tests {
             false,
             None,
             false,
-            None,
-            false,
             Instant::now(),
             &anon(),
         );
@@ -3658,7 +3537,7 @@ mod tests {
     }
 
     #[test]
-    fn documentation_pages_render_verified_content_and_escape_search_rows() {
+    fn package_documentation_links_preserve_release_and_exact_digest() {
         let registry = registry();
         let reference = documentation_reference();
         let detail = PackageDetail {
@@ -3682,8 +3561,6 @@ mod tests {
             false,
             None,
             false,
-            None,
-            false,
             Instant::now(),
             &anon(),
         );
@@ -3702,77 +3579,6 @@ mod tests {
         assert!(package_html.contains("/-/docs/nginx/1.30.4/x86_64-linux?digest=sha256%3A"));
         assert!(!package_html.contains("/-/api/v1/documentation/sha256:"));
 
-        let search_html = documentation_index_page(
-            &registry,
-            None,
-            &[crate::db::PackageDocumentationSearchResult {
-                package_name: "nginx".into(),
-                package_version: "1.30.4".into(),
-                platform: "x86_64-linux".into(),
-                kind: "option".into(),
-                key: "nginx.enable".into(),
-                title: "<script>option</script>".into(),
-                summary: "Enable & start".into(),
-                score: 100,
-            }],
-            Some("enable"),
-            Some("option"),
-            1,
-            1,
-            Instant::now(),
-            &anon(),
-        );
-        assert!(!search_html.contains("<script>option</script>"));
-        assert!(search_html.contains("&lt;script&gt;option&lt;/script&gt;"));
-        assert!(search_html.contains("Enable &amp; start"));
-        assert!(!search_html.contains("value=\"service\""));
-        assert!(!search_html.contains("value=\"credential\""));
-        assert!(search_html.contains(&format!(
-            "href=\"/demo/-/docs/nginx/1.30.4/x86_64-linux#{}\"",
-            aos_doc_model::documentation_anchor("option", "nginx.enable"),
-        )));
-        assert!(!search_html.contains("Exact installable reference"));
-        assert!(!search_html.contains("<h1>Package documentation</h1>"));
-
-        let browse_html = documentation_index_page(
-            &registry,
-            None,
-            &[crate::db::PackageDocumentationSearchResult {
-                package_name: "nginx".into(),
-                package_version: "1.30.4".into(),
-                platform: "x86_64-linux".into(),
-                kind: "package".into(),
-                key: "nginx".into(),
-                title: "nginx".into(),
-                summary: "HTTP server".into(),
-                score: 0,
-            }],
-            Some(""),
-            None,
-            1,
-            1,
-            Instant::now(),
-            &anon(),
-        );
-        assert!(browse_html.contains("Browse 1 indexed documentation entry."));
-        assert!(browse_html.contains("HTTP server"));
-
-        let paged_html = documentation_index_page(
-            &registry,
-            None,
-            &[],
-            Some("tls proxy"),
-            Some("option"),
-            2,
-            150,
-            Instant::now(),
-            &anon(),
-        );
-        assert!(paged_html.contains("150 ranked results"));
-        assert!(paged_html.contains("page 2 of 2"));
-        assert!(paged_html.contains("q=tls+proxy"));
-        assert!(paged_html.contains("kind=option"));
-        assert!(paged_html.contains("page=1"));
     }
 
     #[tokio::test]

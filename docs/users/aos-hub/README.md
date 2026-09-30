@@ -51,5 +51,8 @@ resources.
 
 The [runtime ability viewer](web.md#inspect-native-runtime-ability-documents)
 browses generated module references and deferred transactions, including package
-relationships and ordered handler execution. It is a read-only artifact viewer;
-existing release indexing still needs the native consumer migration.
+relationships and desired execution paths. Imported artifacts use the
+stateless viewer. Published native references also appear in authenticated
+release search and package pages with exact release and document-digest pins.
+See the [documentation API](api.md#read-native-release-documentation) and
+[CLI examples](cli.md#read-published-native-documentation).
