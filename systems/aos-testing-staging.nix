@@ -12,6 +12,12 @@
     then 160
     else 132;
 
+  # Locale data and the complete libc utility interpreter increase the root
+  # payload. Size staging partitions for that payload before external signing.
+  aos.image.budgets.maxRootMiB = 768;
+  aos.image.budgets.maxConvertedDownloadMiB = 1280;
+  aos.image.budgets.maxRecoveryBundleMiB = 1280;
+
   aos.release = {
     registryOrigin = "https://cdn.aos.staging.andyl.org";
     hubUrl = "https://aos.staging.andyl.org";
