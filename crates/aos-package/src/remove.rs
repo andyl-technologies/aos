@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
-use super::profile::meta::{delete_meta, list_meta, snapshot_profile_meta_to_generation};
+use super::profile::meta::{list_meta, write_meta};
 use super::registry::store_path_hash;
 use super::store::closure_paths;
 use super::types::InstalledMeta;
@@ -80,6 +80,14 @@ async fn run_inner(
 
     // Step 1: Inspect profile and get current generation.
     let inspect_profile = Profile::open_readonly(config.scope);
+    let _profile_guard = if !dry_run {
+        Some(inspect_profile.lock_mutation()?)
+    } else {
+        None
+    };
+    if !dry_run {
+        crate::install::native::recover(&inspect_profile)?;
+    }
     let current_gen = inspect_profile
         .current_generation()?
         .ok_or_else(|| anyhow::anyhow!("no current generation -- nothing installed"))?;
@@ -134,18 +142,14 @@ async fn run_inner(
     let new_gen = profile.new_generation()?;
     copy_roots_except(&current_gen, &new_gen, &remove_hashes)?;
 
-    // Step 8: Delete metadata for removed packages.
-    for meta in to_remove.iter().chain(orphans.iter()) {
-        let hash = store_path_hash(&meta.store_path).to_string();
-        delete_meta(&profile, &hash)?;
-    }
-    snapshot_profile_meta_to_generation(&profile, &new_gen)?;
-    // Step 9: Rebuild FHS tree on the new generation.
-    printer.step(2, 3, "Rebuilding file tree...");
-    build_generation_fhs_tree(&new_gen, printer)?;
-
-    // Step 10: Switch to the new generation.
-    profile.switch_to(&new_gen)?;
+    publish_removal(
+        config,
+        &profile,
+        &new_gen,
+        &installed,
+        &remove_hashes,
+        printer,
+    )?;
     // Step 11: Report success.
     printer.step(3, 3, "Done!");
     let total_removed = to_remove.len() + orphans.len();
@@ -189,6 +193,14 @@ pub async fn run_autoremove(
 ) -> Result<RemoveOutcome> {
     // Step 1: Inspect profile.
     let inspect_profile = Profile::open_readonly(config.scope);
+    let _profile_guard = if !dry_run {
+        Some(inspect_profile.lock_mutation()?)
+    } else {
+        None
+    };
+    if !dry_run {
+        crate::install::native::recover(&inspect_profile)?;
+    }
     let current_gen = inspect_profile
         .current_generation()?
         .ok_or_else(|| anyhow::anyhow!("no current generation -- nothing installed"))?;
@@ -251,18 +263,14 @@ pub async fn run_autoremove(
     let new_gen = profile.new_generation()?;
     copy_roots_except(&current_gen, &new_gen, &remove_hashes)?;
 
-    // Delete metadata for orphans.
-    for meta in &orphans {
-        let hash = store_path_hash(&meta.store_path).to_string();
-        delete_meta(&profile, &hash)?;
-    }
-    snapshot_profile_meta_to_generation(&profile, &new_gen)?;
-    // Step 7: Rebuild FHS tree.
-    printer.step(2, 3, "Rebuilding file tree...");
-    build_generation_fhs_tree(&new_gen, printer)?;
-
-    // Step 8: Switch.
-    profile.switch_to(&new_gen)?;
+    publish_removal(
+        config,
+        &profile,
+        &new_gen,
+        &installed,
+        &remove_hashes,
+        printer,
+    )?;
     printer.step(3, 3, "Done!");
     printer.success(&format!(
         "Removed {} orphaned package(s) in generation {}.",
@@ -285,6 +293,48 @@ pub async fn run_autoremove(
     Ok(RemoveOutcome {
         orphan_count: orphans.len(),
     })
+}
+
+/// Evaluates removal before touching published metadata or running effects.
+fn publish_removal(
+    config: &ApmConfig,
+    profile: &Profile,
+    generation: &crate::profile::Generation,
+    installed: &[InstalledMeta],
+    removed: &HashSet<String>,
+    printer: &Printer,
+) -> Result<()> {
+    let registries = crate::registry::RegistrySet::new(Vec::new());
+    let native = crate::install::native::prepare(
+        config,
+        profile,
+        &registries,
+        installed,
+        &[],
+        &[],
+        removed,
+    )?;
+    anyhow::ensure!(
+        native.additional.is_empty(),
+        "removal would require an additional native package"
+    );
+    let selected = native.selected_paths();
+    let staged = Profile {
+        path: generation.path.clone(),
+        scope: profile.scope,
+    };
+    for (hash, path) in generation.roots()? {
+        if !selected.contains(path.to_str().context("profile root is not UTF-8")?) {
+            std::fs::remove_file(generation.path.join("usr").join(hash))?;
+        }
+    }
+    for meta in installed {
+        if selected.contains(meta.store_path.as_str()) {
+            write_meta(&staged, store_path_hash(&meta.store_path), meta)?;
+        }
+    }
+    build_generation_fhs_tree(generation, printer)?;
+    native.commit(profile, generation)
 }
 
 // ---------------------------------------------------------------------------
@@ -494,15 +544,11 @@ fn root_hashes_for_installed(installed: &[InstalledMeta]) -> HashSet<String> {
             if !apm.source_drv.is_empty() {
                 hashes.insert(store_path_hash(&apm.source_drv).to_string());
             }
-            if let Some(documentation) = &apm.documentation {
-                hashes.insert(store_path_hash(&documentation.store_path).to_string());
-            }
-            if let Some(ability) = &apm.contract {
-                hashes.insert(store_path_hash(&ability.document.store_path).to_string());
-                hashes.extend(
-                    crate::package_contract::retained_artifacts(ability)
-                        .map(|artifact| store_path_hash(&artifact.store_path).to_string()),
-                );
+            for artifact in [&apm.deployment, &apm.module_documentation]
+                .into_iter()
+                .flatten()
+            {
+                hashes.insert(store_path_hash(&artifact.store_path).to_string());
             }
         }
     }
@@ -610,7 +656,7 @@ mod tests {
 
     use crate::profile::Generation;
     use crate::profile::meta::write_meta;
-    use crate::types::{ApmMeta, DocumentationArtifactMeta, ProfileScope};
+    use crate::types::{ApmMeta, NativeArtifactMeta, ProfileScope};
 
     fn test_profile(tmp: &TempDir) -> Profile {
         Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap()
@@ -634,8 +680,9 @@ mod tests {
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
-                documentation: None,
-                contract: None,
+                deployment: None,
+                module_documentation: None,
+                qualification: None,
                 attestation: Default::default(),
             }),
         }
@@ -652,19 +699,12 @@ mod tests {
     }
 
     fn with_documentation(mut installed: InstalledMeta, hash: &str) -> InstalledMeta {
-        installed.apm.as_mut().unwrap().documentation = Some(DocumentationArtifactMeta {
-            format: aos_doc_model::DOCUMENT_FORMAT.to_string(),
-            store_path: format!("/var/lib/store/{hash}-package-aos-docs.json"),
-            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                .to_string(),
+        installed.apm.as_mut().unwrap().module_documentation = Some(NativeArtifactMeta {
+            store_path: format!("/nix/store/{hash}-package-module-docs"),
+            nar_hash: format!("sha256:{}", "a".repeat(64)),
             nar_size: 1024,
-            document_sha256:
-                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                    .to_string(),
+            document_sha256: format!("sha256:{}", "b".repeat(64)),
             document_size: 900,
-            semantic_schema_sha256:
-                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-                    .to_string(),
             references: Vec::new(),
         });
         installed

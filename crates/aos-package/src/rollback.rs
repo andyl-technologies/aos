@@ -2,10 +2,9 @@
 //!
 //! Every mutating apm command creates a new profile generation (a directory
 //! of symlinks to package store paths, see [`crate::profile`]). Rollback is
-//! therefore pure pointer surgery: it repoints the `current` symlink at an
-//! older generation and rebuilds the per-package metadata from that
-//! generation's roots — no downloads, no store mutations, and the abandoned
-//! generation remains available for rolling forward again.
+//! restores an older checked desired deployment through a new transaction and
+//! profile generation. Retained sources and original admission are verified
+//! before effects run; the current link changes only after durable completion.
 //!
 //! Generation roots are resolved against the enabled registry caches where
 //! possible so listings show `name version [registry]` instead of bare
@@ -19,9 +18,8 @@ use anyhow::{Result, bail};
 use super::config::ApmConfig;
 use super::platform::native_platform;
 use super::profile::Profile;
-use super::profile::meta;
 use super::registry::RegistrySet;
-use super::types::{ConfigGeneration, PackageContractMeta, ProfileScope, ReactivationPlan};
+use super::types::ProfileScope;
 use aos_core::output::{OutputMode, Printer};
 
 /// List user package profile generations.
@@ -123,9 +121,8 @@ pub async fn list(config: &ApmConfig, printer: &Printer) -> Result<()> {
 
 /// Run `apm rollback [--generation=N]`.
 ///
-/// Rollback is instantaneous -- no downloads, no store mutations.
-/// It switches the `current` symlink to a previous generation and
-/// rebuilds metadata from that generation's roots.
+/// Rollback applies a retained checked deployment as a new generation, including
+/// effect reconciliation and restoration of that generation's source inputs.
 ///
 /// Without `--generation`, the target is the highest-numbered generation
 /// below the current one. With `dry_run`, the planned switch is reported
@@ -145,6 +142,14 @@ pub async fn run(
 ) -> Result<()> {
     let json_mode = printer.mode() == OutputMode::Json;
     let inspect_profile = Profile::open_readonly(config.scope);
+    let _profile_guard = if dry_run {
+        None
+    } else {
+        Some(inspect_profile.lock_mutation()?)
+    };
+    if !dry_run {
+        crate::install::native::recover(&inspect_profile)?;
+    }
 
     // Must have a current generation to roll back from.
     let current = match inspect_profile.current_generation()? {
@@ -175,6 +180,8 @@ pub async fn run(
             None => bail!("no previous generation to roll back to"),
         }
     };
+
+    crate::install::native::probe_rollback(&inspect_profile, target)?;
 
     // Show what we are about to do.
     if !json_mode {
@@ -234,13 +241,7 @@ pub async fn run(
 
     let profile = Profile::open(config.scope)?;
     let registries = load_registries(config)?;
-    verify_target_package_contracts(config, target, &registries)?;
-
-    // Switch to the target generation.
-    profile.switch_to(target)?;
-
-    // Rebuild metadata from the target generation's roots.
-    meta::rebuild_meta(&profile, target, &registries)?;
+    let published = crate::install::native::rollback_locked(&profile, target, printer)?;
     if json_mode {
         printer.json(&rollback_result_json(
             "rolled_back",
@@ -248,7 +249,7 @@ pub async fn run(
             current.number,
             target.number,
             dry_run,
-            Some(target.number),
+            Some(published.number),
             &added,
             &removed,
             &target_by_hash,
@@ -258,99 +259,13 @@ pub async fn run(
             &registries,
         ));
     } else {
-        printer.success(&format!("Rolled back to generation {}.", target.number));
+        printer.success(&format!(
+            "Restored generation {} as generation {}.",
+            target.number, published.number
+        ));
     }
 
     Ok(())
-}
-
-fn verify_target_package_contracts(
-    config: &ApmConfig,
-    target: &super::profile::Generation,
-    registries: &RegistrySet,
-) -> Result<()> {
-    let roots = target.roots()?;
-    let mut entries = Vec::new();
-    for (hash, store_path) in &roots {
-        let Some(snapshot) = meta::read_generation_meta(target, hash)? else {
-            continue;
-        };
-        let Some(installed) = snapshot.apm.as_ref() else {
-            continue;
-        };
-        let registry = registries
-            .registries()
-            .iter()
-            .find(|registry| registry.config.name == installed.registry);
-        let Some(registry) = registry else {
-            if installed.contract.is_none() {
-                continue;
-            }
-            bail!(
-                "rollback target {}@{} requires unavailable registry '{}' for package-contract verification",
-                installed.name,
-                installed.version,
-                installed.registry
-            );
-        };
-        let package = registry.get_by_hash(hash);
-        let Some(package) = package else {
-            if installed.contract.is_none() {
-                continue;
-            }
-            return Err(anyhow::anyhow!(
-                "rollback target {}@{} is absent from registry '{}'",
-                installed.name,
-                installed.version,
-                installed.registry
-            ));
-        };
-        let requires_verification = require_rollback_contract(
-            &installed.name,
-            &installed.version,
-            &installed.registry,
-            installed.contract.as_ref(),
-            package.contract.as_ref(),
-        )?;
-        if !requires_verification {
-            continue;
-        }
-        if package.name != installed.name
-            || package.version != installed.version
-            || store_path.to_str() != Some(package.store_path.as_str())
-        {
-            bail!(
-                "rollback target {}@{} package contract differs from registry '{}'",
-                installed.name,
-                installed.version,
-                installed.registry
-            );
-        }
-        entries.push((registry.config.name.as_str(), package));
-    }
-
-    super::install::verify_package_contracts_from_cache_with_store(config, entries)?;
-    Ok(())
-}
-
-/// Requires an exact retained package contract before a rollback can reactivate it.
-fn require_rollback_contract(
-    name: &str,
-    version: &str,
-    registry: &str,
-    snapshot: Option<&PackageContractMeta>,
-    current: Option<&PackageContractMeta>,
-) -> Result<bool> {
-    match (snapshot, current) {
-        (None, None) => Ok(false),
-        (Some(snapshot), Some(current)) if snapshot == current => Ok(true),
-        (None, Some(_)) => bail!(
-            "rollback target {name}@{version} does not retain package contract now required by registry '{registry}'"
-        ),
-        _ => bail!(
-            "rollback target {name}@{version} package contract differs from registry '{registry}'"
-        ),
-    }
 }
 
 /// Build the JSON document emitted for `apm rollback` (planned or applied).
@@ -475,79 +390,11 @@ fn system_generation_hint(config: &ApmConfig) -> Option<usize> {
     if config.scope != ProfileScope::User {
         return None;
     }
-    let system_path = ProfileScope::System.profile_path();
-    let state = crate::sysroot::load_generation_state_pub(&system_path).ok()?;
-    let count = state.generations.len();
+    let count = Profile::open_readonly(ProfileScope::System)
+        .list_generations()
+        .ok()?
+        .len();
     (count > 0).then_some(count)
-}
-
-// ---------------------------------------------------------------------------
-// Cross-ABI configuration-generation rollback.
-// ---------------------------------------------------------------------------
-
-/// Decide how a config-generation may be re-activated under the running image's
-/// shared-option ABI according to the generation pin.
-///
-/// This is the rollback-side entrypoint to [`ConfigGeneration::reactivation_plan`]:
-/// it compares the target generation's `module_abi_pinned` against the running
-/// image's `running_image_abi` and returns the action required —
-/// [`ReactivationPlan::DirectReactivate`] for any generation with the same ABI,
-/// or [`ReactivationPlan::CrossAbiReEval`] carrying the
-/// retained inputs the running image's evaluator must replay.
-///
-/// A `DirectReactivate` plan is the existing cheap path: a pure
-/// `Profile::switch_to` + `activate <N>` pointer switch over the retained `cfg/`
-/// outputs, no eval, no reboot. A `CrossAbiReEval` plan must be executed via
-/// [`execute_cross_abi_reeval`] before the generation can be committed.
-///
-/// # Errors
-///
-/// Returns an error when the target requires cross-ABI re-eval but a retained
-/// input (`package_modules`, `host_nix_ref`, or `facts_hash`) is missing
-/// from its record — a fail-closed signal that the generation cannot be safely
-/// recomputed.
-pub fn plan_config_gen_reactivation(
-    target: &ConfigGeneration,
-    _running_image: u32,
-    running_image_abi: u32,
-) -> Result<ReactivationPlan> {
-    target.reactivation_plan(running_image_abi)
-}
-
-/// Execute the cross-ABI re-eval branch of a config-generation rollback
-/// by reusing the configuration fixpoint driver.
-///
-/// Given a [`ReactivationPlan::CrossAbiReEval`]'s retained inputs, this feeds the
-/// content-pinned `host.nix` and the rolled-back image's `running_base_lib` into
-/// [`crate::config_eval::reeval_cross_abi`], which drives the existing on-host
-/// fixpoint to a fresh manifest pinned to the running image's ABI. The §3
-/// pre-eval ABI gate still fires inside the fixpoint, so an incompatible config
-/// module is refused fail-closed and the old config-gen stays live.
-///
-/// `source_manifest` is the immutable manifest retained by the selected
-/// generation. `eval_root` and `out` select ephemeral re-evaluation outputs.
-///
-/// # Errors
-///
-/// Returns an error when the re-eval reaches a terminal state (no manifest is
-/// then written, so nothing downstream activates) or its inputs cannot be read.
-pub fn execute_cross_abi_reeval(
-    inputs: &crate::types::CrossAbiReEvalInputs,
-    running_base_lib: &std::path::Path,
-    source_manifest: &std::path::Path,
-    eval_root: PathBuf,
-    out: PathBuf,
-    verbose: u8,
-) -> Result<()> {
-    crate::config_eval::reeval_cross_abi(
-        inputs,
-        running_base_lib,
-        source_manifest,
-        eval_root,
-        out,
-        verbose,
-        None,
-    )
 }
 
 /// Human description of a root: `name version [registry]` when resolvable,
@@ -565,153 +412,11 @@ fn describe_root(registries: &RegistrySet, hash: &str, target: &std::path::Path)
 #[cfg(test)]
 mod tests {
     use crate::profile::Profile;
-    use crate::types::{
-        ConfigGeneration, PackageContractArtifactMeta, PackageContractDocumentMeta,
-        PackageContractMeta, PackageModule, PackageModuleOrigin, ProfileScope, ReactivationPlan,
-    };
+    use crate::types::ProfileScope;
     use tempfile::TempDir;
 
     fn test_profile(tmp: &TempDir) -> Profile {
         Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap()
-    }
-
-    fn contract_meta(store_path: &str) -> PackageContractMeta {
-        let artifact = PackageContractArtifactMeta {
-            content: format!("sha256:{}", "c".repeat(64)),
-            store_path: "/nix/store/11111111111111111111111111111111-owner".to_string(),
-            nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-            nar_size: 1,
-            closure_digest: format!("sha256:{}", "d".repeat(64)),
-            closure: Vec::new(),
-        };
-        PackageContractMeta {
-            document: PackageContractDocumentMeta {
-                store_path: store_path.to_string(),
-                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-                nar_size: 1,
-                document_sha256: format!("sha256:{}", "a".repeat(64)),
-                document_size: 1,
-                references: Vec::new(),
-            },
-            payload: artifact.clone(),
-            source: artifact,
-            selectors: Vec::new(),
-            provenance: "provenance/a/ability.intoto.jsonl".to_string(),
-        }
-    }
-
-    #[test]
-    fn legacy_snapshot_cannot_omit_new_registry_contract_metadata() {
-        let current = contract_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-contract");
-
-        let error =
-            super::require_rollback_contract("owner", "1.0.0", "test-reg", None, Some(&current))
-                .expect_err("rollback must not infer an package contract absent from its snapshot");
-
-        assert!(
-            error
-                .to_string()
-                .contains("does not retain package contract")
-        );
-    }
-
-    #[test]
-    fn rollback_rejects_changed_retained_contract_metadata() {
-        let snapshot = contract_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-contract");
-        let current = contract_meta("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-owner-contract");
-
-        let error = super::require_rollback_contract(
-            "owner",
-            "1.0.0",
-            "test-reg",
-            Some(&snapshot),
-            Some(&current),
-        )
-        .expect_err("changed retained metadata must fail closed");
-
-        assert!(error.to_string().contains("differs from registry"));
-    }
-
-    #[test]
-    fn rollback_accepts_exact_retained_contract_metadata() {
-        let snapshot = contract_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-contract");
-
-        assert!(
-            super::require_rollback_contract(
-                "owner",
-                "1.0.0",
-                "test-reg",
-                Some(&snapshot),
-                Some(&snapshot),
-            )
-            .unwrap()
-        );
-    }
-
-    /// Builds a configuration-generation record with the supplied axis metadata.
-    fn config_gen(number: u32, module_abi_pinned: u32, with_inputs: bool) -> ConfigGeneration {
-        let package_modules = with_inputs
-            .then(|| PackageModule {
-                package: "server".to_string(),
-                document_digest: format!("sha256:{}", "a".repeat(64)),
-                store_path: "/nix/store/src0-cfg".to_string(),
-                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-                entrypoint: "module.nix".to_string(),
-                origin: PackageModuleOrigin::Registry,
-            })
-            .into_iter()
-            .collect();
-        ConfigGeneration {
-            number,
-            created_at: "2026-06-01T00:00:00Z".into(),
-            image_gen_parent: 1,
-            module_abi_pinned,
-            manifest_hash: "sha256:beef".into(),
-            package_modules,
-            host_nix_ref: "/nix/store/hn0-host.nix".to_string(),
-            host_nix_commit: None,
-            facts_hash: "sha256:facts".to_string(),
-            facts_ref: "/nix/store/fa0-facts.json".to_string(),
-            base_lib_ref: "/nix/store/bl0-base-lib".to_string(),
-            evaluator_ref: "/nix/store/ev0-evaluator".to_string(),
-        }
-    }
-
-    // A host-only configuration has a legitimate empty module closure.
-    #[test]
-    fn reactivation_cross_abi_accepts_host_only_inputs() {
-        let target = config_gen(3, 1, false);
-        let plan = super::plan_config_gen_reactivation(&target, 1, 2).unwrap();
-        let ReactivationPlan::CrossAbiReEval(inputs) = plan else {
-            panic!("cross-ABI host-only reactivation must re-evaluate");
-        };
-        assert!(inputs.package_modules.is_empty());
-    }
-
-    // The same ABI permits direct pointer-switch reactivation across images.
-    #[test]
-    fn reactivation_same_abi_is_direct() {
-        let target = config_gen(3, 2, true);
-        let plan = super::plan_config_gen_reactivation(&target, 99, 2).unwrap();
-        assert_eq!(plan, ReactivationPlan::DirectReactivate);
-    }
-
-    // A different ABI requires reevaluation over the retained inputs.
-    #[test]
-    fn reactivation_cross_abi_returns_retained_inputs() {
-        let target = config_gen(3, 1, true);
-        let plan = super::plan_config_gen_reactivation(&target, 1, 2).unwrap();
-        match plan {
-            ReactivationPlan::CrossAbiReEval(inputs) => {
-                assert_eq!(inputs.from_module_abi, 1);
-                assert_eq!(inputs.to_module_abi, 2);
-                assert_eq!(inputs.package_modules[0].store_path, "/nix/store/src0-cfg");
-                assert_eq!(inputs.host_nix_ref, "/nix/store/hn0-host.nix");
-                assert_eq!(inputs.facts_hash, "sha256:facts");
-                assert_eq!(inputs.facts_ref, "/nix/store/fa0-facts.json");
-            }
-            other => panic!("expected CrossAbiReEval, got {other:?}"),
-        }
     }
 
     #[tokio::test]

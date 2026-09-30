@@ -26,9 +26,7 @@ use super::download::{
 use super::platform::native_platform;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
-use super::profile::meta::{
-    delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
-};
+use super::profile::meta::{delete_meta, list_meta, write_meta};
 use super::registry::{RegistrySet, store_path_hash};
 use super::remove::retained_installed_indexes;
 use super::resolve::resolve_multiple;
@@ -102,6 +100,14 @@ pub async fn run(
     // Step 1: Inspect profile and load installed metadata.
     printer.step(1, 7, "Loading installed packages...");
     let inspect_profile = Profile::open_readonly(config.scope);
+    let _profile_guard = if !dry_run {
+        Some(inspect_profile.lock_mutation()?)
+    } else {
+        None
+    };
+    if !dry_run {
+        crate::install::native::recover(&inspect_profile)?;
+    }
     let installed = list_meta(&inspect_profile)?;
 
     // Step 2: Load registries from cache.
@@ -148,6 +154,7 @@ pub async fn run(
     printer.step(3, 7, "Resolving dependencies...");
     let mut all_new_metas: Vec<PackageMeta> = Vec::new();
     let mut upgrade_closures: Vec<(String, Vec<PackageMeta>)> = Vec::new();
+    let mut native_closures = Vec::new();
 
     for candidate in &to_upgrade {
         let closures = resolve_multiple(
@@ -166,7 +173,8 @@ pub async fn run(
                     all_new_metas.push(meta.clone());
                 }
             }
-            upgrade_closures.push((closure.registry_name, closure.closure));
+            upgrade_closures.push((closure.registry_name.clone(), closure.closure.clone()));
+            native_closures.push(closure);
         }
     }
     super::install::verify_package_provenance_entries_from_cache_with_policy(
@@ -239,6 +247,16 @@ pub async fn run(
             .iter()
             .map(|artifact| artifact.store_path.clone()),
     );
+    let mut temporary_roots = if !dry_run {
+        let mut lease = crate::store::temp_roots::TemporaryRoots::open(
+            &crate::install::native::packaged_path("AOS_NIX_STORE")?,
+            &Default::default(),
+        )?;
+        lease.retain(store_paths.iter().cloned(), &Default::default())?;
+        Some(lease)
+    } else {
+        None
+    };
     let missing = filter_missing(&store_paths).await?;
     let missing_set: HashSet<&str> = missing.iter().map(|s| s.as_str()).collect();
     let to_download: Vec<&PackageMeta> = all_new_metas
@@ -315,6 +333,12 @@ pub async fn run(
 
         // Import NARs into the store.
         printer.step(5, 7, "Importing packages...");
+        if let Some(lease) = temporary_roots.as_mut() {
+            lease.retain(
+                results.iter().map(|result| result.store_path.clone()),
+                &Default::default(),
+            )?;
+        }
         for result in &results {
             crate::store::import_nar_with_compression(
                 &result.local_path,
@@ -331,21 +355,31 @@ pub async fn run(
         printer.info("All packages already in store, skipping download.");
     }
 
-    let _verified_package_contracts =
-        super::install::verify_package_contracts_from_cache_with_store(
-            config,
-            upgrade_closures
-                .iter()
-                .flat_map(|(registry_name, closure)| {
-                    closure.iter().map(|meta| (registry_name.as_str(), meta))
-                }),
-        )?;
+    let realized_modules = crate::install::native::realize_modules(
+        config,
+        &registries,
+        &native_closures,
+        printer,
+        false,
+        &mut temporary_roots,
+    )
+    .await?;
 
     // Step 8: Create new generation.
     printer.step(6, 7, "Updating profile...");
     let profile = Profile::open(config.scope)?;
     let prev_gen = profile.current_generation()?;
+    let native = crate::install::native::prepare(
+        config,
+        &profile,
+        &registries,
+        &installed,
+        &native_closures,
+        &realized_modules,
+        &obsolete_hashes,
+    )?;
     let new_gen = profile.new_generation()?;
+    all_new_metas.extend(native.additional.iter().map(|(_, meta)| meta.clone()));
 
     // Copy existing roots from the previous generation.
     if let Some(ref prev) = prev_gen {
@@ -362,6 +396,19 @@ pub async fn run(
     };
     create_gc_roots(&new_gen.path, &unique_for_roots)?;
 
+    let metadata_profile = {
+        let selected = native.selected_paths();
+        for (hash, path) in new_gen.roots()? {
+            if !selected.contains(path.to_str().context("profile root is not UTF-8")?) {
+                std::fs::remove_file(new_gen.path.join("usr").join(hash))?;
+            }
+        }
+        Profile {
+            path: new_gen.path.clone(),
+            scope: profile.scope,
+        }
+    };
+
     // Write metadata for upgraded packages.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -372,57 +419,66 @@ pub async fn run(
 
     // Carry forward metadata for non-upgraded packages.
     for hash in &obsolete_hashes {
-        delete_meta(&profile, hash)?;
+        delete_meta(&metadata_profile, hash)?;
     }
     for meta in &installed {
         let hash = store_path_hash(&meta.store_path).to_string();
-        if obsolete_hashes.contains(&hash) {
+        if obsolete_hashes.contains(&hash)
+            || !native.selected_paths().contains(meta.store_path.as_str())
+        {
             continue;
         }
-        write_meta(&profile, &hash, meta)?;
+        write_meta(&metadata_profile, &hash, meta)?;
     }
 
     // Write new metadata for upgraded packages.
-    for (registry_name, closure) in &upgrade_closures {
-        for meta in closure {
-            let hash = store_path_hash(&meta.store_path).to_string();
-            let flags = installed_flags
-                .get(meta.name.as_str())
-                .copied()
-                .unwrap_or_default();
+    let entries = upgrade_closures
+        .iter()
+        .flat_map(|(registry, closure)| closure.iter().map(move |meta| (registry.as_str(), meta)))
+        .chain(
+            native
+                .additional
+                .iter()
+                .map(|(registry, meta)| (registry.as_str(), meta)),
+        );
+    for (registry_name, meta) in entries {
+        let hash = store_path_hash(&meta.store_path).to_string();
+        let flags = installed_flags
+            .get(meta.name.as_str())
+            .copied()
+            .unwrap_or_default();
 
-            let installed_meta = InstalledMeta {
-                store_path: meta.store_path.clone(),
-                pushed_at: now,
-                pushed_by: "apm".into(),
-                expires_at: None,
-                is_root: true,
-                last_accessed: now,
-                access_count: 0,
-                apm: Some(ApmMeta {
-                    name: meta.name.clone(),
-                    version: meta.version.clone(),
-                    explicit: flags.explicit,
-                    registry: registry_name.clone(),
-                    installed_at: now_iso.clone(),
-                    held: flags.held,
-                    source_drv: meta.source_drv.clone(),
-                    source_nar_hash: meta.source_nar_hash.clone(),
-                    documentation: meta.documentation.clone(),
-                    contract: meta.contract.clone(),
-                    attestation: meta.attestation.clone(),
-                }),
-            };
+        let installed_meta = InstalledMeta {
+            store_path: meta.store_path.clone(),
+            pushed_at: now,
+            pushed_by: "apm".into(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: now,
+            access_count: 0,
+            apm: Some(ApmMeta {
+                name: meta.name.clone(),
+                version: meta.version.clone(),
+                explicit: flags.explicit,
+                registry: registry_name.to_owned(),
+                installed_at: now_iso.clone(),
+                held: flags.held,
+                source_drv: meta.source_drv.clone(),
+                source_nar_hash: meta.source_nar_hash.clone(),
+                deployment: meta.deployment.clone(),
+                module_documentation: meta.module_documentation.clone(),
+                qualification: meta.qualification.clone(),
+                attestation: meta.attestation.clone(),
+            }),
+        };
 
-            write_meta(&profile, &hash, &installed_meta)?;
-        }
+        write_meta(&metadata_profile, &hash, &installed_meta)?;
     }
-    snapshot_profile_meta_to_generation(&profile, &new_gen)?;
     // Build FHS tree for the new generation.
     build_generation_fhs_tree(&new_gen, printer)?;
 
     // Atomic switch to the new generation.
-    profile.switch_to(&new_gen)?;
+    native.commit(&profile, &new_gen)?;
 
     printer.step(7, 7, "Done!");
     printer.success(&format!(
@@ -600,16 +656,6 @@ fn obsolete_installed_hashes(
         hashes.insert(hash);
         if !apm.source_drv.is_empty() {
             hashes.insert(store_path_hash(&apm.source_drv).to_string());
-        }
-        if let Some(documentation) = &apm.documentation {
-            hashes.insert(store_path_hash(&documentation.store_path).to_string());
-        }
-        if let Some(ability) = &apm.contract {
-            hashes.insert(store_path_hash(&ability.document.store_path).to_string());
-            hashes.extend(
-                crate::package_contract::retained_artifacts(ability)
-                    .map(|artifact| store_path_hash(&artifact.store_path).to_string()),
-            );
         }
     }
     hashes
@@ -853,38 +899,19 @@ fn collect_closure_secondary_artifacts(
         .collect::<HashMap<_, _>>();
     for (registry_name, packages) in closures {
         for package in packages {
-            if let Some(documentation) = &package.documentation {
+            for artifact in [&package.deployment, &package.module_documentation]
+                .into_iter()
+                .flatten()
+            {
                 push_secondary_artifact(
                     artifacts,
                     &mut seen,
                     registry_name,
-                    &documentation.store_path,
-                    &documentation.nar_hash,
-                    true,
-                    true,
-                )?;
-            }
-            if let Some(ability) = &package.contract {
-                push_secondary_artifact(
-                    artifacts,
-                    &mut seen,
-                    registry_name,
-                    &ability.document.store_path,
-                    &ability.document.nar_hash,
+                    &artifact.store_path,
+                    &artifact.nar_hash,
                     true,
                     false,
                 )?;
-                for artifact in crate::package_contract::retained_artifacts(ability) {
-                    push_secondary_artifact(
-                        artifacts,
-                        &mut seen,
-                        registry_name,
-                        &artifact.store_path,
-                        &artifact.nar_hash,
-                        true,
-                        false,
-                    )?;
-                }
             }
         }
     }
@@ -1116,8 +1143,9 @@ mod tests {
                 held,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
-                documentation: None,
-                contract: None,
+                deployment: None,
+                module_documentation: None,
+                qualification: None,
                 attestation: Default::default(),
             }),
         }
@@ -1390,14 +1418,16 @@ references = []
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    named_outputs: std::collections::BTreeMap::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
                     images: vec![],
                     min_format: None,
                     requires_features: Vec::new(),
-                    documentation: None,
-                    contract: None,
+                    deployment: None,
+                    module_documentation: None,
+                    qualification: None,
                     attestation: Default::default(),
                 },
                 registry: "aos-core".into(),
@@ -1421,14 +1451,16 @@ references = []
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    named_outputs: std::collections::BTreeMap::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
                     images: vec![],
                     min_format: None,
                     requires_features: Vec::new(),
-                    documentation: None,
-                    contract: None,
+                    deployment: None,
+                    module_documentation: None,
+                    qualification: None,
                     attestation: Default::default(),
                 },
                 registry: "aos-core".into(),
@@ -1470,14 +1502,16 @@ references = []
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    named_outputs: std::collections::BTreeMap::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
                     images: vec![],
                     min_format: None,
                     requires_features: Vec::new(),
-                    documentation: None,
-                    contract: None,
+                    deployment: None,
+                    module_documentation: None,
+                    qualification: None,
                     attestation: Default::default(),
                 },
                 registry: "aos-core".into(),
@@ -1501,14 +1535,16 @@ references = []
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    named_outputs: std::collections::BTreeMap::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
                     images: vec![],
                     min_format: None,
                     requires_features: Vec::new(),
-                    documentation: None,
-                    contract: None,
+                    deployment: None,
+                    module_documentation: None,
+                    qualification: None,
                     attestation: Default::default(),
                 },
                 registry: "aos-core".into(),
@@ -1551,14 +1587,16 @@ references = []
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    named_outputs: std::collections::BTreeMap::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
                     images: vec![],
                     min_format: None,
                     requires_features: Vec::new(),
-                    documentation: None,
-                    contract: None,
+                    deployment: None,
+                    module_documentation: None,
+                    qualification: None,
                     attestation: Default::default(),
                 },
                 registry: "aos-core".into(),
@@ -1582,14 +1620,16 @@ references = []
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    named_outputs: std::collections::BTreeMap::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
                     images: vec![],
                     min_format: None,
                     requires_features: Vec::new(),
-                    documentation: None,
-                    contract: None,
+                    deployment: None,
+                    module_documentation: None,
+                    qualification: None,
                     attestation: Default::default(),
                 },
                 registry: "aos-core".into(),
