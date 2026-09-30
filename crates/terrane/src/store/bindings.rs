@@ -104,6 +104,42 @@ pub struct TokioFileLock {
     _file: std::fs::File,
 }
 
+/// Locks the opened regular inode and verifies that its pathname still names it.
+#[cfg(all(feature = "tokio", unix))]
+fn lock_opened(path: &std::path::Path, file: std::fs::File) -> std::io::Result<TokioFileLock> {
+    use std::os::unix::fs::MetadataExt;
+
+    let before = file.metadata()?;
+    if !before.is_file() || before.nlink() != 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "coordination inode is not a single-link regular file",
+        ));
+    }
+
+    file.lock()?;
+
+    // A waiter may resume after the name has been replaced. Holding the old
+    // inode's kernel lock cannot establish exclusion at that new pathname.
+    let opened = file.metadata()?;
+    let named = std::fs::symlink_metadata(path)?;
+    if !opened.is_file()
+        || !named.is_file()
+        || named.file_type().is_symlink()
+        || opened.nlink() != 1
+        || named.nlink() != 1
+        || (opened.dev(), opened.ino()) != (before.dev(), before.ino())
+        || (opened.dev(), opened.ino()) != (named.dev(), named.ino())
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "coordination pathname changed while acquiring its lock",
+        ));
+    }
+
+    Ok(TokioFileLock { _file: file })
+}
+
 /// Binds portable file operations to the native runtime (CRATE-8).
 #[cfg(feature = "tokio")]
 #[derive(Clone, Copy, Debug, Default)]
@@ -137,15 +173,28 @@ impl LocalFs for TokioLocalFs {
 
         // Waiting for the kernel lock must not block an async executor thread.
         tokio::task::spawn_blocking(move || {
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(path)?;
-            file.lock()?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
 
-            Ok(TokioFileLock { _file: file })
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                    .open(&path)?;
+                lock_opened(&path, file)
+            }
+
+            #[cfg(not(unix))]
+            {
+                let _ = path;
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "nofollow coordination locking unavailable",
+                ))
+            }
         })
         .await
         .map_err(std::io::Error::other)?
@@ -448,6 +497,60 @@ mod tests {
                 clock.sleep(Duration::MAX).await.unwrap_err().kind(),
                 std::io::ErrorKind::InvalidInput
             );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_lock_rejects_symlinks_hardlinks_and_replaced_open_inodes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let fs = TokioLocalFs;
+            let entropy = fs.random_bytes(16).await.unwrap();
+            let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+            let root = std::env::temp_dir().join(format!("terrane-lock-inode-{suffix}"));
+            fs.create_dir_new(&root).await.unwrap();
+            let path = root.join("coordination");
+            let link = root.join("symlink");
+            let alias = root.join("alias");
+            let retained = root.join("retained-inode");
+            fs.write_new(&path, b"original").await.unwrap();
+
+            let guard = fs.lock_exclusive(&path).await.unwrap();
+            drop(guard);
+            fs.symlink(&path, &link).await.unwrap();
+            assert!(fs.lock_exclusive(&link).await.is_err());
+            assert!(fs.lock_exclusive(&root).await.is_err());
+            fs.hard_link(&path, &alias).await.unwrap();
+            assert!(fs.lock_exclusive(&path).await.is_err());
+            fs.remove_file(&alias).await.unwrap();
+
+            // Model replacement after the primitive opens its descriptor but
+            // before its waiting lock can establish current-name exclusion.
+            let opened = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            fs.rename(&path, &retained).await.unwrap();
+            fs.write_new(&path, b"replacement").await.unwrap();
+
+            assert_eq!(
+                lock_opened(&path, opened).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+            assert_eq!(fs.read(&retained).await.unwrap(), b"original");
+            assert_eq!(fs.read(&path).await.unwrap(), b"replacement");
+            let guard = fs.lock_exclusive(&path).await.unwrap();
+            drop(guard);
+
+            for path in [link, retained, path] {
+                fs.remove_file(&path).await.unwrap();
+            }
+            fs.remove_dir(&root).await.unwrap();
         });
     }
 

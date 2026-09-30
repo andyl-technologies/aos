@@ -172,6 +172,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             }),
         };
 
+        bucket.preflight_publication_namespace().await?;
+
         let freshly_created = match bucket
             .inner
             .fs

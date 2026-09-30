@@ -49,6 +49,7 @@ in {
   store-capability-probe = sourceGate "store-capability-probe" ''
     cd crates
     ${focusedTests}
+    run_bucket_test store::bindings::tests::native_lock_rejects_symlinks_hardlinks_and_replaced_open_inodes
     run_core_bucket_test bucket::records::tests::capability_publication_marker_preserves_legacy_bytes_and_rejects_unknown_versions
     run_bucket_test bucket::tests::registered_publication_marker_cannot_authorize_legacy_probe_writes
     ${builtins.concatStringsSep "\n" (map (test: "run_bucket_test bucket::${test}") ["version_tests::v1_readonly_refuses_an_empty_backend_response_after_initial_validation" "version_tests::v1_readonly_preserves_unknown_inventory_and_refuses_every_effect" "version_tests::v1_readonly_rejects_layout_transition_without_upgrading_or_writing" "tests::probe_revalidates_persisted_layout_and_profile_each_open" "tests::missing_capabilities_never_reinitializes_existing_portable_state"])}
