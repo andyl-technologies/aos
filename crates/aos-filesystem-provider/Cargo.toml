@@ -7,8 +7,8 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 aos-ability-model.workspace = true
+aos-ability-runtime.workspace = true
 aos-contract.workspace = true
-aos-provider-protocol.workspace = true
 rustix = { workspace = true, features = ["process"] }
 serde.workspace = true
 serde_json.workspace = true

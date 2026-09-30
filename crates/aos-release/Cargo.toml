@@ -7,6 +7,7 @@ description = "Pure release contracts and offline verification for canonical AOS
 
 [dependencies]
 aos-ability-model = { workspace = true }
+aos-ability-plan = { workspace = true }
 aos-contract = { workspace = true }
 aos-registry-surface = { workspace = true }
 anyhow = { workspace = true }

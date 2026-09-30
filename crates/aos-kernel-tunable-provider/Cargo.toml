@@ -6,9 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-aos-ability-model.workspace = true
 aos-contract.workspace = true
-aos-provider-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

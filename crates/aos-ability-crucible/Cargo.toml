@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-aos-ability-model = { workspace = true }
+aos-ability-runtime = { workspace = true }
 aos-contract = { workspace = true }
 crucible-guest = { path = "../crucible-guest" }
 rustix = { workspace = true, features = ["net"] }
