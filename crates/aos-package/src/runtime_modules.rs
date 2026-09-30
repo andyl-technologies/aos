@@ -180,11 +180,14 @@ pub fn snapshot(
             .context("runtime snapshots require their packaged Nix store")?,
     );
     let cancellation = aos_ability_runtime::adapter::CancellationToken::default();
-    let expected_hash = crate::store::verification::dump_store_path_identity_in(
-        staging
-            .to_str()
-            .context("runtime source staging is not UTF-8")?,
-        Some(&executable),
+    // Staging is a sealed private filesystem tree, not an imported store object.
+    // Its initial NAR intentionally uses the filesystem serializer; realized
+    // store identities below use Nix's selected-store accessor instead.
+    let mut source_command = crate::store::verification::live_store_command(Some(&executable))?;
+    source_command.arg("--dump").arg(&staging);
+    let expected_hash = aos_core::nix::identity::hash_nar_command(
+        source_command,
+        std::time::Duration::from_secs(10 * 60),
     )?
     .0;
     let expected_path = crate::store::temp_roots::fixed_path(

@@ -110,6 +110,7 @@ pub(crate) fn validate_registry(command: &RegistryCommand, system: bool) -> Resu
 /// runtime classification before the crate compiles.
 fn requires_host_runtime(command: &PackageCommand) -> bool {
     match command {
+        PackageCommand::Image { .. } => true,
         PackageCommand::Install {
             from,
             system,
@@ -210,6 +211,7 @@ fn is_read_only(command: &PackageCommand) -> bool {
         PackageCommand::Credential(CredentialCommand::Encrypt { output, .. }) => output.is_none(),
         PackageCommand::Registry { command, .. } => apm_registry_is_read_only(command),
         PackageCommand::Install { .. }
+        | PackageCommand::Image { .. }
         | PackageCommand::ApplyDeployment(..)
         | PackageCommand::Remove { .. }
         | PackageCommand::Autoremove
@@ -402,6 +404,64 @@ mod tests {
         TestRegistryCli::try_parse_from(std::iter::once("apr").chain(arguments.iter().copied()))
             .expect("test registry command parses")
             .command
+    }
+
+    #[test]
+    fn image_prepare_requires_a_writable_host_and_system_scope() {
+        for arguments in [
+            &["image", "prepare", "server"][..],
+            &[
+                "image",
+                "prepare",
+                "server",
+                "--registry",
+                "trusted",
+                "--qualified",
+            ][..],
+        ] {
+            let command = command(arguments);
+            assert!(command.is_system());
+            assert_eq!(
+                command.runtime_requirement(),
+                crate::environment::RuntimeRequirement::LiveAos
+            );
+            RuntimeBoundary::default().validate(&command).unwrap();
+            assert!(
+                RuntimeBoundary {
+                    container: true,
+                    read_only: false
+                }
+                .validate(&command)
+                .is_err()
+            );
+            assert!(
+                RuntimeBoundary {
+                    container: false,
+                    read_only: true
+                }
+                .validate(&command)
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn image_prepare_parser_preserves_registry_and_admission_purpose() {
+        let parsed = command(&[
+            "image",
+            "prepare",
+            "server",
+            "--registry",
+            "trusted",
+            "--qualified",
+        ]);
+        assert!(matches!(parsed, PackageCommand::Image {
+            command: crate::ImageCommand::Prepare { package, registry: Some(registry), qualified: true }
+        } if package == "server" && registry == "trusted"));
+        assert!(TestCli::try_parse_from(["apm", "image", "prepare"]).is_err());
+        assert!(
+            TestCli::try_parse_from(["apm", "image", "prepare", "server", "--reboot"]).is_err()
+        );
     }
 
     #[test]

@@ -27,9 +27,7 @@ use super::profile::meta::{list_meta, orphaned_by_registry};
 use super::registry::{Registry, RegistrySet, store_path_hash};
 use super::store;
 use super::sysroot_lock;
-use super::types::{
-    DocumentationArtifactMeta, InstalledMeta, PackageContractMeta, PackageMeta, ProfileScope,
-};
+use super::types::{InstalledMeta, NativeArtifactMeta, PackageMeta, ProfileScope};
 use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
@@ -273,7 +271,7 @@ fn show_registry_package(
         .find(|m| store_path_hash(&m.store_path) == pkg_hash);
 
     let is_installed = installed_meta.is_some();
-    let documentation_hint = meta.documentation.as_ref().map(|_| {
+    let documentation_hint = meta.module_documentation.as_ref().map(|_| {
         documentation_hint(
             &meta.name,
             config.scope,
@@ -281,7 +279,7 @@ fn show_registry_package(
                 installed
                     .apm
                     .as_ref()
-                    .is_some_and(|apm| apm.documentation.is_some())
+                    .is_some_and(|apm| apm.module_documentation.is_some())
             }),
         )
     });
@@ -306,8 +304,9 @@ fn show_registry_package(
             "dependencies": dep_names,
             "source_drv": meta.source_drv,
             "maintainer": meta.maintainer,
-            "documentation": documentation_availability(meta.documentation.as_ref()),
-            "package_contract": contract_availability(meta.contract.as_ref()),
+            "documentation": artifact_availability(meta.module_documentation.as_ref()),
+            "deployment": artifact_availability(meta.deployment.as_ref()),
+            "qualification": artifact_availability(meta.qualification.as_ref()),
             "documentation_hint": documentation_hint,
         });
         printer.json(&json_obj);
@@ -333,8 +332,9 @@ fn show_registry_package(
         printer.kv("Maintainer", &meta.maintainer);
         print_document_authority(
             printer,
-            meta.documentation.as_ref(),
-            meta.contract.as_ref(),
+            meta.module_documentation.as_ref(),
+            meta.deployment.as_ref(),
+            meta.qualification.as_ref(),
             documentation_hint.as_deref(),
         );
         // Show sysroot-specific information.
@@ -387,7 +387,7 @@ async fn show_installed_unavailable(
         .context("installed metadata is missing APM package state")?;
     let dep_names = installed_dependency_names(installed, meta_list).await?;
     let documentation_hint = apm
-        .documentation
+        .module_documentation
         .as_ref()
         .map(|_| documentation_hint(&apm.name, scope, true));
 
@@ -408,8 +408,9 @@ async fn show_installed_unavailable(
             "dependencies": dep_names,
             "source_drv": null,
             "maintainer": null,
-            "documentation": documentation_availability(apm.documentation.as_ref()),
-            "package_contract": contract_availability(apm.contract.as_ref()),
+            "documentation": artifact_availability(apm.module_documentation.as_ref()),
+            "deployment": artifact_availability(apm.deployment.as_ref()),
+            "qualification": artifact_availability(apm.qualification.as_ref()),
             "documentation_hint": documentation_hint,
         });
         printer.json(&json_obj);
@@ -428,8 +429,9 @@ async fn show_installed_unavailable(
         }
         print_document_authority(
             printer,
-            apm.documentation.as_ref(),
-            apm.contract.as_ref(),
+            apm.module_documentation.as_ref(),
+            apm.deployment.as_ref(),
+            apm.qualification.as_ref(),
             documentation_hint.as_deref(),
         );
     }
@@ -437,29 +439,15 @@ async fn show_installed_unavailable(
     Ok(())
 }
 
-fn documentation_availability(metadata: Option<&DocumentationArtifactMeta>) -> serde_json::Value {
+fn artifact_availability(metadata: Option<&NativeArtifactMeta>) -> serde_json::Value {
     metadata.map_or_else(
-        || serde_json::json!({ "available": false }),
+        || serde_json::json!({"available": false}),
         |metadata| {
             serde_json::json!({
                 "available": true,
-                "format": metadata.format,
+                "store_path": metadata.store_path,
                 "document_sha256": metadata.document_sha256,
-                "semantic_schema_sha256": metadata.semantic_schema_sha256,
                 "nar_hash": metadata.nar_hash,
-            })
-        },
-    )
-}
-
-fn contract_availability(metadata: Option<&PackageContractMeta>) -> serde_json::Value {
-    metadata.map_or_else(
-        || serde_json::json!({ "available": false }),
-        |metadata| {
-            serde_json::json!({
-                "available": true,
-                "document_sha256": metadata.document.document_sha256,
-                "nar_hash": metadata.document.nar_hash,
             })
         },
     )
@@ -479,31 +467,28 @@ fn documentation_hint(package: &str, scope: ProfileScope, installed: bool) -> St
 
 fn print_document_authority(
     printer: &Printer,
-    documentation: Option<&DocumentationArtifactMeta>,
-    contract: Option<&PackageContractMeta>,
+    documentation: Option<&NativeArtifactMeta>,
+    deployment: Option<&NativeArtifactMeta>,
+    qualification: Option<&NativeArtifactMeta>,
     hint: Option<&str>,
 ) {
-    if let Some(documentation) = documentation {
-        printer.kv("Documentation", "available");
-        printer.kv("Documentation document", &documentation.document_sha256);
+    for (label, artifact) in [
+        ("Documentation", documentation),
+        ("Deployment", deployment),
+        ("Qualification", qualification),
+    ] {
         printer.kv(
-            "Documentation semantic schema",
-            &documentation.semantic_schema_sha256,
+            label,
+            if artifact.is_some() {
+                "available"
+            } else {
+                "unavailable"
+            },
         );
-    } else {
-        printer.kv("Documentation", "unavailable");
+        if let Some(artifact) = artifact {
+            printer.kv(&format!("{label} document"), &artifact.document_sha256);
+        }
     }
-
-    if let Some(contract) = contract {
-        printer.kv("Package contract", "available");
-        printer.kv(
-            "Package contract document",
-            &contract.document.document_sha256,
-        );
-    } else {
-        printer.kv("Package contract", "unavailable");
-    }
-
     if let Some(hint) = hint {
         printer.kv("Documentation hint", hint);
     }
@@ -1072,10 +1057,7 @@ mod tests {
 
     use crate::registry::Registry;
     use crate::registry::parse::{CURL_TOML, ZLIB_TOML};
-    use crate::types::{
-        ApmMeta, InstalledMeta, PackageContractArtifactMeta, PackageContractDocumentMeta,
-        RegistryConfig,
-    };
+    use crate::types::{ApmMeta, InstalledMeta, RegistryConfig};
 
     /// Helper: create a registry in a temp directory from TOML test fixtures.
     fn make_registry(
@@ -1149,8 +1131,9 @@ mod tests {
                 held,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
-                documentation: None,
-                contract: None,
+                deployment: None,
+                module_documentation: None,
+                qualification: None,
                 attestation: Default::default(),
             }),
         }
@@ -1264,72 +1247,6 @@ mod tests {
         assert_eq!(format_size(14_893_056), "14.2 MiB");
         assert_eq!(format_size(1_073_741_824), "1.0 GiB");
         assert_eq!(format_size(2_684_354_560), "2.5 GiB");
-    }
-
-    #[test]
-    fn show_authority_summaries_use_verified_metadata_identities() {
-        let documentation = DocumentationArtifactMeta {
-            format: "aos.package-documentation/v1".to_string(),
-            store_path: "/nix/store/documentation".to_string(),
-            nar_hash: "sha256:documentation-nar".to_string(),
-            nar_size: 42,
-            document_sha256: "sha256:documentation-document".to_string(),
-            document_size: 41,
-            semantic_schema_sha256: "sha256:documentation-schema".to_string(),
-            references: Vec::new(),
-        };
-        let artifact = PackageContractArtifactMeta {
-            content: "sha256:content".to_string(),
-            store_path: "/nix/store/artifact".to_string(),
-            nar_hash: "sha256:artifact-nar".to_string(),
-            nar_size: 43,
-            closure_digest: "sha256:closure".to_string(),
-            closure: Vec::new(),
-        };
-        let contract = PackageContractMeta {
-            document: PackageContractDocumentMeta {
-                store_path: "/nix/store/contract".to_string(),
-                nar_hash: "sha256:contract-nar".to_string(),
-                nar_size: 44,
-                document_sha256: "sha256:contract-document".to_string(),
-                document_size: 45,
-                references: Vec::new(),
-            },
-            payload: artifact.clone(),
-            source: artifact,
-            selectors: Vec::new(),
-            provenance: "contracts/fixture.dsse.json".to_string(),
-        };
-
-        let documentation_summary = documentation_availability(Some(&documentation));
-        assert_eq!(documentation_summary["available"], true);
-        assert_eq!(
-            documentation_summary["document_sha256"],
-            "sha256:documentation-document"
-        );
-        assert_eq!(
-            documentation_summary["semantic_schema_sha256"],
-            "sha256:documentation-schema"
-        );
-
-        let contract_summary = contract_availability(Some(&contract));
-        assert_eq!(contract_summary["available"], true);
-        assert_eq!(
-            contract_summary["document_sha256"],
-            "sha256:contract-document"
-        );
-        assert_eq!(
-            documentation_hint("fixture", ProfileScope::System, true),
-            "apm docs show fixture --system"
-        );
-        assert_eq!(
-            documentation_availability(None),
-            serde_json::json!({ "available": false })
-        );
-        assert_eq!(
-            contract_availability(None),
-            serde_json::json!({ "available": false })
-        );
     }
 
     // 7. list_installed_filters_correctly
