@@ -111,18 +111,43 @@ namespaces and are reconciled by full stage-2 evaluation.
 The v1 partition contract contains:
 
 ```text
-device     null or a stable absolute /dev/disk/by-id path
-label      validated GPT label, defaulting to the logical attribute name
-type       linux-generic, swap, or a non-protected canonical raw GPT GUID
-sizeMin    systemd size string
-sizeMax    optional systemd size string
-weight     positive integer
-format     null, ext4, vfat, or swap
-uuid       optional operator-declared partition UUID; otherwise AOS-generated
-grow       whether this partition consumes remaining free space
-growFs     whether repart may grow an existing filesystem
-priority   deterministic placement priority
+device      null or a stable absolute /dev/disk/by-id path
+label       validated GPT label, defaulting to the logical attribute name
+type        linux-generic, linux-raid, swap, or a non-protected canonical raw GPT GUID
+sizeMin     systemd size string
+sizeMax     optional systemd size string
+weight      positive integer
+format      null, ext4, xfs, vfat, or swap
+encryption  null (image policy), none, or tpm2
+uuid        optional operator-declared partition UUID; otherwise AOS-generated
+grow        whether this partition consumes remaining free space
+growFs      whether repart may grow an existing filesystem
+priority    deterministic placement priority
 ```
+
+Above the partition layer, `aos.provisioning.storage.arrays` binds declared
+partitions into Linux MD arrays:
+
+```text
+level       raid0, raid1, raid10, raid5, or raid6
+members     logical partition names; each member becomes a raw linux-raid partition
+format      null, ext4, or xfs; the filesystem the assembled array carries
+encryption  null (image policy), none, or tpm2
+```
+
+A partition or array that carries a filesystem is a *volume*. Its filesystem
+label is the partition's GPT label or the array's name, and that label is the
+mount identity (`/dev/disk/by-label/<label>`) for every consumer; the validator
+bounds it by the filesystem's label capacity (16 bytes for ext4, 12 for xfs).
+The system-state volume is ext4 only; data volumes may be ext4 or xfs. The
+system-state volume is the `var` array when one is declared, otherwise the
+root-disk `var` partition; a `var` array must include that partition as a
+member. `encryption = "tpm2"` wraps the filesystem in a LUKS2 container sealed
+by the measured-boot unit and is admitted only on a measured-boot image, where
+the system-state volume may not be plaintext. Arrays are created with metadata
+1.2 and homehost `aos`, are named `/dev/md/<name>`, and are assembled by the
+initrd on every later boot; a `var` array is inferred from the member type of
+the `var` partition when no plan is available.
 
 The root-disk default (`device = null`) is resolved from the parent of the
 booted `root-a` partition. Explicit devices must be stable paths. The renderer
@@ -147,7 +172,12 @@ The validator rejects:
 - incompatible type/format pairs;
 - non-stable or relative device paths;
 - formats whose tools are absent from the initrd;
-- raw INI, arbitrary commands, and caller-chosen output paths.
+- raw INI, arbitrary commands, and caller-chosen output paths;
+- array members that are undeclared, formatted, encrypted, or shared between
+  arrays; levels with too few members; array names longer than an ext4 label
+  or equal to a partition label; a `var` array without the root-disk member;
+- `tpm2` encryption without measured boot, `none` on the system-state volume
+  with it, and encryption of anything but an ext4 or xfs volume.
 
 These rules deliberately tighten two earlier schema sketches: device paths are
 limited to `/dev/disk/by-id/...`, rather than any absolute `/dev` path, and GPT
@@ -157,9 +187,13 @@ stricter contract prevents a transient kernel name or an ambiguous
 that need repeated human-facing names use distinct GPT labels and mount by
 their explicit UUIDs.
 
-`/var` remains fixed substrate in v1. Measured images leave it raw so
-`aos-var-crypt` can create LUKS2 and enroll the TPM token. Unmeasured images
-format it as ext4. General filesystem mounts remain stage-2 configuration.
+`/var` remains fixed substrate in v1: the root-disk `var` partition always
+exists, either as the volume itself or as a member of the `var` array. The
+renderer omits `Format=` for a TPM-sealed volume so `aos-var-crypt` can create
+LUKS2 and enroll the TPM token; plain volumes are formatted by repart
+(partitions) or by `aos-storage-topology` (arrays). Data-volume mounts remain
+stage-2 configuration, declared through `aos.filesystems.volumes` against the
+same logical names.
 
 The frozen image partitions occupy their own type space: root-a (and future
 root-b) use the target architecture's DPS root GUID, and a verity hash uses the
@@ -267,13 +301,16 @@ INITRD
          create/reserve pending provenance marker
                     |
                     v
-         apply every device; verify resulting topology
+         apply every device; verify resulting partition layout
+                    |
+                    v
+         create declared arrays on blank members; format plain array volumes
                     |
                     v
          relabel pending marker as operator-v1 or fallback-v1
                     |
                     v
-         /var encryption/format -> mount -> switch-root
+         volume sealing/unlock -> mount /var -> switch-root
 
 STAGE 2
   persist first-boot audit evidence and generated per-device definitions
@@ -293,9 +330,14 @@ aos-provenance-fallback-v1
 
 Only a committed provenance label means provisioning completed. Creating the
 partition as `pending` before the mutating passes reserves space ahead of a
-grow-to-fill partition without falsely recording success. A crash or device
-failure leaves `pending`; the next boot refuses an automatic replay so recovery
-can inspect which devices committed before choosing resume or factory reset.
+grow-to-fill partition without falsely recording success. The relabel happens
+in `aos-storage-topology.service`, after every declared array exists, so the
+transaction covers the array layer as well as the partition layer. A crash or
+device failure leaves `pending`; the next boot refuses an automatic replay so
+recovery can inspect which devices committed before choosing resume or factory
+reset. Array creation refuses a member that already carries any signature.
+Because the relabel rescans the partition table, the dm-verity root units
+order after `aos-storage-topology.service` on verity images.
 
 On the provisioning boot, authorization, evaluation, validation, preflight, or
 mutation failure blocks switch-root and emits a console diagnostic. The

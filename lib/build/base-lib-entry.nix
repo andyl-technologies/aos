@@ -106,6 +106,7 @@ in {
           sizeMax
           weight
           format
+          encryption
           uuid
           grow
           growFs
@@ -113,10 +114,22 @@ in {
           ;
       })
       evaluated.config.aos.provisioning.storage.partitions;
+    arrays =
+      builtins.mapAttrs
+      (_: array: {
+        inherit
+          (array)
+          level
+          members
+          format
+          encryption
+          ;
+      })
+      evaluated.config.aos.provisioning.storage.arrays;
   in {
     # Do not return the module engine's internal `_module` metadata. This
     # closed value is the complete initrd/Rust data contract.
-    config.aos.provisioning.storage = {inherit partitions;};
+    config.aos.provisioning.storage = {inherit partitions arrays;};
   };
 
   ## Evaluate the package-name seed required before registry module resolution.

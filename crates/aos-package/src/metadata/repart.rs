@@ -5,6 +5,11 @@
 //! resulting JSON as an untrusted data contract: unknown fields, unsafe device
 //! paths, protected partition types, malformed sizes and ambiguous growth all
 //! fail before `systemd-repart` is allowed to mutate a disk.
+//!
+//! The partition layer rendered here is consumed by `systemd-repart`. The
+//! arrays and volumes layered on top of it are validated and rendered by
+//! [`super::topology`], which this module invokes so one call validates and
+//! renders the complete plan.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -13,6 +18,8 @@ use anyhow::{Context, Result, bail};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use super::topology::{self, Encryption, LINUX_RAID_TYPE_GUID, Topology};
 
 /// Directory below the metadata stash for rendered definitions.
 pub const REPART_DIR: &str = "repart.d";
@@ -45,6 +52,26 @@ pub struct ProvisioningPlan {
 pub struct StoragePlan {
     /// Logical partition name to definition.
     pub partitions: BTreeMap<String, PartitionSpec>,
+    /// Logical array name to definition. Absent in plans persisted before
+    /// arrays existed, which is equivalent to declaring none.
+    #[serde(default)]
+    pub arrays: BTreeMap<String, ArraySpec>,
+}
+
+/// One Linux MD array bound from declared partitions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ArraySpec {
+    /// MD RAID level: `raid0`, `raid1`, `raid10`, `raid5`, or `raid6`.
+    pub level: String,
+    /// Logical partition names forming the array, in declaration order.
+    pub members: Vec<String>,
+    /// Filesystem created on the assembled array (`ext4` or `xfs`), or
+    /// `null` for a raw array.
+    pub format: Option<String>,
+    /// Declared encryption, or `null` for the image policy default.
+    #[serde(default)]
+    pub encryption: Option<String>,
 }
 
 /// One additive partition definition.
@@ -64,8 +91,12 @@ pub struct PartitionSpec {
     pub size_max: Option<String>,
     /// Relative free-space allocation weight.
     pub weight: i64,
-    /// Optional initial filesystem format.
+    /// Optional initial filesystem format: `ext4`, `xfs`, `vfat`, or `swap`.
     pub format: Option<String>,
+    /// Declared encryption, or `null` for the image policy default. Absent
+    /// in plans persisted before volume encryption was declarable.
+    #[serde(default)]
+    pub encryption: Option<String>,
     /// Optional deterministic partition UUID.
     pub uuid: Option<String>,
     /// Whether this partition consumes remaining free space.
@@ -78,13 +109,22 @@ pub struct PartitionSpec {
 
 /// Validates the complete evaluated provisioning plan.
 ///
+/// Partition rules are checked here; the array and volume layers are then
+/// resolved by [`topology::resolve_topology`], which enforces membership,
+/// level, naming, system-state placement, and encryption policy.
+///
 /// # Errors
 ///
 /// Returns an error for an unsupported schema, invalid or duplicated labels,
 /// unstable device paths, protected types, malformed sizes or UUIDs, unsafe
-/// formatting, multiple grow partitions per device, or a missing root-disk
-/// `var` partition.
+/// formatting, multiple grow partitions per device, a missing root-disk
+/// `var` partition, or an invalid array or volume declaration.
 pub fn validate_provisioning_plan(plan: &ProvisioningPlan, measured_boot: bool) -> Result<()> {
+    resolve_validated_topology(plan, measured_boot).map(|_| ())
+}
+
+/// Validates the partition layer, then resolves the layers above it.
+fn resolve_validated_topology(plan: &ProvisioningPlan, measured_boot: bool) -> Result<Topology> {
     if plan.schema != "aos.provisioning-plan/v1" {
         bail!("unsupported provisioning plan schema '{}'", plan.schema);
     }
@@ -144,28 +184,29 @@ pub fn validate_provisioning_plan(plan: &ProvisioningPlan, measured_boot: bool) 
         }
         if !matches!(
             partition.format.as_deref(),
-            None | Some("ext4" | "vfat" | "swap")
+            None | Some("ext4" | "xfs" | "vfat" | "swap")
         ) {
             bail!("partition '{name}' uses an unsupported format");
         }
         if partition.label == "var" && partition.device.is_none() {
             root_var = true;
-            if measured_boot && partition.format.is_some() {
-                bail!("measured boot requires root-disk var to remain raw");
+            if !matches!(partition.format.as_deref(), None | Some("ext4")) {
+                bail!("the root-disk var partition must carry ext4");
             }
         }
     }
     if !root_var {
         bail!("storage plan must declare label 'var' on the root disk");
     }
-    Ok(())
+    topology::resolve_topology(plan, measured_boot)
 }
 
-/// Renders a validated plan into per-device transient repart definitions.
+/// Renders a validated plan into per-device transient repart definitions
+/// plus the array and volume indexes the later initrd units consume.
 ///
 /// The root-disk definition set also contains a pending marker. The initrd
-/// relabels that marker only after every planned device succeeds, making the
-/// one-time commit durable and crash-observable.
+/// relabels that marker only after every planned device and array succeeds,
+/// making the one-time commit durable and crash-observable.
 ///
 /// # Errors
 ///
@@ -178,7 +219,7 @@ pub fn render_provisioning_plan(
     marker_label: &str,
     marker_uuid: &str,
 ) -> Result<Vec<PathBuf>> {
-    validate_provisioning_plan(plan, measured_boot)?;
+    let topology = resolve_validated_topology(plan, measured_boot)?;
     if !matches!(
         marker_label,
         PENDING_LABEL | OPERATOR_LABEL | FALLBACK_LABEL
@@ -228,7 +269,7 @@ pub fn render_provisioning_plan(
 
         for (position, (name, partition)) in partitions.into_iter().enumerate() {
             let path = dir.join(format!("{:04}-{name}.conf", position + 10));
-            std::fs::write(&path, render_partition(partition, measured_boot))
+            std::fs::write(&path, render_partition(name, partition, &topology))
                 .with_context(|| format!("writing {}", path.display()))?;
             written.push(path);
         }
@@ -249,6 +290,7 @@ pub fn render_provisioning_plan(
     }
     std::fs::write(stash_dir.join(REPART_TARGETS_FILE), targets)
         .context("writing repart target index")?;
+    written.extend(topology::render_topology(stash_dir, &topology)?);
     Ok(written)
 }
 
@@ -319,8 +361,16 @@ fn format_uuid(bytes: [u8; 16]) -> String {
     )
 }
 
-fn render_partition(partition: &PartitionSpec, measured_boot: bool) -> String {
+/// Renders one repart definition.
+///
+/// A member partition is typed linux-raid and never formatted: the array
+/// carries the filesystem. A TPM-sealed volume is also left raw here because
+/// the unlock unit formats it inside the LUKS2 container it creates.
+fn render_partition(name: &str, partition: &PartitionSpec, topology: &Topology) -> String {
+    let is_member = topology.members.contains(name);
     let partition_type = match partition.partition_type.as_str() {
+        _ if is_member => LINUX_RAID_TYPE_GUID,
+        "linux-raid" => LINUX_RAID_TYPE_GUID,
         "linux-generic" => "linux-generic",
         other => other,
     };
@@ -336,10 +386,18 @@ fn render_partition(partition: &PartitionSpec, measured_boot: bool) -> String {
     } else if !partition.grow {
         result.push_str(&format!("SizeMaxBytes={}\n", partition.size_min));
     }
-    let format = if partition.label == "var" && !measured_boot && partition.format.is_none() {
-        Some("ext4")
+    let format = if is_member {
+        None
     } else {
-        partition.format.as_deref()
+        match topology
+            .volumes
+            .iter()
+            .find(|volume| volume.source == topology::VolumeSource::Partition && volume.name == name)
+        {
+            Some(volume) if volume.encryption == Encryption::Tpm2 => None,
+            Some(volume) => volume.filesystem.as_deref(),
+            None => partition.format.as_deref(),
+        }
     };
     if let Some(format) = format {
         result.push_str(&format!("Format={format}\n"));
@@ -363,7 +421,7 @@ fn validate_label(value: &str, kind: &str) -> Result<()> {
 }
 
 fn validate_partition_type(value: &str) -> Result<()> {
-    if matches!(value, "linux-generic" | "swap") {
+    if matches!(value, "linux-generic" | "linux-raid" | "swap") {
         return Ok(());
     }
     let lower = value.to_ascii_lowercase();

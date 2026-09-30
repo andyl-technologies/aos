@@ -247,6 +247,10 @@ in
               # exist, the mount fails at stage-2 boot. /var was already
               # above — /boot would otherwise be missing in production.
               mkdir -p rootfs/boot
+              # /srv is a mountpoint too: modules/services/storage-topology.nix
+              # binds the persistent /var/srv over it so data volumes declared
+              # in host.nix can mount beneath /srv on the read-only root.
+              mkdir -p rootfs/srv
               mkdir -m 0700 rootfs/root
               # Root-owned APM authoring config lives on the read-only rootfs,
               # so create it here instead of asking tmpfiles to mutate /root at
