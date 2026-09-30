@@ -18,9 +18,8 @@
 //! retained references, installation, settlement, signer, or effect authority.
 //! There is no ordinary producer or append exception in this module.
 
-use sha2::{Digest as _, Sha256};
-
 use super::super::{JournalError, JournalRecord, RecordNamespace};
+use super::fixed300::{FixedCapacityBody, floor_identity as fixed_floor_identity};
 use super::{reservation_key, take};
 
 /// Fixes the exact ordinary floor value width.
@@ -235,19 +234,23 @@ impl OrdinaryCapacityDataV4 {
         let mut bytes = b"AOSJCR01".to_vec();
         bytes.extend_from_slice(&4_u16.to_be_bytes());
         bytes.extend_from_slice(&[40, 10, self.kind as u8, self.profile as u8, 0, 0]);
-        bytes.extend_from_slice(&self.owner_id);
-        bytes.extend_from_slice(&self.original_owner_cut_digest);
-        bytes.extend_from_slice(&self.operation_id);
-        bytes.extend_from_slice(&self.original_artifact_digest);
-        bytes.extend_from_slice(&self.admission_owner_mutation_digest);
-        bytes.extend_from_slice(&self.admission_native_preservation_union_digest);
-        bytes.extend_from_slice(&self.remaining_transactions.to_be_bytes());
-        bytes.extend_from_slice(&self.remaining_record_frames.to_be_bytes());
-        bytes.extend_from_slice(&self.remaining_append_bytes.to_be_bytes());
-        bytes.extend_from_slice(&self.maximum_retained_growth_entries.to_be_bytes());
-        bytes.extend_from_slice(&self.maximum_retained_growth_bytes.to_be_bytes());
-        bytes.extend_from_slice(&self.admission_transaction);
-        bytes.extend_from_slice(&self.remaining_profile_digest);
+        FixedCapacityBody {
+            owner_id: self.owner_id,
+            original_owner_cut_digest: self.original_owner_cut_digest,
+            operation_id: self.operation_id,
+            original_artifact_digest: self.original_artifact_digest,
+            admission_owner_mutation_digest: self.admission_owner_mutation_digest,
+            admission_native_preservation_union_digest: self
+                .admission_native_preservation_union_digest,
+            remaining_transactions: self.remaining_transactions,
+            remaining_record_frames: self.remaining_record_frames,
+            remaining_append_bytes: self.remaining_append_bytes,
+            maximum_retained_growth_entries: self.maximum_retained_growth_entries,
+            maximum_retained_growth_bytes: self.maximum_retained_growth_bytes,
+            admission_transaction: self.admission_transaction,
+            remaining_profile_digest: self.remaining_profile_digest,
+        }
+        .encode_into(&mut bytes);
         bytes
     }
 }
@@ -323,22 +326,26 @@ impl OrdinaryCapacityRecordV4 {
         }
 
         let mut offset = 16;
+        let kind = OrdinaryCapacityKindV4::from_byte(value[12])?;
+        let profile = OrdinaryCapacityProfileV4::from_byte(value[13])?;
+        let body = FixedCapacityBody::decode(value, &mut offset);
         let data = OrdinaryCapacityDataV4 {
-            kind: OrdinaryCapacityKindV4::from_byte(value[12])?,
-            profile: OrdinaryCapacityProfileV4::from_byte(value[13])?,
-            owner_id: take::<32>(value, &mut offset),
-            original_owner_cut_digest: take::<32>(value, &mut offset),
-            operation_id: take::<16>(value, &mut offset),
-            original_artifact_digest: take::<32>(value, &mut offset),
-            admission_owner_mutation_digest: take::<32>(value, &mut offset),
-            admission_native_preservation_union_digest: take::<32>(value, &mut offset),
-            remaining_transactions: u32::from_be_bytes(take::<4>(value, &mut offset)),
-            remaining_record_frames: u32::from_be_bytes(take::<4>(value, &mut offset)),
-            remaining_append_bytes: u64::from_be_bytes(take::<8>(value, &mut offset)),
-            maximum_retained_growth_entries: u32::from_be_bytes(take::<4>(value, &mut offset)),
-            maximum_retained_growth_bytes: u64::from_be_bytes(take::<8>(value, &mut offset)),
-            admission_transaction: take::<16>(value, &mut offset),
-            remaining_profile_digest: take::<32>(value, &mut offset),
+            kind,
+            profile,
+            owner_id: body.owner_id,
+            original_owner_cut_digest: body.original_owner_cut_digest,
+            operation_id: body.operation_id,
+            original_artifact_digest: body.original_artifact_digest,
+            admission_owner_mutation_digest: body.admission_owner_mutation_digest,
+            admission_native_preservation_union_digest: body
+                .admission_native_preservation_union_digest,
+            remaining_transactions: body.remaining_transactions,
+            remaining_record_frames: body.remaining_record_frames,
+            remaining_append_bytes: body.remaining_append_bytes,
+            maximum_retained_growth_entries: body.maximum_retained_growth_entries,
+            maximum_retained_growth_bytes: body.maximum_retained_growth_bytes,
+            admission_transaction: body.admission_transaction,
+            remaining_profile_digest: body.remaining_profile_digest,
         };
         let candidate = take::<32>(value, &mut offset);
         let decoded = Self::new(data)?;
@@ -350,16 +357,7 @@ impl OrdinaryCapacityRecordV4 {
 }
 
 fn floor_identity(payload: &[u8]) -> Result<[u8; 32], JournalError> {
-    if payload.len() != 268 {
-        return Err(invalid("ordinary identity payload width"));
-    }
-
-    let length = u32::try_from(payload.len()).map_err(|_| JournalError::JournalTooLarge)?;
-    let mut digest = Sha256::new();
-    digest.update(IDENTITY_DOMAIN);
-    digest.update(length.to_be_bytes());
-    digest.update(payload);
-    Ok(digest.finalize().into())
+    fixed_floor_identity(payload, IDENTITY_DOMAIN, "ordinary identity payload width")
 }
 
 fn invalid(reason: &'static str) -> JournalError {

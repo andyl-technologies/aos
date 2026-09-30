@@ -20,12 +20,18 @@ use super::{
 };
 
 pub(super) mod family;
+mod fixed300;
 pub mod native_held;
 mod ordinary;
+mod query;
 
 pub(in crate::journal) use ordinary::{
     OrdinaryCapacityDataV4, OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4,
     OrdinaryCapacityRecordV4,
+};
+
+pub(in crate::journal) use query::{
+    QueryCapacityDataV6, QueryCapacityProfileV6, QueryCapacityRecordV6,
 };
 
 use family::{CanonicalCapacityFamily, canonical_reservations};
