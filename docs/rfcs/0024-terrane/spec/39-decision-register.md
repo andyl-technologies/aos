@@ -1402,6 +1402,54 @@ is added rather than editing history.
     remains immutable under CDC-3. This correction precedes T1's initial
     identity and encoding freeze.
 
+- **[D-82] Permanently own remote physical keys and reconcile future residue.**
+  - **Status:** Decided
+  - **Decision:** Register complete monotone MANIFEST-key-7 pack burns,
+    permanent recoverable PublicationState-key-7 owner selectors, proof case 3,
+    immutable v2 sweep/copied-retirement authorization/operation and repeatable
+    reconciliation passes at existing keys. Each owner covers ALL present/future
+    versions and deletion markers, not a frozen handle list. No Done phase or
+    completed pass discharges ownership. Retain local D-78-v1 bytes/semantics.
+    First ownership requires complete current roots/history/serving/control,
+    live lease/exclusion and genuine FULL same-instance G/D: ordinary sweep
+    observes pack/index plus trash; copied retirement observes NEW barrier.
+    Initial nonburned tombstoning retains GC-14. Later marked members require
+    verified eligible fresh unburned placements with no live dependency through
+    the excluded keys. After ownership, fresh secure-ID placements are the
+    only restore/admission path. Every new request and selected progress uses
+    the actual current whole live lease. Already-owned residue is an explicit
+    GC-10/12/15/16 recovery exception, not fresh sweep or invented artifact age.
+    Fair recurring reconciliation retains the owner even after empty passes.
+    Copies retain visibility only. A distinct genuine destination preparation,
+    CURRENT placement fence and NEW trash barrier permit FULL G/D even when
+    old pack/index/witness are missing. They mint no foreign provenance or
+    lineage. The final new destination owner covers future same-key residue
+    and ALL canonical stale trash cycles. Local/remote copied-burn-v2 is
+    additive; ordinary local D-78-v1 bytes and effects stay unchanged.
+  - **Rationale:** A finite delayed pre-burn create may finish after deletion.
+    Immutable permanent ownership keeps its old keys forever unservable, so
+    that residue cannot threaten live fresh placements. Dynamic genuine
+    version observations and fair later passes permit eventual all-version
+    reclamation without an unprovable universal outstanding-create drain or
+    frozen all-version list. An absence observation cannot prove no future
+    residue and MUST NOT end ownership. Ordinary lease renewal/unrelated
+    publication must not restart valid artifact waits; final current fences
+    remain mandatory. Retiring metadata or reusing keys would break safety;
+    forgetting reconciliation after one pass would break eventual GC. Ordinary
+    quiescent copy can lose either/both old artifacts and deliberately does
+    not import private authorization. Requiring their witness/age would strand
+    residue forever; genuine new destination barrier/authority is the explicit
+    alternative, not absence or copied-marker permission.
+  - **Affects:** GC-4, GC-7, GC-10, GC-12, GC-14 to GC-16, GC-22 to GC-24,
+    GC-26, GC-29, BKT-2, BKT-4 to BKT-9, BKT-14, BKT-17, STORE-13,
+    PACK-2, PACK-15, PACK-18, PACK-20; MANIFEST/PublicationState optional key 7,
+    proof case 3 and disjoint sweep/copied-retirement-v2 alternatives. Existing
+    IDs, keys,
+    identity domains, Tombstone bytes and local-v1 bodies remain unchanged.
+    This additive registration precedes T1 encoding/key freeze; actual provider
+    eventual-observation/deletion/finite-effects qualification and implementation
+    remain pending, not established by a format or simulator gate.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

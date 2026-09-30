@@ -325,7 +325,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   cannot qualify deletion.
   D-79 defines complete current fences, selected lease/configuration changes
   and source-lineage preservation; their native implementation and actual
-  effect/recovery qualification remain incomplete. Narrowed
+  effect/recovery qualification remain incomplete. D-82 registers permanent
+  burns, destination retirement barriers for ordinary copies, and recurring
+  physical-residue reconciliation. Its codecs, private factories, local
+  copied-retirement effects and provider qualification remain pending.
+  Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,
   GC-28 to GC-30; `checks.terrane.gates.gc-roots-complete`,

@@ -142,6 +142,20 @@ readmit an identity into a fresh pack. The active binding governs whole-pack
 and detached-index inventory lookup as well as member lookup. Its restore,
 crash-recovery and deletion rules are GC-29.
 
+Optional manifest key 7 is the complete permanent physical-pack burn set
+under D-82. It MUST be sorted uniquely by unsigned pack-ID bytes and MUST
+never lose an ID across selected generations. Present `[]` means known
+empty; absent legacy key 7 means unknown. BKT-4 publication MUST preserve
+the set on upload, repair, restore and compaction. A burn permanently
+forbids serving or admitting the old pack and detached-index keys through
+any member, container, inventory, cache or fallback path. It does not
+quarantine the content identities, which may use verified fresh placements.
+Unknown completeness MUST refuse remote deletion and same-ID readmission
+unless independently qualified fenced migration establishes the exact set.
+Its selected ownership, visibility and migration checks complete BKT-4
+and BKT-5 in
+[`reference/remote-deletion-authority.md`](reference/remote-deletion-authority.md).
+
 ### `refs/heads/`
 
 One canonical CBOR ref record per branch

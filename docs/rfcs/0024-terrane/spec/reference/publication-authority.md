@@ -97,6 +97,10 @@ Proof case 1 requires the private completed candidate check, exact current
 source dependencies and durable signed graph before installing lineage.
 Proof case 2 requires complete current collection qualification and exact
 removed-index witnesses before carrying sources to a new loss generation.
+Proof case 3 requires the D-82 private completed sweep/copied ownership check,
+exact immutable authorization, complete current fence and permanent
+burn publication. It uses case 2's complete source-preservation checks
+when carrying lineage through a loss-generation transition.
 Proof case 4 requires actual trusted Guard installation and complete checks
 of every carried source dependency; affected sources lose lineage. Public
 proof tuples or digest equality cannot substitute for any private check.
@@ -283,12 +287,28 @@ the same actual exclusion as final checked head publication. D-78 physical
 intent, old marks and a returned digest cannot replace this proof. A changed
 fence requires fresh complete reconciliation with the retained verified
 index witness, including after physical containers are absent.
-`GcReconciliation` binds that exact current fence, immutable deletion
+For the additive D-82 local copied-burn-v2 case only, each effect/restart
+uses an actual complete CURRENT CopiedPlacementFence under that same held
+namespace exclusion, plus permanent selected owner/burn and whole live
+lease. It certifies physical serving closure, not foreign signed history.
+Ordinary local D-78-v1 current-root/trust/journal/effect rules remain
+unchanged; a legitimate unburned replacement cannot use this exception.
+Local-v1 GcReconciliation binds that current collection fence, immutable
 authorization, original pack/cycle/epoch and detached index identity.
+D-82 permanent-v2 passes bind their actual owner and current permission;
+local copied-burn progress additionally binds its current placement fence.
 
 GC may carry source lineage to a new loss generation only after complete
 ordinary root/context visitation of every carried source and proof that
-every member of each removed actual detached index is unmarked. Witness-only
+every member of each removed actual detached index is unmarked. For D-82
+proof case 3 only, marked members may instead have complete verified
+eligible fresh unburned placements, with no live dependency resolving
+through the retired keys. Initial nonburned tombstoning still follows
+GC-14, and proof case 2 keeps its existing all-unmarked rule. Copied
+retirement instead proves complete current physical placement closure
+without an old index/witness; nonempty carry still requires its separate
+complete current lineage fence and ordinary independent source contexts.
+Witness-only
 source traversal or a marked root digest alone cannot qualify preservation.
 New lineages, catalog and selected state publish atomically. Affecting loss
 or quarantine invalidates unmatched lineages. Derived Attribute/Memo/Bundle
@@ -296,6 +316,15 @@ relationships come from complete verified identities and signed recipes,
 not a second guessed mutable catalog. Independent host/regional/redundant
 participants require complete compatible roots and exclusion; absence of
 support forbids combined destructive collection.
+
+D-82 CopiedPlacementFence is a distinct private CURRENT destination
+root/history/serving placement check. Actual fresh-copy registration and
+current administrative/control authority are required; copied bytes cannot
+mint permission. The missing retired pack/index/witness is not required.
+It certifies no foreign original authorization or graph lineage. Nonempty
+case-3 carried lineage for copied retirement additionally requires the
+complete independently checked CurrentCollectionFence and ordinary source
+context visitation, never inferred source OriginalBootstrap or ACL.
 
 A cold unchanged-root fork reads the exact current source whole record,
 selected lineage, signed source Commit/recipe and actual current Guard and
@@ -417,3 +446,7 @@ derives exact logical bytes from the selected chain; mutable remote cache
 bytes cannot establish snapshot authority. Physical collection additionally
 requires qualified backend incarnation and effect semantics. Publication
 slots alone do not qualify remote deletion or exempt it from eventual GC.
+D-82's [remote deletion authority](remote-deletion-authority.md) defines
+irreversible selected ownership, permanent physical burns and owner map,
+repeatable typed reconciliation passes for all future residue
+without changing local v1 records.

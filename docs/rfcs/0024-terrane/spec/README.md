@@ -150,6 +150,7 @@ for the gates it names.
 | [`reference/surface-registry.md`](reference/surface-registry.md) | Registered surfaces and their schemas |
 | [`reference/bucket-key-registry.md`](reference/bucket-key-registry.md) | Registered bucket key prefixes |
 | [`reference/publication-authority.md`](reference/publication-authority.md) | Checked publication, retained history and current collection fences |
+| [`reference/remote-deletion-authority.md`](reference/remote-deletion-authority.md) | Permanent physical ownership, copied retirement and recurring recovery |
 | [`reference/errno-mapping.md`](reference/errno-mapping.md) | How outcomes reach POSIX callers |
 | [`reference/prior-art.md`](reference/prior-art.md) | Informative survey of prior systems and theory |
 | [`reference/comparisons.md`](reference/comparisons.md) | Informative comparisons with ZFS and git |

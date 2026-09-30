@@ -394,6 +394,7 @@ IndexGenerationManifest = {
   4 => cycle,                           ; collection cycle that produced it
   ? 5 => [ * pack-inventory-entry ],    ; authoritative published containers
   ? 6 => [ * pack-exclusion ],          ; complete active physical exclusions
+  ? 7 => [ * pack-id ],                 ; complete permanent physical burns
 }
 shard-entry = [ shard: uint, idx-hash: digest32, idx-size: uint,
                 ? (flt-hash: digest32, flt-size: uint) ]
@@ -403,6 +404,9 @@ pack-exclusion = [ pack-id, cycle, epoch ]
 ; Exclusions sort uniquely by pack id. The cycle/epoch pair identifies the
 ; current trash incarnation for that physical pack. New publications preserve
 ; the complete set; [] means known empty, absence means legacy unknown.
+; Key 7 sorts uniquely by pack ID and is monotone across selected generations.
+; [] is known empty; absence is unknown. Burns retire physical keys forever,
+; independently of content identity quarantine and clearable key 6 bindings.
 
 ; ---------------------------------------------------------------------------
 ; Store records (13-bucket-layout.md, 17-garbage-collection.md)
@@ -436,7 +440,8 @@ GcLease = {
   3 => timestamp,                       ; expiry
 }
 
-; Collector records use version 1 at key 0. GC-4, GC-7 and GC-24.
+; Mark/root/state records use version 1. D-82 deletion/pass alternatives
+; are permanent version 2; ordinary local D-78-v1 bodies are unchanged.
 GcRoots = {
   0 => 1,
   1 => cycle,
@@ -520,8 +525,12 @@ gc-artifact-binding = [ 0, digest32, uint ] ; whole pack identity and size
                     / [ 2, bstr .size (1..128) ] ; exact canonical Tombstone bytes
 
 ; gc/<cycle>/delete/<pack-id>/<operation-id>. Physical intent alone never
-; authorizes an effect: every effect requires complete CURRENT-root proof.
-DeleteOperation = {
+; authorizes an effect. Local effects require complete CURRENT-root proof;
+; selected permanent/copy retirement follows the exact D-82 alternative.
+DeleteOperation = LocalDeleteOperation / PermanentDeleteOperation
+                / CopiedRetirementPreparation
+; Local version-1 map bytes and semantics remain unchanged.
+LocalDeleteOperation = {
   0 => 1,
   1 => gc-delete-authorization,
   2 => 0 / 1 / 2 / 3 / 4 / 5 / 6,
@@ -690,6 +699,7 @@ PublicationState = {
   4 => backend-binding,
   5 => [* [tstr, committed-selection]],  ; every inventoried branch, even absent
   6 => digest32 / null,                 ; selected current GuardSnapshot, null pre-Guard
+  ? 7 => [* permanent-burn-owner],       ; permanent recoverable pack owners
 }
 PublicationCurrent = {0 => 1, 1 => uint, 2 => digest32}
 ; Nonauthoritative cache of selected commit revision/digest.
@@ -704,9 +714,14 @@ publication-proof = [0]                ; raw opaque mutation, no lineage creatio
                   / [1, digest32]      ; privately checked candidate Lineage digest
                   / [2, tstr, digest32, [* [pack-id, digest32]],
                      [* [tstr, digest32]]]
+                  / [3, bstr .cbor PermanentDeleteAuthorization,
+                     [* [tstr, digest32]]]
                   / [4, digest32]      ; privately checked Guard configuration transition
 ; GC preservation: exact Fence key/digest, removed pack/index witnesses and
 ; exact carried current source/prior Lineage pairs. Only a checked adapter seals it.
+; Case 3 irreversibly owns the exact physical family and selects a burn;
+; its final array has the same carried-source meaning as case 2. The selecting
+; slot digest is stored only after selection, never inside its authorization.
 PublicationTransaction = {
   0 => 1,
   1 => bstr .size 32,                   ; secure nonce matching immutable key
@@ -718,7 +733,9 @@ PublicationTransaction = {
   6 => [uint, digest32] / null,          ; exact predecessor slot/digest or genesis
   7 => [tstr, digest32],                ; staged exact portable snapshot key/digest
 }
-GcFence = {
+GcFence = CurrentCollectionFence / CopiedPlacementFence
+; The existing current-collection version-1 body is unchanged.
+CurrentCollectionFence = {
   0 => 1,
   1 => bstr .cbor Capabilities,
   2 => bstr .cbor IndexGenerationManifest / null,
@@ -731,13 +748,162 @@ GcFence = {
   8 => backend-binding,
   9 => [* required-control-pin],        ; exhaustive actually consumed mark inputs
 }
-GcReconciliation = {
+GcReconciliation = LocalGcReconciliation / PermanentDeletePass
+; Local version-1 map bytes and semantics remain unchanged.
+LocalGcReconciliation = {
   0 => 1,
   1 => digest32,                        ; immutable deletion authorization digest
   2 => [tstr, digest32],                ; exact current Fence key/digest
   3 => [pack-id, cycle, epoch],          ; exact original exclusion incarnation
   4 => digest32,                        ; verified detached Index identity
 }
+
+; D-82: permanent deletion authority (reference/remote-deletion-authority.md).
+; Protected control, not imported authority. New v2 alternatives are disjoint
+; from unchanged local-v1 maps. Digests here are raw canonical record BLAKE3.
+remote-deletion-binding =
+  [1, remote-provider, remote-resource, remote-coordination]
+remote-delete-artifact = [tstr, digest32, uint]
+; Initial key/container identity (pack/index) or raw trash digest/byte size.
+; Ordinary remote sweep still needs all initial artifacts and index witness.
+PermanentDeleteAuthorization = RemoteSweepDeleteAuthorization
+                             / CopiedRetirementAuthorization
+RemoteSweepDeleteAuthorization = {
+  0 => 2,
+  1 => bstr .size 32,                   ; secure operation nonce
+  2 => remote-deletion-binding,
+  3 => [pack-id, cycle, epoch],         ; original exact exclusion
+  4 => GcLease,                        ; original whole authorizing lease
+  5 => uint,                           ; D, whole seconds
+  6 => [remote-delete-artifact, remote-delete-artifact,
+        remote-delete-artifact],       ; pack, detached index, original trash
+  7 => bstr,                           ; bounded verified detached-index witness
+  8 => bstr .size (1..128) .cbor Tombstone,
+  9 => uint,                           ; completed D lower bound, nanoseconds
+  10 => [tstr, digest32],               ; exact current CurrentCollectionFence
+  11 => uint,                          ; G, whole seconds
+  12 => uint,                          ; completed G lower bound, nanoseconds
+  13 => 1,                             ; permanent pack/index + ALL trash cycles
+}
+; Scope 1 includes ALL present/future versions/markers/incarnations at the
+; exact pack/index keys and every canonical trash/<cycle>/<this-pack-id> key.
+; It does not authorize other IDs, resources or uncommitted multipart storage.
+permanent-ownership-slot = [uint, digest32]
+retirement-barrier-artifact = remote-delete-artifact / gc-artifact-version
+; Remote: exact fresh destination trash key/raw digest/size. Local: genuine
+; destination Committed journal version with kind-2 canonical trash binding.
+CopiedRetirementPlan = {
+  0 => 2,
+  1 => bstr .size 32,                   ; nonce matching preparation/operation key
+  2 => backend-binding,                ; actual fresh destination, local or remote
+  3 => [pack-id, cycle, epoch],         ; NEW destination exclusion/barrier
+  4 => GcLease,                        ; current whole preparing lease
+  5 => permanent-ownership-slot,        ; actual destination fresh-copy genesis
+  6 => [tstr, digest32],               ; current CopiedPlacementFence
+  7 => bstr .size (1..128) .cbor Tombstone,
+  8 => uint,                           ; G, whole seconds
+  9 => uint,                           ; D, whole seconds, D >= G
+}
+CopiedRetirementPreparation = [2, uint, 3 / 4, CopiedRetirementPlan]
+; Preparing / Abandoned; no ownership, clock or delete permission. Initially
+; revision 0. Selected preparation precedes actual NEW destination trash.
+; Abandonment never clears the copied burn or pending qualification duty.
+CopiedRetirementAuthorization = {
+  0 => 2,
+  1 => bstr .size 32,
+  2 => backend-binding,
+  3 => [pack-id, cycle, epoch],         ; exact selected destination barrier
+  4 => GcLease,                        ; current whole final authorizing lease
+  5 => uint,                           ; D, whole seconds
+  6 => [null, null, retirement-barrier-artifact],
+       ; no invented pack/index identity, version or witness
+  8 => bstr .size (1..128) .cbor Tombstone,
+  9 => uint,                           ; FULL barrier D lower bound, nanoseconds
+  10 => [tstr, digest32],               ; current final CopiedPlacementFence
+  11 => uint,                          ; G, whole seconds
+  12 => uint,                          ; FULL barrier G lower bound, nanoseconds
+  13 => 1,                             ; same permanent key-family scope
+  14 => 1,                             ; copied-placement retirement case
+  15 => permanent-ownership-slot,       ; genuine destination genesis, not source
+  16 => permanent-ownership-slot,       ; actual prior selected preparation slot
+  ? 17 => [tstr, digest32],             ; optional complete current lineage fence
+}
+; Unknown keys reject. Sweep has key 7 and no 14..17; copied retirement has
+; no key 7 and mandatory 14..16. No source witness/owner/age is inferred.
+; Both need checked D >= G, G > enforced C, G/D * 1e9, actual trusted settings
+; and genuine live completed-wait factory. Copy observes the NEW trash barrier
+; for FULL G AND D, not the possibly absent pack/index. Backend cases agree
+; with artifact kind; local journal authority is genuinely newly created.
+CopiedPlacementFence = {
+  0 => 2,
+  1 => bstr .cbor Capabilities,
+  2 => bstr .cbor IndexGenerationManifest,
+  3 => [* [tstr, bstr / null, committed-selection, RefLogRecord / null]],
+  4 => digest32,                        ; actual selected destination GuardSnapshot
+  5 => bstr .cbor PublicationState,
+  6 => [tstr, digest32],               ; complete current destination GcRoots
+  7 => [tstr, digest32],               ; complete placement traversal GcState
+  8 => backend-binding,
+  9 => [* required-control-pin],        ; exact actually used destination inputs
+  10 => permanent-ownership-slot,       ; actual independent fresh-copy genesis
+  11 => [tstr, digest32],               ; actual selected portable projection
+}
+; Private current placement check, not foreign history/lineage certification.
+; Complete root/history/policy/serving closure and EVERY placement/fallback
+; exclude this P. Missing old pack/index/witness is permitted, not evidence.
+; Actual independent destination control/admin authority is always required.
+permanent-owner-selection = [0]        ; copied visibility, pending destination retirement
+                          / [1, tstr, digest32]
+; Exact selected operation key/raw immutable authorization digest. Only a
+; winning checked case-3 transaction establishes the permanent owner.
+permanent-burn-owner = [pack-id, permanent-owner-selection]
+permanent-pass-pointer = [tstr, digest32]
+PermanentDeleteOperation = [2, uint, 0 / 1 / 2, PermanentDeleteAuthorization,
+                            permanent-ownership-slot / null,
+                            permanent-pass-pointer / null]
+; Proposed / Owned / Cancelled. No Done or post-selection cancellation.
+; Ownership selects Proposed/null first (no self-slot hash). Copy replaces
+; its selected Preparing value with this Proposed at next checked revision.
+; First Owned progress adds exact owner/pass pointers at the next revision;
+; Proposed/Cancelled have null pointers. Immutable authorization never changes.
+permanent-observed-instance = [0]
+                            / [1, 0 / 1, bstr .size (1..4096)]
+; Actual unversioned object/local file, or retained object version/marker handle.
+; Local binding requires [0]. Handles are opaque genuine backend observations.
+permanent-request-observation = [0 / 1, permanent-observed-instance, 0 / 1 / 2 / 3]
+                              / [2, cycle, permanent-observed-instance, 0 / 1 / 2 / 3]
+; Pack/index or trash at ACTUAL observed canonical cycle; request states are
+; Planned / ConfirmedAbsent / Indeterminate / Deferred. Sort uniquely by
+; unsigned fieldwise artifact kind, cycle for trash, instance discriminant,
+; version kind/handle bytes if present. Never caller-invented key authority.
+permanent-pass-coverage = [0 / 1 / 2, 0 / 1 / 2]
+; Pack/index/trash-FAMILY; Unknown / CandidateTraversalCompleted /
+; QualifiedAllVersionAbsenceAtObservation. LIST exhaustion is not the last case.
+PermanentDeletePass = {
+  0 => 2,
+  1 => digest32,                       ; immutable authorization raw digest
+  2 => permanent-ownership-slot,        ; actual original owner slot
+  3 => uint,                           ; next operation revision, matches key suffix
+  4 => [uint, uint],                   ; checked pass/event numbers
+  5 => permanent-ownership-slot,        ; current predecessor publication slot
+  6 => bstr .cbor PublicationState,
+  7 => GcLease,                        ; current whole live progress lease
+  8 => backend-binding,
+  9 => 0 / 1,                         ; Open / PassCompleted, neither ends owner
+  10 => [* permanent-request-observation], ; bounded event observation delta
+  11 => [permanent-pass-coverage, permanent-pass-coverage, permanent-pass-coverage],
+  12 => bstr .size 32,                  ; fresh event proposal nonce matches key
+  ? 13 => [tstr, digest32],             ; current CopiedPlacementFence, local REQUIRED
+}
+; Coverage kinds exactly 0/1/2 in order. First pass/event 0/0; its operation
+; revision is checked selected owner revision + 1 (sweep 1, copy ordinarily 2).
+; Same-pass event increments by 1; after completion pass + 1/event 0. Complete
+; leaves no unresolved Planned item and every coverage >= CandidateTraversal;
+; Indeterminate/Deferred duties remain. Every owner needs future fair passes.
+; Local copied-burn progress requires key 13 and actual same-exclusion
+; current root/policy/serving proof; ordinary local-v1 effects stay unchanged.
+; Losing events get fresh immutable nonce keys. Pass names the predecessor;
+; its subsequent selecting transaction chooses the new pass digest, no cycle.
 
 ; ---------------------------------------------------------------------------
 ; Capability token (22-authentication-and-authorization.md AUTH-7..AUTH-18)

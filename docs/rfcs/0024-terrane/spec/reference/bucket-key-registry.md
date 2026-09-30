@@ -124,9 +124,9 @@ copy rules are in [`publication-authority.md`](publication-authority.md).
 | `publication/guards/<digest>` | immutable complete `GuardSnapshot` | create-once |
 | `publication/STATE` | optional nonauthoritative selected state cache | CAS |
 | `publication/CURRENT` | optional nonauthoritative `PublicationCurrent` cache | CAS |
-| `gc/<cycle>/fence/<revision>` | complete current `GcFence` | create-once |
-| `gc/<cycle>/reconcile/<operation-id>/<revision>` | exact `GcReconciliation` | create-once |
-| `gc/<cycle>/delete/<pack-id>/<operation-id>` | protected `DeleteOperation` physical intent | CAS |
+| `gc/<cycle>/fence/<revision>` | exact current-v1 or copied-placement-v2 `GcFence` | create-once |
+| `gc/<cycle>/reconcile/<operation-id>/<revision>` | exact local-v1 or permanent-v2 `GcReconciliation` | create-once |
+| `gc/<cycle>/delete/<pack-id>/<operation-id>` | protected local-v1 or permanent/copied-v2 `DeleteOperation` | CAS |
 
 Cycle/revision are canonical unsigned decimal, without leading zeroes
 except `0`. Operation IDs are fresh secure 32-byte nonces in lowercase
@@ -134,7 +134,14 @@ except `0`. Operation IDs are fresh secure 32-byte nonces in lowercase
 control bytes, without a content identity domain. A digest or named key
 does not provide its private creation capability. Commit slots and
 selected transactions remain retrievable and cannot be pruned or reused
-without a separately registered protocol.
+without a separately registered protocol. D-82's
+[remote deletion authority](remote-deletion-authority.md) registers the
+version-2 sweep/copied-retirement preparations, ownership, placement fence
+and repeatable-pass alternatives, selected
+state key 7 and publication-proof case 3 at
+these existing keys. Permanent-v2 owner/pass progress uses selected
+transactions; its physical CAS record is a cache. Local-v1 physical CAS
+remains unchanged. No key class or old local-version-1 bytes change.
 
 Original-authority control has independently configured ownership. These
 existing create-once records retain their canonical local schemas:

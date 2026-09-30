@@ -234,7 +234,10 @@ Each shard has the same preamble as a pack index and entries of this shape:
   compaction generation confirms the pack's bytes were deleted. A reader MUST NOT
   serve the tombstoned placement. A fully verified fresh upload MAY select a
   new live placement for the same identity; it MUST NOT restore the old pack
-  implicitly. The old pack's durable exclusion and deletion-window evidence
+  implicitly. A D-82 permanently burned pack ID MUST NOT be served or
+  readmitted by any content, import or fallback path; eligible same-content
+  recovery MUST use a fresh PACK-2 ID and matching PACK-15 index. The old
+  pack's durable exclusion and deletion-window evidence
   MUST remain authoritative even when the selected hash row names the new
   placement. State `1` denotes only GC retirement, not corruption quarantine.
   State `2` denotes identity quarantine: ordinary uploads, newer per-pack

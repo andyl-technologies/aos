@@ -165,7 +165,10 @@ A backend is a store that owns bytes. Five are defined.
 - **[STORE-13]** `bucket` over a `file://` root MUST use exactly the key
   layout of [`13-bucket-layout.md`](13-bucket-layout.md), so that a directory
   written by one instance is a valid bucket for any other, and so that a
-  `disk` tier's durable state is a bucket. *Gate:* `gate:bucket-file-layout`.
+  `disk` tier's durable state is a bucket. A copied selected catalog MUST
+  preserve permanent burn visibility under D-82, but copied records MUST
+  NOT establish destination physical deletion ownership, age or lease
+  authority. *Gate:* `gate:bucket-file-layout`.
 - **[STORE-14]** `shared-dir` MUST answer `get` and `has` from the directory
   it views and MUST NOT write to it, cache from it, or count its contents
   against the viewing instance's reservations. A `put` to `shared-dir` MUST

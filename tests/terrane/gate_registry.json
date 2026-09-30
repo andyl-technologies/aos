@@ -307,7 +307,7 @@
   {
     "name": "gc-two-phase-delete",
     "owner": "17",
-    "requirements": "GC-15"
+    "requirements": "GC-10, GC-12, GC-15, GC-16, GC-24, GC-29"
   },
   {
     "name": "guard-single-enforcement",

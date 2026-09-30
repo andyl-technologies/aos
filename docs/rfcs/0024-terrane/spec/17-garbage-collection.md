@@ -153,7 +153,8 @@ data.
   eligible parent edges. Null
   denotes unbounded retention, and unpruned receipt/source edges bypass the
   ordinary parent-edge age test. All collector records use the CDDL
-  version-one schemas;
+  version-one schemas except the exact D-82 permanent-v2 DeleteOperation,
+  GcReconciliation/GcFence alternatives; existing mark/root/state stay v1;
   shard and revision key segments are canonical decimal unsigned integers.
   A mark checkpoint contains exactly 2,048 filter bytes, initially zero. For
   every hash, interpret byte pairs beginning at offsets 1, 11 and 21 as
@@ -185,7 +186,14 @@ data.
 
 - **[GC-10]** Every store MUST define a grace window `G`. An object whose
   last-modified time is younger than `G` MUST NOT be swept regardless of
-  reachability. *Gate:* `gate:gc-grace-window`.
+  reachability. D-82 permits removal of newly observed residue at exact
+  keys ALREADY under selected irreversible permanent ownership without a
+  new grace wait: that residue can never be admitted or served. This is
+  ownership recovery, not a new sweep of a young object; unowned keys
+  retain this rule. Already-burned copied placements use genuine NEW
+  destination retirement barrier G/D under D-82, not missing old artifacts.
+  Their physical residue is inadmissible and cannot acquire serving age.
+  *Gate:* `gate:gc-grace-window`.
 - **[GC-11]** `G` MUST be strictly longer than the maximum commit duration
   `C` that clients are permitted, and clients MUST enforce `C`: a commit
   whose first pack was written more than `C` ago MUST be aborted by the
@@ -194,7 +202,16 @@ data.
 - **[GC-12]** An implementation MUST obtain last-modified time from the
   store that holds the object (the bucket's timestamp, the slab header's
   timestamp for `blockdev`, the filesystem's for `disk`), never from a
-  client-supplied value.
+  client-supplied value. Remote first-ownership qualification MAY instead
+  use D-82's stronger FULL same-instance immutable-artifact G/D elapsed
+  method in [`reference/remote-deletion-authority.md`](reference/remote-deletion-authority.md).
+  Backend metadata and exact continuity remain independently checked;
+  client timestamps or persisted ticks MUST NOT establish elapsed age.
+  Already-owned permanent residue recovery is the explicit GC-10 exception;
+  it MUST NOT fabricate old creation or last-modified times for residue.
+  For already-burned copied placement, FULL G/D observe a newly selected,
+  genuinely created destination trash barrier. This explicit retirement
+  delay is not a claim about absent pack/index last-modified time.
 
 ## Sweep
 
@@ -213,8 +230,19 @@ data.
   resolving to it. Second, after a deletion window `D` has elapsed since the
   tombstone, the pack bytes are deleted. During `D` a tombstoned pack MUST
   be restorable by a single operation that re-adds its index entries.
+  Ordinary remote first ownership MUST wait the full D and publish
+  the permanent burn/owner before any DELETE. After ownership, restore
+  MUST use verified fresh secure-ID packs; the old keys never return to
+  service. Every subsequently observed version/marker/residue at those
+  owned keys remains covered by repeatable recovery, with no new D and
+  no terminal phase ending ownership. Genuine copied-burn qualification
+  requires a NEW selected destination exclusion/trash barrier, FULL G/D
+  observation of that barrier and independently checked destination
+  ownership. Neither old pack/index nor source private witness must exist.
   *Gate:* `gate:gc-two-phase-delete`.
 - **[GC-16]** `D` MUST be at least `G`. The RECOMMENDED value is `D = G`.
+  D-82 preserves this for sweep AND copied-barrier ownership; later
+  residue recovery does not restart D/G.
 - **[GC-17]** A read that resolves through a stale index to a tombstoned
   pack MUST retry through the current index before reporting an error, and
   MUST report a tombstone hit through
@@ -252,9 +280,37 @@ data.
   inventory fallback to bypass a known retired placement. *Gate:*
   `gate:gc-two-phase-delete`.
 
+  D-82 [`reference/remote-deletion-authority.md`](reference/remote-deletion-authority.md)
+  supplies exact sweep/copied-retirement-v2 alternatives. Selected ownership
+  and manifest-key-7 burn permanently retire every present/future version
+  at pack/index keys and ALL canonical trash/<cycle>/<P> keys. State key 7
+  retains recoverable ownership; separate passes reconcile future residue
+  fairly. Pre-ownership restore may cancel/clear key 6; owned keys MUST
+  NOT be cancelled, recreated or readmitted. Initial nonburned tombstoning
+  retains GC-14. Later ownership requires complete current root/history,
+  serving/catalog/control proof, live lease and actual exclusion. Every
+  marked old member MUST have verified eligible fresh unburned placements;
+  no live dependency may resolve through the excluded keys. New requests
+  and selected pass progress always need the current whole live lease and
+  selected owner/burn/backend; post-ownership retries do not require old
+  hashes globally unmarked or import old root marks. Copied burns preserve
+  visibility only. The separately typed copied-retirement case requires
+  actual fresh destination authority, complete CURRENT root/history and
+  all serving/fallback closure, selected exclusion and NEW trash barrier.
+  FULL G/D observe that barrier even if pack/index/both are absent. No
+  source owner/witness/elapsed claim or absence mints permission. Missing
+  old copied trash does not block creating this NEW destination barrier;
+  it cannot backfill source incarnation/time. Local D-78-v1 is unchanged;
+  the additional copied-burn-v2 case also uses actual held local exclusion.
+
 ## Physical incarnation evidence and recoverable deletion
 
-The following completes GC-15, GC-16, GC-24 and GC-29 under D-78. It does
+The following ordinary local-filesystem v1 protocol completes GC-15,
+GC-16, GC-24 and GC-29 under D-78. Its cancellation and per-effect exclusion
+rules remain unchanged. The additional D-82 copied/remote-v2 case follows
+its separately registered alternative; old copied pack/index journals are
+not fabricated or required by that already-burned copied-retirement case.
+It MUST NOT synthesize local file identities. This does
 not replace current reachability, retention or lease authorization.
 
 Filesystem backends MUST retain a protected external-control `CreationJournal`
@@ -359,7 +415,11 @@ read-only access MUST refuse every journal and maintenance mutation.
   create-if-absent, carrying a fencing epoch and an expiry, and MUST renew
   it by
   conditional write before expiry. A collector whose renewal fails MUST stop
-  immediately. *Gate:* `gate:gc-singleton-lease`.
+  immediately. An already dispatched DELETE under selected irreversible
+  permanent ownership may finish later but cannot touch newly reachable
+  placements. Every new request and selected progress requires the actual
+  current whole live lease; a stale collector MUST NOT issue either.
+  *Gate:* `gate:gc-singleton-lease`.
 - **[GC-23]** A new collector MUST use a fencing epoch greater than the one
   in the
   expired lease it replaces, and every checkpoint and tombstone it writes
@@ -370,7 +430,13 @@ read-only access MUST refuse every journal and maintenance mutation.
   discard checkpoints from a cycle it did not start except the root-set
   snapshot it
   chooses to reuse, which it MAY do only if that snapshot is younger than
-  `G`.
+  `G`. D-82 permanent ownership is distinct recovery evidence, not
+  reusable marks. Current collectors MUST fairly and repeatedly reconcile
+  every selected owner, including new residue after a completed pass and
+  after original roots/cycles expire. They check the actual current backend,
+  burn/owner and whole live lease on each new request/progress. Progress
+  uses the current lease epoch; immutable ownership keeps its original
+  epoch. Completed passes never end or prune that recovery obligation.
 - **[GC-25]** Every host tier MUST run its own collector over its local
   store with the same rules, using its pins and leases as additional roots
   ([`14-host-tier.md`](14-host-tier.md)); eviction under pressure is a
@@ -386,7 +452,10 @@ promisor pattern: the commit records where its packs were written.
 - **[GC-26]** The collector MUST treat every replica store, in every region,
   as a sweep target, and MUST mark from the union of roots before sweeping
   any of them. A pack that is marked in any region MUST NOT be swept in any
-  region.
+  region. D-82 recovery of already-owned permanently burned keys is not a
+  fresh regional sweep. First ownership MUST prove complete compatible
+  cross-region roots and fresh placements for all marked uses; recovery
+  cannot target fresh placements in any region.
 - **[GC-27]** A commit's recorded pack locations MUST be consulted during
   mark so that a pack referenced by a commit but not yet present in the
   local index is neither treated as missing nor swept when it arrives.

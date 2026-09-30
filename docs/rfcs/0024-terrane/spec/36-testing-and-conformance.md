@@ -207,7 +207,7 @@ here is a conformance error of this document.
 | `gate:gc-mark-reachability` | 17 | GC-5, GC-30 |
 | `gate:gc-roots-complete` | 17 | GC-1 |
 | `gate:gc-singleton-lease` | 17 | GC-22 |
-| `gate:gc-two-phase-delete` | 17 | GC-15 |
+| `gate:gc-two-phase-delete` | 17 | GC-10, GC-12, GC-15, GC-16, GC-24, GC-29 |
 | `gate:guard-single-enforcement` | 11 | STORE-22 |
 | `gate:store-validates-uploads` | 11 | STORE-33 |
 | `gate:store-trait-split` | 11 | STORE-32 |
