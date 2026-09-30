@@ -77,6 +77,10 @@ use effect::{
 };
 #[cfg(target_os = "linux")]
 pub(crate) use fuse_admission::accepted_fuse_admission_v1;
+#[cfg(target_os = "linux")]
+mod nix_admission;
+#[cfg(target_os = "linux")]
+pub(crate) use nix_admission::accepted_nix_start_admission_v2;
 pub use observe_reservation::{
     adopt_execution_observe_child_v1, observe_child_adoption_state_v1, observe_child_identity_v1,
 };
@@ -1438,6 +1442,10 @@ where
                         return Err(ReconcilerError::IdempotencyConflict);
                     }
                 }
+                #[cfg(target_os = "linux")]
+                nix_admission::require_exact_nix_replay_plan_v2(
+                    &self.journal, operation_id, plan,
+                )?;
                 return Ok(AcceptOutcome::Replay(operation_id));
             }
             IdempotencyOutcome::Conflict => return Err(ReconcilerError::IdempotencyConflict),

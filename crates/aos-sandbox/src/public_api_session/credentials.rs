@@ -86,6 +86,105 @@ impl PinnedSystemdCredential {
         Self::load_named(CONTROLLER_SOURCE_TREE_SEED_ISSUER_NAME)
     }
 
+    /// Retains the fixed independent Nix recipe issuer, never a signing seed.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing, oversized, unsafe or changing fixed protected custody.
+    pub(crate) fn load_nix_recipe_issuer_v2() -> Result<Self, PublicApiSessionError> {
+        Self::load_named("nix-recipe-issuer-v2")
+    }
+
+    /// Retains the fixed Nix domain/presentation and disclosure pin contract.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing, oversized, unsafe or changing fixed protected custody.
+    pub(crate) fn load_nix_fixed_domain_pins_v2() -> Result<Self, PublicApiSessionError> {
+        Self::load_named("nix-fixed-domain-pins-v2")
+    }
+
+    /// Retains the fixed four-role Nix public endpoint manifest.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing, oversized, unsafe or changing fixed protected custody.
+    pub(crate) fn load_nix_broker_session_manifest_v1() -> Result<Self, PublicApiSessionError> {
+        Self::load_named("nix-broker-session-manifest-v1")
+    }
+
+    /// Retains the bounded independent recipe catalog; never a signing seed.
+    ///
+    /// # Errors
+    /// Rejects missing, oversized or unsafe fixed protected credential custody.
+    pub(crate) fn load_nix_preadmitted_recipes_v2() -> Result<Self, PublicApiSessionError> {
+        Self::load_named("nix-preadmitted-recipes-v2")
+    }
+
+    /// Retains the existing public ownership policy without its session secret.
+    ///
+    /// # Errors
+    /// Rejects missing, oversized or unsafe fixed protected credential custody.
+    pub(crate) fn load_nix_ownership_policy() -> Result<Self, PublicApiSessionError> {
+        Self::load_named("ownership-lease-policy.cbor")
+    }
+
+    /// Retains the existing public ownership verification key.
+    ///
+    /// # Errors
+    /// Rejects missing, oversized or unsafe fixed protected credential custody.
+    pub(crate) fn load_nix_ownership_public_key() -> Result<Self, PublicApiSessionError> {
+        Self::load_named("ownership-lease-public-key")
+    }
+
+    /// Retains the existing public Host plan policy, never its signing seed.
+    ///
+    /// # Errors
+    /// Rejects missing, oversized or unsafe fixed protected credential custody.
+    pub(crate) fn load_nix_host_plan_policy() -> Result<Self, PublicApiSessionError> {
+        Self::load_named("broker-plan-policy.cbor")
+    }
+
+    /// Retains the existing public Host plan key.
+    ///
+    /// # Errors
+    /// Rejects missing, oversized or unsafe fixed protected credential custody.
+    pub(crate) fn load_nix_host_plan_public_key() -> Result<Self, PublicApiSessionError> {
+        Self::load_named("broker-plan-public-key")
+    }
+
+    /// Retains Host's independently provisioned plan revocation scope.
+    ///
+    /// # Errors
+    /// Rejects missing, oversized or unsafe fixed protected credential custody.
+    pub(crate) fn load_nix_host_plan_revocation_scope() -> Result<Self, PublicApiSessionError> {
+        Self::load_named("broker-revocation-scope")
+    }
+
+    /// Retains the existing public Mount plan policy, never its signing seed.
+    ///
+    /// # Errors
+    /// Rejects missing, oversized or unsafe fixed protected credential custody.
+    pub(crate) fn load_nix_mount_plan_policy() -> Result<Self, PublicApiSessionError> {
+        Self::load_named("mount-broker-plan-policy.cbor")
+    }
+
+    /// Retains the existing public Mount plan key.
+    ///
+    /// # Errors
+    /// Rejects missing, oversized or unsafe fixed protected credential custody.
+    pub(crate) fn load_nix_mount_plan_public_key() -> Result<Self, PublicApiSessionError> {
+        Self::load_named("mount-broker-plan-public-key")
+    }
+
+    /// Retains Mount's independently provisioned plan revocation scope.
+    ///
+    /// # Errors
+    /// Rejects missing, oversized or unsafe fixed protected credential custody.
+    pub(crate) fn load_nix_mount_plan_revocation_scope() -> Result<Self, PublicApiSessionError> {
+        Self::load_named("mount-broker-revocation-scope")
+    }
+
     /// Retains both exact administrative packets, or no optional startup pair.
     ///
     /// # Errors

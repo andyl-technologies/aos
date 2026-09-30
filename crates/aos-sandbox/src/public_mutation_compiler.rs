@@ -30,6 +30,8 @@ pub(crate) struct AuthorizedPublicMutationRequestV1 {
     caller: PrincipalId,
     project: ProjectId,
     fuse_authority: Option<crate::controller_fuse_admission::AdmissionAuthorityV1>,
+    #[cfg(target_os = "linux")]
+    start_authority: Option<crate::production_operation_compiler::CheckedStartAuthorityV2>,
     original_request: Vec<u8>,
     original_trust: [[u8; 32]; 4],
 }
@@ -52,6 +54,44 @@ impl AuthorizedPublicMutationRequestV1 {
         peer: &PublicApiPeer,
         capability_id: CapabilityId,
         encoded: &[u8],
+    ) -> Result<Self, PublicMutationAuthorizationErrorV1> {
+        Self::authorize_inner(
+            journal,
+            peer,
+            capability_id,
+            encoded,
+            #[cfg(target_os = "linux")]
+            None,
+        )
+    }
+
+    /// Authorizes with the compiler's genuinely retained optional Nix owner.
+    ///
+    /// Only configured Start work captures the additional Nix originals. The
+    /// same current authorization still precedes idempotency classification.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed input or failed current authorization, and rejects
+    /// configured Nix Start when its additional original capture fails.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn authorize_with_nix_start(
+        journal: &mut Journal,
+        peer: &PublicApiPeer,
+        capability_id: CapabilityId,
+        encoded: &[u8],
+        nix_start: Option<&crate::production_operation_compiler::ControllerNixStartRecipeSelectorV2>,
+    ) -> Result<Self, PublicMutationAuthorizationErrorV1> {
+        Self::authorize_inner(journal, peer, capability_id, encoded, nix_start)
+    }
+
+    fn authorize_inner(
+        journal: &mut Journal,
+        peer: &PublicApiPeer,
+        capability_id: CapabilityId,
+        encoded: &[u8],
+        #[cfg(target_os = "linux")]
+        nix_start: Option<&crate::production_operation_compiler::ControllerNixStartRecipeSelectorV2>,
     ) -> Result<Self, PublicMutationAuthorizationErrorV1> {
         let request = ResolvedPublicMutationRequestV1::decode_with_capability_id(
             encoded,
@@ -119,12 +159,27 @@ impl AuthorizedPublicMutationRequestV1 {
             [[0; 32]; 4]
         };
 
+        // Authorization precedes idempotency classification. Retain only the
+        // real decision here; assignment and recipe selection belong to Vacant.
+        #[cfg(target_os = "linux")]
+        let start_authority = if nix_start.is_some()
+            && matches!(request.request(), DormantSandboxRequestKindV1::Start(_))
+        {
+            Some(crate::production_operation_compiler::CheckedStartAuthorityV2::capture(
+                journal, peer, &checked_admission, authorization, encoded,
+            )?)
+        } else {
+            None
+        };
+
         Ok(Self {
             request,
             authorization,
             caller: peer.principal(),
             project: peer.project(),
             fuse_authority,
+            #[cfg(target_os = "linux")]
+            start_authority,
             original_request,
             original_trust,
         })
@@ -164,6 +219,8 @@ impl AuthorizedPublicMutationRequestV1 {
             caller: PrincipalId::from_bytes([1; 16]),
             project: ProjectId::from_bytes([2; 16]),
             fuse_authority: None,
+            #[cfg(target_os = "linux")]
+            start_authority: None,
             original_request: Vec::new(),
             original_trust: [[0; 32]; 4],
         }
@@ -179,6 +236,13 @@ impl AuthorizedPublicMutationRequestV1 {
     #[must_use]
     pub(crate) const fn accepted_wall_seconds(&self) -> i64 {
         self.authorization.accepted_wall_seconds()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn checked_start_authority(
+        &self,
+    ) -> Result<&crate::production_operation_compiler::CheckedStartAuthorityV2, PublicMutationAuthorizationErrorV1> {
+        self.start_authority.as_ref().ok_or(PublicMutationAuthorizationErrorV1::Rejected)
     }
 
     /// Returns the immutable capability and policy limit accepted for attachment.
