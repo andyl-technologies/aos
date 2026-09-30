@@ -5,13 +5,25 @@
   fetchurl,
   buildPackages,
   gnumake,
+  kubernetes-interface,
 }: let
   version = "1.17.3";
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -82,9 +94,9 @@ in
     ];
     runtimeDeps = [];
 
-    # One module owns Cilium's configuration and provider-neutral ability
-    # requirements. Its typed requests are the desired-state source.
-    abilities = ./_cilium-abilities;
+    # The shared controller owns effects derived from this merged add-on config.
+    module = ./_cilium-abilities;
+    moduleDeps = [kubernetes-interface];
 
     phases = [
       {

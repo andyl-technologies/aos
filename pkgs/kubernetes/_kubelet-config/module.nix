@@ -2,38 +2,22 @@
 {
   config,
   lib,
+  package,
   packageName,
   packageVersion,
   ...
 }: let
-  cfg = config.kubelet;
-  serviceEnabled = config.aos.services."service.kubelet".enable;
+  cfg = config.aos.kubelet;
+  serviceEnabled = config.aos.services.kubelet.enable;
   inherit (lib) mkOption;
-  abilityTypes = lib.abilities.types;
-  positiveInt = abilityTypes.integer {
-    minimum = 1;
-    maximum = abilityTypes.limits.maxSafeInteger;
-  };
-  refinedString = name: description: pattern:
-    abilityTypes.refined {
-      inherit name description;
-      type = abilityTypes.runtimeString;
-      constraints = [
-        {
-          kind = "string-pattern";
-          pattern = pattern;
-        }
-      ];
-    };
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  networkPolicy = lib.abilities.interfaces.networkPolicy;
-  serviceTypes = serviceManagement.types;
-  resultOf = lib.abilities.resultOf;
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "service";
-      inherit key interface parameters;
-    };
+  positiveInt = lib.types.ints.between 1 9007199254740991;
+  refinedString = name: description: pattern: lib.types.strMatching pattern;
+  network = config.aos.abilities.network.operations.ready.effects.kubelet;
+  modules = config.aos.abilities.kernelModules.operations.ensure.effects.kubelet;
+  ingress = config.aos.abilities.networkPolicy.operations.ruleset.effects.host;
+  configuration = config.aos.abilities.configuration.operations.file.effects.kubelet;
+  credential = config.aos.abilities.credential.operations.deliver.effects.kubelet;
+
   kubeletConfig = {
     apiVersion = "kubelet.config.k8s.io/v1beta1";
     kind = "KubeletConfiguration";
@@ -60,54 +44,11 @@
       then "Webhook"
       else "AlwaysAllow";
   };
-  network = producer "network" serviceManagement.interfaces.networkReadiness {
-    scope = "configured-connectivity";
-    address_families = [
-      "ipv4"
-      "ipv6"
-    ];
-  };
-  ingressPolicy = producer "ingress-policy" networkPolicy.interfaces.ingress {
-    endpoints = [
-      {
-        transport = "tcp";
-        port = 10250;
-      }
-    ];
-    prerequisites = [];
-  };
-  modules = producer "kernel-modules" serviceManagement.interfaces.kernelModules {
-    modules = [
-      "br_netfilter"
-      "overlay"
-    ];
-    required = true;
-  };
-  configuration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "service";
-    declaration = {
-      name = "configuration";
-      source = {
-        kind = "inline-text";
-        content = builtins.toJSON kubeletConfig;
-      };
-      mode = "0444";
-    };
-  };
   kubeconfigRef = cfg.kubeconfig;
-  credential = serviceManagement.forCredentialReferences {
-    consumerInstance = "service";
-    references = lib.optional (kubeconfigRef != null) {
-      key = "kubeconfig";
-      name = "kubeconfig";
-      reference = kubeconfigRef;
-    };
-  };
   commandArgs =
     [
       "--config"
-      (resultOf "configuration" "planned-path")
+      configuration.outputs.path
       "--root-dir"
       "/var/lib/kubelet"
       "--hostname-override"
@@ -115,7 +56,7 @@
     ]
     ++ lib.optionals (kubeconfigRef != null) [
       "--kubeconfig"
-      (resultOf "kubeconfig" "credential-path")
+      credential.outputs.path
     ];
   service = {
     policy.devicePolicy = {
@@ -174,7 +115,6 @@
       operation_profile = "privileged";
       isolated_identity_mapping = "none";
     };
-    consumerInstance = "service";
     service = "kubelet";
     lifecycle = {
       description = "Standalone Kubernetes node agent (${packageName} ${packageVersion})";
@@ -185,8 +125,7 @@
       start = [
         {
           executable = {
-            artifact = lib.abilities.packageOutput {};
-            entry_point = "bin/kubelet";
+            path = "${package}/bin/kubelet";
             arguments = commandArgs;
           };
           ignore_failure = false;
@@ -203,16 +142,14 @@
     };
     dependencies = {
       after = [
-        (resultOf "network" "resource")
-        (resultOf "kernel-modules" "resource")
-        (resultOf "ingress-policy" "resource")
+        (network.outputs.resource)
+        (ingress.outputs.resource)
       ];
       before = [];
       requires = [
-        (resultOf "kernel-modules" "resource")
-        (resultOf "ingress-policy" "resource")
+        (ingress.outputs.resource)
       ];
-      wants = [(resultOf "network" "resource")];
+      wants = [(network.outputs.resource)];
     };
     supervision = {
       startup_protocol = "notification";
@@ -254,13 +191,13 @@
     configuration.views = [
       {
         name = "configuration";
-        source = resultOf "configuration" "planned-path";
+        source = configuration.outputs.path;
         optional = false;
       }
     ];
     credentials.views = lib.optional (kubeconfigRef != null) {
       name = "kubeconfig";
-      reference = resultOf "kubeconfig" "credential-path";
+      reference = credential.outputs.path;
       encrypted = kubeconfigRef.encrypted;
       optional = true;
     };
@@ -299,19 +236,8 @@
       permit_core_dumps = true;
     };
   };
-  serviceProducers = [
-    network
-    modules
-    ingressPolicy
-    configuration
-  ];
 in {
-  options.kubelet = {
-    enable = mkOption {
-      type = abilityTypes.boolean;
-      default = false;
-      description = "Enable the package-owned standalone kubelet service.";
-    };
+  options.aos.kubelet = {
     nodeName = mkOption {
       type =
         refinedString "kubelet node name" "a DNS-label-compatible Kubernetes node name"
@@ -334,7 +260,7 @@ in {
       description = "CRI runtime endpoint used to create pods and images.";
     };
     cgroupDriver = mkOption {
-      type = abilityTypes.enum [
+      type = lib.types.enum [
         "cgroupfs"
         "systemd"
       ];
@@ -342,12 +268,7 @@ in {
       description = "Cgroup manager shared with the container runtime.";
     };
     clusterDns = mkOption {
-      type = abilityTypes.list {
-        element = refinedString "cluster DNS address" "an IPv4 or IPv6 DNS service address" "[0-9a-fA-F:.]+";
-        maxItems = 16;
-        unique = true;
-        canonicalOrder = true;
-      };
+      type = lib.types.listOf (lib.types.strMatching "[0-9a-fA-F:.]+");
       default = ["10.43.0.10"];
       description = "DNS service addresses written into pod resolv.conf files.";
     };
@@ -371,22 +292,22 @@ in {
       description = "Maximum number of pods admitted on this node.";
     };
     failSwapOn = mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = true;
       description = "Refuse to start when swap is enabled on the host.";
     };
     registerNode = mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = true;
       description = "Register and maintain this node through the Kubernetes API. Disabling registration selects standalone authentication and authorization defaults for static-pod operation.";
     };
     authentication.anonymous = mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = false;
       description = "Permit unauthenticated requests to the kubelet HTTPS endpoint.";
     };
     kubeconfig = mkOption {
-      type = abilityTypes.optional serviceTypes.credentialReference;
+      type = lib.types.nullOr (lib.types.submodule config.aos.abilities.credential.operations.deliver.input);
       default = null;
       description = "Kubernetes API client identity delivered as an opaque service credential.";
     };
@@ -402,26 +323,48 @@ in {
             || (
               kubeconfigRef
               != null
-              && serviceManagement.credentialReferenceConfigured kubeconfigRef
+              && ((kubeconfigRef.name != null) != (kubeconfigRef.resource != null))
             );
-          message = "kubelet.enable with kubelet.registerNode requires a kubelet.kubeconfig credential reference";
+          message = "aos.services.kubelet.enable with aos.kubelet.registerNode requires an aos.kubelet.kubeconfig credential";
         }
         {
           assertion = cfg.clusterDns != [];
-          message = "kubelet.clusterDns must contain at least one address";
+          message = "aos.kubelet.clusterDns must contain at least one address";
         }
       ];
-      aos.services."service.kubelet" = service // {enable = cfg.enable;};
+      aos.services.kubelet = lib.mkMerge [
+        (lib.mkDefault service)
+        {activationAfter = [modules.outputs.loaded];}
+      ];
     }
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = serviceProducers;
-      enabled = serviceEnabled;
-    })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [credential];
-      enabled = serviceEnabled && kubeconfigRef != null;
+    (lib.mkIf serviceEnabled {
+      aos.networkPolicy = {
+        enable = lib.mkDefault true;
+        ingress.kubelet.endpoints = [
+          {
+            transport = "tcp";
+            port = 10250;
+          }
+        ];
+      };
+      aos.abilities = {
+        network.operations.ready.effects.kubelet.input = {
+          scope = "address-configured";
+          families = ["ipv4" "ipv6"];
+        };
+        kernelModules.operations.ensure.effects.kubelet.input = {
+          modules = ["br_netfilter" "overlay"];
+          required = true;
+        };
+        configuration.operations.file.effects.kubelet.input = {
+          path = "/etc/kubelet/config.json";
+          content = builtins.toJSON kubeletConfig;
+          mode = "0444";
+        };
+        credential.operations.deliver.effects = lib.mkIf (kubeconfigRef != null) {
+          kubelet.input = kubeconfigRef;
+        };
+      };
     })
   ];
 }

@@ -1,18 +1,16 @@
-##! Checks containerd's disabled package projection retains consumed abilities.
+##! Checks containerd's native declarations without requiring enabled handlers.
 {
   pkgs,
   lib,
 }: let
-  projection = pkgs.containerd.abilities;
-  contractRequirementAliases =
-    builtins.map
-    (requirement: requirement.alias)
-    pkgs.containerd.contract.value.requirements;
+  evaluated = lib.evalPackageModules {
+    scope = ["test" "containerd-declarations"];
+    packages = [pkgs.containerd];
+  };
 in
-  assert builtins.attrNames projection.interfaces == [];
-  assert builtins.attrNames projection.implementations == [];
-  assert contractRequirementAliases == builtins.attrNames projection.requirementTemplates;
-  assert projection.requirementTemplates != {};
-  assert lib.all
-  (requirement: requirement.accepted_interfaces != [] && requirement.methods != [])
-  (builtins.attrValues projection.requirementTemplates); true
+  assert pkgs.containerd ? module;
+  assert pkgs.containerd.deployment.module.source == builtins.toString pkgs.containerd.module;
+  assert evaluated.config.aos.services.containerd.lifecycle.start != [];
+  assert !evaluated.config.aos.services.containerd.enable;
+  assert evaluated.deployment.graph.nodes == {};
+  assert evaluated.documentation.abilities.serviceManagement.realize.input.lifecycle.type.kind == "nullable"; true

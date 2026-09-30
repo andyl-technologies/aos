@@ -2,237 +2,68 @@
 {
   config,
   lib,
+  package,
   ...
 }: let
   cfg = config.containerd;
   inherit (lib) mkOption;
-  inherit (lib.abilities) resultOf;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  abilityTypes = lib.abilities.types;
-
-  pluginName = abilityTypes.refined {
-    name = "containerd plugin name";
-    description = "a non-empty containerd plugin identifier";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[A-Za-z0-9][A-Za-z0-9._-]*";
-      }
+  types = lib.types;
+  checkedString = pattern: types.addCheck types.str (value: builtins.match pattern value != null);
+  pluginName = checkedString "[A-Za-z0-9][A-Za-z0-9._-]*";
+  pluginNames = types.addCheck (types.listOf pluginName) (values: builtins.length values <= 256);
+  checkedPath = pattern:
+    types.addCheck (checkedString pattern) (value:
+      !(lib.hasSuffix "/" value)
+      && !(lib.hasInfix "//" value)
+      && builtins.all (component: component != "." && component != "..") (lib.splitString "/" value));
+  persistentRoot = checkedPath "/var/lib/containerd(/[A-Za-z0-9._/-]+)?";
+  runtimeRoot = checkedPath "/run/containerd(/[A-Za-z0-9._/-]+)?";
+  metricsAddress = checkedString "[^[:space:]]+:[0-9]+";
+  sandboxImage = checkedString "[^[:space:]]+";
+  directories = config.aos.abilities.filesystem.operations.directory.effects;
+  views = config.aos.abilities.filesystem.operations.view.effects;
+  configuration = config.aos.abilities.configuration.operations.file.effects.containerd;
+  modules = config.aos.abilities.kernelModules.operations.ensure.effects.containerd;
+  readiness = config.aos.abilities.network.operations.ready.effects.containerd;
+  rootPath = directories.containerd-root.outputs.path;
+  statePath = directories.containerd-state.outputs.path;
+  socketPath = views.containerd-socket.outputs.path;
+  configPath = configuration.outputs.path;
+  quoted = builtins.toJSON;
+  # Deferred path fragments are resolved before TOML materialization. The path
+  # producers reject quotes and traversal, so their quoted values are exact.
+  serverFragments =
+    [
+      "version = 3\nroot = \""
+      rootPath
+      "\"\nstate = \""
+      statePath
+      "\"\n"
+      "disabled_plugins = ${quoted cfg.disabledPlugins}\nrequired_plugins = ${quoted cfg.requiredPlugins}\n"
+      "[grpc]\naddress = \""
+      socketPath
+      "\"\n"
+    ]
+    ++ lib.optionals (cfg.metricsAddress != null) [
+      "[metrics]\naddress = ${quoted cfg.metricsAddress}\n"
+    ]
+    ++ [
+      "[plugins.\"io.containerd.cri.v1.images\"]\nsnapshotter = ${quoted cfg.snapshotter}\n"
+      "[plugins.\"io.containerd.cri.v1.images\".pinned_images]\nsandbox = ${quoted cfg.sandboxImage}\n"
+    ]
+    ++ lib.optionals (cfg.registryConfigResource != null) [
+      "[plugins.\"io.containerd.cri.v1.images\".registry]\nconfig_path = \""
+      views.containerd-registry.outputs.path
+      "\"\n"
+    ]
+    ++ [
+      "[plugins.\"io.containerd.cri.v1.runtime\".containerd]\ndefault_runtime_name = ${quoted cfg.defaultRuntime}\n"
+      "[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc]\nruntime_type = \"io.containerd.runc.v2\"\n"
+      "[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc.options]\nSystemdCgroup = ${quoted cfg.systemdCgroup}\n"
     ];
-  };
-  pluginNames = abilityTypes.list {
-    element = pluginName;
-    maxItems = 256;
-  };
-  persistentRoot = abilityTypes.refined {
-    name = "containerd persistent root";
-    description = "an absolute path beneath /var/lib/containerd";
-    type = serviceTypes.storagePath;
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "/var/lib/containerd(/[A-Za-z0-9._/-]+)?";
-      }
-    ];
-  };
-  runtimeRoot = abilityTypes.refined {
-    name = "containerd runtime root";
-    description = "an absolute path beneath /run/containerd";
-    type = serviceTypes.storagePath;
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "/run/containerd(/[A-Za-z0-9._/-]+)?";
-      }
-    ];
-  };
-  metricsAddress = abilityTypes.refined {
-    name = "containerd metrics address";
-    description = "a non-empty host and port accepted by containerd";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[^[:space:]]+:[0-9]+";
-      }
-    ];
-  };
-  sandboxImage = abilityTypes.refined {
-    name = "containerd sandbox image";
-    description = "a non-empty image reference without whitespace";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[^[:space:]]+";
-      }
-    ];
-  };
-  optionalMetrics = {
-    type = abilityTypes.optional (abilityTypes.record {
-      fields.address = metricsAddress;
-    });
-    optional = true;
-  };
-  optionalRegistry = {
-    type = abilityTypes.optional (abilityTypes.record {
-      fields.config_path = abilityTypes.deferredResult serviceTypes.hostPath;
-    });
-    optional = true;
-  };
-  serverConfigType = abilityTypes.record {
-    fields = {
-      version = abilityTypes.integer {
-        minimum = 3;
-        maximum = 3;
-      };
-      root = abilityTypes.deferredResult serviceTypes.storagePath;
-      state = abilityTypes.deferredResult serviceTypes.storagePath;
-      disabled_plugins = pluginNames;
-      required_plugins = pluginNames;
-      grpc = abilityTypes.record {
-        fields.address = abilityTypes.deferredResult serviceTypes.storagePath;
-      };
-      metrics = optionalMetrics;
-      plugins = abilityTypes.record {
-        fields = {
-          "io.containerd.cri.v1.images" = abilityTypes.record {
-            fields = {
-              snapshotter = abilityTypes.enum ["native" "overlayfs"];
-              pinned_images = abilityTypes.record {
-                fields.sandbox = sandboxImage;
-              };
-              registry = optionalRegistry;
-            };
-          };
-          "io.containerd.cri.v1.runtime" = abilityTypes.record {
-            fields.containerd = abilityTypes.record {
-              fields = {
-                default_runtime_name = abilityTypes.enum ["runc"];
-                runtimes = abilityTypes.record {
-                  fields.runc = abilityTypes.record {
-                    fields = {
-                      runtime_type = abilityTypes.enum ["io.containerd.runc.v2"];
-                      options = abilityTypes.record {
-                        fields.SystemdCgroup = abilityTypes.boolean;
-                      };
-                    };
-                  };
-                };
-              };
-            };
-          };
-        };
-      };
-    };
-  };
-  rootPath = resultOf "root-storage" "planned-path";
-  statePath = resultOf "state-storage" "planned-path";
-  socketPath = resultOf "grpc-socket-view" "planned-path";
-  configPath = resultOf "server-configuration" "planned-path";
-  serverConfig =
-    {
-      version = 3;
-      root = rootPath;
-      state = statePath;
-      disabled_plugins = cfg.disabledPlugins;
-      required_plugins = cfg.requiredPlugins;
-      grpc.address = socketPath;
-      plugins = {
-        "io.containerd.cri.v1.images" =
-          {
-            snapshotter = cfg.snapshotter;
-            pinned_images.sandbox = cfg.sandboxImage;
-          }
-          // lib.optionalAttrs (cfg.registryConfigResource != null) {
-            registry.config_path = resultOf "registry-config-view" "host-path";
-          };
-        "io.containerd.cri.v1.runtime".containerd = {
-          default_runtime_name = cfg.defaultRuntime;
-          runtimes.runc = {
-            runtime_type = "io.containerd.runc.v2";
-            options.SystemdCgroup = cfg.systemdCgroup;
-          };
-        };
-      };
-    }
-    // lib.optionalAttrs (cfg.metricsAddress != null) {
-      metrics.address = cfg.metricsAddress;
-    };
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "containerd";
-      inherit key interface parameters;
-    };
-  storage = serviceManagement.forProducers {
-    consumerInstance = "containerd";
-    interface = serviceManagement.interfaces.storageAllocation;
-    producers = [
-      {
-        key = "state-storage";
-        parameters = {
-          name = "state";
-          purpose = "runtime";
-          mode = "0750";
-          requested_path = cfg.state;
-        };
-      }
-    ];
-  };
-  rootStorage = producer "root-storage" serviceManagement.interfaces.persistentStorageAllocation {
-    name = "root";
-    purpose = "state";
-    mode = "0750";
-    requested_path = cfg.root;
-  };
-  grpcSocket = producer "grpc-socket-view" serviceManagement.interfaces.storageView {
-    name = "grpc-socket";
-    source = resultOf "state-storage" "resource";
-    source_path = statePath;
-    access = "read-write";
-    relative_path = cfg.grpcSocketName;
-  };
-  registryConfig = serviceManagement.forProducers {
-    consumerInstance = "containerd";
-    interface = serviceManagement.interfaces.hostPathView;
-    producers = lib.optionals (cfg.registryConfigResource != null) [
-      {
-        key = "registry-config-view";
-        parameters = {
-          name = "registry-config";
-          source = cfg.registryConfigResource;
-          access = "read-only";
-        };
-      }
-    ];
-  };
-  kernelModules = producer "kernel-modules" serviceManagement.interfaces.kernelModules {
-    modules = ["overlay"];
-    required = true;
-  };
-  networkReadiness = producer "network-readiness" serviceManagement.interfaces.networkReadiness {
-    scope = "stack-prepared";
-    address_families = ["ipv4" "ipv6"];
-  };
-  configuration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "containerd";
-    declaration = {
-      name = "server-configuration";
-      source = serviceManagement.structuredSource {
-        format = "toml";
-        valueType = serverConfigType;
-        value = serverConfig;
-      };
-      mode = "0444";
-    };
-  };
   command = arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "bin/containerd";
+      path = "${package}/bin/containerd";
       inherit arguments;
     };
     ignore_failure = false;
@@ -286,8 +117,7 @@
       operation_profile = "privileged";
       isolated_identity_mapping = "none";
     };
-    consumerInstance = "containerd";
-    service = "main";
+    activationAfter = [configuration.outputs.path modules.outputs.loaded];
     lifecycle = {
       description = "containerd standalone container runtime";
       execution_model = "foreground";
@@ -307,18 +137,16 @@
     };
     dependencies = {
       after = [
-        (resultOf "kernel-modules" "resource")
-        (resultOf "network-readiness" "resource")
-        (resultOf "root-storage" "resource")
-        (resultOf "state-storage" "resource")
+        readiness.outputs.resource
+        directories.containerd-root.outputs.resource
+        directories.containerd-state.outputs.resource
       ];
       before = [];
       requires = [
-        (resultOf "kernel-modules" "resource")
-        (resultOf "root-storage" "resource")
-        (resultOf "state-storage" "resource")
+        directories.containerd-root.outputs.resource
+        directories.containerd-state.outputs.resource
       ];
-      wants = [(resultOf "network-readiness" "resource")];
+      wants = [readiness.outputs.resource];
     };
     supervision = {
       startup_protocol = "notification";
@@ -372,31 +200,22 @@
       devices = [];
       host_paths = lib.optionals (cfg.registryConfigResource != null) [
         {
-          source = resultOf "registry-config-view" "host-path";
+          source = views.containerd-registry.outputs.path;
           mode = "read-only";
         }
       ];
       permit_core_dumps = true;
     };
   };
-  producers = [
-    storage
-    rootStorage
-    grpcSocket
-    registryConfig
-    kernelModules
-    networkReadiness
-    configuration
-  ];
 in {
   options.containerd = {
     enable = mkOption {
-      type = abilityTypes.boolean;
+      type = types.bool;
       default = false;
       description = "Run containerd as a standalone host runtime.";
     };
     restartToken = mkOption {
-      type = abilityTypes.optional serviceTypes.restartToken;
+      type = types.nullOr types.str;
       default = null;
       description = "Operator-controlled token whose change requests a service restart.";
     };
@@ -411,12 +230,12 @@ in {
       description = "Requested volatile containerd state directory.";
     };
     grpcSocketName = mkOption {
-      type = abilityTypes.relativePath;
+      type = checkedPath "[A-Za-z0-9][A-Za-z0-9._/-]*";
       default = "containerd.sock";
       description = "Socket path relative to the allocated volatile state directory.";
     };
     metricsAddress = mkOption {
-      type = abilityTypes.optional metricsAddress;
+      type = types.nullOr metricsAddress;
       default = null;
       description = "Optional Prometheus metrics listen address.";
     };
@@ -431,17 +250,17 @@ in {
       description = "Plugins whose initialization failure aborts startup.";
     };
     snapshotter = mkOption {
-      type = abilityTypes.enum ["native" "overlayfs"];
+      type = types.enum ["native" "overlayfs"];
       default = "overlayfs";
       description = "Default CRI image snapshotter.";
     };
     defaultRuntime = mkOption {
-      type = abilityTypes.enum ["runc"];
+      type = types.enum ["runc"];
       default = "runc";
       description = "Default OCI runtime registered with the CRI plugin.";
     };
     systemdCgroup = mkOption {
-      type = abilityTypes.boolean;
+      type = types.bool;
       default = true;
       description = "Whether runc delegates cgroup management to the selected service manager.";
     };
@@ -451,9 +270,9 @@ in {
       description = "CRI pod sandbox image reference.";
     };
     registryConfigResource = mkOption {
-      type = abilityTypes.optional abilityTypes.resourceReference;
+      type = types.nullOr (checkedPath "/[A-Za-z0-9._/-]+");
       default = null;
-      description = "Optional authorized host resource containing registry configuration.";
+      description = "Optional explicitly selected absolute host directory containing registry configuration.";
     };
   };
 
@@ -473,11 +292,46 @@ in {
           message = "containerd.requiredPlugins must not contain duplicates";
         }
       ];
-      aos.services."containerd.main" = service // {enable = cfg.enable;};
+      aos.services.containerd = service // {enable = cfg.enable;};
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = config.aos.services."containerd.main".enable;
+    (lib.mkIf config.aos.services.containerd.enable {
+      aos.abilities = {
+        filesystem.operations.directory.effects = {
+          containerd-root = {
+            lifetime = "persistent";
+            input = {
+              path = cfg.root;
+              mode = "0750";
+            };
+          };
+          containerd-state.input = {
+            path = cfg.state;
+            mode = "0750";
+          };
+        };
+        filesystem.operations.view.effects = {
+          containerd-socket.input = {
+            sourcePath = statePath;
+            relativePath = cfg.grpcSocketName;
+          };
+          containerd-registry = lib.mkIf (cfg.registryConfigResource != null) {
+            input.sourcePath = cfg.registryConfigResource;
+          };
+        };
+        configuration.operations.file.effects.containerd.input = {
+          path = "/run/aos/containerd/config.toml";
+          fragments = serverFragments;
+          mode = "0444";
+        };
+        kernelModules.operations.ensure.effects.containerd.input = {
+          modules = ["overlay"];
+          required = true;
+        };
+        network.operations.ready.effects.containerd.input = {
+          scope = "stack-prepared";
+          families = ["ipv4" "ipv6"];
+        };
+      };
     })
   ];
 }

@@ -1,10 +1,8 @@
-//! K3s-owned convergence for typed Kubernetes object sets.
+//! Native module handlers for K3s configuration and Kubernetes object sets.
 //!
-//! The generic ability runtime authenticates and invokes this executable but
-//! does not interpret Kubernetes objects. This provider validates the complete
-//! checked resource context, binds it to one observed cluster incarnation and
-//! kubeconfig digest, and applies or releases only objects bearing its exact
-//! ownership annotation.
+//! The module runtime supplies fully resolved inputs and retained previous state.
+//! Kubernetes mutations retain exact cluster identity and object UID receipts;
+//! teardown uses ownership annotations and API preconditions to reject replacements.
 
 #![forbid(unsafe_code)]
 
@@ -15,50 +13,20 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, AccessMode, IncarnationId, LocalKey, MethodSemantics,
-    ResourceReference,
-};
+use aos_ability_runtime::activation::{Action, Invocation};
 use aos_contract::Sha256Digest;
-use aos_provider_protocol::{
-    ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
-    AdmissionResult, AdmissionRevision, BoundNativeContext, HANDLER_ABI_ARGUMENT,
-    INVOCATION_SCHEMA, Invocation, InvocationDisposition, InvocationPurpose, InvocationResult,
-    REQUEST_SCHEMA, RESULT_SCHEMA, ResourceContext, SupportedPurposes, resource_set_digest,
-    validate_admission_resource, validate_resource_context, validate_resource_contexts,
-};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
 mod configuration;
 
-const PROVIDER_CONTEXT_SCHEMA: &str = "aos.kubernetes.object-set-context/v1";
+const MAX_DOCUMENT_BYTES: u64 = 256 * 1024;
 const RECEIPT_SCHEMA: &str = "aos.kubernetes.object-set-receipt/v1";
 const OWNER_ANNOTATION: &str = "aos.andyl.com/object-set-owner";
 const REVISION_ANNOTATION: &str = "aos.andyl.com/object-revision";
 const STATE_ROOT: &str = "/var/lib/aos/ability-runtime/kubernetes-object-set";
 const MAX_KUBECONFIG_BYTES: u64 = 1024 * 1024;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum HandlerRole {
-    Configuration,
-    ObjectSet,
-}
-
-impl HandlerRole {
-    fn from_handler(handler: Option<&LocalKey>) -> Result<Self, KubernetesProviderError> {
-        let handler =
-            handler.ok_or_else(|| invalid("selected Kubernetes implementation has no handler"))?;
-        match handler.as_str() {
-            "k3s-configuration-effects" => Ok(Self::Configuration),
-            "kubernetes-object-effects" => Ok(Self::ObjectSet),
-            _ => Err(invalid(
-                "selected implementation does not name a Kubernetes handler behavior",
-            )),
-        }
-    }
-}
 
 /// Reports invalid contracts, unavailable Kubernetes operations, and state I/O failures.
 #[derive(Debug, Error)]
@@ -77,22 +45,15 @@ pub enum KubernetesProviderError {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct AggregateRequest {
-    cluster: ClusterRequest,
+    kubeconfig: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     object_sets: BTreeMap<String, ObjectSetRequest>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ClusterRequest {
-    prerequisites: Vec<ResourceReference>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 struct ObjectSetRequest {
     objects: Vec<KubernetesObject>,
-    prerequisites: Vec<ResourceReference>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -104,23 +65,6 @@ struct KubernetesObject {
     namespace: Option<String>,
     name: String,
     content: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Realization {
-    #[serde(rename = "schema")]
-    _schema: String,
-    kubeconfig: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ProviderContext {
-    schema: String,
-    cluster_incarnation: String,
-    kubeconfig_digest: Sha256Digest,
-    owner: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -147,6 +91,8 @@ struct ObjectReceipt {
 
 #[derive(Clone, Debug, Deserialize)]
 struct LiveObject {
+    #[serde(skip)]
+    document: Value,
     #[serde(rename = "apiVersion")]
     api_version: String,
     kind: String,
@@ -193,274 +139,156 @@ struct ObjectObservation {
     resource_version: Option<String>,
 }
 
-/// Runs one selected command-handler operation from process arguments and streams.
+/// Executes one native `apply`, `remove`, or `observe` invocation.
 ///
 /// # Errors
-///
-/// Returns an error when the command ABI, checked resource context, Kubernetes
-/// response, or provider receipt is invalid.
+/// Returns an error for invalid input, ownership conflicts, unavailable cluster
+/// operations, or failed durable receipt writes.
 pub fn run_from_process() -> Result<(), KubernetesProviderError> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if arguments.len() != 2 || arguments[0] != HANDLER_ABI_ARGUMENT {
-        return Err(invalid("expected --aos-primitive-v1 and one purpose"));
+    let [operation] = arguments.as_slice() else {
+        return Err(invalid("expected one apply, remove, or observe argument"));
+    };
+    if !matches!(operation.as_str(), "apply" | "remove" | "observe") {
+        return Err(invalid("unsupported module handler operation"));
     }
 
     let mut input = Vec::new();
     io::stdin()
-        .take(ABILITY_LIMITS_V1.max_document_bytes + 1)
+        .take(MAX_DOCUMENT_BYTES + 1)
         .read_to_end(&mut input)?;
-    if input.len() as u64 > ABILITY_LIMITS_V1.max_document_bytes {
-        return Err(invalid(
-            "protocol input exceeds the canonical document bound",
-        ));
+    if input.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err(invalid("module invocation exceeds its byte bound"));
     }
-
-    let output = match arguments[1].as_str() {
-        "admit" => serde_json::to_vec(&admit(serde_json::from_slice(&input)?)?)?,
-        "effect" | "reconcile" | "cancel" | "compensate" | "reconcile-compensation" => {
-            let invocation = serde_json::from_slice(&input)?;
-            serde_json::to_vec(&invoke(invocation, &arguments[1])?)?
-        }
-        _ => return Err(invalid("unsupported provider purpose")),
+    let invocation: Invocation = serde_json::from_slice(&input)?;
+    let output = match invocation
+        .effect
+        .identity
+        .iter()
+        .rev()
+        .nth(2)
+        .map(String::as_str)
+        .unwrap_or("")
+    {
+        "kubernetes" => invoke(&invocation, operation)?,
+        "k3sConfiguration" => configuration::invoke(&invocation, operation)?,
+        _ => return Err(invalid("unknown Kubernetes operation ability")),
     };
-    io::stdout().write_all(&output)?;
+    io::stdout().write_all(&serde_json::to_vec(&output)?)?;
     Ok(())
 }
 
-fn admit(request: AdmissionRequest) -> Result<AdmissionResult, KubernetesProviderError> {
-    if request.schema != ADMISSION_REQUEST_SCHEMA {
-        return Err(invalid("admission schema differs from the selected ABI"));
-    }
-    validate_admission_resource(&request).map_err(|error| invalid(error.to_string()))?;
-    validate_contexts(&request.resources)?;
-    let role = HandlerRole::from_handler(request.assignment.implementation.handler.as_ref())?;
-    if role == HandlerRole::Configuration {
-        return configuration::admit(request);
-    }
-    validate_method(request.method.method.as_str(), &request.semantics)?;
-    let observation_schema = request
-        .contract
-        .observation_discriminator()
-        .ok_or_else(|| {
-            invalid("selected Kubernetes method has no exact observation discriminator")
-        })?;
-    let desired: AggregateRequest = decode(&request.resource_spec.value)?;
-    let realization: Realization = decode(&request.resource_spec.realization)?;
+fn invoke(invocation: &Invocation, operation: &str) -> Result<Value, KubernetesProviderError> {
+    let desired: AggregateRequest = serde_json::from_value(invocation.input.clone())?;
     validate_desired(&desired)?;
-    validate_object_prerequisites(&request.resources, &desired)?;
-    validate_realization(&realization)?;
-    let capability = Capability::acquire(&realization, request.control.attempt_remaining_millis)?;
-    let owner = canonical_owner(&request.target)?;
-    let observation = observe(observation_schema, &capability, &desired, &owner)?;
-    let current = observation.state == "current";
+    if !Path::new(&desired.kubeconfig).is_absolute() {
+        return Err(invalid("kubeconfig must have an absolute path"));
+    }
+    let capability = Capability::acquire(&desired.kubeconfig, invocation.effect.timeout_ms)?;
+    let owner = Sha256Digest::of_bytes(invocation.id.as_bytes()).to_string();
+    validate_intent(invocation, &capability)?;
+    let receipt = read_retained_receipt(invocation, &capability)?;
+    let observation = observe("aos.kubernetes.objects/v1", &capability, &desired, &owner)?;
 
-    Ok(AdmissionResult {
-        schema: ADMISSION_SCHEMA.into(),
-        disposition: AdmissionDisposition::Admitted,
-        revision: if current {
-            AdmissionRevision::Present {
-                revision: request.resource_spec.revision,
-            }
+    if operation == "observe" {
+        let status = if observation
+            .objects
+            .values()
+            .any(|object| object.state == "foreign")
+        {
+            "indeterminate"
+        } else if invocation.action == Action::Remove
+            && (observation.state == "absent" || observation.objects.is_empty())
+        {
+            "absent"
+        } else if invocation.action == Action::Apply
+            && observation.state == "current"
+            && receipt
+                .as_ref()
+                .is_some_and(|receipt| receipt.revision == invocation.revision)
+        {
+            return Ok(serde_json::json!({"status":"current", "outputs": outputs(&capability)}));
         } else {
-            AdmissionRevision::Absent
-        },
-        incarnation: Some(
-            IncarnationId::new(capability.cluster_incarnation.clone())
-                .map_err(|error| invalid(error.to_string()))?,
-        ),
-        observation: ability_value(serde_json::to_value(observation)?)?,
-        native_context: ability_value(serde_json::to_value(ProviderContext {
-            schema: PROVIDER_CONTEXT_SCHEMA.into(),
-            cluster_incarnation: capability.cluster_incarnation,
-            kubeconfig_digest: capability.kubeconfig_digest,
-            owner,
-        })?)?,
-        supported_purposes: SupportedPurposes::from_ordered(vec![
-            InvocationPurpose::Effect,
-            InvocationPurpose::Reconcile,
-            InvocationPurpose::Cancel,
-        ])
-        .ok_or_else(|| invalid("Kubernetes purpose support is not canonical"))?,
-    })
+            "retry-safe"
+        };
+        return Ok(serde_json::json!({"status":status}));
+    }
+
+    if operation == "apply" {
+        // Establish writable durable state before changing the remote cluster.
+        let intent_path = receipt_path(invocation)?.with_extension("intent.json");
+        atomic_write(
+            &intent_path,
+            &aos_contract::canonical::to_vec(&serde_json::json!({
+                "revision":invocation.revision,
+                "cluster":capability.cluster_incarnation,
+                "kubeconfig_digest":capability.kubeconfig_digest,
+            }))
+            .map_err(|error| invalid(error.to_string()))?,
+        )?;
+        apply(
+            "aos.kubernetes.objects/v1",
+            &capability,
+            &desired,
+            &owner,
+            receipt.as_ref(),
+        )?;
+        write_receipt(
+            "aos.kubernetes.objects/v1",
+            invocation,
+            &capability,
+            &desired,
+            &owner,
+        )?;
+        return Ok(outputs(&capability));
+    }
+    if observation.state != "absent" && !observation.objects.is_empty() {
+        let receipt = read_receipt(invocation, &capability, &desired)?;
+        release(
+            "aos.kubernetes.objects/v1",
+            &capability,
+            &desired,
+            &owner,
+            &receipt,
+        )?;
+    }
+    remove_receipt(invocation)?;
+    let intent_path = receipt_path(invocation)?.with_extension("intent.json");
+    match fs::remove_file(intent_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(serde_json::json!({}))
 }
 
-fn invoke(
-    invocation: Invocation,
-    selected_purpose: &str,
-) -> Result<InvocationResult, KubernetesProviderError> {
-    if invocation.schema != INVOCATION_SCHEMA
-        || invocation.request.schema != REQUEST_SCHEMA
-        || selected_purpose != purpose_name(invocation.purpose)
-        || !invocation.method_is_bound()
-        || invocation.method.interface != invocation.request.target.interface
-        || !invocation
-            .request
-            .target
-            .operations
-            .contains(&invocation.method.method)
+fn validate_intent(
+    invocation: &Invocation,
+    capability: &Capability,
+) -> Result<(), KubernetesProviderError> {
+    let path = receipt_path(invocation)?.with_extension("intent.json");
+    let bytes = match read_bounded(&path, MAX_DOCUMENT_BYTES) {
+        Ok(bytes) => bytes,
+        Err(KubernetesProviderError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    let intent: Value = serde_json::from_slice(&bytes)?;
+    if intent.get("cluster").and_then(Value::as_str)
+        != Some(capability.cluster_incarnation.as_str())
+        || intent.get("kubeconfig_digest")
+            != Some(&Value::String(capability.kubeconfig_digest.to_string()))
     {
         return Err(invalid(
-            "invocation differs from its selected durable operation",
+            "interrupted Kubernetes mutation belongs to another cluster capability",
         ));
     }
-    let role = HandlerRole::from_handler(Some(&invocation.request.handler))?;
-    validate_contexts(&invocation.request.resources)?;
-    if resource_set_digest(&invocation.request.resources)
-        .map_err(|error| invalid(error.to_string()))?
-        != invocation.request.native_context_digest
-    {
-        return Err(invalid(
-            "resource contexts differ from their authenticated digest",
-        ));
-    }
-    if role == HandlerRole::Configuration {
-        return configuration::invoke(invocation);
-    }
-    validate_method(invocation.method.method.as_str(), &invocation.semantics)?;
-    let observation_schema = invocation
-        .contract
-        .observation_discriminator()
-        .ok_or_else(|| {
-            invalid("selected Kubernetes method has no exact observation discriminator")
-        })?;
-    let (desired, realization, provider_context) = target_context(&invocation)?;
-    validate_desired(&desired)?;
-    validate_object_prerequisites(&invocation.request.resources, &desired)?;
-    validate_realization(&realization)?;
-    validate_selected_inputs(&invocation.request.inputs, &desired)?;
-    if provider_context.schema != PROVIDER_CONTEXT_SCHEMA
-        || provider_context.owner != canonical_owner(&invocation.request.target)?
-    {
-        return Err(invalid(
-            "Kubernetes provider context differs from the selected target",
-        ));
-    }
-    let capability =
-        Capability::acquire(&realization, invocation.control.attempt_remaining_millis)?;
-    if capability.cluster_incarnation != provider_context.cluster_incarnation
-        || capability.kubeconfig_digest != provider_context.kubeconfig_digest
-    {
-        return Err(invalid(
-            "Kubernetes cluster context changed after admission",
-        ));
-    }
+    Ok(())
+}
 
-    if invocation.control.cancelled {
-        return result(
-            &invocation,
-            &desired,
-            &capability,
-            &provider_context.owner,
-            InvocationDisposition::RejectedBeforeEffect,
-            false,
-        );
-    }
-
-    match invocation.purpose {
-        InvocationPurpose::Effect if invocation.method.method.as_str() == "apply" => {
-            let prior_receipt = read_retained_receipt(&invocation, &capability)?;
-            apply(
-                observation_schema,
-                &capability,
-                &desired,
-                &provider_context.owner,
-                prior_receipt.as_ref(),
-            )?;
-            write_receipt(
-                observation_schema,
-                &invocation,
-                &capability,
-                &desired,
-                &provider_context.owner,
-            )?;
-            result(
-                &invocation,
-                &desired,
-                &capability,
-                &provider_context.owner,
-                InvocationDisposition::Completed,
-                true,
-            )
-        }
-        InvocationPurpose::Effect if invocation.method.method.as_str() == "release" => {
-            if observe(
-                observation_schema,
-                &capability,
-                &desired,
-                &provider_context.owner,
-            )?
-            .state
-                == "absent"
-            {
-                remove_receipt(&invocation)?;
-                return result(
-                    &invocation,
-                    &desired,
-                    &capability,
-                    &provider_context.owner,
-                    InvocationDisposition::Completed,
-                    false,
-                );
-            }
-            let receipt = read_receipt(&invocation, &capability, &desired)?;
-            release(
-                observation_schema,
-                &capability,
-                &desired,
-                &provider_context.owner,
-                &receipt,
-            )?;
-            remove_receipt(&invocation)?;
-            result(
-                &invocation,
-                &desired,
-                &capability,
-                &provider_context.owner,
-                InvocationDisposition::Completed,
-                false,
-            )
-        }
-        InvocationPurpose::Effect => result(
-            &invocation,
-            &desired,
-            &capability,
-            &provider_context.owner,
-            InvocationDisposition::Completed,
-            false,
-        ),
-        InvocationPurpose::Reconcile => {
-            let observation = observe(
-                observation_schema,
-                &capability,
-                &desired,
-                &provider_context.owner,
-            )?;
-            let disposition = if invocation.request.method.method.as_str() == "release" {
-                if observation.state == "absent" {
-                    remove_receipt(&invocation)?;
-                    InvocationDisposition::Completed
-                } else {
-                    InvocationDisposition::SafeToRetry
-                }
-            } else if observation.state == "current" {
-                InvocationDisposition::Completed
-            } else {
-                InvocationDisposition::SafeToRetry
-            };
-            result_with_observation(&invocation, observation, disposition, false)
-        }
-        InvocationPurpose::Cancel => result(
-            &invocation,
-            &desired,
-            &capability,
-            &provider_context.owner,
-            InvocationDisposition::RejectedBeforeEffect,
-            false,
-        ),
-        InvocationPurpose::Compensate | InvocationPurpose::ReconcileCompensation => Err(invalid(
-            "Kubernetes object-set provider has no compensation operation",
-        )),
-    }
+fn outputs(capability: &Capability) -> Value {
+    serde_json::json!({"cluster": capability.cluster_incarnation})
 }
 
 struct Capability {
@@ -473,11 +301,11 @@ struct Capability {
 
 impl Capability {
     fn acquire(
-        realization: &Realization,
+        kubeconfig_path: &str,
         timeout_millis: u64,
     ) -> Result<Self, KubernetesProviderError> {
         let executable = sibling_executable()?;
-        let kubeconfig = PathBuf::from(&realization.kubeconfig);
+        let kubeconfig = PathBuf::from(kubeconfig_path);
         let metadata = fs::symlink_metadata(&kubeconfig)?;
         if !metadata.file_type().is_file() {
             return Err(invalid("kubeconfig is not a regular file"));
@@ -534,7 +362,7 @@ impl Capability {
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
-        if output.stdout.len() as u64 > ABILITY_LIMITS_V1.max_document_bytes {
+        if output.stdout.len() as u64 > MAX_DOCUMENT_BYTES {
             return Err(invalid(
                 "kubectl response exceeds the canonical document bound",
             ));
@@ -587,19 +415,6 @@ fn validate_desired(desired: &AggregateRequest) -> Result<(), KubernetesProvider
     Ok(())
 }
 
-fn validate_selected_inputs(
-    inputs: &AbilityValue,
-    desired: &AggregateRequest,
-) -> Result<(), KubernetesProviderError> {
-    let selected: AggregateRequest = decode(inputs)?;
-    if selected != *desired {
-        return Err(invalid(
-            "terminal inputs differ from the retained aggregate resource",
-        ));
-    }
-    Ok(())
-}
-
 fn validate_object_identity(
     object: &KubernetesObject,
     value: &Value,
@@ -632,111 +447,6 @@ fn validate_object_identity(
         ));
     }
     Ok(())
-}
-
-fn validate_realization(realization: &Realization) -> Result<(), KubernetesProviderError> {
-    if !Path::new(&realization.kubeconfig).is_absolute() {
-        return Err(invalid(
-            "Kubernetes realization is outside the package-owned schema",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_method(
-    method: &str,
-    semantics: &MethodSemantics,
-) -> Result<(), KubernetesProviderError> {
-    let method_allowed = matches!(method, "apply" | "observe" | "release");
-    if !method_allowed {
-        return Err(invalid(
-            "method does not belong to Kubernetes object-set management",
-        ));
-    }
-    let expected = match method {
-        "observe" => MethodSemantics::ordinary(AccessMode::Read),
-        "release" => MethodSemantics {
-            required_target_access: AccessMode::ExclusiveWrite,
-            stops_provider: true,
-        },
-        _ => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
-    };
-    if *semantics != expected {
-        return Err(invalid(
-            "method semantics differ from Kubernetes object-set management",
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_contexts(
-    contexts: &[ResourceContext],
-) -> Result<(), KubernetesProviderError> {
-    validate_resource_contexts(contexts).map_err(|error| invalid(error.to_string()))
-}
-
-pub(crate) fn require_resource(
-    contexts: &[ResourceContext],
-    reference: &ResourceReference,
-) -> Result<(), KubernetesProviderError> {
-    let index = contexts
-        .binary_search_by(|context| context.reference.resource.cmp(&reference.resource))
-        .map_err(|_| invalid("required resource has no runtime context"))?;
-    if contexts[index].reference != *reference {
-        return Err(invalid(
-            "required resource context differs from the exact desired reference",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_object_prerequisites(
-    contexts: &[ResourceContext],
-    desired: &AggregateRequest,
-) -> Result<(), KubernetesProviderError> {
-    for reference in &desired.cluster.prerequisites {
-        require_resource(contexts, reference)?;
-    }
-    for object_set in desired.object_sets.values() {
-        for reference in &object_set.prerequisites {
-            require_resource(contexts, reference)?;
-        }
-    }
-    Ok(())
-}
-
-fn target_context(
-    invocation: &Invocation,
-) -> Result<(AggregateRequest, Realization, ProviderContext), KubernetesProviderError> {
-    let native = bound_target_context(invocation)?;
-    Ok((
-        decode(&native.resource_spec.value)?,
-        decode(&native.resource_spec.realization)?,
-        decode(&native.provider_context)?,
-    ))
-}
-
-pub(crate) fn bound_target_context(
-    invocation: &Invocation,
-) -> Result<BoundNativeContext, KubernetesProviderError> {
-    let contexts = invocation
-        .request
-        .resources
-        .iter()
-        .filter(|context| context.reference == invocation.request.target)
-        .collect::<Vec<_>>();
-    let [context] = contexts.as_slice() else {
-        return Err(invalid(
-            "target resource must have exactly one runtime context",
-        ));
-    };
-    let native = validate_resource_context(context).map_err(|error| invalid(error.to_string()))?;
-    if native.resource_spec.value != invocation.request.inputs {
-        return Err(invalid(
-            "controller inputs differ from the retained aggregate resource",
-        ));
-    }
-    Ok(native)
 }
 
 fn all_objects(desired: &AggregateRequest) -> impl Iterator<Item = &KubernetesObject> {
@@ -806,7 +516,10 @@ fn observe<'a>(
                     .annotations
                     .get(REVISION_ANNOTATION)
                     .and_then(|value| Sha256Digest::parse(value).ok());
-                let current = owned && revision == Some(desired_revision(object));
+                let expected: Value = serde_json::from_str(&object.content)?;
+                let current = owned
+                    && revision == Some(desired_revision(object))
+                    && contains_desired(&live.document, &expected);
                 all_current &= current;
                 ObjectObservation {
                     state: if !owned {
@@ -844,6 +557,18 @@ fn observe<'a>(
     })
 }
 
+// Server defaulting may add fields; every explicitly desired field must still match.
+fn contains_desired(observed: &Value, desired: &Value) -> bool {
+    match (observed, desired) {
+        (Value::Object(observed), Value::Object(desired)) => desired.iter().all(|(name, value)| {
+            observed
+                .get(name)
+                .is_some_and(|observed| contains_desired(observed, value))
+        }),
+        _ => observed == desired,
+    }
+}
+
 fn get_object(
     capability: &Capability,
     object: &KubernetesObject,
@@ -863,7 +588,8 @@ fn get_object(
         return Ok(None);
     }
 
-    let live: LiveObject = serde_json::from_slice(&bytes)?;
+    let mut live: LiveObject = serde_json::from_slice(&bytes)?;
+    live.document = serde_json::from_slice(&bytes)?;
     if live.api_version != object.api_version
         || live.kind != object.kind
         || live.metadata.name != object.name
@@ -1100,52 +826,10 @@ fn discover_resource_url(
     })
 }
 
-fn result(
-    invocation: &Invocation,
-    desired: &AggregateRequest,
-    capability: &Capability,
-    owner: &str,
-    disposition: InvocationDisposition,
-    retained: bool,
-) -> Result<InvocationResult, KubernetesProviderError> {
-    let observation_schema = invocation
-        .contract
-        .observation_discriminator()
-        .ok_or_else(|| {
-            invalid("selected Kubernetes method has no exact observation discriminator")
-        })?;
-    let observation = observe(observation_schema, capability, desired, owner)?;
-    result_with_observation(invocation, observation, disposition, retained)
-}
-
-fn result_with_observation(
-    invocation: &Invocation,
-    observation: Observation<'_>,
-    disposition: InvocationDisposition,
-    retained: bool,
-) -> Result<InvocationResult, KubernetesProviderError> {
-    let mut outputs = BTreeMap::new();
-    if retained {
-        outputs.insert(
-            LocalKey::new("retained-resource").map_err(|error| invalid(error.to_string()))?,
-            ability_value(serde_json::to_value(&invocation.request.target)?)?,
-        );
-    }
-    Ok(InvocationResult {
-        schema: RESULT_SCHEMA.into(),
-        disposition,
-        evidence: ability_value(serde_json::to_value(observation)?)?,
-        outputs,
-        native_context_digest: invocation.request.native_context_digest,
-    })
-}
-
 fn receipt_path(invocation: &Invocation) -> Result<PathBuf, KubernetesProviderError> {
-    let digest = Sha256Digest::of_canonical(
-        "aos.kubernetes.object-set-receipt-path/v1",
-        &invocation.request.target.resource,
-    )
-    .map_err(|error| invalid(error.to_string()))?;
+    let digest =
+        Sha256Digest::of_canonical("aos.kubernetes.object-set-receipt-path/v1", &invocation.id)
+            .map_err(|error| invalid(error.to_string()))?;
     Ok(Path::new(STATE_ROOT).join(format!("{}.json", digest.hex())))
 }
 
@@ -1189,15 +873,7 @@ fn write_receipt(
     }
     let receipt = Receipt {
         schema: RECEIPT_SCHEMA.into(),
-        revision: invocation
-            .request
-            .resources
-            .iter()
-            .find(|context| context.reference == invocation.request.target)
-            .ok_or_else(|| invalid("target context is absent"))?
-            .revision
-            .0
-            .to_string(),
+        revision: invocation.revision.clone(),
         cluster_incarnation: capability.cluster_incarnation.clone(),
         kubeconfig_digest: capability.kubeconfig_digest,
         objects,
@@ -1215,15 +891,7 @@ fn read_receipt(
 ) -> Result<Receipt, KubernetesProviderError> {
     let receipt = read_retained_receipt(invocation, capability)?
         .ok_or_else(|| invalid("Kubernetes object-set receipt is absent"))?;
-    let expected_revision = invocation
-        .request
-        .resources
-        .iter()
-        .find(|context| context.reference == invocation.request.target)
-        .ok_or_else(|| invalid("target context is absent"))?
-        .revision
-        .0
-        .to_string();
+    let expected_revision = invocation.revision.clone();
     let desired_keys = all_objects(desired)
         .map(|object| object.key.as_str())
         .collect::<BTreeSet<_>>();
@@ -1259,10 +927,7 @@ fn read_retained_receipt(
     invocation: &Invocation,
     capability: &Capability,
 ) -> Result<Option<Receipt>, KubernetesProviderError> {
-    let bytes = match read_bounded(
-        &receipt_path(invocation)?,
-        ABILITY_LIMITS_V1.max_document_bytes,
-    ) {
+    let bytes = match read_bounded(&receipt_path(invocation)?, MAX_DOCUMENT_BYTES) {
         Ok(bytes) => bytes,
         Err(KubernetesProviderError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
             return Ok(None);
@@ -1284,7 +949,6 @@ fn read_retained_receipt(
             && Sha256Digest::parse(&object.revision).is_ok()
     });
     if receipt.schema != RECEIPT_SCHEMA
-        || Sha256Digest::parse(&receipt.revision).is_err()
         || receipt.cluster_incarnation != capability.cluster_incarnation
         || receipt.kubeconfig_digest != capability.kubeconfig_digest
         || identities.len() != receipt.objects.len()
@@ -1360,12 +1024,6 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), KubernetesPr
     Ok(())
 }
 
-fn canonical_owner(reference: &ResourceReference) -> Result<String, KubernetesProviderError> {
-    Sha256Digest::of_canonical("aos.kubernetes.object-set-owner/v1", &reference.resource)
-        .map(|digest| digest.to_string())
-        .map_err(|error| invalid(error.to_string()))
-}
-
 pub(crate) fn read_bounded(path: &Path, maximum: u64) -> Result<Vec<u8>, KubernetesProviderError> {
     let mut bytes = Vec::new();
     fs::File::open(path)?
@@ -1391,26 +1049,6 @@ fn required_string(value: &Value, path: &[&str]) -> Result<String, KubernetesPro
         .ok_or_else(|| invalid("Kubernetes response field is not a nonempty string"))
 }
 
-pub(crate) fn decode<T: for<'de> Deserialize<'de>>(
-    value: &AbilityValue,
-) -> Result<T, KubernetesProviderError> {
-    Ok(serde_json::from_value(value.as_json().clone())?)
-}
-
-pub(crate) fn ability_value(value: Value) -> Result<AbilityValue, KubernetesProviderError> {
-    AbilityValue::new(value).map_err(|error| invalid(error.to_string()))
-}
-
-pub(crate) fn purpose_name(purpose: InvocationPurpose) -> &'static str {
-    match purpose {
-        InvocationPurpose::Effect => "effect",
-        InvocationPurpose::Reconcile => "reconcile",
-        InvocationPurpose::Cancel => "cancel",
-        InvocationPurpose::Compensate => "compensate",
-        InvocationPurpose::ReconcileCompensation => "reconcile-compensation",
-    }
-}
-
 pub(crate) fn invalid(message: impl Into<String>) -> KubernetesProviderError {
     KubernetesProviderError::Invalid(message.into())
 }
@@ -1418,10 +1056,6 @@ pub(crate) fn invalid(message: impl Into<String>) -> KubernetesProviderError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn key(value: &str) -> LocalKey {
-        LocalKey::new(value).expect("handler key is valid")
-    }
 
     fn object() -> KubernetesObject {
         KubernetesObject {
@@ -1435,49 +1069,13 @@ mod tests {
     }
 
     #[test]
-    fn handler_accepts_only_object_methods_with_exact_semantics() {
-        let apply = MethodSemantics::ordinary(AccessMode::ExclusiveWrite);
-
-        assert!(validate_method("apply", &apply).is_ok());
-        assert!(validate_method("unknown", &apply).is_err());
-        assert_eq!(
-            HandlerRole::from_handler(Some(&key("kubernetes-object-effects")))
-                .expect("object handler selects its behavior"),
-            HandlerRole::ObjectSet,
-        );
-        assert_eq!(
-            HandlerRole::from_handler(Some(&key("k3s-configuration-effects")))
-                .expect("configuration handler selects its behavior"),
-            HandlerRole::Configuration,
-        );
-        assert!(HandlerRole::from_handler(Some(&key("kubernetes-objects"))).is_err());
-        assert!(HandlerRole::from_handler(None).is_err());
-    }
-
-    #[test]
-    fn cluster_request_needs_no_empty_object_set_map() {
-        let value = serde_json::json!({"cluster": {"prerequisites": []}});
-        let desired: AggregateRequest = serde_json::from_value(value.clone())
-            .expect("cluster request without object sets decodes");
-
-        assert!(desired.object_sets.is_empty());
-        assert_eq!(
-            serde_json::to_value(desired).expect("request encodes"),
-            value
-        );
-    }
-
-    #[test]
     fn object_identity_and_canonical_content_are_checked_together() {
         let desired = AggregateRequest {
-            cluster: ClusterRequest {
-                prerequisites: vec![],
-            },
+            kubeconfig: "/etc/rancher/k3s/k3s.yaml".into(),
             object_sets: BTreeMap::from([(
                 "gateway".into(),
                 ObjectSetRequest {
                     objects: vec![object()],
-                    prerequisites: vec![],
                 },
             )]),
         };
@@ -1510,6 +1108,7 @@ mod tests {
     #[test]
     fn delete_options_bind_uid_and_resource_version() {
         let live = LiveObject {
+            document: Value::Null,
             api_version: "v1".into(),
             kind: "ConfigMap".into(),
             metadata: LiveMetadata {
@@ -1551,5 +1150,15 @@ mod tests {
         let mut replacement = object;
         replacement.name = "replacement".into();
         assert!(!retained.matches(&replacement));
+    }
+
+    #[test]
+    fn observation_checks_owned_fields_while_allowing_server_defaults() {
+        let desired = serde_json::json!({"spec":{"replicas":2}});
+        let observed = serde_json::json!({"spec":{"replicas":2,"defaulted":true},"status":{}});
+        assert!(contains_desired(&observed, &desired));
+
+        let drifted = serde_json::json!({"spec":{"replicas":3,"defaulted":true}});
+        assert!(!contains_desired(&drifted, &desired));
     }
 }

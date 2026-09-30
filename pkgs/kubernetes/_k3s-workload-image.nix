@@ -29,16 +29,17 @@
     maxClosureMiB = 256;
     maxDevelopmentPayloadMiB = 1;
   };
-  abilityContract = oci.mkStaticAbilityContract {
-    pname = "k3s-workload-static-abilities";
-    inherit platform;
-    runtimeRoots = [pkgs.coreutils];
+  deploymentArtifact = oci.mkDeploymentArtifact {
+    pname = "k3s-workload-deployment";
+    inherit pkgs platform;
+    scope = ["container" "k3s-workload"];
+    packages = [pkgs.coreutils];
   };
 in
   oci.mkImageLayout {
     pname = "k3s-workload-image";
     layers = [payload metadata];
-    inherit runtimeAudit abilityContract;
+    inherit runtimeAudit deploymentArtifact;
     referenceName = "aos.invalid/qualification:fixture";
     config = {
       entrypoint = ["${pkgs.coreutils}/bin/printf"];

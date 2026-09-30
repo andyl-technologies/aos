@@ -2,52 +2,24 @@
 {
   config,
   lib,
+  package,
   packageName,
   packageVersion,
   ...
 }: let
-  cfg = config.cloudcore;
-  serviceEnabled = config.aos.services."service.cloudcore".enable;
+  cfg = config.aos.cloudcore;
+  serviceEnabled = config.aos.services.cloudcore.enable;
   inherit (lib) mkOption;
-  abilityTypes = lib.abilities.types;
-  positiveInt = abilityTypes.integer {
-    minimum = 1;
-    maximum = abilityTypes.limits.maxSafeInteger;
-  };
-  address = abilityTypes.refined {
-    name = "CloudCore listener address";
-    description = "an IP address or DNS name accepted by CloudCore";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[A-Za-z0-9][A-Za-z0-9.:-]*";
-      }
-    ];
-  };
-  nonWhitespace = abilityTypes.refined {
-    name = "CloudCore non-whitespace string";
-    description = "a bounded CloudCore value without whitespace";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "minimum-size";
-        minimum = 1;
-      }
-      {
-        kind = "string-excludes";
-        classes = ["ascii-space" "line-break"];
-      }
-    ];
-  };
-  port = abilityTypes.integer {
-    minimum = 1;
-    maximum = 65535;
-  };
+  positiveInt = lib.types.ints.between 1 9007199254740991;
+  refinedString = name: description: pattern: lib.types.strMatching pattern;
+  address = lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9.:-]*";
+  nonWhitespace = lib.types.strMatching "[^[:space:]]+";
+  port = lib.types.ints.between 1 65535;
   bool = value:
     if value
     then "true"
     else "false";
+  credentialType = lib.types.nullOr (lib.types.submodule config.aos.abilities.credential.operations.deliver.input);
   credentials = {
     kubeconfig = cfg.kubeApi.kubeconfig;
     ca-certificate = cfg.tls.caCertificate;
@@ -146,58 +118,12 @@
     }
   ];
   requiredRefs = builtins.attrValues credentials;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  networkPolicy = lib.abilities.interfaces.networkPolicy;
-  serviceTypes = serviceManagement.types;
-  resultOf = lib.abilities.resultOf;
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "service";
-      inherit key interface parameters;
-    };
-  credentialPath = name: resultOf "${name}-delivery" "credential-path";
+  deliveries = config.aos.abilities.credential.operations.deliver.effects;
+  credentialPath = name: deliveries."cloudcore-${name}".outputs.path;
   configuredCredentials = lib.filterAttrs (_: ref: ref != null) credentials;
-  credentialRequests = serviceManagement.forCredentialReferences {
-    consumerInstance = "service";
-    references =
-      lib.mapAttrsToList (name: reference: {
-        key = "${name}-delivery";
-        inherit name reference;
-      })
-      configuredCredentials;
-  };
-  network = producer "network" serviceManagement.interfaces.networkReadiness {
-    scope = "configured-connectivity";
-    address_families = [
-      "ipv4"
-      "ipv6"
-    ];
-  };
-  ingressPolicy = producer "ingress-policy" networkPolicy.interfaces.ingress {
-    endpoints =
-      lib.optional cfg.websocket.enable {
-        transport = "tcp";
-        port = cfg.websocket.port;
-      }
-      ++ lib.optional cfg.https.enable {
-        transport = "tcp";
-        port = cfg.https.port;
-      };
-    prerequisites = [];
-  };
-  configuration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "service";
-    declaration = {
-      name = "configuration";
-      source = {
-        kind = "interpolated-text";
-        fragments = configurationFragments;
-        maximum_size_bytes = lib.abilities.types.limits.maxDocumentBytes;
-      };
-      mode = "0444";
-    };
-  };
+  network = config.aos.abilities.network.operations.ready.effects.cloudcore;
+  configuration = config.aos.abilities.configuration.operations.file.effects.cloudcore;
+  ingress = config.aos.abilities.networkPolicy.operations.ruleset.effects.host;
   service = {
     policy.hardening = {
       allow_privilege_escalation = false;
@@ -232,7 +158,6 @@
       operation_profile = "system-service";
       isolated_identity_mapping = "none";
     };
-    consumerInstance = "service";
     service = "cloudcore";
     lifecycle = {
       description = "KubeEdge cloud control plane (${packageName} ${packageVersion})";
@@ -243,11 +168,10 @@
       start = [
         {
           executable = {
-            artifact = lib.abilities.packageOutput {};
-            entry_point = "bin/cloudcore";
+            path = "${package}/bin/cloudcore";
             arguments = [
               "--config"
-              (resultOf "configuration" "planned-path")
+              configuration.outputs.path
             ];
           };
           ignore_failure = false;
@@ -264,12 +188,12 @@
     };
     dependencies = {
       after = [
-        (resultOf "network" "resource")
-        (resultOf "ingress-policy" "resource")
+        network.outputs.resource
+        ingress.outputs.resource
       ];
       before = [];
-      requires = [(resultOf "ingress-policy" "resource")];
-      wants = [(resultOf "network" "resource")];
+      requires = [ingress.outputs.resource];
+      wants = [network.outputs.resource];
     };
     directories.managed = [
       {
@@ -294,7 +218,7 @@
     configuration.views = [
       {
         name = "configuration";
-        source = resultOf "configuration" "planned-path";
+        source = configuration.outputs.path;
         optional = false;
       }
     ];
@@ -329,26 +253,10 @@
       permit_core_dumps = false;
     };
   };
-  producers = [
-    network
-    ingressPolicy
-    configuration
-    credentialRequests
-  ];
 in {
-  options.cloudcore = {
-    enable = mkOption {
-      type = abilityTypes.boolean;
-      default = false;
-      description = "Enable the package-owned KubeEdge CloudCore service.";
-    };
+  options.aos.cloudcore = {
     advertiseAddresses = mkOption {
-      type = abilityTypes.list {
-        element = address;
-        maxItems = 64;
-        unique = true;
-        canonicalOrder = true;
-      };
+      type = lib.types.listOf address;
       default = ["127.0.0.1"];
       description = "Addresses advertised to EdgeCore nodes.";
     };
@@ -364,7 +272,7 @@ in {
     };
     kubeApi = {
       kubeconfig = mkOption {
-        type = abilityTypes.optional serviceTypes.credentialReference;
+        type = credentialType;
         default = null;
         description = "Opaque credential reference for CloudCore's Kubernetes API kubeconfig.";
       };
@@ -381,7 +289,7 @@ in {
     };
     https = {
       enable = mkOption {
-        type = abilityTypes.boolean;
+        type = lib.types.bool;
         default = true;
         description = "Enable CloudHub's HTTPS enrollment listener.";
       };
@@ -394,12 +302,12 @@ in {
         type = port;
         default = 10002;
         readOnly = true;
-        description = "Signed HTTPS port admitted by the CloudCore expose firewall contract.";
+        description = "Fixed HTTPS enrollment port used by this package.";
       };
     };
     websocket = {
       enable = mkOption {
-        type = abilityTypes.boolean;
+        type = lib.types.bool;
         default = true;
         description = "Enable CloudHub's WebSocket listener for connected edge nodes.";
       };
@@ -412,27 +320,27 @@ in {
         type = port;
         default = 10000;
         readOnly = true;
-        description = "Signed WebSocket port admitted by the CloudCore expose firewall contract.";
+        description = "Fixed WebSocket listener port used by this package.";
       };
     };
     tls = {
       caCertificate = mkOption {
-        type = abilityTypes.optional serviceTypes.credentialReference;
+        type = credentialType;
         default = null;
         description = "Opaque credential reference for the CloudHub certificate authority certificate.";
       };
       caPrivateKey = mkOption {
-        type = abilityTypes.optional serviceTypes.credentialReference;
+        type = credentialType;
         default = null;
         description = "Opaque credential reference for the CloudHub certificate authority private key.";
       };
       serverCertificate = mkOption {
-        type = abilityTypes.optional serviceTypes.credentialReference;
+        type = credentialType;
         default = null;
         description = "Opaque credential reference for the CloudHub server certificate.";
       };
       serverPrivateKey = mkOption {
-        type = abilityTypes.optional serviceTypes.credentialReference;
+        type = credentialType;
         default = null;
         description = "Opaque credential reference for the CloudHub server private key.";
       };
@@ -453,7 +361,7 @@ in {
             (reference:
               reference
               != null
-              && serviceManagement.credentialReferenceConfigured reference)
+              && ((reference.name != null) != (reference.resource != null)))
             requiredRefs;
           message = "cloudcore.enable requires kubeconfig and all CloudHub TLS credential references";
         }
@@ -462,11 +370,41 @@ in {
           message = "cloudcore.enable requires HTTPS or WebSocket CloudHub transport";
         }
       ];
-      aos.services."service.cloudcore" = service // {enable = cfg.enable;};
+      aos.services.cloudcore = lib.mkDefault service;
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = serviceEnabled;
+    (lib.mkIf serviceEnabled {
+      aos.networkPolicy = {
+        enable = lib.mkDefault true;
+        ingress.cloudcore.endpoints =
+          lib.optional cfg.websocket.enable {
+            transport = "tcp";
+            port = cfg.websocket.port;
+          }
+          ++ lib.optional cfg.https.enable {
+            transport = "tcp";
+            port = cfg.https.port;
+          };
+      };
+      aos.abilities = {
+        network.operations.ready.effects.cloudcore.input = {
+          scope = "address-configured";
+          families = ["ipv4" "ipv6"];
+        };
+        configuration.operations.file.effects.cloudcore.input = {
+          path = "/etc/cloudcore/config.yaml";
+          fragments = map (fragment:
+            if fragment.kind == "literal"
+            then fragment.text
+            else fragment.value)
+          configurationFragments;
+          mode = "0444";
+        };
+        credential.operations.deliver.effects = builtins.listToAttrs (lib.mapAttrsToList (credentialName: input: {
+            name = "cloudcore-${credentialName}";
+            value = {inherit input;};
+          })
+          configuredCredentials);
+      };
     })
   ];
 }

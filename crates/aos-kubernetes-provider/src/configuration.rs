@@ -1,32 +1,21 @@
-//! K3s runtime-configuration materialization through the selected provider protocol.
+//! Native K3s configuration materialization and ownership-safe teardown.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, AccessMode, LocalKey, MethodSemantics, ResourceReference,
-};
+use aos_ability_runtime::activation::{Action, Invocation};
 use aos_contract::Sha256Digest;
-use aos_provider_protocol::{
-    ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest, AdmissionResult, AdmissionRevision,
-    Invocation, InvocationDisposition, InvocationPurpose, InvocationResult, RESULT_SCHEMA,
-    SupportedPurposes,
-};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{
-    KubernetesProviderError, ability_value, atomic_write, bound_target_context, decode, invalid,
-    read_bounded, require_resource,
-};
-
-const CONTEXT_SCHEMA: &str = "aos.k3s.configuration-context/v1";
+use super::{KubernetesProviderError, MAX_DOCUMENT_BYTES, atomic_write, invalid, read_bounded};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct K3sConfiguration {
+    path: String,
     base: K3sConfigurationBase,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     integrations: BTreeMap<String, K3sIntegration>,
@@ -39,7 +28,6 @@ struct K3sConfigurationBase {
     disable_network_policy: bool,
     disable_kube_proxy: bool,
     node_labels: BTreeMap<String, String>,
-    prerequisites: Vec<ResourceReference>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -49,203 +37,100 @@ struct K3sIntegration {
     disable_network_policy: bool,
     disable_kube_proxy: bool,
     node_labels: BTreeMap<String, String>,
-    prerequisites: Vec<ResourceReference>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct K3sConfigurationRealization {
-    #[serde(rename = "schema")]
-    _schema: String,
-    path: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct K3sConfigurationContext {
-    schema: String,
-    path: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct K3sConfigurationObservation<'a> {
-    schema: &'a str,
-    expected: &'a K3sConfiguration,
-    state: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content_digest: Option<Sha256Digest>,
-}
-
-pub(super) fn admit(request: AdmissionRequest) -> Result<AdmissionResult, KubernetesProviderError> {
-    validate_configuration_method(request.method.method.as_str(), &request.semantics)?;
-    let desired: K3sConfiguration = decode(&request.resource_spec.value)?;
-    let realization: K3sConfigurationRealization = decode(&request.resource_spec.realization)?;
+pub(super) fn invoke(
+    invocation: &Invocation,
+    operation: &str,
+) -> Result<Value, KubernetesProviderError> {
+    let desired: K3sConfiguration = serde_json::from_value(invocation.input.clone())?;
     validate_configuration(&desired)?;
-    validate_configuration_prerequisites(&request.resources, &desired)?;
-    validate_configuration_realization(&realization)?;
-    let observation_schema = request
-        .contract
-        .observation_discriminator()
-        .ok_or_else(|| invalid("selected K3s method has no exact observation discriminator"))?;
-    let content = render_configuration(&desired)?;
-    let current = configuration_matches(
-        Path::new(&realization.path),
-        &content,
-        &request.resource_spec.revision.0.to_string(),
-    )?;
-    let observation = configuration_observation(
-        observation_schema,
-        &desired,
-        &realization.path,
-        &content,
-        current,
-    );
-
-    Ok(AdmissionResult {
-        schema: ADMISSION_SCHEMA.into(),
-        disposition: AdmissionDisposition::Admitted,
-        revision: if current {
-            AdmissionRevision::Present {
-                revision: request.resource_spec.revision,
-            }
-        } else {
-            AdmissionRevision::Absent
-        },
-        incarnation: None,
-        observation: ability_value(serde_json::to_value(observation)?)?,
-        native_context: ability_value(serde_json::to_value(K3sConfigurationContext {
-            schema: CONTEXT_SCHEMA.into(),
-            path: realization.path,
-        })?)?,
-        supported_purposes: SupportedPurposes::from_ordered(vec![
-            InvocationPurpose::Effect,
-            InvocationPurpose::Reconcile,
-            InvocationPurpose::Cancel,
-        ])
-        .ok_or_else(|| invalid("K3s configuration purpose support is not canonical"))?,
-    })
-}
-
-pub(super) fn invoke(invocation: Invocation) -> Result<InvocationResult, KubernetesProviderError> {
-    validate_configuration_method(invocation.method.method.as_str(), &invocation.semantics)?;
-    let context = bound_target_context(&invocation)?;
-    let desired: K3sConfiguration = decode(&context.resource_spec.value)?;
-    let realization: K3sConfigurationRealization = decode(&context.resource_spec.realization)?;
-    let provider_context: K3sConfigurationContext = decode(&context.provider_context)?;
-    validate_configuration(&desired)?;
-    validate_configuration_prerequisites(&invocation.request.resources, &desired)?;
-    validate_selected_inputs(&invocation.request.inputs, &desired)?;
-    validate_configuration_realization(&realization)?;
-    if provider_context.schema != CONTEXT_SCHEMA || provider_context.path != realization.path {
+    let path = Path::new(&desired.path);
+    if path.parent() != Some(Path::new("/run/aos/k3s"))
+        || path.extension().and_then(|value| value.to_str()) != Some("json")
+    {
         return Err(invalid(
-            "K3s configuration context differs from its checked realization",
+            "configuration path is outside the K3s runtime root",
         ));
     }
     let content = render_configuration(&desired)?;
-    let revision = context.resource_spec.revision.0.to_string();
-
-    if invocation.control.cancelled {
-        return configuration_result(
-            &invocation,
-            &desired,
-            &realization.path,
-            &content,
-            false,
-            InvocationDisposition::RejectedBeforeEffect,
-            false,
-        );
-    }
-    match invocation.purpose {
-        InvocationPurpose::Effect if invocation.method.method.as_str() == "apply" => {
-            materialize_configuration(Path::new(&realization.path), &content, &revision)?;
-            configuration_result(
-                &invocation,
-                &desired,
-                &realization.path,
-                &content,
-                true,
-                InvocationDisposition::Completed,
-                true,
-            )
+    let current = configuration_matches(path, &content, &invocation.revision)?;
+    let outputs = serde_json::json!({"path":desired.path});
+    let previous = invocation
+        .previous
+        .as_ref()
+        .map(|previous| {
+            serde_json::from_value::<K3sConfiguration>(previous.input.clone())
+                .map(|input| (input, previous.revision.as_str()))
+        })
+        .transpose()?;
+    let retired = previous
+        .as_ref()
+        .filter(|(input, _)| input.path != desired.path);
+    let retired_present = match retired {
+        Some((input, _)) => {
+            Path::new(&input.path).try_exists()?
+                || configuration_marker(Path::new(&input.path)).try_exists()?
         }
-        InvocationPurpose::Effect if invocation.method.method.as_str() == "release" => {
-            release_configuration(Path::new(&realization.path), &revision)?;
-            configuration_result(
-                &invocation,
-                &desired,
-                &realization.path,
-                &content,
-                false,
-                InvocationDisposition::Completed,
-                false,
-            )
-        }
-        InvocationPurpose::Effect => {
-            let current = configuration_matches(Path::new(&realization.path), &content, &revision)?;
-            configuration_result(
-                &invocation,
-                &desired,
-                &realization.path,
-                &content,
-                current,
-                InvocationDisposition::Completed,
-                false,
-            )
-        }
-        InvocationPurpose::Reconcile => {
-            let current = configuration_matches(Path::new(&realization.path), &content, &revision)?;
-            let released = invocation.request.method.method.as_str() == "release" && !current;
-            configuration_result(
-                &invocation,
-                &desired,
-                &realization.path,
-                &content,
-                current,
-                if current || released {
-                    InvocationDisposition::Completed
-                } else {
-                    InvocationDisposition::SafeToRetry
-                },
-                current && invocation.request.method.method.as_str() == "apply",
-            )
-        }
-        InvocationPurpose::Cancel => configuration_result(
-            &invocation,
-            &desired,
-            &realization.path,
-            &content,
-            false,
-            InvocationDisposition::RejectedBeforeEffect,
-            false,
-        ),
-        InvocationPurpose::Compensate | InvocationPurpose::ReconcileCompensation => Err(invalid(
-            "K3s configuration provider has no compensation operation",
-        )),
-    }
-}
-
-fn validate_configuration_method(
-    method: &str,
-    semantics: &MethodSemantics,
-) -> Result<(), KubernetesProviderError> {
-    let method_allowed = matches!(method, "apply" | "observe" | "release");
-    if !method_allowed {
-        return Err(invalid("method does not belong to K3s configuration"));
-    }
-    let expected = match method {
-        "observe" => MethodSemantics::ordinary(AccessMode::Read),
-        "release" => MethodSemantics {
-            required_target_access: AccessMode::ExclusiveWrite,
-            stops_provider: true,
-        },
-        _ => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+        None => false,
     };
-    if *semantics != expected {
-        return Err(invalid("method semantics differ from K3s configuration"));
+
+    if operation == "observe" {
+        if current && !retired_present && invocation.action == Action::Apply {
+            return Ok(serde_json::json!({"status":"current", "outputs":outputs}));
+        }
+        let status = if !path.try_exists()? && !configuration_marker(path).try_exists()? {
+            "absent"
+        } else if current
+            || invocation.action == Action::Apply
+            || (!path.try_exists()?
+                && configuration_intent_matches(path, &content, &invocation.revision)?)
+        {
+            "retry-safe"
+        } else {
+            "indeterminate"
+        };
+        return Ok(serde_json::json!({"status":status}));
     }
-    Ok(())
+    if operation == "apply" {
+        if !current
+            && path.try_exists()?
+            && !configuration_intent_matches(path, &content, &invocation.revision)?
+        {
+            let previous = invocation
+                .previous
+                .as_ref()
+                .ok_or_else(|| invalid("refusing to overwrite unowned K3s configuration"))?;
+            let old: K3sConfiguration = serde_json::from_value(previous.input.clone())?;
+            if old.path != desired.path
+                || !configuration_matches(path, &render_configuration(&old)?, &previous.revision)?
+            {
+                return Err(invalid("K3s previous configuration ownership differs"));
+            }
+        }
+        if let Some((input, revision)) = retired {
+            let old_path = Path::new(&input.path);
+            if old_path.parent() != Some(Path::new("/run/aos/k3s"))
+                || old_path.extension().and_then(|value| value.to_str()) != Some("json")
+            {
+                return Err(invalid(
+                    "previous configuration path is outside the K3s runtime root",
+                ));
+            }
+            if old_path.try_exists()?
+                && !configuration_matches(old_path, &render_configuration(input)?, revision)?
+            {
+                return Err(invalid("retired K3s configuration has external edits"));
+            }
+        }
+        materialize_configuration(path, &content, &invocation.revision)?;
+        if let Some((input, revision)) = retired {
+            release_configuration(Path::new(&input.path), revision)?;
+        }
+        return Ok(outputs);
+    }
+    release_configuration(path, &invocation.revision)?;
+    Ok(serde_json::json!({}))
 }
 
 fn validate_configuration(desired: &K3sConfiguration) -> Result<(), KubernetesProviderError> {
@@ -256,48 +141,6 @@ fn validate_configuration(desired: &K3sConfiguration) -> Result<(), KubernetesPr
                 return Err(invalid("K3s configuration repeats a node label"));
             }
         }
-    }
-    Ok(())
-}
-
-fn validate_configuration_prerequisites(
-    contexts: &[aos_provider_protocol::ResourceContext],
-    desired: &K3sConfiguration,
-) -> Result<(), KubernetesProviderError> {
-    for reference in &desired.base.prerequisites {
-        require_resource(contexts, reference)?;
-    }
-    for integration in desired.integrations.values() {
-        for reference in &integration.prerequisites {
-            require_resource(contexts, reference)?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_selected_inputs(
-    inputs: &AbilityValue,
-    desired: &K3sConfiguration,
-) -> Result<(), KubernetesProviderError> {
-    let selected: K3sConfiguration = decode(inputs)?;
-    if selected != *desired {
-        return Err(invalid(
-            "configuration terminal inputs differ from the retained aggregate resource",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_configuration_realization(
-    realization: &K3sConfigurationRealization,
-) -> Result<(), KubernetesProviderError> {
-    let path = Path::new(&realization.path);
-    if path.parent() != Some(Path::new("/run/aos/k3s"))
-        || path.extension().and_then(|value| value.to_str()) != Some("json")
-    {
-        return Err(invalid(
-            "K3s configuration realization is outside its package-owned runtime root",
-        ));
     }
     Ok(())
 }
@@ -340,7 +183,7 @@ fn materialize_configuration(
         .parent()
         .ok_or_else(|| invalid("K3s configuration path has no parent"))?;
     fs::create_dir_all(parent)?;
-    atomic_write(path, content)?;
+    // Publish the owned intent first so interruption before content rename is retryable.
     atomic_write(
         &configuration_marker(path),
         &aos_contract::canonical::to_vec(&serde_json::json!({
@@ -349,6 +192,28 @@ fn materialize_configuration(
             "content_digest": Sha256Digest::of_bytes(content),
         }))
         .map_err(|error| invalid(error.to_string()))?,
+    )?;
+    atomic_write(path, content)
+}
+
+fn configuration_intent_matches(
+    path: &Path,
+    content: &[u8],
+    revision: &str,
+) -> Result<bool, KubernetesProviderError> {
+    let bytes = match read_bounded(&configuration_marker(path), MAX_DOCUMENT_BYTES) {
+        Ok(bytes) => bytes,
+        Err(KubernetesProviderError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
+    let marker: Value = serde_json::from_slice(&bytes)?;
+    Ok(
+        marker.get("schema").and_then(Value::as_str) == Some("aos.k3s.configuration-state/v1")
+            && marker.get("revision").and_then(Value::as_str) == Some(revision)
+            && marker.get("content_digest")
+                == Some(&Value::String(Sha256Digest::of_bytes(content).to_string())),
     )
 }
 
@@ -357,17 +222,14 @@ fn configuration_matches(
     content: &[u8],
     revision: &str,
 ) -> Result<bool, KubernetesProviderError> {
-    let actual = match read_bounded(path, ABILITY_LIMITS_V1.max_document_bytes) {
+    let actual = match read_bounded(path, MAX_DOCUMENT_BYTES) {
         Ok(actual) => actual,
         Err(KubernetesProviderError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
             return Ok(false);
         }
         Err(error) => return Err(error),
     };
-    let marker = match read_bounded(
-        &configuration_marker(path),
-        ABILITY_LIMITS_V1.max_document_bytes,
-    ) {
+    let marker = match read_bounded(&configuration_marker(path), MAX_DOCUMENT_BYTES) {
         Ok(marker) => marker,
         Err(KubernetesProviderError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
             return Ok(false);
@@ -384,7 +246,7 @@ fn configuration_matches(
 
 fn release_configuration(path: &Path, revision: &str) -> Result<(), KubernetesProviderError> {
     let marker = configuration_marker(path);
-    let marker_bytes = match read_bounded(&marker, ABILITY_LIMITS_V1.max_document_bytes) {
+    let marker_bytes = match read_bounded(&marker, MAX_DOCUMENT_BYTES) {
         Ok(bytes) => bytes,
         Err(KubernetesProviderError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
             return Ok(());
@@ -396,6 +258,16 @@ fn release_configuration(path: &Path, revision: &str) -> Result<(), KubernetesPr
         return Err(invalid(
             "refusing to release a K3s configuration owned by another revision",
         ));
+    }
+    if path.try_exists()? {
+        let content = read_bounded(path, MAX_DOCUMENT_BYTES)?;
+        if marker_value.get("content_digest")
+            != Some(&Value::String(Sha256Digest::of_bytes(content).to_string()))
+        {
+            return Err(invalid(
+                "refusing to delete externally modified K3s configuration",
+            ));
+        }
     }
     match fs::remove_file(path) {
         Ok(()) => {}
@@ -410,78 +282,19 @@ fn release_configuration(path: &Path, revision: &str) -> Result<(), KubernetesPr
     Ok(())
 }
 
-fn configuration_observation<'a>(
-    observation_schema: &'a str,
-    desired: &'a K3sConfiguration,
-    path: &str,
-    content: &[u8],
-    current: bool,
-) -> K3sConfigurationObservation<'a> {
-    K3sConfigurationObservation {
-        schema: observation_schema,
-        expected: desired,
-        state: if current { "current" } else { "absent" },
-        path: current.then(|| path.to_owned()),
-        content_digest: current.then(|| Sha256Digest::of_bytes(content)),
-    }
-}
-
-fn configuration_result(
-    invocation: &Invocation,
-    desired: &K3sConfiguration,
-    path: &str,
-    content: &[u8],
-    current: bool,
-    disposition: InvocationDisposition,
-    retained: bool,
-) -> Result<InvocationResult, KubernetesProviderError> {
-    let observation_schema = invocation
-        .contract
-        .observation_discriminator()
-        .ok_or_else(|| invalid("selected K3s method has no exact observation discriminator"))?;
-    let mut outputs = BTreeMap::new();
-    if retained {
-        outputs.insert(
-            LocalKey::new("retained-resource").map_err(|error| invalid(error.to_string()))?,
-            ability_value(serde_json::to_value(&invocation.request.target)?)?,
-        );
-    }
-    Ok(InvocationResult {
-        schema: RESULT_SCHEMA.into(),
-        disposition,
-        evidence: ability_value(serde_json::to_value(configuration_observation(
-            observation_schema,
-            desired,
-            path,
-            content,
-            current,
-        ))?)?,
-        outputs,
-        native_context_digest: invocation.request.native_context_digest,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn handler_accepts_only_configuration_methods_with_exact_semantics() {
-        let apply = MethodSemantics::ordinary(AccessMode::ExclusiveWrite);
-
-        assert!(validate_configuration_method("apply", &apply).is_ok());
-        assert!(validate_configuration_method("unknown", &apply).is_err());
-    }
-
-    #[test]
     fn base_configuration_needs_no_empty_integration_map() {
         let value = serde_json::json!({
+            "path":"/run/aos/k3s/config.json",
             "base": {
                 "flannel_backend": "vxlan",
                 "disable_network_policy": false,
                 "disable_kube_proxy": false,
-                "node_labels": {},
-                "prerequisites": []
+                "node_labels": {}
             }
         });
         let desired: K3sConfiguration = serde_json::from_value(value.clone())
@@ -497,12 +310,12 @@ mod tests {
     #[test]
     fn configuration_composes_flags_and_labels_canonically() {
         let desired = K3sConfiguration {
+            path: "/run/aos/k3s/config.json".into(),
             base: K3sConfigurationBase {
                 flannel_backend: "vxlan".into(),
                 disable_network_policy: false,
                 disable_kube_proxy: false,
                 node_labels: BTreeMap::from([("region".into(), "west".into())]),
-                prerequisites: vec![],
             },
             integrations: BTreeMap::from([(
                 "cilium".into(),
@@ -511,7 +324,6 @@ mod tests {
                     disable_network_policy: true,
                     disable_kube_proxy: true,
                     node_labels: BTreeMap::from([("storage".into(), "longhorn".into())]),
-                    prerequisites: vec![],
                 },
             )]),
         };
@@ -524,5 +336,48 @@ mod tests {
         assert_eq!(rendered["disable-kube-proxy"], true);
         assert_eq!(rendered["node-label"][0], "region=west");
         assert_eq!(rendered["node-label"][1], "storage=longhorn");
+    }
+
+    #[test]
+    fn interrupted_configuration_intent_can_finish_and_rejects_other_revisions() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let content = br#"{"flannel-backend":"vxlan"}"#;
+        let marker = serde_json::json!({
+            "schema":"aos.k3s.configuration-state/v1",
+            "revision":"revision-one",
+            "content_digest":Sha256Digest::of_bytes(content),
+        });
+        atomic_write(
+            &configuration_marker(&path),
+            &serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+
+        assert!(configuration_intent_matches(&path, content, "revision-one").unwrap());
+        assert!(!configuration_intent_matches(&path, content, "revision-two").unwrap());
+        assert!(!configuration_matches(&path, content, "revision-one").unwrap());
+
+        materialize_configuration(&path, content, "revision-one").unwrap();
+        assert!(configuration_matches(&path, content, "revision-one").unwrap());
+    }
+
+    #[test]
+    fn release_preserves_foreign_edits_and_removes_owned_configuration_idempotently() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let content = br#"{"owned":true}"#;
+        materialize_configuration(&path, content, "revision-one").unwrap();
+
+        assert!(release_configuration(&path, "revision-two").is_err());
+        fs::write(&path, br#"{"foreign":true}"#).unwrap();
+        assert!(release_configuration(&path, "revision-one").is_err());
+        assert!(path.exists());
+
+        fs::write(&path, content).unwrap();
+        release_configuration(&path, "revision-one").unwrap();
+        release_configuration(&path, "revision-one").unwrap();
+        assert!(!path.exists());
+        assert!(!configuration_marker(&path).exists());
     }
 }

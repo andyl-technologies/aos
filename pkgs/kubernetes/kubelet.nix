@@ -3,11 +3,25 @@
   lib,
   mkGoPackage,
   kubeSource,
+  service-management,
+  kmod,
+  nftables,
 }:
 mkGoPackage {
   platformSupport = {
-    build = [{abi = ["gnu"]; os = ["linux"];}];
-    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+    build = [
+      {
+        abi = ["gnu"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["linux"];
+      }
+    ];
     target = [];
     role = "public-package";
   };
@@ -68,7 +82,8 @@ mkGoPackage {
   goOutput = "kubelet";
   ldflags = "-s -w -X k8s.io/component-base/version.gitVersion=v${kubeSource.version}";
   doCheck = false;
-  abilities = ./_kubelet-config;
+  module = ./_kubelet-config;
+  moduleDeps = [service-management kmod nftables];
 
   checks = {
     testing,
