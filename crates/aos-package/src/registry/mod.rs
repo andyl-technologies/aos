@@ -581,11 +581,23 @@ impl RegistrySet {
 
     /// Returns all versions of a package across registries (for `apm policy`).
     ///
-    /// Returns entries from all registries, ordered by priority (highest first).
+    /// Returns entries by registry priority, then newest package version first.
+    /// The leading candidate preserves [`Self::resolve`]'s existing selection.
     pub fn all_versions(&self, name: &str) -> Vec<(&Registry, &PackageMeta)> {
         self.registries
             .iter()
-            .filter_map(|reg| reg.get(name).map(|meta| (reg, meta)))
+            .flat_map(|reg| {
+                let mut versions = reg
+                    .package_versions()
+                    .enumerate()
+                    .filter(|(_, meta)| meta.name == name)
+                    .collect::<Vec<_>>();
+                versions.sort_by(|(left_index, left), (right_index, right)| {
+                    parse::compare_registry_versions(&right.version, &left.version)
+                        .then_with(|| right_index.cmp(left_index))
+                });
+                versions.into_iter().map(move |(_, meta)| (reg, meta))
+            })
             .collect()
     }
 
@@ -1043,6 +1055,23 @@ pub(crate) mod tests {
         assert_eq!(versions.len(), 2);
         assert_eq!(versions[0].0.config.name, "aos-core");
         assert_eq!(versions[1].0.config.name, "aos-extra");
+    }
+
+    #[test]
+    fn registry_set_all_versions_includes_historical_candidates() {
+        let tmp = TempDir::new().unwrap();
+        let registry = make_registry(&tmp, "aos-core", 500, &[("tool", MULTI_VERSION_TOML)]);
+        let lower = MULTI_VERSION_TOML.replace("2.0.0", "3.0.0");
+        let lower = make_registry(&tmp, "aos-extra", 400, &[("tool", &lower)]);
+        let set = RegistrySet::new(vec![registry, lower]);
+
+        let versions = set
+            .all_versions("tool")
+            .into_iter()
+            .map(|(_, package)| package.version.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(versions, ["2.0.0", "1.0.0", "3.0.0", "1.0.0"]);
+        assert_eq!(versions[0], set.resolve("tool").unwrap().1.version);
     }
 
     #[test]

@@ -1,5 +1,11 @@
 //! Native evaluation and transaction publication for signed registry installs.
 
+mod module_upgrade;
+
+#[cfg(test)]
+use module_upgrade::module_selection_changed;
+pub(crate) use module_upgrade::{prepare_module_upgrade, realize_module_upgrades};
+
 use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 
@@ -28,6 +34,29 @@ pub(crate) async fn realize_modules(
     download_only: bool,
     temporary_roots: &mut Option<crate::store::temp_roots::TemporaryRoots>,
 ) -> Result<Vec<(String, PackageMeta)>> {
+    discover_modules(
+        config,
+        registries,
+        closures,
+        &[],
+        &[],
+        printer,
+        download_only,
+        temporary_roots,
+    )
+    .await
+}
+
+async fn discover_modules(
+    config: &ApmConfig,
+    registries: &RegistrySet,
+    closures: &[ResolvedClosure],
+    original_envelopes: &[crate::deployment::model::Envelope],
+    retained_artifacts: &[crate::deployment::model::Artifact],
+    printer: &aos_core::output::Printer,
+    download_only: bool,
+    temporary_roots: &mut Option<crate::store::temp_roots::TemporaryRoots>,
+) -> Result<Vec<(String, PackageMeta)>> {
     let mut pending = closures
         .iter()
         .flat_map(|closure| {
@@ -38,54 +67,99 @@ pub(crate) async fn realize_modules(
             })
         })
         .collect::<Vec<_>>();
+    let required = pending
+        .iter()
+        .map(|(_, meta)| {
+            (
+                meta.name.clone(),
+                meta.version.clone(),
+                meta.store_path.clone(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let mut unavailable = BTreeSet::new();
     let mut seen = BTreeSet::new();
     let mut discovered = Vec::new();
-    while let Some((registry_name, meta)) = pending.pop() {
-        if !seen.insert((
-            meta.name.clone(),
-            meta.version.clone(),
-            meta.store_path.clone(),
-        )) {
-            continue;
-        }
-        ensure!(
-            seen.len() <= 16_384,
-            "native module companion closure exceeds its bound"
-        );
-        let artifact = meta
-            .deployment
-            .as_ref()
-            .context("native companion has no envelope")?;
-        let envelope = if download_only {
-            let results = realize_companions(
-                config,
-                registries,
-                &registry_name,
-                &meta,
-                printer,
-                true,
-                temporary_roots,
-            )
-            .await?;
-            cached_envelope(artifact, &meta, &results)?
+    let mut original_envelopes = original_envelopes.to_vec();
+    while !pending.is_empty() || !original_envelopes.is_empty() {
+        let (envelope, requester_key, required_requester) = if let Some(envelope) =
+            original_envelopes.pop()
+        {
+            let key = (
+                envelope.package.name.clone(),
+                envelope.package.version.clone(),
+                envelope.package.canonical_catalog().path,
+            );
+            (envelope, key, true)
         } else {
-            crate::native_artifact::read_envelope(
-                artifact,
-                &meta.name,
-                &meta.version,
-                &meta.platform,
-            )?
+            let (registry_name, meta) = pending.pop().context("discovery queue is empty")?;
+            if !seen.insert((
+                meta.name.clone(),
+                meta.version.clone(),
+                meta.store_path.clone(),
+            )) {
+                continue;
+            }
+            ensure!(
+                seen.len() <= 16_384,
+                "native module companion closure exceeds its bound"
+            );
+            let artifact = meta
+                .deployment
+                .as_ref()
+                .context("native companion has no envelope")?;
+            let envelope = if download_only {
+                let results = realize_companions(
+                    config,
+                    registries,
+                    &registry_name,
+                    &meta,
+                    printer,
+                    true,
+                    temporary_roots,
+                )
+                .await?;
+                cached_envelope(artifact, &meta, &results)?
+            } else {
+                crate::native_artifact::read_envelope(
+                    artifact,
+                    &meta.name,
+                    &meta.version,
+                    &meta.platform,
+                )?
+            };
+            envelope.verify_catalog_resolution(&meta.ability_exports, &meta.module_dependencies)?;
+            let requester_key = (
+                meta.name.clone(),
+                meta.version.clone(),
+                meta.store_path.clone(),
+            );
+            let required_requester = required.contains(&requester_key);
+            (envelope, requester_key, required_requester)
         };
-        for source in envelope.module_dependencies {
+        for dependency in envelope.module_dependencies {
+            let source = dependency.seed();
             let candidates = registries
                 .all_versions(&source.name)
                 .into_iter()
-                .filter(|(_, meta)| meta.version == source.version && meta.deployment.is_some())
+                .filter(|(registry, meta)| {
+                    registry.release_trust().is_some()
+                        && registry.store_map().is_present()
+                        && (dependency.is_ranged() || meta.version == source.version)
+                        && meta.deployment.is_some()
+                })
                 .map(|(registry, meta)| (registry.config.name.clone(), meta.clone()))
                 .collect::<Vec<_>>();
             let mut selected = None;
             let mut selected_envelope = None;
             for (registry_name, meta) in candidates {
+                if dependency.is_ranged() {
+                    let mut catalog_source = source.clone();
+                    catalog_source.version = meta.version.clone();
+                    if !dependency.accepts(&catalog_source, &meta.version, &meta.ability_exports)? {
+                        continue;
+                    }
+                }
                 let results = realize_companions(
                     config,
                     registries,
@@ -110,7 +184,22 @@ pub(crate) async fn realize_modules(
                         &meta.platform,
                     )?
                 };
-                if candidate.module.as_ref() == Some(&source) {
+                candidate
+                    .verify_catalog_resolution(&meta.ability_exports, &meta.module_dependencies)?;
+                let compatible = match &candidate.module {
+                    Some(module) => dependency.accepts(
+                        module,
+                        &candidate.package.version,
+                        &candidate.ability_exports,
+                    )?,
+                    None => false,
+                };
+                if compatible {
+                    if dependency.is_ranged() {
+                        discovered.push((registry_name.clone(), meta.clone()));
+                        pending.push((registry_name, meta));
+                        continue;
+                    }
                     if let Some(previous) = &selected_envelope {
                         ensure!(
                             crate::native_registry::same_package_context(previous, &candidate),
@@ -122,16 +211,24 @@ pub(crate) async fn realize_modules(
                     }
                 }
             }
-            let selected = selected.with_context(|| {
-                format!(
-                    "pinned native module {}@{} is unavailable",
-                    source.name, source.version
-                )
-            })?;
+            if dependency.is_ranged() {
+                // An empty alternative domain is a solver conflict, not a failure
+                // of discovery: another parent release can still be viable.
+                continue;
+            }
+            let Some(selected) = selected else {
+                continue;
+            };
             discovered.push(selected.clone());
             pending.push(selected);
         }
         for dependency in envelope.runtime_dependencies.values() {
+            if retained_artifacts
+                .iter()
+                .any(|artifact| selected_artifact_matches(artifact, dependency))
+            {
+                continue;
+            }
             if seen.iter().any(|(name, version, path)| {
                 name == &dependency.name
                     && version == &dependency.version
@@ -142,7 +239,12 @@ pub(crate) async fn realize_modules(
             let candidates = registries
                 .all_versions(&dependency.name)
                 .into_iter()
-                .filter(|(_, meta)| meta.version == dependency.version && meta.deployment.is_some())
+                .filter(|(registry, meta)| {
+                    registry.release_trust().is_some()
+                        && registry.store_map().is_present()
+                        && meta.version == dependency.version
+                        && meta.deployment.is_some()
+                })
                 .map(|(registry, meta)| (registry.config.name.clone(), meta.clone()))
                 .collect::<Vec<_>>();
             let mut selected = None;
@@ -184,16 +286,27 @@ pub(crate) async fn realize_modules(
                     }
                 }
             }
-            let selected = selected.with_context(|| {
-                format!(
-                    "native runtime dependency {}@{} lacks an authenticated exact envelope",
-                    dependency.name, dependency.version
-                )
-            })?;
+            let Some(selected) = selected else {
+                ensure!(
+                    !required_requester,
+                    "required native runtime dependency {}@{} lacks an authenticated exact envelope",
+                    dependency.name,
+                    dependency.version
+                );
+                unavailable.insert(requester_key.clone());
+                continue;
+            };
             discovered.push(selected.clone());
             pending.push(selected);
         }
     }
+    discovered.retain(|(_, meta)| {
+        !unavailable.contains(&(
+            meta.name.clone(),
+            meta.version.clone(),
+            meta.store_path.clone(),
+        ))
+    });
     Ok(discovered)
 }
 
@@ -327,6 +440,7 @@ fn cached_envelope(
         "native envelope document differs from authenticated metadata"
     );
     let envelope = crate::deployment::model::Envelope::decode(document)?;
+    envelope.verify_catalog_resolution(&package.ability_exports, &package.module_dependencies)?;
     ensure!(
         envelope.package.name == package.name
             && envelope.package.version == package.version
@@ -373,13 +487,21 @@ fn selected_artifact_matches(
     expected == *selected
 }
 
+#[cfg(test)]
 fn resolve_scope_packages(
     system: &str,
     modules: Vec<crate::deployment::model::Envelope>,
     payloads: Vec<crate::deployment::model::Artifact>,
     resolver: &mut impl crate::deployment::evaluation::PackageResolver,
 ) -> Result<crate::deployment::model::ResolvedPackages> {
-    let mut resolved = resolve_packages(system, modules, resolver)?;
+    let resolved = resolve_packages(system, modules, resolver)?;
+    select_scope_payloads(resolved, payloads)
+}
+
+fn select_scope_payloads(
+    mut resolved: crate::deployment::model::ResolvedPackages,
+    payloads: Vec<crate::deployment::model::Artifact>,
+) -> Result<crate::deployment::model::ResolvedPackages> {
     // Module imports supply availability catalogs. Installation is determined
     // independently by the caller's selected payloads, including aliases.
     resolved.artifacts.clear();
@@ -450,6 +572,7 @@ pub(crate) fn prepare(
     closures: &[ResolvedClosure],
     realized_modules: &[(String, PackageMeta)],
     obsolete: &HashSet<String>,
+    refresh_names: Option<&BTreeSet<String>>,
 ) -> Result<Prepared> {
     prepare_with_inputs(
         config,
@@ -459,6 +582,7 @@ pub(crate) fn prepare(
         closures,
         realized_modules,
         obsolete,
+        refresh_names,
         None,
     )
 }
@@ -471,6 +595,7 @@ fn prepare_with_inputs(
     closures: &[ResolvedClosure],
     realized_modules: &[(String, PackageMeta)],
     obsolete: &HashSet<String>,
+    refresh_names: Option<&BTreeSet<String>>,
     runtime: Option<&crate::runtime_modules::RuntimeModuleSnapshot>,
 ) -> Result<Prepared> {
     for meta in closures.iter().flat_map(|closure| &closure.closure) {
@@ -559,6 +684,17 @@ fn prepare_with_inputs(
     if let Some((descriptor, desired)) = &retained_context {
         resolver.retain_modules(descriptor, desired)?;
     }
+    let mut original_packages = Vec::new();
+    for meta in installed {
+        let envelope = resolver.installed(meta)?;
+        if retained_modules.contains(&envelope.package.name)
+            || (envelope.module.is_none()
+                && !envelope.module_dependencies.is_empty()
+                && meta.apm.as_ref().is_some_and(|package| package.explicit))
+        {
+            original_packages.push(envelope);
+        }
+    }
     let mut roots = Vec::new();
     let mut payloads = Vec::new();
     let mut selected = BTreeSet::new();
@@ -579,23 +715,46 @@ fn prepare_with_inputs(
             && selected.insert(meta.store_path.clone())
         {
             let envelope = resolver.installed(meta)?;
-            if retained_modules.contains(&envelope.package.name) {
+            if (retained_modules.contains(&envelope.package.name)
+                && meta.apm.as_ref().is_some_and(|meta| meta.explicit))
+                || (envelope.module.is_none()
+                    && !envelope.module_dependencies.is_empty()
+                    && meta.apm.as_ref().is_some_and(|meta| meta.explicit))
+            {
                 roots.push(envelope.clone());
             }
             select_payload(&mut payloads, &envelope, &meta.store_path)?;
         }
+    }
+    for envelope in resolver.retained_roots(&original_packages)? {
+        if roots
+            .iter()
+            .any(|selected| selected.package.name == envelope.package.name)
+            || envelope
+                .package
+                .outputs
+                .values()
+                .any(|path| obsolete.contains(store_path_hash(path)))
+        {
+            continue;
+        }
+        roots.push(envelope);
     }
     for (registry, meta) in realized_modules {
         // Companions populate the authenticated resolver and retention catalog.
         // Runtime payload metadata does not make its optional module a root.
         resolver.package(registry, meta)?;
     }
-    let packages = resolve_scope_packages(
+    let solver_cancellation = crate::cancellation::AbilityCancellationGuard::install()?;
+    let (packages, resolution_lock) = resolver.resolve_scope(
         &crate::platform::native_platform(),
         roots,
-        payloads,
-        &mut resolver,
+        &payloads,
+        !closures.is_empty() || refresh_names.is_some(),
+        refresh_names,
+        solver_cancellation.token(),
     )?;
+    let packages = select_scope_payloads(packages, payloads)?;
     let additional = packages
         .artifacts
         .iter()
@@ -620,6 +779,25 @@ fn prepare_with_inputs(
         .chain(runtime.map(|snapshot| snapshot.store_path.clone()))
         .collect();
     let module_envelopes = resolver.module_envelopes(&packages)?;
+    let chosen_companions = module_envelopes
+        .values()
+        .chain(
+            resolution_lock
+                .iter()
+                .flat_map(|lock| lock.requesters.values()),
+        )
+        .collect::<BTreeSet<_>>();
+    super::verify_package_provenance_entries_from_cache_with_policy(
+        config,
+        realized_modules
+            .iter()
+            .filter(|(_, meta)| {
+                meta.deployment.as_ref().is_some_and(|artifact| {
+                    chosen_companions.contains(&PathBuf::from(&artifact.store_path))
+                })
+            })
+            .map(|(registry, meta)| (registry.as_str(), meta)),
+    )?;
     let mut admission = resolver.into_admission();
     let (library_root, _) =
         crate::deployment::nix::store_root_and_suffix(&evaluation_inputs.library)?;
@@ -636,6 +814,7 @@ fn prepare_with_inputs(
         scope: scope.clone(),
         packages: packages.clone(),
         module_envelopes,
+        resolution_lock,
         configuration: evaluation_inputs.configuration.clone(),
         runtime_configuration: evaluation_inputs.runtime_configuration.clone(),
         supplemental_inputs: evaluation_inputs.supplemental_inputs.clone(),
@@ -671,6 +850,10 @@ fn prepare_with_inputs(
             .context("evaluation descriptor is not UTF-8")?,
     )?;
     let evaluation = Evaluation {
+        module_requirements: descriptor
+            .resolution_lock
+            .as_ref()
+            .map_or_else(Vec::new, |lock| lock.module_requirements()),
         nix_store: executable.clone(),
         library: descriptor.library,
         scope,
@@ -781,6 +964,7 @@ pub(crate) fn reconfigure_at(
         &[],
         &[],
         &HashSet::new(),
+        None,
         Some(runtime),
     )?;
     ensure!(
@@ -871,6 +1055,7 @@ pub(crate) fn append_runtime_snapshot(
         &[],
         &[],
         &HashSet::new(),
+        None,
         Some(&combined),
     )?;
     ensure!(
@@ -1002,13 +1187,13 @@ pub(crate) fn packaged_path(variable: &str) -> Result<PathBuf> {
 mod tests {
     use super::*;
     use crate::deployment::evaluation::PackageResolver;
-    use crate::deployment::model::{Artifact, Envelope, ModuleSource};
+    use crate::deployment::model::{Artifact, Envelope, ModuleDependency, ModuleSource};
     use std::collections::BTreeMap;
 
     struct NoModuleDependencies;
 
     impl PackageResolver for NoModuleDependencies {
-        fn resolve(&mut self, _: &ModuleSource) -> Result<Envelope> {
+        fn resolve(&mut self, _: &ModuleDependency) -> Result<Envelope> {
             anyhow::bail!("test package has no module dependency")
         }
     }
@@ -1032,8 +1217,153 @@ mod tests {
                 entrypoint: "module.nix".into(),
             }),
             runtime_dependencies: BTreeMap::new(),
+            ability_exports: BTreeMap::new(),
             module_dependencies: Vec::new(),
         }
+    }
+
+    #[test]
+    fn retained_runtime_catalog_matches_without_current_registry_discovery() {
+        let original = package("library", 'b');
+        let mut different_build = original.package.clone();
+        different_build.path = format!("/nix/store/{}-other-library", "c".repeat(32));
+        different_build
+            .outputs
+            .insert("out".into(), different_build.path.clone());
+        assert!(selected_artifact_matches(
+            &original.package,
+            &original.package
+        ));
+        assert!(!selected_artifact_matches(
+            &original.package,
+            &different_build
+        ));
+        let mut changed_catalog = original.package.clone();
+        changed_catalog.main_program = Some("other-tool".into());
+        assert!(!selected_artifact_matches(
+            &original.package,
+            &changed_catalog
+        ));
+    }
+
+    #[test]
+    fn equivalent_lock_order_does_not_publish_an_interface_generation() {
+        let provider = package("provider", 'b');
+        let other = package("other", 'c');
+        let application = package("application", 'a');
+        let edge = |dependency: &Envelope| crate::native_deployment::LockedEdge {
+            requester: application.package.clone(),
+            requirement: ModuleDependency::Exact(dependency.module.clone().unwrap()),
+            selected: dependency.module.clone().unwrap(),
+        };
+        let original = Some(crate::native_deployment::ResolutionLock {
+            schema: "aos.package.resolution-lock".into(),
+            edges: vec![edge(&provider), edge(&other)],
+            requesters: BTreeMap::from([(
+                application.package.path.clone(),
+                PathBuf::from(format!(
+                    "/nix/store/{}-application-envelope",
+                    "d".repeat(32)
+                )),
+            )]),
+        });
+        let mut reordered = original.clone();
+        reordered.as_mut().unwrap().edges.reverse();
+        let packages = crate::deployment::model::ResolvedPackages {
+            system: "x86_64-linux".into(),
+            modules: vec![
+                application.module_record().unwrap(),
+                provider.module_record().unwrap(),
+                other.module_record().unwrap(),
+            ],
+            artifacts: vec![application.package],
+        };
+        assert!(!module_selection_changed(&packages, &original, &packages, &reordered).unwrap());
+        reordered.as_mut().unwrap().edges[0].selected.source =
+            format!("/nix/store/{}-changed-module", "f".repeat(32));
+        assert!(module_selection_changed(&packages, &original, &packages, &reordered).unwrap());
+    }
+
+    #[test]
+    fn interface_upgrade_changes_modules_without_selecting_provider_payloads() {
+        let mut provider = package("provider", 'b');
+        provider.ability_exports.insert(
+            "storage".into(),
+            crate::deployment::model::AbilityExport {
+                version: "1.1.0".into(),
+            },
+        );
+        let mut newer = provider.clone();
+        newer.package.version = "2.0.0".into();
+        newer.package.path = format!("/nix/store/{}-provider-2", "c".repeat(32));
+        newer
+            .package
+            .outputs
+            .insert("out".into(), newer.package.path.clone());
+        let source = newer.module.as_mut().unwrap();
+        source.version = "2.0.0".into();
+        source.source = format!("/nix/store/{}-provider-2-module", "d".repeat(32));
+        newer.ability_exports.get_mut("storage").unwrap().version = "1.2.0".into();
+        let mut application = package("application", 'a');
+        application
+            .module_dependencies
+            .push(ModuleDependency::Ranged {
+                package: provider.module.clone().unwrap(),
+                abilities: BTreeMap::from([("storage".into(), "^1.0".into())]),
+                package_version: None,
+            });
+        let cancellation = aos_ability_runtime::adapter::CancellationToken::default();
+        let refreshed = BTreeSet::from(["application".to_owned()]);
+        let solution = crate::native_registry::solver::solve(
+            &[application.clone()],
+            &[newer.clone(), provider],
+            None,
+            &[],
+            Some(&refreshed),
+            &cancellation,
+        )
+        .unwrap();
+        assert_eq!(
+            solution
+                .envelopes
+                .iter()
+                .find(|envelope| envelope.package.name == "provider")
+                .unwrap()
+                .package
+                .version,
+            "2.0.0"
+        );
+        let modules = solution
+            .envelopes
+            .iter()
+            .filter_map(Envelope::module_record)
+            .collect();
+        let resolved = crate::deployment::model::ResolvedPackages {
+            system: "x86_64-linux".into(),
+            modules,
+            artifacts: vec![application.package.clone()],
+        };
+        let selected = select_scope_payloads(resolved, vec![application.package.clone()]).unwrap();
+        assert_eq!(selected.artifacts, vec![application.package]);
+        assert!(
+            !module_selection_changed(&selected, &solution.lock, &selected, &solution.lock)
+                .unwrap()
+        );
+        let mut reordered = solution.lock.clone();
+        reordered.as_mut().unwrap().edges.reverse();
+        assert!(
+            !module_selection_changed(&selected, &solution.lock, &selected, &reordered).unwrap()
+        );
+        let mut original = selected.clone();
+        original
+            .modules
+            .iter_mut()
+            .find(|module| module.name == "provider")
+            .unwrap()
+            .version = "1.0.0".into();
+        assert!(
+            module_selection_changed(&original, &solution.lock, &selected, &solution.lock).unwrap()
+        );
     }
 
     #[test]

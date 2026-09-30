@@ -350,6 +350,10 @@ pub fn rederive(record: &GenerationEvidence) -> Result<String> {
         )?;
     }
     let evaluation = crate::deployment::evaluation::Evaluation {
+        module_requirements: descriptor
+            .resolution_lock
+            .as_ref()
+            .map_or_else(Vec::new, |lock| lock.module_requirements()),
         nix_store: executable.clone(),
         library: descriptor.library,
         scope: descriptor.scope,
@@ -719,6 +723,7 @@ mod tests {
                 },
                 configuration: vec![PathBuf::from(format!("{baseline}/host.nix"))],
                 module_envelopes: Default::default(),
+                resolution_lock: None,
                 runtime_configuration: Vec::new(),
                 supplemental_inputs: Vec::new(),
             },

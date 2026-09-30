@@ -15,6 +15,11 @@ use aos_contract::{Sha256Digest, canonical};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Re-exports native declaration and dependency contracts shared with signed catalogs.
+pub use aos_registry_surface::native_dependencies::{
+    AbilityExport, ModuleDependency, ModuleRequirement, ModuleSource,
+};
+
 /// Identifies realized package outputs without reconstructing a derivation.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -31,20 +36,6 @@ pub struct Artifact {
     pub main_program: Option<String>,
 }
 
-/// Identifies a package's retained module source independently of its payload.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModuleSource {
-    /// Names the declaring package.
-    pub name: String,
-    /// Identifies the selected source version.
-    pub version: String,
-    /// Identifies the immutable source directory.
-    pub source: String,
-    /// Names its relative module entry point.
-    pub entrypoint: String,
-}
-
 /// Publishes a package's artifacts and explicit configuration dependencies.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -57,13 +48,32 @@ pub struct Envelope {
     pub package: Artifact,
     /// Supplies an optional deployment module.
     pub module: Option<ModuleSource>,
+    /// Exposes only independently versioned abilities owned by this package's module.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ability_exports: BTreeMap<String, AbilityExport>,
     /// Exposes exact runtime artifacts under package-owned local binding names.
     pub runtime_dependencies: BTreeMap<String, Artifact>,
     /// Names the module dependency closure's direct edges.
-    pub module_dependencies: Vec<ModuleSource>,
+    pub module_dependencies: Vec<ModuleDependency>,
 }
 
 impl Envelope {
+    /// Checks that a signed discovery catalog projects this exact envelope's declarations.
+    ///
+    /// # Errors
+    /// Returns an error when exports or dependency requests differ from authenticated bytes.
+    pub fn verify_catalog_resolution(
+        &self,
+        exports: &BTreeMap<String, AbilityExport>,
+        dependencies: &[ModuleDependency],
+    ) -> Result<()> {
+        ensure!(
+            &self.ability_exports == exports && self.module_dependencies == dependencies,
+            "native resolution catalog differs from its authenticated envelope"
+        );
+        Ok(())
+    }
+
     /// Decodes a bounded envelope; publication authenticity remains the resolver's responsibility.
     ///
     /// # Errors
@@ -90,11 +100,14 @@ impl Envelope {
             artifact.check()?;
             ensure!(!name.is_empty(), "runtime dependency binding is empty");
         }
-        let mut names = BTreeSet::new();
-        for module in &envelope.module_dependencies {
-            module.check()?;
-            ensure!(names.insert(&module.name), "duplicate module dependency");
-        }
+        ensure!(
+            envelope.module.is_some() || envelope.ability_exports.is_empty(),
+            "ability exports require the owning package module"
+        );
+        aos_registry_surface::native_dependencies::check_resolution_metadata(
+            &envelope.ability_exports,
+            &envelope.module_dependencies,
+        )?;
         Ok(envelope)
     }
 
@@ -106,6 +119,12 @@ impl Envelope {
             version: module.version.clone(),
             config_root: module.source.clone(),
             module: format!("{}/{}", module.source, module.entrypoint),
+            ability_exports: self.ability_exports.clone(),
+            module_requirements: self
+                .module_dependencies
+                .iter()
+                .filter_map(ModuleDependency::requirement)
+                .collect(),
             artifacts: ArtifactContext {
                 package: self.package.canonical_catalog(),
                 dependencies: self.runtime_dependencies.clone(),
@@ -159,17 +178,6 @@ impl Artifact {
     }
 }
 
-impl ModuleSource {
-    fn check(&self) -> Result<()> {
-        store_root(&self.source)?;
-        ensure!(
-            !self.name.is_empty() && !self.version.is_empty() && self.entrypoint == "module.nix",
-            "invalid package module locator"
-        );
-        Ok(())
-    }
-}
-
 /// Supplies only the artifact values visible to one package module.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -192,6 +200,12 @@ pub struct PackageModule {
     pub config_root: String,
     /// Names its canonical module entry point.
     pub module: String,
+    /// Retains the owned versions authenticated by this module's exact envelope.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ability_exports: BTreeMap<String, AbilityExport>,
+    /// Retains original ranged dependency requirements after exact resolution.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub module_requirements: Vec<ModuleRequirement>,
     /// Supplies realized artifact references to module arguments.
     pub artifacts: ArtifactContext,
 }
@@ -268,6 +282,18 @@ impl Deployment {
                 for (name, artifact) in &record.artifacts.dependencies {
                     artifact.check()?;
                     ensure!(!name.is_empty(), "runtime dependency binding is empty");
+                }
+                aos_registry_surface::native_dependencies::check_resolution_metadata(
+                    &record.ability_exports,
+                    &[],
+                )?;
+                let mut required_packages = BTreeSet::new();
+                for requirement in &record.module_requirements {
+                    requirement.check()?;
+                    ensure!(
+                        required_packages.insert(&requirement.package),
+                        "duplicate module requirement"
+                    );
                 }
                 ensure!(
                     indexed
@@ -419,4 +445,63 @@ fn store_root(path: &str) -> Result<()> {
         "artifact must identify a store root"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn document() -> Value {
+        let payload = "/nix/store/00000000000000000000000000000000-example";
+        json!({"schema":"aos.package.deployment","system":"x86_64-linux",
+            "package":{"name":"example","version":"7","path":payload,
+                "outputs":{"out":payload},"mainProgram":null},
+            "module":{"name":"example","version":"7",
+                "source":"/nix/store/11111111111111111111111111111111-example-source","entrypoint":"module.nix"},
+            "abilityExports":{"filesystem":{"version":"1.2.3"}},
+            "runtimeDependencies":{},"moduleDependencies":[]})
+    }
+
+    #[test]
+    fn exports_require_the_owning_module_and_match_signed_discovery_metadata() {
+        let mut value = document();
+        let envelope = Envelope::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
+        envelope
+            .verify_catalog_resolution(&envelope.ability_exports, &[])
+            .unwrap();
+        assert!(
+            envelope
+                .verify_catalog_resolution(&BTreeMap::new(), &[])
+                .is_err()
+        );
+        assert_eq!(
+            envelope.module_record().unwrap().ability_exports,
+            envelope.ability_exports
+        );
+
+        value["module"] = Value::Null;
+        assert!(Envelope::decode(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+
+    #[test]
+    fn ranged_requests_survive_exact_runtime_record_projection() {
+        let mut value = document();
+        value["moduleDependencies"] = json!([{"package":{"name":"interfaces","version":"2",
+            "source":"/nix/store/22222222222222222222222222222222-interfaces","entrypoint":"module.nix"},
+            "abilities":{"filesystem":"^1.2"}}]);
+        let envelope = Envelope::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let module = envelope.module_record().unwrap();
+
+        assert_eq!(module.module_requirements[0].package, "interfaces");
+        assert_eq!(
+            module.module_requirements[0].abilities["filesystem"],
+            "^1.2"
+        );
+        assert!(
+            envelope
+                .verify_catalog_resolution(&envelope.ability_exports, &[])
+                .is_err()
+        );
+    }
 }

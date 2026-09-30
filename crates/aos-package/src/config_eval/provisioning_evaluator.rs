@@ -140,6 +140,10 @@ pub(crate) fn evaluate(
         library: descriptor.library,
         scope: descriptor.scope,
         packages: descriptor.packages,
+        module_requirements: descriptor
+            .resolution_lock
+            .as_ref()
+            .map_or_else(Vec::new, |lock| lock.module_requirements()),
         configuration,
         evaluation_input: Some(parameters.evaluation_context.clone()),
         retained_inputs,
@@ -261,6 +265,7 @@ mod tests {
             runtime_configuration: vec![PathBuf::from(source).join("host.nix")],
             supplemental_inputs: vec![proof.into()],
             module_envelopes: Default::default(),
+            resolution_lock: None,
             packages: crate::deployment::model::ResolvedPackages {
                 system: "x86_64-linux".into(),
                 modules: vec![],

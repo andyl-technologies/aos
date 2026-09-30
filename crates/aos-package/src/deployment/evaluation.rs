@@ -12,7 +12,7 @@ use aos_ability_plan::module_graph::GRAPH_LIMITS;
 use aos_ability_runtime::adapter::CancellationToken;
 use serde_json::Value;
 
-use super::model::{Deployment, Envelope, ModuleSource, ResolvedPackages};
+use super::model::{Deployment, Envelope, ModuleDependency, ResolvedPackages};
 use super::nix::{nix_string, pure_eval_command_in, store_root_and_suffix};
 use super::process::{FixedBudgetControl, run_bounded_with_input_limit};
 
@@ -23,7 +23,7 @@ pub trait PackageResolver {
     /// # Errors
     /// Returns an error for unavailable artifacts, identity mismatch, or failed
     /// registry authentication. Implementations must not silently select another version.
-    fn resolve(&mut self, module: &ModuleSource) -> Result<Envelope>;
+    fn resolve(&mut self, module: &ModuleDependency) -> Result<Envelope>;
 }
 
 /// Closes explicit module dependencies before entering the Nix fixed point.
@@ -67,9 +67,13 @@ pub fn resolve_packages(
         );
         for dependency in &package.module_dependencies {
             let resolved = resolver.resolve(dependency)?;
+            let source = resolved
+                .module
+                .as_ref()
+                .context("resolved dependency has no module")?;
             ensure!(
-                resolved.module.as_ref() == Some(dependency),
-                "resolved module differs from its pinned source"
+                dependency.accepts(source, &resolved.package.version, &resolved.ability_exports)?,
+                "resolved module does not satisfy its original dependency"
             );
             pending.push(resolved);
         }
@@ -95,6 +99,9 @@ pub struct Evaluation {
     pub scope: Vec<String>,
     /// Contains the already-resolved package module dependency closure.
     pub packages: ResolvedPackages,
+    /// Projects ranged dependencies from admitted locks, including moduleless requesters.
+    /// Package module records supply their own declarations during evaluation.
+    pub module_requirements: Vec<aos_doc_model::runtime::ModuleRequirement>,
     /// Lists immutable operator module files in their intended merge order.
     pub configuration: Vec<PathBuf>,
     /// Retains immutable envelope, documentation, and other caller-admitted artifacts.
@@ -138,6 +145,7 @@ impl Evaluation {
         let scope = nix_string(&serde_json::to_string(&self.scope)?);
         let packages = nix_string(&serde_json::to_string(&self.packages.modules)?);
         let artifacts = nix_string(&serde_json::to_string(&self.packages.artifacts)?);
+        let requirements = nix_string(&serde_json::to_string(&self.module_requirements)?);
         let system = nix_string(&self.packages.system);
         let inputs = nix_string(&serde_json::to_string(&self.inputs()?)?);
         let evaluation_input = self
@@ -158,6 +166,7 @@ impl Evaluation {
                evaluationInput = {evaluation_input};\n\
                packageModules = builtins.fromJSON {packages};\n\
                packageArtifacts = builtins.fromJSON {artifacts};\n\
+               moduleRequirements = builtins.fromJSON {requirements};\n\
                packageImportRoots = {{ {sources} }};\n\
                operatorModules = [ {configuration} ];\n\
              }}; in {output}\n"
