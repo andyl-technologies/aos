@@ -4,10 +4,13 @@
 //! selected target is evaluated independently, so a target-specific override
 //! cannot send an image's package manager to a different registry.
 //!
-//! When the staging surface is a Hub deployment, the baked Hub origin must be
-//! that deployment's origin: the staging surface is the first deployment to
-//! receive and serve the signed images. A static staging surface has no Hub
-//! control origin, so only the registry binding applies.
+//! The baked Hub origin binds to the surface consumers will install from.
+//! A plan with any production destination ships the same signed bytes to
+//! production, so its images must bake the production Hub; staging exercises
+//! them with an explicit cache override. A staging-only plan (every
+//! destination on the staging surface) bakes the staging Hub instead, which
+//! is what the `aos-testing-staging` variant provides. A static surface has
+//! no Hub control origin, so only the registry binding applies.
 
 use anyhow::{Context as _, Result, bail};
 use aos_core::nix::NixRunner;
@@ -26,10 +29,19 @@ pub(super) fn require_plan(nix: &NixRunner, plan: &ReleasePlan) -> Result<()> {
         return Ok(());
     }
     super::plan::require_planned_source(nix.root(), &plan.source)?;
-    let staging_hub = plan
+    let consumer_role = if plan
+        .destinations
+        .iter()
+        .any(|destination| destination.surface == SurfaceRole::Production)
+    {
+        SurfaceRole::Production
+    } else {
+        SurfaceRole::Staging
+    };
+    let consumer_hub = plan
         .surfaces
         .iter()
-        .find(|surface| surface.role == SurfaceRole::Staging && surface.kind == SurfaceKind::Hub);
+        .find(|surface| surface.role == consumer_role && surface.kind == SurfaceKind::Hub);
 
     for image in &plan.images {
         if image.system_variant.is_empty()
@@ -54,8 +66,8 @@ pub(super) fn require_plan(nix: &NixRunner, plan: &ReleasePlan) -> Result<()> {
                     image.system_variant, cell.platform
                 )
             })?;
-            if let Some(staging) = staging_hub {
-                profile.require_hub(&staging.origin).with_context(|| {
+            if let Some(hub) = consumer_hub {
+                profile.require_hub(&hub.origin).with_context(|| {
                     format!(
                         "release profile Hub mismatch for {} on {}",
                         image.system_variant, cell.platform
