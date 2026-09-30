@@ -14,11 +14,9 @@ use aos_image_finalizer::pipeline::finalize_image_set;
 use aos_image_finalizer::request::{ImageRequestAuthorizer, ImageSigningIntent};
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
-use aos_release::plan::ReleasePlanV1;
+use aos_release::plan::ReleasePlan;
 use aos_release::platform::MatrixCell;
-use aos_release::signing::{
-    SIGNING_REQUEST_DOMAIN, SignerRequirement, SignerRole, SigningRequestV1,
-};
+use aos_release::signing::{SIGNING_REQUEST_DOMAIN, SignerRequirement, SignerRole, SigningRequest};
 
 use crate::cli::ReleaseFinalizeImageArgs;
 
@@ -33,7 +31,7 @@ pub(super) async fn run(
 ) -> Result<()> {
     let plan_bytes = capture::control_file(&args.plan, "release plan")?;
     canonical::require_canonical(&plan_bytes, "release plan")?;
-    let plan: ReleasePlanV1 = canonical::from_slice(&plan_bytes, "release plan")?;
+    let plan: ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
     plan.validate()?;
     super::artifact_profiles::require_plan(nix, &plan)?;
     let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
@@ -84,7 +82,7 @@ pub(super) async fn run(
 }
 
 fn require_planned_assembly(
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
     assembly: &UnsignedImageAssemblyV1,
     assembly_root: &Path,
 ) -> Result<()> {
@@ -146,7 +144,7 @@ fn parse_role_keys(values: &[String]) -> Result<BTreeMap<SignerRole, String>> {
 }
 
 struct PlanImageAuthorizer<'a> {
-    plan: &'a ReleasePlanV1,
+    plan: &'a ReleasePlan,
     plan_digest: Sha256Digest,
     selected_keys: BTreeMap<SignerRole, String>,
     requirements: BTreeMap<SignerRole, &'a SignerRequirement>,
@@ -155,7 +153,7 @@ struct PlanImageAuthorizer<'a> {
 
 impl<'a> PlanImageAuthorizer<'a> {
     fn new(
-        plan: &'a ReleasePlanV1,
+        plan: &'a ReleasePlan,
         plan_digest: Sha256Digest,
         selected_keys: BTreeMap<SignerRole, String>,
     ) -> Result<Self> {
@@ -207,7 +205,7 @@ impl<'a> PlanImageAuthorizer<'a> {
 }
 
 impl ImageRequestAuthorizer for PlanImageAuthorizer<'_> {
-    fn authorize(&self, intent: &ImageSigningIntent<'_>) -> Result<SigningRequestV1> {
+    fn authorize(&self, intent: &ImageSigningIntent<'_>) -> Result<SigningRequest> {
         if intent.assembly_policy_id != Self::policy_id(intent.role)? {
             bail!("unsigned assembly requests an unreviewed image signer policy");
         }
@@ -220,7 +218,7 @@ impl ImageRequestAuthorizer for PlanImageAuthorizer<'_> {
             .get(&intent.role)
             .context("image signer key was not selected")?;
         let nonce = self.fresh_nonce()?;
-        let request = SigningRequestV1 {
+        let request = SigningRequest {
             schema_version: SIGNING_REQUEST_DOMAIN.to_owned(),
             request_id: format!("image-{}", &nonce[..24]),
             nonce,

@@ -20,7 +20,13 @@
     inherit lib;
     inherit (buildPackages) mkDerivation coreutils findutils gzip jq tar;
   };
-  retainedSource = name: source:
+  sourceInputs = {
+    boot-storage = ../base/boot-storage.nix;
+    mount-esp = ../base/mount-esp.sh.in;
+    sync-esps = ../base/sync-esps.sh.in;
+    secure-boot = ../base/secure-boot.nix;
+  };
+  buildRetainedSource = name: source:
     pkgs.writeTextFile {
       name = "aos-container-source-${name}";
       text = builtins.readFile source;
@@ -29,25 +35,9 @@
   evidenceOverrides = let
     artifacts = config.aos.config.artifacts;
     version = config.aos.system.version;
-    bootStorageSource = retainedSource "boot-storage" ../base/boot-storage.nix;
-    secureBootSource = retainedSource "secure-boot" ../base/secure-boot.nix;
-    firmwareEnrollmentSource = pkgs.mkDerivation {
-      pname = "aos-container-source-firmware-enrollment";
-      version = "1";
-      src = null;
-      buildDeps = [pkgs.coreutils];
-      runtimeDeps = [];
-      propagatedDeps = [];
-      phases = [
-        {
-          name = "install";
-          script = ''
-            mkdir -p "$out/source"
-            cp ${config.aos.boot.secureBoot.enrollAuthDir}/*.auth "$out/source/"
-          '';
-        }
-      ];
-    };
+    bootStorageSource = config.aos.config.artifacts.container-source-boot-storage;
+    secureBootSource = config.aos.config.artifacts.container-source-secure-boot;
+    firmwareEnrollmentSource = config.aos.config.artifacts.container-source-firmware-enrollment;
   in
     [
       {
@@ -56,7 +46,7 @@
         pname = "aos-mount-esp";
         inherit version;
         licenses = ["Apache-2.0"];
-        sources = [bootStorageSource (retainedSource "mount-esp" ../base/mount-esp.sh.in)];
+        sources = [bootStorageSource config.aos.config.artifacts.container-source-mount-esp];
       }
       {
         output = artifacts.esp-sync;
@@ -64,7 +54,7 @@
         pname = "aos-sync-esps";
         inherit version;
         licenses = ["Apache-2.0"];
-        sources = [bootStorageSource (retainedSource "sync-esps" ../base/sync-esps.sh.in)];
+        sources = [bootStorageSource config.aos.config.artifacts.container-source-sync-esps];
       }
     ]
     ++ lib.optionals config.aos.boot.secureBoot.enable [
@@ -92,6 +82,23 @@
         sources = [secureBootSource firmwareEnrollmentSource];
       }
     ];
+  buildFirmwareEnrollmentSource = pkgs.mkDerivation {
+    pname = "aos-container-source-firmware-enrollment";
+    version = "1";
+    src = null;
+    buildDeps = [pkgs.coreutils];
+    runtimeDeps = [];
+    propagatedDeps = [];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/source"
+          cp ${config.aos.boot.secureBoot.enrollAuthDir}/*.auth "$out/source/"
+        '';
+      }
+    ];
+  };
   defaultAosDefinition =
     (import ../../containers/aos.nix {
       inherit lib pkgs evidenceOverrides;
@@ -202,6 +209,29 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    # The manifest boundary also checks OCI invariants. Retain their exact
+    # source evidence through the existing frozen artifact interface so stage
+    # two checks these values without invoking a builder.
+    aos.config._artifactSources =
+      lib.mapAttrs' (name: source: let
+        key = "container-source-${name}";
+      in
+        lib.nameValuePair key (
+          if config.aos.config.frozenArtifacts ? ${key}
+          then config.aos.config.frozenArtifacts.${key}
+          else buildRetainedSource name source
+        ))
+      sourceInputs
+      // lib.optionalAttrs (
+        config.aos.boot.secureBoot.enable
+        && config.aos.boot.secureBoot.externalFinalization.enable
+      ) {
+        container-source-firmware-enrollment =
+          if config.aos.config.frozenArtifacts ? "container-source-firmware-enrollment"
+          then config.aos.config.frozenArtifacts.container-source-firmware-enrollment
+          else buildFirmwareEnrollmentSource;
+      };
+
     aos.containers.definitions.aos = defaultAosDefinition;
 
     assertions =

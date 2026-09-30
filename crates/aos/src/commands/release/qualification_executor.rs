@@ -18,11 +18,11 @@ use aos_core::output::Printer;
 use aos_release::Sha256Digest;
 use aos_release::canonical;
 use aos_release::evidence::{
-    EvidenceRecord, GateResult, QUALIFICATION_EXECUTOR_RESPONSE_V1, QualificationExecutorRequestV1,
-    QualificationExecutorResponseV1,
+    EvidenceRecord, GateResult, QUALIFICATION_EXECUTOR_RESPONSE, QualificationExecutorRequest,
+    QualificationExecutorResponse,
 };
 use aos_release::manifest::{ManifestEnvelopeV1, ReleaseManifestV1};
-use aos_release::plan::ReleasePlanV1;
+use aos_release::plan::ReleasePlan;
 use aos_release::platform::Platform;
 use aos_release::qualification::QualificationPhase;
 use aos_release::qualification::claims::CompatibilityAssessment;
@@ -34,10 +34,14 @@ use sha2::{Digest as _, Sha256};
 
 use super::{capture, qualification_run};
 use crate::cli::{
-    ReleaseQualificationCommand, ReleaseQualificationExecuteArgs, ReleaseQualificationRespondArgs,
+    ReleaseQualificationCasesArgs, ReleaseQualificationCommand, ReleaseQualificationExecuteArgs,
+    ReleaseQualificationRespondArgs,
 };
 
-const SCENARIO_REPORT_V1: &str = "aos.release.qualification-scenario-report/v1";
+const SCENARIO_REPORT: &str = "aos.release.qualification-scenario-report/v1";
+
+/// Schema of the immutable scenario registry written by `mkQualificationExecutor`.
+const SCENARIO_REGISTRY: &str = "aos.release.qualification-scenarios/v1";
 
 /// Immutable executable selection, produced by `mkQualificationExecutor`.
 #[derive(Clone, Deserialize, Serialize)]
@@ -46,6 +50,8 @@ struct ScenarioRegistry {
     schema_version: String,
     platform: Platform,
     scenarios: BTreeMap<String, String>,
+    /// Exact-case overrides keyed by case id; they win over the
+    /// requirement-wide scenario for that case only.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     case_scenarios: BTreeMap<String, String>,
 }
@@ -85,17 +91,9 @@ struct DownloadRequestTrace {
     content_range: Option<String>,
 }
 
-pub(super) fn inspect(command: &ReleaseQualificationCommand, printer: &Printer) -> Result<()> {
-    let ReleaseQualificationCommand::Cases(args) = command else {
-        return match command {
-            ReleaseQualificationCommand::Respond(args) => respond(args),
-            ReleaseQualificationCommand::Execute(_) => {
-                bail!("qualification execution requires the asynchronous dispatcher")
-            }
-            ReleaseQualificationCommand::Cases(_) => unreachable!(),
-        };
-    };
-    let plan: ReleasePlanV1 = canonical::from_slice(
+/// Prints the cases one destination's profile selects at a hold point.
+fn cases(args: &ReleaseQualificationCasesArgs, printer: &Printer) -> Result<()> {
+    let plan: ReleasePlan = canonical::from_slice(
         &capture::control_file(&args.plan, "qualification plan")?,
         "qualification plan",
     )?;
@@ -114,7 +112,11 @@ pub(super) fn inspect(command: &ReleaseQualificationCommand, printer: &Printer) 
         "complete" => QualificationPhase::Complete,
         _ => bail!("unknown qualification phase"),
     };
-    let cases = aos_release::qualification_evidence::cases(&plan, &manifest, phase)?;
+    if let Some(destination) = &args.to {
+        aos_release::plan::parse_destination_name(destination)?;
+    }
+    let cases =
+        aos_release::qualification_evidence::cases(&plan, &manifest, args.to.as_deref(), phase)?;
     let case_digests = cases
         .iter()
         .map(|case| Ok((case.id.clone(), case.digest()?)))
@@ -123,10 +125,8 @@ pub(super) fn inspect(command: &ReleaseQualificationCommand, printer: &Printer) 
         .iter()
         .filter_map(|case| {
             case.target
-                .as_ref()?
-                .environment
                 .as_ref()
-                .map(|environment| (&case.id, environment))
+                .map(|target| (&case.id, &target.environment))
         })
         .map(|(id, environment)| {
             Ok((
@@ -137,6 +137,7 @@ pub(super) fn inspect(command: &ReleaseQualificationCommand, printer: &Printer) 
         .collect::<Result<BTreeMap<_, _>>>()?;
     let output = serde_json::json!({
         "status": "not-evaluated",
+        "destination": args.to,
         "cases": cases,
         "case_digests": case_digests,
         "environment_profile_digests": environment_profile_digests,
@@ -150,16 +151,16 @@ pub(super) fn inspect(command: &ReleaseQualificationCommand, printer: &Printer) 
 
 pub(super) async fn run(command: &ReleaseQualificationCommand, printer: &Printer) -> Result<()> {
     match command {
-        ReleaseQualificationCommand::Cases(_) => inspect(command, printer),
+        ReleaseQualificationCommand::Cases(args) => cases(args, printer),
         ReleaseQualificationCommand::Execute(args) => execute(args).await,
-        ReleaseQualificationCommand::Respond(_) => inspect(command, printer),
+        ReleaseQualificationCommand::Respond(args) => respond(args),
     }
 }
 
 fn respond(args: &ReleaseQualificationRespondArgs) -> Result<()> {
     let request_bytes = capture::control_file(&args.request, "qualification request")?;
     canonical::require_canonical(&request_bytes, "qualification request")?;
-    let request: QualificationExecutorRequestV1 =
+    let request: QualificationExecutorRequest =
         canonical::from_slice(&request_bytes, "qualification request")?;
     request.validate()?;
 
@@ -168,10 +169,7 @@ fn respond(args: &ReleaseQualificationRespondArgs) -> Result<()> {
     let registry: ScenarioRegistry = canonical::from_slice(&registry_bytes, "scenario registry")?;
     select(&registry, &request)?;
 
-    let case = request
-        .qualification_case
-        .as_ref()
-        .context("native scenario response requires a shared-contract case")?;
+    let case = &request.qualification_case;
     let report_path = match (&args.report, &args.report_root) {
         (Some(path), None) => path.clone(),
         (None, Some(root)) => root.join(format!("{}.json", case.digest()?.hex())),
@@ -194,17 +192,14 @@ fn respond(args: &ReleaseQualificationRespondArgs) -> Result<()> {
 }
 
 fn build_response(
-    request: &QualificationExecutorRequestV1,
+    request: &QualificationExecutorRequest,
     registry_bytes: &[u8],
     report_bytes: &[u8],
     report: serde_json::Value,
     fields: ScenarioReport,
     identity: &str,
-) -> Result<QualificationExecutorResponseV1> {
-    let case = request
-        .qualification_case
-        .as_ref()
-        .context("native scenario response requires a shared-contract case")?;
+) -> Result<QualificationExecutorResponse> {
+    let case = &request.qualification_case;
     validate_report_fields(request, case, &fields)?;
 
     let environment = match (&case.target, fields.environment.as_ref()) {
@@ -255,8 +250,8 @@ fn build_response(
         finished_at: fields.finished_at,
     };
     evidence.validate()?;
-    let response = QualificationExecutorResponseV1 {
-        schema_version: QUALIFICATION_EXECUTOR_RESPONSE_V1.to_owned(),
+    let response = QualificationExecutorResponse {
+        schema_version: QUALIFICATION_EXECUTOR_RESPONSE.to_owned(),
         request_digest: request.digest()?,
         evidence,
         report,
@@ -266,11 +261,11 @@ fn build_response(
 }
 
 fn validate_report_fields(
-    request: &QualificationExecutorRequestV1,
+    request: &QualificationExecutorRequest,
     case: &aos_release::qualification_evidence::QualificationCase,
     report: &ScenarioReport,
 ) -> Result<()> {
-    if report.schema_version != SCENARIO_REPORT_V1 {
+    if report.schema_version != SCENARIO_REPORT {
         bail!("unsupported qualification scenario report schema");
     }
     if report.registry != request.registry
@@ -335,13 +330,10 @@ async fn execute(args: &ReleaseQualificationExecuteArgs) -> Result<()> {
         bail!("qualification request exceeds its byte limit");
     }
     canonical::require_canonical(&input, "qualification request")?;
-    let request: QualificationExecutorRequestV1 =
+    let request: QualificationExecutorRequest =
         canonical::from_slice(&input, "qualification request")?;
     request.validate()?;
-    let case = request
-        .qualification_case
-        .as_ref()
-        .context("native scenario runner requires a shared-contract case")?;
+    let case = &request.qualification_case;
     let registry_bytes = capture::control_file(&args.scenarios, "scenario registry")?;
     let registry: ScenarioRegistry = canonical::from_slice(&registry_bytes, "scenario registry")?;
     let executable = select(&registry, &request)?;
@@ -518,12 +510,12 @@ async fn execute(args: &ReleaseQualificationExecuteArgs) -> Result<()> {
     }
 }
 
-fn resumed_artifact(request: &QualificationExecutorRequestV1) -> Result<Option<String>> {
-    let requires_resume = request.qualification_case.as_ref().is_some_and(|case| {
-        case.checks
-            .iter()
-            .any(|check| check == "anonymous-download-and-resume")
-    });
+fn resumed_artifact(request: &QualificationExecutorRequest) -> Result<Option<String>> {
+    let requires_resume = request
+        .qualification_case
+        .checks
+        .iter()
+        .any(|check| check == "anonymous-download-and-resume");
     if !requires_resume {
         return Ok(None);
     }
@@ -539,7 +531,7 @@ fn resumed_artifact(request: &QualificationExecutorRequestV1) -> Result<Option<S
 
 async fn download_object(
     client: &reqwest::Client,
-    object: &aos_release::evidence::QualificationObjectV1,
+    object: &aos_release::evidence::QualificationObject,
     path: &Path,
     resume: bool,
 ) -> Result<DownloadTrace> {
@@ -658,22 +650,14 @@ async fn write_response(
 
 fn select<'a>(
     registry: &'a ScenarioRegistry,
-    request: &QualificationExecutorRequestV1,
+    request: &QualificationExecutorRequest,
 ) -> Result<&'a str> {
-    let v1 = registry.schema_version == "aos.release.qualification-scenarios/v1";
-    let v2 = registry.schema_version == "aos.release.qualification-scenarios/v2";
-    if (!v1 && !v2)
-        || (v1 && !registry.case_scenarios.is_empty())
-        || registry.platform != request.platform
-    {
+    if registry.schema_version != SCENARIO_REGISTRY || registry.platform != request.platform {
         bail!("scenario registry does not cover this request schema/platform");
     }
-    let case_id = request
-        .qualification_case
-        .as_ref()
-        .map(|case| case.id.as_str());
-    let executable = case_id
-        .and_then(|id| registry.case_scenarios.get(id))
+    let executable = registry
+        .case_scenarios
+        .get(&request.qualification_case.id)
         .or_else(|| registry.scenarios.get(&request.policy_id))
         .context("required scenario is not implemented in this executor")?;
     if !executable.starts_with("/nix/store/") || executable.contains("/../") {
@@ -688,7 +672,7 @@ mod tests {
 
     fn package_case() -> aos_release::qualification_evidence::QualificationCase {
         aos_release::qualification_evidence::QualificationCase {
-            schema_version: Some("aos.release.qualification-case/v2".into()),
+            schema_version: aos_release::qualification_evidence::QUALIFICATION_CASE.into(),
             claim: None,
             measurements: BTreeMap::new(),
             minimum_observed_seconds: None,
@@ -708,11 +692,11 @@ mod tests {
         }
     }
 
-    fn package_request() -> Result<QualificationExecutorRequestV1> {
+    fn package_request() -> Result<QualificationExecutorRequest> {
         let case = package_case();
-        Ok(QualificationExecutorRequestV1 {
-            schema_version: "aos.release.qualification-executor-request/v2".into(),
-            qualification_case: Some(case.clone()),
+        Ok(QualificationExecutorRequest {
+            schema_version: aos_release::evidence::QUALIFICATION_EXECUTOR_REQUEST.into(),
+            qualification_case: case.clone(),
             registry: "andyl/testing".into(),
             release_id: "release-2026.9.0".into(),
             staging_receipt_digest: Sha256Digest::of_bytes(b"receipt"),
@@ -721,7 +705,7 @@ mod tests {
             policy_digest: case.policy_digest,
             platform: Platform::X86_64Linux,
             subjects: case.subjects,
-            objects: vec![aos_release::evidence::QualificationObjectV1 {
+            objects: vec![aos_release::evidence::QualificationObject {
                 artifact_id: "package/example/x86_64-linux".into(),
                 url: "https://aos.staging.andyl.org/andyl/testing/packages/example.nar.zst".into(),
                 size_bytes: 42,
@@ -734,7 +718,7 @@ mod tests {
 
     fn package_report() -> serde_json::Value {
         serde_json::json!({
-            "schema_version": SCENARIO_REPORT_V1,
+            "schema_version": SCENARIO_REPORT,
             "registry": "andyl/testing",
             "release_id": "release-2026.9.0",
             "staging_receipt_digest": Sha256Digest::of_bytes(b"receipt"),
@@ -764,7 +748,7 @@ mod tests {
     #[test]
     fn scenario_registry_rejects_unknown_platform_and_mutable_executables() -> Result<()> {
         let registry = ScenarioRegistry {
-            schema_version: "aos.release.qualification-scenarios/v1".into(),
+            schema_version: SCENARIO_REGISTRY.into(),
             platform: Platform::X86_64Linux,
             scenarios: BTreeMap::from([(
                 "gate".into(),
@@ -772,21 +756,8 @@ mod tests {
             )]),
             case_scenarios: BTreeMap::new(),
         };
-        let mut request = QualificationExecutorRequestV1 {
-            schema_version: aos_release::evidence::QUALIFICATION_EXECUTOR_REQUEST_V1.into(),
-            qualification_case: None,
-            registry: "andyl/testing".into(),
-            release_id: "fixture".into(),
-            staging_receipt_digest: Sha256Digest::of_bytes(b"receipt"),
-            manifest_digest: Sha256Digest::of_bytes(b"manifest"),
-            policy_id: "gate".into(),
-            policy_digest: Sha256Digest::of_bytes(b"policy"),
-            platform: Platform::X86_64Linux,
-            subjects: vec![],
-            objects: vec![],
-            retained_predecessor: None,
-            nonce: "a".repeat(64),
-        };
+        let mut request = package_request()?;
+        request.policy_id = "gate".into();
         assert!(select(&registry, &request).is_ok());
         request.platform = Platform::Aarch64Linux;
         assert!(select(&registry, &request).is_err());
@@ -803,18 +774,13 @@ mod tests {
     }
 
     #[test]
-    fn scenario_registry_v2_prefers_an_exact_case_override() -> Result<()> {
+    fn scenario_registry_prefers_an_exact_case_override() -> Result<()> {
         let request = package_request()?;
-        let case_id = request
-            .qualification_case
-            .as_ref()
-            .context("fixture lacks a qualification case")?
-            .id
-            .clone();
+        let case_id = request.qualification_case.id.clone();
         let generic = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-generic/bin/run";
         let recovery = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-recovery/bin/run";
         let registry = ScenarioRegistry {
-            schema_version: "aos.release.qualification-scenarios/v2".into(),
+            schema_version: SCENARIO_REGISTRY.into(),
             platform: Platform::X86_64Linux,
             scenarios: BTreeMap::from([("package-function".into(), generic.into())]),
             case_scenarios: BTreeMap::from([(case_id, recovery.into())]),
@@ -828,21 +794,19 @@ mod tests {
         };
         assert_eq!(select(&fallback, &request)?, generic);
 
-        let v1 = ScenarioRegistry {
-            schema_version: "aos.release.qualification-scenarios/v1".into(),
+        // Any other schema string fails closed, including a bumped version.
+        let unknown = ScenarioRegistry {
+            schema_version: "aos.release.qualification-scenarios/v2".into(),
             ..registry
         };
-        assert!(select(&v1, &request).is_err());
+        assert!(select(&unknown, &request).is_err());
         Ok(())
     }
 
     #[test]
     fn image_resume_selects_the_largest_subject_object() -> Result<()> {
         let mut request = package_request()?;
-        let case = request
-            .qualification_case
-            .as_mut()
-            .context("fixture lacks a qualification case")?;
+        let case = &mut request.qualification_case;
         case.checks = vec!["anonymous-download-and-resume".into()];
         request.subjects = vec![
             "image/aos/x86_64-linux/metadata".into(),
@@ -850,20 +814,20 @@ mod tests {
         ];
         case.subjects.clone_from(&request.subjects);
         request.objects = vec![
-            aos_release::evidence::QualificationObjectV1 {
+            aos_release::evidence::QualificationObject {
                 artifact_id: "control/release-manifest-envelope".into(),
                 url: "https://aos.staging.andyl.org/andyl/testing/release-manifest.json".into(),
                 size_bytes: 4096,
                 sha256: Sha256Digest::of_bytes(b"manifest"),
             },
-            aos_release::evidence::QualificationObjectV1 {
+            aos_release::evidence::QualificationObject {
                 artifact_id: "image/aos/x86_64-linux/metadata".into(),
                 url: "https://aos.staging.andyl.org/andyl/testing/images/aos/x86_64-linux/metadata"
                     .into(),
                 size_bytes: 8192,
                 sha256: Sha256Digest::of_bytes(b"metadata"),
             },
-            aos_release::evidence::QualificationObjectV1 {
+            aos_release::evidence::QualificationObject {
                 artifact_id: "image/aos/x86_64-linux/raw".into(),
                 url: "https://aos.staging.andyl.org/andyl/testing/images/aos/x86_64-linux/raw"
                     .into(),
@@ -928,12 +892,7 @@ mod tests {
     #[test]
     fn update_request_requires_the_verified_predecessor_graph() -> Result<()> {
         let mut request = package_request()?;
-        request.schema_version = aos_release::evidence::QUALIFICATION_EXECUTOR_REQUEST_V3.into();
-        request
-            .qualification_case
-            .as_mut()
-            .context("fixture lacks a qualification case")?
-            .predecessor = Some(
+        request.qualification_case.predecessor = Some(
             aos_release::qualification_evidence::QualificationPredecessor {
                 registry: "andyl/testing".into(),
                 release_id: "qualification-snapshot-2026.9.0".into(),
@@ -942,23 +901,23 @@ mod tests {
         );
         assert!(request.validate().is_err());
 
-        request.retained_predecessor = Some(aos_release::evidence::QualificationRetainedBundleV1 {
+        request.retained_predecessor = Some(aos_release::evidence::QualificationRetainedBundle {
             bundle_path: "/srv/aos/predecessor".into(),
             objects: vec![
-                aos_release::evidence::QualificationRetainedObjectV1 {
+                aos_release::evidence::QualificationRetainedObject {
                     artifact_id: "control/release-manifest-envelope".into(),
                     source_path: "/srv/aos/predecessor/release-manifest.json".into(),
                     size_bytes: 40,
                     sha256: Sha256Digest::of_bytes(b"manifest-envelope"),
                 },
-                aos_release::evidence::QualificationRetainedObjectV1 {
+                aos_release::evidence::QualificationRetainedObject {
                     artifact_id: "package/example/x86_64-linux".into(),
                     source_path: "/srv/aos/predecessor/example.nar.zst".into(),
                     size_bytes: 42,
                     sha256: Sha256Digest::of_bytes(b"predecessor-nar"),
                 },
             ],
-            trusted_keys: vec![aos_release::evidence::QualificationTrustedKeyV1 {
+            trusted_keys: vec![aos_release::evidence::QualificationTrustedKey {
                 key_id: "release-2026".into(),
                 public_key_hex: "11".repeat(32),
             }],

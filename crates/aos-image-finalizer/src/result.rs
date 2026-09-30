@@ -7,7 +7,7 @@ use aos_release::artifact::BundlePath;
 use aos_release::artifact::require_identifier;
 use aos_release::digest::Sha256Digest;
 use aos_release::platform::Platform;
-use aos_release::signing::SignatureResponseV1;
+use aos_release::signing::SignatureResponse;
 use serde::{Deserialize, Serialize};
 
 use crate::assembly::UnsignedImageAssemblyV1;
@@ -96,7 +96,7 @@ pub struct FinalizedImageSetV1 {
     /// Every required output, sorted by id.
     pub artifacts: Vec<FinalizedImageArtifactV1>,
     /// Audited external signing responses accepted during finalization.
-    pub signing_operations: Vec<SignatureResponseV1>,
+    pub signing_operations: Vec<SignatureResponse>,
 }
 
 impl FinalizedImageSetV1 {

@@ -40,19 +40,22 @@ pub(super) fn assemble(
     let entries = read_cache(cache, key)?;
     validate_report_paths(&entries, report)?;
 
-    payload.copy_origin(
+    payload.copy(
         &cache.join("nix-cache-info"),
         "cache/configuration".to_owned(),
         ArtifactKind::RegistryObject,
-        "nix-cache-info".to_owned(),
+        "cache/nix-cache-info".to_owned(),
         ArtifactAttributes::plain("text/x-nix-cache-info"),
     )?;
     for entry in entries.values() {
-        payload.copy_origin(
+        payload.copy(
             &entry.narinfo_path,
             entry.narinfo_id.clone(),
             ArtifactKind::NarInfo,
-            format!("{}.narinfo", info::store_hash(&entry.info.store_path)),
+            format!(
+                "cache/narinfo/{}.narinfo",
+                info::store_hash(&entry.info.store_path)
+            ),
             ArtifactAttributes {
                 expected: Some(entry.narinfo_identity),
                 ..ArtifactAttributes::plain("text/x-nix-narinfo")
@@ -97,23 +100,6 @@ pub(super) fn assemble(
         canonical_ids
             .entry(store_path.clone())
             .or_insert_with(|| format!("closure/{}", info::store_hash(store_path)));
-    }
-
-    // Signed narinfos retain their canonical URL. Include the exact bytes
-    // there with the same authenticated closure graph as the logical evidence.
-    for entry in entries.values() {
-        payload.copy_origin(
-            &entry.nar_path,
-            format!("cache/nar/{}", info::store_hash(&entry.info.store_path)),
-            ArtifactKind::RegistryObject,
-            entry.info.url.clone(),
-            ArtifactAttributes {
-                expected: Some(nar_identity(entry)?),
-                compression: compression(&entry.info.compression)?,
-                relationships: cache_relationships(entry, &entries, &canonical_ids)?,
-                ..ArtifactAttributes::plain("application/x-nix-nar")
-            },
-        )?;
     }
 
     let output_source_ids = report
@@ -513,30 +499,12 @@ mod tests {
     fn cache_assembly_checks_the_declared_compressed_identity() -> Result<()> {
         let (valid_cache, key) = signed_cache(false)?;
         let output = tempfile::tempdir()?;
-        let mut payload = PayloadBuilder::new(
-            output.path().join("valid"),
-            "releases/edge/1.0.0/artifacts".to_owned(),
-        )?;
+        let mut payload = PayloadBuilder::new(output.path().join("valid"))?;
         assemble(valid_cache.path(), &empty_report(), &key, &mut payload)?;
-        assert_eq!(payload.artifacts.len(), 4);
-
-        let base_commit = "12".repeat(32);
-        fs::write(payload.root.join("HEAD"), format!("{base_commit}\n"))?;
-        fs::create_dir(payload.root.join("info"))?;
-        fs::write(
-            payload.root.join("info/refs"),
-            format!("{base_commit}\trefs/heads/stable\n"),
-        )?;
-        let publication =
-            crate::commands::hub::inspect_publication_for_test(&payload.root, "andyl/testing")?;
-        assert_eq!(publication.default_commit, base_commit);
-        assert_eq!(publication.objects.len(), 6);
+        assert_eq!(payload.artifacts.len(), 3);
 
         let (invalid_cache, key) = signed_cache(true)?;
-        let mut payload = PayloadBuilder::new(
-            output.path().join("invalid"),
-            "releases/edge/1.0.0/artifacts".to_owned(),
-        )?;
+        let mut payload = PayloadBuilder::new(output.path().join("invalid"))?;
         let Err(error) = assemble(invalid_cache.path(), &empty_report(), &key, &mut payload) else {
             panic!("cache assembly should reject a false compressed identity");
         };

@@ -9,7 +9,7 @@ use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::platform::Platform;
 use aos_release::signing::{
-    SignatureAlgorithm, SignatureResponseV1, SignerRole, SigningContext, SigningOperation,
+    SignatureAlgorithm, SignatureResponse, SignerRole, SigningContext, SigningOperation,
     verify_response_binding,
 };
 use base64::Engine as _;
@@ -40,7 +40,7 @@ pub struct SealedImageArtifactsV1 {
     /// Raw signature over the component manifest.
     pub recovery_bundle_signature: PathBuf,
     /// Audited provider response for the bundle manifest.
-    pub signing_operation: SignatureResponseV1,
+    pub signing_operation: SignatureResponse,
 }
 
 #[derive(Serialize)]

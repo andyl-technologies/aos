@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, bail};
 use aos_release::platform::Platform;
 use aos_release::signing::{
-    SignatureAlgorithm, SignatureResponseV1, SignerRole, SigningContext, SigningOperation,
+    SignatureAlgorithm, SignatureResponse, SignerRole, SigningContext, SigningOperation,
     verify_response_binding,
 };
 
@@ -53,7 +53,7 @@ pub struct SignedEfiArtifactsV1 {
     /// Signed slot-B ready-phase measurement sidecar.
     pub measurement_b: UkiMeasurementV1,
     /// Provider operations in deterministic execution order.
-    pub signing_operations: Vec<SignatureResponseV1>,
+    pub signing_operations: Vec<SignatureResponse>,
 }
 
 /// Constructs normal/recovery UKIs and Authenticode-signs every EFI binary.
@@ -423,7 +423,7 @@ async fn build_normal_uki(
     PathBuf,
     SignedPcrPolicyV1,
     UkiMeasurementV1,
-    Vec<SignatureResponseV1>,
+    Vec<SignatureResponse>,
 )> {
     let operation = scratch.join(name);
     fs::create_dir(&operation)?;
@@ -545,7 +545,7 @@ async fn build_recovery_uki(
     signer: &dyn ImageSigner,
     authorizer: &dyn ImageRequestAuthorizer,
     maximum_bytes: u64,
-) -> Result<(PathBuf, SignatureResponseV1)> {
+) -> Result<(PathBuf, SignatureResponse)> {
     let operation = scratch.join(name);
     fs::create_dir(&operation)?;
     let unsigned = operation.join("unsigned.efi");
@@ -628,7 +628,7 @@ async fn sign_pe(
     signer: &dyn ImageSigner,
     authorizer: &dyn ImageRequestAuthorizer,
     maximum_bytes: u64,
-) -> Result<SignatureResponseV1> {
+) -> Result<SignatureResponse> {
     let (_, payload_digest) = digest_regular_file(unsigned)?;
     let intent = ImageSigningIntent {
         assembly_policy_id: &assembly.signer_roles.secure_boot,

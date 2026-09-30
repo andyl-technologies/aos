@@ -22,7 +22,7 @@
     longhorn-engine = "Pod-scoped engine launched by the Longhorn controller.";
     longhorn-instance-manager = "Kubernetes-managed instance-manager payload.";
     miniflare = "Developer command that launches a requested Worker instance.";
-    nix = "Package/store CLI used by AOS control services; no standalone nix-daemon contract.";
+    nix = "Executable payload used by AOS control services and the separate nix-daemon service package.";
     qemu = "Per-VM monitor launched by a VM orchestrator.";
     qemu-crucible = "Crucible-controlled QEMU process across the licensed process boundary.";
     swtpm = "Per-VM TPM process launched by a VM orchestrator.";
@@ -129,6 +129,7 @@
     longhorn-manager.ownership = "package";
     mariadb.ownership = "package";
     nginx.ownership = "package";
+    nix-daemon.ownership = "package";
     openldap.ownership = "package";
     postgresql.ownership = "package";
     rsync.ownership = "package";
