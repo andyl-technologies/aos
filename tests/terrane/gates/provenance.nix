@@ -10,6 +10,11 @@ in {
     ${runTest "prov_commit_signature_binds_exact_preimage_and_signed_identity"}
     ${runTest "prov_commit_verify_rejects_tampering_missing_token_and_wrong_context"}
     ${runTest "prov_commit_signature_uses_last_attenuation_key"}
+    ${runTest "context::prov_commit_signature_binds_context_even_when_changed_scope_is_authorized"}
+    ${runTest "context::prov_commit_history_preserves_original_scope_with_narrow_root_grants"}
+    ${runTest "context::prov_commit_context_rejects_tampered_scope_and_unvalidated_roots"}
+    ${runTest "context::prov_commit_authored_requires_context_and_legacy_bytes_remain_explicit"}
+    ${runTest "context::prov_commit_context_canonicalizes_unsigned_root_pairs_and_rejects_duplicates"}
     printf 'PASS: pure terminal-key commit signatures and embedded authorization\n' > "$out/result"
   '';
 

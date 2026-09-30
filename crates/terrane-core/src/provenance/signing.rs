@@ -1,6 +1,6 @@
 //! Authenticates canonical commits and their embedded capability chains.
 
-use crate::auth::{self, IssuerKey, Request, Token, Verb, VerifiedToken};
+use crate::auth::{self, IssuerKey, Request, RequestRoot, Token, Verb, VerifiedToken};
 use crate::identity::Digest;
 use crate::refs::Commit;
 use core::fmt;
@@ -127,6 +127,11 @@ fn authenticate(
             .filter(|(name, _)| name.as_bytes() == request.reference)
             .count()
             != 1
+        || commit
+            .profile_pair
+            .commit_context
+            .as_ref()
+            .is_some_and(|context| !context.matches_request(request))
     {
         return Err(Diagnostic::Authorization);
     }
@@ -162,6 +167,66 @@ pub fn sign(
     let preimage = commit.signature_preimage().map_err(|_| Rejected)?;
     commit.signature = Some(signing_key.sign(&preimage).to_bytes());
     verify(&commit, keys, request, writer_epoch)
+}
+
+/// Signs a newly authored commit carrying its complete original scope.
+///
+/// The caller must construct signed context from canonical affected roots and
+/// their effective domains and separately enforce current ACLs (PROV-4).
+/// Legacy draft signing remains available through [`sign`] for explicit
+/// compatibility workflows; guards use this operation for new authored commits.
+///
+/// # Errors
+/// Returns [`Rejected`] when context is absent or does not match the request,
+/// or when any schema, token, signature-key, claim, or authorization check fails.
+pub fn sign_authored(
+    commit: Commit,
+    secret: &[u8; 32],
+    keys: &[IssuerKey],
+    request: &Request<'_>,
+    writer_epoch: u64,
+) -> Result<VerifiedCommit, Rejected> {
+    if commit.profile_pair.commit_context.is_none() {
+        return Err(Rejected);
+    }
+    sign(commit, secret, keys, request, writer_epoch)
+}
+
+/// Verifies historical authority using the signed original authoring scope.
+///
+/// `validated_roots` must be independently established from canonical candidate
+/// and previous trees, including effective disclosure policy. A signature alone
+/// does not establish these facts. `original_epochs` supplies trusted historical
+/// evidence for every epoch caveat, including the authoring ref's epoch. Current
+/// reads, forks, tags, and advances still require current grants and ACLs.
+///
+/// Legacy draft commits without stored context require [`verify`] with a trusted
+/// complete original request; this operation never invents missing context.
+///
+/// # Errors
+/// Returns [`Rejected`] for absent stored context, roots differing from signed
+/// assertions, unavailable or incorrect epoch evidence, or any verification error.
+pub fn verify_history(
+    commit: &Commit,
+    keys: &[IssuerKey],
+    validated_roots: &[RequestRoot<'_>],
+    original_epochs: &[(&str, u64)],
+) -> Result<VerifiedCommit, Rejected> {
+    let context = commit
+        .profile_pair
+        .commit_context
+        .as_ref()
+        .ok_or(Rejected)?;
+    let request = Request {
+        reference: context.reference().as_bytes(),
+        verb: Verb::Commit,
+        roots: validated_roots,
+        now: commit.timestamp,
+        surface: context.surface(),
+        locality: context.locality(),
+        epochs: original_epochs,
+    };
+    verify(commit, keys, &request, commit.provenance.writer_epoch)
 }
 
 /// Verifies a signed commit and its embedded capability against trusted context.

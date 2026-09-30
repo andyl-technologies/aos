@@ -14,8 +14,8 @@
 use super::entry_receipts::{self, EntryReceipt};
 use super::token_shape::validate_token;
 use super::{
-    Locality, RecordError, read_bool, read_digest, read_key, read_nested_value, read_raw_value,
-    write_bool,
+    CommitContext, Locality, RecordError, read_bool, read_digest, read_key, read_nested_value,
+    read_raw_value, write_bool,
 };
 use crate::cbor::{self, Decoder};
 use crate::identity::Digest;
@@ -247,6 +247,8 @@ pub struct ProfilePair {
     pub required_properties: Option<Vec<u8>>,
     /// Signed root/path receipts resolving entry and attribute introductions.
     pub entry_receipts: Option<Vec<EntryReceipt>>,
+    /// Signed original authorization scope; absent only on legacy draft records.
+    pub commit_context: Option<CommitContext>,
 }
 
 /// A sealed pack first referenced by a commit and its writing locality.
@@ -484,7 +486,8 @@ impl ProfilePair {
             + usize::from(self.conflicted.is_some())
             + usize::from(self.lease.is_some())
             + usize::from(self.required_properties.is_some())
-            + usize::from(self.entry_receipts.is_some());
+            + usize::from(self.entry_receipts.is_some())
+            + usize::from(self.commit_context.is_some());
         cbor::write_map(output, count);
         cbor::write_uint(output, 1);
         cbor::write_uint(output, self.tree_format);
@@ -514,21 +517,25 @@ impl ProfilePair {
             cbor::write_uint(output, 7);
             entry_receipts::encode_into(receipts, output)?;
         }
+        if let Some(context) = &self.commit_context {
+            cbor::write_uint(output, 8);
+            context.encode_into(output)?;
+        }
         Ok(())
     }
 
     fn decode_from(decoder: &mut Decoder<'_>) -> Result<Self, RecordError> {
-        let count = decoder.map(7)?;
-        if !(2..=7).contains(&count) {
+        let count = decoder.map(8)?;
+        if !(2..=8).contains(&count) {
             return Err(RecordError::Schema);
         }
         let mut previous = 0;
-        require_key(decoder, &mut previous, 1, 7)?;
+        require_key(decoder, &mut previous, 1, 8)?;
         let tree_format = decoder.uint()?;
         if tree_format != 1 {
             return Err(RecordError::Schema);
         }
-        require_key(decoder, &mut previous, 2, 7)?;
+        require_key(decoder, &mut previous, 2, 8)?;
         let chunk_profile = decoder.text(decoder.remaining().len())?.to_string();
         if chunk_profile.is_empty() {
             return Err(RecordError::Schema);
@@ -538,9 +545,10 @@ impl ProfilePair {
         let mut lease = None;
         let mut required_properties = None;
         let mut entry_receipts = None;
+        let mut commit_context = None;
 
         for _ in 2..count {
-            match read_key(decoder, &mut previous, 7)? {
+            match read_key(decoder, &mut previous, 8)? {
                 3 => {
                     let bytes = read_raw_value(decoder)?.to_vec();
                     validate_recipe(&bytes)?;
@@ -566,6 +574,7 @@ impl ProfilePair {
                     required_properties = Some(bytes);
                 }
                 7 => entry_receipts = Some(entry_receipts::decode_from(decoder)?),
+                8 => commit_context = Some(CommitContext::decode_from(decoder)?),
                 _ => return Err(RecordError::Schema),
             }
         }
@@ -577,6 +586,7 @@ impl ProfilePair {
             lease,
             required_properties,
             entry_receipts,
+            commit_context,
         })
     }
 }
@@ -696,6 +706,7 @@ mod tests {
                 lease: None,
                 required_properties: None,
                 entry_receipts: None,
+                commit_context: None,
             },
             packs: None,
             signature: None,

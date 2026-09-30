@@ -8,6 +8,8 @@ use crate::refs::{Commit, CommitSource, Locality, PrincipalKind, ProfilePair, Pr
 use alloc::{string::ToString, vec, vec::Vec};
 use ed25519_dalek::{Signature, Signer, SigningKey};
 
+mod context;
+
 fn issuer_keys() -> Vec<IssuerKey> {
     vec![IssuerKey {
         issuer: "issuer".to_string(),
@@ -63,6 +65,7 @@ fn unsigned_commit() -> Commit {
             lease: None,
             required_properties: None,
             entry_receipts: None,
+            commit_context: None,
         },
         packs: None,
         signature: None,

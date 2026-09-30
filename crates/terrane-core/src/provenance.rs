@@ -17,7 +17,10 @@ mod trust;
 
 pub use history::{EntryLocation, VerifiedHistory, same_content, source_commit_references};
 pub use selector::{Preset, Selector, SelectorError};
-pub use signing::{Diagnostic, Rejected, VerifiedCommit, sign, verify, verify_diagnostic};
+pub use signing::{
+    Diagnostic, Rejected, VerifiedCommit, sign, sign_authored, verify, verify_diagnostic,
+    verify_history,
+};
 pub use trust::{TrustContext, validate_canonical_context};
 
 #[cfg(test)]
