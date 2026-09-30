@@ -411,3 +411,80 @@ async fn a_head_missing_from_a_complete_inventory_is_corruption() {
     );
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
 }
+
+#[tokio::test]
+async fn nested_ref_names_coexist_without_changing_refname_grammar() {
+    for names in [
+        ["refs/heads/_/a", "refs/heads/_/a/b"],
+        ["refs/heads/_/a/b", "refs/heads/_/a"],
+    ] {
+        let bucket = fixture().await;
+        let mut expected = Vec::new();
+
+        for (position, name) in names.iter().enumerate() {
+            assert!(terrane_core::refs::RefName::parse(name).is_ok());
+            let digest = if position == 0 { [1; 32] } else { [2; 32] };
+            let first = RefRecord::first(digest, 1, Locality::default()).selected();
+            let first_log = log(first.clone(), None);
+            assert_eq!(
+                bucket.ref_log_append(name, 1, &first_log).await.unwrap(),
+                RefLogAppendOutcome::Appended
+            );
+            assert_eq!(
+                bucket.ref_cas(name, None, &first).await.unwrap(),
+                RefCasOutcome::Applied
+            );
+            expected.push((first, first_log));
+        }
+
+        let reopened = FileBucket::open(
+            config(bucket.root().to_owned()),
+            TokioLocalFs,
+            TokioClock,
+            Validator,
+        )
+        .await
+        .unwrap();
+        for (position, name) in names.iter().enumerate() {
+            let (first, first_log) = &expected[position];
+            assert_eq!(reopened.ref_get(name).await.unwrap(), Some(first.clone()));
+            assert_eq!(
+                reopened.ref_log_read(name, 1).await.unwrap(),
+                vec![first_log.clone()]
+            );
+
+            let digest = if position == 0 { [3; 32] } else { [4; 32] };
+            let second = first.advance(digest, 2).unwrap().selected();
+            let second_log = log(second.clone(), Some(first.clone()));
+            reopened.ref_log_append(name, 2, &second_log).await.unwrap();
+            assert_eq!(
+                reopened.ref_cas(name, Some(first), &second).await.unwrap(),
+                RefCasOutcome::Applied
+            );
+            assert_eq!(reopened.ref_get(name).await.unwrap(), Some(second.clone()));
+            assert_eq!(
+                reopened.ref_log_read(name, 1).await.unwrap(),
+                vec![first_log.clone(), second_log]
+            );
+            expected[position].0 = second;
+        }
+
+        let reopened_again = FileBucket::open(
+            config(bucket.root().to_owned()),
+            TokioLocalFs,
+            TokioClock,
+            Validator,
+        )
+        .await
+        .unwrap();
+        for (name, (record, _)) in names.iter().zip(&expected) {
+            assert_eq!(
+                reopened_again.ref_get(name).await.unwrap(),
+                Some(record.clone())
+            );
+            assert_eq!(reopened_again.ref_log_read(name, 1).await.unwrap().len(), 2);
+        }
+
+        tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+    }
+}
