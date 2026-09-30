@@ -2,21 +2,50 @@
 {
   lib,
   mkDerivation,
+  aos-runtime-checks,
   fetchurl,
   buildPackages,
   libcap,
   nettle,
   gnutls,
   stdenv,
+  service-management,
 }: let
   version = "4.9";
   isDarwin = stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       role = "public-package";
     };
     pname = "chrony";
@@ -94,7 +123,8 @@ in
       ];
     propagatedDeps = [];
 
-    abilities = ./_chrony-abilities;
+    module = ./_chrony-abilities;
+    moduleDeps = [aos-runtime-checks service-management];
 
     phases = [
       {

@@ -1,148 +1,82 @@
-##! Package-owned PostgreSQL options and provider-neutral service declarations.
+##! Package-owned PostgreSQL topology, authentication, TLS, and native services.
 {
   config,
   lib,
+  package,
+  dependencies,
   ...
 }: let
-  cfg = config.postgresql;
-  anyServiceEnabled =
-    config.aos.services."postgresql.initialize".enable
-    || config.aos.services."postgresql.main".enable;
-  inherit (lib.abilities) pathWithin resultOf;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  abilityTypes = lib.abilities.types;
-
-  boundedText = maximum:
-    abilityTypes.string {
-      maxLength = maximum;
-      syntax = null;
-    };
-  checkedString = name: description: pattern:
-    abilityTypes.refined {
-      inherit name description;
-      type = abilityTypes.runtimeString;
-      constraints = [
-        {
-          kind = "string-pattern";
-          pattern = pattern;
-        }
-      ];
-    };
-  positiveInt = abilityTypes.integer {
-    minimum = 1;
-    maximum = abilityTypes.limits.maxSafeInteger;
-  };
-  nonNegativeInt = abilityTypes.integer {
-    minimum = 0;
-    maximum = abilityTypes.limits.maxSafeInteger;
-  };
-  port = abilityTypes.integer {
-    minimum = 1;
-    maximum = 65535;
-  };
-  nonEmptyLine = abilityTypes.refined {
-    name = "PostgreSQL non-empty line";
-    description = "a non-empty PostgreSQL value without line breaks";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "minimum-size";
-        minimum = 1;
-      }
-      {
-        kind = "string-excludes";
-        classes = ["line-break"];
-      }
-    ];
-  };
-  identifier =
-    checkedString
-    "PostgreSQL identifier"
-    "a PostgreSQL identifier beginning with a letter or underscore"
-    "[A-Za-z_][A-Za-z0-9_$-]*";
-  address =
-    checkedString
-    "PostgreSQL address"
-    "a PostgreSQL host or address without commas, quotes, or whitespace"
-    "[^,'[:space:]]+";
-  memorySize =
-    checkedString
-    "PostgreSQL memory size"
-    "a positive PostgreSQL memory size with an explicit unit"
-    "[1-9][0-9]*(B|kB|MB|GB|TB)";
-  settingName =
-    checkedString
-    "PostgreSQL setting name"
-    "a lowercase PostgreSQL parameter name"
-    "[a-z][a-z0-9_]*";
-  settingString = abilityTypes.refined {
-    name = "PostgreSQL setting value";
-    description = "a PostgreSQL setting value without line breaks";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "string-excludes";
-        classes = ["line-break"];
-      }
-    ];
-  };
-  settingValue = abilityTypes.disjointUnion [
-    abilityTypes.boolean
-    (abilityTypes.integer {
-      minimum = -abilityTypes.limits.maxSafeInteger;
-      maximum = abilityTypes.limits.maxSafeInteger;
-    })
-    settingString
-  ];
-  settingsType = abilityTypes.map {
+  cfg = config.aos.postgresql;
+  anyServiceEnabled = config.aos.services."postgresql.initialize".enable || config.aos.services."postgresql.main".enable;
+  types = lib.types;
+  operations = config.aos.abilities;
+  boundedText = maximum: types.strWith {maxLength = maximum;};
+  checkedString = name: description: pattern: types.strMatching pattern;
+  positiveInt = types.ints.between 1 9007199254740991;
+  nonNegativeInt = types.ints.between 0 9007199254740991;
+  port = types.ints.between 1 65535;
+  nonEmptyLine = types.strMatching "[^\n\r]+";
+  identifier = types.strMatching "[A-Za-z_][A-Za-z0-9_$-]*";
+  address = types.strMatching "[^,'[:space:]]+";
+  memorySize = types.strMatching "[1-9][0-9]*(B|kB|MB|GB|TB)";
+  settingName = types.strMatching "[a-z][a-z0-9_]*";
+  settingString = types.strMatching "[^\n\r]*";
+  settingValue = types.oneOf [types.bool (types.ints.between (-9007199254740991) 9007199254740991) settingString];
+  settingsType = types.attrsWith {
+    elemType = settingValue;
     keyMaxLength = 63;
-    keySyntax = null;
     maxEntries = 1024;
-    value = settingValue;
   };
-  addressList = abilityTypes.list {
-    element = address;
+  addressList = types.listWith {
+    elemType = address;
     maxItems = 64;
-    unique = false;
-    canonicalOrder = false;
   };
-  hbaSelector =
-    checkedString
-    "PostgreSQL HBA selector"
-    "a PostgreSQL database, role, or HBA keyword"
-    "[A-Za-z0-9_.+-]+";
-  hbaSelectorList = abilityTypes.list {
-    element = hbaSelector;
+  hbaSelector = types.strMatching "[A-Za-z0-9_.+-]+";
+  hbaSelectorList = types.listWith {
+    elemType = hbaSelector;
     maxItems = 256;
     unique = true;
     canonicalOrder = true;
   };
-  credentialReference = serviceTypes.credentialReference;
-  endpointType = abilityTypes.record {
-    fields = {
-      host = address;
-      port = port;
+  credentialReference = types.submodule operations.credential.operations.deliver.input;
+  credentialConfigured = value: (value.name != null) != (value.resource != null);
+  endpointType = types.submodule {
+    options = {
+      host = lib.mkOption {type = address;};
+      port = lib.mkOption {
+        type = port;
+        default = 5432;
+      };
     };
-    optional = ["port"];
   };
-  hbaRuleType = abilityTypes.record {
-    fields = {
-      type = abilityTypes.enum ["local" "host" "hostssl" "hostnossl"];
-      databases = hbaSelectorList;
-      users = hbaSelectorList;
-      address = abilityTypes.optional nonEmptyLine;
-      method = abilityTypes.enum ["cert" "md5" "peer" "reject" "scram-sha-256" "trust"];
+  hbaRuleType = types.submodule {
+    options = {
+      type = lib.mkOption {
+        type = types.enum ["local" "host" "hostssl" "hostnossl"];
+        default = "host";
+      };
+      databases = lib.mkOption {
+        type = hbaSelectorList;
+        default = ["all"];
+      };
+      users = lib.mkOption {
+        type = hbaSelectorList;
+        default = ["all"];
+      };
+      address = lib.mkOption {
+        type = types.nullOr nonEmptyLine;
+        default = null;
+      };
+      method = lib.mkOption {
+        type = types.enum ["cert" "md5" "peer" "reject" "scram-sha-256" "trust"];
+        default = "scram-sha-256";
+      };
     };
-    optional = ["type" "databases" "users" "address" "method"];
   };
-  hbaRules = abilityTypes.list {
-    element = hbaRuleType;
+  hbaRules = types.listWith {
+    elemType = hbaRuleType;
     maxItems = 1024;
-    unique = false;
-    canonicalOrder = false;
   };
-
   normalizeEndpoint = endpoint:
     if endpoint == null
     then null
@@ -186,33 +120,23 @@
       ++ lib.optional (rule.type != "local") rule.address
       ++ [rule.method]
     );
-  literal = text: {
-    kind = "literal";
-    inherit text;
-  };
-  executionPath = value: {
-    kind = "execution-path";
-    inherit value;
-  };
+  literal = text: text;
+  executionPath = value: value;
   command = arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "bin/postgresql-control";
+      path = "${package}/bin/postgresql-control";
       inherit arguments;
     };
     ignore_failure = false;
   };
-  runtimeSearchPath =
-    builtins.map
-    (package: lib.abilities.packageOutput {inherit package;})
-    ["self" "bash" "coreutils"];
+  runtimeSearchPath = [package.path dependencies.bash.path dependencies.coreutils.path];
 
   configuredCredentials =
-    lib.optional (cfg.topology != "standby" && serviceManagement.credentialReferenceConfigured bootstrapPassword) {
+    lib.optional (cfg.topology != "standby" && credentialConfigured bootstrapPassword) {
       name = "bootstrap-superuser-password";
       reference = bootstrapPassword;
     }
-    ++ lib.optional (cfg.topology == "standby" && serviceManagement.credentialReferenceConfigured replicationPassfile) {
+    ++ lib.optional (cfg.topology == "standby" && credentialConfigured replicationPassfile) {
       name = "replication-passfile";
       reference = replicationPassfile;
     }
@@ -227,82 +151,21 @@
           reference = tlsPrivateKey;
         }
       ]
-      ++ lib.optional (serviceManagement.credentialReferenceConfigured tlsCa) {
+      ++ lib.optional (credentialConfigured tlsCa) {
         name = "tls-ca";
         reference = tlsCa;
       }
     );
-  credentialRequests = serviceManagement.forCredentialReferences {
-    consumerInstance = "postgresql";
-    references =
-      builtins.map (credential: {
-        key = "credential-${credential.name}";
-        inherit (credential) name reference;
-      })
-      configuredCredentials;
-  };
-  storage = serviceManagement.forProducers {
-    consumerInstance = "postgresql";
-    interface = serviceManagement.interfaces.persistentStorageAllocation;
-    producers = [
-      {
-        key = "state-storage";
-        parameters = {
-          name = "state";
-          purpose = "state";
-          mode = "0700";
-        };
-      }
-    ];
-  };
-  runtimeStorage = serviceManagement.forProducer {
-    consumerInstance = "postgresql";
-    key = "runtime-storage";
-    interface = serviceManagement.interfaces.storageAllocation;
-    parameters = {
-      name = "runtime";
-      purpose = "runtime";
-      mode = "0755";
-    };
-  };
-  networkReadiness = serviceManagement.forProducer {
-    consumerInstance = "postgresql";
-    key = "network-readiness";
-    interface = serviceManagement.interfaces.networkReadiness;
-    parameters = {
-      scope = "configured-connectivity";
-      address_families = ["ipv4" "ipv6"];
-    };
-  };
-
-  stateRuntimePath = resultOf "state-storage" "planned-path";
-  runtimeRuntimePath = resultOf "runtime-storage" "planned-path";
-  statePlannedPath = resultOf "state-storage" "planned-path";
-  runtimePlannedPath = resultOf "runtime-storage" "planned-path";
-  dataRuntimePath = pathWithin {
-    base = stateRuntimePath;
-    relativePath = "data";
-  };
+  stateRuntimePath = operations.filesystem.operations.directory.effects.postgresql-state.outputs.path;
+  runtimeRuntimePath = operations.filesystem.operations.directory.effects.postgresql-runtime.outputs.path;
+  statePlannedPath = operations.filesystem.operations.directory.effects.postgresql-state.outputs.path;
+  runtimePlannedPath = operations.filesystem.operations.directory.effects.postgresql-runtime.outputs.path;
+  dataRuntimePath = operations.filesystem.operations.view.effects.postgresql-data.outputs.path;
   socketRuntimePath = runtimeRuntimePath;
-  serverConfigurationPath = resultOf "server-configuration" "planned-path";
-  hbaConfigurationPath = resultOf "hba-configuration" "planned-path";
-  credentialPath = name: resultOf "credential-${name}" "credential-path";
+  serverConfigurationPath = operations.configuration.operations.file.effects.postgresql-server.outputs.path;
+  hbaConfigurationPath = operations.configuration.operations.file.effects.postgresql-hba.outputs.path;
+  credentialPath = name: operations.credential.operations.deliver.effects."postgresql-${name}".outputs.path;
 
-  hbaConfiguration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "postgresql";
-    declaration = {
-      name = "hba-configuration";
-      source = {
-        kind = "inline-text";
-        content = ''
-          # Generated by the PostgreSQL package module. Do not edit.
-          ${lib.concatStringsSep "\n" (builtins.map renderHbaRule hba)}
-        '';
-      };
-      mode = "0444";
-    };
-  };
   primaryConnInfoFragments =
     if cfg.topology != "standby"
     then []
@@ -323,47 +186,34 @@
         (executionPath (credentialPath "tls-private-key"))
         (literal "'\n")
       ]
-      ++ lib.optionals (serviceManagement.credentialReferenceConfigured tlsCa) [
+      ++ lib.optionals (credentialConfigured tlsCa) [
         (literal "ssl_ca_file = '")
         (executionPath (credentialPath "tls-ca"))
         (literal "'\n")
       ];
-  serverConfiguration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "postgresql";
-    declaration = {
-      name = "server-configuration";
-      source = {
-        kind = "interpolated-text";
-        fragments =
-          [
-            (literal "# Generated by the PostgreSQL package module. Do not edit.\ndata_directory = '")
-            (executionPath dataRuntimePath)
-            (literal "'\nhba_file = '")
-            (executionPath hbaConfigurationPath)
-            (literal "'\nlisten_addresses = ${quote (lib.concatStringsSep "," cfg.listen.addresses)}\nport = ${toString cfg.listen.port}\nunix_socket_directories = '")
-            (executionPath socketRuntimePath)
-            (literal "'\ncluster_name = ${quote cfg.clusterName}\n\nmax_connections = ${toString cfg.resources.maxConnections}\nshared_buffers = ${quote cfg.resources.sharedBuffers}\nwork_mem = ${quote cfg.resources.workMem}\nmaintenance_work_mem = ${quote cfg.resources.maintenanceWorkMem}\n\nwal_level = ${cfg.replication.walLevel}\nmax_wal_senders = ${toString cfg.replication.maxWalSenders}\nmax_replication_slots = ${toString cfg.replication.maxReplicationSlots}\nhot_standby = ${
-              if cfg.replication.hotStandby
-              then "on"
-              else "off"
-            }\n")
-          ]
-          ++ primaryConnInfoFragments
-          ++ lib.optionals (cfg.topology == "standby" && cfg.replication.slot != null) [
-            (literal "primary_slot_name = ${quote cfg.replication.slot}\n")
-          ]
-          ++ tlsFragments
-          ++ [
-            (literal "ssl_min_protocol_version = ${quote cfg.tls.minimumProtocol}\nlogging_collector = off\nlog_destination = 'stderr'\n")
-            (literal (lib.concatStringsSep "" (lib.mapAttrsToList renderSetting cfg.settings)))
-          ];
-        maximum_size_bytes = abilityTypes.limits.maxDocumentBytes;
-      };
-      mode = "0444";
-    };
-  };
-
+  serverFragments =
+    [
+      (literal "# Generated by the PostgreSQL package module. Do not edit.\ndata_directory = '")
+      (executionPath dataRuntimePath)
+      (literal "'\nhba_file = '")
+      (executionPath hbaConfigurationPath)
+      (literal "'\nlisten_addresses = ${quote (lib.concatStringsSep "," cfg.listen.addresses)}\nport = ${toString cfg.listen.port}\nunix_socket_directories = '")
+      (executionPath socketRuntimePath)
+      (literal "'\ncluster_name = ${quote cfg.clusterName}\n\nmax_connections = ${toString cfg.resources.maxConnections}\nshared_buffers = ${quote cfg.resources.sharedBuffers}\nwork_mem = ${quote cfg.resources.workMem}\nmaintenance_work_mem = ${quote cfg.resources.maintenanceWorkMem}\n\nwal_level = ${cfg.replication.walLevel}\nmax_wal_senders = ${toString cfg.replication.maxWalSenders}\nmax_replication_slots = ${toString cfg.replication.maxReplicationSlots}\nhot_standby = ${
+        if cfg.replication.hotStandby
+        then "on"
+        else "off"
+      }\n")
+    ]
+    ++ primaryConnInfoFragments
+    ++ lib.optionals (cfg.topology == "standby" && cfg.replication.slot != null) [
+      (literal "primary_slot_name = ${quote cfg.replication.slot}\n")
+    ]
+    ++ tlsFragments
+    ++ [
+      (literal "ssl_min_protocol_version = ${quote cfg.tls.minimumProtocol}\nlogging_collector = off\nlog_destination = 'stderr'\n")
+      (literal (lib.concatStringsSep "" (lib.mapAttrsToList renderSetting cfg.settings)))
+    ];
   commonStorage.mounts = [
     {
       name = "state";
@@ -464,7 +314,6 @@
   ];
   initService = {
     policy.hardening = commonHardening;
-    consumerInstance = "postgresql";
     service = "initialize";
     lifecycle = {
       description = "Initialize PostgreSQL database state";
@@ -484,10 +333,10 @@
       stop_timeout_millis = 90000;
     };
     dependencies = {
-      after = [(resultOf "network-readiness" "resource")];
+      after = [(operations.network.operations.ready.effects.postgresql.outputs.resource)];
       before = [];
       requires = [];
-      wants = [(resultOf "network-readiness" "resource")];
+      wants = [(operations.network.operations.ready.effects.postgresql.outputs.resource)];
     };
     supervision = {
       startup_protocol = "process";
@@ -523,12 +372,12 @@
     lib.optional (
       cfg.topology
       == "standby"
-      && serviceManagement.credentialReferenceConfigured replicationPassfile
+      && credentialConfigured replicationPassfile
     ) "replication-passfile"
     ++ lib.optionals cfg.tls.enable (
-      lib.optional (serviceManagement.credentialReferenceConfigured tlsCertificate) "tls-certificate"
-      ++ lib.optional (serviceManagement.credentialReferenceConfigured tlsPrivateKey) "tls-private-key"
-      ++ lib.optional (serviceManagement.credentialReferenceConfigured tlsCa) "tls-ca"
+      lib.optional (credentialConfigured tlsCertificate) "tls-certificate"
+      ++ lib.optional (credentialConfigured tlsPrivateKey) "tls-private-key"
+      ++ lib.optional (credentialConfigured tlsCa) "tls-ca"
     );
   credentialsByName = builtins.listToAttrs (builtins.map (credential: {
       inherit (credential) name;
@@ -537,7 +386,6 @@
     configuredCredentials);
   mainService = {
     policy.hardening = commonHardening;
-    consumerInstance = "postgresql";
     service = "main";
     lifecycle = {
       description = "PostgreSQL database server";
@@ -550,7 +398,6 @@
       stop = [(command ["stop" statePlannedPath])];
       post_stop = [];
       restart = "on-failure";
-      restart_token = cfg.restartToken;
       restart_delay_millis = 2000;
       configuration_change_action = "restart";
       remain_after_exit = false;
@@ -559,12 +406,12 @@
     };
     dependencies = {
       after = [
-        (resultOf "initialize-lifecycle" "resource")
-        (resultOf "network-readiness" "resource")
+        (operations.serviceManagement.operations.realize.effects."postgresql.initialize".outputs.resource)
+        (operations.network.operations.ready.effects.postgresql.outputs.resource)
       ];
       before = [];
-      requires = [(resultOf "initialize-lifecycle" "resource")];
-      wants = [(resultOf "network-readiness" "resource")];
+      requires = [(operations.serviceManagement.operations.realize.effects."postgresql.initialize".outputs.resource)];
+      wants = [(operations.network.operations.ready.effects.postgresql.outputs.resource)];
     };
     supervision = {
       startup_protocol = "notification";
@@ -625,25 +472,12 @@
       value = 1048576;
     };
   };
-  producers = [
-    storage
-    runtimeStorage
-    networkReadiness
-    credentialRequests
-    hbaConfiguration
-    serverConfiguration
-  ];
 in {
-  options.postgresql = {
+  options.aos.postgresql = {
     enable = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = types.bool;
       default = false;
       description = "Enable the PostgreSQL database server.";
-    };
-    restartToken = lib.mkOption {
-      type = abilityTypes.optional serviceTypes.restartToken;
-      default = null;
-      description = "Operator-controlled token whose change requests a service restart.";
     };
     clusterName = lib.mkOption {
       type = nonEmptyLine;
@@ -651,7 +485,7 @@ in {
       description = "Cluster name included in process titles and logs.";
     };
     topology = lib.mkOption {
-      type = abilityTypes.enum ["standalone" "primary" "standby"];
+      type = types.enum ["standalone" "primary" "standby"];
       default = "standalone";
       description = "The database server's replication role.";
     };
@@ -721,7 +555,7 @@ in {
     };
     replication = {
       walLevel = lib.mkOption {
-        type = abilityTypes.enum ["minimal" "replica" "logical"];
+        type = types.enum ["minimal" "replica" "logical"];
         default = "replica";
         description = "Write-ahead log detail retained for recovery and replication.";
       };
@@ -736,12 +570,12 @@ in {
         description = "Maximum replication slots retained by this server.";
       };
       hotStandby = lib.mkOption {
-        type = abilityTypes.boolean;
+        type = types.bool;
         default = true;
         description = "Allow read-only queries while the server is in recovery.";
       };
       primary = lib.mkOption {
-        type = abilityTypes.optional endpointType;
+        type = types.nullOr endpointType;
         default = null;
         description = "Primary endpoint used by a standby.";
       };
@@ -756,7 +590,7 @@ in {
         description = "Standby application name reported to the primary.";
       };
       slot = lib.mkOption {
-        type = abilityTypes.optional identifier;
+        type = types.nullOr identifier;
         default = null;
         description = "Optional physical replication slot consumed by the standby.";
       };
@@ -768,7 +602,7 @@ in {
     };
     tls = {
       enable = lib.mkOption {
-        type = abilityTypes.boolean;
+        type = types.bool;
         default = false;
         description = "Enable TLS for TCP connections.";
       };
@@ -788,7 +622,7 @@ in {
         description = "Optional typed source for the client-certificate CA bundle.";
       };
       minimumProtocol = lib.mkOption {
-        type = abilityTypes.enum ["TLSv1.2" "TLSv1.3"];
+        type = types.enum ["TLSv1.2" "TLSv1.3"];
         default = "TLSv1.2";
         description = "Minimum accepted TLS protocol version.";
       };
@@ -803,8 +637,8 @@ in {
   config = lib.mkMerge [
     {
       aos.services = {
-        "postgresql.initialize" = initService // {enable = cfg.enable;};
-        "postgresql.main" = mainService // {enable = cfg.enable;};
+        "postgresql.initialize" = lib.mkDefault (initService // {enable = lib.mkDefault cfg.enable;});
+        "postgresql.main" = lib.mkDefault (mainService // {enable = lib.mkDefault cfg.enable;});
       };
       assertions = [
         {
@@ -815,7 +649,7 @@ in {
           assertion =
             !anyServiceEnabled
             || cfg.topology == "standby"
-            || serviceManagement.credentialReferenceConfigured bootstrapPassword;
+            || credentialConfigured bootstrapPassword;
           message = "postgresql.bootstrap.password requires a credential reference for an enabled primary or standalone cluster";
         }
         {
@@ -834,7 +668,7 @@ in {
           assertion =
             !anyServiceEnabled
             || cfg.topology != "standby"
-            || serviceManagement.credentialReferenceConfigured replicationPassfile;
+            || credentialConfigured replicationPassfile;
           message = "PostgreSQL standby topology requires a replication.passfile credential reference";
         }
         {
@@ -846,8 +680,8 @@ in {
             !anyServiceEnabled
             || !cfg.tls.enable
             || (
-              serviceManagement.credentialReferenceConfigured tlsCertificate
-              && serviceManagement.credentialReferenceConfigured tlsPrivateKey
+              credentialConfigured tlsCertificate
+              && credentialConfigured tlsPrivateKey
             );
           message = "TLS-enabled PostgreSQL requires certificate and private-key resource references";
         }
@@ -862,7 +696,7 @@ in {
                 rule.type
                 == "hostssl"
                 && cfg.tls.enable
-                && serviceManagement.credentialReferenceConfigured tlsCa
+                && credentialConfigured tlsCa
               ))
             hba;
           message = "PostgreSQL cert authentication requires a hostssl rule, TLS, and a CA resource reference";
@@ -903,9 +737,50 @@ in {
         }
       ];
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = anyServiceEnabled;
+    (lib.mkIf anyServiceEnabled {
+      aos.abilities = {
+        filesystem.operations.directory.effects = {
+          postgresql-state = {
+            lifetime = "persistent";
+            input = {
+              path = "/var/lib/aos-pkg-postgresql";
+              mode = "0700";
+            };
+          };
+          postgresql-runtime.input = {
+            path = "/run/aos-pkg-postgresql";
+            mode = "0750";
+          };
+        };
+        filesystem.operations.view.effects.postgresql-data.input = {
+          sourcePath = stateRuntimePath;
+          relativePath = "data";
+        };
+        network.operations.ready.effects.postgresql.input = {
+          scope = "address-configured";
+          families = ["ipv4" "ipv6"];
+        };
+        configuration.operations.file.effects = {
+          postgresql-hba.input = {
+            path = "/etc/aos/packages/postgresql/pg_hba.conf";
+            content = ''
+              # Generated by the PostgreSQL package module. Do not edit.
+              ${lib.concatStringsSep "\n" (builtins.map renderHbaRule hba)}
+            '';
+            mode = "0444";
+          };
+          postgresql-server.input = {
+            path = "/etc/aos/packages/postgresql/postgresql.conf";
+            fragments = serverFragments;
+            mode = "0444";
+          };
+        };
+        credential.operations.deliver.effects = builtins.listToAttrs (builtins.map (credential: {
+            name = "postgresql-${credential.name}";
+            value.input = credential.reference;
+          })
+          configuredCredentials);
+      };
     })
   ];
 }

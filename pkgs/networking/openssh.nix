@@ -2,6 +2,7 @@
 {
   lib,
   mkDerivation,
+  aos-runtime-checks,
   fetchurl,
   gnumake,
   linux-pam,
@@ -11,13 +12,32 @@
   zlib,
   bash,
   stdenv,
+  service-management,
+  aos-filesystem-provider,
+  nftables,
 }: let
   version = "10.5p1";
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -114,7 +134,8 @@ in
       );
     propagatedDeps = [];
 
-    abilities = ./_openssh;
+    module = ./_openssh;
+    moduleDeps = [aos-runtime-checks service-management aos-filesystem-provider nftables linux-pam];
 
     phases = [
       {

@@ -1,10 +1,9 @@
-//! Checked convergence of one aggregate host network ruleset through nftables.
+//! Native reconciliation of the host firewall through one owned nftables table.
 //!
-//! The provider renders the provider-neutral ruleset resource into one private
-//! nftables table. After every mutation it captures the canonical nftables JSON
-//! observation and records its digest beside the selected resource revision.
-//! Reconciliation compares the live kernel object with that captured digest,
-//! so drift is detected independently from the desired declaration.
+//! Apply replaces the table atomically and retains its observed JSON digest.
+//! Observe checks that receipt against the kernel. Interrupted mutations without
+//! a completed receipt are indeterminate; another installation scope or unmanaged
+//! table is never silently adopted or removed.
 
 #![forbid(unsafe_code)]
 
@@ -12,27 +11,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_ability_model::{
-    AbilityValue, AccessMode, LocalKey, MethodSemantics, ResourceReference, RevisionId,
-};
+use aos_ability_runtime::activation::{Action, Invocation};
 use aos_contract::Sha256Digest;
-use aos_provider_protocol::{
-    ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
-    AdmissionResult, AdmissionRevision, BoundNativeContext, INVOCATION_SCHEMA, Invocation,
-    InvocationDisposition, InvocationPurpose, InvocationResult, RESULT_SCHEMA, ResourceContext,
-    SupportedPurposes, resource_set_digest, validate_admission_resource, validate_resource_context,
-    validate_resource_contexts,
-};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
-const CONTEXT_SCHEMA: &str = "aos.network.ruleset-context/v1";
-const MARKER_SCHEMA: &str = "aos.network.ruleset-state/v1";
-const STATE_ROOT: &str = "/run/aos/network-ruleset";
+const STATE_ROOT: &str = "/var/lib/aos/network-ruleset";
 const TABLE_FAMILY: &str = "inet";
 const TABLE_NAME: &str = "aos_filter";
 const MAX_MARKER_BYTES: u64 = 1024 * 1024;
@@ -72,84 +60,49 @@ impl Policy {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct BasePolicy {
-    input_policy: Policy,
-    forward_policy: Policy,
-    trusted_interfaces: Vec<String>,
-    prerequisites: Vec<ResourceReference>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct IngressPolicy {
     endpoints: Vec<Endpoint>,
-    prerequisites: Vec<ResourceReference>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ForwardingPolicy {
     policy: Policy,
-    prerequisites: Vec<ResourceReference>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RulesetRequest {
-    base: BasePolicy,
+    #[serde(rename = "defaultPolicy")]
+    input_policy: Policy,
+    forward_policy: Policy,
+    trusted_interfaces: Vec<String>,
+    allowed_tcp: Vec<u16>,
+    allowed_udp: Vec<u16>,
+    #[serde(default)]
     ingress: BTreeMap<String, IngressPolicy>,
+    #[serde(default)]
     forwarding: BTreeMap<String, ForwardingPolicy>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct RulesetRealization {
-    #[serde(rename = "schema")]
-    _schema: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum RulesetState {
-    Applied,
-    Drifted,
-    Unmanaged,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct RulesetObservation {
-    schema: String,
-    expected: RulesetRequest,
-    observed_digest: Option<Sha256Digest>,
-    state: RulesetState,
-    discrepancies: Vec<LocalKey>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ProviderContext {
-    schema: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StateMarker {
-    schema: String,
-    revision: RevisionId,
-    observed_digest: Sha256Digest,
+    id: String,
+    revision: String,
+    observed_digest: Option<Sha256Digest>,
 }
 
-/// Handles the package-owned aggregate network-ruleset ability.
+/// Reconciles one host firewall using the retained, source-built nft executable.
 pub struct NetworkRulesetProvider {
     nft: PathBuf,
     state_root: PathBuf,
 }
 
 impl NetworkRulesetProvider {
-    /// Constructs the production provider with the build-authenticated nft executable.
+    /// Constructs the production handler with the build-authenticated nft path.
     #[must_use]
     pub fn production() -> Self {
         Self {
@@ -158,275 +111,113 @@ impl NetworkRulesetProvider {
         }
     }
 
-    #[cfg(test)]
-    fn for_test(nft: PathBuf, state_root: PathBuf) -> Self {
-        Self { nft, state_root }
-    }
-
-    /// Handles one bounded command invocation and emits canonical JSON.
+    /// Handles an apply, remove, or observe native process invocation.
     ///
     /// # Errors
-    ///
-    /// Returns an error when the wire contract, selected method, resource
-    /// contexts, desired ruleset, retained state, or nftables operation is invalid.
-    pub fn handle(&self, purpose: &str, input: &[u8]) -> Result<Vec<u8>> {
+    /// Returns an error for invalid input, conflicting ownership, drift, malformed
+    /// retained state, a concurrent invocation, or a failed nftables transaction.
+    pub fn handle(&self, purpose: &str, bytes: &[u8]) -> Result<Vec<u8>> {
+        let invocation: Invocation = serde_json::from_slice(bytes)?;
+        ensure!(
+            matches!(purpose, "apply" | "remove" | "observe"),
+            "unsupported handler action"
+        );
+        ensure!(
+            purpose == "observe"
+                || matches!(
+                    (purpose, invocation.action),
+                    ("apply", Action::Apply) | ("remove", Action::Remove)
+                ),
+            "action differs from invocation"
+        );
+        let identity = &invocation.effect.identity;
+        ensure!(
+            identity.len() >= 3
+                && identity[identity.len() - 3] == "networkPolicy"
+                && identity[identity.len() - 2] == "ruleset",
+            "unsupported native operation"
+        );
+        let request: RulesetRequest = serde_json::from_value(invocation.input.clone())?;
+        validate_request(&request)?;
+
+        fs::create_dir_all(&self.state_root)?;
+        ensure!(
+            !fs::symlink_metadata(&self.state_root)?
+                .file_type()
+                .is_symlink(),
+            "state root is a symlink"
+        );
+        fs::set_permissions(&self.state_root, fs::Permissions::from_mode(0o700))?;
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(self.state_root.join("lock"))?;
+        lock.try_lock().context("locking the host ruleset")?;
+
+        let marker = self.read_marker()?;
+        let observed = self.observed_digest()?;
+        let status = classify_receipt(
+            invocation.action,
+            &invocation.id,
+            &invocation.revision,
+            invocation
+                .previous
+                .as_ref()
+                .map(|previous| previous.revision.as_str()),
+            marker.as_ref(),
+            observed,
+        );
+
         let result = match purpose {
-            "admit" => {
-                let request: AdmissionRequest =
-                    aos_contract::canonical::from_slice(input, "network-ruleset admission")?;
-                ensure!(
-                    request.schema == ADMISSION_REQUEST_SCHEMA,
-                    "unsupported admission schema"
-                );
-                serde_json::to_value(self.admit(request)?)?
-            }
-            "effect" | "reconcile" | "cancel" | "compensate" | "reconcile-compensation" => {
-                let invocation: Invocation =
-                    aos_contract::canonical::from_slice(input, "network-ruleset invocation")?;
-                ensure!(
-                    invocation.schema == INVOCATION_SCHEMA,
-                    "unsupported invocation schema"
-                );
-                ensure!(
-                    purpose == purpose_name(invocation.purpose),
-                    "purpose differs from argv"
-                );
-                serde_json::to_value(self.invoke(invocation)?)?
-            }
-            _ => bail!("unsupported command-handler purpose {purpose:?}"),
-        };
-
-        aos_contract::canonical::canonical_json(&result)
-            .context("encoding canonical network-ruleset response")
-    }
-
-    fn admit(&self, request: AdmissionRequest) -> Result<AdmissionResult> {
-        validate_method(request.method.method.as_str(), &request.semantics)?;
-        validate_admission_resource(&request)?;
-        validate_resource_contexts(&request.resources)?;
-        let observation_schema = request
-            .contract
-            .observation_discriminator()
-            .context("selected network-ruleset method has no observation discriminator")?;
-        let desired: RulesetRequest = decode_value(&request.resource_spec.value)?;
-        validate_request(&desired)?;
-        let _realization: RulesetRealization = decode_value(&request.resource_spec.realization)?;
-        require_dependencies(&desired, &request.resources)?;
-
-        let observation = self.observe(
-            observation_schema,
-            &desired,
-            &request.target,
-            request.resource_spec.revision,
-        )?;
-        let revision = observation_revision(&observation, request.resource_spec.revision)?;
-        let supported_purposes = if request.method.method.as_str() == "observe" {
-            SupportedPurposes::from_ordered(vec![InvocationPurpose::Effect])
-        } else {
-            SupportedPurposes::from_ordered(vec![
-                InvocationPurpose::Effect,
-                InvocationPurpose::Reconcile,
-                InvocationPurpose::Cancel,
-            ])
-        }
-        .context("constructing canonical purpose support")?;
-
-        Ok(AdmissionResult {
-            schema: ADMISSION_SCHEMA.into(),
-            disposition: AdmissionDisposition::Admitted,
-            revision,
-            incarnation: Some(request.assignment.incarnation),
-            observation: ability_value(serde_json::to_value(observation)?)?,
-            native_context: ability_value(json!({"schema": CONTEXT_SCHEMA}))?,
-            supported_purposes,
-        })
-    }
-
-    fn invoke(&self, invocation: Invocation) -> Result<InvocationResult> {
-        ensure!(
-            invocation.method_is_bound(),
-            "invocation method is not durably bound"
-        );
-        validate_method(invocation.method.method.as_str(), &invocation.semantics)?;
-        let observation_schema = invocation
-            .contract
-            .observation_discriminator()
-            .context("selected network-ruleset method has no observation discriminator")?;
-        validate_resource_contexts(&invocation.request.resources)?;
-        ensure!(
-            resource_set_digest(&invocation.request.resources)?
-                == invocation.request.native_context_digest,
-            "resource contexts differ from their authenticated set digest"
-        );
-        let target = require_resource(&invocation.request.resources, &invocation.request.target)?;
-        let bound: BoundNativeContext = validate_resource_context(target)?;
-        ensure!(
-            invocation.method.interface == invocation.request.method.interface
-                && invocation.method.interface == invocation.request.target.interface
-                && invocation
-                    .request
-                    .target
-                    .operations
-                    .binary_search(&invocation.method.method)
-                    .is_ok(),
-            "invocation method is outside the target resource authority"
-        );
-        ensure!(
-            bound.resource_spec.value == invocation.request.inputs,
-            "bound inputs differ"
-        );
-        let _realization: RulesetRealization = decode_value(&bound.resource_spec.realization)?;
-        let context: ProviderContext = decode_value(&bound.provider_context)?;
-        ensure!(
-            context.schema == CONTEXT_SCHEMA,
-            "unsupported provider context"
-        );
-
-        let desired: RulesetRequest = decode_value(&bound.resource_spec.value)?;
-        validate_request(&desired)?;
-        require_dependencies(&desired, &invocation.request.resources)?;
-        let before = self.observe(
-            observation_schema,
-            &desired,
-            &invocation.request.target,
-            target.revision,
-        )?;
-        let removing = invocation.method.method.as_str() == "remove";
-        let (disposition, evidence) = match invocation.purpose {
-            InvocationPurpose::Effect if invocation.method.method.as_str() == "observe" => {
-                (InvocationDisposition::Completed, before)
-            }
-            InvocationPurpose::Effect if invocation.control.cancelled => {
-                (InvocationDisposition::RejectedBeforeEffect, before)
-            }
-            InvocationPurpose::Effect if invocation.method.method.as_str() == "apply" => {
-                self.apply(&desired, &invocation.request.target, target.revision)?;
-                let after = self.observe(
-                    observation_schema,
-                    &desired,
-                    &invocation.request.target,
-                    target.revision,
-                )?;
-                let disposition = if after.state == RulesetState::Applied {
-                    InvocationDisposition::Completed
+            "observe" => {
+                if status == "current" {
+                    json!({"status": status, "outputs": outputs()})
                 } else {
-                    InvocationDisposition::Indeterminate
-                };
-                (disposition, after)
-            }
-            InvocationPurpose::Effect => {
-                self.remove(&invocation.request.target)?;
-                let after = self.observe(
-                    observation_schema,
-                    &desired,
-                    &invocation.request.target,
-                    target.revision,
-                )?;
-                let disposition = if after.state == RulesetState::Unmanaged {
-                    InvocationDisposition::Completed
-                } else {
-                    InvocationDisposition::Indeterminate
-                };
-                (disposition, after)
-            }
-            InvocationPurpose::Reconcile => {
-                let complete = if removing {
-                    before.state == RulesetState::Unmanaged
-                } else {
-                    before.state == RulesetState::Applied
-                };
-                (
-                    if complete {
-                        InvocationDisposition::Completed
-                    } else {
-                        InvocationDisposition::SafeToRetry
-                    },
-                    before,
-                )
-            }
-            InvocationPurpose::Cancel => (
-                if before.state == RulesetState::Unmanaged {
-                    InvocationDisposition::RejectedBeforeEffect
-                } else {
-                    InvocationDisposition::Indeterminate
-                },
-                before,
-            ),
-            InvocationPurpose::Compensate | InvocationPurpose::ReconcileCompensation => {
-                (InvocationDisposition::InterventionRequired, before)
-            }
-        };
-
-        let evidence = ability_value(serde_json::to_value(evidence)?)?;
-        let mut outputs = BTreeMap::new();
-        if disposition == InvocationDisposition::Completed {
-            outputs.insert(LocalKey::new("observation")?, evidence.clone());
-            if invocation.method.method.as_str() == "apply" {
-                outputs.insert(
-                    LocalKey::new("retained-resource")?,
-                    ability_value(serde_json::to_value(&invocation.request.target)?)?,
-                );
-            }
-        }
-        Ok(InvocationResult {
-            schema: RESULT_SCHEMA.into(),
-            disposition,
-            evidence,
-            outputs,
-            native_context_digest: invocation.request.native_context_digest,
-        })
-    }
-
-    fn observe(
-        &self,
-        observation_schema: &str,
-        desired: &RulesetRequest,
-        target: &ResourceReference,
-        desired_revision: RevisionId,
-    ) -> Result<RulesetObservation> {
-        let marker = self.read_marker(target)?;
-        let observed_digest = self.observed_digest()?;
-        let mut discrepancies = Vec::new();
-        let state = match (marker, observed_digest) {
-            (None, None) => RulesetState::Unmanaged,
-            (None, Some(_)) => {
-                discrepancies.push(LocalKey::new("ownership-absent")?);
-                RulesetState::Unmanaged
-            }
-            (Some(_), None) => {
-                discrepancies.push(LocalKey::new("ruleset-absent")?);
-                RulesetState::Drifted
-            }
-            (Some(marker), Some(observed))
-                if marker.revision == desired_revision && marker.observed_digest == observed =>
-            {
-                RulesetState::Applied
-            }
-            (Some(marker), Some(observed)) => {
-                if marker.revision != desired_revision {
-                    discrepancies.push(LocalKey::new("revision-mismatch")?);
+                    json!({"status": status})
                 }
-                if marker.observed_digest != observed {
-                    discrepancies.push(LocalKey::new("ruleset-drift")?);
-                }
-                RulesetState::Drifted
             }
+            "apply" => {
+                ensure!(
+                    matches!(status, "current" | "retry-safe"),
+                    "ruleset is unclaimed, conflicted, or drifted"
+                );
+                self.write_marker(&StateMarker {
+                    id: invocation.id.clone(),
+                    revision: invocation.revision.clone(),
+                    observed_digest: None,
+                })?;
+                self.apply(&request)?;
+                let digest = self
+                    .observed_digest()?
+                    .context("applied ruleset is absent")?;
+                self.write_marker(&StateMarker {
+                    id: invocation.id,
+                    revision: invocation.revision,
+                    observed_digest: Some(digest),
+                })?;
+                outputs()
+            }
+            "remove" => {
+                if status != "absent" {
+                    ensure!(
+                        status == "retry-safe",
+                        "refusing to remove a conflicted or drifted table"
+                    );
+                    self.remove_table_if_present()?;
+                    fs::remove_file(self.state_root.join("claim.json"))?;
+                    fs::File::open(&self.state_root)?.sync_all()?;
+                }
+                json!({})
+            }
+            _ => bail!("unsupported handler action"),
         };
-        Ok(RulesetObservation {
-            schema: observation_schema.into(),
-            expected: desired.clone(),
-            observed_digest,
-            state,
-            discrepancies,
-        })
+        serde_json::to_vec(&result).context("encoding native ruleset result")
     }
 
-    fn apply(
-        &self,
-        desired: &RulesetRequest,
-        target: &ResourceReference,
-        revision: RevisionId,
-    ) -> Result<()> {
+    fn apply(&self, desired: &RulesetRequest) -> Result<()> {
         let replacement = render_replacement(desired, self.table_exists()?);
         let mut child = Command::new(&self.nft)
             .args(["--file", "-"])
@@ -438,40 +229,15 @@ impl NetworkRulesetProvider {
         child
             .stdin
             .take()
-            .context("nftables transaction omitted stdin")?
-            .write_all(replacement.as_bytes())
-            .context("writing nftables ruleset transaction")?;
-        let output = child
-            .wait_with_output()
-            .context("waiting for nftables ruleset transaction")?;
+            .context("nftables omitted stdin")?
+            .write_all(replacement.as_bytes())?;
+        let output = child.wait_with_output()?;
         ensure!(
             output.status.success(),
-            "nftables rejected the rendered ruleset: {}",
+            "nftables rejected the ruleset: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-
-        let observed_digest = self
-            .observed_digest()?
-            .context("applied nftables table is absent")?;
-        self.write_marker(
-            target,
-            &StateMarker {
-                schema: MARKER_SCHEMA.into(),
-                revision,
-                observed_digest,
-            },
-        )
-    }
-
-    fn remove(&self, target: &ResourceReference) -> Result<()> {
-        self.remove_table_if_present()?;
-        match fs::remove_file(self.marker_path(target)?) {
-            Ok(()) => fs::File::open(&self.state_root)?
-                .sync_all()
-                .context("synchronizing removed network-ruleset state marker"),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error).context("removing network-ruleset state marker"),
-        }
+        Ok(())
     }
 
     fn observed_digest(&self) -> Result<Option<Sha256Digest>> {
@@ -543,63 +309,83 @@ impl NetworkRulesetProvider {
         Ok(())
     }
 
-    fn marker_path(&self, target: &ResourceReference) -> Result<PathBuf> {
-        let digest =
-            Sha256Digest::of_canonical("aos.network.ruleset-resource/v1", &target.resource)?;
-        Ok(self
-            .state_root
-            .join(digest.to_string().trim_start_matches("sha256:")))
-    }
-
-    fn read_marker(&self, target: &ResourceReference) -> Result<Option<StateMarker>> {
-        let path = self.marker_path(target)?;
-        let file = match fs::File::open(path) {
+    fn read_marker(&self) -> Result<Option<StateMarker>> {
+        let file = match fs::File::open(self.state_root.join("claim.json")) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error).context("reading network-ruleset state marker"),
+            Err(error) => return Err(error).context("reading ruleset receipt"),
         };
         let mut bytes = Vec::new();
-        file.take(MAX_MARKER_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .context("reading bounded network-ruleset state marker")?;
+        file.take(MAX_MARKER_BYTES + 1).read_to_end(&mut bytes)?;
         ensure!(
-            u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_MARKER_BYTES,
-            "network-ruleset state marker exceeds its bound"
+            u64::try_from(bytes.len())? <= MAX_MARKER_BYTES,
+            "receipt exceeds bound"
         );
-        let marker: StateMarker =
-            aos_contract::canonical::from_slice(&bytes, "network-ruleset marker")?;
-        ensure!(
-            marker.schema == MARKER_SCHEMA,
-            "unsupported network-ruleset marker schema"
-        );
-        Ok(Some(marker))
+        Ok(Some(serde_json::from_slice(&bytes)?))
     }
 
-    fn write_marker(&self, target: &ResourceReference, marker: &StateMarker) -> Result<()> {
-        fs::create_dir_all(&self.state_root)?;
-        fs::set_permissions(&self.state_root, fs::Permissions::from_mode(0o700))?;
-        let path = self.marker_path(target)?;
-        let temporary = path.with_extension("tmp");
-        let bytes = aos_contract::canonical::canonical_json(&serde_json::to_value(marker)?)?;
+    fn write_marker(&self, marker: &StateMarker) -> Result<()> {
+        let temporary = self.state_root.join("claim.tmp");
         let mut file = OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
             .mode(0o600)
             .open(&temporary)?;
-        file.write_all(&bytes)?;
+        file.write_all(&serde_json::to_vec(marker)?)?;
         file.sync_all()?;
-        fs::rename(temporary, path)?;
-        fs::File::open(&self.state_root)?
-            .sync_all()
-            .context("synchronizing network-ruleset state directory")?;
+        fs::rename(temporary, self.state_root.join("claim.json"))?;
+        fs::File::open(&self.state_root)?.sync_all()?;
         Ok(())
     }
 }
 
+// Receipts bind mutations to the current or explicitly retained previous
+// revision. A matching logical identity alone cannot authorize a stale caller.
+fn classify_receipt(
+    action: Action,
+    id: &str,
+    revision: &str,
+    previous_revision: Option<&str>,
+    marker: Option<&StateMarker>,
+    observed: Option<Sha256Digest>,
+) -> &'static str {
+    let Some(marker) = marker else {
+        return if observed.is_none() {
+            if action == Action::Remove {
+                "absent"
+            } else {
+                "retry-safe"
+            }
+        } else {
+            "indeterminate"
+        };
+    };
+    let compatible_revision = marker.revision == revision
+        || (action == Action::Apply && previous_revision == Some(marker.revision.as_str()));
+    if marker.id != id || !compatible_revision {
+        return "indeterminate";
+    }
+    if observed.is_none() {
+        return "retry-safe";
+    }
+    if marker.observed_digest.is_none() || marker.observed_digest != observed {
+        return "indeterminate";
+    }
+    if action == Action::Apply && marker.revision == revision {
+        "current"
+    } else {
+        "retry-safe"
+    }
+}
+
+fn outputs() -> Value {
+    json!({"resource": "inet/aos_filter"})
+}
+
 fn render_ruleset(request: &RulesetRequest) -> String {
-    let mut tcp = BTreeSet::new();
-    let mut udp = BTreeSet::new();
+    let mut tcp = request.allowed_tcp.iter().copied().collect::<BTreeSet<_>>();
+    let mut udp = request.allowed_udp.iter().copied().collect::<BTreeSet<_>>();
     for policy in request.ingress.values() {
         for endpoint in &policy.endpoints {
             match endpoint.transport {
@@ -608,7 +394,7 @@ fn render_ruleset(request: &RulesetRequest) -> String {
             };
         }
     }
-    let forwarding = if request.base.forward_policy == Policy::Drop
+    let forwarding = if request.forward_policy == Policy::Drop
         || request
             .forwarding
             .values()
@@ -620,9 +406,9 @@ fn render_ruleset(request: &RulesetRequest) -> String {
     };
     let mut rules = format!(
         "table {TABLE_FAMILY} {TABLE_NAME} {{\n  chain input {{\n    type filter hook input priority 0; policy {};\n    ct state established,related accept\n    ct state invalid drop\n",
-        request.base.input_policy.as_str()
+        request.input_policy.as_str()
     );
-    for interface in &request.base.trusted_interfaces {
+    for interface in &request.trusted_interfaces {
         rules.push_str(&format!(
             "    iifname \"{}\" accept\n",
             escape_nft_string(interface)
@@ -671,207 +457,174 @@ fn escape_nft_string(value: &str) -> String {
 
 fn validate_request(request: &RulesetRequest) -> Result<()> {
     ensure!(
-        request.ingress.len() <= 4096,
-        "ingress contribution bound exceeded"
+        request.ingress.len() <= 4096 && request.forwarding.len() <= 4096,
+        "contribution bound exceeded"
     );
     ensure!(
-        request.forwarding.len() <= 4096,
-        "forwarding contribution bound exceeded"
+        request.trusted_interfaces.len() <= 256,
+        "trusted interface bound exceeded"
     );
-    ensure!(
-        request.base.trusted_interfaces.len() <= 256,
-        "trusted-interface bound exceeded"
-    );
-    for interface in &request.base.trusted_interfaces {
+    for interface in &request.trusted_interfaces {
         ensure!(
-            interface.len() <= 128 && !interface.contains(['\0', '\n', '\r']),
-            "invalid trusted interface name"
+            !interface.is_empty()
+                && interface.len() <= 128
+                && !interface.contains(['\0', '\n', '\r']),
+            "invalid interface name"
         );
     }
+    ensure!(
+        request.allowed_tcp.len() <= 4096 && request.allowed_udp.len() <= 4096,
+        "port bound exceeded"
+    );
     ensure!(
         request
-            .base
-            .trusted_interfaces
-            .windows(2)
-            .all(|pair| pair[0] < pair[1]),
-        "trusted interfaces are not canonical and unique"
+            .allowed_tcp
+            .iter()
+            .chain(&request.allowed_udp)
+            .all(|port| *port > 0),
+        "port zero is invalid"
     );
-    validate_prerequisites("base", &request.base.prerequisites)?;
-    for (key, policy) in &request.ingress {
-        LocalKey::new(key.clone()).context("invalid ingress contribution key")?;
-        ensure!(policy.endpoints.len() <= 65_536, "endpoint bound exceeded");
+    for contribution in request.ingress.values() {
         ensure!(
-            policy.endpoints.windows(2).all(|pair| pair[0] < pair[1]),
-            "ingress endpoints are not canonical and unique"
+            contribution.endpoints.len() <= 65536,
+            "endpoint bound exceeded"
         );
-        validate_prerequisites("ingress", &policy.prerequisites)?;
-    }
-    for (key, policy) in &request.forwarding {
-        LocalKey::new(key.clone()).context("invalid forwarding contribution key")?;
-        validate_prerequisites("forwarding", &policy.prerequisites)?;
-    }
-    Ok(())
-}
-
-fn validate_prerequisites(context: &str, prerequisites: &[ResourceReference]) -> Result<()> {
-    ensure!(
-        prerequisites.len() <= 64,
-        "{context} prerequisite bound exceeded"
-    );
-    let encoded = prerequisites
-        .iter()
-        .map(serde_json::to_vec)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    ensure!(
-        encoded.windows(2).all(|pair| pair[0] < pair[1]),
-        "{context} prerequisites are not canonical and unique"
-    );
-    Ok(())
-}
-
-fn validate_method(method: &str, semantics: &MethodSemantics) -> Result<()> {
-    let access = match method {
-        "observe" => AccessMode::Read,
-        "apply" | "remove" => AccessMode::ExclusiveWrite,
-        _ => bail!("unsupported network-ruleset method"),
-    };
-    ensure!(
-        *semantics == MethodSemantics::ordinary(access),
-        "method semantics differ"
-    );
-    Ok(())
-}
-
-fn require_dependencies(request: &RulesetRequest, resources: &[ResourceContext]) -> Result<()> {
-    for dependency in request
-        .base
-        .prerequisites
-        .iter()
-        .chain(
-            request
-                .ingress
-                .values()
-                .flat_map(|policy| &policy.prerequisites),
-        )
-        .chain(
-            request
-                .forwarding
-                .values()
-                .flat_map(|policy| &policy.prerequisites),
-        )
-    {
-        require_resource(resources, dependency)?;
+        ensure!(
+            contribution
+                .endpoints
+                .iter()
+                .all(|endpoint| endpoint.port > 0),
+            "port zero is invalid"
+        );
     }
     Ok(())
-}
-
-fn require_resource<'a>(
-    resources: &'a [ResourceContext],
-    reference: &ResourceReference,
-) -> Result<&'a ResourceContext> {
-    let index = resources
-        .binary_search_by(|context| context.reference.resource.cmp(&reference.resource))
-        .map_err(|_| anyhow::anyhow!("request omits a referenced resource context"))?;
-    let context = &resources[index];
-    ensure!(
-        &context.reference == reference,
-        "resource context authority differs"
-    );
-    Ok(context)
-}
-
-fn observation_revision(
-    observation: &RulesetObservation,
-    desired: RevisionId,
-) -> Result<AdmissionRevision> {
-    match observation.state {
-        RulesetState::Applied => Ok(AdmissionRevision::Present { revision: desired }),
-        RulesetState::Unmanaged => Ok(AdmissionRevision::Absent),
-        RulesetState::Drifted => Ok(AdmissionRevision::Present {
-            revision: RevisionId(Sha256Digest::of_canonical(
-                "aos.network.ruleset-observed/v1",
-                observation,
-            )?),
-        }),
-    }
-}
-
-fn ability_value(value: serde_json::Value) -> Result<AbilityValue> {
-    AbilityValue::new(value).context("constructing canonical ability value")
-}
-
-fn decode_value<T: for<'de> Deserialize<'de>>(value: &AbilityValue) -> Result<T> {
-    serde_json::from_value(value.as_json().clone()).context("decoding checked ability value")
-}
-
-const fn purpose_name(purpose: InvocationPurpose) -> &'static str {
-    match purpose {
-        InvocationPurpose::Effect => "effect",
-        InvocationPurpose::Reconcile => "reconcile",
-        InvocationPurpose::Cancel => "cancel",
-        InvocationPurpose::Compensate => "compensate",
-        InvocationPurpose::ReconcileCompensation => "reconcile-compensation",
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn rendering_is_canonical_across_contribution_order() {
-        let request = RulesetRequest {
-            base: BasePolicy {
-                input_policy: Policy::Drop,
-                forward_policy: Policy::Accept,
-                trusted_interfaces: vec!["lo".into()],
-                prerequisites: Vec::new(),
-            },
-            ingress: BTreeMap::from([
-                (
-                    "web".into(),
-                    IngressPolicy {
-                        endpoints: vec![Endpoint {
-                            transport: Transport::Tcp,
-                            port: 443,
-                        }],
-                        prerequisites: Vec::new(),
-                    },
-                ),
-                (
-                    "dns".into(),
-                    IngressPolicy {
-                        endpoints: vec![Endpoint {
-                            transport: Transport::Udp,
-                            port: 53,
-                        }],
-                        prerequisites: Vec::new(),
-                    },
-                ),
-            ]),
+    fn request() -> RulesetRequest {
+        RulesetRequest {
+            input_policy: Policy::Drop,
+            forward_policy: Policy::Accept,
+            trusted_interfaces: vec!["lo".into()],
+            allowed_tcp: vec![443, 443],
+            allowed_udp: vec![53],
+            ingress: BTreeMap::new(),
             forwarding: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn rendering_preserves_allowances_and_atomic_replacement() {
+        let mut request = request();
+        request.ingress.insert(
+            "web".into(),
+            IngressPolicy {
+                endpoints: vec![Endpoint {
+                    transport: Transport::Tcp,
+                    port: 80,
+                }],
+            },
+        );
+        request.forwarding.insert(
+            "restriction".into(),
+            ForwardingPolicy {
+                policy: Policy::Drop,
+            },
+        );
+        let rules = render_replacement(&request, true);
+        assert!(rules.starts_with("delete table inet aos_filter\n"));
+        assert!(rules.contains("tcp dport { 80, 443 } accept"));
+        assert!(rules.contains("udp dport { 53 } accept"));
+        assert!(rules.contains("hook forward priority 0; policy drop;"));
+    }
+
+    #[test]
+    fn rejects_zero_ports_and_configuration_delimiters() {
+        let mut request = request();
+        request.allowed_tcp.push(0);
+        assert!(validate_request(&request).is_err());
+        request.allowed_tcp.pop();
+        request.trusted_interfaces.push("lo\nadd table".into());
+        assert!(validate_request(&request).is_err());
+    }
+    #[test]
+    fn receipts_distinguish_current_drift_and_interrupted_mutations() {
+        let digest = Sha256Digest::of_canonical("test", &json!({"table": "rules"})).unwrap();
+        let mut marker = StateMarker {
+            id: "owned".into(),
+            revision: "old".into(),
+            observed_digest: Some(digest),
         };
-
-        let rendered = render_ruleset(&request);
-        assert!(rendered.contains("tcp dport { 443 } accept"));
-        assert!(rendered.contains("udp dport { 53 } accept"));
-        assert!(rendered.contains("chain forward"));
-        let replacement = render_replacement(&request, true);
-        assert!(replacement.starts_with("delete table inet aos_filter\n"));
-        assert_eq!(replacement.matches("table inet aos_filter").count(), 2);
-    }
-
-    #[test]
-    fn production_constructor_uses_authenticated_nft_path() {
-        let provider = NetworkRulesetProvider::production();
-        assert!(provider.nft.is_absolute());
-        assert_eq!(provider.state_root, Path::new(STATE_ROOT));
-    }
-
-    #[test]
-    fn test_constructor_keeps_explicit_paths() {
-        let provider = NetworkRulesetProvider::for_test("/nft".into(), "/state".into());
-        assert_eq!(provider.nft, Path::new("/nft"));
-        assert_eq!(provider.state_root, Path::new("/state"));
+        assert_eq!(
+            classify_receipt(
+                Action::Apply,
+                "owned",
+                "old",
+                None,
+                Some(&marker),
+                Some(digest)
+            ),
+            "current"
+        );
+        assert_eq!(
+            classify_receipt(
+                Action::Apply,
+                "owned",
+                "new",
+                Some("old"),
+                Some(&marker),
+                Some(digest)
+            ),
+            "retry-safe"
+        );
+        assert_eq!(
+            classify_receipt(
+                Action::Apply,
+                "owned",
+                "new",
+                None,
+                Some(&marker),
+                Some(digest)
+            ),
+            "indeterminate"
+        );
+        assert_eq!(
+            classify_receipt(
+                Action::Remove,
+                "other",
+                "old",
+                None,
+                Some(&marker),
+                Some(digest)
+            ),
+            "indeterminate"
+        );
+        assert_eq!(
+            classify_receipt(Action::Apply, "owned", "old", None, None, Some(digest)),
+            "indeterminate"
+        );
+        marker.observed_digest = None;
+        assert_eq!(
+            classify_receipt(
+                Action::Apply,
+                "owned",
+                "old",
+                None,
+                Some(&marker),
+                Some(digest)
+            ),
+            "indeterminate"
+        );
+        assert_eq!(
+            classify_receipt(Action::Remove, "owned", "old", None, Some(&marker), None),
+            "retry-safe"
+        );
+        assert_eq!(
+            classify_receipt(Action::Remove, "owned", "old", None, None, None),
+            "absent"
+        );
     }
 }

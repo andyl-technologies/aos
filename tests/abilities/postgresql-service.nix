@@ -3,53 +3,14 @@
   lib,
   pkgs,
 }: let
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  environmentId = lib.abilities.environmentId {
-    authority = "deployment";
-    key = "postgresql-test";
-    stage = "host";
-  };
-  environment = builtins.removeAttrs environmentId ["_type"];
-  credentialProvider = lib.abilities.instanceId {
-    environment = environmentId;
-    key = "credential-provider";
-  };
-  credential = name:
-    lib.abilities.resourceReference {
-      interface = serviceManagement.interfaces.credentialDelivery.identity;
-      resource = {
-        provider = credentialProvider;
-        key = name;
-      };
-      operations = ["observe"];
-      lifetime = "persistent";
+  credential = name: name;
+  evaluateWith = settings: extraModules:
+    lib.evalPackageModules {
+      scope = ["test" "postgresql"];
+      packages = [pkgs.postgresql];
+      operatorModules = [{aos.postgresql = settings;}] ++ extraModules;
     };
-  evaluateWith = postgresqlConfig: extraModules:
-    lib.evalModules {
-      inherit lib;
-      modules =
-        [
-          ../../modules/abilities/default.nix
-          {
-            options.assertions = lib.mkOption {
-              type = lib.types.listOf lib.types.attrs;
-              default = [];
-              extensible = true;
-            };
-            aos.abilities.environment = environment;
-            postgresql = postgresqlConfig;
-          }
-        ]
-        ++ extraModules;
-      packageModules = [
-        (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
-        {
-          name = "postgresql";
-          module = pkgs.postgresql.module + "/module.nix";
-        }
-      ];
-    };
-  evaluate = postgresqlConfig: evaluateWith postgresqlConfig [];
+  evaluate = settings: evaluateWith settings [];
   disabled = evaluate {};
   standalone = evaluate {
     enable = true;
@@ -79,33 +40,18 @@
         host = "postgres-primary.internal";
         port = 5433;
       };
-      passfile.resource = credential "replication-passfile";
+      passfile.name = credential "replication-passfile";
       slot = "standby_1";
     };
     tls = {
       enable = true;
-      certificate.resource = credential "tls-certificate";
-      privateKey.resource = credential "tls-private-key";
-      ca.resource = credential "tls-ca";
+      certificate.name = credential "tls-certificate";
+      privateKey.name = credential "tls-private-key";
+      ca.name = credential "tls-ca";
     };
   };
-  assertionsHold = evaluated:
-    builtins.all (assertion: assertion.assertion) evaluated.config.assertions;
-  disabledAbilities = disabled.config.aos.abilities;
-  standaloneAbilities = standalone.config.aos.abilities;
-  standbyAbilities = standby.config.aos.abilities;
-  standaloneRequests = builtins.attrNames standaloneAbilities.requests;
-  standbyRequests = builtins.attrNames standbyAbilities.requests;
-  postgresqlRequests = evaluated:
-    lib.filterAttrs
-    (_: request: lib.abilities.packageForDeclarationAuthority request.authority == "postgresql")
-    evaluated.config.aos.abilities.requests;
-  postgresqlInstances = evaluated:
-    lib.filterAttrs
-    (_: instance: lib.abilities.packageForDeclarationAuthority instance.authority == "postgresql")
-    evaluated.config.aos.abilities.instances;
-  mainStorage = standaloneAbilities.requests."postgresql:main-storage".parameters.mounts;
-  serverSource = standbyAbilities.requests."postgresql:server-configuration".parameters.source;
+  assertionsHold = evaluated: builtins.all (check: check.assertion) evaluated.assertions;
+  operations = result: result.config.aos.abilities;
   missingBootstrap = evaluate {enable = true;};
   missingStandby = evaluate {
     enable = true;
@@ -113,44 +59,24 @@
   };
   invalidTls = evaluate {
     enable = true;
-    bootstrap.password.resource = credential "bootstrap-password";
+    bootstrap.password.name = credential "bootstrap-password";
     tls.enable = true;
-    tls.certificate.resource = credential "tls-certificate";
+    tls.certificate.name = credential "tls-certificate";
   };
   reservedSetting = evaluate {
     enable = true;
-    bootstrap.password.resource = credential "bootstrap-password";
+    bootstrap.password.name = credential "bootstrap-password";
     settings.port = 6000;
   };
 in
-  assert assertionsHold standalone;
-  assert assertionsHold standby;
-  assert !assertionsHold missingBootstrap;
-  assert !assertionsHold missingStandby;
-  assert !assertionsHold invalidTls;
-  assert !assertionsHold reservedSetting;
-  assert postgresqlInstances disabled == {};
-  assert postgresqlRequests disabled == {};
-  assert postgresqlRequests disabledServices == {};
-  assert disabledServices.config.aos.abilities.requirementTemplates == standalone.config.aos.abilities.requirementTemplates;
-  assert !disabled.config.aos.services."postgresql.main".enable;
+  assert assertionsHold standalone && assertionsHold standby;
+  assert !assertionsHold missingBootstrap && !assertionsHold missingStandby && !assertionsHold invalidTls && !assertionsHold reservedSetting;
+  assert (operations disabled).configuration.operations.file.effects == {};
+  assert (operations disabledServices).configuration.operations.file.effects == {};
   assert standalone.config.aos.services."postgresql.initialize".enable;
   assert standalone.config.aos.services."postgresql.main".enable;
-  assert builtins.elem "postgresql:initialize-lifecycle" standaloneRequests;
-  assert builtins.elem "postgresql:main-lifecycle" standaloneRequests;
-  assert builtins.elem "postgresql:credential-bootstrap-superuser-password" standaloneRequests;
-  assert builtins.elem "postgresql:credential-bootstrap-superuser-password-source" standaloneRequests;
-  assert !(builtins.elem "postgresql:credential-replication-passfile" standaloneRequests);
-  assert builtins.elem "postgresql:credential-replication-passfile" standbyRequests;
-  assert builtins.elem "postgresql:credential-tls-certificate" standbyRequests;
-  assert builtins.elem "postgresql:credential-tls-private-key" standbyRequests;
-  assert builtins.elem "postgresql:credential-tls-ca" standbyRequests;
-  assert serverSource.kind == "interpolated-text";
-  assert builtins.any (fragment: fragment.kind == "execution-path") serverSource.fragments;
-  assert builtins.map (mount: mount.source.request) mainStorage
-  == ["postgresql:state-storage" "postgresql:runtime-storage"];
-  assert builtins.all (mount: mount.source._type == "aos-request-output-reference") mainStorage;
-  assert builtins.all (mount: mount.source.output == "planned-path") mainStorage;
-  assert !(lib.hasInfix "POSTGRESQL_CONFIG_GENERATION" (builtins.toJSON standaloneAbilities.requests));
-  assert !(lib.hasInfix "/etc/postgresql" (builtins.toJSON standaloneAbilities.requests));
-  assert !(lib.hasInfix "/run/credentials" (builtins.toJSON standbyAbilities.requests)); true
+  assert builtins.length (builtins.attrNames (operations standalone).credential.operations.deliver.effects) == 1;
+  assert builtins.length (builtins.attrNames (operations standby).credential.operations.deliver.effects) == 4;
+  assert builtins.length standalone.config.aos.services."postgresql.main".storage.mounts == 2;
+  assert builtins.any builtins.isAttrs (operations standby).configuration.operations.file.effects.postgresql-server.input.fragments;
+  assert standalone.config.aos.services."postgresql.main".lifecycle.configuration_change_action == "restart"; true

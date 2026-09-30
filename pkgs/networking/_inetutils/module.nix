@@ -1,39 +1,22 @@
-##! Package-owned privileged ping wrapper requests.
+##! Configures optional privileged GNU ping executables through filesystem effects.
 {
   config,
   lib,
+  package,
   ...
-}: let
-  configured =
-    config.aos.abilities.environment
-    != null
-    && config.aos.profiles.development.enable;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  wrapper = name:
-    serviceManagement.forProducer {
-      consumerInstance = "runtime";
-      key = "wrapper-${name}";
-      interface = serviceManagement.interfaces.privilegedExecutable;
-      methods = ["observe"];
-      parameters = {
+}: {
+  options.aos.inetutils.privilegedPing.enable = lib.mkEnableOption "privileged ping and ping6 wrappers";
+
+  config.aos.abilities.filesystem.operations.privilegedExecutable.effects = lib.mkIf config.aos.inetutils.privilegedPing.enable (
+    builtins.listToAttrs (map (name: {
+      name = "inetutils-${name}";
+      value.input = {
         inherit name;
-        source = {
-          artifact = lib.abilities.packageOutput {};
-          path = "bin/${name}";
-        };
+        source = "${package}/bin/${name}";
         owner = "root";
         group = "root";
         mode = "4755";
-        maximum_size_bytes = lib.abilities.types.limits.maxSafeInteger;
       };
-    };
-  producers = [
-    (wrapper "ping")
-    (wrapper "ping6")
-  ];
-in {
-  config = serviceManagement.producerModule {
-    inherit config lib producers;
-    enabled = configured;
-  };
+    }) ["ping" "ping6"])
+  );
 }

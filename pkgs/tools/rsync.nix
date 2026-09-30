@@ -10,13 +10,31 @@
   lz4,
   bash,
   stdenv,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "3.5.0";
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -98,7 +116,8 @@ in
       );
     propagatedDeps = [];
 
-    abilities = ./_rsyncd;
+    module = ./_rsyncd;
+    moduleDeps = [service-management aos-filesystem-provider];
 
     phases = [
       {
@@ -154,36 +173,14 @@ in
       testing,
       self,
       pkgs,
-      mkSystem,
+      ...
     }: let
-      serviceManagement = lib.abilities.interfaces.serviceManagement;
-      environmentId = lib.abilities.environmentId {
-        authority = "system-image";
-        key = "rsync-package-check";
-        stage = "host";
-      };
-      credentialProvider = lib.abilities.instanceId {
-        environment = environmentId;
-        key = "credential-provider";
-      };
-      credential = lib.abilities.resourceReference {
-        interface = serviceManagement.interfaces.credentialDelivery.identity;
-        resource = {
-          provider = credentialProvider;
-          key = "rsync-secrets";
-        };
-        operations = ["observe"];
-        lifetime = "persistent";
-      };
-      evaluate = rsyncd:
-        mkSystem {
-          systemName = "rsync-package-check";
-          modules = [
-            {
-              environment.systemPackages = [self];
-              inherit rsyncd;
-            }
-          ];
+      credential = "rsync-secrets";
+      evaluate = settings:
+        lib.evalPackageModules {
+          scope = ["package-check" "rsyncd"];
+          packages = [self];
+          operatorModules = [{aos.rsyncd = settings;}];
         };
       evaluated = evaluate {
         enable = true;
@@ -192,27 +189,14 @@ in
       authenticated = evaluate {
         enable = true;
         modules.private.authUsers = ["backup"];
-        secrets.resource = credential;
+        secrets.name = credential;
       };
       invalid = evaluate {
         enable = true;
         modules.private.authUsers = ["backup"];
       };
-      assertionsHold = result:
-        builtins.all (assertion: assertion.assertion) result.config.assertions;
-      requests = evaluated.config.aos.abilities.requests;
-      authenticatedRequests = authenticated.config.aos.abilities.requests;
-      configuration = requests."rsync:daemon-configuration".parameters;
-      contractHolds =
-        assertionsHold evaluated
-        && lib.abilities.types.isPortableOptionTree evaluated.options.rsyncd
-        && assertionsHold authenticated
-        && !assertionsHold invalid
-        && configuration.source.kind == "interpolated-text"
-        && !(lib.hasInfix "/var/lib/aos-pkg-rsyncd" (builtins.toJSON configuration))
-        && !(lib.hasInfix "RSYNCD_CONFIG_GENERATION" (builtins.toJSON requests))
-        && !(builtins.hasAttr "rsync:secrets-file" requests)
-        && builtins.hasAttr "rsync:secrets-file" authenticatedRequests;
+      nativeTests = import ./_rsyncd/native-tests.nix {inherit lib evaluated authenticated invalid;};
+      contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
     in {
       version = testing.mkToolCheck {
         pname = "tool-rsync";
@@ -220,13 +204,13 @@ in
         command = "rsync --version";
       };
 
-      ability-module-contract =
+      native-module-contract =
         if contractHolds
         then
-          pkgs.runCommand "rsyncd-ability-module-contract" {} ''
+          pkgs.runCommand "rsyncd-native-module-contract" {} ''
             mkdir -p "$out"
             printf '%s\n' PASS > "$out/result"
           ''
-        else throw "the rsyncd native ability checks failed";
+        else throw "the rsyncd native module checks failed";
     };
   }

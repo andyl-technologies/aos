@@ -1,73 +1,23 @@
-##! Portable option contracts for the Envoy package configuration module.
+##! Native mergeable option contracts for Envoy configuration.
 {lib}: let
-  abilityTypes = lib.abilities.types;
-
-  runtimeString = abilityTypes.runtimeString;
-  nonEmpty = abilityTypes.refined {
-    name = "non-empty Envoy string";
-    description = "a non-empty Envoy configuration string";
-    type = runtimeString;
-    constraints = [
-      {
-        kind = "minimum-size";
-        minimum = 1;
-      }
-    ];
-  };
-  positiveInt = abilityTypes.integer {
-    minimum = 1;
-    maximum = abilityTypes.limits.maxSafeInteger;
-  };
-  nonNegativeInt = abilityTypes.integer {
-    minimum = 0;
-    maximum = abilityTypes.limits.maxSafeInteger;
-  };
-  port = abilityTypes.integer {
-    minimum = 1;
-    maximum = 65535;
-  };
-  statusCode = abilityTypes.refined {
-    name = "Envoy redirect status";
-    description = "an HTTP redirect status supported by Envoy";
-    type = abilityTypes.integer {
-      minimum = 301;
-      maximum = 308;
-    };
-    constraints = [
-      {
-        kind = "integer-set";
-        values = [301 302 303 307 308];
-      }
-    ];
-  };
-  listOf = element:
-    abilityTypes.list {
-      inherit element;
-      maxItems = 4096;
-    };
-  mapOf = value:
-    abilityTypes.map {
-      keyMaxLength = 1024;
-      maxEntries = 4096;
-      inherit value;
-    };
+  types = lib.types;
+  runtimeString = types.str;
+  nonEmpty = types.strMatching ".+";
+  positiveInt = types.ints.between 1 9007199254740991;
+  nonNegativeInt = types.ints.between 0 9007199254740991;
+  port = types.ints.between 1 65535;
+  statusCode = types.enum [301 302 303 307 308];
+  listOf = types.listOf;
+  mapOf = types.attrsOf;
   nullable = type: description: {
-    type = abilityTypes.optional type;
+    type = types.nullOr type;
     default = null;
     inherit description;
   };
+  runtimeValue = types.oneOf [types.bool (types.ints.between (-9007199254740991) 9007199254740991) types.str];
 
-  runtimeValue = abilityTypes.disjointUnion [
-    abilityTypes.boolean
-    (abilityTypes.integer {
-      minimum = -abilityTypes.limits.maxSafeInteger;
-      maximum = abilityTypes.limits.maxSafeInteger;
-    })
-    runtimeString
-  ];
-
-  socketAddress = abilityTypes.record {
-    fields = {
+  socketAddress = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       address = {
         type = nonEmpty;
         default = "127.0.0.1";
@@ -80,15 +30,15 @@
     };
   };
 
-  tlsContext = abilityTypes.record {
-    fields = {
+  tlsContext = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       sdsSecret = nullable nonEmpty "The SDS secret resource name; never secret material.";
       validationSdsSecret = nullable nonEmpty "The SDS validation-context resource name; never CA material.";
-      certificateCredential = nullable (abilityTypes.enum ["tls-certificate"]) "The credential handle containing the PEM certificate chain.";
-      privateKeyCredential = nullable (abilityTypes.enum ["tls-private-key"]) "The credential handle containing the PEM private key.";
-      validationCaCredential = nullable (abilityTypes.enum ["validation-ca"]) "The credential handle containing trusted CA certificates.";
+      certificateCredential = nullable (types.enum ["tls-certificate"]) "The credential handle containing the PEM certificate chain.";
+      privateKeyCredential = nullable (types.enum ["tls-private-key"]) "The credential handle containing the PEM private key.";
+      validationCaCredential = nullable (types.enum ["validation-ca"]) "The credential handle containing trusted CA certificates.";
       requireClientCertificate = {
-        type = abilityTypes.boolean;
+        type = types.bool;
         default = false;
         description = "Whether a downstream peer must present a valid certificate.";
       };
@@ -101,13 +51,10 @@
     };
   };
 
-  directResponse = abilityTypes.record {
-    fields = {
+  directResponse = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       status = {
-        type = abilityTypes.integer {
-          minimum = 100;
-          maximum = 599;
-        };
+        type = types.ints.between 100 599;
         default = 200;
         description = "The HTTP response status.";
       };
@@ -119,10 +66,10 @@
     };
   };
 
-  redirect = abilityTypes.record {
-    fields = {
+  redirect = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       https = {
-        type = abilityTypes.boolean;
+        type = types.bool;
         default = true;
         description = "Whether the redirect changes the scheme to HTTPS.";
       };
@@ -136,8 +83,8 @@
     };
   };
 
-  routeMatch = abilityTypes.record {
-    fields = {
+  routeMatch = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       prefix = nullable runtimeString "The path prefix to match." // {default = "/";};
       path = nullable runtimeString "The exact path to match.";
       safeRegex = nullable nonEmpty "The RE2-compatible path expression to match.";
@@ -149,8 +96,8 @@
     };
   };
 
-  route = abilityTypes.record {
-    fields = {
+  route = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       match = {
         type = routeMatch;
         default = {};
@@ -178,8 +125,8 @@
     };
   };
 
-  virtualHost = abilityTypes.record {
-    fields = {
+  virtualHost = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       domains = nullable (listOf nonEmpty) "The authority patterns accepted by this virtual host.";
       routes = {
         type = mapOf route;
@@ -199,14 +146,14 @@
     };
   };
 
-  filterChain = abilityTypes.record {
-    fields = {
+  filterChain = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       serverNames = {
         type = listOf nonEmpty;
         default = [];
         description = "The SNI names selecting this filter chain.";
       };
-      transportProtocol = nullable (abilityTypes.enum ["raw_buffer" "tls"]) "An optional transport-protocol match.";
+      transportProtocol = nullable (types.enum ["raw_buffer" "tls"]) "An optional transport-protocol match.";
       applicationProtocols = {
         type = listOf nonEmpty;
         default = [];
@@ -227,8 +174,8 @@
     };
   };
 
-  listener = abilityTypes.record {
-    fields = {
+  listener = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       address = {
         type = nonEmpty;
         default = "127.0.0.1";
@@ -239,12 +186,12 @@
         description = "The listener bind port.";
       };
       protocol = {
-        type = abilityTypes.enum ["TCP" "UDP"];
+        type = types.enum ["TCP" "UDP"];
         default = "TCP";
         description = "The listener socket protocol.";
       };
       transparent = {
-        type = abilityTypes.boolean;
+        type = types.bool;
         default = false;
         description = "Whether the listener accepts transparently redirected traffic.";
       };
@@ -256,8 +203,8 @@
     };
   };
 
-  endpoint = abilityTypes.record {
-    fields = {
+  endpoint = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       address = {
         type = nonEmpty;
         description = "The endpoint IP address or DNS name.";
@@ -280,10 +227,10 @@
     };
   };
 
-  healthCheck = abilityTypes.record {
-    fields = {
+  healthCheck = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       type = {
-        type = abilityTypes.enum ["tcp" "http" "grpc"];
+        type = types.enum ["tcp" "http" "grpc"];
         default = "tcp";
         description = "The active health-check protocol.";
       };
@@ -320,24 +267,24 @@
     };
   };
 
-  circuitBreakers = abilityTypes.record {
-    fields =
-      builtins.mapAttrs (_: default: {
+  circuitBreakers = types.submodule {
+    options = builtins.mapAttrs (_: default:
+      lib.mkOption {
         type = positiveInt;
         inherit default;
         description = "The default-priority circuit-breaker threshold.";
       }) {
-        maxConnections = 1024;
-        maxPendingRequests = 1024;
-        maxRequests = 1024;
-        maxRetries = 3;
-      };
+      maxConnections = 1024;
+      maxPendingRequests = 1024;
+      maxRequests = 1024;
+      maxRetries = 3;
+    };
   };
 
-  cluster = abilityTypes.record {
-    fields = {
+  cluster = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       discovery = {
-        type = abilityTypes.enum ["STATIC" "STRICT_DNS" "LOGICAL_DNS" "EDS"];
+        type = types.enum ["STATIC" "STRICT_DNS" "LOGICAL_DNS" "EDS"];
         default = "STATIC";
         description = "The endpoint discovery policy.";
       };
@@ -353,12 +300,12 @@
         description = "The upstream connection timeout.";
       };
       lbPolicy = {
-        type = abilityTypes.enum ["ROUND_ROBIN" "LEAST_REQUEST" "RING_HASH" "RANDOM" "MAGLEV"];
+        type = types.enum ["ROUND_ROBIN" "LEAST_REQUEST" "RING_HASH" "RANDOM" "MAGLEV"];
         default = "ROUND_ROBIN";
         description = "The load-balancing policy.";
       };
       http2 = {
-        type = abilityTypes.boolean;
+        type = types.bool;
         default = false;
         description = "Whether to use HTTP/2 upstream.";
       };
@@ -376,8 +323,8 @@
     };
   };
 
-  runtimeLayer = abilityTypes.record {
-    fields.values = {
+  runtimeLayer = types.submodule {
+    options.values = lib.mkOption {
       type = mapOf runtimeValue;
       default = {};
       description = "Non-secret static runtime keys.";

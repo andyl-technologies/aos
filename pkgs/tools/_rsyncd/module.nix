@@ -1,92 +1,66 @@
-##! Typed package-owned rsync daemon abilities.
+##! Package-owned rsync daemon exports and native runtime configuration.
 {
   config,
   lib,
+  package,
   ...
 }: let
-  cfg = config.rsyncd;
+  cfg = config.aos.rsyncd;
   serviceEnabled = config.aos.services."rsyncd.main".enable;
   inherit (lib) mkOption;
-  inherit (lib.abilities) resultOf;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  abilityTypes = lib.abilities.types;
-
-  positiveInt = abilityTypes.integer {
-    minimum = 1;
-    maximum = 2147483647;
+  types = lib.types;
+  operations = config.aos.abilities;
+  positiveInt = types.ints.between 1 2147483647;
+  port = types.ints.between 1 65535;
+  boundedText = types.strWith {maxLength = 4096;};
+  authUser = types.strWith {
+    maxLength = 128;
+    pattern = "[A-Za-z0-9][A-Za-z0-9_.@-]*";
   };
-  port = abilityTypes.integer {
-    minimum = 1;
-    maximum = 65535;
-  };
-  boundedText = abilityTypes.string {
-    maxLength = 4096;
-    syntax = null;
-  };
-  authUser = abilityTypes.refined {
-    name = "rsync authentication user";
-    description = "a bounded rsync authentication user name";
-    type = abilityTypes.string {
-      maxLength = 128;
-      syntax = null;
-    };
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[A-Za-z0-9][A-Za-z0-9_.@-]*";
-      }
-    ];
-  };
-  credentialReference = serviceTypes.credentialReference;
-  moduleType = abilityTypes.record {
-    fields = {
-      comment = {
+  credentialReference = types.submodule operations.credential.operations.deliver.input;
+  credentialConfigured = value: (value.name != null) != (value.resource != null);
+  moduleType = types.submodule ({name, ...}: {
+    options = {
+      comment = mkOption {
         type = boundedText;
-        optional = true;
+        default = "AOS rsync module ${name}";
       };
-      readOnly = {
-        type = abilityTypes.boolean;
+      readOnly = mkOption {
+        type = types.bool;
         default = true;
       };
-      authUsers = {
-        type = abilityTypes.list {
-          element = authUser;
+      authUsers = mkOption {
+        type = types.listWith {
+          elemType = authUser;
           maxItems = 1024;
         };
         default = [];
       };
-      maxConnections = {
+      maxConnections = mkOption {
         type = positiveInt;
         default = 8;
       };
     };
-  };
-  moduleMap = abilityTypes.map {
+  });
+  moduleMap = types.attrsWith {
+    elemType = moduleType;
+    maxEntries = 1024;
     keyMaxLength = 128;
     keySyntax = "local-key-v1";
-    maxEntries = 1024;
-    value = moduleType;
   };
   bool = value:
     if value
     then "yes"
     else "no";
   authenticated = builtins.any (module: module.authUsers != []) (builtins.attrValues cfg.modules);
-  literal = text: {
-    kind = "literal";
-    inherit text;
-  };
-  executionPath = value: {
-    kind = "execution-path";
-    inherit value;
-  };
+  literal = text: text;
+  executionPath = value: value;
   moduleFragments = name: module:
     [
       (literal ''
         [${name}]
         path = '')
-      (executionPath (resultOf "export-${name}" "planned-path"))
+      (executionPath (operations.filesystem.operations.directory.effects."rsyncd-export-${name}".outputs.path))
       (literal ''
 
         comment = ${module.comment or "AOS rsync module ${name}"}
@@ -97,99 +71,23 @@
     ]
     ++ lib.optionals (module.authUsers != []) [
       (literal "secrets file = ")
-      (executionPath (resultOf "secrets-file" "credential-path"))
+      (executionPath (operations.credential.operations.deliver.effects.rsyncd-secrets.outputs.path))
       (literal "\n")
     ];
   configurationFragments =
     [
       (literal "pid file = ")
-      (executionPath (resultOf "runtime-storage" "planned-path"))
+      (executionPath (operations.filesystem.operations.directory.effects.rsyncd-runtime.outputs.path))
       (literal "/rsyncd.pid\nlock file = ")
-      (executionPath (resultOf "runtime-storage" "planned-path"))
+      (executionPath (operations.filesystem.operations.directory.effects.rsyncd-runtime.outputs.path))
       (literal "/rsyncd.lock\nuse chroot = no\nlog file = ")
-      (executionPath (resultOf "log-storage" "planned-path"))
+      (executionPath (operations.filesystem.operations.directory.effects.rsyncd-logs.outputs.path))
       (literal "/rsyncd.log\n")
     ]
     ++ lib.concatLists (lib.mapAttrsToList moduleFragments cfg.modules);
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "rsyncd";
-      inherit key interface parameters;
-    };
-  persistentStorage = serviceManagement.forProducers {
-    consumerInstance = "rsyncd";
-    interface = serviceManagement.interfaces.persistentStorageAllocation;
-    producers = [
-      {
-        key = "state-storage";
-        parameters = {
-          name = "state";
-          purpose = "state";
-          mode = "0750";
-        };
-      }
-      {
-        key = "log-storage";
-        parameters = {
-          name = "logs";
-          purpose = "logs";
-          mode = "0750";
-        };
-      }
-    ];
-  };
-  runtimeStorage = producer "runtime-storage" serviceManagement.interfaces.storageAllocation {
-    name = "runtime";
-    purpose = "runtime";
-    mode = "0750";
-  };
-  networkReadiness = producer "network-readiness" serviceManagement.interfaces.networkReadiness {
-    scope = "configured-connectivity";
-    address_families = ["ipv4" "ipv6"];
-  };
-  exportViews = serviceManagement.forProducers {
-    consumerInstance = "rsyncd";
-    interface = serviceManagement.interfaces.storageView;
-    producers =
-      lib.mapAttrsToList (name: _: {
-        key = "export-${name}";
-        parameters = {
-          inherit name;
-          source = resultOf "state-storage" "resource";
-          source_path = resultOf "state-storage" "planned-path";
-          access = "read-write";
-          relative_path = "exports/${name}";
-        };
-      })
-      cfg.modules;
-  };
-  credentialRequest = serviceManagement.forCredentialReferences {
-    consumerInstance = "rsyncd";
-    references = [
-      {
-        key = "secrets-file";
-        name = "secrets-file";
-        reference = cfg.secrets;
-      }
-    ];
-  };
-  configurationRequest = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "rsyncd";
-    declaration = {
-      name = "daemon-configuration";
-      source = {
-        kind = "interpolated-text";
-        fragments = configurationFragments;
-        maximum_size_bytes = abilityTypes.limits.maxDocumentBytes;
-      };
-      mode = "0444";
-    };
-  };
   command = arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "bin/rsync";
+      path = "${package}/bin/rsync";
       inherit arguments;
     };
     ignore_failure = false;
@@ -225,7 +123,6 @@
       operation_profile = "system-service";
       isolated_identity_mapping = "none";
     };
-    consumerInstance = "rsyncd";
     service = "main";
     lifecycle = {
       description = "Rsync file-transfer daemon";
@@ -233,7 +130,7 @@
       environment_files = [];
       condition = [];
       pre_start = [];
-      start = [(command ["--daemon" "--no-detach" "--config" (resultOf "daemon-configuration" "planned-path") "--address" cfg.address "--port" (toString cfg.port)])];
+      start = [(command ["--daemon" "--no-detach" "--config" (operations.configuration.operations.file.effects.rsyncd.outputs.path) "--address" cfg.address "--port" (toString cfg.port)])];
       post_start = [];
       stop = [];
       post_stop = [];
@@ -245,10 +142,10 @@
       stop_timeout_millis = 90000;
     };
     dependencies = {
-      after = [(resultOf "network-readiness" "resource")];
+      after = [(operations.network.operations.ready.effects.rsyncd.outputs.resource)];
       before = [];
       requires = [];
-      wants = [(resultOf "network-readiness" "resource")];
+      wants = [(operations.network.operations.ready.effects.rsyncd.outputs.resource)];
     };
     credentials =
       if withCredential
@@ -256,7 +153,7 @@
         views = [
           {
             name = "secrets-file";
-            reference = resultOf "secrets-file" "credential-path";
+            reference = operations.credential.operations.deliver.effects.rsyncd-secrets.outputs.path;
             inherit (cfg.secrets) encrypted;
             optional = false;
           }
@@ -266,24 +163,24 @@
     configuration.views = [
       {
         name = "daemon";
-        source = resultOf "daemon-configuration" "planned-path";
+        source = operations.configuration.operations.file.effects.rsyncd.outputs.path;
         optional = false;
       }
     ];
     storage.mounts = [
       {
         name = "state";
-        source = resultOf "state-storage" "planned-path";
+        source = operations.filesystem.operations.directory.effects.rsyncd-state.outputs.path;
         access = "read-write";
       }
       {
         name = "runtime";
-        source = resultOf "runtime-storage" "planned-path";
+        source = operations.filesystem.operations.directory.effects.rsyncd-runtime.outputs.path;
         access = "read-write";
       }
       {
         name = "logs";
-        source = resultOf "log-storage" "planned-path";
+        source = operations.filesystem.operations.directory.effects.rsyncd-logs.outputs.path;
         access = "read-write";
       }
     ];
@@ -310,17 +207,10 @@
       permit_core_dumps = false;
     };
   };
-  producers = [
-    persistentStorage
-    runtimeStorage
-    networkReadiness
-    exportViews
-    configurationRequest
-  ];
 in {
-  options.rsyncd = {
+  options.aos.rsyncd = {
     enable = mkOption {
-      type = abilityTypes.boolean;
+      type = types.bool;
       default = false;
       description = "Enable the package-owned rsync daemon.";
     };
@@ -330,7 +220,7 @@ in {
       description = "TCP port on which rsyncd listens.";
     };
     address = mkOption {
-      type = abilityTypes.runtimeString;
+      type = types.str;
       default = "0.0.0.0";
       description = "Address on which rsyncd listens.";
     };
@@ -356,20 +246,68 @@ in {
         {
           assertion =
             !authenticated
-            || serviceManagement.credentialReferenceConfigured cfg.secrets;
+            || credentialConfigured cfg.secrets;
           message = "authenticated rsyncd modules require an rsyncd.secrets credential reference";
         }
       ];
-      aos.services."rsyncd.main" = (serviceRequestFor authenticated) // {enable = cfg.enable;};
+      aos.services."rsyncd.main" = lib.mkDefault ((serviceRequestFor authenticated) // {enable = lib.mkDefault cfg.enable;});
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = serviceEnabled;
+    (lib.mkIf serviceEnabled {
+      aos.abilities = {
+        filesystem.operations.directory.effects =
+          {
+            rsyncd-state = {
+              lifetime = "persistent";
+              input = {
+                path = "/var/lib/aos-pkg-rsync";
+                mode = "0750";
+              };
+            };
+            rsyncd-exports = {
+              lifetime = "persistent";
+              input = {
+                path = "/var/lib/aos-pkg-rsync/exports";
+                parentResource = operations.filesystem.operations.directory.effects.rsyncd-state.outputs.resource;
+                mode = "0750";
+              };
+            };
+            rsyncd-runtime.input = {
+              path = "/run/aos-pkg-rsync";
+              mode = "0750";
+            };
+            rsyncd-logs = {
+              lifetime = "persistent";
+              input = {
+                path = "/var/log/aos-pkg-rsync";
+                mode = "0750";
+              };
+            };
+          }
+          // builtins.listToAttrs (lib.mapAttrsToList (name: _: {
+              name = "rsyncd-export-${name}";
+              value = {
+                lifetime = "persistent";
+                input = {
+                  path = "/var/lib/aos-pkg-rsync/exports/${name}";
+                  parentResource = operations.filesystem.operations.directory.effects.rsyncd-exports.outputs.resource;
+                  mode = "0750";
+                };
+              };
+            })
+            cfg.modules);
+        network.operations.ready.effects.rsyncd.input = {
+          scope = "address-configured";
+          families = ["ipv4" "ipv6"];
+        };
+        configuration.operations.file.effects.rsyncd.input = {
+          path = "/etc/aos/packages/rsync/rsyncd.conf";
+          fragments = configurationFragments;
+          mode = "0444";
+        };
+      };
     })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [credentialRequest];
-      enabled = serviceEnabled && authenticated;
+    (lib.mkIf (serviceEnabled && authenticated) {
+      aos.abilities.credential.operations.deliver.effects.rsyncd-secrets.input = cfg.secrets;
     })
   ];
 }

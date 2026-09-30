@@ -8,6 +8,8 @@
   gnumake,
   go,
   stdenv,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "3.7.1";
   src = fetchurl {
@@ -135,7 +137,8 @@ in
       else [gnumake go];
     runtimeDeps = [];
 
-    abilities = ./_etcd-config;
+    module = ./_etcd-config;
+    moduleDeps = [service-management aos-filesystem-provider];
 
     phases = [
       {
@@ -188,141 +191,8 @@ in
       testing,
       self,
       pkgs,
-      mkSystem,
     }: let
-      serviceManagement = lib.abilities.interfaces.serviceManagement;
-      environmentId = lib.abilities.environmentId {
-        authority = "system-image";
-        key = "etcd-package-check";
-        stage = "host";
-      };
-      credentialProvider = lib.abilities.instanceId {
-        environment = environmentId;
-        key = "credential-provider";
-      };
-      credential = name:
-        lib.abilities.resourceReference {
-          interface = serviceManagement.interfaces.credentialDelivery.identity;
-          resource = {
-            provider = credentialProvider;
-            key = name;
-          };
-          operations = ["observe"];
-          lifetime = "persistent";
-        };
-      tls = prefix: {
-        enable = true;
-        certificate.resource = credential "${prefix}-certificate";
-        privateKey.resource = credential "${prefix}-private-key";
-        trustedCa.resource = credential "${prefix}-trusted-ca";
-      };
-      evalConfig = etcdConfig:
-        mkSystem {
-          systemName = "etcd-package-check";
-          modules = [
-            {
-              environment.systemPackages = [self];
-              etcd = etcdConfig;
-            }
-          ];
-        };
-      assertionsHold = result:
-        builtins.all (assertion: assertion.assertion) result.config.assertions;
-      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
-      evaluated = evalConfig {
-        enable = true;
-        name = "node-a";
-        client = {
-          listenUrls = ["http://127.0.0.1:12379"];
-          advertiseUrls = ["http://127.0.0.1:12379"];
-        };
-        peer = {
-          listenUrls = ["http://127.0.0.1:12380"];
-          advertiseUrls = ["http://127.0.0.1:12380"];
-        };
-        cluster.members.node-a.peerUrls = ["http://127.0.0.1:12380"];
-        storage = {
-          quotaBackendBytes = 104857600;
-          snapshotCount = 1000;
-        };
-      };
-      evaluateTls = clientTls: peerTls: let
-        clientScheme =
-          if clientTls
-          then "https"
-          else "http";
-        peerScheme =
-          if peerTls
-          then "https"
-          else "http";
-      in
-        evalConfig {
-          enable = true;
-          name = "node-a";
-          client = {
-            listenUrls = ["${clientScheme}://127.0.0.1:12379"];
-            advertiseUrls = ["${clientScheme}://127.0.0.1:12379"];
-            tls =
-              if clientTls
-              then tls "client"
-              else {};
-          };
-          peer = {
-            listenUrls = ["${peerScheme}://127.0.0.1:12380"];
-            advertiseUrls = ["${peerScheme}://127.0.0.1:12380"];
-            tls =
-              if peerTls
-              then tls "peer"
-              else {};
-          };
-          cluster.members.node-a.peerUrls = ["${peerScheme}://127.0.0.1:12380"];
-        };
-      tlsEvaluations = {
-        neither = evaluateTls false false;
-        client = evaluateTls true false;
-        peer = evaluateTls false true;
-        both = evaluateTls true true;
-      };
-      credentialRequests = evaluation:
-        builtins.map
-        (request: request.localKey)
-        (builtins.filter
-          (request:
-            lib.abilities.packageForDeclarationAuthority request.authority
-            == self.pname
-            && lib.hasPrefix "credential-" request.localKey)
-          (builtins.attrValues evaluation.config.aos.abilities.requests));
-      expectedRequestOutput = localKey: output: {
-        authority = {
-          kind = "package";
-          package = self.pname;
-        };
-        inherit localKey output;
-      };
-      disabled = evalConfig {};
-      invalidMember = evalConfig {
-        name = "missing";
-        cluster.members.node-a.peerUrls = ["http://127.0.0.1:2380"];
-      };
-      invalidTls = evalConfig {
-        client = {
-          listenUrls = ["https://127.0.0.1:2379"];
-          advertiseUrls = ["https://127.0.0.1:2379"];
-          tls.enable = true;
-        };
-      };
-      invalidDuplicate = evalConfig {
-        client.listenUrls = [
-          "http://127.0.0.1:2379"
-          "http://127.0.0.1:2379"
-        ];
-      };
-      enabledAbilityConfig = evaluated.config.aos.abilities;
-      disabledAbilityConfig = disabled.config.aos.abilities;
-      requests = builtins.attrNames enabledAbilityConfig.requests;
-      mainStorageMounts = enabledAbilityConfig.requests."etcd:main-storage".parameters.mounts;
-      disabledRequirements = builtins.attrNames disabledAbilityConfig.requirementTemplates;
-      configurationSource = enabledAbilityConfig.requests."etcd:server-configuration".parameters.source;
+      nativeTests = import ./_etcd-config/native-tests.nix {inherit lib self;};
       runtimeConfig = builtins.toFile "etcd-runtime-check.json" (builtins.toJSON {
         name = "node-a";
         "data-dir" = "/var/lib/etcd-check";
@@ -334,50 +204,6 @@ in
         "initial-cluster-state" = "new";
         "initial-cluster-token" = "aos-etcd-check";
       });
-      contractHolds =
-        assertionsHold evaluated
-        && lib.abilities.types.isPortableOptionTree evaluated.options.etcd
-        && !assertionsHold invalidMember
-        && !assertionsHold invalidTls
-        && !assertionsHold invalidDuplicate
-        && ownedValues disabledAbilityConfig.instances == {}
-        && ownedValues disabledAbilityConfig.requests == {}
-        && builtins.elem "etcd:credential-delivery" disabledRequirements
-        && builtins.elem "etcd:main-service-lifecycle" disabledRequirements
-        && builtins.elem "etcd:main-lifecycle" requests
-        && builtins.elem "etcd:main-dependencies" requests
-        && builtins.elem "etcd:main-readiness" requests
-        && builtins.elem "etcd:server-configuration" requests
-        && builtins.all assertionsHold (builtins.attrValues tlsEvaluations)
-        && credentialRequests tlsEvaluations.neither == []
-        && credentialRequests tlsEvaluations.client
-        == [
-          "credential-client-certificate"
-          "credential-client-private-key"
-          "credential-client-trusted-ca"
-        ]
-        && credentialRequests tlsEvaluations.peer
-        == [
-          "credential-peer-certificate"
-          "credential-peer-private-key"
-          "credential-peer-trusted-ca"
-        ]
-        && credentialRequests tlsEvaluations.both
-        == credentialRequests tlsEvaluations.client ++ credentialRequests tlsEvaluations.peer
-        && builtins.map
-        (mount:
-          lib.abilities.requestOutputIdentity {
-            requests = enabledAbilityConfig.requests;
-            reference = mount.source;
-          })
-        mainStorageMounts
-        == [
-          (expectedRequestOutput "data-storage" "planned-path")
-          (expectedRequestOutput "runtime-storage" "planned-path")
-        ]
-        && configurationSource.kind == "structured-value"
-        && configurationSource.format == "json"
-        && !(lib.hasInfix "/var/lib/aos-pkg-etcd" (builtins.toJSON configurationSource));
     in {
       version = testing.mkToolCheck {
         pname = "tool-etcd";
@@ -423,14 +249,14 @@ in
         '';
       };
 
-      ability-module-contract =
-        if contractHolds
+      native-module-contract =
+        if builtins.all (value: value) (builtins.attrValues nativeTests)
         then
-          pkgs.runCommand "db-etcd-ability-module-contract" {} ''
+          pkgs.runCommand "db-etcd-native-module-contract" {} ''
             mkdir -p "$out"
             printf '%s\n' PASS >"$out/result"
           ''
-        else throw "the etcd ability module contract checks failed";
+        else throw "the etcd native module contract checks failed";
     };
 
     meta = {

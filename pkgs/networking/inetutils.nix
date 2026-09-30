@@ -8,6 +8,7 @@
   libxcrypt,
   perl,
   stdenv,
+  aos-filesystem-provider,
 }: let
   version = "2.8";
 in
@@ -98,7 +99,8 @@ in
     buildDeps = [gnumake perl];
     runtimeDeps = [ncurses libxcrypt];
     propagatedDeps = [];
-    abilities = ./_inetutils;
+    module = ./_inetutils;
+    moduleDeps = [aos-filesystem-provider];
     configureFlags =
       "--with-ncurses-include-dir=${ncurses}/include"
       + (

@@ -3,31 +3,12 @@
   lib,
   pkgs,
 }: let
-  evaluateBase = import ./base-module-evaluation.nix {inherit lib pkgs;};
-  environment = lib.abilities.environmentId {
-    authority = "test";
-    key = "mariadb";
-    stage = "host";
-  };
-  credential = key:
-    lib.abilities.resourceReference {
-      interface = lib.abilities.interfaces.serviceManagement.interfaces.credentialDelivery.identity;
-      resource = {
-        provider = lib.abilities.instanceId {
-          inherit environment;
-          key = "credentials";
-        };
-        inherit key;
-      };
-      operations = ["observe"];
-      lifetime = "persistent";
-    };
+  credential = name: name;
   evaluateWith = settings: extraModules:
-    evaluateBase {
-      name = "mariadb";
-      module.mariadb = settings;
-      packages = [pkgs.mariadb pkgs.systemd];
-      inherit extraModules;
+    lib.evalPackageModules {
+      scope = ["test" "mariadb"];
+      packages = [pkgs.mariadb];
+      operatorModules = [{aos.mariadb = settings;}] ++ extraModules;
     };
   evaluate = settings: evaluateWith settings [];
   disabled = evaluate {};
@@ -42,22 +23,17 @@
     enable = true;
     tls = {
       enable = true;
-      certificate.resource = credential "certificate";
-      privateKey.resource = credential "private-key";
+      certificate.name = credential "certificate";
+      privateKey.name = credential "private-key";
     };
-    bootstrap.adminSql.resource = credential "admin-sql";
+    bootstrap.adminSql.name = credential "admin-sql";
   };
-  requestsFor = evaluation:
-    lib.filterAttrs (name: _: lib.hasPrefix "mariadb:" name) evaluation.config.aos.abilities.requests;
-  plainRequests = requestsFor plain;
-  tlsRequests = requestsFor tls;
+  files = result: result.config.aos.abilities.configuration.operations.file.effects;
 in
-  assert requestsFor disabled == {};
-  assert requestsFor disabledServices == {};
-  assert disabledServices.config.aos.abilities.requirementTemplates == plain.config.aos.abilities.requirementTemplates;
-  assert plainRequests ? "mariadb:main-lifecycle";
-  assert !(plainRequests ? "mariadb:main-credentials");
-  assert !(plainRequests ? "mariadb:bootstrap-configuration");
-  assert tlsRequests ? "mariadb:main-credentials";
-  assert tlsRequests ? "mariadb:bootstrap-configuration";
-  assert tlsRequests ? "mariadb:credential-admin-bootstrap-sql"; true
+  assert files disabled == {} && files disabledServices == {};
+  assert plain.config.aos.services."mariadb.main".enable;
+  assert !(files plain ? mariadb-bootstrap);
+  assert files tls ? mariadb-bootstrap;
+  assert (files tls).mariadb-bootstrap.input.mode == "0600";
+  assert builtins.length tls.config.aos.services."mariadb.main".credentials.views == 2;
+  assert tls.config.aos.abilities.credential.operations.deliver.effects.mariadb-admin-bootstrap-sql.input.name == "admin-sql"; true

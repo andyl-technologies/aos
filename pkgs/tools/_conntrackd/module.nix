@@ -1,46 +1,18 @@
-##! Typed, package-owned conntrackd service declaration.
+##! Package-owned conntrackd settings and native runtime resources.
 {
   config,
   lib,
+  package,
   ...
 }: let
-  cfg = config.conntrackd;
+  cfg = config.aos.conntrackd;
   inherit (lib) mkOption;
-  inherit (lib.abilities) resultOf;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  abilityTypes = lib.abilities.types;
-
-  positiveInt = abilityTypes.integer {
-    minimum = 1;
-    maximum = 9007199254740991;
-  };
-  port = abilityTypes.integer {
-    minimum = 1;
-    maximum = 65535;
-  };
-  ipv4Address = abilityTypes.refined {
-    name = "conntrackd IPv4 address";
-    description = "an IPv4 address accepted by conntrackd";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[0-9]{1,3}(\\.[0-9]{1,3}){3}";
-      }
-    ];
-  };
-  interfaceName = abilityTypes.refined {
-    name = "conntrackd interface name";
-    description = "a non-empty network interface name accepted by conntrackd";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[A-Za-z0-9][A-Za-z0-9_.:-]*";
-      }
-    ];
-  };
+  types = lib.types;
+  operations = config.aos.abilities;
+  positiveInt = types.ints.between 1 9007199254740991;
+  port = types.ints.between 1 65535;
+  ipv4Address = types.strMatching "[0-9]{1,3}(\\.[0-9]{1,3}){3}";
+  interfaceName = types.strMatching "[A-Za-z0-9][A-Za-z0-9_.:-]*";
   onOff = value:
     if value
     then "on"
@@ -65,17 +37,11 @@
       LogFile ${onOff cfg.logConnections}
     }
   '';
-  literal = text: {
-    kind = "literal";
-    inherit text;
-  };
-  path = value: {
-    kind = "execution-path";
-    inherit value;
-  };
-  configPath = resultOf "daemon-configuration" "planned-path";
-  runtimePath = resultOf "runtime-storage" "planned-path";
-  logPath = resultOf "log-storage" "planned-path";
+  literal = text: text;
+  path = value: value;
+  configPath = operations.configuration.operations.file.effects.conntrackd.outputs.path;
+  runtimePath = operations.filesystem.operations.directory.effects.conntrackd-runtime.outputs.path;
+  logPath = operations.filesystem.operations.directory.effects.conntrackd-logs.outputs.path;
   configurationFragments = [
     (literal ''
       General {
@@ -109,43 +75,10 @@
   ];
   command = arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "sbin/conntrackd";
+      path = "${package}/sbin/conntrackd";
       inherit arguments;
     };
     ignore_failure = false;
-  };
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "conntrack-tools";
-      inherit key interface parameters;
-    };
-  runtimeStorage = producer "runtime-storage" serviceManagement.interfaces.storageAllocation {
-    name = "runtime";
-    purpose = "runtime";
-    mode = "0750";
-  };
-  logStorage = producer "log-storage" serviceManagement.interfaces.persistentStorageAllocation {
-    name = "logs";
-    purpose = "logs";
-    mode = "0750";
-  };
-  networkReadiness = producer "network-readiness" serviceManagement.interfaces.networkReadiness {
-    scope = "configured-connectivity";
-    address_families = ["ipv4"];
-  };
-  configuration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "conntrack-tools";
-    declaration = {
-      name = "daemon-configuration";
-      source = {
-        kind = "interpolated-text";
-        fragments = configurationFragments;
-        maximum_size_bytes = abilityTypes.limits.maxDocumentBytes;
-      };
-      mode = "0444";
-    };
   };
   service = {
     policy.hardening = {
@@ -178,7 +111,6 @@
       operation_profile = "system-service";
       isolated_identity_mapping = "none";
     };
-    consumerInstance = "conntrack-tools";
     service = "main";
     lifecycle = {
       description = "Connection tracking state daemon";
@@ -191,7 +123,6 @@
       stop = [];
       post_stop = [];
       restart = "on-failure";
-      restart_token = cfg.restartToken;
       restart_delay_millis = 1000;
       configuration_change_action = "restart";
       remain_after_exit = false;
@@ -199,10 +130,10 @@
       stop_timeout_millis = 60000;
     };
     dependencies = {
-      after = [(resultOf "network-readiness" "resource")];
+      after = [(operations.network.operations.ready.effects.conntrackd.outputs.resource)];
       before = [];
       requires = [];
-      wants = [(resultOf "network-readiness" "resource")];
+      wants = [(operations.network.operations.ready.effects.conntrackd.outputs.resource)];
     };
     supervision = {
       startup_protocol = "notification";
@@ -260,26 +191,15 @@
       permit_core_dumps = false;
     };
   };
-  producers = [
-    runtimeStorage
-    logStorage
-    networkReadiness
-    configuration
-  ];
 in {
-  options.conntrackd = {
+  options.aos.conntrackd = {
     enable = mkOption {
-      type = abilityTypes.boolean;
+      type = types.bool;
       default = false;
       description = "Enable the package-owned connection tracking daemon.";
     };
-    restartToken = mkOption {
-      type = abilityTypes.optional serviceTypes.restartToken;
-      default = null;
-      description = "Operator-controlled token whose change requests a service restart.";
-    };
     mode = mkOption {
-      type = abilityTypes.enum ["stats" "sync"];
+      type = types.enum ["stats" "sync"];
       default = "stats";
       description = "Run as a local statistics collector or an FTFW state replicator.";
     };
@@ -304,12 +224,12 @@ in {
       description = "Maximum dynamically grown netlink buffer size in bytes.";
     };
     pollSeconds = mkOption {
-      type = abilityTypes.optional positiveInt;
+      type = types.nullOr positiveInt;
       default = null;
       description = "Optional kernel conntrack polling interval.";
     };
     logConnections = mkOption {
-      type = abilityTypes.boolean;
+      type = types.bool;
       default = false;
       description = "Log destroyed connections in statistics mode.";
     };
@@ -335,7 +255,7 @@ in {
         description = "UDP replication port.";
       };
       checksum = mkOption {
-        type = abilityTypes.boolean;
+        type = types.bool;
         default = true;
         description = "Verify checksums on state replication messages.";
       };
@@ -364,11 +284,33 @@ in {
           message = "conntrackd sync localAddress and peerAddress must differ";
         }
       ];
-      aos.services."conntrack-tools.main" = service // {enable = cfg.enable;};
+      aos.services."conntrack-tools.main" = lib.mkDefault (service // {enable = lib.mkDefault cfg.enable;});
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = config.aos.services."conntrack-tools.main".enable;
+    (lib.mkIf config.aos.services."conntrack-tools.main".enable {
+      aos.abilities = {
+        filesystem.operations.directory.effects = {
+          conntrackd-runtime.input = {
+            path = "/run/aos-pkg-conntrack-tools";
+            mode = "0750";
+          };
+          conntrackd-logs = {
+            lifetime = "persistent";
+            input = {
+              path = "/var/log/aos-pkg-conntrack-tools";
+              mode = "0750";
+            };
+          };
+        };
+        configuration.operations.file.effects.conntrackd.input = {
+          path = "/etc/aos/packages/conntrack-tools/conntrackd.conf";
+          fragments = configurationFragments;
+          mode = "0444";
+        };
+        network.operations.ready.effects.conntrackd.input = {
+          scope = "address-configured";
+          families = ["ipv4"];
+        };
+      };
     })
   ];
 }

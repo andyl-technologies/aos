@@ -2,27 +2,23 @@
 {
   config,
   lib,
+  package,
   ...
 }: let
   envoyTypes = import ./types.nix {inherit lib;};
   render = import ./render.nix {inherit lib;};
-  inherit (lib.abilities) resultOf;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  abilityTypes = lib.abilities.types;
+  types = lib.types;
+  operations = config.aos.abilities;
+  credentialConfigured = value: (value.name != null) != (value.resource != null);
   credentialNames = [
     "tls-certificate"
     "tls-private-key"
     "validation-ca"
   ];
-  credentialReference = serviceTypes.credentialReference;
-  credentialReferences = abilityTypes.map {
-    keyMaxLength = 64;
-    maxEntries = builtins.length credentialNames;
-    value = credentialReference;
-  };
-  nodeType = abilityTypes.record {
-    fields = {
+  credentialReference = types.submodule operations.credential.operations.deliver.input;
+  credentialReferences = types.attrsOf credentialReference;
+  nodeType = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       id = {
         type = envoyTypes.nonEmpty;
         default = "aos-envoy";
@@ -40,10 +36,10 @@
       };
     };
   };
-  dynamicResourcesType = abilityTypes.record {
-    fields = {
+  dynamicResourcesType = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       enableAds = {
-        type = abilityTypes.boolean;
+        type = types.bool;
         default = false;
         description = "Whether to configure aggregated discovery service.";
       };
@@ -53,21 +49,21 @@
         description = "The static cluster serving ADS and SDS.";
       };
       listenersFromAds = {
-        type = abilityTypes.boolean;
+        type = types.bool;
         default = false;
         description = "Whether listeners are obtained through LDS over ADS.";
       };
       clustersFromAds = {
-        type = abilityTypes.boolean;
+        type = types.bool;
         default = false;
         description = "Whether clusters are obtained through CDS over ADS.";
       };
     };
   };
-  adminType = abilityTypes.record {
-    fields = {
+  adminType = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       enable = {
-        type = abilityTypes.boolean;
+        type = types.bool;
         default = true;
         description = "Whether to expose the loopback administration API.";
       };
@@ -82,27 +78,27 @@
         description = "The administration API port.";
       };
       accessLog = {
-        type = abilityTypes.enum ["disabled" "service-log"];
+        type = types.enum ["disabled" "service-log"];
         default = "service-log";
         description = "Whether administration requests are discarded or written to the service-owned log storage.";
       };
     };
   };
-  telemetryType = abilityTypes.record {
-    fields = {
+  telemetryType = types.submodule {
+    options = lib.mapAttrs (_: definition: lib.mkOption definition) {
       statsPrefix = {
-        type = abilityTypes.runtimeString;
+        type = types.str;
         default = "";
         description = "An optional fixed tag attached to emitted metrics.";
       };
       statsd = {
-        type = abilityTypes.optional envoyTypes.socketAddress;
+        type = types.nullOr envoyTypes.socketAddress;
         default = null;
         description = "An optional StatsD sink.";
       };
     };
   };
-  cfg = envoyTypes.normalize config.envoy;
+  cfg = envoyTypes.normalize config.aos.envoy;
   serviceEnabled = config.aos.services."envoy.main".enable;
   named = attrs: builtins.map (name: attrs.${name}) (builtins.attrNames attrs);
   allChains = lib.concatLists (builtins.map (listener: named listener.filterChains) (named cfg.listeners));
@@ -185,169 +181,30 @@
   configuredCredentials =
     builtins.filter
     (name:
-      cfg.credentials ? ${name}
-      && serviceManagement.credentialReferenceConfigured cfg.credentials.${name})
+      cfg.credentials ? ${name})
     usedCredentials;
-  isDeferredResult = value:
-    builtins.isAttrs value
-    && (value._type or null) == "aos-request-output-reference";
-  documentKind = value:
-    if isDeferredResult value || builtins.isString value
-    then "string"
-    else if value == null
-    then "null"
-    else if builtins.isBool value
-    then "boolean"
-    else if builtins.isInt value
-    then "integer"
-    else if builtins.isList value
-    then "array"
-    else if builtins.isAttrs value
-    then "object"
-    else throw "Envoy rendered an unsupported bootstrap value";
-  valueTypeFor = values: let
-    nonNullValues = builtins.filter (value: value != null) values;
-    kinds = lib.unique (builtins.map documentKind nonNullValues);
-    typeForKind = kind: let
-      matching = builtins.filter (value: documentKind value == kind) nonNullValues;
-    in
-      if kind == "boolean"
-      then abilityTypes.boolean
-      else if kind == "integer"
-      then
-        abilityTypes.integer {
-          minimum = -abilityTypes.limits.maxSafeInteger;
-          maximum = abilityTypes.limits.maxSafeInteger;
-        }
-      else if kind == "string"
-      then
-        if builtins.any isDeferredResult matching
-        then abilityTypes.deferredResult abilityTypes.executionPath
-        else abilityTypes.runtimeString
-      else if kind == "array"
-      then let
-        elements = lib.concatLists matching;
-      in
-        abilityTypes.list {
-          element =
-            if elements == []
-            then abilityTypes.runtimeString
-            else valueTypeFor elements;
-          maxItems = abilityTypes.limits.maxCollectionItems;
-        }
-      else if kind == "object"
-      then let
-        keys = lib.unique (lib.concatLists (builtins.map builtins.attrNames matching));
-        presentValues = key:
-          builtins.map (value: value.${key}) (builtins.filter (value: builtins.hasAttr key value) matching);
-      in
-        abilityTypes.documentRecord {
-          keyMaxLength = 1024;
-          fields = builtins.listToAttrs (builtins.map (key: {
-              name = key;
-              value = valueTypeFor (presentValues key);
-            })
-            keys);
-          optional =
-            builtins.filter
-            (key: builtins.any (value: !(builtins.hasAttr key value)) matching)
-            keys;
-        }
-      else throw "Envoy bootstrap type inference encountered an unsupported value kind";
-    concrete =
-      if kinds == []
-      then abilityTypes.runtimeString
-      else if builtins.length kinds == 1
-      then typeForKind (builtins.head kinds)
-      else abilityTypes.disjointUnion (builtins.map typeForKind kinds);
-  in
-    if builtins.length nonNullValues != builtins.length values
-    then abilityTypes.optional concrete
-    else concrete;
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "envoy";
-      inherit key interface parameters;
-    };
   command = arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "bin/envoy";
+      path = "${package}/bin/envoy";
       inherit arguments;
     };
     ignore_failure = false;
   };
   credentialPaths = builtins.listToAttrs (builtins.map (name: {
       inherit name;
-      value = resultOf "credential-${name}" "credential-path";
+      value = operations.credential.operations.deliver.effects."envoy-${name}".outputs.path;
     })
     configuredCredentials);
   adminLogEnabled = cfg.admin.enable && cfg.admin.accessLog == "service-log";
   adminLogPath =
     if adminLogEnabled
-    then resultOf "admin-log-view" "planned-path"
+    then operations.filesystem.operations.view.effects.envoy-admin-log.outputs.path
     else null;
   renderedBootstrap =
     render {
       inherit adminLogPath credentialPaths;
     }
     cfg;
-  storage = serviceManagement.forProducers {
-    consumerInstance = "envoy";
-    interface = serviceManagement.interfaces.persistentStorageAllocation;
-    producers = [
-      {
-        key = "state-storage";
-        parameters = {
-          name = "state";
-          purpose = "state";
-          mode = "0750";
-        };
-      }
-      {
-        key = "log-storage";
-        parameters = {
-          name = "logs";
-          purpose = "logs";
-          mode = "0750";
-        };
-      }
-    ];
-  };
-  adminLogView = producer "admin-log-view" serviceManagement.interfaces.storageView {
-    name = "admin-access-log";
-    source = resultOf "log-storage" "resource";
-    source_path = resultOf "log-storage" "planned-path";
-    access = "read-write";
-    relative_path = "admin-access.log";
-  };
-  networkReadiness = producer "network-readiness" serviceManagement.interfaces.networkReadiness {
-    scope = "configured-connectivity";
-    address_families = ["ipv4" "ipv6"];
-  };
-  credentialRequests = serviceManagement.forCredentialReferences {
-    consumerInstance = "envoy";
-    references =
-      builtins.map (name: {
-        key = "credential-${name}";
-        inherit name;
-        reference = cfg.credentials.${name};
-      })
-      configuredCredentials;
-  };
-  configuration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "envoy";
-    declaration = {
-      name = "bootstrap-configuration";
-      source = serviceManagement.structuredSource {
-        format = "json";
-        valueType = valueTypeFor [renderedBootstrap];
-        value = renderedBootstrap;
-      };
-      mode = "0444";
-    };
-  };
   service = {
     policy.hardening = {
       allow_privilege_escalation = false;
@@ -379,20 +236,18 @@
       operation_profile = "restricted";
       isolated_identity_mapping = "none";
     };
-    consumerInstance = "envoy";
     service = "main";
     lifecycle = {
       description = "Envoy proxy";
       execution_model = "foreground";
       environment_files = [];
       condition = [];
-      pre_start = [(command ["--mode" "validate" "--config-path" (resultOf "bootstrap-configuration" "planned-path")])];
-      start = [(command ["--disable-hot-restart" "--config-path" (resultOf "bootstrap-configuration" "planned-path")])];
+      pre_start = [(command ["--mode" "validate" "--config-path" (operations.configuration.operations.file.effects.envoy.outputs.path)])];
+      start = [(command ["--disable-hot-restart" "--config-path" (operations.configuration.operations.file.effects.envoy.outputs.path)])];
       post_start = [];
       stop = [];
       post_stop = [];
       restart = "on-failure";
-      restart_token = cfg.restartToken;
       restart_delay_millis = 2000;
       configuration_change_action = "restart";
       remain_after_exit = false;
@@ -400,10 +255,10 @@
       stop_timeout_millis = 60000;
     };
     dependencies = {
-      after = [(resultOf "network-readiness" "resource")];
+      after = [(operations.network.operations.ready.effects.envoy.outputs.resource)];
       before = [];
       requires = [];
-      wants = [(resultOf "network-readiness" "resource")];
+      wants = [(operations.network.operations.ready.effects.envoy.outputs.resource)];
     };
     supervision = {
       startup_protocol = "process";
@@ -422,7 +277,7 @@
           builtins.map (name: {
             inherit name;
             inherit (cfg.credentials.${name}) encrypted;
-            reference = resultOf "credential-${name}" "credential-path";
+            reference = operations.credential.operations.deliver.effects."envoy-${name}".outputs.path;
             optional = false;
           })
           configuredCredentials;
@@ -430,19 +285,19 @@
     configuration.views = [
       {
         name = "bootstrap";
-        source = resultOf "bootstrap-configuration" "planned-path";
+        source = operations.configuration.operations.file.effects.envoy.outputs.path;
         optional = false;
       }
     ];
     storage.mounts = [
       {
         name = "state";
-        source = resultOf "state-storage" "planned-path";
+        source = operations.filesystem.operations.directory.effects.envoy-state.outputs.path;
         access = "read-write";
       }
       {
         name = "logs";
-        source = resultOf "log-storage" "planned-path";
+        source = operations.filesystem.operations.directory.effects.envoy-logs.outputs.path;
         access = "read-write";
       }
     ];
@@ -474,9 +329,9 @@
     };
   };
 in {
-  options.envoy = {
+  options.aos.envoy = {
     enable = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = types.bool;
       default = false;
       description = "Enable the Envoy proxy service.";
     };
@@ -531,17 +386,11 @@ in {
       default = {};
       description = "Typed credential resources used by static TLS contexts.";
     };
-
-    restartToken = lib.mkOption {
-      type = abilityTypes.optional serviceTypes.restartToken;
-      default = null;
-      description = "Operator-controlled token whose change requests a service restart.";
-    };
   };
 
   config = lib.mkMerge [
     {
-      aos.services."envoy.main" = service // {enable = cfg.enable;};
+      aos.services."envoy.main" = lib.mkDefault (service // {enable = lib.mkDefault cfg.enable;});
 
       assertions = [
         {
@@ -579,7 +428,7 @@ in {
             || builtins.all
             (name:
               cfg.credentials ? ${name}
-              && serviceManagement.credentialReferenceConfigured cfg.credentials.${name})
+              && credentialConfigured cfg.credentials.${name})
             usedCredentials;
           message = "each Envoy TLS credential handle must have a typed envoy.credentials resource";
         }
@@ -617,20 +466,46 @@ in {
         }
       ];
     }
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [storage networkReadiness configuration];
-      enabled = serviceEnabled;
+    (lib.mkIf serviceEnabled {
+      aos.abilities = {
+        filesystem.operations.directory.effects = {
+          envoy-state = {
+            lifetime = "persistent";
+            input = {
+              path = "/var/lib/aos-pkg-envoy";
+              mode = "0750";
+            };
+          };
+          envoy-logs = {
+            lifetime = "persistent";
+            input = {
+              path = "/var/log/aos-pkg-envoy";
+              mode = "0750";
+            };
+          };
+        };
+        network.operations.ready.effects.envoy.input = {
+          scope = "address-configured";
+          families = ["ipv4" "ipv6"];
+        };
+        credential.operations.deliver.effects = builtins.listToAttrs (builtins.map (name: {
+            name = "envoy-${name}";
+            value.input = cfg.credentials.${name};
+          })
+          configuredCredentials);
+        configuration.operations.file.effects.envoy.input = {
+          path = "/etc/aos/packages/envoy/bootstrap.json";
+          format = "json";
+          value = renderedBootstrap;
+          mode = "0444";
+        };
+      };
     })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [credentialRequests];
-      enabled = serviceEnabled && configuredCredentials != [];
-    })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [adminLogView];
-      enabled = serviceEnabled && adminLogEnabled;
+    (lib.mkIf (serviceEnabled && adminLogEnabled) {
+      aos.abilities.filesystem.operations.view.effects.envoy-admin-log.input = {
+        sourcePath = operations.filesystem.operations.directory.effects.envoy-logs.outputs.path;
+        relativePath = "admin-access.log";
+      };
     })
   ];
 }

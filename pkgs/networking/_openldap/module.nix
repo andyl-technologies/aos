@@ -1,95 +1,34 @@
-##! Typed package-owned OpenLDAP server abilities.
+##! Package-owned OpenLDAP server settings and native runtime configuration.
 {
   config,
   lib,
+  package,
   ...
 }: let
-  cfg = config.openldap;
+  cfg = config.aos.openldap;
   serviceEnabled = config.aos.services."openldap.main".enable;
   inherit (lib) mkOption;
-  inherit (lib.abilities) resultOf;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  abilityTypes = lib.abilities.types;
-
-  positiveInt = abilityTypes.integer {
-    minimum = 1;
-    maximum = abilityTypes.limits.maxSafeInteger;
-  };
-  ldapUrl = abilityTypes.refined {
-    name = "OpenLDAP listener URL";
-    description = "an LDAP, LDAPS, or local-domain listener URL";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "(ldap|ldaps|ldapi)://[^[:space:]]*";
-      }
-    ];
-  };
-  ldapUrls = abilityTypes.refined {
-    name = "OpenLDAP listener URLs";
-    description = "a non-empty list of OpenLDAP listener URLs";
-    type = abilityTypes.list {
-      element = ldapUrl;
-      maxItems = abilityTypes.limits.maxCollectionItems;
-    };
-    constraints = [
-      {
-        kind = "minimum-size";
-        minimum = 1;
-      }
-    ];
-  };
-  distinguishedName = abilityTypes.refined {
-    name = "OpenLDAP distinguished name";
-    description = "a non-empty distinguished name without control characters";
-    type = abilityTypes.runtimeString;
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[A-Za-z][^[:cntrl:]]*";
-      }
-    ];
-  };
-  credentialReference = serviceTypes.credentialReference;
-  literal = text: {
-    kind = "literal";
-    inherit text;
-  };
-  executionPath = value: {
-    kind = "execution-path";
-    inherit value;
-  };
-  artifactPath = path: {
-    kind = "artifact-file-path";
-    reference = {
-      artifact = lib.abilities.packageOutput {};
-      inherit path;
-    };
-  };
-  artifactDirectoryPath = path: {
-    kind = "artifact-directory-path";
-    reference = {
-      artifact = lib.abilities.packageOutput {};
-      inherit path;
-    };
-  };
+  types = lib.types;
+  operations = config.aos.abilities;
+  positiveInt = types.ints.between 1 9007199254740991;
+  ldapUrl = types.strMatching "(ldap|ldaps|ldapi)://[^[:space:]]*";
+  ldapUrls = types.listOf ldapUrl;
+  distinguishedName = types.strMatching "[A-Za-z][^[:cntrl:]]*";
+  credentialReference = types.submodule operations.credential.operations.deliver.input;
+  credentialConfigured = value: (value.name != null) != (value.resource != null);
+  credentialPath = name: operations.credential.operations.deliver.effects."openldap-${name}".outputs.path;
+  literal = text: text;
+  executionPath = value: value;
+  artifactPath = path: "${package}/${path}";
+  artifactDirectoryPath = artifactPath;
   quoted = value: lib.replaceStrings ["\\" "\""] ["\\\\" "\\\""] value;
   credentialContent = name: {
-    kind = "credential-content";
-    resource = resultOf "credential-${name}" "resource";
-    path = resultOf "credential-${name}" "credential-path";
+    credentialPath = credentialPath name;
+    maximumBytes = 65536;
   };
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "openldap";
-      inherit key interface parameters;
-    };
   command = entryPoint: arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = entryPoint;
+      path = "${package}/${entryPoint}";
       inherit arguments;
     };
     ignore_failure = false;
@@ -126,20 +65,20 @@
       (literal "\nmodulepath ")
       (artifactDirectoryPath "libexec/openldap")
       (literal "\npidfile ")
-      (executionPath (resultOf "runtime-storage" "planned-path"))
+      (executionPath (operations.filesystem.operations.directory.effects.openldap-runtime.outputs.path))
       (literal "/slapd.pid\nargsfile ")
-      (executionPath (resultOf "runtime-storage" "planned-path"))
+      (executionPath (operations.filesystem.operations.directory.effects.openldap-runtime.outputs.path))
       (literal "/slapd.args\ndatabase mdb\nmaxsize ${toString cfg.database.maxBytes}\nsuffix \"${quoted cfg.suffix}\"\nrootdn \"${quoted cfg.rootDn}\"\ndirectory ")
-      (executionPath (resultOf "data-view" "planned-path"))
+      (executionPath (operations.filesystem.operations.directory.effects.openldap-data.outputs.path))
       (literal "\nindex objectClass eq\n")
     ]
     ++ lib.optionals withTls [
       (literal "TLSCertificateFile ")
-      (executionPath (resultOf "credential-tls-certificate" "credential-path"))
+      (executionPath (credentialPath "tls-certificate"))
       (literal "\nTLSCertificateKeyFile ")
-      (executionPath (resultOf "credential-tls-private-key" "credential-path"))
+      (executionPath (credentialPath "tls-private-key"))
       (literal "\nTLSCACertificateFile ")
-      (executionPath (resultOf "credential-tls-ca" "credential-path"))
+      (executionPath (credentialPath "tls-ca"))
       (literal "\nTLSVerifyClient ${cfg.tls.verifyClient}\n")
     ]
     ++ [
@@ -147,209 +86,138 @@
       (credentialContent "root-password")
       (literal "\n")
     ];
-  abilityFragmentsFor = withTls: let
-    credentials = credentialsFor withTls;
-    persistentStorage = producer "state-storage" serviceManagement.interfaces.persistentStorageAllocation {
-      name = "state";
-      purpose = "state";
-      mode = "0700";
-    };
-    runtimeStorage = producer "runtime-storage" serviceManagement.interfaces.storageAllocation {
-      name = "runtime";
-      purpose = "runtime";
-      mode = "0700";
-    };
-    dataView = producer "data-view" serviceManagement.interfaces.storageView {
-      name = "data";
-      source = resultOf "state-storage" "resource";
-      source_path = resultOf "state-storage" "planned-path";
-      access = "read-write";
-      relative_path = "data";
-    };
-    group = producer "service-group" serviceManagement.interfaces.groupResolution {
-      name = "openldap";
-      allocation = "managed";
-    };
-    principal = producer "service-principal" serviceManagement.interfaces.principalResolution {
-      name = "openldap";
-      allocation = "managed";
-      description = "OpenLDAP directory service";
-      home_directory = resultOf "state-storage" "planned-path";
-      login_access = "disabled";
-      primary_group = resultOf "service-group" "group-name";
-      supplementary_groups = [];
-    };
-    networkReadiness = producer "network-readiness" serviceManagement.interfaces.networkReadiness {
-      scope = "configured-connectivity";
-      address_families = ["ipv4" "ipv6"];
-    };
-    credentialRequests = serviceManagement.forCredentialReferences {
-      consumerInstance = "openldap";
-      references =
-        builtins.map (credential: {
-          key = "credential-${credential.name}";
-          inherit (credential) name reference;
-        })
-        credentials;
-    };
-    configurationRequest = serviceManagement.forConfiguration {
-      inherit serviceTypes;
-      consumerInstance = "openldap";
-      declaration = {
-        name = "server-configuration";
-        source = {
-          kind = "interpolated-text";
-          fragments = configurationFragmentsFor withTls;
-          maximum_size_bytes = abilityTypes.limits.maxDocumentBytes;
-        };
-        mode = "0600";
-        owner = resultOf "service-principal" "principal-name";
+  usedCredentials = credentialsFor cfg.tls.enable;
+  account = operations.identity.operations.principal.effects.openldap.outputs.name;
+  group = operations.identity.operations.group.effects.openldap.outputs.name;
+  service = {
+    policy.hardening = {
+      allow_privilege_escalation = false;
+      ambient_privileges = [];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = [];
       };
+      resource_control_delegation = false;
+      resource_control_access = "read-only";
+      device_access_scope = "shared";
+      host_clock_mutation = false;
+      host_name_mutation = false;
+      operating_system_log_access = false;
+      operating_system_extension_access = false;
+      operating_system_tunable_access = false;
+      lock_execution_personality = true;
+      writable_executable_memory = false;
+      isolation_domains = [];
+      network_families = ["ipv4" "ipv6" "local"];
+      memory_pressure_adjustment = 0;
+      permit_realtime = false;
+      permit_elevated_file_identity = false;
+      process_visibility = "all";
+      security_label = "aos-pkg-openldap";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = [];
+      operation_profile = "system-service";
+      isolated_identity_mapping = "none";
     };
-    serviceRequest = {
-      policy.hardening = {
-        allow_privilege_escalation = false;
-        ambient_privileges = [];
-        privilege_bounds = {
-          kind = "restricted";
-          privileges = [];
-        };
-        resource_control_delegation = false;
-        resource_control_access = "read-only";
-        device_access_scope = "shared";
-        host_clock_mutation = false;
-        host_name_mutation = false;
-        operating_system_log_access = false;
-        operating_system_extension_access = false;
-        operating_system_tunable_access = false;
-        lock_execution_personality = true;
-        writable_executable_memory = false;
-        isolation_domains = [];
-        network_families = ["ipv4" "ipv6" "local"];
-        memory_pressure_adjustment = 0;
-        permit_realtime = false;
-        permit_elevated_file_identity = false;
-        process_visibility = "all";
-        security_label = "aos-pkg-openldap";
-        operation_architectures = [];
-        operation_allow = [];
-        operation_deny = [];
-        operation_profile = "system-service";
-        isolated_identity_mapping = "none";
-      };
-      consumerInstance = "openldap";
-      service = "main";
-      lifecycle = {
-        description = "OpenLDAP directory server";
-        execution_model = "foreground";
-        environment_files = [];
-        condition = [];
-        pre_start = [
-          (command "sbin/slaptest" [
-            "-u"
-            "-f"
-            (resultOf "server-configuration" "planned-path")
-          ])
-        ];
-        start = [
-          (command "libexec/slapd" [
-            "-d"
-            "0"
-            "-f"
-            (resultOf "server-configuration" "planned-path")
-            "-h"
-            (lib.concatStringsSep " " cfg.listenUrls)
-          ])
-        ];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "on-failure";
-        restart_delay_millis = 0;
-        configuration_change_action = "restart";
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        after = [(resultOf "network-readiness" "resource")];
-        before = [];
-        requires = [];
-        wants = [(resultOf "network-readiness" "resource")];
-      };
-      credentials =
-        if withTls
-        then {
-          views = builtins.map (credential: {
-            inherit (credential) name;
-            inherit (credential.reference) encrypted;
-            reference = resultOf "credential-${credential.name}" "credential-path";
-            optional = false;
-          }) (builtins.filter (credential: credential.name != "root-password") credentials);
-        }
-        else null;
-      configuration.views = [
-        {
-          name = "server";
-          source = resultOf "server-configuration" "planned-path";
+    service = "main";
+    lifecycle = {
+      description = "OpenLDAP directory server";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [
+        (command "sbin/slaptest" [
+          "-u"
+          "-f"
+          (operations.configuration.operations.file.effects.openldap.outputs.path)
+        ])
+      ];
+      start = [
+        (command "libexec/slapd" [
+          "-d"
+          "0"
+          "-f"
+          (operations.configuration.operations.file.effects.openldap.outputs.path)
+          "-h"
+          (lib.concatStringsSep " " cfg.listenUrls)
+        ])
+      ];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "on-failure";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [(operations.network.operations.ready.effects.openldap.outputs.resource)];
+      before = [];
+      requires = [];
+      wants = [(operations.network.operations.ready.effects.openldap.outputs.resource)];
+    };
+    credentials =
+      if cfg.tls.enable
+      then {
+        views = builtins.map (credential: {
+          inherit (credential) name;
+          inherit (credential.reference) encrypted;
+          reference = credentialPath credential.name;
           optional = false;
-        }
-      ];
-      storage.mounts = [
-        {
-          name = "data";
-          source = resultOf "data-view" "planned-path";
-          access = "read-write";
-        }
-        {
-          name = "runtime";
-          source = resultOf "runtime-storage" "planned-path";
-          access = "read-write";
-        }
-      ];
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = [];
-        directory_mode = "0750";
-      };
-      identity = {
-        principal = resultOf "service-principal" "principal-name";
-        primary_group = resultOf "service-group" "group-name";
-        supplementary_groups = [];
-        ephemeral = false;
-        file_creation_mask = "0077";
-      };
-      isolation = {
-        privilege = "unprivileged";
-        filesystem = "read-only-system";
-        network = "host";
-        process_visibility = "host";
-        termination_scope = "all-processes";
-        temporary_directory = "private";
-        devices = [];
-        host_paths = [];
-        permit_core_dumps = false;
-      };
-    };
-  in {
-    service = serviceRequest;
-    producers = [
-      persistentStorage
-      runtimeStorage
-      dataView
-      group
-      principal
-      networkReadiness
-      credentialRequests
-      configurationRequest
+        }) (builtins.filter (credential: credential.name != "root-password") usedCredentials);
+      }
+      else null;
+    configuration.views = [
+      {
+        name = "server";
+        source = operations.configuration.operations.file.effects.openldap.outputs.path;
+        optional = false;
+      }
     ];
+    storage.mounts = [
+      {
+        name = "data";
+        source = operations.filesystem.operations.directory.effects.openldap-data.outputs.path;
+        access = "read-write";
+      }
+      {
+        name = "runtime";
+        source = operations.filesystem.operations.directory.effects.openldap-runtime.outputs.path;
+        access = "read-write";
+      }
+    ];
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0750";
+    };
+    identity = {
+      principal = operations.identity.operations.principal.effects.openldap.outputs.name;
+      primary_group = operations.identity.operations.group.effects.openldap.outputs.name;
+      supplementary_groups = [];
+      ephemeral = false;
+      file_creation_mask = "0077";
+    };
+    isolation = {
+      privilege = "unprivileged";
+      filesystem = "read-only-system";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "private";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = false;
+    };
   };
-  fragments = abilityFragmentsFor cfg.tls.enable;
 in {
-  options.openldap = {
+  options.aos.openldap = {
     enable = mkOption {
-      type = abilityTypes.boolean;
+      type = types.bool;
       default = false;
       description = "Enable the package-owned OpenLDAP server.";
     };
@@ -380,7 +248,7 @@ in {
     };
     tls = {
       enable = mkOption {
-        type = abilityTypes.boolean;
+        type = types.bool;
         default = false;
         description = "Enable TLS configuration and permit LDAPS listeners.";
       };
@@ -400,7 +268,7 @@ in {
         description = "Typed credential containing the trusted certificate authority bundle.";
       };
       verifyClient = mkOption {
-        type = abilityTypes.enum ["allow" "demand" "never" "try"];
+        type = types.enum ["allow" "demand" "never" "try"];
         default = "demand";
         description = "Client-certificate verification policy applied to TLS sessions.";
       };
@@ -411,15 +279,20 @@ in {
     {
       assertions = [
         {
+          assertion = cfg.listenUrls != [];
+          message = "OpenLDAP requires at least one listener URL";
+        }
+
+        {
           assertion =
             !serviceEnabled
-            || serviceManagement.credentialReferenceConfigured cfg.rootPassword;
+            || credentialConfigured cfg.rootPassword;
           message = "openldap.enable requires an openldap.rootPassword credential reference";
         }
         {
           assertion =
             !cfg.tls.enable
-            || builtins.all serviceManagement.credentialReferenceConfigured [
+            || builtins.all credentialConfigured [
               cfg.tls.certificate
               cfg.tls.privateKey
               cfg.tls.trustedCa
@@ -433,12 +306,63 @@ in {
           message = "ldaps listen URLs require openldap.tls.enable";
         }
       ];
-      aos.services."openldap.main" = fragments.service // {enable = cfg.enable;};
+      aos.services."openldap.main" = lib.mkDefault (service // {enable = lib.mkDefault cfg.enable;});
     }
-    (serviceManagement.producerModule {
-      inherit config lib;
-      inherit (fragments) producers;
-      enabled = serviceEnabled;
+    (lib.mkIf serviceEnabled {
+      aos.abilities = {
+        identity.operations = {
+          group.effects.openldap.input.name = "openldap";
+          principal.effects.openldap.input = {
+            name = "openldap";
+            description = "OpenLDAP directory service";
+            home_directory = "/var/lib/aos-pkg-openldap";
+            primary_group = operations.identity.operations.group.effects.openldap.outputs.name;
+          };
+        };
+        filesystem.operations.directory.effects = {
+          openldap-state = {
+            lifetime = "persistent";
+            input = {
+              path = "/var/lib/aos-pkg-openldap";
+              mode = "0700";
+              owner = account;
+              group = group;
+            };
+          };
+          openldap-data = {
+            lifetime = "persistent";
+            input = {
+              path = "/var/lib/aos-pkg-openldap/data";
+              parentResource = operations.filesystem.operations.directory.effects.openldap-state.outputs.resource;
+              mode = "0700";
+              owner = account;
+              group = group;
+            };
+          };
+          openldap-runtime.input = {
+            path = "/run/aos-pkg-openldap";
+            mode = "0700";
+            owner = account;
+            group = group;
+          };
+        };
+        network.operations.ready.effects.openldap.input = {
+          scope = "address-configured";
+          families = ["ipv4" "ipv6"];
+        };
+        credential.operations.deliver.effects = builtins.listToAttrs (builtins.map (credential: {
+            name = "openldap-${credential.name}";
+            value.input = credential.reference;
+          })
+          usedCredentials);
+        configuration.operations.file.effects.openldap.input = {
+          path = "/etc/aos/packages/openldap/slapd.conf";
+          fragments = configurationFragmentsFor cfg.tls.enable;
+          mode = "0600";
+          owner = account;
+          group = group;
+        };
+      };
     })
   ];
 }

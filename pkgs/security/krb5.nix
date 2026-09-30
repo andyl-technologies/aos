@@ -13,6 +13,9 @@
   buildPackages,
   coreutils,
   writeShellScriptBin,
+  service-management,
+  aos-filesystem-provider,
+  nftables,
 }: let
   version = "1.22.2";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -200,7 +203,8 @@ in
     runtimeDeps = [openssl bash coreutils control];
     propagatedDeps = [];
 
-    abilities = ./_krb5-kdc;
+    module = ./_krb5-kdc;
+    moduleDeps = [service-management aos-filesystem-provider nftables];
 
     phases = [
       {
@@ -306,158 +310,9 @@ in
       testing,
       self,
       pkgs,
-      mkSystem,
       ...
     }: let
-      expectedRequestOutput = localKey: output: {
-        authority = {
-          kind = "package";
-          package = self.pname;
-        };
-        inherit localKey output;
-      };
-      evaluate = krb5Config:
-        mkSystem {
-          systemName = "krb5-package-check";
-          modules = [
-            {
-              environment.systemPackages = [self];
-              krb5Kdc = krb5Config;
-            }
-          ];
-        };
-      enabled = evaluate {
-        enable = true;
-        realm = "EXAMPLE.TEST";
-        kdcServers = ["kdc.example.test"];
-        adminServer = "kdc.example.test";
-        masterPassword.name = "krb5-master";
-      };
-      withAdministration = evaluate {
-        enable = true;
-        enableAdminServer = true;
-        realm = "EXAMPLE.TEST";
-        masterPassword.name = "krb5-master";
-      };
-      disabled = evaluate {};
-      missingPassword = evaluate {enable = true;};
-      detachedAdministration = evaluate {enableAdminServer = true;};
-      assertionsHold = result:
-        builtins.all (assertion: assertion.assertion) result.config.assertions;
-      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
-      enabledAbilityConfig = enabled.config.aos.abilities;
-      administrationAbilityConfig = withAdministration.config.aos.abilities;
-      disabledAbilityConfig = disabled.config.aos.abilities;
-      requests = enabledAbilityConfig.requests;
-      administrationRequests = administrationAbilityConfig.requests;
-      clientSource = requests."krb5:client-configuration".parameters.source;
-      kdcSource = requests."krb5:kdc-profile".parameters.source;
-      kdcLiteralText = lib.concatStringsSep "" (builtins.map
-        (fragment:
-          if fragment.kind == "literal"
-          then fragment.text
-          else "")
-        kdcSource.fragments);
-      passwordSource = requests."krb5:master-password-source".parameters;
-      passwordDelivery = requests."krb5:master-password".parameters;
-      kdcDependencies = requests."krb5:kdc-dependencies".parameters;
-      administrationDependencies =
-        administrationRequests."krb5:administration-dependencies".parameters;
-      kdcIngress = requests."krb5:kdc-ingress".parameters;
-      administrationIngress =
-        administrationRequests."krb5:administration-ingress".parameters;
-      kdcHardening = requests."krb5:kdc-hardening".parameters;
-      contractHolds =
-        assertionsHold enabled
-        && assertionsHold withAdministration
-        && !assertionsHold missingPassword
-        && !assertionsHold detachedAdministration
-        && ownedValues disabledAbilityConfig.instances == {}
-        && ownedValues disabledAbilityConfig.requests == {}
-        && builtins.elem "krb5:named-credential-resolution"
-        (builtins.attrNames disabledAbilityConfig.requirementTemplates)
-        && builtins.elem "krb5:credential-delivery"
-        (builtins.attrNames disabledAbilityConfig.requirementTemplates)
-        && builtins.hasAttr "krb5:initialize-lifecycle" requests
-        && builtins.hasAttr "krb5:kdc-lifecycle" requests
-        && !(builtins.hasAttr "krb5:administration-lifecycle" requests)
-        && builtins.hasAttr "krb5:administration-lifecycle" administrationRequests
-        && passwordSource
-        == {
-          name = "krb5-master";
-          scope = "system";
-        }
-        && lib.abilities.requestOutputIdentity {
-          inherit requests;
-          reference = passwordDelivery.source;
-        }
-        == expectedRequestOutput "master-password-source" "resource"
-        && passwordDelivery.name == "master-password"
-        && clientSource.kind == "inline-text"
-        && lib.hasInfix "default_realm = EXAMPLE.TEST" clientSource.content
-        && lib.hasInfix "kdc = kdc.example.test:88" clientSource.content
-        && kdcSource.kind == "interpolated-text"
-        && lib.hasInfix "max_life = 10h" kdcLiteralText
-        && !(lib.hasInfix "/var/lib/" (builtins.toJSON kdcSource))
-        && !(lib.hasInfix "/var/log/" (builtins.toJSON kdcSource))
-        && !(lib.hasInfix "krb5-master" (builtins.toJSON kdcSource))
-        && builtins.map
-        (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
-        kdcDependencies.after
-        == [(expectedRequestOutput "initialize-lifecycle" "resource")]
-        && builtins.map
-        (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
-        kdcDependencies.requires
-        == [(expectedRequestOutput "initialize-lifecycle" "resource")]
-        && builtins.map
-        (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
-        kdcDependencies.prerequisites
-        == [(expectedRequestOutput "kdc-ingress" "resource")]
-        && builtins.map
-        (reference:
-          lib.abilities.requestOutputIdentity {
-            requests = administrationRequests;
-            inherit reference;
-          })
-        administrationDependencies.after
-        == [(expectedRequestOutput "initialize-lifecycle" "resource")]
-        && builtins.map
-        (reference:
-          lib.abilities.requestOutputIdentity {
-            requests = administrationRequests;
-            inherit reference;
-          })
-        administrationDependencies.requires
-        == [(expectedRequestOutput "initialize-lifecycle" "resource")]
-        && builtins.map
-        (reference:
-          lib.abilities.requestOutputIdentity {
-            requests = administrationRequests;
-            inherit reference;
-          })
-        administrationDependencies.prerequisites
-        == [(expectedRequestOutput "administration-ingress" "resource")]
-        && kdcIngress.endpoints
-        == [
-          {
-            transport = "tcp";
-            port = 88;
-          }
-          {
-            transport = "udp";
-            port = 88;
-          }
-        ]
-        && administrationIngress.endpoints
-        == [
-          {
-            transport = "tcp";
-            port = 749;
-          }
-        ]
-        && kdcHardening.ambient_privileges == ["bind-privileged-network-port"]
-        && !(requests."krb5:service-group".parameters ? requested_id)
-        && !(requests."krb5:service-principal".parameters ? requested_id);
+      nativeTests = import ./_krb5-kdc/native-tests.nix {inherit lib self;};
       krb5Conf = builtins.toFile "krb5-lifecycle.conf" ''
         [libdefaults]
           default_realm = EXAMPLE.TEST
@@ -502,10 +357,10 @@ in
         libs = ["libkrb5.so" "libgssapi_krb5.so"];
       };
 
-      ability-module-contract =
-        if contractHolds
+      native-module-contract =
+        if builtins.all (value: value) (builtins.attrValues nativeTests)
         then
-          pkgs.runCommand "krb5-kdc-ability-module-contract" {} ''
+          pkgs.runCommand "krb5-kdc-native-module-contract" {} ''
             mkdir -p "$out"
             printf '%s\n' PASS > "$out/result"
           ''

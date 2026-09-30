@@ -73,9 +73,38 @@ in
       role = "public-package";
     };
     pname = "aos-network-ruleset-provider";
-    qualification.packageProbe = lib.qualification.providerExecutableProbe {
-      name = "aos-network-ruleset-provider";
-      entryPoint = "bin/aos-network-ruleset-provider";
+
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "The local native handler version command.";
+        operation = "Print the packaged version without accessing the host firewall.";
+        expected = "The executable reports its package version.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/aos-network-ruleset-provider" "--version"];
+            exit_code = 0;
+            stdout.exact = "aos-network-ruleset-provider ${version}\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "An unsupported process action without an invocation.";
+        operation = "Reject the action before dispatching any host operation.";
+        expected = "The handler fails with no standard output.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/aos-network-ruleset-provider" "invalid-action"];
+            exit_code = 1;
+            observes_rejection = true;
+            stdout.exact = "";
+          }
+        ];
+      };
     };
 
     inherit version cargoDeps cargoArtifacts cargoArtifactContract;
@@ -87,7 +116,8 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [nftables];
 
-    abilities = ./_aos-network-ruleset-provider;
+    module = ./_aos-network-ruleset-provider;
+    moduleDeps = [nftables];
 
     preBuild = staticBuildSetup;
 
@@ -100,6 +130,22 @@ in
         exit 1
       fi
     '';
+
+    checks = {
+      testing,
+      self,
+      ...
+    }: {
+      native-contract =
+        builtins.deepSeq (import ./_aos-network-ruleset-provider/native-tests.nix {
+          inherit lib;
+          package = self;
+        }) (testing.mkToolCheck {
+          pname = "native-network-ruleset-contract";
+          tool = self;
+          command = "aos-network-ruleset-provider --version";
+        });
+    };
 
     meta = {
       description = "Checked nftables network-ruleset convergence provider";

@@ -2,12 +2,14 @@
 {
   lib,
   mkDerivation,
+  aos-runtime-checks,
   fetchurl,
   buildPackages,
   gnumake,
   bash,
   pkg-config,
   btrfs-progs,
+  aos-filesystem-provider,
   containerd,
   e2fsprogs,
   fuse-overlayfs,
@@ -23,6 +25,7 @@
   slirp4netns,
   sqlite,
   systemd,
+  service-management,
   tini,
   util-linux,
   xfsprogs,
@@ -153,7 +156,8 @@ in
     propagatedDeps = [];
     disallowedReferences = [buildPackages.go];
 
-    abilities = ./_docker-engine;
+    module = ./_docker-engine;
+    moduleDeps = [aos-runtime-checks service-management aos-filesystem-provider];
 
     phases = [
       {

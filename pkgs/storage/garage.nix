@@ -11,6 +11,8 @@
   mkCargoPackage,
   fetchurl,
   fetchCargoDeps,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "2.3.0";
   src = fetchurl {
@@ -119,50 +121,21 @@ in
     doCheck = false;
     runtimeDeps = [];
 
-    abilities = ./_garage-config;
+    module = ./_garage-config;
+    moduleDeps = [service-management aos-filesystem-provider];
 
     checks = {
       testing,
       self,
       pkgs,
-      mkSystem,
+      ...
     }: let
-      serviceManagement = lib.abilities.interfaces.serviceManagement;
-      environmentId = lib.abilities.environmentId {
-        authority = "system-image";
-        key = "garage-package-check";
-        stage = "host";
-      };
-      credentialProvider = lib.abilities.instanceId {
-        environment = environmentId;
-        key = "credential-provider";
-      };
-      expectedRequestOutput = localKey: output: {
-        authority = {
-          kind = "package";
-          package = self.pname;
-        };
-        inherit localKey output;
-      };
-      secret = name:
-        lib.abilities.resourceReference {
-          interface = serviceManagement.interfaces.credentialDelivery.identity;
-          resource = {
-            provider = credentialProvider;
-            key = name;
-          };
-          operations = ["observe"];
-          lifetime = "persistent";
-        };
-      evaluate = garageConfig:
-        mkSystem {
-          systemName = "garage-package-check";
-          modules = [
-            {
-              environment.systemPackages = [self];
-              garage = garageConfig;
-            }
-          ];
+      secret = name: name;
+      evaluate = settings:
+        lib.evalPackageModules {
+          scope = ["package-check" "garage"];
+          packages = [self];
+          operatorModules = [{aos.garage = settings;}];
         };
       evaluated = evaluate {
         enable = true;
@@ -172,7 +145,7 @@ in
           bindAddress = "127.0.0.1:43901";
           publicAddress = "127.0.0.1:43901";
           bootstrapPeers = ["0000000000000000000000000000000000000000000000000000000000000000@127.0.0.1:43909"];
-          secret.resource = secret "rpc-secret";
+          secret.name = secret "rpc-secret";
         };
         s3 = {
           bindAddress = "127.0.0.1:43900";
@@ -188,48 +161,36 @@ in
       disabled = evaluate {};
       evaluatedAdmin = evaluate {
         enable = true;
-        rpc.secret.resource = secret "rpc-secret";
+        rpc.secret.name = secret "rpc-secret";
         admin = {
           enable = true;
-          token.resource = secret "admin-token";
-          metrics.token.resource = secret "metrics-token";
+          token.name = secret "admin-token";
+          metrics.token.name = secret "metrics-token";
         };
       };
       evaluatedAdminWithoutMetricsToken = evaluate {
         enable = true;
-        rpc.secret.resource = secret "rpc-secret";
+        rpc.secret.name = secret "rpc-secret";
         admin = {
           enable = true;
-          token.resource = secret "admin-token";
+          token.name = secret "admin-token";
           metrics.requireToken = false;
         };
       };
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
-      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
       invalidRpc = evaluate {enable = true;};
       invalidAdmin = evaluate {
         enable = true;
-        rpc.secret.resource = secret "rpc-secret";
+        rpc.secret.name = secret "rpc-secret";
         admin.enable = true;
       };
       invalidPeers = evaluate {
         rpc = {
-          secret.resource = secret "rpc-secret";
+          secret.name = secret "rpc-secret";
           bootstrapPeers = ["same@host:3901" "same@host:3901"];
         };
       };
-      enabledAbilityConfig = evaluated.config.aos.abilities;
-      disabledAbilityConfig = disabled.config.aos.abilities;
-      adminAbilityConfig = evaluatedAdmin.config.aos.abilities;
-      adminWithoutMetricsTokenAbilityConfig = evaluatedAdminWithoutMetricsToken.config.aos.abilities;
-      requests = builtins.attrNames enabledAbilityConfig.requests;
-      disabledRequirements = builtins.attrNames disabledAbilityConfig.requirementTemplates;
-      adminRequests = builtins.attrNames adminAbilityConfig.requests;
-      adminWithoutMetricsTokenRequests = builtins.attrNames adminWithoutMetricsTokenAbilityConfig.requests;
-      configurationSource = enabledAbilityConfig.requests."garage:server-configuration".parameters.source;
-      servicePrincipal = enabledAbilityConfig.requests."garage:service-principal".parameters;
-      mainStorageMounts = enabledAbilityConfig.requests."garage:main-storage".parameters.mounts;
       renderedConfig = builtins.toFile "garage-runtime-check.toml" ''
         metadata_dir = "/var/lib/aos-pkg-garage/meta"
         data_dir = "/var/lib/aos-pkg-garage/data"
@@ -241,46 +202,8 @@ in
         api_bind_addr = "127.0.0.1:43900"
         s3_region = "aos-test"
       '';
-      contractHolds =
-        assertionsHold evaluated
-        && lib.abilities.types.isPortableOptionTree evaluated.options.garage
-        && !assertionsHold invalidRpc
-        && !assertionsHold invalidAdmin
-        && !assertionsHold invalidPeers
-        && ownedValues disabledAbilityConfig.instances == {}
-        && ownedValues disabledAbilityConfig.requests == {}
-        && builtins.elem "garage:credential-delivery" disabledRequirements
-        && builtins.elem "garage:main-service-lifecycle" disabledRequirements
-        && builtins.elem "garage:main-lifecycle" requests
-        && builtins.elem "garage:main-storage" requests
-        && builtins.elem "garage:service-principal" requests
-        && builtins.elem "garage:credential-rpc-secret" requests
-        && !(builtins.elem "garage:credential-admin-token" requests)
-        && builtins.elem "garage:credential-admin-token" adminRequests
-        && builtins.elem "garage:credential-metrics-token" adminRequests
-        && builtins.elem "garage:credential-admin-token" adminWithoutMetricsTokenRequests
-        && !(builtins.elem "garage:credential-metrics-token" adminWithoutMetricsTokenRequests)
-        && lib.abilities.requestOutputIdentity {
-          requests = enabledAbilityConfig.requests;
-          reference = servicePrincipal.home_directory;
-        }
-        == expectedRequestOutput "home-storage" "planned-path"
-        && builtins.map
-        (mount:
-          lib.abilities.requestOutputIdentity {
-            requests = enabledAbilityConfig.requests;
-            reference = mount.source;
-          })
-        mainStorageMounts
-        == [
-          (expectedRequestOutput "metadata-storage" "planned-path")
-          (expectedRequestOutput "data-storage" "planned-path")
-          (expectedRequestOutput "runtime-storage" "planned-path")
-        ]
-        && configurationSource.kind == "structured-value"
-        && configurationSource.format == "toml"
-        && !(lib.hasInfix "/var/lib/aos-pkg-garage" (builtins.toJSON configurationSource))
-        && !(lib.hasInfix "rpc-secret" (builtins.toJSON configurationSource));
+      nativeTests = import ./_garage-config/native-tests.nix {inherit lib evaluated disabled evaluatedAdmin evaluatedAdminWithoutMetricsToken invalidRpc invalidAdmin invalidPeers;};
+      contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
     in {
       version = testing.mkToolCheck {
         pname = "storage-garage";
@@ -288,14 +211,14 @@ in
         command = "garage --version";
       };
 
-      ability-module-contract =
+      native-module-contract =
         if contractHolds
         then
-          pkgs.runCommand "storage-garage-ability-module-contract" {} ''
+          pkgs.runCommand "storage-garage-native-module-contract" {} ''
             mkdir -p "$out"
             printf '%s\n' PASS >"$out/result"
           ''
-        else throw "the Garage ability module contract checks failed";
+        else throw "the Garage native module contract checks failed";
 
       lifecycle = import ./_garage-tests/lifecycle.nix {
         inherit testing self renderedConfig;

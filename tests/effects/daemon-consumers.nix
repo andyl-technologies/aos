@@ -1,0 +1,121 @@
+##! Checks enabled native package services and shared manager ownership.
+let
+  lib = import ../../lib {system = "x86_64-linux";};
+  artifactLib = import ../../lib/packages/artifacts.nix {};
+  fixturePayload = import ./_fixture-payload.nix;
+  artifact = name: {
+    inherit name;
+    version = "1";
+    path = toString (fixturePayload name);
+    outputs.out = toString (fixturePayload name);
+    mainProgram = name;
+  };
+  record = name: source: dependencies: let
+    retained = builtins.path {
+      path = source;
+      name = "${name}-module";
+    };
+  in {
+    inherit name;
+    version = "1";
+    configRoot = toString retained;
+    module = "${retained}/module.nix";
+    artifacts = {
+      package = artifact name;
+      inherit dependencies;
+    };
+  };
+  dependenciesFor = names:
+    builtins.listToAttrs (builtins.map (name: {
+        inherit name;
+        value = artifact name;
+      })
+      names);
+  evaluated = lib.evalPackageModules {
+    scope = ["test" "native-daemons"];
+    packageModules = [
+      (record "aos-runtime-checks" ../../pkgs/system/_aos-runtime-checks {})
+      (record "service-management" ../../pkgs/system/_service-management {})
+      (record "filesystem" ../../pkgs/filesystem/_aos-filesystem-provider {})
+      (record "docker-engine" ../../pkgs/containers/_docker-engine {})
+      (record "tailscale" ../../pkgs/networking/_tailscale (dependenciesFor ["getent" "iproute2" "iptables" "procps-ng"]))
+      (record "chrony" ../../pkgs/networking/_chrony-abilities {})
+      (record "nginx" ../../pkgs/networking/_nginx {})
+      (record "openldap" ../../pkgs/networking/_openldap {})
+      (record "envoy" ../../pkgs/networking/_envoy {})
+      (record "etcd" ../../pkgs/db/_etcd-config {})
+    ];
+    operatorModules = [
+      {
+        aos.services = {
+          docker.enable = true;
+          tailscale.enable = true;
+          chrony.enable = true;
+          nginx = {
+            enable = true;
+            virtualHosts.default.locations."/"."return".code = 200;
+          };
+        };
+        aos.openldap = {
+          enable = true;
+          rootPassword.name = "ldap-root";
+        };
+        aos.envoy = {
+          enable = true;
+          listeners.http = {
+            port = 8080;
+            filterChains.http.virtualHosts.default.routes.root.directResponse.status = 200;
+          };
+        };
+        aos.etcd.enable = true;
+        aos.abilities = builtins.listToAttrs (builtins.map (ability: {
+            name = ability.name;
+            value.operations = builtins.listToAttrs (builtins.map (operation: {
+                name = operation;
+                value.handler.program = artifactLib.value (artifact "${ability.name}-handler");
+              })
+              ability.operations);
+          }) [
+            {
+              name = "serviceManagement";
+              operations = ["realize"];
+            }
+            {
+              name = "identity";
+              operations = ["group" "principal"];
+            }
+            {
+              name = "network";
+              operations = ["ready"];
+            }
+            {
+              name = "device";
+              operations = ["present"];
+            }
+            {
+              name = "configuration";
+              operations = ["file"];
+            }
+            {
+              name = "credential";
+              operations = ["deliver"];
+            }
+          ]);
+      }
+    ];
+  };
+  nodes = builtins.attrValues evaluated.deployment.graph.nodes;
+  services = builtins.filter (node: builtins.elem "serviceManagement" node.identity) nodes;
+  inputFiles = evaluated.config.aos.abilities.configuration.operations.file.effects;
+in {
+  sharedServiceManager = assert builtins.length services == 7;
+  assert builtins.all (node: node.owner == "service-management") services;
+  assert builtins.all (node: node.dependencies != []) services; true;
+  retainedExecutables = assert lib.hasSuffix "/bin/dockerd" (builtins.head evaluated.config.aos.services.docker.lifecycle.start).executable.path;
+  assert lib.hasSuffix "/bin/tailscaled" (builtins.head evaluated.config.aos.services.tailscale.lifecycle.start).executable.path; true;
+  materializedStructuredPaths = assert inputFiles.etcd.input.format == "json";
+  assert inputFiles.envoy.input.format == "json";
+  assert (inputFiles.etcd.input.value."data-dir"._type or null) != null; true;
+  protectedCredentialContents = assert inputFiles.openldap.input.mode == "0600";
+  assert builtins.any (fragment: builtins.isAttrs fragment && fragment ? credentialPath) inputFiles.openldap.input.fragments; true;
+}

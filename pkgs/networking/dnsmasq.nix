@@ -2,6 +2,7 @@
 {
   lib,
   mkDerivation,
+  aos-runtime-checks,
   fetchurl,
   gnumake,
   gettext,
@@ -15,6 +16,8 @@
   libnetfilter_conntrack,
   libnfnetlink,
   nftables,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "2.93";
 in
@@ -100,7 +103,8 @@ in
     ];
     propagatedDeps = [];
 
-    abilities = ./_dnsmasq;
+    module = ./_dnsmasq;
+    moduleDeps = [aos-runtime-checks service-management aos-filesystem-provider nftables];
 
     phases = [
       {
@@ -142,83 +146,20 @@ in
       testing,
       self,
       pkgs,
-      mkSystem,
       ...
     }: let
-      evaluated = mkSystem {
-        systemName = "dnsmasq-package-check";
-        modules = [
-          ../../systems/_artifact-backend.nix
-          ../../systems/_base-packages.nix
-          ../../systems/_system-manager.nix
-          {
-            aos.kernel.packageRoot = pkgs.linux;
-            aos.services.dnsmasq = {
-              enable = true;
-              port = 5353;
-              dhcpRanges = ["192.0.2.10,192.0.2.20,12h"];
-            };
-          }
-        ];
-      };
-      requests = evaluated.config.aos.abilities.requests;
-      configuration = requests."dnsmasq:server-configuration".parameters.source;
-      dependencies = requests."dnsmasq:dnsmasq-dependencies".parameters;
-      ingress = requests."dnsmasq:network-ingress".parameters;
-      expectedRequestOutput = localKey: output: {
-        authority = {
-          kind = "package";
-          package = self.pname;
-        };
-        inherit localKey output;
-      };
-      contractHolds =
-        self.abilities ? interfaces
-        && self.abilities ? implementations
-        && self.abilities ? requirementTemplates
-        && self.abilities ? guarantees
-        && !(self.abilities ? contract)
-        && builtins.hasAttr "listener-claim" self.abilities.requirementTemplates
-        && builtins.hasAttr "network-ingress-policy" self.abilities.requirementTemplates
-        && builtins.all (assertion: assertion.assertion) evaluated.config.assertions
-        && configuration.kind == "interpolated-text"
-        && !(lib.hasInfix "/run/" (builtins.toJSON configuration))
-        && ingress.endpoints
-        == [
-          {
-            transport = "tcp";
-            port = 5353;
-          }
-          {
-            transport = "udp";
-            port = 5353;
-          }
-          {
-            transport = "udp";
-            port = 67;
-          }
-        ]
-        && builtins.map
-        (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
-        dependencies.prerequisites
-        == [
-          (expectedRequestOutput "listener-tcp-5353" "resource")
-          (expectedRequestOutput "listener-udp-5353" "resource")
-          (expectedRequestOutput "listener-udp-67" "resource")
-          (expectedRequestOutput "network-ingress" "resource")
-        ]
-        && dependencies.after == []
-        && dependencies.requires == [];
+      nativeTests = import ./_dnsmasq/native-tests.nix {inherit lib self pkgs;};
+      contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
     in {
       tool = testing.mkToolCheck {
         pname = "tool-dnsmasq";
         tool = self;
         command = "dnsmasq --version | grep ' IDN ' | grep ' Lua ' | grep ' DNSSEC ' | grep ' nftset '";
       };
-      ability-module-contract =
+      native-module-contract =
         if contractHolds
         then
-          pkgs.runCommand "dnsmasq-ability-module-contract" {} ''
+          pkgs.runCommand "dnsmasq-native-module-contract" {} ''
             mkdir -p "$out"
             printf '%s\n' PASS > "$out/result"
           ''

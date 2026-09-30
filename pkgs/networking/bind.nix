@@ -2,6 +2,7 @@
 {
   lib,
   mkDerivation,
+  aos-runtime-checks,
   fetchurl,
   stdenv,
   gnumake,
@@ -27,6 +28,9 @@
   readline,
   tzdata,
   buildPackages,
+  service-management,
+  aos-filesystem-provider,
+  nftables,
 }: let
   version = "9.20.27";
 in
@@ -131,7 +135,8 @@ in
       ];
     propagatedDeps = [];
 
-    abilities = ./_bind;
+    module = ./_bind;
+    moduleDeps = [aos-runtime-checks service-management aos-filesystem-provider nftables];
 
     phases = [
       {
@@ -253,97 +258,10 @@ in
       testing,
       self,
       pkgs,
-      mkSystem,
       ...
     }: let
-      evaluated = mkSystem {
-        systemName = "bind-package-check";
-        modules = [
-          ../../systems/_artifact-backend.nix
-          ../../systems/_base-packages.nix
-          ../../systems/_system-manager.nix
-          {
-            aos.kernel.packageRoot = pkgs.linux;
-            aos.services.bind = {
-              enable = true;
-              port = 5353;
-              listenIPv4 = ["127.0.0.1"];
-              listenIPv6 = [];
-            };
-          }
-        ];
-      };
-      conflictingListenerClaims = builtins.tryEval (builtins.deepSeq (
-          (mkSystem {
-            systemName = "conflicting-listener-claims";
-            modules = [
-              ../../systems/_artifact-backend.nix
-              ../../systems/_base-packages.nix
-              ../../systems/_system-manager.nix
-              {
-                aos.kernel.packageRoot = pkgs.linux;
-                aos.services.bind = {
-                  enable = true;
-                  port = 5353;
-                };
-                aos.services.dnsmasq = {
-                  enable = true;
-                  port = 5353;
-                };
-              }
-            ];
-          })
-          .config
-          .aos
-          .abilities
-          .compositionOutputs
-        )
-        true);
-      requests = evaluated.config.aos.abilities.requests;
-      configuration = requests."bind:server-configuration".parameters.source;
-      dependencies = requests."bind:named-dependencies".parameters;
-      ingress = requests."bind:dns-ingress".parameters;
-      expectedRequestOutput = localKey: output: {
-        authority = {
-          kind = "package";
-          package = self.pname;
-        };
-        inherit localKey output;
-      };
-      contractHolds =
-        self.abilities ? interfaces
-        && self.abilities ? implementations
-        && self.abilities ? requirementTemplates
-        && self.abilities ? guarantees
-        && !(self.abilities ? contract)
-        && builtins.hasAttr "listener-claim" self.abilities.requirementTemplates
-        && builtins.hasAttr "network-ingress-policy" self.abilities.requirementTemplates
-        && !conflictingListenerClaims.success
-        && builtins.all (assertion: assertion.assertion) evaluated.config.assertions
-        && configuration.kind == "interpolated-text"
-        && !(lib.hasInfix "/var/lib/" (builtins.toJSON configuration))
-        && !(lib.hasInfix "/run/" (builtins.toJSON configuration))
-        && ingress.endpoints
-        == [
-          {
-            transport = "tcp";
-            port = 5353;
-          }
-          {
-            transport = "udp";
-            port = 5353;
-          }
-        ]
-        && builtins.map
-        (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
-        dependencies.prerequisites
-        == [
-          (expectedRequestOutput "dns-ingress" "resource")
-          (expectedRequestOutput "listener-tcp-5353" "resource")
-          (expectedRequestOutput "listener-udp-5353" "resource")
-        ]
-        && dependencies.after == []
-        && dependencies.requires == [];
+      nativeTests = import ./_bind/native-tests.nix {inherit lib self pkgs;};
+      contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
     in {
       link = testing.mkLinkCheck {
         pname = "lib-bind-dns";
@@ -368,10 +286,10 @@ in
         tool = self.dnsutils;
         command = "dig -v && nslookup -version";
       };
-      ability-module-contract =
+      native-module-contract =
         if contractHolds
         then
-          pkgs.runCommand "bind-ability-module-contract" {} ''
+          pkgs.runCommand "bind-native-module-contract" {} ''
             mkdir -p "$out"
             printf '%s\n' PASS > "$out/result"
           ''

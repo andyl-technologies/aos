@@ -1,117 +1,35 @@
-##! Package-owned dnsmasq DNS and DHCP service declarations.
+##! Package-owned DNS service and native runtime prerequisites.
 {
   config,
   lib,
+  package,
   ...
 }: let
   cfg = config.aos.services.dnsmasq;
-  inherit (lib.abilities) resultOf;
-  abilityTypes = lib.abilities.types;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceListener = lib.abilities.interfaces.serviceListener;
-  serviceTypes = serviceManagement.types;
-
-  port = abilityTypes.integer {
-    minimum = 1;
-    maximum = 65535;
-  };
-  address = abilityTypes.refined {
-    name = "dnsmasq listen address";
-    description = "a host name or address without configuration delimiters";
-    type = abilityTypes.string {
-      maxLength = 255;
-      syntax = null;
-    };
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[A-Za-z0-9:.%_-]+";
-      }
-    ];
-  };
-  server = abilityTypes.refined {
-    name = "dnsmasq upstream server";
-    description = "a non-empty single-line dnsmasq server specification";
-    type = abilityTypes.string {
-      maxLength = 4096;
-      syntax = null;
-    };
-    constraints = [
-      {
-        kind = "minimum-size";
-        minimum = 1;
-      }
-      {
-        kind = "string-excludes";
-        classes = ["line-break"];
-      }
-    ];
-  };
-  dhcpRange = abilityTypes.refined {
-    name = "dnsmasq DHCP range";
-    description = "a non-empty single-line dnsmasq DHCP range specification";
-    type = abilityTypes.string {
-      maxLength = 4096;
-      syntax = null;
-    };
-    constraints = [
-      {
-        kind = "minimum-size";
-        minimum = 1;
-      }
-      {
-        kind = "string-excludes";
-        classes = ["line-break"];
-      }
-    ];
-  };
-  addresses = abilityTypes.list {
-    element = address;
-    maxItems = 256;
-    unique = true;
-    canonicalOrder = true;
-  };
-  servers = abilityTypes.list {
-    element = server;
-    maxItems = 256;
-    unique = true;
-    canonicalOrder = true;
-  };
-  dhcpRanges = abilityTypes.list {
-    element = dhcpRange;
-    maxItems = 256;
-    unique = true;
-    canonicalOrder = true;
-  };
-  configurationText = abilityTypes.string {
-    maxLength = abilityTypes.limits.maxStringLength;
-    syntax = null;
-  };
-
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "service";
-      inherit key interface parameters;
-    };
+  types = lib.types;
+  operations = config.aos.abilities;
+  port = types.ints.between 1 65535;
+  address = types.strMatching "[A-Za-z0-9:.%_-]+";
+  addresses = types.listOf address;
+  server = types.strMatching "[^\n\r]+";
+  dhcpRange = server;
+  servers = types.listOf server;
+  dhcpRanges = types.listOf dhcpRange;
+  configurationText = types.str;
   command = entryPoint: arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = entryPoint;
+      path = "${package}/${entryPoint}";
       inherit arguments;
     };
     ignore_failure = false;
   };
-  literal = text: {
-    kind = "literal";
-    inherit text;
-  };
-  executionPath = value: {
-    kind = "execution-path";
-    inherit value;
-  };
-
-  runtimePath = resultOf "runtime-storage" "planned-path";
-  configurationPath = resultOf "server-configuration" "planned-path";
+  statePath = operations.filesystem.operations.directory.effects.dnsmasq-state.outputs.path;
+  runtimePath = operations.filesystem.operations.directory.effects.dnsmasq-runtime.outputs.path;
+  configurationPath = operations.configuration.operations.file.effects.dnsmasq.outputs.path;
+  renderAddresses = values:
+    if values == []
+    then "none"
+    else lib.concatStringsSep "; " values;
   dnsEndpoints = [
     {
       transport = "tcp";
@@ -128,68 +46,32 @@
       transport = "udp";
       port = 67;
     };
-  listenerRequestKey = endpoint: "listener-${serviceListener.slotFor endpoint}";
-  listenerRequests = builtins.listToAttrs (builtins.map (endpoint: {
-      name = listenerRequestKey endpoint;
-      value = {
-        requirement = "listener-claim";
-        consumer = "service";
-        scope = ["listener" (serviceListener.slotFor endpoint)];
-        parameters = endpoint;
-      };
-    })
-    ingressEndpoints);
   listenerPrerequisites =
     builtins.map (
-      endpoint: resultOf (listenerRequestKey endpoint) "resource"
+      endpoint:
+        operations.listener.operations.claim.effects."${endpoint.transport}-${toString endpoint.port}".outputs.resource
     )
     ingressEndpoints;
+  configurationFragments = [
+    ''
+      # Generated from the package-owned dnsmasq module.
+      keep-in-foreground
+      bind-dynamic
+      port=${toString cfg.port}
+      pid-file=''
+    runtimePath
+    ''
+      /dnsmasq.pid
+      ${lib.concatMapStringsSep "\n" (value: "listen-address=${value}") cfg.listenAddresses}
+      ${lib.concatMapStringsSep "\n" (value: "server=${value}") cfg.servers}
+      ${lib.concatMapStringsSep "\n" (value: "dhcp-range=${value}") cfg.dhcpRanges}
+      ${lib.optionalString cfg.domainNeeded "domain-needed"}
+      ${lib.optionalString cfg.bogusPrivate "bogus-priv"}
+      ${cfg.extraConfig}
+    ''
+  ];
 
-  runtimeStorage = producer "runtime-storage" serviceManagement.interfaces.storageAllocation {
-    name = "runtime";
-    purpose = "runtime";
-    mode = "0750";
-  };
-  networkReadiness = producer "network-readiness" serviceManagement.interfaces.networkReadiness {
-    scope = "local-connectivity";
-    address_families = ["ipv4" "ipv6"];
-  };
-  configuration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "service";
-    declaration = {
-      name = "server-configuration";
-      source = {
-        kind = "interpolated-text";
-        fragments = [
-          (literal ''
-            # Generated from the package-owned dnsmasq module.
-            keep-in-foreground
-            bind-dynamic
-            port=${toString cfg.port}
-            pid-file='')
-          (executionPath runtimePath)
-          (literal ''
-            /dnsmasq.pid
-            ${lib.concatMapStringsSep "\n" (value: "listen-address=${value}") cfg.listenAddresses}
-            ${lib.concatMapStringsSep "\n" (value: "server=${value}") cfg.servers}
-            ${lib.concatMapStringsSep "\n" (value: "dhcp-range=${value}") cfg.dhcpRanges}
-            ${lib.optionalString cfg.domainNeeded "domain-needed"}
-            ${lib.optionalString cfg.bogusPrivate "bogus-priv"}
-            ${cfg.extraConfig}
-          '')
-        ];
-        maximum_size_bytes = abilityTypes.limits.maxDocumentBytes;
-      };
-      mode = "0444";
-    };
-  };
-  ingress = producer "network-ingress" lib.abilities.interfaces.networkPolicy.interfaces.ingress {
-    endpoints = ingressEndpoints;
-    prerequisites = [(resultOf "network-readiness" "resource")];
-  };
   serviceDefinition = {
-    consumerInstance = "service";
     policy.hardening = {
       allow_privilege_escalation = false;
       ambient_privileges = ["administer-network" "bind-privileged-network-port" "raw-network"];
@@ -237,8 +119,9 @@
       start_timeout_millis = 90000;
       stop_timeout_millis = 90000;
     };
+    activationAfter = [operations.network.operations.ready.effects.dnsmasq.outputs.resource];
     dependencies = {
-      prerequisites = [(resultOf "network-ingress" "resource")] ++ listenerPrerequisites;
+      prerequisites = [operations.networkPolicy.operations.ruleset.effects.host.outputs.resource] ++ listenerPrerequisites;
       after = [];
       before = [];
       requires = [];
@@ -288,17 +171,10 @@
       permit_core_dumps = false;
     };
   };
-
-  producers = [runtimeStorage networkReadiness configuration ingress];
 in {
   options.aos.services = lib.mkOption {
     type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
       options = lib.optionalAttrs (name == "dnsmasq") {
-        enable = lib.mkOption {
-          type = abilityTypes.boolean;
-          default = false;
-          description = "Run dnsmasq as a DNS and optional DHCP server.";
-        };
         port = lib.mkOption {
           type = port;
           default = 53;
@@ -320,12 +196,12 @@ in {
           description = "Canonical dnsmasq DHCP range specifications.";
         };
         domainNeeded = lib.mkOption {
-          type = abilityTypes.boolean;
+          type = types.bool;
           default = true;
           description = "Refuse to forward plain names without a domain.";
         };
         bogusPrivate = lib.mkOption {
-          type = abilityTypes.boolean;
+          type = types.bool;
           default = true;
           description = "Do not forward reverse lookups for private addresses.";
         };
@@ -341,45 +217,41 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.services.dnsmasq = serviceDefinition;
+      aos.services.dnsmasq = lib.mkDefault serviceDefinition;
       assertions = [
         {
           assertion = cfg.listenAddresses != [];
-          message = "aos.services.dnsmasq.listenAddresses must contain at least one address";
+          message = "dnsmasq must listen on at least one address";
         }
       ];
-      aos.abilities.requirementTemplates.listener-claim = {
-        interface = serviceListener.interface.identity.name;
-        inherit (serviceListener.interface.identity) abi descriptor;
-        description = "Requires exclusive ownership of each host listener used by dnsmasq.";
-        methods = ["observe"];
-        guarantees = [];
-        strength = "required";
-        fallback = null;
-      };
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = cfg.enable;
-    })
     (lib.mkIf cfg.enable {
+      system.checks.dnsmasq = import ./runtime-tests.nix {inherit cfg;};
       aos.abilities = {
-        requests = listenerRequests;
-        runtimeChecks.dnsmasq = {
-          description = "dnsmasq service checks";
-          checks = [
-            {
-              name = "local-dns-query";
-              description = "dnsmasq answers a local DNS request";
-              script = ''
-                vm.wait_until_succeeds(
-                    "dig -p ${toString cfg.port} @127.0.0.1 localhost A +short | grep -Fx 127.0.0.1",
-                    timeout=30,
-                )
-              '';
-            }
-          ];
+        filesystem.operations.directory.effects = {
+          dnsmasq-runtime.input = {
+            path = "/run/aos-pkg-dnsmasq";
+            mode = "0750";
+          };
         };
+        configuration.operations.file.effects.dnsmasq.input = {
+          path = "/etc/aos/packages/dnsmasq/dnsmasq.conf";
+          fragments = configurationFragments;
+          mode = "0444";
+        };
+        network.operations.ready.effects.dnsmasq.input = {
+          scope = "stack-prepared";
+          families = ["ipv4" "ipv6"];
+        };
+        listener.operations.claim.effects = builtins.listToAttrs (builtins.map (endpoint: {
+            name = "${endpoint.transport}-${toString endpoint.port}";
+            value.input = endpoint;
+          })
+          ingressEndpoints);
+      };
+      aos.networkPolicy = {
+        enable = lib.mkDefault true;
+        ingress.dnsmasq.endpoints = ingressEndpoints;
       };
     })
   ];

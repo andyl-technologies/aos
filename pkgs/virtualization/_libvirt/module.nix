@@ -1,88 +1,24 @@
-##! Package-owned Libvirt identities, directories, services, and sockets.
+##! Package-owned Libvirt identities, filesystem trees, daemons, and sockets.
 {
   config,
   lib,
-  packageArtifactFor,
+  package,
+  dependencies,
   ...
 }: let
   cfg = config.aos.virtualization.libvirt;
   libvirtdEnabled = config.aos.services."libvirt.libvirtd".enable;
-  anyDaemonEnabled =
-    libvirtdEnabled
-    || config.aos.services."libvirt.virtlogd".enable
-    || config.aos.services."libvirt.virtlockd".enable;
-  abilityTypes = lib.abilities.types;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  interfaces = serviceManagement.interfaces;
-  consumerInstance = "libvirt";
-  resultOf = lib.abilities.resultOf;
-  availabilityRequirement = "dbus-system-bus-availability";
-  authorizationRequirement = "authorization-service-availability";
-
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      inherit consumerInstance key interface parameters;
-    };
-  command = entry_point: arguments: {
+  anyDaemonEnabled = libvirtdEnabled || config.aos.services."libvirt.virtlogd".enable || config.aos.services."libvirt.virtlockd".enable;
+  types = lib.types;
+  operations = config.aos.abilities;
+  command = entryPoint: arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      inherit entry_point arguments;
+      path = "${package}/${entryPoint}";
+      inherit arguments;
     };
     ignore_failure = false;
   };
-  group = key: name: allocation:
-    producer key interfaces.groupResolution {inherit name allocation;};
-  principal = key: name: allocation: attributes:
-    producer key interfaces.principalResolution ({inherit name allocation;} // attributes);
-
-  qemuGroup = group "qemu-group" "libvirt-qemu" "managed";
-  accessGroup = group "access-group" "libvirt" "managed";
-  kvmGroup = group "kvm-group" "kvm" "existing";
-  qemuPrincipal = principal "qemu-principal" "libvirt-qemu" "managed" {
-    description = "Libvirt QEMU virtual machine";
-    home_directory = "/var/lib/libvirt";
-    login_access = "disabled";
-    primary_group = resultOf "qemu-group" "group-name";
-    supplementary_groups = [(resultOf "kvm-group" "group-name")];
-  };
-  allowedPrincipalKey = name: "allowed-${lib.abilities.identityKeyFor "aos.libvirt.allowed-principal-request/v1" {
-    principal = name;
-    allocation = "existing";
-  }}";
-  allowedPrincipals = serviceManagement.forProducers {
-    inherit consumerInstance;
-    interface = interfaces.principalResolution;
-    producers =
-      builtins.map (name: {
-        key = allowedPrincipalKey name;
-        parameters = {
-          inherit name;
-          allocation = "existing";
-        };
-      })
-      cfg.allowedUsers;
-  };
-  accessMembership = producer "access-membership" interfaces.groupMembership {
-    name = "libvirt-access";
-    group = resultOf "access-group" "resource";
-    principals =
-      builtins.sort
-      (left: right: builtins.toJSON left < builtins.toJSON right)
-      (builtins.map
-        (name: resultOf (allowedPrincipalKey name) "resource")
-        cfg.allowedUsers);
-  };
-  localFilesystems = producer "local-filesystems" interfaces.filesystemReadiness {
-    scope = "local-filesystems";
-  };
-  filesystemEntry = key: destination: mode: owner: groupName: prerequisites:
-    producer key interfaces.filesystemEntry {
-      name = key;
-      entry.kind = "directory";
-      inherit destination owner mode prerequisites;
-      group = groupName;
-    };
+  principalKey = name: "libvirt-allowed-${builtins.substring 0 24 (builtins.hashString "sha256" name)}";
   directoryDefinitions = {
     runtime = {
       path = "/run/libvirt";
@@ -129,15 +65,15 @@
     qemu = {
       path = "/var/lib/libvirt/qemu";
       mode = "0750";
-      owner = resultOf "qemu-principal" "principal-name";
-      group = resultOf "qemu-group" "group-name";
+      owner = operations.identity.operations.principal.effects.libvirt-qemu.outputs.name;
+      group = operations.identity.operations.group.effects.libvirt-qemu.outputs.name;
       parent = "state";
     };
     swtpm = {
       path = "/var/lib/libvirt/swtpm";
       mode = "0710";
-      owner = resultOf "qemu-principal" "principal-name";
-      group = resultOf "qemu-group" "group-name";
+      owner = operations.identity.operations.principal.effects.libvirt-qemu.outputs.name;
+      group = operations.identity.operations.group.effects.libvirt-qemu.outputs.name;
       parent = "state";
     };
     logs = {
@@ -150,24 +86,17 @@
     qemu-logs = {
       path = "/var/log/libvirt/qemu";
       mode = "0750";
-      owner = resultOf "qemu-principal" "principal-name";
-      group = resultOf "qemu-group" "group-name";
+      owner = operations.identity.operations.principal.effects.libvirt-qemu.outputs.name;
+      group = operations.identity.operations.group.effects.libvirt-qemu.outputs.name;
       parent = "logs";
     };
   };
-  directory = key: let
-    value = directoryDefinitions.${key};
-    prerequisites =
-      [(resultOf "local-filesystems" "resource")]
-      ++ lib.optional (value.parent != null) (resultOf "directory-${value.parent}" "resource");
-  in
-    filesystemEntry "directory-${key}" value.path value.mode value.owner value.group prerequisites;
-  directories = builtins.map directory (builtins.attrNames directoryDefinitions);
   directoryResources =
-    builtins.map
-    (key: resultOf "directory-${key}" "resource")
-    (builtins.attrNames directoryDefinitions);
-
+    builtins.map (key: operations.filesystem.operations.directory.effects."libvirt-${key}".outputs.resource) (builtins.attrNames directoryDefinitions)
+    ++ [
+      operations.configurationLower.operations.install.effects.image.outputs.receiptEffect
+      operations.identity.operations.membership.effects.libvirt-access.outputs.resource
+    ];
   socket = {
     name,
     path,
@@ -188,7 +117,7 @@
     owner = "root";
     group = groupName;
     remove_on_stop = true;
-    prerequisites = [(resultOf "directory-runtime" "resource")];
+    prerequisites = [(operations.filesystem.operations.directory.effects.libvirt-runtime.outputs.resource)];
     inherit after;
     binds_to = bindsTo;
   };
@@ -236,7 +165,6 @@
   service = declaration:
     (builtins.removeAttrs declaration ["hardening" "enabled"])
     // {
-      inherit consumerInstance;
       policy.hardening = declaration.hardening;
     };
   daemon = {
@@ -318,7 +246,7 @@
       inherit isolation identity;
       hardening = hardening;
     };
-  searchPath = builtins.map (package: lib.abilities.packageOutput {inherit package;}) [
+  searchPath = builtins.map (name: dependencies.${name}.path) [
     "bridge-utils"
     "coreutils"
     "dbus"
@@ -451,30 +379,30 @@
     inherit searchPath;
     dependencies = {
       after = [
-        (resultOf authorizationRequirement "resource")
-        (resultOf "system-bus-availability" "resource")
-        (resultOf "virtlogd-lifecycle" "resource")
-        (resultOf "virtlockd-lifecycle" "resource")
+        (operations.serviceManagement.operations.realize.effects."polkit.polkit".outputs.resource)
+        (operations.serviceManagement.operations.realize.effects.dbus.outputs.resource)
+        (operations.serviceManagement.operations.realize.effects."libvirt.virtlogd".outputs.resource)
+        (operations.serviceManagement.operations.realize.effects."libvirt.virtlockd".outputs.resource)
       ];
       requires = [
-        (resultOf authorizationRequirement "resource")
-        (resultOf "system-bus-availability" "resource")
-        (resultOf "virtlogd-lifecycle" "resource")
+        (operations.serviceManagement.operations.realize.effects."polkit.polkit".outputs.resource)
+        (operations.serviceManagement.operations.realize.effects.dbus.outputs.resource)
+        (operations.serviceManagement.operations.realize.effects."libvirt.virtlogd".outputs.resource)
       ];
-      wants = [(resultOf "virtlockd-lifecycle" "resource")];
+      wants = [(operations.serviceManagement.operations.realize.effects."libvirt.virtlockd".outputs.resource)];
     };
     sockets = [
       (socket {
         name = "libvirtd";
         path = "/run/libvirt/libvirt-sock";
         mode = "0660";
-        groupName = resultOf "access-group" "group-name";
+        groupName = operations.identity.operations.group.effects.libvirt-access.outputs.name;
       })
       (socket {
         name = "libvirtd-ro";
         path = "/run/libvirt/libvirt-sock-ro";
         mode = "0660";
-        groupName = resultOf "access-group" "group-name";
+        groupName = operations.identity.operations.group.effects.libvirt-access.outputs.name;
         after = ["libvirtd"];
         bindsTo = ["libvirtd"];
       })
@@ -494,67 +422,16 @@
       wants = ["libvirtd" "libvirtd-admin" "libvirtd-ro"];
     };
   };
-
-  producers =
-    [
-      qemuGroup
-      accessGroup
-      kvmGroup
-      qemuPrincipal
-      accessMembership
-      localFilesystems
-    ]
-    ++ [allowedPrincipals] ++ directories;
-  requirements = {
-    requirementTemplates.${availabilityRequirement} =
-      lib.abilities.interfaceSelector {
-        name = "aos.dbus.system-bus-availability";
-        abi = 1;
-      }
-      // {
-        description = "Selects the exact package-owned system message bus.";
-        methods = ["observe"];
-        guarantees = [];
-        strength = "required";
-        fallback = null;
-      };
-    requirementTemplates.${authorizationRequirement} =
-      lib.abilities.interfaceSelector {
-        name = "aos.authorization.service-availability";
-        abi = 1;
-      }
-      // {
-        description = "Requires the selected system authorization service.";
-        methods = ["observe"];
-        guarantees = [];
-        strength = "required";
-        fallback = null;
-      };
-    requests.system-bus-availability = {
-      requirement = availabilityRequirement;
-      consumer = consumerInstance;
-      scope = ["system-bus"];
-      parameters.scope = "system-bus";
-    };
-    requests.${authorizationRequirement} = {
-      requirement = authorizationRequirement;
-      consumer = consumerInstance;
-      scope = ["authorization"];
-      parameters.scope = "system";
-    };
-  };
 in {
-  imports = [./dbus-registration.nix];
-
   options.aos.virtualization.libvirt = {
     enable = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = types.bool;
       default = false;
       description = "Run Libvirt with the QEMU virtualization driver.";
     };
     allowedUsers = lib.mkOption {
-      type = abilityTypes.list {
-        element = serviceTypes.principalName;
+      type = types.listWith {
+        elemType = types.str;
         maxItems = 256;
         unique = true;
         canonicalOrder = true;
@@ -567,36 +444,77 @@ in {
   config = lib.mkMerge [
     {
       aos.services = {
-        "libvirt.virtlogd" = virtlogd // {enable = cfg.enable;};
-        "libvirt.virtlockd" = virtlockd // {enable = cfg.enable;};
-        "libvirt.libvirtd" = libvirtd // {enable = cfg.enable;};
+        "libvirt.virtlogd" = lib.mkDefault (virtlogd // {enable = lib.mkDefault cfg.enable;});
+        "libvirt.virtlockd" = lib.mkDefault (virtlockd // {enable = lib.mkDefault cfg.enable;});
+        "libvirt.libvirtd" = lib.mkDefault (libvirtd // {enable = lib.mkDefault cfg.enable;});
       };
     }
     (lib.mkIf anyDaemonEnabled {
-      environment.etc."libvirt".source = "${packageArtifactFor (lib.abilities.packageOutput {})}/etc/libvirt";
-    })
-    (lib.mkIf libvirtdEnabled {
-      aos.abilities.runtimeChecks.libvirt = {
-        description = "Libvirt local connection checks";
-        checks = [
+      aos.filesystems.etcTrees = [
+        {
+          target = "libvirt";
+          source = "${package}/etc/libvirt";
+        }
+      ];
+      aos.abilities = {
+        identity.operations.group.effects = {
+          libvirt-qemu.input.name = "libvirt-qemu";
+          libvirt-access.input.name = "libvirt";
+          libvirt-kvm.input = {
+            name = "kvm";
+            allocation = "existing";
+          };
+        };
+        identity.operations.principal.effects =
           {
-            name = "libvirt-connect";
-            description = "The client connects to the local QEMU driver";
-            script = ''
-              vm.wait_until_succeeds(
-                  "virsh --connect qemu:///system list --all", timeout=30
-              )
-              vm.succeed("test -S /run/libvirt/libvirt-sock")
-              vm.succeed("test $(stat -c %G /run/libvirt/libvirt-sock) = libvirt")
-            '';
+            libvirt-qemu.input = {
+              name = "libvirt-qemu";
+              description = "Libvirt QEMU virtual machine";
+              home_directory = "/var/lib/libvirt";
+              primary_group = operations.identity.operations.group.effects.libvirt-qemu.outputs.name;
+              supplementary_groups = [operations.identity.operations.group.effects.libvirt-kvm.outputs.name];
+            };
           }
-        ];
+          // builtins.listToAttrs (builtins.map (name: {
+              name = principalKey name;
+              value.input = {
+                inherit name;
+                allocation = "existing";
+              };
+            })
+            cfg.allowedUsers);
+        identity.operations.membership.effects.libvirt-access.input = {
+          group = operations.identity.operations.group.effects.libvirt-access.outputs.name;
+          members = builtins.map (name: operations.identity.operations.principal.effects.${principalKey name}.outputs.name) cfg.allowedUsers;
+        };
+        filesystem.operations.directory.effects =
+          builtins.mapAttrs (key: value: {
+            lifetime =
+              if key == "libvirt-runtime"
+              then "instance"
+              else "persistent";
+            input = {
+              inherit (value) path mode owner group;
+              parentResource =
+                if value.parent == null
+                then null
+                else operations.filesystem.operations.directory.effects."libvirt-${value.parent}".outputs.resource;
+            };
+          }) (lib.mapAttrs' (key: value: {
+              name = "libvirt-${key}";
+              inherit value;
+            })
+            directoryDefinitions);
       };
     })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = producers ++ [requirements];
-      enabled = anyDaemonEnabled;
+    (lib.mkIf libvirtdEnabled {
+      system.checks.libvirt = import ./runtime-tests.nix;
+      aos.services.dbus.enable = lib.mkDefault true;
+      aos.security.polkit.enable = lib.mkDefault true;
+      aos.dbus = {
+        activationDirectories = ["${package}/share/dbus-1/system-services"];
+        policyDirectories = ["${package}/share/dbus-1/system.d"];
+      };
     })
   ];
 }
