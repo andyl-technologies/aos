@@ -97,7 +97,7 @@ in
     cargoFlags = "-p aos-ebpf-net-policy-provider --bin aos-ebpf-net-policy-provider";
     cargoTestFlags = "-p aos-ebpf-net-policy-provider";
     doCheck = true;
-    abilities = ./_aos-ebpf-net-policy;
+    module = ./_aos-ebpf-net-policy;
 
     buildDeps = [
       linux-headers
@@ -213,6 +213,7 @@ in
     };
 
     meta = {
+      mainProgram = "aos-ebpf-net-policy-provider";
       description = "Load fleet-managed BPF network policy artifacts";
       license = "MIT";
     };

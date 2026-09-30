@@ -5,7 +5,6 @@
 //! the provider-neutral request beside that root so admission can distinguish
 //! a converged resource from an older semantic revision.
 
-use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read as _, Write as _};
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _, symlink};
@@ -14,26 +13,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
-    AbilityValue, AccessMode, ArtifactClosureMemberInput, ArtifactReference, LocalKey,
-    MethodSemantics, ResourceId, ResourceReference, RevisionId, artifact_closure_identity,
+    ArtifactClosureMemberInput, ArtifactReference, LocalKey, artifact_closure_identity,
     artifact_content_identity,
 };
+use aos_ability_runtime::activation::{Action, Invocation};
 use aos_contract::Sha256Digest;
-use aos_provider_protocol::{
-    ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest, AdmissionResult, AdmissionRevision,
-    BoundNativeContext, INVOCATION_SCHEMA, Invocation, InvocationDisposition, InvocationPurpose,
-    InvocationResult, MAX_TRANSACTION_BLOB_BYTES, RESULT_SCHEMA, ResourceContext,
-    SupportedPurposes, TRANSACTION_BLOB_INPUT_DIRECTORY_ENV, TRANSACTION_BLOB_REFERENCE_TYPE,
-    TransactionBlobReference, resource_set_digest, validate_admission_resource,
-    validate_resource_context, validate_resource_contexts,
-};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::handler::{ability_value, decode_value, remaining};
+use crate::handler::remaining;
 use crate::process::ProcessStoreCommands;
 
-const PROVIDER_CONTEXT_SCHEMA: &str = "aos.artifact.content-addressed-object-context/v1";
+const MAX_CONTENT_BYTES: u64 = 1024 * 1024;
 const METADATA_SCHEMA: &str = "aos.artifact.content-addressed-object-metadata/v1";
 const ROOT_DIRECTORY: &str = "/nix/var/nix/gcroots/aos/content-addressed-objects";
 const NIX_STORE_RELATIVE: &str = "../libexec/nix-store";
@@ -60,193 +51,55 @@ impl ContentArtifactProvider {
         }
     }
 
-    /// Admits one effect-free object operation.
-    pub(super) fn admit(&self, request: AdmissionRequest) -> Result<AdmissionResult> {
-        validate_method(request.method.method.as_str(), &request.semantics)?;
-        validate_admission_resource(&request)?;
-        validate_resource_contexts(&request.resources)?;
-        let observation_schema = request
-            .contract
-            .observation_discriminator()
-            .context("selected content-object method has no exact observation discriminator")?;
-
-        let desired: ContentObjectRequest = decode_value(&request.resource_spec.value)?;
+    /// Executes the native persistent content-object lifecycle.
+    pub(super) fn invoke(
+        &self,
+        purpose: &str,
+        invocation: Invocation,
+    ) -> Result<serde_json::Value> {
+        let parameters: ContentObjectParameters = serde_json::from_value(invocation.input)?;
+        ensure!(
+            parameters.content.len() as u64 <= MAX_CONTENT_BYTES,
+            "content object exceeds native string bound"
+        );
+        let desired = ContentObjectRequest {
+            name: parameters.name,
+            media_type: parameters.media_type,
+            content_sha256: Sha256Digest::of_bytes(parameters.content.as_bytes()),
+        };
         validate_request(&desired)?;
-        validate_prerequisites(&desired.prerequisites, &request.resources)?;
-        validate_target(&request.target, request.method.method.as_str())?;
-        let _realization: ContentObjectRealization =
-            decode_value(&request.resource_spec.realization)?;
         let executable = self.executable()?;
+        if purpose == "remove" {
+            self.remove(&invocation.id)?;
+            return Ok(json!({}));
+        }
+        if purpose == "apply" {
+            self.commit(
+                &invocation.id,
+                &desired,
+                parameters.content.as_bytes(),
+                &executable,
+                invocation.effect.timeout_ms,
+            )?;
+        }
         let inspection = self.inspect(
-            &request.resource_spec.resource,
+            &invocation.id,
             &desired,
             &executable,
-            request.control.attempt_remaining_millis,
+            invocation.effect.timeout_ms,
         );
-        let observation = observation(observation_schema, &desired, &inspection)?;
-        let revision = admission_revision(&inspection, &observation)?;
-        let native_context = ability_value(json!({
-            "schema": PROVIDER_CONTEXT_SCHEMA,
-            "executable": executable,
-            "owner": request.resource_spec.resource,
-        }))?;
-        let purposes = if request.method.method.as_str() == "observe" {
-            vec![InvocationPurpose::Effect]
-        } else {
-            vec![
-                InvocationPurpose::Effect,
-                InvocationPurpose::Reconcile,
-                InvocationPurpose::Cancel,
-            ]
-        };
-
-        Ok(AdmissionResult {
-            schema: ADMISSION_SCHEMA.into(),
-            disposition: AdmissionDisposition::Admitted,
-            revision,
-            incarnation: Some(request.assignment.incarnation),
-            observation,
-            native_context,
-            supported_purposes: SupportedPurposes::from_ordered(purposes)
-                .context("constructing content object supported purposes")?,
-        })
-    }
-
-    /// Executes or reconciles one checked persistent object operation.
-    pub(super) fn invoke(&self, invocation: Invocation) -> Result<InvocationResult> {
-        let observation_schema = invocation
-            .contract
-            .observation_discriminator()
-            .context("selected content-object method has no exact observation discriminator")?;
-        ensure!(
-            invocation.schema == INVOCATION_SCHEMA,
-            "unsupported invocation schema"
-        );
-        ensure!(
-            invocation.method_is_bound(),
-            "invocation method differs from durable recovery authority"
-        );
-        validate_method(invocation.method.method.as_str(), &invocation.semantics)?;
-        validate_method(
-            invocation.request.method.method.as_str(),
-            &invocation.request.semantics,
-        )?;
-        validate_resource_contexts(&invocation.request.resources)?;
-        ensure!(
-            resource_set_digest(&invocation.request.resources)?
-                == invocation.request.native_context_digest,
-            "resource contexts differ from their authenticated set digest"
-        );
-
-        let target = require_resource(&invocation.request.resources, &invocation.request.target)?;
-        let bound: BoundNativeContext = validate_resource_context(target)?;
-        validate_target(
-            &invocation.request.target,
-            invocation.method.method.as_str(),
-        )?;
-
-        let desired: ContentObjectRequest = decode_value(&bound.resource_spec.value)?;
-        validate_request(&desired)?;
-        validate_prerequisites(&desired.prerequisites, &invocation.request.resources)?;
-        let parameters: ContentObjectParameters = decode_value(&invocation.request.inputs)?;
-        ensure!(
-            parameters.request == desired,
-            "content object method request differs from the checked resource"
-        );
-        validate_parameters(invocation.request.method.method.as_str(), &parameters)?;
-        let _realization: ContentObjectRealization =
-            decode_value(&bound.resource_spec.realization)?;
-        let provider: ProviderContext = decode_value(&bound.provider_context)?;
-        ensure!(
-            provider.schema == PROVIDER_CONTEXT_SCHEMA
-                && provider.owner == bound.resource_spec.resource,
-            "content object provider context differs from the bound resource"
-        );
-        let executable = self.executable()?;
-        ensure!(
-            provider.executable == executable,
-            "selected Nix store executable changed after admission"
-        );
-
-        let primary_method = invocation.request.method.method.as_str();
-        let observation_before = self.inspect(
-            &bound.resource_spec.resource,
-            &desired,
-            &executable,
-            invocation.control.attempt_remaining_millis,
-        );
-        let (disposition, inspection) = match invocation.purpose {
-            InvocationPurpose::Effect if invocation.control.cancelled => (
-                InvocationDisposition::RejectedBeforeEffect,
-                observation_before,
-            ),
-            InvocationPurpose::Effect => {
-                match primary_method {
-                    "commit" => self.commit(
-                        &bound.resource_spec.resource,
-                        &desired,
-                        parameters.blob.as_ref().context(
-                            "content object commit is missing its checked transaction blob",
-                        )?,
-                        &executable,
-                        invocation.control.attempt_remaining_millis,
-                    )?,
-                    "observe" => {}
-                    "remove" => self.remove(&bound.resource_spec.resource)?,
-                    _ => bail!("unsupported content object effect method"),
-                }
-                let current = self.inspect(
-                    &bound.resource_spec.resource,
-                    &desired,
-                    &executable,
-                    invocation.control.attempt_remaining_millis,
-                );
-                (completion_disposition(primary_method, &current), current)
+        if purpose == "apply" {
+            return ready_outputs(&inspection);
+        }
+        Ok(match (invocation.action, inspection) {
+            (_, Inspection::Absent) => json!({"status":"absent"}),
+            (Action::Apply, Inspection::Ready(stored)) => {
+                json!({"status":"current","outputs":ready_outputs(&Inspection::Ready(stored))?})
             }
-            InvocationPurpose::Reconcile => (
-                reconciliation_disposition(
-                    primary_method,
-                    &observation_before,
-                    parameters.blob.as_ref(),
-                ),
-                observation_before,
-            ),
-            InvocationPurpose::Cancel => (
-                cancellation_disposition(
-                    primary_method,
-                    &observation_before,
-                    parameters.blob.as_ref(),
-                ),
-                observation_before,
-            ),
-            InvocationPurpose::Compensate => (
-                InvocationDisposition::RejectedBeforeEffect,
-                observation_before,
-            ),
-            InvocationPurpose::ReconcileCompensation => (
-                InvocationDisposition::InterventionRequired,
-                observation_before,
-            ),
-        };
-        let evidence = observation(observation_schema, &desired, &inspection)?;
-        let outputs = if disposition == InvocationDisposition::Completed
-            && matches!(primary_method, "commit" | "observe")
-        {
-            successful_outputs(
-                &invocation.request.target,
-                &inspection,
-                primary_method == "commit",
-            )?
-        } else {
-            BTreeMap::new()
-        };
-
-        Ok(InvocationResult {
-            schema: RESULT_SCHEMA.into(),
-            disposition,
-            evidence,
-            outputs,
-            native_context_digest: invocation.request.native_context_digest,
+            (Action::Remove, Inspection::Ready(_)) | (_, Inspection::Drifted) => {
+                json!({"status":"retry-safe"})
+            }
+            (_, Inspection::Unknown) => json!({"status":"indeterminate"}),
         })
     }
 
@@ -281,7 +134,7 @@ impl ContentArtifactProvider {
 
     fn inspect(
         &self,
-        resource: &ResourceId,
+        resource: &str,
         desired: &ContentObjectRequest,
         executable: &Path,
         remaining_millis: u64,
@@ -294,7 +147,7 @@ impl ContentArtifactProvider {
 
     fn inspect_checked(
         &self,
-        resource: &ResourceId,
+        resource: &str,
         desired: &ContentObjectRequest,
         executable: &Path,
         remaining_millis: u64,
@@ -341,6 +194,7 @@ impl ContentArtifactProvider {
         let observed = self.describe_artifact(executable, &target, remaining_millis)?;
         if observed.artifact != metadata.artifact
             || observed.content_sha256 != metadata.content_sha256
+            || observed.content_sha256 != desired.content_sha256
         {
             return Ok(Inspection::Drifted);
         }
@@ -349,21 +203,24 @@ impl ContentArtifactProvider {
 
     fn commit(
         &self,
-        resource: &ResourceId,
+        resource: &str,
         desired: &ContentObjectRequest,
-        blob: &TransactionBlobReference,
+        content: &[u8],
         executable: &Path,
         remaining_millis: u64,
     ) -> Result<()> {
-        let source = checked_blob_path(blob)?;
+        let source =
+            tempfile::NamedTempFile::new().context("creating private content-object input")?;
+        source.as_file().write_all(content)?;
+        source.as_file().sync_all()?;
         let deadline = crate::handler::deadline(remaining_millis)?;
-        let store_path = self
-            .commands
-            .add_fixed(executable, &source, remaining(deadline)?)?;
+        let store_path =
+            self.commands
+                .add_fixed(executable, source.path(), remaining(deadline)?)?;
         let stored = self.describe_artifact(executable, &store_path, remaining(deadline)?)?;
         ensure!(
-            stored.content_sha256 == blob.content_sha256,
-            "stored object differs from its checked transaction blob"
+            stored.content_sha256 == desired.content_sha256,
+            "stored object differs from its exact native content input"
         );
         let metadata = ObjectMetadata {
             schema: METADATA_SCHEMA.into(),
@@ -420,7 +277,7 @@ impl ContentArtifactProvider {
 
     fn publish_root(
         &self,
-        resource: &ResourceId,
+        resource: &str,
         store_path: &Path,
         metadata: &ObjectMetadata,
     ) -> Result<()> {
@@ -454,7 +311,7 @@ impl ContentArtifactProvider {
         sync_directory(&paths.directory)
     }
 
-    fn remove(&self, resource: &ResourceId) -> Result<()> {
+    fn remove(&self, resource: &str) -> Result<()> {
         let paths = self.paths(resource)?;
         remove_symlink_if_present(&paths.root)?;
         remove_regular_if_present(&paths.metadata)?;
@@ -465,9 +322,11 @@ impl ContentArtifactProvider {
         }
     }
 
-    fn paths(&self, resource: &ResourceId) -> Result<ObjectPaths> {
-        let digest =
-            Sha256Digest::of_canonical("aos.artifact.content-addressed-object-owner/v1", resource)?;
+    fn paths(&self, resource: &str) -> Result<ObjectPaths> {
+        let digest = Sha256Digest::of_canonical(
+            "aos.artifact.content-addressed-object-owner/v1",
+            &resource,
+        )?;
         let directory = self.root_directory.join(digest.hex());
         Ok(ObjectPaths {
             root: directory.join("root"),
@@ -497,29 +356,15 @@ impl ContentArtifactProvider {
 struct ContentObjectRequest {
     name: LocalKey,
     media_type: String,
-    prerequisites: Vec<ResourceReference>,
+    content_sha256: Sha256Digest,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContentObjectParameters {
-    request: ContentObjectRequest,
-    blob: Option<TransactionBlobReference>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ContentObjectRealization {
-    #[serde(rename = "schema")]
-    _schema: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProviderContext {
-    schema: String,
-    executable: PathBuf,
-    owner: ResourceId,
+    name: LocalKey,
+    media_type: String,
+    content: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -569,21 +414,7 @@ pub(super) trait ArtifactStoreCommands: Send + Sync {
 }
 
 fn validate_request(request: &ContentObjectRequest) -> Result<()> {
-    validate_media_type(&request.media_type)?;
-    ensure!(
-        request.prerequisites.len() <= 64,
-        "too many content object prerequisites"
-    );
-    let encoded = request
-        .prerequisites
-        .iter()
-        .map(serde_json::to_vec)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    ensure!(
-        encoded.windows(2).all(|pair| pair[0] < pair[1]),
-        "content object prerequisites are not canonical and unique"
-    );
-    Ok(())
+    validate_media_type(&request.media_type)
 }
 
 fn validate_media_type(value: &str) -> Result<()> {
@@ -613,110 +444,6 @@ fn media_token_byte(byte: u8) -> bool {
         )
 }
 
-fn validate_parameters(method: &str, parameters: &ContentObjectParameters) -> Result<()> {
-    match method {
-        "commit" => {
-            ensure!(
-                parameters.blob.is_some(),
-                "content object commit requires a transaction blob"
-            );
-        }
-        "observe" | "remove" => {
-            ensure!(
-                parameters.blob.is_none(),
-                "content object observation and deletion reject blob inputs"
-            );
-        }
-        _ => bail!("unsupported content object method"),
-    }
-    Ok(())
-}
-
-fn validate_method(method: &str, semantics: &MethodSemantics) -> Result<()> {
-    let expected = match method {
-        "commit" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
-        "observe" => MethodSemantics::ordinary(AccessMode::Read),
-        "remove" => MethodSemantics::provider_stop(),
-        _ => bail!("selected content object method is unsupported"),
-    };
-    ensure!(
-        *semantics == expected,
-        "selected content object method semantics differ"
-    );
-    Ok(())
-}
-
-fn validate_target(target: &ResourceReference, method: &str) -> Result<()> {
-    ensure!(
-        target
-            .operations
-            .binary_search_by_key(&method, LocalKey::as_str)
-            .is_ok(),
-        "content object method is outside the target resource authority"
-    );
-    ensure!(
-        target.lifetime == aos_ability_model::ResourceLifetime::Persistent,
-        "content object target is not persistent"
-    );
-    Ok(())
-}
-
-fn validate_prerequisites(
-    prerequisites: &[ResourceReference],
-    resources: &[ResourceContext],
-) -> Result<()> {
-    for prerequisite in prerequisites {
-        let context = require_resource(resources, prerequisite)?;
-        validate_resource_context(context)?;
-    }
-    Ok(())
-}
-
-fn require_resource<'a>(
-    resources: &'a [ResourceContext],
-    reference: &ResourceReference,
-) -> Result<&'a ResourceContext> {
-    let matches = resources
-        .iter()
-        .filter(|context| &context.reference == reference)
-        .collect::<Vec<_>>();
-    ensure!(
-        matches.len() == 1,
-        "request does not contain one exact resource context"
-    );
-    Ok(matches[0])
-}
-
-fn checked_blob_path(reference: &TransactionBlobReference) -> Result<PathBuf> {
-    ensure!(
-        reference.kind == TRANSACTION_BLOB_REFERENCE_TYPE,
-        "transaction blob reference has an unsupported type"
-    );
-    ensure!(
-        reference.size_bytes <= MAX_TRANSACTION_BLOB_BYTES,
-        "transaction blob exceeds its bound"
-    );
-    let input = std::env::var_os(TRANSACTION_BLOB_INPUT_DIRECTORY_ENV)
-        .context("runtime did not expose checked transaction blob inputs")?;
-    let input = PathBuf::from(input);
-    ensure!(
-        input.is_absolute(),
-        "transaction blob input root is not absolute"
-    );
-    checked_blob_at(&input, reference)
-}
-
-fn checked_blob_at(input: &Path, reference: &TransactionBlobReference) -> Result<PathBuf> {
-    let path = input.join(reference.handle.as_str());
-    let bytes = read_bounded_regular(&path)?;
-    ensure!(
-        bytes.len() as u64 == reference.size_bytes
-            && Sha256Digest::of_bytes(&bytes) == reference.content_sha256,
-        "transaction blob bytes differ from their checked reference"
-    );
-    Ok(path)
-}
-
 fn read_bounded_regular(path: &Path) -> Result<Vec<u8>> {
     let mut file = OpenOptions::new()
         .read(true)
@@ -728,16 +455,16 @@ fn read_bounded_regular(path: &Path) -> Result<Vec<u8>> {
         .with_context(|| format!("inspecting regular file {}", path.display()))?;
     ensure!(metadata.is_file(), "checked object is not a regular file");
     ensure!(
-        metadata.len() <= MAX_TRANSACTION_BLOB_BYTES,
+        metadata.len() <= MAX_CONTENT_BYTES,
         "checked object exceeds the transaction blob bound"
     );
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     (&mut file)
-        .take(MAX_TRANSACTION_BLOB_BYTES + 1)
+        .take(MAX_CONTENT_BYTES + 1)
         .read_to_end(&mut bytes)
         .with_context(|| format!("reading regular file {}", path.display()))?;
     ensure!(
-        bytes.len() as u64 <= MAX_TRANSACTION_BLOB_BYTES,
+        bytes.len() as u64 <= MAX_CONTENT_BYTES,
         "checked object grew beyond the transaction blob bound"
     );
     let after = file
@@ -755,125 +482,11 @@ fn read_metadata(path: &Path) -> Result<ObjectMetadata> {
     aos_contract::canonical::from_slice(&bytes, "content object metadata")
 }
 
-fn observation(
-    observation_schema: &str,
-    desired: &ContentObjectRequest,
-    inspection: &Inspection,
-) -> Result<AbilityValue> {
-    let (state, content_sha256, artifact) = match inspection {
-        Inspection::Absent => ("absent", None, None),
-        Inspection::Ready(stored) => (
-            "ready",
-            Some(stored.content_sha256),
-            Some(stored.artifact.clone()),
-        ),
-        Inspection::Drifted => ("drifted", None, None),
-        Inspection::Unknown => ("unknown", None, None),
-    };
-    ability_value(json!({
-        "schema": observation_schema,
-        "expected": desired,
-        "state": state,
-        "content_sha256": content_sha256,
-        "artifact": artifact,
-    }))
-}
-
-fn admission_revision(
-    inspection: &Inspection,
-    observation: &AbilityValue,
-) -> Result<AdmissionRevision> {
-    match inspection {
-        Inspection::Ready(_) | Inspection::Drifted => Ok(AdmissionRevision::Present {
-            revision: RevisionId(Sha256Digest::of_canonical(
-                "aos.artifact.content-addressed-object-observed/v1",
-                observation,
-            )?),
-        }),
-        Inspection::Absent => Ok(AdmissionRevision::Absent),
-        Inspection::Unknown => Ok(AdmissionRevision::Unknown),
-    }
-}
-
-fn completion_disposition(method: &str, inspection: &Inspection) -> InvocationDisposition {
-    match (method, inspection) {
-        ("commit" | "observe", Inspection::Ready(_)) | ("remove", Inspection::Absent) => {
-            InvocationDisposition::Completed
-        }
-        (_, Inspection::Unknown) => InvocationDisposition::Indeterminate,
-        _ => InvocationDisposition::Indeterminate,
-    }
-}
-
-fn reconciliation_disposition(
-    method: &str,
-    inspection: &Inspection,
-    blob: Option<&TransactionBlobReference>,
-) -> InvocationDisposition {
-    match (method, inspection) {
-        ("commit", Inspection::Ready(stored))
-            if blob.is_some_and(|blob| blob.content_sha256 == stored.content_sha256) =>
-        {
-            InvocationDisposition::Completed
-        }
-        ("observe", Inspection::Ready(_)) => InvocationDisposition::Completed,
-        ("remove", Inspection::Absent) => InvocationDisposition::Completed,
-        ("commit", Inspection::Absent | Inspection::Ready(_) | Inspection::Drifted)
-        | ("remove", Inspection::Ready(_) | Inspection::Drifted) => {
-            InvocationDisposition::SafeToRetry
-        }
-        _ => InvocationDisposition::StillIndeterminate,
-    }
-}
-
-fn cancellation_disposition(
-    method: &str,
-    inspection: &Inspection,
-    blob: Option<&TransactionBlobReference>,
-) -> InvocationDisposition {
-    match (method, inspection) {
-        ("commit", Inspection::Ready(stored))
-            if blob.is_some_and(|blob| blob.content_sha256 == stored.content_sha256) =>
-        {
-            InvocationDisposition::Completed
-        }
-        ("observe", Inspection::Ready(_)) => InvocationDisposition::Completed,
-        ("remove", Inspection::Absent) => InvocationDisposition::Completed,
-        ("commit", Inspection::Absent | Inspection::Ready(_))
-        | ("remove", Inspection::Ready(_)) => InvocationDisposition::RejectedBeforeEffect,
-        _ => InvocationDisposition::Indeterminate,
-    }
-}
-
-fn successful_outputs(
-    target: &ResourceReference,
-    inspection: &Inspection,
-    include_resource: bool,
-) -> Result<BTreeMap<LocalKey, AbilityValue>> {
+fn ready_outputs(inspection: &Inspection) -> Result<serde_json::Value> {
     let Inspection::Ready(stored) = inspection else {
-        bail!("completed content object operation lacks a ready observation");
+        bail!("content object did not converge to exact desired bytes");
     };
-    let mut outputs = BTreeMap::new();
-    outputs.insert(
-        LocalKey::new("artifact-reference")?,
-        ability_value(serde_json::to_value(&stored.artifact)?)?,
-    );
-    if include_resource {
-        let mut retained = target.clone();
-        retained.operations = ["observe", "remove"]
-            .into_iter()
-            .map(LocalKey::new)
-            .collect::<Result<Vec<_>, _>>()?;
-        outputs.insert(
-            LocalKey::new("artifact-resource")?,
-            ability_value(serde_json::to_value(retained)?)?,
-        );
-    }
-    outputs.insert(
-        LocalKey::new("content-sha256")?,
-        ability_value(serde_json::to_value(stored.content_sha256)?)?,
-    );
-    Ok(outputs)
+    Ok(json!({"path": stored.artifact.store_path,"content_sha256": stored.content_sha256}))
 }
 
 fn validate_store_path(path: &Path, store_directory: &Path) -> Result<()> {

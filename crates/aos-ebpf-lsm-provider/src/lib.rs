@@ -1,13 +1,12 @@
 //! Checked Linux realization of package-selected BPF-LSM policy resources.
 //!
-//! The provider accepts immutable policy and BPF object artifact references
-//! from the selected package contract. Admission resolves those references and
-//! the package-owned loader once, then effect execution loads or removes only
-//! the exact pins owned by the admitted resource.
+//! Native activation resolves immutable policy and BPF object paths and the
+//! package-owned loader. Ownership markers bind pins to logical effect identity
+//! and revision; teardown removes only the pins established by that effect.
 
 #![forbid(unsafe_code)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
@@ -15,24 +14,13 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_ability_model::{
-    AbilityValue, AccessMode, LocalKey, MethodSemantics, ResourceReference, RevisionId,
-};
+use aos_ability_runtime::activation::{Action, Invocation};
 use aos_contract::Sha256Digest;
-use aos_provider_protocol::{
-    ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
-    AdmissionResult, AdmissionRevision, BoundNativeContext, INVOCATION_SCHEMA, Invocation,
-    InvocationDisposition, InvocationPurpose, InvocationResult, RESULT_SCHEMA, ResourceContext,
-    SupportedPurposes, resource_set_digest, validate_admission_resource, validate_resource_context,
-    validate_resource_contexts,
-};
 use serde::{Deserialize, Serialize};
 
 mod native;
 
-use native::{
-    ArtifactPathReference, Executable, ExecutableReference, path_text, resolve_artifact_path,
-};
+use native::{Executable, path_text, resolve_artifact_path};
 
 const CONTEXT_SCHEMA: &str = "aos.linux.ebpf-lsm-policy-context/v1";
 const MARKER_SCHEMA: &str = "aos.linux.ebpf-lsm-policy-state/v1";
@@ -44,8 +32,8 @@ const MAX_MARKER_BYTES: u64 = 256 * 1024;
 #[serde(deny_unknown_fields)]
 struct PolicySelection {
     name: String,
-    policy: ArtifactPathReference,
-    object: ArtifactPathReference,
+    policy: String,
+    object: String,
     programs: Vec<String>,
 }
 
@@ -53,15 +41,6 @@ struct PolicySelection {
 #[serde(deny_unknown_fields)]
 struct PolicySetRequest {
     policies: Vec<PolicySelection>,
-    prerequisites: Vec<ResourceReference>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Realization {
-    schema: String,
-    loader: ExecutableReference,
-    pin_directory: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -86,7 +65,7 @@ struct ProviderContext {
 #[serde(deny_unknown_fields)]
 struct StateMarker {
     schema: String,
-    revision: RevisionId,
+    revision: String,
     pins: Vec<String>,
 }
 
@@ -135,245 +114,75 @@ impl EbpfLsmProvider {
         }
     }
 
-    /// Handles one bounded command invocation and emits canonical JSON.
+    /// Executes or observes one native activation invocation.
     ///
     /// # Errors
-    ///
-    /// Returns an error when the invocation, resource authority, immutable
-    /// artifact paths, selected loader, pin ownership, or native effect fails
-    /// validation.
+    /// Returns an error for invalid inputs, immutable artifacts, ownership
+    /// conflicts, or failed loader execution.
     pub fn handle(&self, purpose: &str, input: &[u8]) -> Result<Vec<u8>> {
-        let result = match purpose {
-            "admit" => {
-                let request: AdmissionRequest =
-                    aos_contract::canonical::from_slice(input, "BPF-LSM admission request")?;
-                ensure!(
-                    request.schema == ADMISSION_REQUEST_SCHEMA,
-                    "unsupported admission schema"
-                );
-                serde_json::to_value(self.admit(request)?)?
-            }
-            "effect" | "reconcile" | "cancel" | "compensate" | "reconcile-compensation" => {
-                let invocation: Invocation =
-                    aos_contract::canonical::from_slice(input, "BPF-LSM invocation")?;
-                ensure!(
-                    invocation.schema == INVOCATION_SCHEMA,
-                    "unsupported invocation schema"
-                );
-                ensure!(
-                    purpose == purpose_name(invocation.purpose),
-                    "purpose differs from argv"
-                );
-                serde_json::to_value(self.invoke(invocation)?)?
-            }
-            _ => bail!("unsupported command-handler purpose {purpose:?}"),
-        };
-
-        aos_contract::canonical::canonical_json(&result)
-            .context("encoding canonical BPF-LSM response")
-    }
-
-    fn admit(&self, request: AdmissionRequest) -> Result<AdmissionResult> {
-        validate_method(request.method.method.as_str(), &request.semantics)?;
-        validate_admission_resource(&request)?;
-        validate_resource_contexts(&request.resources)?;
-        let observation_schema = request
-            .contract
-            .observation_discriminator()
-            .context("selected BPF-LSM method has no observation discriminator")?;
-        let desired: PolicySetRequest = decode_value(&request.resource_spec.value)?;
+        let invocation: Invocation =
+            aos_contract::canonical::from_slice(input, "BPF-LSM invocation")?;
+        ensure!(
+            matches!(purpose, "apply" | "remove" | "observe"),
+            "unsupported native purpose"
+        );
+        ensure!(
+            purpose == "observe" || (purpose == "apply") == (invocation.action == Action::Apply),
+            "action differs from argv"
+        );
+        let desired: PolicySetRequest = serde_json::from_value(invocation.input.clone())?;
         validate_request(&desired)?;
-        require_prerequisites(&desired.prerequisites, &request.resources)?;
-        let context = self.resolve_context(&desired, &request.resource_spec.realization)?;
-        let observation = self.observe(
-            observation_schema,
-            &desired,
-            &context,
-            &request.target,
-            request.resource_spec.revision,
-        )?;
-        let revision = observation_revision(&observation, request.resource_spec.revision)?;
-        let supported_purposes = if request.method.method.as_str() == "observe" {
-            SupportedPurposes::from_ordered(vec![InvocationPurpose::Effect])
-        } else {
-            SupportedPurposes::from_ordered(vec![
-                InvocationPurpose::Effect,
-                InvocationPurpose::Reconcile,
-                InvocationPurpose::Cancel,
-            ])
-        }
-        .context("constructing canonical purpose support")?;
-
-        Ok(AdmissionResult {
-            schema: ADMISSION_SCHEMA.into(),
-            disposition: AdmissionDisposition::Admitted,
-            revision,
-            incarnation: Some(request.assignment.incarnation),
-            observation: ability_value(serde_json::to_value(observation)?)?,
-            native_context: ability_value(serde_json::to_value(context)?)?,
-            supported_purposes,
-        })
-    }
-
-    fn invoke(&self, invocation: Invocation) -> Result<InvocationResult> {
-        ensure!(
-            invocation.method_is_bound(),
-            "invocation method is not durably bound"
-        );
-        validate_method(invocation.method.method.as_str(), &invocation.semantics)?;
-        let observation_schema = invocation
-            .contract
-            .observation_discriminator()
-            .context("selected BPF-LSM method has no observation discriminator")?;
-        validate_resource_contexts(&invocation.request.resources)?;
-        ensure!(
-            resource_set_digest(&invocation.request.resources)?
-                == invocation.request.native_context_digest,
-            "resource contexts differ from their authenticated set digest"
-        );
-        let target = require_resource(&invocation.request.resources, &invocation.request.target)?;
-        let bound: BoundNativeContext = validate_resource_context(target)?;
-        ensure!(
-            invocation.method.interface == invocation.request.method.interface
-                && invocation
-                    .request
-                    .target
-                    .operations
-                    .binary_search(&invocation.method.method)
-                    .is_ok(),
-            "invocation method is outside the target resource authority"
-        );
-        ensure!(
-            bound.resource_spec.value == invocation.request.inputs,
-            "bound inputs differ"
-        );
-        let desired: PolicySetRequest = decode_value(&bound.resource_spec.value)?;
-        validate_request(&desired)?;
-        require_prerequisites(&desired.prerequisites, &invocation.request.resources)?;
-        let context: ProviderContext = decode_value(&bound.provider_context)?;
-        self.validate_context(&desired, &bound.resource_spec.realization, &context)?;
-        let before = self.observe(
-            observation_schema,
-            &desired,
-            &context,
-            &invocation.request.target,
-            bound.resource_spec.revision,
-        )?;
-        let removing = invocation.method.method.as_str() == "remove";
-        let (disposition, evidence) = match invocation.purpose {
-            InvocationPurpose::Effect if invocation.method.method.as_str() == "observe" => {
-                (InvocationDisposition::Completed, before)
-            }
-            InvocationPurpose::Effect if invocation.control.cancelled => {
-                (InvocationDisposition::RejectedBeforeEffect, before)
-            }
-            InvocationPurpose::Effect if invocation.method.method.as_str() == "apply" => {
+        let context = self.resolve_context(&desired)?;
+        let output = match purpose {
+            "apply" => {
                 self.apply(
                     &context,
-                    &invocation.request.target,
-                    bound.resource_spec.revision,
-                    invocation.control.attempt_remaining_millis,
+                    &invocation.id,
+                    invocation.revision.clone(),
+                    invocation.effect.timeout_ms,
                 )?;
-                let after = self.observe(
-                    observation_schema,
+                let observation = self.observe(
+                    "aos.security.ebpf-lsm-observation/v1",
                     &desired,
                     &context,
-                    &invocation.request.target,
-                    bound.resource_spec.revision,
+                    &invocation.id,
+                    &invocation.revision,
                 )?;
-                let disposition = if after.state == PolicyState::Applied {
-                    InvocationDisposition::Completed
-                } else {
-                    InvocationDisposition::Indeterminate
-                };
-                (disposition, after)
+                ensure!(
+                    observation.state == PolicyState::Applied,
+                    "policy pins did not converge"
+                );
+                serde_json::json!({"loaded": observation.loaded})
             }
-            InvocationPurpose::Effect => {
-                self.remove(&invocation.request.target)?;
-                let after = self.observe(
-                    observation_schema,
+            "remove" => {
+                self.remove(&invocation.id)?;
+                serde_json::json!({})
+            }
+            _ => {
+                let observation = self.observe(
+                    "aos.security.ebpf-lsm-observation/v1",
                     &desired,
                     &context,
-                    &invocation.request.target,
-                    bound.resource_spec.revision,
+                    &invocation.id,
+                    &invocation.revision,
                 )?;
-                let disposition = if after.state == PolicyState::Absent {
-                    InvocationDisposition::Completed
-                } else {
-                    InvocationDisposition::Indeterminate
-                };
-                (disposition, after)
-            }
-            InvocationPurpose::Reconcile => {
-                let complete = if removing {
-                    before.state == PolicyState::Absent
-                } else {
-                    before.state == PolicyState::Applied
-                };
-                let disposition = if complete {
-                    InvocationDisposition::Completed
-                } else if before.state == PolicyState::Unknown {
-                    InvocationDisposition::InterventionRequired
-                } else {
-                    InvocationDisposition::SafeToRetry
-                };
-                (disposition, before)
-            }
-            InvocationPurpose::Cancel => {
-                let complete = if removing {
-                    before.state == PolicyState::Absent
-                } else {
-                    before.state == PolicyState::Applied
-                };
-                let disposition = if complete {
-                    InvocationDisposition::Completed
-                } else if before.state == PolicyState::Absent {
-                    InvocationDisposition::RejectedBeforeEffect
-                } else {
-                    InvocationDisposition::Indeterminate
-                };
-                (disposition, before)
-            }
-            InvocationPurpose::Compensate | InvocationPurpose::ReconcileCompensation => {
-                (InvocationDisposition::InterventionRequired, before)
+                match (invocation.action, observation.state) {
+                    (_, PolicyState::Absent) => serde_json::json!({"status":"absent"}),
+                    (Action::Apply, PolicyState::Applied) => {
+                        serde_json::json!({"status":"current","outputs":{"loaded":observation.loaded}})
+                    }
+                    (_, PolicyState::Drifted) | (Action::Remove, PolicyState::Applied) => {
+                        serde_json::json!({"status":"retry-safe"})
+                    }
+                    (_, PolicyState::Unknown) => serde_json::json!({"status":"indeterminate"}),
+                }
             }
         };
-
-        let evidence = ability_value(serde_json::to_value(evidence)?)?;
-        let mut outputs = BTreeMap::new();
-        if disposition == InvocationDisposition::Completed {
-            outputs.insert(LocalKey::new("observation")?, evidence.clone());
-            if invocation.method.method.as_str() == "apply" {
-                outputs.insert(
-                    LocalKey::new("retained-resource")?,
-                    ability_value(serde_json::to_value(&invocation.request.target)?)?,
-                );
-            }
-        }
-        Ok(InvocationResult {
-            schema: RESULT_SCHEMA.into(),
-            disposition,
-            evidence,
-            outputs,
-            native_context_digest: invocation.request.native_context_digest,
-        })
+        aos_contract::canonical::canonical_json(&output)
     }
 
-    fn resolve_context(
-        &self,
-        desired: &PolicySetRequest,
-        realization: &AbilityValue,
-    ) -> Result<ProviderContext> {
-        let realization: Realization = decode_value(realization)?;
-        ensure!(
-            realization.schema == "aos.linux.ebpf-lsm-policy-realization/v1",
-            "unsupported BPF-LSM realization"
-        );
-        ensure!(
-            Path::new(&realization.pin_directory) == self.pin_root,
-            "BPF-LSM realization selects an unauthorized pin directory"
-        );
-        let loader = realization.loader.resolve(&self.immutable_root)?;
+    fn resolve_context(&self, desired: &PolicySetRequest) -> Result<ProviderContext> {
+        let loader = Executable::from_process(&self.immutable_root)?;
         let policies = desired
             .policies
             .iter()
@@ -385,23 +194,6 @@ impl EbpfLsmProvider {
             pin_directory: self.pin_root.clone(),
             policies,
         })
-    }
-
-    fn validate_context(
-        &self,
-        desired: &PolicySetRequest,
-        realization: &AbilityValue,
-        context: &ProviderContext,
-    ) -> Result<()> {
-        ensure!(
-            context.schema == CONTEXT_SCHEMA,
-            "unsupported provider context"
-        );
-        ensure!(
-            self.resolve_context(desired, realization)? == *context,
-            "provider context differs from the exact selected artifacts"
-        );
-        Ok(())
     }
 
     fn resolve_policy(&self, policy: &PolicySelection) -> Result<ResolvedPolicy> {
@@ -418,8 +210,8 @@ impl EbpfLsmProvider {
         observation_schema: &str,
         desired: &PolicySetRequest,
         context: &ProviderContext,
-        target: &ResourceReference,
-        desired_revision: RevisionId,
+        target: &str,
+        desired_revision: &str,
     ) -> Result<PolicyObservation> {
         let marker = self.read_marker(target)?;
         let expected_pins = pin_names(&context.policies);
@@ -464,8 +256,8 @@ impl EbpfLsmProvider {
     fn apply(
         &self,
         context: &ProviderContext,
-        target: &ResourceReference,
-        revision: RevisionId,
+        target: &str,
+        revision: String,
         remaining_millis: u64,
     ) -> Result<()> {
         let marker = self.read_marker(target)?;
@@ -515,7 +307,7 @@ impl EbpfLsmProvider {
         Ok(())
     }
 
-    fn remove(&self, target: &ResourceReference) -> Result<()> {
+    fn remove(&self, target: &str) -> Result<()> {
         let Some(marker) = self.read_marker(target)? else {
             return Ok(());
         };
@@ -527,15 +319,14 @@ impl EbpfLsmProvider {
         }
     }
 
-    fn marker_path(&self, target: &ResourceReference) -> Result<PathBuf> {
-        let digest =
-            Sha256Digest::of_canonical("aos.linux.ebpf-lsm-policy-resource/v1", &target.resource)?;
+    fn marker_path(&self, target: &str) -> Result<PathBuf> {
+        let digest = Sha256Digest::of_canonical("aos.linux.ebpf-lsm-policy-resource/v1", &target)?;
         Ok(self
             .state_root
             .join(digest.to_string().trim_start_matches("sha256:")))
     }
 
-    fn read_marker(&self, target: &ResourceReference) -> Result<Option<StateMarker>> {
+    fn read_marker(&self, target: &str) -> Result<Option<StateMarker>> {
         let file = match fs::File::open(self.marker_path(target)?) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -555,7 +346,7 @@ impl EbpfLsmProvider {
         Ok(Some(marker))
     }
 
-    fn write_marker(&self, target: &ResourceReference, marker: &StateMarker) -> Result<()> {
+    fn write_marker(&self, target: &str, marker: &StateMarker) -> Result<()> {
         validate_marker(marker)?;
         fs::create_dir_all(&self.state_root)?;
         fs::set_permissions(&self.state_root, fs::Permissions::from_mode(0o700))?;
@@ -607,15 +398,6 @@ fn validate_request(request: &PolicySetRequest) -> Result<()> {
             .windows(2)
             .all(|pair| pair[0].name < pair[1].name),
         "BPF-LSM policies are not in canonical name order"
-    );
-    let prerequisites = request
-        .prerequisites
-        .iter()
-        .map(serde_json::to_vec)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    ensure!(
-        prerequisites.windows(2).all(|pair| pair[0] < pair[1]),
-        "BPF-LSM prerequisites are not canonical and unique"
     );
     Ok(())
 }
@@ -682,130 +464,23 @@ fn remove_pins(pin_root: &Path, pins: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn validate_method(method: &str, semantics: &MethodSemantics) -> Result<()> {
-    let expected = match method {
-        "observe" => MethodSemantics::ordinary(AccessMode::Read),
-        "apply" => MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
-        "remove" => MethodSemantics::provider_stop(),
-        _ => bail!("unsupported BPF-LSM policy method"),
-    };
-    ensure!(*semantics == expected, "method semantics differ");
-    Ok(())
-}
-
-fn require_prerequisites(
-    prerequisites: &[ResourceReference],
-    resources: &[ResourceContext],
-) -> Result<()> {
-    for prerequisite in prerequisites {
-        require_resource(resources, prerequisite)?;
-    }
-    Ok(())
-}
-
-fn require_resource<'a>(
-    resources: &'a [ResourceContext],
-    reference: &ResourceReference,
-) -> Result<&'a ResourceContext> {
-    let index = resources
-        .binary_search_by(|context| context.reference.resource.cmp(&reference.resource))
-        .map_err(|_| anyhow::anyhow!("request omits a referenced resource context"))?;
-    let context = &resources[index];
-    ensure!(
-        &context.reference == reference,
-        "resource context authority differs from the exact reference"
-    );
-    Ok(context)
-}
-
-fn observation_revision(
-    observation: &PolicyObservation,
-    desired: RevisionId,
-) -> Result<AdmissionRevision> {
-    match observation.state {
-        PolicyState::Applied => Ok(AdmissionRevision::Present { revision: desired }),
-        PolicyState::Absent => Ok(AdmissionRevision::Absent),
-        PolicyState::Drifted => Ok(AdmissionRevision::Present {
-            revision: RevisionId(Sha256Digest::of_canonical(
-                "aos.linux.ebpf-lsm-policy-observed/v1",
-                observation,
-            )?),
-        }),
-        PolicyState::Unknown => Ok(AdmissionRevision::Unknown),
-    }
-}
-
-fn ability_value(value: serde_json::Value) -> Result<AbilityValue> {
-    AbilityValue::new(value).context("constructing canonical ability value")
-}
-
-fn decode_value<T: for<'de> Deserialize<'de>>(value: &AbilityValue) -> Result<T> {
-    serde_json::from_value(value.as_json().clone()).context("decoding checked ability value")
-}
-
-const fn purpose_name(purpose: InvocationPurpose) -> &'static str {
-    match purpose {
-        InvocationPurpose::Effect => "effect",
-        InvocationPurpose::Reconcile => "reconcile",
-        InvocationPurpose::Cancel => "cancel",
-        InvocationPurpose::Compensate => "compensate",
-        InvocationPurpose::ReconcileCompensation => "reconcile-compensation",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_ability_model::{
-        ArtifactReference, EnvironmentId, ExecutionStage, InstanceId, InterfaceKey, InterfaceName,
-        ResourceId, ResourceLifetime,
-    };
-    use std::num::NonZeroU32;
     use tempfile::tempdir;
 
-    fn artifact(root: &Path) -> ArtifactReference {
-        ArtifactReference {
-            content: Sha256Digest::of_bytes(b"content"),
-            store_path: root.to_string_lossy().into_owned(),
-            nar_hash: Sha256Digest::of_bytes(b"nar"),
-            closure: Sha256Digest::of_bytes(b"closure"),
-        }
-    }
-
-    fn target() -> ResourceReference {
-        ResourceReference {
-            interface: InterfaceKey {
-                name: InterfaceName::new("aos.security.ebpf-lsm-policy-set").expect("interface"),
-                abi: NonZeroU32::new(1).expect("ABI"),
-                descriptor: Sha256Digest::of_bytes(b"descriptor"),
-            },
-            resource: ResourceId {
-                provider: InstanceId {
-                    environment: EnvironmentId {
-                        authority: LocalKey::new("test").expect("authority"),
-                        key: LocalKey::new("host").expect("environment"),
-                        stage: ExecutionStage::Host,
-                    },
-                    key: LocalKey::new("ebpf-lsm").expect("provider"),
-                },
-                key: LocalKey::new("fleet-policy").expect("resource"),
-            },
-            operations: vec![LocalKey::new("observe").expect("operation")],
-            lifetime: ResourceLifetime::Instance,
-        }
+    fn target() -> String {
+        "test-host-policy".into()
     }
 
     fn policy(root: &Path) -> PolicySelection {
         PolicySelection {
             name: "audit".into(),
-            policy: ArtifactPathReference {
-                artifact: artifact(root),
-                path: "share/policy.json".into(),
-            },
-            object: ArtifactPathReference {
-                artifact: artifact(root),
-                path: "lib/policy.bpf.o".into(),
-            },
+            policy: root
+                .join("share/policy.json")
+                .to_string_lossy()
+                .into_owned(),
+            object: root.join("lib/policy.bpf.o").to_string_lossy().into_owned(),
             programs: vec!["file_mprotect".into()],
         }
     }
@@ -837,7 +512,7 @@ mod tests {
                 &target(),
                 &StateMarker {
                     schema: MARKER_SCHEMA.into(),
-                    revision: RevisionId(Sha256Digest::of_bytes(b"revision")),
+                    revision: "revision".into(),
                     pins: vec![owned.clone()],
                 },
             )
@@ -854,10 +529,7 @@ mod tests {
         let package = immutable.join("package");
         fs::create_dir_all(&package).expect("package directory");
         fs::write(temporary.path().join("outside"), b"outside").expect("outside file");
-        let reference = ArtifactPathReference {
-            artifact: artifact(&package),
-            path: "../outside".into(),
-        };
+        let reference = package.join("../outside").to_string_lossy().into_owned();
         assert!(resolve_artifact_path(&reference, &immutable).is_err());
     }
 
@@ -876,7 +548,6 @@ mod tests {
                     ..policy(Path::new("/nix/store/test"))
                 },
             ],
-            prerequisites: Vec::new(),
         };
         assert!(validate_request(&request).is_err());
     }

@@ -4,23 +4,13 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_ability_model::{
-    AbilityValue, AccessMode, ArtifactReference, LocalKey, MethodSemantics, ResourceReference,
-    RevisionId,
-};
+use aos_ability_model::AbilityValue;
+use aos_ability_runtime::activation::{Action, Invocation};
 use aos_contract::Sha256Digest;
-use aos_provider_protocol::{
-    ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
-    AdmissionResult, AdmissionRevision, BoundNativeContext, INVOCATION_SCHEMA, Invocation,
-    InvocationDisposition, InvocationPurpose, InvocationResult, RESULT_SCHEMA, ResourceContext,
-    RootObservationRequest, RootObservationResult, SupportedPurposes, boot_scoped_handler_root,
-    resource_set_digest, validate_admission_resource, validate_resource_context,
-    validate_resource_contexts,
-};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -29,27 +19,9 @@ use crate::process::ProcessStoreCommands;
 #[cfg(test)]
 use crate::process::argument_batches;
 
-const PROVIDER_CONTEXT_SCHEMA: &str = "aos.nix.store-database-context/v1";
 const DATABASE_PATH: &str = "/nix/var/nix/db/db.sqlite";
 const MAX_REGISTRATION_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_REGISTRATION_RECORDS: usize = 1_000_000;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum NixStoreRole {
-    Database,
-    ContentAddressedObject,
-}
-
-impl NixStoreRole {
-    fn from_handler(handler: Option<&LocalKey>) -> Result<Self> {
-        let handler = handler.context("selected Nix store implementation has no handler")?;
-        match handler.as_str() {
-            "nix-store-database-effects" => Ok(Self::Database),
-            "content-addressed-object-operations" => Ok(Self::ContentAddressedObject),
-            _ => bail!("selected implementation does not name a Nix store handler behavior"),
-        }
-    }
-}
 
 /// Handles package-owned local Nix store abilities.
 pub struct NixStoreProvider {
@@ -75,289 +47,111 @@ impl NixStoreProvider {
     ///
     /// # Errors
     ///
-    /// Returns an error when the wire schema, authority, provider context, or
-    /// selected executable is invalid, or when a requested database command
-    /// cannot complete within its supplied deadline.
+    /// Returns an error when the native invocation, immutable executable,
+    /// registration stream, or requested store operation is invalid or cannot
+    /// complete within its supplied deadline.
     pub fn handle(&self, purpose: &str, input: &[u8]) -> Result<Vec<u8>> {
-        let result = match purpose {
-            "observe-root" => {
-                let request: RootObservationRequest = aos_contract::canonical::from_slice(
-                    input,
-                    "Nix store root observation request",
-                )?;
-                let native_boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id")
-                    .context("reading Nix store handler boot identity")?;
-                serde_json::to_value(observe_root_for_boot(request, native_boot_id.trim())?)?
-            }
-            "admit" => {
-                let request: AdmissionRequest = aos_contract::canonical::from_slice(
-                    input,
-                    "Nix store database admission request",
-                )
-                .context("decoding Nix store database admission request")?;
-                ensure!(
-                    request.schema == ADMISSION_REQUEST_SCHEMA,
-                    "unsupported admission schema"
-                );
-                let role =
-                    NixStoreRole::from_handler(request.assignment.implementation.handler.as_ref())?;
-                match role {
-                    NixStoreRole::Database => serde_json::to_value(self.admit(request)?)?,
-                    NixStoreRole::ContentAddressedObject => {
-                        serde_json::to_value(self.artifacts.admit(request)?)?
-                    }
-                }
-            }
-            "effect" | "reconcile" | "cancel" | "compensate" | "reconcile-compensation" => {
-                let invocation: Invocation =
-                    aos_contract::canonical::from_slice(input, "Nix store database invocation")
-                        .context("decoding Nix store database invocation")?;
-                ensure!(
-                    invocation.schema == INVOCATION_SCHEMA,
-                    "unsupported invocation schema"
-                );
-                ensure!(
-                    purpose == purpose_name(invocation.purpose),
-                    "invocation purpose differs from argv"
-                );
-                ensure!(
-                    invocation.method_is_bound(),
-                    "invocation method differs from durable recovery authority"
-                );
-                let role = NixStoreRole::from_handler(Some(&invocation.request.handler))?;
-                match role {
-                    NixStoreRole::Database => serde_json::to_value(self.invoke(invocation)?)?,
-                    NixStoreRole::ContentAddressedObject => {
-                        serde_json::to_value(self.artifacts.invoke(invocation)?)?
-                    }
-                }
-            }
-            _ => bail!("unsupported command-handler purpose {purpose:?}"),
+        ensure!(
+            matches!(purpose, "apply" | "remove" | "observe"),
+            "unknown native Nix store purpose"
+        );
+        let invocation: Invocation =
+            aos_contract::canonical::from_slice(input, "Nix store invocation")?;
+        ensure!(
+            purpose == "observe" || (purpose == "apply") == (invocation.action == Action::Apply),
+            "action differs from argv"
+        );
+        let ability = invocation
+            .effect
+            .identity
+            .iter()
+            .rev()
+            .nth(2)
+            .context("Nix store operation identity is missing")?;
+        let result = match ability.as_str() {
+            "contentAddressedObject" => self.artifacts.invoke(purpose, invocation)?,
+            "nixStoreDatabase" => self.invoke_database(purpose, invocation)?,
+            _ => bail!("unknown native Nix store ability"),
         };
-
         aos_contract::canonical::canonical_json(&result)
-            .context("encoding canonical Nix store database response")
     }
 
-    fn admit(&self, request: AdmissionRequest) -> Result<AdmissionResult> {
-        validate_method(request.method.method.as_str(), &request.semantics)?;
-        validate_admission_resource(&request)?;
-        validate_resource_contexts(&request.resources)?;
-        let observation_schema = request
-            .contract
-            .observation_discriminator()
-            .context("selected Nix store method has no exact observation discriminator")?;
-
-        let desired: DatabaseRequest = decode_value(&request.resource_spec.value)?;
+    fn invoke_database(&self, purpose: &str, invocation: Invocation) -> Result<serde_json::Value> {
+        if purpose == "observe" && invocation.action == Action::Remove {
+            return Ok(json!({"status":"absent"}));
+        }
+        let desired: DatabaseRequest = serde_json::from_value(invocation.input.clone())?;
         validate_request(&desired)?;
-        validate_prerequisites(&desired.prerequisites, &request.resources)?;
-        let realization: DatabaseRealization = decode_value(&request.resource_spec.realization)?;
-        let executable = self.validate_realization(&realization)?;
+        if purpose == "remove" {
+            // Removing readiness never deletes a shared Nix database.
+            return Ok(json!({}));
+        }
+        let executable = self.bundled_executable()?;
         let registration = read_registration(desired.registration.as_ref())?;
-        let observation = self.observe(
-            observation_schema,
-            &request.resource_spec.value,
-            &desired,
-            &executable,
-            registration.as_ref(),
-            request.control.attempt_remaining_millis,
-        )?;
-        let revision = observation_revision(&observation, request.resource_spec.revision)?;
-        let native_context = ability_value(json!({
-            "schema": PROVIDER_CONTEXT_SCHEMA,
-            "executable": executable,
-            "registration": registration.as_ref().map(Registration::context),
-        }))?;
-        let purposes = if request.method.method.as_str() == "observe" {
-            vec![InvocationPurpose::Effect]
-        } else {
-            vec![
-                InvocationPurpose::Effect,
-                InvocationPurpose::Reconcile,
-                InvocationPurpose::Cancel,
-            ]
-        };
-        let supported_purposes = SupportedPurposes::from_ordered(purposes)
-            .context("constructing canonical supported purposes")?;
-
-        Ok(AdmissionResult {
-            schema: ADMISSION_SCHEMA.into(),
-            disposition: AdmissionDisposition::Admitted,
-            revision,
-            incarnation: Some(request.assignment.incarnation),
-            observation,
-            native_context,
-            supported_purposes,
-        })
-    }
-
-    fn invoke(&self, invocation: Invocation) -> Result<InvocationResult> {
-        ensure!(
-            invocation.method_is_bound(),
-            "invocation method differs from durable recovery authority"
-        );
-        validate_method(invocation.method.method.as_str(), &invocation.semantics)?;
-        let observation_schema = invocation
-            .contract
-            .observation_discriminator()
-            .context("selected Nix store method has no exact observation discriminator")?;
-
-        let request = &invocation.request;
-        validate_resource_contexts(&request.resources)?;
-        ensure!(
-            resource_set_digest(&request.resources)? == request.native_context_digest,
-            "resource contexts differ from their authenticated set digest"
-        );
-        let target = require_resource(&request.resources, &request.target)?;
-        let bound: BoundNativeContext = validate_resource_context(target)?;
-        ensure!(
-            invocation.method.interface == request.target.interface
-                && request
-                    .target
-                    .operations
-                    .binary_search(&invocation.method.method)
-                    .is_ok(),
-            "invocation method is outside the target resource authority"
-        );
-        ensure!(
-            bound.resource_spec.value == request.inputs,
-            "durable inputs differ from the bound desired request"
-        );
-
-        let desired: DatabaseRequest = decode_value(&bound.resource_spec.value)?;
-        validate_request(&desired)?;
-        validate_prerequisites(&desired.prerequisites, &request.resources)?;
-        let realization: DatabaseRealization = decode_value(&bound.resource_spec.realization)?;
-        let executable = self.validate_realization(&realization)?;
-        let context: ProviderContext = decode_value(&bound.provider_context)?;
-        ensure!(
-            context.schema == PROVIDER_CONTEXT_SCHEMA,
-            "unsupported Nix store provider context"
-        );
-        ensure!(
-            context.executable == executable,
-            "selected Nix executable differs from admitted context"
-        );
-        let registration = read_registration(desired.registration.as_ref())?;
-        ensure!(
-            registration.as_ref().map(Registration::context) == context.registration,
-            "registration stream differs from admitted context"
-        );
-
-        let observation_before = self.observe(
-            observation_schema,
-            &bound.resource_spec.value,
-            &desired,
-            &executable,
-            registration.as_ref(),
-            invocation.control.attempt_remaining_millis,
-        )?;
-        let (disposition, evidence, mut outputs) = match invocation.purpose {
-            InvocationPurpose::Effect if invocation.method.method.as_str() == "observe" => (
-                InvocationDisposition::Completed,
-                observation_before,
-                BTreeMap::new(),
-            ),
-            InvocationPurpose::Effect if invocation.control.cancelled => (
-                InvocationDisposition::RejectedBeforeEffect,
-                observation_before,
-                BTreeMap::new(),
-            ),
-            InvocationPurpose::Effect => {
-                self.apply(
-                    &executable,
-                    registration.as_ref(),
-                    invocation.control.attempt_remaining_millis,
-                )?;
-                let evidence = self.observe(
-                    observation_schema,
-                    &bound.resource_spec.value,
-                    &desired,
-                    &executable,
-                    registration.as_ref(),
-                    invocation.control.attempt_remaining_millis,
-                )?;
-                if observation_state(&evidence) == Some(DatabaseState::Ready) {
-                    (
-                        InvocationDisposition::Completed,
-                        evidence,
-                        successful_outputs(&request.target)?,
-                    )
-                } else {
-                    (
-                        InvocationDisposition::Indeterminate,
-                        evidence,
-                        BTreeMap::new(),
-                    )
-                }
+        if let (Some(input), Some(registration)) = (&desired.registration, &registration) {
+            if let Some(expected) = &input.sha256 {
+                ensure!(
+                    *expected == registration.digest.to_string(),
+                    "registration stream differs from the exact retained digest"
+                );
+            } else if self.validate_executable_file {
+                let path = fs::canonicalize(&input.path)?;
+                ensure!(
+                    path.starts_with("/nix/store"),
+                    "mutable registration input requires an exact retained digest"
+                );
             }
-            InvocationPurpose::Reconcile => match observation_state(&observation_before) {
-                Some(DatabaseState::Ready) => (
-                    InvocationDisposition::Completed,
-                    observation_before,
-                    successful_outputs(&request.target)?,
-                ),
-                Some(DatabaseState::Absent | DatabaseState::Degraded) => (
-                    InvocationDisposition::SafeToRetry,
-                    observation_before,
-                    BTreeMap::new(),
-                ),
-                Some(DatabaseState::Unknown) | None => (
-                    InvocationDisposition::StillIndeterminate,
-                    observation_before,
-                    BTreeMap::new(),
-                ),
-            },
-            InvocationPurpose::Cancel => match observation_state(&observation_before) {
-                Some(DatabaseState::Ready) => (
-                    InvocationDisposition::Completed,
-                    observation_before,
-                    successful_outputs(&request.target)?,
-                ),
-                Some(DatabaseState::Absent) => (
-                    InvocationDisposition::RejectedBeforeEffect,
-                    observation_before,
-                    BTreeMap::new(),
-                ),
-                Some(DatabaseState::Degraded | DatabaseState::Unknown) | None => (
-                    InvocationDisposition::Indeterminate,
-                    observation_before,
-                    BTreeMap::new(),
-                ),
-            },
-            InvocationPurpose::Compensate => (
-                InvocationDisposition::RejectedBeforeEffect,
-                observation_before,
-                BTreeMap::new(),
-            ),
-            InvocationPurpose::ReconcileCompensation => (
-                InvocationDisposition::InterventionRequired,
-                observation_before,
-                BTreeMap::new(),
-            ),
-        };
-        if disposition == InvocationDisposition::Completed {
-            outputs.insert(LocalKey::new("observation")?, evidence.clone());
         }
 
-        Ok(InvocationResult {
-            schema: RESULT_SCHEMA.into(),
-            disposition,
-            evidence,
-            outputs,
-            native_context_digest: request.native_context_digest,
+        let expected = ability_value(invocation.input)?;
+        if purpose == "apply" {
+            ensure!(
+                !desired
+                    .registration
+                    .as_ref()
+                    .is_some_and(|value| value.required)
+                    || registration.is_some(),
+                "required registration stream is missing"
+            );
+            self.apply(
+                &executable,
+                registration.as_ref(),
+                invocation.effect.timeout_ms,
+            )?;
+        }
+        let observation = self.observe(
+            "aos.nix.store-database-observation/v1",
+            &expected,
+            &desired,
+            &executable,
+            registration.as_ref(),
+            invocation.effect.timeout_ms,
+        )?;
+        let outputs = json!({"resource": self.database_path,"registration_digest":observation.as_json()["registration_digest"]});
+        let state = observation_state(&observation);
+        if purpose == "apply" {
+            ensure!(
+                state == Some(DatabaseState::Ready),
+                "Nix database did not converge to the exact requested registration"
+            );
+            return Ok(outputs);
+        }
+        Ok(match state {
+            Some(DatabaseState::Ready) => json!({"status":"current","outputs":outputs}),
+            Some(DatabaseState::Absent) => json!({"status":"absent"}),
+            Some(DatabaseState::Degraded) => json!({"status":"retry-safe"}),
+            Some(DatabaseState::Unknown) | None => json!({"status":"indeterminate"}),
         })
     }
 
-    fn validate_realization(&self, realization: &DatabaseRealization) -> Result<Executable> {
-        ensure!(
-            realization.nix_store.arguments.is_empty(),
-            "the Nix store executable must not carry undeclared arguments"
-        );
-        let executable = Executable {
-            artifact: realization.nix_store.artifact.clone(),
-            entry_point: realization.nix_store.entry_point.clone(),
-        };
+    fn bundled_executable(&self) -> Result<Executable> {
+        let current = std::env::current_exe()?;
+        let path = current
+            .parent()
+            .context("Nix handler has no parent")?
+            .join("../libexec/nix-store");
+        let path = fs::canonicalize(path)?;
+        let executable = Executable { path };
         executable.validate(self.validate_executable_file)?;
         Ok(executable)
     }
@@ -426,7 +220,7 @@ impl NixStoreProvider {
         if let Some(registration) = registration {
             self.commands
                 .load(executable, &registration.bytes, remaining(deadline)?)
-                .context("loading the admitted Nix registration stream")?;
+                .context("loading the verified Nix registration stream")?;
         }
         Ok(())
     }
@@ -442,22 +236,6 @@ impl NixStoreProvider {
     }
 }
 
-fn observe_root_for_boot(
-    request: RootObservationRequest,
-    native_boot_id: &str,
-) -> Result<RootObservationResult> {
-    let role = NixStoreRole::from_handler(request.implementation.handler.as_ref())?;
-    let selected_interface = match role {
-        NixStoreRole::Database => "aos.nix.store-database-effects",
-        NixStoreRole::ContentAddressedObject => "aos.artifact.content-addressed-object-operations",
-    };
-    ensure!(
-        request.interface.name.as_str() == selected_interface,
-        "selected Nix store handler does not implement the root interface"
-    );
-    boot_scoped_handler_root(request, native_boot_id)
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 enum DatabaseScope {
@@ -470,111 +248,53 @@ struct DatabaseRequest {
     scope: DatabaseScope,
     #[serde(default)]
     registration: Option<RegistrationInput>,
-    prerequisites: Vec<ResourceReference>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct RegistrationInput {
     path: String,
+    #[serde(default)]
+    sha256: Option<String>,
     required: bool,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DatabaseRealization {
-    #[serde(rename = "schema")]
-    _schema: String,
-    nix_store: ExecutableReference,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExecutableReference {
-    artifact: ArtifactReference,
-    entry_point: String,
-    arguments: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Executable {
-    artifact: ArtifactReference,
-    entry_point: String,
+    path: PathBuf,
 }
 
 impl Executable {
     pub(super) fn path(&self) -> PathBuf {
-        Path::new(&self.artifact.store_path).join(&self.entry_point)
+        self.path.clone()
     }
 
     fn validate(&self, inspect_file: bool) -> Result<()> {
-        let root = Path::new(&self.artifact.store_path);
         ensure!(
-            root.is_absolute() && root.starts_with("/nix/store"),
-            "Nix executable artifact is outside the immutable store"
+            self.path.is_absolute() && self.path.starts_with("/nix/store"),
+            "Nix executable is outside immutable store"
         );
-        let relative = Path::new(&self.entry_point);
-        ensure!(
-            !self.entry_point.is_empty()
-                && !relative.is_absolute()
-                && relative
-                    .components()
-                    .all(|component| matches!(component, Component::Normal(_))),
-            "Nix executable entry point is not a normalized relative path"
-        );
-        if !inspect_file {
-            return Ok(());
+        if inspect_file {
+            let resolved = fs::canonicalize(&self.path)?;
+            ensure!(
+                resolved.starts_with("/nix/store"),
+                "Nix executable escapes immutable store"
+            );
+            let metadata = fs::metadata(resolved)?;
+            ensure!(
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0,
+                "nix-store is not executable"
+            );
         }
-
-        let expected = self.path();
-        let root = fs::canonicalize(root).context("resolving Nix artifact root")?;
-        let resolved = fs::canonicalize(&expected).context("resolving Nix executable")?;
-        ensure!(
-            resolved.starts_with(&root),
-            "Nix executable resolves outside its authenticated artifact"
-        );
-        let metadata = fs::metadata(&resolved).context("inspecting Nix executable")?;
-        ensure!(metadata.is_file(), "Nix executable is not a regular file");
-        ensure!(
-            metadata.permissions().mode() & 0o111 != 0,
-            "Nix executable is not executable"
-        );
         Ok(())
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ProviderContext {
-    schema: String,
-    executable: Executable,
-    registration: Option<RegistrationContext>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct RegistrationContext {
-    path: String,
-    digest: Sha256Digest,
-    records: u64,
-}
-
 struct Registration {
-    path: String,
     bytes: Vec<u8>,
     digest: Sha256Digest,
     records: BTreeMap<String, RegistrationRecord>,
-}
-
-impl Registration {
-    fn context(&self) -> RegistrationContext {
-        RegistrationContext {
-            path: self.path.clone(),
-            digest: self.digest,
-            records: self.records.len() as u64,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -658,7 +378,6 @@ fn read_registration(input: Option<&RegistrationInput>) -> Result<Option<Registr
     );
     let records = parse_registration(&bytes)?;
     Ok(Some(Registration {
-        path: input.path.clone(),
         digest: Sha256Digest::of_bytes(&bytes),
         bytes,
         records,
@@ -741,77 +460,7 @@ fn validate_request(request: &DatabaseRequest) -> Result<()> {
         request.scope == DatabaseScope::Local,
         "the Nix store database provider only supports the local store"
     );
-    ensure!(
-        request.prerequisites.len() <= 64,
-        "too many Nix store database prerequisites"
-    );
-    let encoded = request
-        .prerequisites
-        .iter()
-        .map(serde_json::to_vec)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    ensure!(
-        encoded.windows(2).all(|pair| pair[0] < pair[1]),
-        "Nix store database prerequisites are not canonical and unique"
-    );
     Ok(())
-}
-
-fn validate_method(method: &str, semantics: &MethodSemantics) -> Result<()> {
-    let access = match method {
-        "converge" => AccessMode::ExclusiveWrite,
-        "observe" => AccessMode::Read,
-        _ => bail!("selected Nix store database method is unsupported"),
-    };
-    ensure!(
-        *semantics == MethodSemantics::ordinary(access),
-        "selected Nix store database method semantics differ"
-    );
-    Ok(())
-}
-
-fn validate_prerequisites(
-    prerequisites: &[ResourceReference],
-    resources: &[ResourceContext],
-) -> Result<()> {
-    for prerequisite in prerequisites {
-        let context = require_resource(resources, prerequisite)?;
-        validate_resource_context(context)?;
-    }
-    Ok(())
-}
-
-fn require_resource<'a>(
-    resources: &'a [ResourceContext],
-    reference: &ResourceReference,
-) -> Result<&'a ResourceContext> {
-    let matches = resources
-        .iter()
-        .filter(|context| &context.reference == reference)
-        .collect::<Vec<_>>();
-    ensure!(
-        matches.len() == 1,
-        "request does not contain one exact resource context"
-    );
-    Ok(matches[0])
-}
-
-fn observation_revision(
-    observation: &AbilityValue,
-    desired: RevisionId,
-) -> Result<AdmissionRevision> {
-    match observation_state(observation) {
-        Some(DatabaseState::Ready) => Ok(AdmissionRevision::Present { revision: desired }),
-        Some(DatabaseState::Absent) => Ok(AdmissionRevision::Absent),
-        Some(DatabaseState::Degraded) => {
-            let digest =
-                Sha256Digest::of_canonical("aos.nix.store-database-observed/v1", observation)?;
-            Ok(AdmissionRevision::Present {
-                revision: RevisionId(digest),
-            })
-        }
-        Some(DatabaseState::Unknown) | None => Ok(AdmissionRevision::Unknown),
-    }
 }
 
 fn observation_state(observation: &AbilityValue) -> Option<DatabaseState> {
@@ -839,15 +488,6 @@ fn database_is_regular(path: &Path) -> Result<bool> {
     }
 }
 
-fn successful_outputs(target: &ResourceReference) -> Result<BTreeMap<LocalKey, AbilityValue>> {
-    let mut outputs = BTreeMap::new();
-    outputs.insert(
-        LocalKey::new("retained-resource")?,
-        ability_value(serde_json::to_value(target)?)?,
-    );
-    Ok(outputs)
-}
-
 pub(super) fn deadline(remaining_millis: u64) -> Result<Instant> {
     ensure!(remaining_millis > 0, "operation deadline expired");
     monotonic_now()
@@ -873,20 +513,6 @@ pub(super) fn ability_value(value: serde_json::Value) -> Result<AbilityValue> {
     AbilityValue::new(value).context("constructing canonical ability value")
 }
 
-pub(super) fn decode_value<T: for<'de> Deserialize<'de>>(value: &AbilityValue) -> Result<T> {
-    serde_json::from_value(value.as_json().clone()).context("decoding checked ability value")
-}
-
-pub(super) const fn purpose_name(purpose: InvocationPurpose) -> &'static str {
-    match purpose {
-        InvocationPurpose::Effect => "effect",
-        InvocationPurpose::Reconcile => "reconcile",
-        InvocationPurpose::Cancel => "cancel",
-        InvocationPurpose::Compensate => "compensate",
-        InvocationPurpose::ReconcileCompensation => "reconcile-compensation",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -908,72 +534,6 @@ mod tests {
         "\n",
         "0\n",
     );
-
-    const BOOT_ID: &str = "01234567-89ab-cdef-0123-456789abcdef";
-
-    fn root_request(handler: &str, interface: &str) -> RootObservationRequest {
-        serde_json::from_value(serde_json::json!({
-            "schema": aos_provider_protocol::ROOT_OBSERVATION_REQUEST_SCHEMA,
-            "provider": {
-                "environment": {"authority":"system-image","key":"test","stage":"initrd"},
-                "key": handler
-            },
-            "interface": {
-                "name": interface,
-                "abi": 1,
-                "descriptor": Sha256Digest::of_bytes(b"interface")
-            },
-            "implementation": {
-                "descriptor": Sha256Digest::of_bytes(b"implementation"),
-                "artifact": {
-                    "content": Sha256Digest::of_bytes(b"artifact"),
-                    "store_path": "/nix/store/00000000000000000000000000000000-nix-provider",
-                    "nar_hash": Sha256Digest::of_bytes(b"nar"),
-                    "closure": Sha256Digest::of_bytes(b"closure")
-                },
-                "handler": handler
-            },
-            "policy_revision": Sha256Digest::of_bytes(b"policy"),
-            "boot_id": BOOT_ID,
-            "challenge": Sha256Digest::of_bytes(b"challenge"),
-            "maximum_age_millis": 1000,
-            "control": {
-                "attempt_remaining_millis": 1000,
-                "recovery_remaining_millis": 1000,
-                "cancelled": false
-            }
-        }))
-        .expect("Nix store root request")
-    }
-
-    #[test]
-    fn root_probe_accepts_only_declared_nix_store_handler_interfaces() {
-        for (handler, interface) in [
-            (
-                "nix-store-database-effects",
-                "aos.nix.store-database-effects",
-            ),
-            (
-                "content-addressed-object-operations",
-                "aos.artifact.content-addressed-object-operations",
-            ),
-        ] {
-            let request = root_request(handler, interface);
-            let observed =
-                observe_root_for_boot(request.clone(), BOOT_ID).expect("selected Nix store root");
-            assert_eq!(observed.boot_id, BOOT_ID);
-            assert_eq!(observed.challenge, request.challenge);
-            assert!(
-                observe_root_for_boot(request, "11234567-89ab-cdef-0123-456789abcdef").is_err()
-            );
-        }
-
-        let wrong_interface = root_request(
-            "nix-store-database-effects",
-            "aos.artifact.content-addressed-object-operations",
-        );
-        assert!(observe_root_for_boot(wrong_interface, BOOT_ID).is_err());
-    }
 
     #[derive(Default)]
     struct FakeCommands {
@@ -1014,29 +574,6 @@ mod tests {
         anyhow::anyhow!("test lock is poisoned")
     }
 
-    fn key(value: &str) -> LocalKey {
-        LocalKey::new(value).expect("handler key is valid")
-    }
-
-    #[test]
-    fn authenticated_handlers_select_only_package_declared_behaviors() {
-        assert_eq!(
-            NixStoreRole::from_handler(Some(&key("nix-store-database-effects")))
-                .expect("database handler selects its behavior"),
-            NixStoreRole::Database
-        );
-        assert_eq!(
-            NixStoreRole::from_handler(Some(&key("content-addressed-object-operations")))
-                .expect("content handler selects its behavior"),
-            NixStoreRole::ContentAddressedObject
-        );
-        assert!(
-            NixStoreRole::from_handler(Some(&key("content-addressed-object"))).is_err(),
-            "the public controller alias must not select terminal behavior"
-        );
-        assert!(NixStoreRole::from_handler(None).is_err());
-    }
-
     #[test]
     fn registration_parser_retains_exact_database_records() {
         let records = parse_registration(SAMPLE.as_bytes()).expect("registration parses");
@@ -1069,9 +606,9 @@ mod tests {
             scope: DatabaseScope::Local,
             registration: Some(RegistrationInput {
                 path: registration_path.display().to_string(),
+                sha256: None,
                 required: true,
             }),
-            prerequisites: Vec::new(),
         };
         let registration = read_registration(desired.registration.as_ref())
             .expect("registration can be read")
@@ -1083,19 +620,12 @@ mod tests {
                     "path": registration_path,
                     "required": true,
                 },
-                "prerequisites": [],
             }))
             .expect("request serializes"),
         )
         .expect("request is bounded");
         let executable = Executable {
-            artifact: ArtifactReference {
-                content: Sha256Digest::of_bytes(b"content"),
-                store_path: "/nix/store/00000000000000000000000000000000-nix".into(),
-                nar_hash: Sha256Digest::of_bytes(b"nar"),
-                closure: Sha256Digest::of_bytes(b"closure"),
-            },
-            entry_point: "bin/nix-store".into(),
+            path: "/nix/store/00000000000000000000000000000000-nix/bin/nix-store".into(),
         };
         let provider = NixStoreProvider::test(
             database_path,

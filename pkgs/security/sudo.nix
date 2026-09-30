@@ -13,6 +13,8 @@
   openssl,
   zlib,
   coreutils,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "1.9.17p2";
 in
@@ -89,7 +91,8 @@ in
     buildDeps = [gnumake patch];
     runtimeDeps = [linux-pam audit libselinux openldap cyrus-sasl openssl zlib];
     propagatedDeps = [];
-    abilities = ./_sudo;
+    module = ./_sudo;
+    moduleDeps = [service-management aos-filesystem-provider linux-pam];
     configureFlags = builtins.concatStringsSep " " [
       "--with-env-editor"
       "--with-editor=/run/current-system/sw/bin/vi"

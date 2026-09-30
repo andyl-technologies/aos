@@ -9,67 +9,39 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_ability_model::ArtifactReference;
 use serde::{Deserialize, Serialize};
 
 const MAX_COMMAND_OUTPUT_BYTES: u64 = 256 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ArtifactPathReference {
-    pub(super) artifact: ArtifactReference,
-    pub(super) path: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ExecutableReference {
-    artifact: ArtifactReference,
-    entry_point: String,
-    arguments: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct Executable {
-    artifact: ArtifactReference,
-    entry_point: String,
-}
-
-impl ExecutableReference {
-    pub(super) fn resolve(self, immutable_root: &Path) -> Result<Executable> {
-        ensure!(self.arguments.is_empty(), "loader has preset arguments");
-        let executable = Executable {
-            artifact: self.artifact,
-            entry_point: self.entry_point,
-        };
-        executable.validate(immutable_root)?;
-        Ok(executable)
-    }
+    path: PathBuf,
 }
 
 impl Executable {
-    fn path(&self) -> PathBuf {
-        Path::new(&self.artifact.store_path).join(&self.entry_point)
-    }
-
-    fn validate(&self, immutable_root: &Path) -> Result<()> {
+    pub(super) fn from_process(immutable_root: &Path) -> Result<Self> {
+        let current = std::env::current_exe().context("resolving handler executable")?;
+        let package = current
+            .parent()
+            .and_then(Path::parent)
+            .context("handler has no package root")?;
         let path = resolve_contained_path(
-            &self.artifact,
-            &self.entry_point,
+            package,
+            "libexec/aos-ebpf-net-policy-loader",
             immutable_root,
             "loader executable",
         )?;
-        let metadata = fs::metadata(path).context("inspecting BPF network loader")?;
+        let metadata = fs::metadata(&path)?;
         ensure!(
-            metadata.is_file(),
-            "BPF network loader is not a regular file"
+            metadata.is_file() && metadata.permissions().mode() & 0o111 != 0,
+            "loader is not executable"
         );
-        ensure!(
-            metadata.permissions().mode() & 0o111 != 0,
-            "BPF network loader is not executable"
-        );
-        Ok(())
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
     }
 
     pub(super) fn run(&self, arguments: &[&str], remaining_millis: u64) -> Result<Output> {
@@ -118,44 +90,51 @@ impl Executable {
     }
 }
 
-pub(super) fn resolve_artifact_path(
-    reference: &ArtifactPathReference,
-    immutable_root: &Path,
-) -> Result<PathBuf> {
-    let path = resolve_contained_path(
-        &reference.artifact,
-        &reference.path,
-        immutable_root,
-        "policy artifact",
-    )?;
+pub(super) fn resolve_artifact_path(reference: &str, immutable_root: &Path) -> Result<PathBuf> {
+    let path = Path::new(reference);
+    let relative = path
+        .strip_prefix(immutable_root)
+        .context("policy is outside immutable store")?;
+    let mut components = relative.components();
+    let package = components.next().context("policy has no package root")?;
+    ensure!(
+        matches!(package, Component::Normal(_)),
+        "invalid package root"
+    );
+    let root = immutable_root.join(package.as_os_str());
+    let relative = components
+        .as_path()
+        .to_str()
+        .context("non-UTF8 artifact path")?;
+    let path = resolve_contained_path(&root, relative, immutable_root, "policy artifact")?;
     ensure!(path.is_file(), "policy artifact is not a regular file");
     Ok(path)
 }
 
 fn resolve_contained_path(
-    artifact: &ArtifactReference,
+    root: &Path,
     relative: &str,
     immutable_root: &Path,
     label: &str,
 ) -> Result<PathBuf> {
-    let root = Path::new(&artifact.store_path);
     ensure!(
         root.is_absolute() && root.starts_with(immutable_root),
-        "{label} is outside the immutable artifact root"
+        "{label} is outside immutable root"
     );
     let relative_path = Path::new(relative);
     ensure!(
         !relative.is_empty()
-            && !relative_path.is_absolute()
             && relative_path
                 .components()
                 .all(|component| matches!(component, Component::Normal(_))),
         "{label} path is not normalized"
     );
-    let canonical_root =
-        fs::canonicalize(root).with_context(|| format!("resolving {label} root"))?;
-    let canonical =
-        fs::canonicalize(root.join(relative)).with_context(|| format!("resolving {label}"))?;
+    let canonical_root = fs::canonicalize(root)?;
+    ensure!(
+        canonical_root.starts_with(fs::canonicalize(immutable_root)?),
+        "{label} package escapes immutable root"
+    );
+    let canonical = fs::canonicalize(root.join(relative))?;
     ensure!(
         canonical.starts_with(canonical_root),
         "{label} escapes its artifact"

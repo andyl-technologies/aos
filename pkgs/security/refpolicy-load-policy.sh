@@ -15,6 +15,8 @@ marker="$store_root/$policy/.aos-refpolicy-source"
 desired=@out@
 
 @coreutils@/bin/mkdir -p "$store_root" "/etc/selinux/$policy" "$policy_dir"
+# Native package transactions also need the policy contexts outside image builds.
+@coreutils@/bin/cp -a @out@/etc/selinux/refpolicy/contexts "/etc/selinux/$policy/"
 
 policy_file_exists() {
   for policy_file in "$policy_dir"/policy.*; do

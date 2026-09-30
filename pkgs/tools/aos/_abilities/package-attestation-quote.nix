@@ -2,31 +2,22 @@
 {
   config,
   lib,
+  package,
   ...
 }: let
   cfg = config.aos.packageRuntime.packageAttestationQuote;
-  readinessDeclaration = config.aos.abilities.interfaces."aos:package-profile-readiness";
-  readinessIdentity = lib.abilities.interfaceIdentity (
-    lib.abilities.interfaceDocumentFromDeclaration readinessDeclaration
-  );
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  packageProfileReadiness = lib.abilities.resultOf "package-profile-readiness" "resource";
-  hostStage =
-    config.aos.abilities.environment
-    != null
-    && config.aos.abilities.environment.stage == "host";
+  hostStage = (config.aos.boot.stage or "host") == "host";
   command = {
     executable = {
-      artifact = lib.abilities.packageOutput {output = "packageRuntime";};
-      entry_point = "libexec/aos-package-attestation-provider";
+      path = "${package.outputs.packageRuntime}/libexec/aos-package-attestation-provider";
       arguments = [];
     };
     ignore_failure = false;
   };
   serviceDefinition = {
-    consumerInstance = "package-attestation-quote";
     service = "aos-attest";
     autoStart = false;
+    activationOwner = "manager";
     policy.hardening = {
       allow_privilege_escalation = false;
       ambient_privileges = [];
@@ -77,11 +68,11 @@
       stop_timeout_millis = 90000;
     };
     dependencies = {
-      prerequisites = lib.optional cfg.packageProfileEnabled packageProfileReadiness;
-      after = [];
+      after = lib.optionals cfg.packageProfileEnabled ["aos-activate.service" "package-profile-convergence.service" "aos-image-boot-commit.service"];
       before = [];
-      requires = [];
+      requires = lib.optionals cfg.packageProfileEnabled ["aos-activate.service" "package-profile-convergence.service" "aos-image-boot-commit.service"];
       wants = [];
+      wanted_by = ["multi-user.target"];
     };
     readiness = {
       mechanism = "successful-exit";
@@ -122,35 +113,11 @@
   };
 in {
   options.aos.packageRuntime.packageAttestationQuote.packageProfileEnabled = lib.mkOption {
-    type = lib.abilities.types.boolean;
+    type = lib.types.bool;
     default = false;
     internal = true;
     description = "Whether quote production waits for package-profile convergence.";
   };
 
-  config = lib.mkMerge [
-    {
-      aos.services."package-attestation-quote.aos-attest" = serviceDefinition // {enable = hostStage;};
-      aos.abilities.requirementTemplates.package-profile-readiness = {
-        description = "Require completion of the selected system package profile before producing a quote.";
-        interface = readinessIdentity.name;
-        inherit (readinessIdentity) abi descriptor;
-        methods = [];
-        guarantees = [];
-        strength = "required";
-        fallback = null;
-      };
-    }
-    (lib.mkIf (hostStage && cfg.packageProfileEnabled) {
-      aos.abilities = {
-        instances.package-attestation-policy = {};
-        requests.package-profile-readiness = {
-          requirement = "package-profile-readiness";
-          consumer = "package-attestation-policy";
-          scope = ["system-profile"];
-          parameters = "system-profile";
-        };
-      };
-    })
-  ];
+  config.aos.services."package-attestation-quote.aos-attest" = serviceDefinition // {enable = hostStage;};
 }

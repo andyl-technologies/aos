@@ -2,35 +2,32 @@
 {
   config,
   lib,
+  package,
   ...
 }: let
   cfg = config.aos.security.measuredVar;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  milestones = serviceManagement.milestones;
-  interfaces = serviceManagement.interfaces;
-  resultOf = lib.abilities.resultOf;
-  consumerInstance = "measured-var";
-  initrdStage =
-    config.aos.abilities.environment
-    != null
-    && config.aos.abilities.environment.stage == "initrd";
-
-  systemMilestone = key: name:
-    serviceManagement.forProducer {
-      inherit consumerInstance key;
-      interface = interfaces.systemMilestoneReadiness;
-      parameters.milestone = name;
-    };
-  bootIdentity = systemMilestone "boot-identity" milestones.bootIdentityValidated;
-  deviceEvents = systemMilestone "device-events" milestones.deviceSettle;
-  initrdStageExecution = systemMilestone "initrd-stage" milestones.initrdStageExecuted;
-  initrdFilesystems = systemMilestone "initrd-filesystems" milestones.initrdFilesystems;
-  persistentState = systemMilestone "persistent-state" milestones.var;
-  verityRoot = systemMilestone "verity-root" milestones.verityRootVerified;
-  verityReadiness = resultOf "verity-root" "resource";
+  initrdStage = config.aos.boot.stage == "initrd";
+  measuredBoot = config.aos.boot.secureBoot.measuredBoot;
+  units = {
+    bootIdentity = "aos-boot-identity-guard.service";
+    deviceEvents = "systemd-udev-settle.service";
+    initrdStage = "aos-ability-initrd-controller.service";
+    filesystems = "initrd-fs.target";
+    persistentState = "mount-var.service";
+    verityRoot = "aos-verity-root-verify.service";
+  };
+  absolutePath = lib.types.strWith {
+    maxLength = 4096;
+    pattern = "/[^[:space:]]+";
+  };
+  pcrSelection = lib.types.strWith {
+    maxLength = 128;
+    pattern = "[0-9]+([+][0-9]+)*";
+  };
 
   serviceDefinition = {
-    activationOwner = "manager";
+    activationOwner = "image";
+    autoStart = false;
     lifecycle = {
       description = "Encrypt and TPM2-seal persistent state";
       execution_model = "oneshot";
@@ -40,8 +37,7 @@
       start = [
         {
           executable = {
-            artifact = lib.abilities.packageOutput {};
-            entry_point = "bin/aos-var-crypt";
+            path = "${package}/bin/aos-var-crypt";
             arguments = [
               cfg.pcrPublicKey
               cfg.signedPcrs
@@ -70,27 +66,27 @@
       prerequisites = [];
       after =
         [
-          (resultOf "boot-identity" "resource")
-          (resultOf "initrd-stage" "resource")
-          (resultOf "device-events" "resource")
+          units.bootIdentity
+          units.initrdStage
+          units.deviceEvents
         ]
-        ++ lib.optional cfg.requireVerity verityReadiness;
+        ++ lib.optional cfg.requireVerity units.verityRoot;
       before = [
-        (resultOf "persistent-state" "resource")
-        (resultOf "initrd-filesystems" "resource")
+        units.persistentState
+        units.filesystems
       ];
       requires =
         [
-          (resultOf "boot-identity" "resource")
+          units.bootIdentity
         ]
-        ++ lib.optional cfg.requireVerity verityReadiness;
+        ++ lib.optional cfg.requireVerity units.verityRoot;
       wants = [];
       requisite = [];
       conflicts = [];
       binds_to = [];
       part_of = [];
       upholds = [];
-      required_by = [(resultOf "initrd-filesystems" "resource")];
+      required_by = [units.filesystems];
       wanted_by = [];
       required_mounts = [];
       implicit_dependencies = true;
@@ -114,66 +110,55 @@
       directory_mode = "0755";
     };
   };
-  producers = [
-    bootIdentity
-    deviceEvents
-    initrdStageExecution
-    initrdFilesystems
-    persistentState
-    verityRoot
-  ];
 in {
   options.aos.security.measuredVar = {
     enable = lib.mkOption {
-      type = lib.abilities.types.boolean;
+      type = lib.types.bool;
       default = false;
+      extensible = true;
       description = "Encrypt persistent state and seal its unlock key to the measured boot policy.";
     };
 
     pcrPublicKey = lib.mkOption {
-      type = lib.abilities.types.executionPath;
+      type = absolutePath;
       default = "/nonexistent/aos-pcr-public-key";
       description = "Initrd path to the public key that authenticates signed PCR policy.";
     };
 
     signedPcrs = lib.mkOption {
-      type = lib.abilities.types.string {
-        maxLength = 128;
-        syntax = null;
-      };
+      type = pcrSelection;
       default = "11";
       description = "PCR set covered by the signed policy.";
     };
 
     pinnedPcrs = lib.mkOption {
-      type = lib.abilities.types.string {
-        maxLength = 128;
-        syntax = null;
-      };
+      type = pcrSelection;
       default = "7+12";
       description = "PCR set pinned by value when the TPM2 token is enrolled.";
     };
 
     recoveryKeyPath = lib.mkOption {
-      type = lib.abilities.types.executionPath;
+      type = absolutePath;
       default = "/run/aos-var-recovery.key";
       description = "Volatile path that receives the generated recovery credential.";
     };
 
     requireVerity = lib.mkOption {
-      type = lib.abilities.types.boolean;
+      type = lib.types.bool;
       default = false;
       description = "Require complete dm-verity root verification before persistent-state unlock.";
     };
   };
 
-  config = lib.mkMerge [
-    {
-      aos.services."measured-var.aos-var-crypt" = serviceDefinition // {enable = cfg.enable && initrdStage;};
-    }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = config.aos.services."measured-var.aos-var-crypt".enable;
-    })
-  ];
+  config = {
+    aos.security.measuredVar = {
+      enable = lib.mkDefault (initrdStage && measuredBoot.enable && config.aos.boot.storage.backend != "zfs-zvol");
+      pcrPublicKey = lib.mkIf (measuredBoot._effectivePcrPublicKey != null) (lib.mkDefault measuredBoot._effectivePcrPublicKey);
+      signedPcrs = lib.mkDefault measuredBoot.signedPcrs;
+      pinnedPcrs = lib.mkDefault measuredBoot.pinnedPcrs;
+      recoveryKeyPath = lib.mkDefault measuredBoot.recoveryKeyPath;
+      requireVerity = lib.mkDefault config.aos.security.verity.enable;
+    };
+    aos.services."measured-var.aos-var-crypt" = serviceDefinition // {enable = cfg.enable && initrdStage;};
+  };
 }
