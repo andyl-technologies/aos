@@ -6,8 +6,8 @@ use super::content_tests::{chunk_identity, raw, upload};
 use super::tests::{Selected, Validator, config, fixture, log};
 use super::*;
 use crate::store::{
-    ByteRange, ChunkPosition, ContentStore, IdentityPrefix, RefCasOutcome, RefStore, RefWatch,
-    TokioClock, TokioLocalFs,
+    ByteRange, ChunkPosition, ContentStore, IdentityPrefix, RefCasOutcome, RefLogAppendOutcome,
+    RefStore, RefWatch, TokioClock, TokioLocalFs,
 };
 use std::sync::{
     Arc,
@@ -20,6 +20,8 @@ use terrane_core::refs::{RefClass, RefLogReason, RefLogRecord, RefName, RefRecor
 #[derive(Clone, Default)]
 struct ReadOnlyFs {
     effects: Arc<AtomicUsize>,
+    capability_reads: Arc<AtomicUsize>,
+    empty_capability_read: Option<usize>,
 }
 
 impl ReadOnlyFs {
@@ -74,7 +76,14 @@ impl LocalFs for ReadOnlyFs {
     }
 
     async fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
-        TokioLocalFs.read(path).await
+        let bytes = TokioLocalFs.read(path).await?;
+        if path.file_name().is_some_and(|name| name == "CAPABILITIES") {
+            let read = self.capability_reads.fetch_add(1, Ordering::SeqCst) + 1;
+            if self.empty_capability_read == Some(read) {
+                return Ok(Vec::new());
+            }
+        }
+        Ok(bytes)
     }
 
     async fn read_range(&self, path: &Path, range: ByteRange) -> std::io::Result<Vec<u8>> {
@@ -557,4 +566,95 @@ async fn v2_registered_ref_classes_preserve_public_names_and_reopen() {
     let names = bucket.ref_names().await.unwrap();
     assert!(names.iter().all(|name| !name.ends_with(":record")));
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+}
+
+#[tokio::test]
+async fn v2_numbered_logs_require_migration_and_preserve_exact_existing_bytes() {
+    let bucket = fixture().await;
+    let name = "refs/heads/_/legacy";
+    let record = RefRecord::first([7; 32], 1, Locality::default());
+    let legacy_log = RefLogRecord {
+        record,
+        previous_commit: None,
+        expected_previous: None,
+        principal: "legacy-writer".into(),
+        reason: RefLogReason::Commit,
+        timestamp: 1,
+    };
+    let cap_path = bucket.root().join("CAPABILITIES");
+    let original_capabilities = TokioLocalFs.read(&cap_path).await.unwrap();
+    let key = BucketKey::reflog(name, 1).unwrap();
+    let path = bucket.root().join(key.as_str());
+
+    assert!(matches!(
+        bucket
+            .ref_log_append(name, 1, &legacy_log)
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Unsupported
+    ));
+    assert!(!path.exists());
+    assert_eq!(bucket.ref_get(name).await.unwrap(), None);
+    assert_eq!(
+        TokioLocalFs.read(&cap_path).await.unwrap(),
+        original_capabilities
+    );
+
+    // Author a migrated artifact as fixture setup; the backend offers no migrator.
+    TokioLocalFs
+        .create_dir_all(path.parent().unwrap())
+        .await
+        .unwrap();
+    let original_log = legacy_log.encode().unwrap();
+    TokioLocalFs.write_new(&path, &original_log).await.unwrap();
+    assert_eq!(
+        bucket.ref_log_append(name, 1, &legacy_log).await.unwrap(),
+        RefLogAppendOutcome::Exists
+    );
+    let mut conflicting = legacy_log;
+    conflicting.timestamp += 1;
+    assert!(matches!(
+        bucket
+            .ref_log_append(name, 1, &conflicting)
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Corrupt(_)
+    ));
+    assert_eq!(TokioLocalFs.read(&path).await.unwrap(), original_log);
+    assert_eq!(
+        TokioLocalFs.read(&cap_path).await.unwrap(),
+        original_capabilities
+    );
+    assert!(bucket.ref_log_read(name, 1).await.unwrap().is_empty());
+    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+}
+
+#[tokio::test]
+async fn v1_readonly_refuses_an_empty_backend_response_after_initial_validation() {
+    let (fixture, _, _, _, original) = legacy_fixture().await;
+    let fs = ReadOnlyFs {
+        empty_capability_read: Some(2),
+        ..ReadOnlyFs::default()
+    };
+    let error = FileBucket::open_legacy_read_only(
+        config(fixture.root().to_owned()),
+        fs.clone(),
+        TokioClock,
+        Validator,
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(matches!(error.kind(), StoreErrorKind::Corrupt(_)));
+    assert_eq!(fs.effects.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        TokioLocalFs
+            .read(&fixture.root().join("CAPABILITIES"))
+            .await
+            .unwrap(),
+        original
+    );
+    tokio::fs::remove_dir_all(fixture.root()).await.unwrap();
 }

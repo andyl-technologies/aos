@@ -279,32 +279,22 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             return Err(files::malformed());
         }
         let bytes = record.encode().map_err(|_| files::malformed())?;
-        if self.read_optional(&key).await?.is_some() {
+        if let Some(existing) = self.read_optional(&key).await? {
+            if record.record.candidate_id.is_none() && existing != bytes {
+                return Err(corrupt(name));
+            }
             return Ok(RefLogAppendOutcome::Exists);
         }
-        if record.record.candidate_id.is_some() {
-            let previous = record.selected_previous().map_err(|_| files::malformed())?;
-            record
-                .validate_candidate(previous, &record.record)
-                .map_err(|_| files::malformed())?;
-        } else if seq > 1 {
-            let previous_key = BucketKey::reflog(name, seq - 1).map_err(|_| files::malformed())?;
-            let previous_bytes = self
-                .read_optional(&previous_key)
-                .await?
-                .ok_or_else(|| corrupt(name))?;
-            let previous = RefLogRecord::decode(&previous_bytes).map_err(|_| corrupt(name))?;
-            RefRecord::validate_successor(Some(&previous.record), &record.record)
-                .map_err(|_| files::malformed())?;
-            if record.previous_commit != Some(previous.record.commit) {
-                return Err(files::malformed());
-            }
-        } else {
-            RefRecord::validate_successor(None, &record.record).map_err(|_| files::malformed())?;
-            if record.previous_commit.is_some() {
-                return Err(files::malformed());
-            }
+        if record.record.candidate_id.is_none() {
+            // BKT-3 reserves new numbered slots for externally fenced migration.
+            // This backend cannot establish whole legacy namespace completeness.
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
         }
+        let previous = record.selected_previous().map_err(|_| files::malformed())?;
+        record
+            .validate_candidate(previous, &record.record)
+            .map_err(|_| files::malformed())?;
+
         if self.install(&key, &bytes, false).await? {
             Ok(RefLogAppendOutcome::Appended)
         } else {

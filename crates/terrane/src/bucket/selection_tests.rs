@@ -168,9 +168,14 @@ async fn selected_candidates_coexist_with_legacy_numbered_files() {
     let first = RefRecord::first([1; 32], 1, Locality::default());
     let mut first_log = log(first.clone(), None);
     first_log.expected_previous = None;
-    bucket.ref_log_append(name, 1, &first_log).await.unwrap();
     let key = BucketKey::ref_record(name).unwrap();
     let guard = bucket.exclusive().await.unwrap();
+    // Fixture setup authors migrated bytes; ordinary append cannot migrate.
+    let first_log_key = BucketKey::reflog(name, 1).unwrap();
+    bucket
+        .install(&first_log_key, &first_log.encode().unwrap(), false)
+        .await
+        .unwrap();
     bucket
         .install(&key, &first.encode().unwrap(), false)
         .await
@@ -191,7 +196,13 @@ async fn selected_candidates_coexist_with_legacy_numbered_files() {
     let orphan = first.advance([3; 32], 2).unwrap();
     let mut orphan_log = log(orphan, Some(first.clone()));
     orphan_log.expected_previous = None;
-    bucket.ref_log_append(name, 2, &orphan_log).await.unwrap();
+    let guard = bucket.exclusive().await.unwrap();
+    let orphan_key = BucketKey::reflog(name, 2).unwrap();
+    bucket
+        .install(&orphan_key, &orphan_log.encode().unwrap(), false)
+        .await
+        .unwrap();
+    drop(guard);
     assert_eq!(
         bucket.ref_log_read(name, 1).await.unwrap(),
         vec![first_log.clone()]
@@ -308,9 +319,14 @@ async fn legacy_unknown_inventory_allows_existing_advances_but_rejects_new_names
     let first = RefRecord::first([1; 32], 1, Locality::default());
     let mut first_log = log(first.clone(), None);
     first_log.expected_previous = None;
-    bucket.ref_log_append(name, 1, &first_log).await.unwrap();
     let key = BucketKey::ref_record(name).unwrap();
     let guard = bucket.exclusive().await.unwrap();
+    // Fixture setup authors migrated bytes; ordinary append cannot migrate.
+    let first_log_key = BucketKey::reflog(name, 1).unwrap();
+    bucket
+        .install(&first_log_key, &first_log.encode().unwrap(), false)
+        .await
+        .unwrap();
     bucket
         .install(&key, &first.encode().unwrap(), false)
         .await

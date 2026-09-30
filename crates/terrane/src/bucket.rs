@@ -259,7 +259,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             )
             .await
             .map_err(files::io_failure)?;
-        if ranged != current[..1] {
+        let first_byte = current.get(..1).ok_or_else(files::layout_corrupt)?;
+        if ranged.as_slice() != first_byte {
             return Err(StoreFailure::new(StoreErrorKind::Unsupported));
         }
         bucket.catalog().await?;
