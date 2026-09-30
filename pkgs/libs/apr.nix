@@ -1,10 +1,14 @@
 ##! Apache Portable Runtime built from the upstream source release.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
   stdenv,
   bash,
+  coreutils,
+  grep,
+  sed,
 }: let
   version = "1.7.0";
 in
@@ -18,7 +22,7 @@ in
     };
 
     buildDeps = [buildPackages.file];
-    runtimeDeps = [bash];
+    runtimeDeps = [bash] ++ lib.optionals stdenv.isCross [coreutils grep sed];
 
     phases = [
       {
@@ -125,24 +129,36 @@ in
       }
       {
         name = "install";
-        script = ''
-          make install
-          # Installed helpers use the development prefix, never the discarded
-          # source/build directories. Source-mode helpers remain in the tree.
-          sed -i \
-            -e "s|^APR_SOURCE_DIR=.*|APR_SOURCE_DIR=\"$out\"|" \
-            -e "s|^APR_BUILD_DIR=.*|APR_BUILD_DIR=\"$out\"|" \
-            "$out/bin/apr-1-config"
-          # Installed helper scripts execute on the target platform.
-          sed -i 's|/bin/sh|${bash}/bin/bash|g' \
-            "$out/bin/apr-1-config" \
-            "$out/build-1/mkdir.sh" \
-            "$out/build-1/libtool"
-          # The compiler wrapper supplies target search paths to downstream
-          # links; libtool must not retain the build compiler in APR's closure.
-          sed -i 's|^sys_lib_search_path_spec=.*|sys_lib_search_path_spec=""|' \
-            "$out/build-1/libtool"
-        '';
+        script =
+          ''
+            make install
+            # Installed helpers use the development prefix, never the discarded
+            # source/build directories. Source-mode helpers remain in the tree.
+            sed -i \
+              -e "s|^APR_SOURCE_DIR=.*|APR_SOURCE_DIR=\"$out\"|" \
+              -e "s|^APR_BUILD_DIR=.*|APR_BUILD_DIR=\"$out\"|" \
+              "$out/bin/apr-1-config"
+            # Installed helper scripts execute on the target platform.
+            sed -i 's|/bin/sh|${bash}/bin/bash|g' \
+              "$out/bin/apr-1-config" \
+              "$out/build-1/mkdir.sh" \
+              "$out/build-1/libtool"
+            # The compiler wrapper supplies target search paths to downstream
+            # links; libtool must not retain the build compiler in APR's closure.
+            sed -i 's|^sys_lib_search_path_spec=.*|sys_lib_search_path_spec=""|' \
+              "$out/build-1/libtool"
+          ''
+          + lib.optionalString stdenv.isCross ''
+            # Installed helpers execute on the target. The construction wrapper
+            # runs on the build host; expose names for the user's target tools.
+            sed -i \
+              -e 's|${stdenv.cc}/bin/||g' \
+              -e 's|${buildPackages.bash}|${bash}|g' \
+              -e 's|${buildPackages.coreutils}|${coreutils}|g' \
+              -e 's|${buildPackages.grep}|${grep}|g' \
+              -e 's|${buildPackages.sed}|${sed}|g' \
+              "$out/build-1/libtool" "$out/build-1/apr_rules.mk"
+          '';
       }
     ];
 
