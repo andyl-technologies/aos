@@ -247,14 +247,17 @@ in
               # exist, the mount fails at stage-2 boot. /var was already
               # above — /boot would otherwise be missing in production.
               mkdir -p rootfs/boot
+              # /srv is a mountpoint too: modules/services/storage-topology.nix
+              # binds the persistent /var/srv over it so data volumes declared
+              # in host.nix can mount beneath /srv on the read-only root.
+              mkdir -p rootfs/srv
+              # /root and /home are mount points only: modules/base/homes.nix
+              # binds them from the persistent state volume (/var/roothome
+              # always, /var/home when homes are enabled), so nothing under
+              # them may be baked into the read-only image.
               mkdir -m 0700 rootfs/root
-              # Root-owned APM authoring config lives on the read-only rootfs,
-              # so create it here instead of asking tmpfiles to mutate /root at
-              # boot.
-              mkdir -p rootfs/root/.config/apm/registries.d
-              chmod 0700 rootfs/root/.config
-              chmod 0755 rootfs/root/.config/apm
-              chmod 0755 rootfs/root/.config/apm/registries.d
+              mkdir -m 0755 rootfs/home
+              mkdir -p rootfs/run/current-system
 
               # ── 2. Copy the closure into /nix/store ─────────────────────────
               total=$(wc -l < store-paths)

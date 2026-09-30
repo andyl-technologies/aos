@@ -680,6 +680,7 @@ let
     "longhorn-instance-manager"
     "longhorn-manager"
     "lvm2"
+    "mdadm"
     "nftables"
     "numactl"
     "numad"

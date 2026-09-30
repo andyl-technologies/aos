@@ -6,10 +6,13 @@ their own machines.
 
 AOS is an early preview. The public golden image is not published yet.
 First-boot storage provisioning, runtime `host.nix` activation, package
-profiles, durable A/B image and configuration generations, and a guarded
-encrypted-ZFS bare-metal installer are present in the tree. They remain
-early-preview interfaces that must be qualified on the exact image and
-platform. The checked-in verified-boot variants still use public test keys;
+profiles, and durable A/B image and configuration generations are present in
+the tree. They remain early-preview interfaces that must be qualified on the
+exact image and platform. Persistent state is ext4 by default, on partitions
+or on MD RAID arrays declared from `host.nix`, and sealed to the TPM on
+measured-boot images. xfs data volumes and the encrypted-ZFS bare-metal
+installer are opt-in at lower stability tiers (see
+[filesystem support tiers](support-status.md#filesystem-support-tiers)). The checked-in verified-boot variants still use public test keys;
 production deployments must supply their own trust material.
 
 ## The operating model
@@ -63,9 +66,12 @@ consumption, and on-host activation as distinct installed capabilities.
   boundary for exposed services and how to inspect its effective policy.
 - [Operate an AOS host](operations.md) covers services, logs, storage,
   packages, monitoring, and maintenance.
-- [Run ZFS storage](storage-zfs.md) covers the memory budget, dataset
-  declarations, pool lifecycle, and the metrics that move before a host runs
-  into trouble.
+- [Configure redundant and encrypted storage](host-nix.md#mirror-the-system-state)
+  covers MD mirrors for `/var` and data volumes, TPM-sealed data volumes, and
+  their mount units.
+- [Run ZFS storage](storage-zfs.md) covers the opt-in ZFS path: the memory
+  budget, dataset declarations, pool lifecycle, and the metrics that move
+  before a host runs into trouble.
 - [Upgrade and roll back a host](upgrades.md) covers the independent image and
   configuration generation axes, A/B boot counting, and failure semantics.
 - [Use Secure Boot and verify package trust](secure-boot.md) follows the chain

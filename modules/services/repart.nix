@@ -3,8 +3,10 @@
 ##! The initrd evaluates `aos.provisioning.storage` from authenticated
 ##! `host.nix` (or the same schema defaults), validates it in Rust, and renders
 ##! per-device transient repart definitions. This unit dry-runs every target,
-##! mutates each target once, then commits a GPT-resident provenance marker.
-##! A committed marker freezes mutation but permits an authenticated,
+##! mutates each target once, and reserves a pending GPT-resident provenance
+##! marker. `aos-storage-topology.service` (modules/services/storage-topology.nix)
+##! then creates the declared arrays and filesystems and relabels the marker as
+##! committed. A committed marker freezes mutation but permits an authenticated,
 ##! non-mutating dry-run that reports drift. A pending marker fails closed for
 ##! explicit recovery instead of guessing whether a partial plan is safe.
 {
@@ -225,29 +227,11 @@ in {
             exit 1
           fi
 
-          pending=$(readlink -f /dev/disk/by-partlabel/aos-provisioning-pending-v1)
-          part_number=$(cat "/sys/class/block/$(basename "$pending")/partition")
-          source=$(tr -d '\n' < /run/aos-metadata/provisioning-source)
-          case "$source" in
-            operator) committed=aos-provenance-operator-v1 ;;
-            fallback) committed=aos-provenance-fallback-v1 ;;
-            *) klog "unknown provisioning source '$source'"; exit 1 ;;
-          esac
-          sfdisk --part-label "$root_disk" "$part_number" "$committed"
-          udevadm settle --timeout=10 || true
-
-          i=0
-          while [ ! -e "/dev/disk/by-partlabel/$committed" ] && [ "$i" -lt 60 ]; do
-            i=$((i + 1))
-            sleep 0.5
-          done
-          if [ ! -e "/dev/disk/by-partlabel/$committed" ]; then
-            klog "committed marker did not materialize"
-            exit 1
-          fi
-          # The durable marker is the transaction boundary. Report completion
-          # through the service's journal/console stream.
-          echo "aos-repart: committed $committed; future boots will not mutate disks" >&2
+          # The partition layer is complete but the transaction is not: the
+          # marker stays pending until aos-storage-topology has created every
+          # declared array and filesystem, then relabels it as committed. A
+          # crash before that point is observable on the next boot above.
+          klog "partition layer applied; pending marker reserved for the array and volume layers"
           exit 0
         '';
       };
