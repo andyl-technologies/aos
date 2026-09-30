@@ -59,12 +59,28 @@
       in
         if selected ? ${name}
         then
-          if record == selected.${name}
+          if record == selected.${name}.identity
           then visit selected rest
-          else throw "Module dependency '${name}' has conflicting package identities in: ${builtins.concatStringsSep ", " (builtins.filter (field: record.${field} != selected.${name}.${field}) (builtins.attrNames record))}. Catalogs: ${builtins.toJSON [(artifacts.metadata record.artifact) (artifacts.metadata selected.${name}.artifact)]}"
-        else visit (selected // {${name} = record;}) ((package.moduleDeps or []) ++ rest);
+          else throw "Module dependency '${name}' has conflicting package identities in: ${builtins.concatStringsSep ", " (builtins.filter (field: record.${field} != selected.${name}.identity.${field}) (builtins.attrNames record))}. Catalogs: ${builtins.toJSON [(artifacts.metadata record.artifact) (artifacts.metadata selected.${name}.identity.artifact)]}"
+        else
+          visit (selected
+            // {
+              ${name} = {
+                inherit package;
+                identity = record;
+              };
+            }) ((package.moduleDeps or []) ++ rest);
   in
     visit {} packages;
-  closure = packages: builtins.filter (record: record != null) (builtins.map (record: record.module) (resolved packages));
+  closure = packages: builtins.filter (record: record != null) (builtins.map (entry: entry.identity.module) (resolved packages));
+  # Source companions use the same checked closure as module evaluation. The
+  # first selected output supplies the envelope; identity comparison above
+  # ensures other outputs of that package carry the same module context.
+  envelopes = packages:
+    builtins.listToAttrs (builtins.map (entry: {
+        name = entry.identity.module.name;
+        value = entry.package.deploymentArtifact;
+      })
+      (builtins.filter (entry: entry.identity.module != null) (resolved packages)));
   payloads = packages: artifacts.unique (builtins.map artifacts.reference packages);
-in {inherit nameFor recordFor identity canonicalize select closure payloads;}
+in {inherit nameFor recordFor identity canonicalize select closure envelopes payloads;}

@@ -105,7 +105,8 @@
     then throw "Native evaluation inputs must be retained in the Nix store."
     else builtins.substring 0 (builtins.stringLength (builtins.elemAt match 0)) file;
   configurationRoots = map storeRoot (configuration ++ runtimeConfiguration);
-  retainedInputs = lib.uniqueBy builtins.toString (inputs ++ profileRoots ++ configurationRoots ++ [(storeRoot evaluationFile)]);
+  moduleEnvelopeRoots = builtins.attrValues evaluationFile.nativeModuleEnvelopes;
+  retainedInputs = lib.uniqueBy builtins.toString (inputs ++ profileRoots ++ moduleEnvelopeRoots ++ configurationRoots ++ [(storeRoot evaluationFile)]);
   evaluationFile =
     if evaluationInput != null
     then evaluationInput
