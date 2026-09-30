@@ -2,7 +2,7 @@
 
 #![allow(
     dead_code,
-    reason = "The paired adapter is a separately integrated ref coordinator prerequisite."
+    reason = "Single and paired held adapters are separately integrated ref coordinator prerequisites."
 )]
 
 use super::{BucketBinding, FileBucket, files};

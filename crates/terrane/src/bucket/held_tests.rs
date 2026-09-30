@@ -14,6 +14,11 @@ use std::time::Duration;
 use terrane_core::identity::Identity;
 use terrane_core::refs::RefRecord;
 
+// Durable writes and native lock requests share filesystem and blocking-pool
+// capacity with the full package suite. Bound completion separately from the
+// short assertion that an observed writer remains excluded while a guard lives.
+const DURABLE_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+
 async fn put_bytes(store: &impl ContentStore, bytes: &[u8]) -> Result<Identity, StoreFailure> {
     let encoded = raw(bytes);
     let identity = chunk_identity(bytes);
@@ -137,7 +142,7 @@ async fn held_buckets_inverse_transactions_finish_in_canonical_order() {
     }
     barrier.wait().await;
     for task in tasks {
-        tokio::time::timeout(Duration::from_secs(5), task)
+        tokio::time::timeout(DURABLE_OPERATION_TIMEOUT, task)
             .await
             .unwrap()
             .unwrap();
@@ -192,7 +197,7 @@ async fn held_buckets_cancellation_releases_both_namespace_guards() {
     assert!(task.await.unwrap_err().is_cancelled());
     for bucket in [&left, &right] {
         tokio::time::timeout(
-            Duration::from_secs(2),
+            DURABLE_OPERATION_TIMEOUT,
             put_bytes(bucket, b"after cancellation"),
         )
         .await
@@ -359,7 +364,7 @@ async fn held_buckets_source_revision_cannot_change_before_destination_cas() {
     assert_eq!(fs.acquired.available_permits(), 0);
     drop(pair);
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(2), task)
+        tokio::time::timeout(DURABLE_OPERATION_TIMEOUT, task)
             .await
             .unwrap()
             .unwrap(),
@@ -399,7 +404,7 @@ async fn held_buckets_cancellation_while_waiting_second_releases_first() {
     assert_eq!(high_fs.acquired.available_permits(), 0);
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
-    let released_low = tokio::time::timeout(Duration::from_secs(2), low.exclusive())
+    let released_low = tokio::time::timeout(DURABLE_OPERATION_TIMEOUT, low.exclusive())
         .await
         .unwrap()
         .unwrap();
@@ -408,7 +413,7 @@ async fn held_buckets_cancellation_while_waiting_second_releases_first() {
     drop(held_high);
     // A native blocking lock request may finish after its cancelled async waiter.
     // Its abandoned result releases that guard instead of leaking ownership.
-    let released_high = tokio::time::timeout(Duration::from_secs(2), high.exclusive())
+    let released_high = tokio::time::timeout(DURABLE_OPERATION_TIMEOUT, high.exclusive())
         .await
         .unwrap()
         .unwrap();
@@ -535,7 +540,7 @@ async fn exercise_single_namespace(
     observed_fs.arm();
     let mut writer =
         tokio::spawn(async move { put_bytes(&writer_bucket, b"independent writer").await });
-    tokio::time::timeout(Duration::from_secs(2), observed_fs.attempts.acquire())
+    tokio::time::timeout(DURABLE_OPERATION_TIMEOUT, observed_fs.attempts.acquire())
         .await
         .unwrap()
         .unwrap()
@@ -546,7 +551,7 @@ async fn exercise_single_namespace(
             .is_err()
     );
     assert_eq!(observed_fs.acquired.available_permits(), 0);
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(DURABLE_OPERATION_TIMEOUT, async {
         destination
             .ref_log_append(name, 1, &log(record.clone(), None))
             .await
@@ -561,7 +566,7 @@ async fn exercise_single_namespace(
     .unwrap();
     assert!(!writer.is_finished());
     drop(held);
-    tokio::time::timeout(Duration::from_secs(2), writer)
+    tokio::time::timeout(DURABLE_OPERATION_TIMEOUT, writer)
         .await
         .unwrap()
         .unwrap()
@@ -592,7 +597,7 @@ async fn single_held_cancellation_releases_namespace_guard() {
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     tokio::time::timeout(
-        Duration::from_secs(2),
+        DURABLE_OPERATION_TIMEOUT,
         put_bytes(&bucket, b"after cancellation"),
     )
     .await
