@@ -466,6 +466,8 @@ pub struct NativeOperationCohortSpec {
     pub matrix_spec: NativeAdapterMatrixSpec,
     /// Commits the exact baseline or scenario source evaluation.
     pub selected_evaluation: NativeSelectedEvaluation,
+    /// Commits the admitted fixture baseline applied before the selected flight.
+    pub adoption_evaluation: NativeSelectedEvaluation,
 }
 
 /// Authored semantic coverage over independently admitted native cohorts.
@@ -490,6 +492,8 @@ pub struct NativeOperationCohortObservation {
     pub matrix_spec: NativeAdapterMatrixSpec,
     /// Retains the exact authored source selection.
     pub selected_evaluation: NativeSelectedEvaluation,
+    /// Commits the admitted fixture baseline applied before the selected flight.
+    pub adoption_evaluation: NativeSelectedEvaluation,
     /// Commits canonical bytes of the independently checked matrix.
     pub spec_digest: Sha256Digest,
     /// Commits candidate bytes authenticated against case-selected artifact evidence.
@@ -497,6 +501,8 @@ pub struct NativeOperationCohortObservation {
     /// The executor checks captured bytes and source admissions before reporting;
     /// this digest does not by itself authorize a self-claimed candidate.
     pub candidate_digest: Sha256Digest,
+    /// Commits independently authenticated baseline bundle bytes before adoption.
+    pub adoption_digest: Sha256Digest,
     /// Contains exactly one observation per applicable cell in this cohort.
     pub cells: Vec<NativeAdapterCellObservation>,
 }
@@ -1396,6 +1402,7 @@ pub fn validate_native_adapter_matrix_observation(
         if observed.id != authored.id
             || observed.matrix_spec != authored.matrix_spec
             || observed.selected_evaluation != authored.selected_evaluation
+            || observed.adoption_evaluation != authored.adoption_evaluation
             || observed.spec_digest
                 != Sha256Digest::of_bytes(crate::canonical::to_vec(&authored.matrix_spec)?)
         {
@@ -1784,6 +1791,20 @@ fn validate_native_adapter_matrix_environment(
     Ok(())
 }
 
+fn valid_evaluation_selection(evaluation: &NativeSelectedEvaluation) -> bool {
+    immutable_source_locator(&evaluation.locator)
+        && evaluation.scenario_sources.len() <= 4096
+        && unique_by(&evaluation.scenario_sources, Clone::clone)
+        && evaluation
+            .scenario_sources
+            .iter()
+            .all(|path| immutable_source_locator(path))
+        && match evaluation.role {
+            NativeEvaluationRole::CandidateBaseline => evaluation.scenario_sources.is_empty(),
+            NativeEvaluationRole::Scenario => !evaluation.scenario_sources.is_empty(),
+        }
+}
+
 /// Validates independently authored cohort custody and required semantic coverage.
 ///
 /// # Errors
@@ -1804,18 +1825,8 @@ pub fn validate_native_operation_qualification_spec(
     for cohort in &spec.cohorts {
         validate_native_adapter_matrix_spec(&cohort.matrix_spec)?;
         if !matrix_token(&cohort.id)
-            || !immutable_source_locator(&cohort.selected_evaluation.locator)
-            || cohort.selected_evaluation.scenario_sources.len() > 4096
-            || !unique_by(&cohort.selected_evaluation.scenario_sources, Clone::clone)
-            || cohort
-                .selected_evaluation
-                .scenario_sources
-                .iter()
-                .any(|path| !immutable_source_locator(path))
-            || (cohort.selected_evaluation.role == NativeEvaluationRole::CandidateBaseline
-                && !cohort.selected_evaluation.scenario_sources.is_empty())
-            || (cohort.selected_evaluation.role == NativeEvaluationRole::Scenario
-                && cohort.selected_evaluation.scenario_sources.is_empty())
+            || !valid_evaluation_selection(&cohort.selected_evaluation)
+            || !valid_evaluation_selection(&cohort.adoption_evaluation)
         {
             bail!("native cohort source custody is malformed");
         }

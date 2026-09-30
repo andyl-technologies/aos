@@ -427,25 +427,26 @@ class Scenario:
             "script",
             "setup",
             "selectedEvaluation",
+            "adoptionEvaluation",
         }
         if isinstance(cohort, dict) and cohort.get("report", {}).get("kind") == "matrix":
             expected_fields |= {"matrixSpec"}
         if not isinstance(cohort, dict) or set(cohort) != expected_fields:
             raise RuntimeError("qualification cohort input is malformed")
-        selection = cohort["selectedEvaluation"]
-        if (not isinstance(selection, dict) or set(selection) != {"role", "locator", "scenario_sources"}
-                or selection["role"] not in {"scenario", "candidate-baseline"}
-                or not isinstance(selection["scenario_sources"], list)
-                or len(selection["scenario_sources"]) > 4096
-                or not all(isinstance(source, str) for source in selection["scenario_sources"])
-                or len(selection["scenario_sources"]) != len(set(selection["scenario_sources"]))
-                or (selection["role"] == "scenario" and not selection["scenario_sources"])
-                or (selection["role"] == "candidate-baseline" and selection["scenario_sources"])):
-            raise RuntimeError("qualification cohort lacks its exact native evaluation source roles")
-        if NATIVE_IMAGE.store_root(selection["locator"]) != selection["locator"]:
-            raise RuntimeError("qualification cohort evaluation is not an exact immutable bundle root")
-        for source in selection["scenario_sources"]:
-            NATIVE_IMAGE.store_root(source)
+        for selection in (cohort["selectedEvaluation"], cohort["adoptionEvaluation"]):
+            if (not isinstance(selection, dict) or set(selection) != {"role", "locator", "scenario_sources"}
+                    or selection["role"] not in {"scenario", "candidate-baseline"}
+                    or not isinstance(selection["scenario_sources"], list)
+                    or len(selection["scenario_sources"]) > 4096
+                    or not all(isinstance(source, str) for source in selection["scenario_sources"])
+                    or len(selection["scenario_sources"]) != len(set(selection["scenario_sources"]))
+                    or (selection["role"] == "scenario" and not selection["scenario_sources"])
+                    or (selection["role"] == "candidate-baseline" and selection["scenario_sources"])):
+                raise RuntimeError("qualification cohort lacks its exact native evaluation source roles")
+            if NATIVE_IMAGE.store_root(selection["locator"]) != selection["locator"]:
+                raise RuntimeError("qualification cohort evaluation is not an exact immutable bundle root")
+            for source in selection["scenario_sources"]:
+                NATIVE_IMAGE.store_root(source)
         if not isinstance(cohort["id"], str) or not cohort["id"]:
             raise RuntimeError("qualification cohort lacks its identity")
         if not isinstance(cohort["script"], str) or not cohort["script"]:
@@ -551,7 +552,8 @@ class Scenario:
         if self.native_operation_spec is not None:
             declared = MATRIX_COHORT.validate_qualification_spec(self.native_operation_spec)
             actual = [{"id": cohort["id"], "matrix_spec": cohort["matrixSpec"],
-                       "selected_evaluation": cohort["selectedEvaluation"]} for cohort in QUALIFICATION_COHORTS]
+                       "selected_evaluation": cohort["selectedEvaluation"],
+                       "adoption_evaluation": cohort["adoptionEvaluation"]} for cohort in QUALIFICATION_COHORTS]
             if actual != declared or any(cohort["qualifiedCells"] != cohort["matrixSpec"]["applicability"]["applicable_cell_ids"] for cohort in QUALIFICATION_COHORTS):
                 raise RuntimeError("native execution cohorts differ from exact authored qualification")
 
@@ -827,12 +829,15 @@ class Scenario:
         declarations = {}
         evaluation_boot_inputs = {}
         for cohort in QUALIFICATION_COHORTS:
-            locator = cohort["selectedEvaluation"]["locator"]
-            boot_input = cohort["execution"]["bootInput"]
-            if evaluation_boot_inputs.setdefault(locator, boot_input) != boot_input:
-                raise RuntimeError("one selected evaluation is bound to conflicting signed image roles")
+            for field in ("selectedEvaluation", "adoptionEvaluation"):
+                locator = cohort[field]["locator"]
+                boot_input = cohort["execution"]["bootInput"]
+                if evaluation_boot_inputs.setdefault(locator, boot_input) != boot_input:
+                    raise RuntimeError("one evaluation is bound to conflicting signed image roles")
         fixture_inventory = None
-        expected_evaluations = {cohort["id"]: cohort["selectedEvaluation"] for cohort in QUALIFICATION_COHORTS}
+        expected_evaluations = {cohort["id"]: {"selected_evaluation": cohort["selectedEvaluation"],
+                                                   "adoption_evaluation": cohort["adoptionEvaluation"]}
+                                for cohort in QUALIFICATION_COHORTS}
         if expected_evaluations:
             fixture_inventory = NATIVE_CUSTODY.verify_fixture_inputs(
                 read_json(SCENARIO_REGISTRY), self.request,
@@ -841,10 +846,11 @@ class Scenario:
                  "evaluations": pathlib.Path(os.environ["AOS_QUALIFICATION_FIXTURE_EVALUATIONS"])},
                 expected_evaluations, NAR.canonical_sha256,
             )
-        for evaluation in expected_evaluations.values():
-            previous = declarations.setdefault(evaluation["locator"], evaluation)
-            if previous != evaluation:
-                raise RuntimeError("native cohorts disagree on one selected evaluation's custody")
+        for context in expected_evaluations.values():
+            for evaluation in context.values():
+                previous = declarations.setdefault(evaluation["locator"], evaluation)
+                if previous != evaluation:
+                    raise RuntimeError("native cohorts disagree on one evaluation's custody")
         self.fixture_inventory = fixture_inventory
         self.candidate_document_bytes = {}
         self.candidate_documents = {}
@@ -922,6 +928,10 @@ class Scenario:
             self.candidate_evaluations[evaluation] = evaluation
         if declarations and set(self.candidate_documents) != set(declarations):
             raise RuntimeError("candidate native evaluations differ from authored cohort selections")
+        for cohort in QUALIFICATION_COHORTS:
+            selected = self.candidate_native_bundles[cohort["selectedEvaluation"]["locator"]]["evaluation"]
+            adopted = self.candidate_native_bundles[cohort["adoptionEvaluation"]["locator"]]["evaluation"]
+            NATIVE_CUSTODY.validate_evaluation_contexts(selected, adopted)
 
     def native_adapter_package_subject(self, cohort: dict[str, Any]) -> dict[str, Any]:
         """Derives operation custody from the exact signed candidate native graph."""
@@ -1483,7 +1493,7 @@ class Scenario:
         machine.copy_to(FIXTURE_ARCHIVE, destination)
         machine.succeed(f"nix-store --import < {destination}", timeout=3600)
         if cohort is not None:
-            selection = cohort["selectedEvaluation"]
+            selection = cohort["adoptionEvaluation"]
             locator = selection["locator"]
             if locator not in self.candidate_native_bundles or self.fixture_inventory is None:
                 raise RuntimeError("fixture adoption lacks original executor custody and replay")
@@ -1493,17 +1503,11 @@ class Scenario:
                 {driver_root}, self.fixture_inventory, IMAGE.NIX_STORE, NAR.canonical_sha256,
             )
             machine.succeed(f"test -x {shlex.quote(driver)} && nix-store --verify-path {shlex.quote(driver_root)}", timeout=1200)
-            admission_digest = "sha256:" + hashlib.sha256(
-                self.candidate_document_bytes[locator]["admission.json"]
-            ).hexdigest()
-            # The catalog bytes were authenticated before import against the
-            # original executor inventory. Its own digest cannot authorize it.
-            machine.succeed(
-                " ".join(shlex.quote(argument) for argument in (
-                    driver, "adopt-native-fixture", locator, admission_digest,
-                    IMAGE.NIX_STORE, "/var/lib/profiles/system",
-                )), timeout=1800,
+            command = NATIVE_CUSTODY.adoption_invocation(
+                cohort, self.candidate_document_bytes, driver,
+                IMAGE.NIX_STORE, "/var/lib/profiles/system",
             )
+            machine.succeed(" ".join(shlex.quote(argument) for argument in command), timeout=1800)
             machine.succeed("systemd-tmpfiles --create", timeout=600)
             self.verify_native_package_runtime_service(machine)
             return
@@ -1559,6 +1563,7 @@ class Scenario:
                 "submissions": maps[0], "subjects": maps[1], "evidence": maps[2],
                 "qualification_subject": subject,
                 "candidate_digest": self.candidate_evaluation_digests[cohort_input["selectedEvaluation"]["locator"]],
+                "adoption_digest": self.candidate_evaluation_digests[cohort_input["adoptionEvaluation"]["locator"]],
             }
 
         if self._requires_predecessor_image() and (

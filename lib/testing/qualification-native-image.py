@@ -111,6 +111,10 @@ def validate_documents(stage: str, documents: dict[str, bytes], platform: str) -
     source_paths = [artifact["path"] for artifact in packages["artifacts"]]
     source_paths += [module["configRoot"] for module in packages["modules"]]
     source_paths += evaluation["configuration"] + evaluation.get("runtimeConfiguration", [])
+    supplemental = evaluation.get("supplementalInputs", [])
+    source_paths += supplemental + list(evaluation.get("moduleEnvelopes", {}).values())
+    if any(store_root(path) not in transaction["inputs"] for path in supplemental):
+        raise RuntimeError("image transaction does not retain an admitted supplemental source root")
     graph = transaction["graph"]
     if graph.get("schema") != "aos.activation.graph":
         raise RuntimeError("native image deployment lacks its checked activation graph")

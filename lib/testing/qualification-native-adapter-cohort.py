@@ -162,24 +162,24 @@ def validate_qualification_spec(spec: Any) -> list[dict[str, Any]]:
     selected = set()
     ids = []
     for cohort in cohorts:
-        if (not isinstance(cohort, dict) or set(cohort) != {"id", "matrix_spec", "selected_evaluation"}
+        if (not isinstance(cohort, dict) or set(cohort) != {"id", "matrix_spec", "selected_evaluation", "adoption_evaluation"}
                 or not isinstance(cohort["id"], str) or not cohort["id"]):
             raise RuntimeError("native cohort declaration is malformed")
         ids.append(cohort["id"])
         matrix = cohort["matrix_spec"]
         selected.update((operation["ability"], operation["name"]) for operation in required_operations(matrix))
         _applicable_specification_cells(matrix)
-        evaluation = cohort["selected_evaluation"]
-        if (not isinstance(evaluation, dict) or set(evaluation) != {"role", "locator", "scenario_sources"}
-                or evaluation["role"] not in {"candidate-baseline", "scenario"}
-                or not _immutable_locator(evaluation["locator"])
-                or not isinstance(evaluation["scenario_sources"], list)
-                or len(evaluation["scenario_sources"]) > 4096
-                or not all(_immutable_locator(source) for source in evaluation["scenario_sources"])
-                or len(evaluation["scenario_sources"]) != len(set(evaluation["scenario_sources"]))
-                or (evaluation["role"] == "candidate-baseline" and evaluation["scenario_sources"])
-                or (evaluation["role"] == "scenario" and not evaluation["scenario_sources"])):
-            raise RuntimeError("native cohort evaluation custody is malformed")
+        for evaluation in (cohort["selected_evaluation"], cohort["adoption_evaluation"]):
+            if (not isinstance(evaluation, dict) or set(evaluation) != {"role", "locator", "scenario_sources"}
+                    or evaluation["role"] not in {"candidate-baseline", "scenario"}
+                    or not _immutable_locator(evaluation["locator"])
+                    or not isinstance(evaluation["scenario_sources"], list)
+                    or len(evaluation["scenario_sources"]) > 4096
+                    or not all(_immutable_locator(source) for source in evaluation["scenario_sources"])
+                    or len(evaluation["scenario_sources"]) != len(set(evaluation["scenario_sources"]))
+                    or (evaluation["role"] == "candidate-baseline" and evaluation["scenario_sources"])
+                    or (evaluation["role"] == "scenario" and not evaluation["scenario_sources"])):
+                raise RuntimeError("native cohort evaluation custody is malformed")
     if ids != sorted(set(ids)):
         raise RuntimeError("native operation cohorts are duplicated or unordered")
     if any((operation["ability"], operation["name"]) not in selected for operation in required):
@@ -208,8 +208,9 @@ def build_cohorts(spec: dict[str, Any], executions: dict[str, dict[str, Any]],
     count = 0
     for cohort in cohorts:
         execution = executions[cohort["id"]]
-        if (set(execution) != {"submissions", "subjects", "evidence", "qualification_subject", "candidate_digest"}
-                or not _matches(DIGEST, execution["candidate_digest"])):
+        if (set(execution) != {"submissions", "subjects", "evidence", "qualification_subject", "candidate_digest", "adoption_digest"}
+                or not _matches(DIGEST, execution["candidate_digest"])
+                or not _matches(DIGEST, execution["adoption_digest"])):
             raise RuntimeError("native cohort lacks its authenticated candidate commitment")
         matrix = cohort["matrix_spec"]
         cells, checked_count = build_cells(
@@ -220,6 +221,8 @@ def build_cohorts(spec: dict[str, Any], executions: dict[str, dict[str, Any]],
         observations.append({
             "id": cohort["id"], "matrix_spec": matrix,
             "selected_evaluation": cohort["selected_evaluation"],
+            "adoption_evaluation": cohort["adoption_evaluation"],
+            "adoption_digest": execution["adoption_digest"],
             "spec_digest": sha256(matrix), "candidate_digest": execution["candidate_digest"],
             "cells": cells,
         })
