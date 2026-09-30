@@ -10,7 +10,11 @@ mod containers;
 mod content;
 mod files;
 mod quarantine;
+mod retirement;
+
 mod refs;
+#[cfg(all(test, feature = "tokio"))]
+mod retirement_tests;
 
 #[cfg(all(test, feature = "tokio"))]
 mod readmission_tests;
@@ -269,6 +273,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .await?
         {
             return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+        }
+        if freshly_created {
+            self.initialize_fresh_catalog(self.catalog().await?).await?;
         }
         Ok(())
     }

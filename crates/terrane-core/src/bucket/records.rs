@@ -4,7 +4,7 @@
 //! CAPABILITIES = {1: 1, 2: true, 3: true, 4: true, 5: false,
 //!                 6: 1, 7: timestamp, 8: store-profile, 10: []}
 //! MANIFEST = {1: generation, 2: [shard-entry], 3: timestamp, 4: cycle,
-//!             5: [pack-inventory-entry]}
+//!             5: [pack-inventory-entry], 6: [pack-exclusion]}
 //! Tombstone = {1: pack-id, 2: cycle, 3: timestamp, 4: removed-entries, 5: epoch}
 //! ```
 
@@ -267,6 +267,17 @@ pub struct PackInventoryEntry {
     pub index_size: u64,
 }
 
+/// Binds a physically retired pack to its active collection incarnation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackExclusion {
+    /// The opaque UUID of the excluded pack and detached index.
+    pub pack_id: [u8; 16],
+    /// The fresh collection cycle that published this exclusion.
+    pub cycle: u64,
+    /// The collector fencing epoch authorizing this incarnation.
+    pub epoch: u64,
+}
+
 /// Describes the complete immutable content of one index generation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GenerationManifest {
@@ -280,6 +291,9 @@ pub struct GenerationManifest {
     pub cycle: u64,
     /// The optional authoritative container inventory, ordered by unique pack ID.
     pub inventory: Option<Vec<PackInventoryEntry>>,
+    /// Complete active physical exclusions, sorted by unique pack ID.
+    /// Absence preserves legacy unknown completeness; an empty array is explicit.
+    pub exclusions: Option<Vec<PackExclusion>>,
 }
 
 impl GenerationManifest {
@@ -305,8 +319,18 @@ impl GenerationManifest {
             return Err(RecordError::Schema);
         }
 
+        if self.exclusions.as_ref().is_some_and(|entries| {
+            entries
+                .windows(2)
+                .any(|pair| pair[0].pack_id >= pair[1].pack_id)
+        }) {
+            return Err(RecordError::Schema);
+        }
         let mut bytes = Vec::new();
-        cbor::write_map(&mut bytes, 4 + usize::from(self.inventory.is_some()));
+        cbor::write_map(
+            &mut bytes,
+            4 + usize::from(self.inventory.is_some()) + usize::from(self.exclusions.is_some()),
+        );
         uint_field(&mut bytes, 1, self.generation);
         cbor::write_uint(&mut bytes, 2);
         cbor::write_array(&mut bytes, self.shards.len());
@@ -334,6 +358,16 @@ impl GenerationManifest {
                 cbor::write_uint(&mut bytes, entry.index_size);
             }
         }
+        if let Some(entries) = &self.exclusions {
+            cbor::write_uint(&mut bytes, 6);
+            cbor::write_array(&mut bytes, entries.len());
+            for entry in entries {
+                cbor::write_array(&mut bytes, 3);
+                cbor::write_bytes(&mut bytes, &entry.pack_id);
+                cbor::write_uint(&mut bytes, entry.cycle);
+                cbor::write_uint(&mut bytes, entry.epoch);
+            }
+        }
         Ok(bytes)
     }
 
@@ -343,8 +377,8 @@ impl GenerationManifest {
     /// Rejects malformed fields, duplicate or unordered shards, and trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, RecordError> {
         let mut decoder = Decoder::new(bytes);
-        let fields = decoder.map(5)?;
-        if !matches!(fields, 4 | 5) {
+        let fields = decoder.map(6)?;
+        if !(4..=6).contains(&fields) {
             return Err(RecordError::Schema);
         }
         key(&mut decoder, 1)?;
@@ -382,40 +416,75 @@ impl GenerationManifest {
         let written_at = decoder.uint()?;
         key(&mut decoder, 4)?;
         let cycle = decoder.uint()?;
-        let inventory = if fields == 5 {
-            key(&mut decoder, 5)?;
-            let count = decoder.array(decoder.remaining().len())?;
-            let mut entries = Vec::with_capacity(count);
-            for _ in 0..count {
-                if decoder.array(5)? != 5 {
-                    return Err(RecordError::Schema);
-                }
-                let pack_id = decoder
-                    .bytes(16)?
-                    .try_into()
-                    .map_err(|_| RecordError::Schema)?;
-                if entries
-                    .last()
-                    .is_some_and(|prior: &PackInventoryEntry| prior.pack_id >= pack_id)
-                {
-                    return Err(RecordError::Schema);
-                }
-                let pack_hash = digest(&mut decoder)?;
-                let pack_size = decoder.uint()?;
-                let index_hash = digest(&mut decoder)?;
-                let index_size = decoder.uint()?;
-                entries.push(PackInventoryEntry {
-                    pack_id,
-                    pack_hash,
-                    pack_size,
-                    index_hash,
-                    index_size,
-                });
+        let mut inventory = None;
+        let mut exclusions = None;
+        let mut previous_key = 4;
+        for _ in 4..fields {
+            let field = decoder.uint()?;
+            if field <= previous_key {
+                return Err(RecordError::Schema);
             }
-            Some(entries)
-        } else {
-            None
-        };
+            previous_key = field;
+            match field {
+                5 => {
+                    let count = decoder.array(decoder.remaining().len())?;
+                    let mut entries = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        if decoder.array(5)? != 5 {
+                            return Err(RecordError::Schema);
+                        }
+                        let pack_id = decoder
+                            .bytes(16)?
+                            .try_into()
+                            .map_err(|_| RecordError::Schema)?;
+                        if entries
+                            .last()
+                            .is_some_and(|prior: &PackInventoryEntry| prior.pack_id >= pack_id)
+                        {
+                            return Err(RecordError::Schema);
+                        }
+                        let pack_hash = digest(&mut decoder)?;
+                        let pack_size = decoder.uint()?;
+                        let index_hash = digest(&mut decoder)?;
+                        let index_size = decoder.uint()?;
+                        entries.push(PackInventoryEntry {
+                            pack_id,
+                            pack_hash,
+                            pack_size,
+                            index_hash,
+                            index_size,
+                        });
+                    }
+                    inventory = Some(entries);
+                }
+                6 => {
+                    let count = decoder.array(decoder.remaining().len())?;
+                    let mut entries = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        if decoder.array(3)? != 3 {
+                            return Err(RecordError::Schema);
+                        }
+                        let pack_id = decoder
+                            .bytes(16)?
+                            .try_into()
+                            .map_err(|_| RecordError::Schema)?;
+                        if entries
+                            .last()
+                            .is_some_and(|prior: &PackExclusion| prior.pack_id >= pack_id)
+                        {
+                            return Err(RecordError::Schema);
+                        }
+                        entries.push(PackExclusion {
+                            pack_id,
+                            cycle: decoder.uint()?,
+                            epoch: decoder.uint()?,
+                        });
+                    }
+                    exclusions = Some(entries);
+                }
+                _ => return Err(RecordError::Schema),
+            }
+        }
         decoder.finish()?;
 
         Ok(Self {
@@ -424,6 +493,7 @@ impl GenerationManifest {
             written_at,
             cycle,
             inventory,
+            exclusions,
         })
     }
 }
@@ -605,10 +675,72 @@ mod tests {
     }
 
     #[test]
+    fn generation_exclusions_preserve_unknown_and_require_unique_canonical_incarnations() {
+        let mut manifest = GenerationManifest {
+            generation: 1,
+            shards: Vec::new(),
+            written_at: 2,
+            cycle: 0,
+            inventory: None,
+            exclusions: None,
+        };
+        let unknown = manifest.encode().unwrap();
+        assert_eq!(
+            GenerationManifest::decode(&unknown).unwrap().exclusions,
+            None
+        );
+        manifest.exclusions = Some(Vec::new());
+        let empty = manifest.encode().unwrap();
+        assert_ne!(unknown, empty);
+        assert_eq!(GenerationManifest::decode(&empty).unwrap(), manifest);
+        manifest.exclusions = Some(alloc::vec![
+            PackExclusion {
+                pack_id: [1; 16],
+                cycle: 3,
+                epoch: 4
+            },
+            PackExclusion {
+                pack_id: [2; 16],
+                cycle: 5,
+                epoch: 6
+            }
+        ]);
+        let encoded = manifest.encode().unwrap();
+        assert_eq!(GenerationManifest::decode(&encoded).unwrap(), manifest);
+        for offset in [0, 1] {
+            let mut invalid = encoded.clone();
+            invalid[offset] = 0xff;
+            assert!(GenerationManifest::decode(&invalid).is_err());
+        }
+        let mut nullable = empty.clone();
+        *nullable.last_mut().unwrap() = 0xf6;
+        assert!(GenerationManifest::decode(&nullable).is_err());
+        let mut trailing = empty;
+        trailing.push(0);
+        assert!(GenerationManifest::decode(&trailing).is_err());
+        manifest.exclusions.as_mut().unwrap().reverse();
+        assert!(manifest.encode().is_err());
+        manifest.exclusions = Some(alloc::vec![
+            PackExclusion {
+                pack_id: [1; 16],
+                cycle: 3,
+                epoch: 4
+            },
+            PackExclusion {
+                pack_id: [1; 16],
+                cycle: 5,
+                epoch: 6
+            }
+        ]);
+        assert!(manifest.encode().is_err());
+    }
+
+    #[test]
     fn generation_manifest_binds_all_shards_and_optional_filters() {
         let mut manifest = GenerationManifest {
             generation: 2,
             inventory: None,
+            exclusions: None,
             shards: alloc::vec![
                 GenerationShard {
                     shard: 0,

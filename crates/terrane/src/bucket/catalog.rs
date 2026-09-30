@@ -5,7 +5,7 @@ use crate::pack::{MergedShard, PackIndexSnapshot, RecordState};
 use crate::store::{Clock, ContentValidator, LocalFs, StoreFailure};
 use std::collections::{BTreeMap, BTreeSet};
 use terrane_core::bucket::{
-    BucketCapabilities, BucketKey, GenerationManifest, GenerationShard, Mutability,
+    BucketCapabilities, BucketKey, GenerationManifest, GenerationShard, Mutability, PackExclusion,
     PackInventoryEntry,
 };
 use terrane_core::identity::{Identity, IdentityKind, TERRANE_V1};
@@ -20,6 +20,8 @@ pub(super) struct Catalog {
     pub shards: Vec<MergedShard>,
     /// The separately admitted whole-pack and detached-index containers.
     pub inventory: Option<Vec<PackInventoryEntry>>,
+    /// Complete active physical retirement incarnations, or legacy unknown.
+    pub exclusions: Option<Vec<PackExclusion>>,
 }
 
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
@@ -43,6 +45,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         }
         let mut shards = Vec::new();
         let mut inventory = None;
+        let mut exclusions = None;
         if let Some(generation) = capabilities.generation {
             let key = registered(&format!("objects/index/{generation}/MANIFEST"))?;
             let bytes = self
@@ -52,6 +55,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             let manifest =
                 GenerationManifest::decode(&bytes).map_err(|_| files::layout_corrupt())?;
             inventory = manifest.inventory.clone();
+            exclusions = manifest.exclusions.clone();
             if manifest.generation != generation {
                 return Err(files::layout_corrupt());
             }
@@ -89,6 +93,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             capability_bytes,
             shards,
             inventory,
+            exclusions,
         })
     }
 
@@ -116,6 +121,26 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .verify(&identity, &bytes)
             .map_err(|_| files::layout_corrupt())?;
         Ok(bytes)
+    }
+
+    /// Publishes known-empty retirement authority only after atomic fresh-root creation.
+    ///
+    /// # Errors
+    /// Rejects an already selected generation and failed durable publication.
+    pub(super) async fn initialize_fresh_catalog(
+        &self,
+        mut catalog: Catalog,
+    ) -> Result<(), StoreFailure> {
+        if catalog.capabilities.generation.is_some() {
+            return Err(files::layout_corrupt());
+        }
+        catalog.inventory = Some(Vec::new());
+        catalog.exclusions = Some(Vec::new());
+        let generation = self.next_generation(&catalog).await?;
+        let empty =
+            MergedShard::rebuild(0, generation, &[], &BTreeSet::new(), None, &BTreeSet::new())
+                .map_err(|_| files::layout_corrupt())?;
+        self.publish_shards(catalog, generation, &[empty]).await
     }
 
     /// Installs an immutable artifact or verifies identical existing bytes.
@@ -218,6 +243,13 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                     std::collections::btree_map::Entry::Occupied(mut entry)
                         if entry.get().state == RecordState::Tombstone as u8 =>
                     {
+                        // Unknown legacy completeness cannot discard the final
+                        // exact evidence that the previous physical pack retired.
+                        if catalog.exclusions.is_none() {
+                            return Err(StoreFailure::new(
+                                crate::store::StoreErrorKind::Unsupported,
+                            ));
+                        }
                         entry.insert(record);
                     }
                     std::collections::btree_map::Entry::Occupied(_) => {}
@@ -307,6 +339,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             written_at: timestamp,
             cycle: 0,
             inventory: catalog.inventory.clone(),
+            exclusions: catalog.exclusions.clone(),
         };
         let bytes = manifest.encode().map_err(|_| files::malformed())?;
         let key = registered(&format!("objects/index/{generation}/MANIFEST"))?;
@@ -350,9 +383,15 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         catalog: &Catalog,
         kind: IdentityKind,
     ) -> Result<Vec<Identity>, StoreFailure> {
+        if kind == IdentityKind::Index && !self.index_retirement_known(catalog) {
+            return Err(StoreFailure::new(crate::store::StoreErrorKind::Unsupported));
+        }
         let mut identities = Vec::new();
         if let Some(entries) = &catalog.inventory {
             for entry in entries {
+                if self.physically_excluded(catalog, &entry.pack_id) {
+                    continue;
+                }
                 let hash = match kind {
                     IdentityKind::Pack => Some(entry.pack_hash),
                     IdentityKind::Index => Some(entry.index_hash),
@@ -371,12 +410,13 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         for shard in &catalog.shards {
             for record in shard.entries() {
                 if record.state() == RecordState::Live
+                    && !self.physically_excluded(catalog, record.pack().as_bytes())
                     && record.entry().kind().identity_kind() == kind
                 {
                     let identity = TERRANE_V1
                         .from_digest(kind, record.entry().hash())
                         .map_err(|_| files::layout_corrupt())?;
-                    if !identities.contains(&identity) {
+                    if !self.is_excluded(catalog, &identity)? && !identities.contains(&identity) {
                         identities.push(identity);
                     }
                 }

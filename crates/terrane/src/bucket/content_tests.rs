@@ -429,6 +429,7 @@ async fn configured_schema_validator_rejects_canonical_but_invalid_meta() {
     let bucket = FileBucket::open(config, TokioLocalFs, TokioClock, validator)
         .await
         .unwrap();
+    let before = bucket.catalog().await.unwrap().capabilities.generation;
     let bad = MetaUpload::new(IdentityKind::Manifest, &[0xa0]).unwrap();
 
     let error = bucket.put(ContentUpload::Meta(bad)).await.unwrap_err();
@@ -436,14 +437,9 @@ async fn configured_schema_validator_rejects_canonical_but_invalid_meta() {
         error.kind(),
         StoreErrorKind::Invalid(InvalidReason::Upload { rule_id: "OBJ-15" })
     ));
-    assert!(
-        bucket
-            .catalog()
-            .await
-            .unwrap()
-            .capabilities
-            .generation
-            .is_none()
+    assert_eq!(
+        bucket.catalog().await.unwrap().capabilities.generation,
+        before
     );
 
     let size = bucket.inner.config.chunk_profile.minimum() as u64 + 1;

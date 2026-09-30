@@ -120,7 +120,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             });
         match location {
             Some(location)
-                if location.state() == RecordState::Live && location.entry().kind() == kind =>
+                if location.state() == RecordState::Live
+                    && location.entry().kind() == kind
+                    && !self.physically_excluded(catalog, location.pack().as_bytes()) =>
             {
                 Ok(location)
             }
@@ -197,6 +199,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         }
         if self.is_excluded(catalog, identity)? {
             return Err(StoreFailure::new(StoreErrorKind::Absent(identity.clone())));
+        }
+        if identity.kind() == IdentityKind::Index && !self.index_retirement_known(catalog) {
+            // An opaque independently admitted index cannot establish physical
+            // retirement completeness. Legacy unknown authority fails closed.
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
         }
         if let Some(bytes) = self.container(catalog, identity).await? {
             return Ok(bytes);
@@ -421,6 +428,21 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             }
         };
 
+        if identity.kind() == IdentityKind::Index && !self.index_retirement_known(&catalog) {
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+        }
+        // A detached index names its physical pack incarnation. Reoffering
+        // those container bytes as metadata cannot bypass physical retirement.
+        if identity.kind() == IdentityKind::Index
+            && catalog.inventory.as_ref().is_some_and(|entries| {
+                entries.iter().any(|entry| {
+                    entry.index_hash == identity.digest()
+                        && self.physically_excluded(&catalog, &entry.pack_id)
+                })
+            })
+        {
+            return Err(StoreFailure::new(StoreErrorKind::Absent(identity)));
+        }
         if let ContentUpload::Meta(meta) = upload
             && meta.kind() == IdentityKind::Pack
         {

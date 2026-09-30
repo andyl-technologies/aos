@@ -9,7 +9,7 @@ use crate::pack::{
     EntryKind, MergedShard, PackClass, PackId, PackIndexSnapshot, PackWriter, RecordState,
 };
 use crate::store::{ChunkPosition, ContentStore, TokioClock, TokioLocalFs};
-use terrane_core::bucket::Tombstone;
+use terrane_core::bucket::{PackExclusion, Tombstone};
 
 #[tokio::test]
 async fn verified_reupload_replaces_gc_retired_placement_without_restoring_old_pack() {
@@ -34,7 +34,7 @@ async fn verified_reupload_replaces_gc_retired_placement_without_restoring_old_p
     // lease/orchestration tests belong to GC; this exercises bucket admission
     // against real selected shards and the durable retained-pack tombstone.
     let guard = bucket.exclusive().await.unwrap();
-    let catalog = bucket.catalog().await.unwrap();
+    let mut catalog = bucket.catalog().await.unwrap();
     let old = catalog
         .shards
         .iter()
@@ -73,6 +73,11 @@ async fn verified_reupload_replaces_gc_retired_placement_without_restoring_old_p
             .unwrap(),
         );
     }
+    catalog.exclusions = Some(vec![PackExclusion {
+        pack_id: *old.as_bytes(),
+        cycle: 42,
+        epoch: 1,
+    }]);
     bucket
         .publish_shards(catalog, generation, &shards)
         .await

@@ -40,6 +40,32 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .map(|record| record.state()))
     }
 
+    /// Recognizes active physical retirement and legacy exact retirement evidence.
+    pub(super) fn physically_excluded(&self, catalog: &Catalog, pack: &[u8; 16]) -> bool {
+        catalog.exclusions.as_ref().is_some_and(|entries| {
+            entries
+                .binary_search_by_key(pack, |entry| entry.pack_id)
+                .is_ok()
+        }) || catalog
+            .shards
+            .iter()
+            .flat_map(|shard| shard.entries())
+            .any(|entry| entry.state() == RecordState::Tombstone && entry.pack().as_bytes() == pack)
+    }
+
+    /// Requires complete retirement authority and identities for every retired index.
+    pub(super) fn index_retirement_known(&self, catalog: &Catalog) -> bool {
+        catalog.exclusions.as_ref().is_some_and(|exclusions| {
+            exclusions.iter().all(|exclusion| {
+                catalog.inventory.as_ref().is_some_and(|entries| {
+                    entries
+                        .iter()
+                        .any(|entry| entry.pack_id == exclusion.pack_id)
+                })
+            })
+        })
+    }
+
     /// Tests selected GC retirement or identity quarantine before serving content.
     ///
     /// # Errors
@@ -49,10 +75,25 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         catalog: &Catalog,
         identity: &Identity,
     ) -> Result<bool, StoreFailure> {
-        Ok(matches!(
-            self.selected_state(catalog, identity)?,
-            Some(RecordState::Tombstone | RecordState::Quarantine)
-        ))
+        let retired_container = catalog.inventory.as_ref().is_some_and(|entries| {
+            entries.iter().any(|entry| {
+                let matches_identity = match identity.kind() {
+                    terrane_core::identity::IdentityKind::Pack => {
+                        entry.pack_hash == identity.digest()
+                    }
+                    terrane_core::identity::IdentityKind::Index => {
+                        entry.index_hash == identity.digest()
+                    }
+                    _ => false,
+                };
+                matches_identity && self.physically_excluded(catalog, &entry.pack_id)
+            })
+        });
+        Ok(retired_container
+            || matches!(
+                self.selected_state(catalog, identity)?,
+                Some(RecordState::Tombstone | RecordState::Quarantine)
+            ))
     }
 
     /// Tests the sticky identity quarantine that ordinary admission cannot clear.
@@ -81,6 +122,13 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let catalog = self.catalog().await?;
         if self.is_quarantined(&catalog, identity)? {
             return Ok(());
+        }
+        if catalog.exclusions.is_none()
+            && self.selected_state(&catalog, identity)? == Some(RecordState::Tombstone)
+        {
+            // Identity quarantine cannot erase the last legacy evidence of
+            // physical retirement before a complete exclusion migration.
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
         }
         let hash = identity
             .terrane_v1_digest()

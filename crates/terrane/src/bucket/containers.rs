@@ -108,10 +108,13 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .terrane_v1_digest()
             .map_err(|_| files::malformed())?;
         let entry = catalog.inventory.as_ref().and_then(|entries| {
-            entries.iter().find(|entry| match identity.kind() {
-                IdentityKind::Pack => entry.pack_hash == hash,
-                IdentityKind::Index => entry.index_hash == hash,
-                _ => false,
+            entries.iter().find(|entry| {
+                !self.physically_excluded(catalog, &entry.pack_id)
+                    && match identity.kind() {
+                        IdentityKind::Pack => entry.pack_hash == hash,
+                        IdentityKind::Index => entry.index_hash == hash,
+                        _ => false,
+                    }
             })
         });
         let Some(entry) = entry else {
@@ -142,6 +145,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         identity: Identity,
     ) -> Result<Identity, StoreFailure> {
         let reader = PackReader::open(bytes).map_err(|_| invalid("PACK-10"))?;
+        if self.physically_excluded(&catalog, reader.header().id().as_bytes()) {
+            return Err(StoreFailure::new(crate::store::StoreErrorKind::Absent(
+                identity,
+            )));
+        }
         let mut dictionaries = BTreeMap::new();
         let mut pending: Vec<_> = reader.entries().iter().collect();
         while !pending.is_empty() {

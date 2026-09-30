@@ -1,0 +1,357 @@
+//! Proves physical retirement fences and exact restore on native durable catalogs.
+
+#![allow(clippy::unwrap_used)]
+
+use super::content_tests::{chunk_identity, fixture, raw, upload};
+use super::readmission_tests::publish_members;
+use super::tests::{Validator, config};
+use super::*;
+use crate::store::{
+    ChunkPosition, ContentStore, ContentUpload, MetaUpload, TokioClock, TokioLocalFs,
+};
+use std::collections::BTreeSet;
+use terrane_core::bucket::PackExclusion;
+use terrane_core::identity::{IdentityKind, TERRANE_V1};
+
+#[tokio::test]
+async fn physical_retirement_survives_fresh_readmission_and_exact_restore() {
+    let bucket = fixture().await;
+    assert_eq!(bucket.catalog().await.unwrap().exclusions, Some(Vec::new()));
+    let first = b"fresh replacement preserves physical exclusion";
+    let other = b"restore eligible old body";
+    let bad = b"sticky quarantine survives physical restore";
+    let old = publish_members(&bucket, &[first, other, bad]).await;
+    let first_id = chunk_identity(first);
+    let other_id = chunk_identity(other);
+    let bad_id = chunk_identity(bad);
+    bucket.exclude(&bad_id).await.unwrap();
+    let before = bucket.catalog().await.unwrap();
+    let entry = before
+        .inventory
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|entry| entry.pack_id == *old.as_bytes())
+        .unwrap();
+    let (retained, index) = bucket.verified_container(entry).await.unwrap();
+    let pack_id = TERRANE_V1.calculate(IdentityKind::Pack, &retained).unwrap();
+    let index_id = TERRANE_V1.calculate(IdentityKind::Index, &index).unwrap();
+    // The same detached-index identity may already have an independent metadata
+    // placement; its container identity still names the retired physical pack.
+    bucket
+        .put(ContentUpload::Meta(
+            MetaUpload::new(IdentityKind::Index, &index).unwrap(),
+        ))
+        .await
+        .unwrap();
+    let before = bucket.catalog().await.unwrap();
+    let exclusion = PackExclusion {
+        pack_id: *old.as_bytes(),
+        cycle: 101,
+        epoch: 7,
+    };
+
+    let guard = bucket.exclusive().await.unwrap();
+    bucket
+        .retire_pack_locked(
+            before,
+            exclusion.clone(),
+            index_id.terrane_v1_digest().unwrap(),
+            &BTreeSet::new(),
+        )
+        .await
+        .unwrap();
+    drop(guard);
+    // No trash has been created: selected exclusion itself must already fence
+    // every content-facing route and remain authoritative across reopen.
+    assert_eq!(
+        bucket
+            .has(&[
+                first_id.clone(),
+                other_id.clone(),
+                bad_id.clone(),
+                pack_id.clone(),
+                index_id.clone()
+            ])
+            .await
+            .unwrap(),
+        vec![false; 5]
+    );
+    for identity in [&first_id, &pack_id, &index_id] {
+        assert!(matches!(
+            bucket.get(identity, None).await.unwrap_err().kind(),
+            StoreErrorKind::Absent(_)
+        ));
+        assert!(
+            !bucket
+                .published_identities(identity.kind())
+                .await
+                .unwrap()
+                .contains(identity)
+        );
+    }
+    assert!(matches!(
+        bucket
+            .put(ContentUpload::Meta(
+                MetaUpload::new(IdentityKind::Pack, &retained).unwrap()
+            ))
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Absent(_)
+    ));
+    assert!(matches!(
+        bucket
+            .put(ContentUpload::Meta(
+                MetaUpload::new(IdentityKind::Index, &index).unwrap()
+            ))
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Absent(_)
+    ));
+    bucket
+        .put(upload(
+            &raw(first),
+            &first_id,
+            first.len(),
+            &bucket.inner.config.chunk_profile,
+            ChunkPosition::Final,
+        ))
+        .await
+        .unwrap();
+    let current = bucket.catalog().await.unwrap();
+    assert_eq!(current.exclusions, Some(vec![exclusion.clone()]));
+    let fresh = current
+        .shards
+        .iter()
+        .flat_map(|shard| shard.entries())
+        .find(|entry| entry.entry().hash() == &first_id.terrane_v1_digest().unwrap())
+        .unwrap()
+        .pack();
+    assert_ne!(fresh, old);
+    assert_eq!(
+        bucket
+            .has(&[first_id.clone(), pack_id.clone(), index_id.clone()])
+            .await
+            .unwrap(),
+        vec![true, false, false]
+    );
+
+    let reopened = FileBucket::open(
+        config(bucket.root().to_owned()),
+        TokioLocalFs,
+        TokioClock,
+        Validator,
+    )
+    .await
+    .unwrap();
+    let guard = reopened.exclusive().await.unwrap();
+    let mut stale = exclusion.clone();
+    stale.epoch += 1;
+    assert!(
+        !reopened
+            .restore_pack_locked(reopened.catalog().await.unwrap(), &stale)
+            .await
+            .unwrap()
+    );
+    assert!(
+        reopened
+            .restore_pack_locked(reopened.catalog().await.unwrap(), &exclusion)
+            .await
+            .unwrap()
+    );
+    drop(guard);
+    let selected = reopened.catalog().await.unwrap();
+    assert_eq!(selected.exclusions, Some(Vec::new()));
+    assert_eq!(
+        selected
+            .shards
+            .iter()
+            .flat_map(|shard| shard.entries())
+            .find(|entry| entry.entry().hash() == &first_id.terrane_v1_digest().unwrap())
+            .unwrap()
+            .pack(),
+        fresh
+    );
+    assert_eq!(
+        reopened
+            .has(&[
+                first_id.clone(),
+                other_id.clone(),
+                bad_id.clone(),
+                pack_id,
+                index_id
+            ])
+            .await
+            .unwrap(),
+        vec![true, true, false, true, true]
+    );
+    assert_eq!(reopened.get(&first_id, None).await.unwrap(), raw(first));
+    assert_eq!(reopened.get(&other_id, None).await.unwrap(), raw(other));
+    assert!(matches!(
+        reopened
+            .put(upload(
+                &raw(bad),
+                &bad_id,
+                bad.len(),
+                &reopened.inner.config.chunk_profile,
+                ChunkPosition::Final
+            ))
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Corrupt(_)
+    ));
+    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+}
+
+#[tokio::test]
+async fn legacy_unknown_retirement_never_loses_its_last_physical_evidence() {
+    let bucket = fixture().await;
+    let body = b"legacy retirement evidence";
+    let identity = chunk_identity(body);
+    let old = publish_members(&bucket, &[body]).await;
+    let initial = bucket.catalog().await.unwrap();
+    let old_entry = initial
+        .inventory
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|entry| entry.pack_id == *old.as_bytes())
+        .unwrap();
+    let index_hash = old_entry.index_hash;
+    let index = bucket.verified_container(old_entry).await.unwrap().1;
+    let index_identity = bucket
+        .put(ContentUpload::Meta(
+            MetaUpload::new(IdentityKind::Index, &index).unwrap(),
+        ))
+        .await
+        .unwrap();
+    let guard = bucket.exclusive().await.unwrap();
+    let catalog = bucket.catalog().await.unwrap();
+    let exclusion = PackExclusion {
+        pack_id: *old.as_bytes(),
+        cycle: 3,
+        epoch: 1,
+    };
+    let mut marked = BTreeSet::new();
+    marked.insert(identity.terrane_v1_digest().unwrap());
+    assert!(matches!(
+        bucket
+            .retire_pack_locked(
+                bucket.catalog().await.unwrap(),
+                exclusion.clone(),
+                index_hash,
+                &marked
+            )
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Unsupported
+    ));
+    bucket
+        .retire_pack_locked(catalog, exclusion, index_hash, &BTreeSet::new())
+        .await
+        .unwrap();
+    let mut incomplete = bucket.catalog().await.unwrap();
+    incomplete.inventory = None;
+    let generation = bucket.next_generation(&incomplete).await.unwrap();
+    let shards = incomplete
+        .shards
+        .iter()
+        .map(|shard| {
+            crate::pack::MergedShard::decode(&shard.encode(), generation, shard.shard()).unwrap()
+        })
+        .collect::<Vec<_>>();
+    bucket
+        .publish_shards(incomplete, generation, &shards)
+        .await
+        .unwrap();
+    let selected = bucket.catalog().await.unwrap();
+    assert!(selected.exclusions.is_some());
+    assert!(matches!(
+        bucket
+            .verified_body(&selected, &index_identity)
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Unsupported
+    ));
+    let mut legacy = selected;
+    legacy.exclusions = None;
+    legacy.inventory = None;
+    let generation = bucket.next_generation(&legacy).await.unwrap();
+    let shards = legacy
+        .shards
+        .iter()
+        .map(|shard| {
+            crate::pack::MergedShard::decode(&shard.encode(), generation, shard.shard()).unwrap()
+        })
+        .collect::<Vec<_>>();
+    bucket
+        .publish_shards(legacy, generation, &shards)
+        .await
+        .unwrap();
+    drop(guard);
+    assert!(matches!(
+        bucket
+            .put(upload(
+                &raw(body),
+                &identity,
+                body.len(),
+                &bucket.inner.config.chunk_profile,
+                ChunkPosition::Final
+            ))
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Unsupported
+    ));
+    assert!(matches!(
+        bucket.exclude(&identity).await.unwrap_err().kind(),
+        StoreErrorKind::Unsupported
+    ));
+    assert!(matches!(
+        bucket.get(&index_identity, None).await.unwrap_err().kind(),
+        StoreErrorKind::Unsupported
+    ));
+    assert!(matches!(
+        bucket
+            .has(std::slice::from_ref(&index_identity))
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Unsupported
+    ));
+    assert!(matches!(
+        bucket
+            .published_identities(IdentityKind::Index)
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Unsupported
+    ));
+    assert!(matches!(
+        bucket
+            .put(ContentUpload::Meta(
+                MetaUpload::new(IdentityKind::Index, &index).unwrap()
+            ))
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Unsupported
+    ));
+    assert_eq!(bucket.catalog().await.unwrap().exclusions, None);
+    assert_eq!(bucket.has(&[identity]).await.unwrap(), vec![false]);
+    let reopened = FileBucket::open(
+        config(bucket.root().to_owned()),
+        TokioLocalFs,
+        TokioClock,
+        Validator,
+    )
+    .await
+    .unwrap();
+    assert_eq!(reopened.catalog().await.unwrap().exclusions, None);
+    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+}
