@@ -112,6 +112,22 @@ async fn held_buckets_inverse_transactions_finish_in_canonical_order() {
     let barrier = Arc::new(tokio::sync::Barrier::new(3));
     let mut tasks = Vec::new();
     for (source, destination) in [(left.clone(), right.clone()), (right.clone(), left.clone())] {
+        let source = FileBucket::open(
+            config(source.root().to_owned()),
+            TokioLocalFs,
+            TokioClock,
+            Validator,
+        )
+        .await
+        .unwrap();
+        let destination = FileBucket::open(
+            config(destination.root().to_owned()),
+            TokioLocalFs,
+            TokioClock,
+            Validator,
+        )
+        .await
+        .unwrap();
         let barrier = barrier.clone();
         tasks.push(tokio::spawn(async move {
             barrier.wait().await;
