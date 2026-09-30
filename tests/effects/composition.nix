@@ -52,6 +52,48 @@ let
     verify = true;
   };
 in {
+  strictChecksLeaveDeclaredValuesLazy = let
+    evaluated = evaluate [
+      {
+        name = "strict-module";
+        module = {
+          config,
+          lib,
+          ...
+        }: {
+          _module.strict = true;
+          options.enable = lib.mkEnableOption "recursive guard";
+          options.value = lib.mkOption {
+            type = lib.types.str;
+            default = "disabled";
+          };
+          config.value = lib.mkIf config.enable "enabled";
+        };
+      }
+    ];
+  in
+    assert !evaluated.config.enable;
+    assert evaluated.config.value == "disabled"; true;
+  recursiveDefaults = assert (evaluate [
+    {
+      name = "recursive-defaults";
+      module = {
+        config,
+        lib,
+        ...
+      }: {
+        options.first = lib.mkOption {
+          type = lib.types.str;
+          default = "source";
+        };
+        options.second = lib.mkOption {
+          type = lib.types.str;
+          default = config.first;
+        };
+      };
+    }
+  ]).config.second
+  == "source"; true;
   sharedSchema = assert (evaluate [owner extension consumer]).config.instances.main == expected; true;
   orderIndependent = assert (evaluate [extension consumer owner]).config.instances.main == expected; true;
   privateOption = assert rejects [

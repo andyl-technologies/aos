@@ -294,7 +294,6 @@
   serviceModuleEvaluation = lib.evalModules {
     inherit lib;
     modules = [
-      ../../modules/abilities/_service.nix
       ({config, ...}: {
         options.aos.services = lib.mkOption {
           type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
@@ -681,7 +680,7 @@
             options.nginx.enable = lib.mkOption {
               type = lib.types.bool;
               default = false;
-              extensible = true;
+              extensible = false;
             };
           })
         ];
@@ -706,7 +705,7 @@
                 };
               });
               default = {};
-              extensible = true;
+              extensible = false;
             };
           })
         ];
@@ -1284,18 +1283,20 @@
       path = source;
       name = "${name}-module";
     };
-    moduleSelector = builtins.toJSON {
-      package = name;
-      output = "module";
+    artifact = artifactName: path: {
+      name = artifactName;
+      version = "1";
+      inherit path;
+      outputs.out = path;
+      mainProgram = null;
     };
   in {
     inherit name configRoot;
+    version = "1";
     module = "${configRoot}/module.nix";
-    outputs = {
-      self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-${name}";
-      dependencies =
-        dependencies
-        // {${moduleSelector} = builtins.toString configRoot;};
+    artifacts = {
+      package = artifact name "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-${name}";
+      dependencies = builtins.mapAttrs artifact dependencies;
     };
   };
 
@@ -1314,8 +1315,8 @@
     .importConfinement
     .value
     == "confined";
-  evaluatedPackageImportRejected =
-    !(builtins.tryEval (builtins.deepSeq (
+  evaluatedPackageImportAccepted =
+    (builtins.tryEval (builtins.deepSeq (
         (lib.evalModules {
           modules = [];
           packageModules = [
@@ -1499,7 +1500,7 @@
         message = "uniqEnum semantics";
       }
       {
-        ok = confinedPackageImport && evaluatedPackageImportRejected && lexicalStringPackageImportRejected;
+        ok = confinedPackageImport && evaluatedPackageImportAccepted && lexicalStringPackageImportRejected;
         message = "authenticated package import-root confinement";
       }
       {
