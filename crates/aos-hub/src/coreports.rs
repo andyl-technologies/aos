@@ -109,6 +109,7 @@ impl aos_hub_core::topology_probe::StorageCredentialProbeProvider
         &self,
         binding: &aos_hub_core::db::BindingRecord,
         credential: &aos_hub_core::db::BindingCredentialRevisionRecord,
+        _operation_id: &str,
         probe_token: &str,
     ) -> Result<aos_hub_core::topology_probe::StorageCredentialProbeEvidence> {
         anyhow::ensure!(

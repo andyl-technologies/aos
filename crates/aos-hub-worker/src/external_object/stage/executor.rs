@@ -88,6 +88,22 @@ pub(crate) async fn execute_stage(
     env: &Env,
     work: &ExternalStageRequest,
 ) -> Result<ExternalStageResult> {
+    execute_stage_observed(env, work, &|| {}).await
+}
+
+/// Observes actual provider dispatch while preserving retained terminal replay.
+///
+/// The observer runs after final eligibility checks, immediately before Fetch.
+/// Returning a retained physical receipt never invokes it.
+///
+/// # Errors
+/// Returns the same configuration, authorization, unknown-effect and provider
+/// errors as [`execute_stage`].
+pub(crate) async fn execute_stage_observed(
+    env: &Env,
+    work: &ExternalStageRequest,
+    before_dispatch: &dyn Fn(),
+) -> Result<ExternalStageResult> {
     executor_key(env)?;
     let object = configured(env)?.ok_or_else(|| anyhow::anyhow!("object consumer disabled"))?;
     let config = config::configured(env, &object)?
@@ -256,6 +272,7 @@ pub(crate) async fn execute_stage(
         source.as_ref(),
         &parts,
         direct_permission_expires_at,
+        before_dispatch,
     )
     .await?;
     let receipt = Receipt { turn, outcome };
@@ -317,6 +334,7 @@ async fn dispatch(
     source: Option<&SourceProof>,
     parts: &[DirectManifestPart],
     direct_permission_expires_at: Option<aos_hub_core::direct_upload::WireInteger>,
+    before_dispatch: &dyn Fn(),
 ) -> Result<Outcome> {
     let now = object.clock().observed_at;
     let domain = config.domain(&work.context)?;
@@ -474,6 +492,8 @@ async fn dispatch(
             "direct external Native publication permission expired before Fetch"
         );
     }
+    before_dispatch();
+    crate::direct_upload::provider_capacity::record_dispatch();
     let response = Fetch::Request(request).send().await?;
     match &work.operation {
         Action::CreateStage | Action::CreateDestination { .. }

@@ -77,6 +77,7 @@ pub struct StorageCapabilities {
 }
 
 mod binding_snapshot;
+pub mod binding_custody;
 mod frozen_cleanup;
 mod metadata_batch;
 

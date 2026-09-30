@@ -7,10 +7,14 @@ use aos_hub_core::db::{
     CompleteOciProviderInventory, NewBindingWriteRevision, NewSurfacePlacementSpec, PlanOciGc,
     RecordOciConditionalDeleteCapability, SurfaceTarget,
 };
-use aos_hub_core::secret_version::ResolvedSecretVersion;
+use aos_hub_core::secret_version::{ResolvedSecretVersion, SecretVersionResolver};
+use aos_hub_core::storage_work::StorageFrozenCleanupHeadResult;
 use aos_hub_core::storage_work::StorageWorkKey;
 use aos_oci_types::Sha256Digest;
-use axum::{body::Bytes, http::HeaderMap};
+use axum::{
+    body::Bytes,
+    http::{HeaderMap, Uri},
+};
 use sha2::{Digest as _, Sha256};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -311,6 +315,7 @@ enum Reply {
     ChangeEpoch,
     ExpireClaim,
     StopRun,
+    WrongSignature,
 }
 
 async fn worker(
@@ -325,14 +330,33 @@ async fn worker(
     let count = Arc::clone(&requests);
     let pool = fixture.pool.clone();
     let expected = fixture.claim.clone();
-    let app = axum::Router::new().route(
-        "/",
-        axum::routing::post(move |headers: HeaderMap, body: Bytes| {
+    let app = axum::Router::new().fallback(
+        axum::routing::post(move |uri: Uri, headers: HeaderMap, body: Bytes| {
             let (count, pool, expected) = (Arc::clone(&count), pool.clone(), expected.clone());
             async move {
                 let key = StorageWorkKey::new(WORK_KEY).unwrap();
-                let request = key
-                    .verify_frozen_cleanup(
+                let signature = headers.get(STORAGE_WORK_SIGNATURE_HEADER).unwrap().to_str().unwrap();
+                if uri.path() == STORAGE_FROZEN_CLEANUP_CREDENTIAL_STAGE_PATH {
+                    let stage = verify_storage_frozen_cleanup_credential_stage(&key, signature, &body,
+                        "deployment-1", aos_hub_core::clock::now_unix_secs()).unwrap();
+                    assert_eq!(stage.request.snapshot.credentials[0].generation, 1);
+                    assert_eq!(stage.request.snapshot.credentials[0].secret_version_ref, "secret://claim/delete/v1");
+                    count.fetch_add(1, Ordering::SeqCst);
+                    if matches!(reply, Reply::RemoveHold) {
+                        sqlx::query("DELETE FROM oci_gc_credential_holds WHERE run_id = ?1")
+                            .bind(&expected.generation_id).execute(&pool).await.unwrap();
+                    }
+                    let signed = sign_storage_frozen_cleanup_credential_stage_reply(&key,
+                        &StorageFrozenCleanupCredentialStageReply {
+                            request: stage.request, material_not_after: stage.material_not_after,
+                            stage_body_sha256: hex::encode(Sha256::digest(&body)),
+                        }).unwrap();
+                    assert!(!std::str::from_utf8(&signed.body).unwrap().contains("value_base64"));
+                    return ([(STORAGE_WORK_SIGNATURE_HEADER, signed.signature)], signed.body);
+                }
+                assert_eq!(uri.path(), STORAGE_FROZEN_CLEANUP_CUSTODY_PATH);
+                let request = verify_storage_frozen_cleanup_custody(
+                        &key,
                         headers
                             .get(STORAGE_WORK_SIGNATURE_HEADER)
                             .unwrap()
@@ -343,14 +367,15 @@ async fn worker(
                         aos_hub_core::clock::now_unix_secs(),
                     )
                     .unwrap();
+                assert!(!std::str::from_utf8(&body).unwrap().contains("value_base64"));
                 count.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(request.action_id, expected.action_id);
                 assert_eq!(request.claim_token, expected.claim_token);
                 assert_eq!(request.operation, StorageFrozenCleanupOperation::Head);
                 assert_eq!(request.path, expected.object_key);
-                assert_eq!(request.publication.snapshot.credentials[0].generation, 1);
+                assert_eq!(request.snapshot.credentials[0].generation, 1);
                 assert_eq!(
-                    request.object_key().unwrap(),
+                    aos_hub_core::keymap::r2_key(&request.snapshot.object_prefix, &aos_hub_core::keymap::r2_key(&request.access.placement_prefix, &request.path)),
                     format!("binding-prefix/old-placement/{}", expected.object_key)
                 );
                 match reply {
@@ -407,27 +432,51 @@ async fn worker(
                 } else {
                     request.claim_fingerprint().unwrap()
                 };
-                axum::Json(StorageFrozenCleanupHeadResult {
-                    version: 1,
-                    request_id: request.request_id,
-                    action_id: request.action_id,
-                    claim_token: request.claim_token,
-                    claim_fingerprint: fingerprint,
-                    object: None,
-                })
+                let reply_mode = reply;
+                let reply = StorageFrozenCleanupCustodyReply {
+                    result: StorageFrozenCleanupHeadResult {
+                        version: 1, request_id: request.request_id.clone(),
+                        action_id: request.action_id.clone(), claim_token: request.claim_token.clone(),
+                        claim_fingerprint: fingerprint, object: None,
+                    },
+                    request, observed_at: aos_hub_core::clock::now_unix_secs(),
+                };
+                let signed = sign_storage_frozen_cleanup_custody_reply(&key, &reply).unwrap();
+                let signature = if matches!(reply_mode, Reply::WrongSignature) { "0".repeat(64) } else { signed.signature };
+                ([(STORAGE_WORK_SIGNATURE_HEADER, signature)], signed.body)
             }
         }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let files = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let tls = crate::native_tls::NativeTlsListener::new(
+        listener,
+        &files.join("hub-hybrid-fleet-server.crt"),
+        &files.join("hub-hybrid-fleet-server.key"),
+        "localhost".into(),
+    )
+    .unwrap();
     let task = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(tls, app).await.unwrap();
     });
-    let mut client =
-        RemoteStorageWorkClient::new("https://worker.example", "deployment-1".into(), WORK_KEY)
-            .unwrap();
-    // Only the test redirects the already validated production HTTPS authority.
-    client.frozen_cleanup_endpoint = format!("http://{address}/");
+    let mut client = RemoteStorageWorkClient::new(
+        &format!("https://localhost:{}", address.port()),
+        "deployment-1".into(),
+        WORK_KEY,
+    )
+    .unwrap();
+    client.http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(30))
+        .add_root_certificate(
+            reqwest::Certificate::from_pem(
+                &std::fs::read(files.join("hub-hybrid-fleet-ca.crt")).unwrap(),
+            )
+            .unwrap(),
+        )
+        .build()
+        .unwrap();
     (client, requests, task)
 }
 
@@ -439,7 +488,7 @@ async fn retained_generation_head_succeeds_and_altered_claim_never_reaches_worke
 
     assert_eq!(
         client
-            .frozen_cleanup_head(&fixture.db, &fixture.claim, &secrets)
+            .frozen_cleanup_head(&fixture.db, &fixture.claim)
             .await
             .unwrap(),
         None
@@ -448,27 +497,161 @@ async fn retained_generation_head_succeeds_and_altered_claim_never_reaches_worke
     let mut altered = fixture.claim.clone();
     altered.object_key = format!("oci/blobs/sha256/{}", "b".repeat(64));
     assert!(client
-        .frozen_cleanup_head(&fixture.db, &altered, &secrets)
+        .frozen_cleanup_head(&fixture.db, &altered)
         .await
         .is_err());
     assert_eq!(requests.load(Ordering::SeqCst), 1);
-    assert_eq!(secrets.0.load(Ordering::SeqCst), 1);
+    assert_eq!(secrets.0.load(Ordering::SeqCst), 0);
 
     let mut swapped = fixture.claim.clone();
     swapped.delete_credential_generation = Some(2);
     assert!(client
-        .frozen_cleanup_head(&fixture.db, &swapped, &secrets)
+        .frozen_cleanup_head(&fixture.db, &swapped)
         .await
         .is_err());
     assert_eq!(requests.load(Ordering::SeqCst), 1);
-    assert_eq!(secrets.0.load(Ordering::SeqCst), 1);
+    assert_eq!(secrets.0.load(Ordering::SeqCst), 0);
     task.abort();
+}
+
+#[tokio::test]
+async fn operator_recovers_only_exact_held_generation_and_refuses_a_hold_removed_during_stage() {
+    for reply in [Reply::Absent, Reply::RemoveHold] {
+        let fixture = fixture().await;
+        let (client, requests, task) = worker(&fixture, reply).await;
+        let secrets = RetainedSecrets(AtomicUsize::new(0));
+        let result = client
+            .stage_frozen_cleanup_credential(&fixture.db, &fixture.claim, &secrets, 86400)
+            .await;
+        assert_eq!(secrets.0.load(Ordering::SeqCst), 1);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        if matches!(reply, Reply::Absent) {
+            let receipt = result.unwrap();
+            assert_eq!(receipt.request.snapshot.credentials[0].generation, 1);
+            assert!(!String::from_utf8(serde_json::to_vec(&receipt).unwrap())
+                .unwrap()
+                .contains("value_base64"));
+            assert_eq!(
+                client
+                    .frozen_cleanup_head(&fixture.db, &fixture.claim)
+                    .await
+                    .unwrap(),
+                None
+            );
+            assert_eq!(secrets.0.load(Ordering::SeqCst), 1);
+            assert_eq!(requests.load(Ordering::SeqCst), 2);
+        } else {
+            assert!(result.is_err());
+        }
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn known_head_result_requires_current_sql_authorization_when_receipt_is_committed() {
+    use aos_hub_core::db::{
+        oci_gc_deletion_evidence_digest, OciGcDeleteOutcome, RecordOciGcDeletionSuccess,
+    };
+
+    for race in ["none", "hold", "epoch", "binding", "lease"] {
+        let fixture = fixture().await;
+        let (client, requests, server) = worker(&fixture, Reply::Absent).await;
+        assert_eq!(
+            client
+                .frozen_cleanup_head(&fixture.db, &fixture.claim)
+                .await
+                .unwrap(),
+            None
+        );
+        let now = aos_hub_core::clock::now_unix_secs();
+        match race {
+            "hold" => {
+                sqlx::query("DELETE FROM oci_gc_credential_holds WHERE run_id = ?1")
+                    .bind(&fixture.claim.generation_id)
+                    .execute(&fixture.pool)
+                    .await
+                    .unwrap();
+            }
+            "epoch" => {
+                sqlx::query("UPDATE oci_registry_state SET mutation_epoch = mutation_epoch + 1 WHERE registry_id = ?1")
+                    .bind(fixture.claim.registry_id).execute(&fixture.pool).await.unwrap();
+            }
+            "binding" => {
+                sqlx::query(
+                    "UPDATE bindings SET resource_version = resource_version + 1 WHERE id = ?1",
+                )
+                .bind(fixture.claim.binding_id)
+                .execute(&fixture.pool)
+                .await
+                .unwrap();
+            }
+            "lease" => {
+                sqlx::query(
+                    "UPDATE oci_gc_placement_actions SET lease_expires_at = ?2 WHERE id = ?1",
+                )
+                .bind(&fixture.claim.action_id)
+                .bind(now)
+                .execute(&fixture.pool)
+                .await
+                .unwrap();
+            }
+            _ => {}
+        }
+        let outcome = OciGcDeleteOutcome::AlreadyAbsent;
+        let receipt = RecordOciGcDeletionSuccess {
+            action_id: fixture.claim.action_id.clone(),
+            claim_token: fixture.claim.claim_token.clone(),
+            response_idempotency_key: "authenticated-head-receipt".into(),
+            outcome,
+            conditional_etag: None,
+            provider_request_id: None,
+            confirmed_at: now,
+            evidence_digest: oci_gc_deletion_evidence_digest(
+                &fixture.claim.action_id,
+                "authenticated-head-receipt",
+                outcome,
+                None,
+                None,
+                now,
+            )
+            .unwrap(),
+        };
+        let result = fixture
+            .db
+            .record_oci_gc_placement_action_success(&receipt)
+            .await;
+        let action = fixture
+            .db
+            .oci_gc_placement_action(&fixture.claim.action_id)
+            .await
+            .unwrap()
+            .unwrap();
+        if race == "none" {
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(action.state, "confirmed_absent");
+        } else {
+            assert!(result.is_err(), "late receipt race {race} admitted");
+            assert_eq!(action.state, "claimed");
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM oci_gc_deletion_evidence WHERE action_id = ?1",
+            )
+            .bind(&fixture.claim.action_id)
+            .fetch_one(&fixture.pool)
+            .await
+            .unwrap();
+            assert_eq!(count, 0);
+        }
+        // A refused SQL settlement never retries a provider effect here.
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
 }
 
 #[tokio::test]
 async fn late_reply_cannot_outlive_credential_hold_epoch_or_stable_scope() {
     for reply in [
         Reply::WrongFingerprint,
+        Reply::WrongSignature,
         Reply::RevokeCredential,
         Reply::RemoveHold,
         Reply::ChangeEpoch,
@@ -477,14 +660,12 @@ async fn late_reply_cannot_outlive_credential_hold_epoch_or_stable_scope() {
     ] {
         let fixture = fixture().await;
         let (client, requests, task) = worker(&fixture, reply).await;
-        let secrets = RetainedSecrets(AtomicUsize::new(0));
-
         let error = client
-            .frozen_cleanup_head(&fixture.db, &fixture.claim, &secrets)
+            .frozen_cleanup_head(&fixture.db, &fixture.claim)
             .await
             .unwrap_err();
         match reply {
-            Reply::WrongFingerprint => {
+            Reply::WrongFingerprint | Reply::WrongSignature => {
                 assert!(
                     error
                         .downcast_ref::<aos_hub_core::storage_work::StorageWorkError>()
@@ -517,7 +698,7 @@ async fn revoked_retained_credential_fails_before_resolution_and_worker_io() {
     .unwrap();
 
     assert!(client
-        .frozen_cleanup_head(&fixture.db, &fixture.claim, &secrets)
+        .frozen_cleanup_head(&fixture.db, &fixture.claim)
         .await
         .is_err());
     assert_eq!(requests.load(Ordering::SeqCst), 0);
@@ -532,8 +713,7 @@ async fn claimed_opener_authorizes_only_its_real_claim_key() {
 
     let fixture = fixture().await;
     let (client, requests, task) = worker(&fixture, Reply::Absent).await;
-    let secrets = Arc::new(RetainedSecrets(AtomicUsize::new(0)));
-    let provider = HybridSurfaceProvider::new(Arc::clone(&fixture.db), Arc::new(client), secrets);
+    let provider = HybridSurfaceProvider::new(Arc::clone(&fixture.db), Arc::new(client));
     let access = fixture.claim.frozen_access();
     let surface = provider
         .claimed_placement_fetcher(&access, &fixture.claim)

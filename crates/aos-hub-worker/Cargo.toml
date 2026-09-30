@@ -69,6 +69,7 @@ base64 = { workspace = true }
 rand = { workspace = true }
 uuid = { workspace = true }
 sha2 = { workspace = true }
+zeroize = { workspace = true }
 md-5 = { workspace = true }
 # Semver ordering for the Cron indexer (release-tag classification + channel
 # frontier selection), matching the native indexer.

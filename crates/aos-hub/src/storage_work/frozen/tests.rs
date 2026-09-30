@@ -7,7 +7,6 @@ use aos_hub_core::db::{
     UpdateSurfacePlacementSpec,
 };
 use aos_hub_core::fetch::SurfaceProvider as _;
-use aos_hub_core::secret_version::{ResolvedSecretVersion, SecretVersionResolver};
 use aos_hub_core::storage_work::{
     StorageObjectIdentity, StorageWorkKey, StorageWorkResult, STORAGE_WORK_SIGNATURE_HEADER,
 };
@@ -19,15 +18,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
 
 const WORK_KEY: &[u8] = b"frozen-storage-test-key-with-thirty-two-bytes";
-
-struct NoSecrets;
-
-#[async_trait]
-impl SecretVersionResolver for NoSecrets {
-    async fn resolve(&self, _version_ref: &str) -> Result<ResolvedSecretVersion> {
-        bail!("deployment R2 must not resolve external credentials")
-    }
-}
 
 async fn fixture() -> (Arc<Database>, FrozenSurfaceAccess) {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
@@ -212,7 +202,7 @@ async fn frozen_hybrid_cleanup_keeps_old_address_after_placement_and_capability_
     work.endpoint = format!("http://{address}/");
     let work = Arc::new(work);
 
-    let reads = HybridSurfaceProvider::new(Arc::clone(&db), Arc::clone(&work), Arc::new(NoSecrets));
+    let reads = HybridSurfaceProvider::new(Arc::clone(&db), Arc::clone(&work));
     let fetch = reads.frozen_placement_fetcher(&access).await.unwrap();
     assert_eq!(fetch.size(&path).await.unwrap(), Some(4));
     assert!(fetch.fetch(&path).await.is_err());
@@ -248,7 +238,7 @@ async fn frozen_hybrid_cleanup_keeps_old_address_after_placement_and_capability_
 async fn frozen_hybrid_cleanup_rejects_binding_drift_and_external_credentials_before_io() {
     let (db, access) = fixture().await;
     let work = Arc::new(client());
-    let reads = HybridSurfaceProvider::new(Arc::clone(&db), Arc::clone(&work), Arc::new(NoSecrets));
+    let reads = HybridSurfaceProvider::new(Arc::clone(&db), Arc::clone(&work));
     let writes = HybridSurfaceWrites::new(Arc::clone(&db), Arc::clone(&work));
     let mut stale = access.clone();
     stale.binding_resource_version += 1;

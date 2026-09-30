@@ -53,6 +53,15 @@ impl DurableObject for ExternalObjectGuard {
 
     async fn fetch(&self, mut request: Request) -> worker::Result<Response> {
         let path = request.url()?.path().to_owned();
+        if path == "/frozen-cleanup-ready" {
+            // Binding custody holds its own gate during this observation.
+            // An active physical turn can need that binding; refuse a busy
+            // physical guard immediately instead of inverting the lock order.
+            let Some(_gate) = self.gate.try_lock() else {
+                return Response::error("frozen physical key is busy", 409);
+            };
+            return super::frozen::readiness(&mut request, &self.env, &self.state).await;
+        }
         if path == "/direct-guard-turn" {
             let _gate = self.gate.lock().await;
             return crate::direct_guard::physical_fetch(&mut request, &self.env, &self.state).await;

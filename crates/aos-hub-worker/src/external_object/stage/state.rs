@@ -107,6 +107,13 @@ pub(super) struct PartRecord {
 }
 
 impl Session {
+    /// Refuses cleanup observations while a physical session is active or unknown.
+    pub(in crate::external_object) fn cleanup_ready(&self) -> bool {
+        self.pending.is_none()
+            && self.pending_parts.is_empty()
+            && matches!(self.phase, Phase::Closed | Phase::Aborted)
+    }
+
     pub(super) fn initialize(
         config: &Config,
         intent: &Intent,

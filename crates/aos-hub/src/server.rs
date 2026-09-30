@@ -197,7 +197,6 @@ pub async fn router_with_hybrid_ingress_and_direct(
         Arc::new(crate::storage_work::HybridSurfaceProvider::new(
             Arc::clone(&state.db),
             Arc::clone(&work),
-            Arc::clone(&state.secret_versions),
         ));
     let writes: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> = Arc::new(
         crate::storage_work::HybridSurfaceWrites::new(Arc::clone(&state.db), work),

@@ -95,6 +95,54 @@ impl DurableObject for HybridBindingState {
         }
 
         let _permit = acquire_gate(Arc::clone(&self.gate)).await;
+        if crate::binding_custody::is_path(request.url()?.path()) {
+            // Retention alarms survive a lost reply or a failed provider probe.
+            crate::binding_custody::schedule_expiry(&self.state.storage())
+                .await
+                .map_err(|_| {
+                    worker::Error::RustError("binding custody expiry unavailable".into())
+                })?;
+            let active = self
+                .state
+                .storage()
+                .get::<StorageBindingPublication>("active")
+                .await?;
+            let result = crate::binding_custody::handle(
+                &mut request,
+                &self.env,
+                &self.state.storage(),
+                active,
+                binding_id,
+            )
+            .await;
+            let reply = match result {
+                Ok(crate::binding_custody::Outcome::Reply(reply)) => reply,
+                Ok(crate::binding_custody::Outcome::Adoption {
+                    request,
+                    publication,
+                }) => {
+                    let acknowledged = publication.snapshot.clone();
+                    if self
+                        .publish(publication, aos_hub_core::clock::now_unix_secs())
+                        .await
+                        .is_err()
+                    {
+                        return Response::error("binding custody adoption refused", 409);
+                    }
+                    match crate::binding_custody::reply_adoption(&self.env, request, acknowledged) {
+                        Ok(reply) => reply,
+                        Err(_) => return Response::error("binding custody adoption refused", 409),
+                    }
+                }
+                Err(_) => return Response::error("binding custody control refused", 409),
+            };
+            crate::binding_custody::schedule_expiry(&self.state.storage())
+                .await
+                .map_err(|_| {
+                    worker::Error::RustError("binding custody expiry unavailable".into())
+                })?;
+            return crate::binding_custody::response(reply);
+        }
         match (request.method(), request.url()?.path()) {
             (Method::Post, "/control") => {
                 let bytes = request.bytes().await?;
@@ -154,6 +202,9 @@ impl DurableObject for HybridBindingState {
 
     async fn alarm(&self) -> worker::Result<Response> {
         let _permit = acquire_gate(Arc::clone(&self.gate)).await;
+        let custody_expiry = crate::binding_custody::expire_material(&self.state.storage())
+            .await
+            .map_err(|_| worker::Error::RustError("binding custody expiry unavailable".into()))?;
         let Some(publication) = self
             .state
             .storage()
@@ -167,7 +218,8 @@ impl DurableObject for HybridBindingState {
             self.state
                 .storage()
                 .set_alarm(Duration::from_secs(
-                    (publication.snapshot.expires_at - now) as u64,
+                    ((publication.snapshot.expires_at - now) as u64)
+                        .min(custody_expiry.unwrap_or(u64::MAX)),
                 ))
                 .await?;
             return Response::ok("binding snapshot still active");
@@ -275,6 +327,10 @@ impl HybridBindingState {
             ))
             .await?;
         self.state.storage().put("watermark", &watermark).await?;
+        self.state
+            .storage()
+            .put("last-snapshot/v1", &publication.snapshot)
+            .await?;
         self.state.storage().put("active", &publication).await?;
         Ok(StorageBindingAcknowledgement { revision })
     }
@@ -317,6 +373,18 @@ impl HybridBindingState {
         watermark.revision = revision.clone();
         watermark.active = false;
 
+        if let Some(snapshot) = self
+            .state
+            .storage()
+            .get::<aos_hub_core::storage_work::StorageBindingSnapshot>("last-snapshot/v1")
+            .await?
+        {
+            crate::binding_custody::revoke_material(&self.state.storage(), &snapshot)
+                .await
+                .map_err(|_| {
+                    worker::Error::RustError("binding custody revocation unavailable".into())
+                })?;
+        }
         self.state.storage().put("watermark", &watermark).await?;
         self.state.storage().delete("active").await?;
         Ok(StorageBindingAcknowledgement { revision })

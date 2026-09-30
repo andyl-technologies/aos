@@ -84,6 +84,23 @@ impl VisibleReceipt {
 }
 
 impl Head {
+    /// Checks uncertainty without treating time or provider absence as settlement.
+    ///
+    /// # Errors
+    /// Returns an error for any pending observation, mutation or active stage.
+    pub(super) fn require_cleanup_ready(&self) -> Result<()> {
+        ensure!(
+            self.pending.is_none()
+                && self.observation.is_none()
+                && self
+                    .stage
+                    .as_ref()
+                    .is_none_or(|stage| stage.cleanup_ready()),
+            "frozen physical effect remains unknown or active"
+        );
+        Ok(())
+    }
+
     pub(super) fn initialize(config: &Config, intent: &Intent, clock: LeaseClock) -> Result<Self> {
         let cohort = config.cohort(&intent.cohort_digest)?;
         ensure!(

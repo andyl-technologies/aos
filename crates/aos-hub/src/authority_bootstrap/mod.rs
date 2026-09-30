@@ -31,7 +31,10 @@ use aos_hub_core::storage_work::StorageBindingSnapshot;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+mod credential;
 mod custody;
+
+pub use credential::{stage_queued_credential, write_cleanup_stage_receipt, write_stage_receipt};
 
 #[cfg(test)]
 mod tests;

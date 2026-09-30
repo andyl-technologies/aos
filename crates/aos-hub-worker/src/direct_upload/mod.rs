@@ -4,9 +4,9 @@
 //! exact provider capability. Durable records precede capability exposure and
 //! effects, and separate bounded verification queues consume immutable stages.
 
-pub(crate) mod journal;
 #[cfg(any(target_arch = "wasm32", test))]
 mod batches;
+pub(crate) mod journal;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod complete;
@@ -21,23 +21,28 @@ mod effects;
 mod authority;
 
 #[cfg(target_arch = "wasm32")]
+pub(crate) mod broker;
+#[cfg(target_arch = "wasm32")]
 pub(crate) mod config;
 #[cfg(target_arch = "wasm32")]
+pub(crate) mod conformance;
+#[cfg(target_arch = "wasm32")]
 pub(crate) mod deployment;
-#[cfg(target_arch = "wasm32")]
-pub(crate) mod storage;
-#[cfg(target_arch = "wasm32")]
-pub(crate) mod broker;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod managed;
 #[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) mod provider_capacity;
 #[cfg(target_arch = "wasm32")]
-pub(crate) mod verification;
+pub(crate) mod qualification;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "qualification/protocol.rs"]
+mod qualification_protocol;
 #[cfg(target_arch = "wasm32")]
-pub(crate) mod conformance;
+pub(crate) mod storage;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod verification;
 
 #[cfg(target_arch = "wasm32")]
-pub use storage::HybridDirectUpload;
-#[cfg(target_arch = "wasm32")]
 pub(crate) use broker::fetch;
+#[cfg(target_arch = "wasm32")]
+pub use storage::HybridDirectUpload;

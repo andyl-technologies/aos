@@ -487,6 +487,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "worker",
  "worker-sys",
+ "zeroize",
 ]
 
 [[package]]

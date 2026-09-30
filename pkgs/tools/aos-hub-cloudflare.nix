@@ -46,6 +46,8 @@ mkDerivation {
           "$out/share/aos-hub/worker/"
         cp ${./aos-hub-direct-sdk-conformance.mjs} \
           "$out/share/aos-hub/direct-sdk-conformance.mjs"
+        cp ${./aos-hub-direct-qualification.mjs} \
+          "$out/share/aos-hub/direct-qualification.mjs"
         # The static-asset bundle Cloudflare serves from its CDN edge (the
         # `[assets]` directory the generated wrangler.toml points at). Copied
         # writable so `wrangler deploy`'s asset manifest pass can stat it.
@@ -70,11 +72,16 @@ mkDerivation {
         exec ${nodejs}/bin/node "$out/share/aos-hub/direct-sdk-conformance.mjs" "\$@"
         EOF
         chmod +x "$out/bin/aos-hub-direct-sdk-conformance"
+        cat > "$out/bin/aos-hub-direct-qualification" <<EOF
+        #!${bash}/bin/bash
+        exec ${nodejs}/bin/node "$out/share/aos-hub/direct-qualification.mjs" "\$@"
+        EOF
+        chmod +x "$out/bin/aos-hub-direct-qualification"
       '';
     }
   ];
 
-  passthru.evidenceSources = [./aos-hub-cloudflare.nix ./aos-hub-direct-sdk-conformance.mjs];
+  passthru.evidenceSources = [./aos-hub-cloudflare.nix ./aos-hub-direct-sdk-conformance.mjs ./aos-hub-direct-qualification.mjs];
 
   meta = {
     description = "aos-hub packaged with wrangler + the Worker wasm dist as a Cloudflare installer";

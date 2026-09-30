@@ -1,7 +1,7 @@
 //! Native issuance and acceptance of exact-key, claimed external cleanup HEADs.
 //!
-//! Retained delete credentials travel only in a short-lived cleanup grant; they
-//! never replace the binding's current publication. SQL claim admission is
+//! Retained delete references travel only in a short-lived metadata challenge;
+//! provider material remains in Worker custody. SQL claim admission is
 //! rechecked before issuance and after the bounded metadata response. This
 //! module grants neither object-body access nor provider mutations.
 
@@ -10,17 +10,13 @@ use std::sync::Arc;
 use anyhow::{bail, Context as _, Result};
 use aos_hub_core::db::{Database, OciGcPlacementActionClaim};
 use aos_hub_core::fetch::SurfaceFetch;
-use aos_hub_core::secret_version::{verify_secret_fingerprint, SecretVersionResolver};
+use aos_hub_core::storage_work::binding_custody::*;
 use aos_hub_core::storage_work::{
-    StorageBindingPublication, StorageBindingSnapshot, StorageCredentialMaterial,
-    StorageCredentialSelector, StorageFrozenCleanupAccess, StorageFrozenCleanupHeadResult,
-    StorageFrozenCleanupOperation, StorageFrozenCleanupRequest, StorageObjectIdentity,
-    MAX_FROZEN_CLEANUP_BYTES, STORAGE_WORK_SIGNATURE_HEADER,
+    StorageBindingSnapshot, StorageFrozenCleanupAccess, StorageFrozenCleanupOperation,
+    StorageObjectIdentity, MAX_FROZEN_CLEANUP_BYTES, STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::FrozenSurfaceAccess;
 use async_trait::async_trait;
-use base64::Engine as _;
-use zeroize::Zeroizing;
 
 use super::{read_bounded_response, RemoteStorageWorkClient};
 
@@ -39,7 +35,6 @@ impl RemoteStorageWorkClient {
         &self,
         db: &Database,
         claim: &OciGcPlacementActionClaim,
-        secrets: &dyn SecretVersionResolver,
     ) -> Result<Option<StorageObjectIdentity>> {
         // Queue before issuing the short-lived grant so local backpressure does
         // not consume its lifetime or admit an expired claim.
@@ -48,6 +43,48 @@ impl RemoteStorageWorkClient {
             .acquire()
             .await
             .context("storage Worker concurrency gate closed")?;
+        let request = self.frozen_cleanup_request(db, claim).await?;
+        let signed = sign_storage_frozen_cleanup_custody(&self.key, &request)?;
+        let response = self
+            .http
+            .post(&self.frozen_cleanup_endpoint)
+            .header(STORAGE_WORK_SIGNATURE_HEADER, signed.signature)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(signed.body)
+            .send()
+            .await
+            .context("observing claimed external object through storage Worker")?;
+        anyhow::ensure!(
+            response.status() == reqwest::StatusCode::OK,
+            "storage Worker returned HTTP {} for claimed cleanup HEAD",
+            response.status()
+        );
+        let signature = response
+            .headers()
+            .get(STORAGE_WORK_SIGNATURE_HEADER)
+            .context("frozen cleanup reply signature absent")?
+            .to_str()?
+            .to_owned();
+        let body = read_bounded_response(response, MAX_FROZEN_CLEANUP_BYTES).await?;
+        let now = aos_hub_core::clock::now_unix_secs();
+        let reply = verify_storage_frozen_cleanup_custody_reply(
+            &self.key, &signature, &body, &request, now,
+        )?;
+        load_matching_claim(db, claim, now).await?;
+        self.check_frozen_snapshot(db, &request).await?;
+        Ok(reply.result.object)
+    }
+
+    /// Builds a fresh metadata challenge from a genuine active SQL cleanup claim.
+    ///
+    /// # Errors
+    /// Rejects changed or expired claims, missing held revisions, invalid access,
+    /// or a changed binding. It resolves no private provider material.
+    pub async fn frozen_cleanup_request(
+        &self,
+        db: &Database,
+        claim: &OciGcPlacementActionClaim,
+    ) -> Result<StorageFrozenCleanupCustodyRequest> {
         let now = aos_hub_core::clock::now_unix_secs();
         load_matching_claim(db, claim, now).await?;
 
@@ -72,8 +109,6 @@ impl RemoteStorageWorkClient {
             .binding_credential_revision(binding.id, "delete", generation)
             .await?
             .context("frozen cleanup delete credential disappeared")?;
-        let secret = secrets.resolve(&credential.secret_version_ref).await?;
-        verify_secret_fingerprint(&secret, &credential.credential_fingerprint)?;
 
         let now = aos_hub_core::clock::now_unix_secs();
         load_matching_claim(db, claim, now).await?;
@@ -88,24 +123,17 @@ impl RemoteStorageWorkClient {
             now,
             expires_at,
         )?;
-        let request = StorageFrozenCleanupRequest {
+        let request = StorageFrozenCleanupCustodyRequest {
             version: 1,
+            nonce: hex::encode(rand::random::<[u8; 32]>()),
+            issued_at: now,
+            expires_at,
             request_id: uuid::Uuid::new_v4().simple().to_string(),
             action_id: claim.action_id.clone(),
             claim_token: claim.claim_token.clone(),
             lease_expires_at: claim.lease_expires_at,
             access: StorageFrozenCleanupAccess::from_access(&claim.frozen_access())?,
-            publication: StorageBindingPublication {
-                snapshot,
-                materials: vec![StorageCredentialMaterial {
-                    selector: StorageCredentialSelector {
-                        purpose: "delete".into(),
-                        generation,
-                    },
-                    value_base64: base64::engine::general_purpose::STANDARD
-                        .encode(secret.expose_bytes()),
-                }],
-            },
+            snapshot,
             path: claim.object_key.clone(),
             expected_hash: claim.expected_hash,
             expected_size: claim.expected_size,
@@ -113,32 +141,39 @@ impl RemoteStorageWorkClient {
             operation: StorageFrozenCleanupOperation::Head,
         };
         request.validate(&self.deployment_id, now)?;
-        let body = Zeroizing::new(serde_json::to_vec(&request)?);
-        let signature = self.key.sign_frozen_cleanup_body(&body)?;
+        self.check_frozen_snapshot(db, &request).await?;
+        Ok(request)
+    }
 
-        let response = self
-            .http
-            .post(&self.frozen_cleanup_endpoint)
-            .header(STORAGE_WORK_SIGNATURE_HEADER, signature)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body.to_vec())
-            .send()
-            .await
-            .context("observing claimed external object through storage Worker")?;
+    pub(super) async fn check_frozen_snapshot(
+        &self,
+        db: &Database,
+        request: &StorageFrozenCleanupCustodyRequest,
+    ) -> Result<()> {
+        let binding = db
+            .binding(request.snapshot.binding_id)
+            .await?
+            .context("frozen binding disappeared")?;
+        let credential = db
+            .binding_credential_revision(
+                binding.id,
+                "delete",
+                request.access.delete_credential_generation,
+            )
+            .await?
+            .context("held cleanup credential disappeared")?;
+        let current = StorageBindingSnapshot::from_binding(
+            self.deployment_id.clone(),
+            &binding,
+            &[credential],
+            request.snapshot.issued_at,
+            request.snapshot.expires_at,
+        )?;
         anyhow::ensure!(
-            response.status() == reqwest::StatusCode::OK,
-            "storage Worker returned HTTP {} for claimed cleanup HEAD",
-            response.status()
+            current == request.snapshot,
+            "frozen cleanup SQL snapshot changed"
         );
-        let body = read_bounded_response(response, MAX_FROZEN_CLEANUP_BYTES).await?;
-        let result: StorageFrozenCleanupHeadResult =
-            serde_json::from_slice(&body).context("decoding claimed cleanup HEAD result")?;
-        result.validate_for(&request)?;
-
-        let now = aos_hub_core::clock::now_unix_secs();
-        request.validate(&self.deployment_id, now)?;
-        load_matching_claim(db, claim, now).await?;
-        Ok(result.object)
+        Ok(())
     }
 }
 
@@ -162,7 +197,6 @@ async fn load_matching_claim(
 pub(super) struct FrozenClaimSurface {
     db: Arc<Database>,
     work: Arc<RemoteStorageWorkClient>,
-    secrets: Arc<dyn SecretVersionResolver>,
     claim: OciGcPlacementActionClaim,
 }
 
@@ -170,7 +204,6 @@ impl FrozenClaimSurface {
     pub(super) async fn open(
         db: Arc<Database>,
         work: Arc<RemoteStorageWorkClient>,
-        secrets: Arc<dyn SecretVersionResolver>,
         access: &FrozenSurfaceAccess,
         claim: &OciGcPlacementActionClaim,
     ) -> Result<Self> {
@@ -183,7 +216,6 @@ impl FrozenClaimSurface {
         Ok(Self {
             db,
             work,
-            secrets,
             claim: claim.clone(),
         })
     }
@@ -193,9 +225,7 @@ impl FrozenClaimSurface {
             path == self.claim.object_key,
             "frozen cleanup surface authorizes only its exact claimed key"
         );
-        self.work
-            .frozen_cleanup_head(&self.db, &self.claim, self.secrets.as_ref())
-            .await
+        self.work.frozen_cleanup_head(&self.db, &self.claim).await
     }
 }
 

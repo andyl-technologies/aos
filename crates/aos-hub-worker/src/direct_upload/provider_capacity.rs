@@ -5,7 +5,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    rc::Rc,
+    rc::{Rc, Weak},
     task::{Poll, Waker},
 };
 
@@ -41,6 +41,10 @@ struct Pool {
     by_class: [Cell<u32>; 3],
     waiters: RefCell<Vec<Waiter>>,
     next_waiter: Cell<u64>,
+    peak: Cell<u32>,
+    metadata_under_bulk: Cell<u64>,
+    dispatches: Cell<u64>,
+    interval_peaks: RefCell<Vec<Weak<Cell<u32>>>>,
 }
 
 impl Pool {
@@ -51,6 +55,10 @@ impl Pool {
             by_class: std::array::from_fn(|_| Cell::new(0)),
             waiters: RefCell::new(Vec::new()),
             next_waiter: Cell::new(0),
+            peak: Cell::new(0),
+            metadata_under_bulk: Cell::new(0),
+            dispatches: Cell::new(0),
+            interval_peaks: RefCell::new(Vec::new()),
         }
     }
 
@@ -69,6 +77,78 @@ impl Pool {
 
 thread_local! {
     static POOL: RefCell<Rc<Pool>> = RefCell::new(Rc::new(Pool::new(2)));
+    static ISOLATE: String = uuid::Uuid::new_v4().to_string();
+}
+
+/// Actual participating-isolate pool counters, without a global deployment claim.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Observation {
+    pub(crate) isolate_id: String,
+    pub(crate) maximum: u32,
+    pub(crate) active: u32,
+    pub(crate) bulk_active: u32,
+    pub(crate) metadata_active: u32,
+    pub(crate) peak_active: u32,
+    pub(crate) metadata_admissions_during_bulk: u64,
+    pub(crate) dispatches: u64,
+}
+
+pub(crate) fn observation() -> Observation {
+    POOL.with(|current| {
+        let pool = current.borrow();
+        pool_observation(&pool)
+    })
+}
+
+fn pool_observation(pool: &Pool) -> Observation {
+    Observation {
+        isolate_id: ISOLATE.with(Clone::clone),
+        maximum: pool.maximum,
+        active: pool.active.get(),
+        bulk_active: pool.by_class[Class::Bulk.index()].get(),
+        metadata_active: pool.by_class[Class::Metadata.index()].get(),
+        peak_active: pool.peak.get(),
+        metadata_admissions_during_bulk: pool.metadata_under_bulk.get(),
+        dispatches: pool.dispatches.get(),
+    }
+}
+
+/// Measures aggregate provider occupancy during one delivery's actual interval.
+pub(crate) struct Interval {
+    pool: Rc<Pool>,
+    peak: Rc<Cell<u32>>,
+}
+
+impl Interval {
+    pub(crate) fn finish(self) -> Observation {
+        let mut observed = pool_observation(&self.pool);
+        observed.peak_active = self.peak.get();
+        observed
+    }
+}
+
+pub(crate) fn observe_interval() -> Result<Interval> {
+    let pool = POOL.with(|current| Rc::clone(&current.borrow()));
+    let peak = Rc::new(Cell::new(pool.active.get()));
+    {
+        let mut intervals = pool.interval_peaks.borrow_mut();
+        intervals.retain(|interval| interval.strong_count() > 0);
+        ensure!(
+            intervals.len() < 128,
+            "provider observation interval bound reached"
+        );
+        intervals.push(Rc::downgrade(&peak));
+    }
+    Ok(Interval { pool, peak })
+}
+
+/// Counts actual provider SDK/Fetch invocation attempts before acknowledgement.
+pub(crate) fn record_dispatch() {
+    POOL.with(|current| {
+        let pool = current.borrow();
+        pool.dispatches.set(pool.dispatches.get().saturating_add(1));
+    });
 }
 
 /// Keeps actual provider requests reserved until metadata or streams settle.
@@ -89,7 +169,13 @@ pub(crate) fn configure(maximum: u32) -> Result<()> {
             return Ok(());
         }
         ensure!(
-            current.active.get() == 0 && current.waiters.borrow().is_empty(),
+            current.active.get() == 0
+                && current.waiters.borrow().is_empty()
+                && current
+                    .interval_peaks
+                    .borrow()
+                    .iter()
+                    .all(|peak| peak.strong_count() == 0),
             "direct accepted provider capacity changed during work"
         );
         *current = Rc::new(Pool::new(maximum));
@@ -121,7 +207,9 @@ pub(crate) async fn acquire_class_checked<F: Fn() -> Result<()>>(
     let class_limit = match class {
         Class::Foreground => pool.maximum,
         Class::Bulk => pool.maximum.saturating_sub(1),
-        Class::Metadata => 1,
+        // Metadata keeps the reserved slot under bulk load and borrows unused
+        // aggregate capacity when the isolate is processing only metadata.
+        Class::Metadata => pool.maximum,
     };
     ensure!(
         count > 0 && count <= class_limit,
@@ -151,6 +239,19 @@ pub(crate) async fn acquire_class_checked<F: Fn() -> Result<()>>(
             && !(class == Class::Foreground && metadata_waiting)
         {
             pool.active.set(pool.active.get() + count);
+            pool.peak.set(pool.peak.get().max(pool.active.get()));
+            for peak in pool
+                .interval_peaks
+                .borrow()
+                .iter()
+                .filter_map(Weak::upgrade)
+            {
+                peak.set(peak.get().max(pool.active.get()));
+            }
+            if class == Class::Metadata && pool.by_class[Class::Bulk.index()].get() > 0 {
+                pool.metadata_under_bulk
+                    .set(pool.metadata_under_bulk.get().saturating_add(1));
+            }
             let active = &pool.by_class[class.index()];
             active.set(active.get() + count);
             return Poll::Ready(Ok(Permit {
@@ -229,6 +330,20 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn metadata_borrows_idle_capacity_without_exceeding_the_same_total() {
+        configure(4).unwrap();
+        let all_metadata = acquire_class(4, Class::Metadata).await.unwrap();
+        let mut excess = Box::pin(acquire_class(1, Class::Metadata));
+        let waker = futures_util::task::noop_waker();
+        let mut context = Context::from_waker(&waker);
+
+        assert!(excess.as_mut().poll(&mut context).is_pending());
+        drop(all_metadata);
+        drop(excess.await.unwrap());
+        configure(2).unwrap();
+    }
+
+    #[tokio::test]
     async fn metadata_has_a_provider_slot_while_bulk_streams_hold_their_permits() {
         configure(3).unwrap();
         let bulk = acquire_class(2, Class::Bulk).await.unwrap();
@@ -266,5 +381,25 @@ mod tests {
         drop(reader);
         configure(1).unwrap();
         assert!(acquire(2).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn delivery_peak_excludes_prior_work_and_includes_actual_overlap() {
+        configure(3).unwrap();
+        drop(acquire(3).await.unwrap());
+        assert_eq!(observation().peak_active, 3);
+
+        let first = observe_interval().unwrap();
+        let one = acquire_class(1, Class::Metadata).await.unwrap();
+        let second = observe_interval().unwrap();
+        let two = acquire_class(1, Class::Metadata).await.unwrap();
+        assert!(configure(4).is_err());
+        drop(two);
+        drop(one);
+
+        assert_eq!(first.finish().peak_active, 2);
+        assert_eq!(second.finish().peak_active, 2);
+        assert_eq!(observe_interval().unwrap().finish().peak_active, 0);
+        configure(2).unwrap();
     }
 }

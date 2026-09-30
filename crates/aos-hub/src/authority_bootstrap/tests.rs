@@ -18,6 +18,9 @@ use axum::{body::Bytes, http::HeaderMap, routing::post, Router};
 
 use super::*;
 
+#[path = "custody_tests.rs"]
+mod credential_custody;
+
 const AUTHORITY: &str = "00000000-0000-4000-8000-000000000041";
 const EXECUTOR: &str = "qualification-executor";
 const NAMESPACE: &str = "qualification-guard-namespace";
@@ -106,7 +109,11 @@ async fn fixture_with_database(db: Database) -> Fixture {
                 owner_incarnation: Some(session.owner_incarnation),
                 browser_session_id_hash: Some(session.session_id_hash),
                 scope: Scope::root(),
-                permissions: vec![Permission::StorageManage],
+                permissions: vec![
+                    Permission::StorageManage,
+                    Permission::BindingManage,
+                    Permission::BindingRead,
+                ],
             },
             3600,
         )
@@ -698,7 +705,7 @@ async fn postgres_operator_role_derives_and_hydrates_with_only_selected_table_re
         binding_storage_authority_revisions, storage_authority_attestations,
         storage_authority_admission_heads, storage_authority_admission_revisions,
         bindings, binding_credential_heads, binding_credential_revisions,
-        binding_write_revisions TO {role}"
+        binding_write_revisions, topology_operations, binding_write_state TO {role}"
     ))
     .execute(&owner)
     .await
@@ -732,6 +739,7 @@ async fn postgres_operator_role_derives_and_hydrates_with_only_selected_table_re
     assert_eq!(revoked.load(Ordering::SeqCst), 0);
     assert!(receipt.binding_hydrated && !receipt.provider_readiness_evaluated);
     server.abort();
+    credential_custody::stage_as_reader(&fixture, &reader).await;
     drop(reader);
     sqlx::query(&format!("DROP OWNED BY {role}"))
         .execute(&owner)

@@ -84,6 +84,16 @@ async function probe(action) {
 
 try {
   await start();
+  // This real Worker has neither Native origin nor bucket bindings. A backend
+  // lookup would fail; reserved public paths must exit with 404 beforehand.
+  const deniedPaths = ["/.aos-direct-upload/source", "/org/.aos-direct-qualification/run",
+    "/org/%2eaos-direct-upload/source", "/org%2f.aos-direct-upload%2fsource"];
+  for (const [index, path] of deniedPaths.entries()) {
+    const response = await fetch(`http://127.0.0.1:8796${path}`, { signal: AbortSignal.timeout(5000) });
+    await writeFile(join(root, `private-namespace-${index}.json`), JSON.stringify({path,status:response.status}),
+      {flag:"wx",mode:0o600});
+    if (response.status !== 404) throw new Error("Reserved public namespace reached a backend.");
+  }
   await probe("seed");
   await probe("unknown");
   await probe("unknown");

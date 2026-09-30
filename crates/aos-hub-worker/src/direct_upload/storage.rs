@@ -107,6 +107,15 @@ impl DurableObject for HybridDirectUpload {
     }
 
     async fn fetch(&self, mut request: Request) -> worker::Result<Response> {
+        if request.url()?.path() == "/qualification" {
+            let _gate = self.gate.lock().await;
+            return super::qualification::physical(&mut request, &self.env, &self.state).await;
+        }
+        if request.url()?.path() == "/qualification-queue" {
+            let _gate = self.gate.lock().await;
+            return super::qualification::queue_physical(&mut request, &self.env, &self.state)
+                .await;
+        }
         if request.url()?.path() == "/conformance" {
             let _gate = self.gate.lock().await;
             return super::conformance::physical(&mut request, &self.env, &self.state).await;
@@ -336,7 +345,10 @@ impl HybridDirectUpload {
                     .ok_or_else(|| anyhow::anyhow!("direct retained page not iterable"))?;
                 let mut parts = Vec::new();
                 for entry in entries {
-                    let entry = js_sys::Array::from(&entry.map_err(|_| anyhow::anyhow!("direct retained entry iteration failed"))?);
+                    let entry =
+                        js_sys::Array::from(&entry.map_err(|_| {
+                            anyhow::anyhow!("direct retained entry iteration failed")
+                        })?);
                     let key = entry
                         .get(0)
                         .as_string()

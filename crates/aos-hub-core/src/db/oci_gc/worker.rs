@@ -406,7 +406,8 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "INSERT INTO oci_gc_deletion_evidence
+                    format!(
+                        "INSERT INTO oci_gc_deletion_evidence
                        (action_id, response_idempotency_key, outcome,
                         conditional_etag, provider_request_id, evidence_digest,
                         confirmed_at)
@@ -414,8 +415,11 @@ impl Database {
                      FROM oci_gc_placement_actions action
                      WHERE action.id = ?1 AND action.state = 'claimed'
                        AND action.claim_token = ?2
+                       AND action.lease_expires_at > ?8 AND {}
                        AND (?4 = 'already_absent'
                          OR action.expected_strong_etag = ?5)",
+                        gc_action_authorization_sql("action", "?8")
+                    ),
                     vals![
                         input.action_id,
                         input.claim_token,

@@ -17,6 +17,10 @@ mod state;
 mod executor;
 #[cfg(target_arch = "wasm32")]
 mod storage;
+#[cfg(target_arch = "wasm32")]
+mod frozen;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use frozen::check_cleanup_ready;
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) use executor::{deny_legacy, fetch, PATH};
@@ -37,7 +41,7 @@ pub(crate) use stage::{
     prepare_direct_destination,
 };
 #[cfg(target_arch = "wasm32")]
-pub(crate) use stage::{execute_stage, fetch as fetch_stage};
+pub(crate) use stage::{execute_stage, execute_stage_observed, fetch as fetch_stage};
 #[cfg(target_arch = "wasm32")]
 pub(crate) use stage::{
     prepare_stage_read_recovery, prepare_stage_request, prepare_stage_request_with_cutoff,
@@ -46,3 +50,5 @@ pub(crate) use stage::{
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod frozen_tests;

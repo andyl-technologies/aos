@@ -107,6 +107,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if path == STORAGE_BINDING_CONTROL_PATH {
         return control_storage_binding(request, env).await;
     }
+    if crate::binding_custody::is_path(&path) {
+        return crate::binding_custody::fetch(request, env).await;
+    }
     if path == STORAGE_CREDENTIAL_PROBE_PATH {
         return probe_storage_credential(request, env).await;
     }
@@ -120,6 +123,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     }
     if path == crate::direct_upload::conformance::PATH {
         return crate::direct_upload::conformance::fetch(request, env).await;
+    }
+    if path == crate::direct_upload::qualification::QUALIFICATION_PATH {
+        return crate::direct_upload::qualification::fetch(request, env).await;
     }
     if path == aos_hub_core::direct_upload::DIRECT_WORKER_DEPLOYMENT_PATH {
         return crate::direct_upload::deployment::fetch(request, env).await;

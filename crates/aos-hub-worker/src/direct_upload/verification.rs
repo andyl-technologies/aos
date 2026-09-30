@@ -271,6 +271,18 @@ pub(crate) async fn enqueue(env: &Env, job: &VerificationJob) -> Result<()> {
     {
         return Ok(());
     }
+    admit_read(env, job).await?;
+    let binding = if job.admission.intent.dependency_phase == DirectDependencyPhase::Content {
+        BULK_QUEUE
+    } else {
+        METADATA_QUEUE
+    };
+    env.queue(binding)?.send(job.clone()).await?;
+    Ok(())
+}
+
+/// Admits the exact original immutable read before either accepted or fixture enqueue.
+pub(crate) async fn admit_read(env: &Env, job: &VerificationJob) -> Result<()> {
     if let ClosedStage::External { result } = &job.closed {
         let operation_id = step_id(
             &job.admission,
@@ -302,13 +314,56 @@ pub(crate) async fn enqueue(env: &Env, job: &VerificationJob) -> Result<()> {
             crate::external_object::admit_stage_read(env, &work).await?;
         }
     }
-    let binding = if job.admission.intent.dependency_phase == DirectDependencyPhase::Content {
-        BULK_QUEUE
-    } else {
-        METADATA_QUEUE
-    };
-    env.queue(binding)?.send(job.clone()).await?;
     Ok(())
+}
+
+/// Uses the same source integrity and capacity path for an isolated admitted fixture.
+pub(crate) async fn run_fixture(
+    env: &Env,
+    job: &VerificationJob,
+    authority: &dyn super::authority::StageAuthority,
+    maximum_objects: u32,
+) -> Result<(VerifiedPlacement, ObjectObservation, bool)> {
+    let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
+    job.admission.validate(&deployment)?;
+    let placement = storage::placement(&job.admission, job.placement_id)?;
+    authority.protected_material(env, placement).await?;
+    ensure!(
+        job.version == 1
+            && job.admission.intent.byte_size.get() <= authority.maximum_object_bytes(),
+        "qualification immutable read exceeds candidate ceiling"
+    );
+    let _capacity = Capacity::acquire(job.admission.intent.dependency_phase, maximum_objects)?;
+    let observed = object_observation();
+    let operation_id = step_id(
+        &job.admission,
+        job.placement_id,
+        &job.complete.operation_id,
+        "verify-stage",
+    )?;
+    let replayed = Cell::new(true);
+    let source_dispatch = || replayed.set(false);
+    let proof = storage::effect(env, &job.admission, operation_id.clone(), job, true, || {
+        verify_observed(env, job, &operation_id, &source_dispatch)
+    })
+    .await?;
+    Ok((proof, observed, replayed.get()))
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ObjectObservation {
+    pub(crate) aggregate_active: u32,
+    pub(crate) bulk_active: u32,
+    pub(crate) metadata_active: u32,
+}
+
+pub(crate) fn object_observation() -> ObjectObservation {
+    ObjectObservation {
+        aggregate_active: OBJECT_ACTIVE.with(|n| n.get()),
+        bulk_active: BULK_ACTIVE.with(|n| n.get()),
+        metadata_active: METADATA_ACTIVE.with(|n| n.get()),
+    }
 }
 
 pub(crate) async fn run(env: &Env, job: &VerificationJob) -> Result<VerifiedPlacement> {
@@ -350,6 +405,15 @@ async fn run_qualified(
 }
 
 async fn verify(env: &Env, job: &VerificationJob, operation_id: &str) -> Result<VerifiedPlacement> {
+    verify_observed(env, job, operation_id, &|| {}).await
+}
+
+async fn verify_observed(
+    env: &Env,
+    job: &VerificationJob,
+    operation_id: &str,
+    source_dispatch: &dyn Fn(),
+) -> Result<VerifiedPlacement> {
     let class = if job.admission.intent.dependency_phase == DirectDependencyPhase::Content {
         super::provider_capacity::Class::Bulk
     } else {
@@ -366,6 +430,9 @@ async fn verify(env: &Env, job: &VerificationJob, operation_id: &str) -> Result<
     let stage_key = direct_staging_key(&job.admission.session_id, placement)?;
     let (incarnation, external_verified, projection) = match &job.closed {
         ClosedStage::Managed { object } => {
+            // This helper has no provider-terminal replay: a positive return
+            // requires the actual complete source stream and integrity checks.
+            source_dispatch();
             managed::verify_class(
                 env,
                 &stage_key,
@@ -413,7 +480,7 @@ async fn verify(env: &Env, job: &VerificationJob, operation_id: &str) -> Result<
             .await?;
             let verified = {
                 let _capacity = super::provider_capacity::acquire_class(1, class).await?;
-                crate::external_object::execute_stage(env, &work).await?
+                crate::external_object::execute_stage_observed(env, &work, source_dispatch).await?
             };
             ensure!(
                 matches!(&verified.outcome, ExternalStageOutcome::Verified { sha256, byte_size, .. } if sha256 == &job.admission.intent.expected_sha256 && byte_size == &job.admission.intent.byte_size),
@@ -519,7 +586,7 @@ impl Capacity {
         let ceiling = if phase == DirectDependencyPhase::Content {
             maximum - 1
         } else {
-            1
+            maximum
         };
         let aggregate = OBJECT_ACTIVE.with(Rc::clone);
         ensure!(
@@ -545,17 +612,35 @@ pub(crate) async fn consume(
 ) -> worker::Result<()> {
     let expected = batch.queue();
     ensure_queue(&expected, env)?;
-    let qualified = QualifiedConfig::load(env).await.map_err(|_| {
-        worker::Error::RustError("direct queue measured acceptance unavailable".into())
-    })?;
-    let parallel = if expected == env.var("HUB_DIRECT_VERIFY_BULK_NAME")?.to_string() {
-        qualified
-            .runtime
-            .maximum_parallel_objects
+    // Fixture deliveries have their own exact signed original and reserved
+    // namespace. Ordinary jobs still require the full independent acceptance.
+    let qualified = QualifiedConfig::load(env).await.ok();
+    let maximum_objects = if let Some(qualified) = &qualified {
+        qualified.runtime.maximum_parallel_objects.get()
+    } else if super::config::qualification_limits(env)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        super::config::integer(env, "HUB_DIRECT_VERIFY_MAX_PARALLEL_OBJECTS")
+            .map_err(|_| {
+                worker::Error::RustError("qualification queue object bound absent".into())
+            })?
             .get()
-            .saturating_sub(1)
     } else {
-        1
+        return Err(worker::Error::RustError(
+            "direct queue measured acceptance unavailable".into(),
+        ));
+    };
+    if !(2..=32).contains(&maximum_objects) {
+        return Err(worker::Error::RustError(
+            "direct queue object bound invalid".into(),
+        ));
+    }
+    let parallel = if expected == env.var("HUB_DIRECT_VERIFY_BULK_NAME")?.to_string() {
+        maximum_objects.saturating_sub(1)
+    } else {
+        maximum_objects
     };
     // Object admission and actual provider requests have independent bounds.
     // A queued object waiting for an SDK slot still occupies its class slot.
@@ -564,6 +649,26 @@ pub(crate) async fn consume(
     let expected = &expected;
     futures_util::stream::iter(batch.raw_iter())
         .map(|message| async move {
+            if let Some(outcome) = super::qualification::consume_message(
+                message.body(),
+                env,
+                expected,
+                message.id(),
+                message.timestamp().as_millis(),
+            )
+            .await
+            {
+                if outcome.is_ok() {
+                    message.ack();
+                } else {
+                    message.retry();
+                }
+                return Ok::<_, worker::Error>(());
+            }
+            let Some(qualified) = qualified.as_ref() else {
+                message.retry();
+                return Ok(());
+            };
             let job: VerificationJob = match serde_wasm_bindgen::from_value(message.body()) {
                 Ok(job) => job,
                 Err(_) => {

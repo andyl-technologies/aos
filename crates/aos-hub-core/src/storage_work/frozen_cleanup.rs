@@ -99,7 +99,7 @@ impl StorageFrozenCleanupAccess {
         })
     }
 
-    fn validate(&self) -> Result<(), StorageWorkError> {
+    pub(crate) fn validate(&self) -> Result<(), StorageWorkError> {
         FrozenSurfaceAccess {
             registry_id: self.registry_id,
             placement_id: self.placement_id,

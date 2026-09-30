@@ -144,6 +144,8 @@ pub(crate) mod direct_digest;
 mod direct_upload;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod direct_guard;
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) mod binding_custody;
 #[cfg(target_arch = "wasm32")]
 pub use direct_upload::HybridDirectUpload;
 #[cfg(all(target_arch = "wasm32", feature = "do-e2e"))]
@@ -187,6 +189,7 @@ pub mod indexer;
 pub(crate) mod pitr;
 pub mod placeholder;
 mod hybrid_front;
+mod private_namespace;
 pub(crate) mod r2_adapter;
 #[cfg(target_arch = "wasm32")]
 mod remotebackend;
@@ -1232,6 +1235,12 @@ mod entry {
         // Route the shared core's `tracing` events to the console so handler
         // errors land in Workers Logs (idempotent; see `crate::tracinglog`).
         crate::tracinglog::init();
+
+        // Reserved stage objects have no public origin or object-store route.
+        // This precedes every Native/service/bucket binding lookup.
+        if crate::private_namespace::contains_private_namespace(req.url()?.path()) {
+            return Response::error("not found", 404);
+        }
 
         match env
             .var("HUB_RUNTIME_ROLE")

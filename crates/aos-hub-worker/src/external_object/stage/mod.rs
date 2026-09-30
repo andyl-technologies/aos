@@ -32,7 +32,7 @@ pub(crate) use direct_guard::{
 };
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) use executor::{execute_stage, fetch};
+pub(crate) use executor::{execute_stage, execute_stage_observed, fetch};
 #[cfg(target_arch = "wasm32")]
 pub(in crate::external_object) use planning::prepare_observation_read_lease;
 #[cfg(target_arch = "wasm32")]

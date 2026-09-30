@@ -12,6 +12,41 @@ through `StorageAuthorityService` Plan/Apply. Read, write and presign credential
 must be current, validated and included in that reviewed attestation. The
 selected binding must use private access.
 
+## Validate queued credentials without Native provider material
+
+Install the paired Worker and storage control key before validating external
+credentials. Create each immutable credential revision through the normal
+authenticated binding control API. Apply its reviewed
+`PlanValidateBindingCredential` plan; keep the returned operation identity. On
+the operator or Worker machine, stage only that actual queued original:
+
+```sh
+aos-hub-authority-bootstrap --database-url-file ./operator/sql.url stage-credential \
+  --operation-id '<queued-operation-id>' \
+  --deployment-id '<paired-deployment-id>' \
+  --worker-url 'https://paired-worker.test' \
+  --storage-work-key-file ./operator/storage-work.key \
+  --secret-version-manifest ./operator/provider-versions.json \
+  --output ./operator/credential-stage
+```
+
+This command attaches read-only to live SQL, verifies the original binding,
+credential head, immutable reference, fingerprint, write-state CAS and probe
+token, and resolves material on the invoking operator machine. It authenticates
+the Worker acknowledgement and rechecks the originals after the exchange. The
+private receipt contains metadata and a commitment to the staged control; it
+contains no provider material and cannot mark SQL credentials valid.
+
+The existing Native controller sends a fresh metadata-only challenge. Worker
+uses its exact retained material to execute the real purpose-specific provider
+probe and authenticates the result against the complete original task and nonce.
+Native atomically fences the running claim, binding, credential head and original
+write state before persisting validation. Write capability selection also keeps
+the original fence across controller restart. A missing stage or failed exchange
+leaves the credential unvalidated. If the controller already failed an unstaged
+task, stage that original and use authenticated `RetryOperation` with its current
+resource version; the helper does not retry or settle the task itself.
+
 ## Export current decisions
 
 Prepare an existing private directory and owner-private input files. The SQL URL
@@ -97,6 +132,48 @@ the existing `aos-hub authority-control-sync`, actual issuer lease renewal,
 fresh protected profile inspection, measured SDK/provider/runtime evidence and
 independent acceptance review. Each of those steps retains its own trust checks.
 
+## Native restart and retained cleanup
+
+Native placement reads adopt the Worker-held snapshot through a fresh signed
+metadata challenge and reply. This compares full current SQL binding coordinates,
+credential purposes, generations, references and fingerprints before and after
+the exchange. An existing live acknowledgement retains its exact snapshot hash;
+expiry can renew only under the same current validated pins. Native does not load
+the provider manifest or trust an old hydration receipt. Changes during adoption
+trigger exact remote revocation and refuse the local plan.
+
+Initial material custody is bounded to twenty-four hours. Fresh adoption for an
+active, currently validated binding renews separate bounded custody; active
+bindings do not require daily manual hydration. Missing or expired material after
+a long idle period requires explicit operator staging and actual validation.
+Explicitly revoked material cannot be recovered under its old identity.
+
+Frozen external cleanup HEADs likewise send only an exact current claim,
+historical held delete reference and fresh nonce. Worker selects that retained
+generation rather than the current head and refuses unresolved physical work.
+Native rechecks the live claim, hold and snapshot after the authenticated reply.
+SQL receipt commit additionally requires the live lease and current cleanup
+authorization. A known physical result with stale SQL authority does not cause an
+SDK mutation replay or settle pending or unknown physical work.
+
+If an exact historical cleanup credential expired from Worker custody, an
+operator may recover it only under its still-active SQL action and hold:
+
+```sh
+aos-hub-authority-bootstrap --database-url-file ./operator/sql.url stage-cleanup-credential \
+  --action-id '<claimed-placement-action-id>' \
+  --claim-token-file ./operator/cleanup-claim.token \
+  --deployment-id '<paired-deployment-id>' \
+  --worker-url 'https://paired-worker.test' \
+  --storage-work-key-file ./operator/storage-work.key \
+  --secret-version-manifest ./operator/provider-versions.json \
+  --output ./operator/cleanup-credential-stage
+```
+
+Recovery neither extends the SQL claim lease nor grants deletion permission. The
+current external frozen executor supports HEAD; metadata custody does not add a
+new delete capability or qualify provider behavior.
+
 ## Existing SQL and least privilege
 
 The helper attaches to an existing exact production schema. It creates no
@@ -111,10 +188,26 @@ GRANT SELECT ON schema_version, hub_schema_identity,
   binding_storage_authority_revisions, storage_authority_attestations,
   storage_authority_admission_heads, storage_authority_admission_revisions,
   bindings, binding_credential_heads, binding_credential_revisions,
-  binding_write_revisions TO operator_reader;
+  binding_write_revisions, topology_operations, binding_write_state
+  TO operator_reader;
 ```
 
 Limit the login and network audience independently. The subsequent Native
 `authority-control-sync` step writes its exact SQL acknowledgement and uses its
 existing operator authority. It does not require widening the helper's reader
 role.
+
+Historical cleanup recovery additionally reads the exact existing claim and its
+authorization dependencies. Grant these only to the separate cleanup reader:
+
+```sql
+GRANT SELECT ON oci_gc_placement_actions, oci_gc_candidates,
+  oci_gc_placement_snapshots, oci_gc_candidate_repositories, oci_gc_runs,
+  oci_gc_registry_locks, oci_registry_state, surface_placements,
+  surface_placement_observations, oci_gc_credential_holds, oci_tags,
+  oci_release_roots, oci_release_evidence, oci_leases, oci_upload_sessions,
+  oci_publication_sessions, oci_publication_objects TO cleanup_reader;
+```
+
+That reader also needs the binding and schema tables above. No helper command
+requires SQL mutation privileges, schema ownership or migration permission.

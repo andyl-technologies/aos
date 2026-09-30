@@ -9,7 +9,6 @@ use aos_hub_core::db::{
     RecordOciConditionalDeleteCapability, SurfaceTarget,
 };
 use aos_hub_core::oci_gc_controller::OciGcDeletionController;
-use aos_hub_core::secret_version::{ResolvedSecretVersion, SecretVersionResolver};
 use aos_hub_core::storage_work::{
     StorageWorkKey, StorageWorkResult, STORAGE_WORK_SIGNATURE_HEADER,
 };
@@ -21,15 +20,6 @@ use axum::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const WORK_KEY: &[u8] = b"frozen-absence-test-key-with-thirty-two-bytes";
-
-struct NoSecrets;
-
-#[async_trait]
-impl SecretVersionResolver for NoSecrets {
-    async fn resolve(&self, _version_ref: &str) -> Result<ResolvedSecretVersion> {
-        bail!("deployment R2 must not resolve external credentials")
-    }
-}
 
 async fn reviewed_absent_action() -> (Arc<Database>, sqlx::SqlitePool, String, String) {
     let backend = SqlxBackend::connect_sqlite(":memory:").await.unwrap();
@@ -274,7 +264,6 @@ async fn reviewed_absent_r2_action_uses_only_head_and_fenced_reads_cannot_finali
         let surfaces = Arc::new(HybridSurfaceProvider::new(
             Arc::clone(&db),
             Arc::clone(&work),
-            Arc::new(NoSecrets),
         ));
         let writes = Arc::new(HybridSurfaceWrites::new(Arc::clone(&db), work));
         let controller = OciGcDeletionController::new(Arc::clone(&db), surfaces, writes);

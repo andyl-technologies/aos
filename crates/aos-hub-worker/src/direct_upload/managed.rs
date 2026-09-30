@@ -551,6 +551,7 @@ async fn invoke_await_unmetered(
     method: &str,
     arguments: &[JsValue],
 ) -> Result<JsValue> {
+    super::provider_capacity::record_dispatch();
     let promise = invoke(object, method, arguments)?
         .dyn_into::<Promise>()
         .map_err(|_| refused())?;

@@ -149,7 +149,6 @@ async fn surfaces(
         return Ok(Arc::new(aos_hub::storage_work::HybridSurfaceProvider::new(
             db,
             Arc::new(work),
-            secrets,
         )));
     }
 

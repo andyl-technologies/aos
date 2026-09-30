@@ -22,14 +22,14 @@ use aos_hub_core::secret_version::{verify_secret_fingerprint, SecretVersionResol
 use aos_hub_core::storage_work::{
     StorageBindingAcknowledgement, StorageBindingControl, StorageBindingPublication,
     StorageBindingSnapshot, StorageCapabilities, StorageCredentialMaterial,
-    StorageCredentialProbeRequest, StorageCredentialSelector, StorageGitObjectProjection,
+    StorageCredentialSelector, StorageGitObjectProjection,
     StorageOciChunkSource, StorageWorkKey, StorageWorkOperation, StorageWorkOutcome,
-    StorageWorkPlan, StorageWorkResult, MAX_BINDING_CONTROL_BYTES, MAX_CREDENTIAL_PROBE_BYTES,
+    StorageWorkPlan, StorageWorkResult, MAX_BINDING_CONTROL_BYTES,
     MAX_DOCUMENTATION_ROWS, MAX_GIT_INSPECTION_BATCH, MAX_GIT_INSPECTION_CONTENT_BYTES,
     MAX_METADATA_BYTES, MAX_METADATA_INSPECTION_BATCH, MAX_OCI_HASH_RANGE_BYTES,
     MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_BINDING_CONTROL_PATH,
     STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
-    STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES, STORAGE_CREDENTIAL_PROBE_PATH, STORAGE_WORK_PATH,
+    STORAGE_WORK_PATH,
     STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::{
@@ -48,6 +48,7 @@ use tokio::sync::{Mutex, Semaphore};
 use zeroize::Zeroizing;
 
 mod authority;
+mod binding_custody;
 
 pub use authority::StorageAuthorityControlSynchronization;
 mod control;
@@ -96,7 +97,6 @@ pub struct RemoteStorageWorkClient {
     endpoint: String,
     capabilities_endpoint: String,
     binding_control_endpoint: String,
-    credential_probe_endpoint: String,
     frozen_cleanup_endpoint: String,
     deployment_id: String,
     key: StorageWorkKey,
@@ -140,15 +140,10 @@ impl RemoteStorageWorkClient {
             origin.origin().ascii_serialization(),
             STORAGE_BINDING_CONTROL_PATH
         );
-        let credential_probe_endpoint = format!(
-            "{}{}",
-            origin.origin().ascii_serialization(),
-            STORAGE_CREDENTIAL_PROBE_PATH
-        );
         let frozen_cleanup_endpoint = format!(
             "{}{}",
             origin.origin().ascii_serialization(),
-            aos_hub_core::storage_work::STORAGE_FROZEN_CLEANUP_PATH
+            aos_hub_core::storage_work::binding_custody::STORAGE_FROZEN_CLEANUP_CUSTODY_PATH
         );
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -159,7 +154,6 @@ impl RemoteStorageWorkClient {
             endpoint,
             capabilities_endpoint,
             binding_control_endpoint,
-            credential_probe_endpoint,
             frozen_cleanup_endpoint,
             deployment_id,
             key: StorageWorkKey::new(key)?,
@@ -217,79 +211,11 @@ impl RemoteStorageWorkClient {
         Ok(capabilities)
     }
 
-    /// Runs one unvalidated capability probe beside its object store.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid credentials, Worker rejection, or malformed evidence.
-    pub async fn probe_credential(
-        &self,
-        binding: &BindingRecord,
-        credential: &BindingCredentialRevisionRecord,
-        secret: &aos_hub_core::secret_version::ResolvedSecretVersion,
-        probe_token: &str,
-    ) -> Result<StorageCredentialProbeEvidence> {
-        let now = aos_hub_core::clock::now_unix_secs();
-        let snapshot = StorageBindingSnapshot::for_credential_probe(
-            self.deployment_id.clone(),
-            binding,
-            credential,
-            now,
-        )?;
-        let request = StorageCredentialProbeRequest {
-            version: 1,
-            publication: StorageBindingPublication {
-                snapshot,
-                materials: vec![StorageCredentialMaterial {
-                    selector: StorageCredentialSelector {
-                        purpose: credential.purpose.clone(),
-                        generation: credential.generation,
-                    },
-                    value_base64: base64::engine::general_purpose::STANDARD
-                        .encode(secret.expose_bytes()),
-                }],
-            },
-            probe_token: probe_token.to_owned(),
-        };
-        request.validate(&self.deployment_id, now)?;
-        let body = Zeroizing::new(serde_json::to_vec(&request)?);
-        anyhow::ensure!(
-            body.len() <= MAX_CREDENTIAL_PROBE_BYTES,
-            "credential probe exceeds its limit"
-        );
-        let signature = self.key.sign_body(body.as_slice())?;
-        let response = self
-            .http
-            .post(&self.credential_probe_endpoint)
-            .header("content-type", "application/json")
-            .header(STORAGE_WORK_SIGNATURE_HEADER, signature)
-            .body(body.to_vec())
-            .send()
-            .await
-            .context("sending credential probe to storage Worker")?;
-        if response.status() != reqwest::StatusCode::OK {
-            let status = response.status();
-            let body = read_bounded_response(response, 256)
-                .await
-                .unwrap_or_default();
-            let stage = std::str::from_utf8(&body)
-                .ok()
-                .map(str::trim)
-                .filter(|stage| STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES.contains(stage));
-            anyhow::bail!(
-                "storage Worker rejected credential probe with HTTP {status} at {}",
-                stage.unwrap_or("unclassified stage")
-            );
-        }
-        let body = read_bounded_response(response, 4096).await?;
-        serde_json::from_slice(&body).context("decoding storage Worker credential evidence")
-    }
-
     /// Publishes one frozen external binding and its exact credential heads.
     ///
-    /// Only bounded control bytes cross from Native to Worker. The returned
-    /// snapshot revision may be named in plans after the Worker acknowledges
-    /// durable publication; no provider object body passes through Native.
+    /// The separate operator process supplies material through this bounded
+    /// control. Native service plans use metadata-only adoption of the durable
+    /// acknowledgement; no provider object body passes through this interface.
     ///
     /// # Errors
     ///
@@ -340,7 +266,9 @@ impl RemoteStorageWorkClient {
         Ok(snapshot)
     }
 
-    /// Reconciles one SQL binding and its credential heads before external work.
+    /// Hydrates one SQL binding from operator-resolved exact credential versions.
+    ///
+    /// Native placement reads use [`Self::ensure_remote_binding_snapshot`].
     ///
     /// # Errors
     ///
@@ -792,20 +720,17 @@ impl RemoteStorageWorkClient {
     }
 }
 
-/// Hybrid probe adapter that sends only one exact secret to the paired Worker.
+/// Hybrid controller adapter that probes exact Worker-held credential material.
 pub struct HybridStorageCredentialProbeProvider {
     work: Arc<RemoteStorageWorkClient>,
-    secrets: Arc<dyn SecretVersionResolver>,
+    db: Arc<Database>,
 }
 
 impl HybridStorageCredentialProbeProvider {
     /// Creates the controller-owned hybrid credential probe adapter.
     #[must_use]
-    pub fn new(
-        work: Arc<RemoteStorageWorkClient>,
-        secrets: Arc<dyn SecretVersionResolver>,
-    ) -> Self {
-        Self { work, secrets }
+    pub fn new(work: Arc<RemoteStorageWorkClient>, db: Arc<Database>) -> Self {
+        Self { work, db }
     }
 }
 
@@ -815,17 +740,44 @@ impl StorageCredentialProbeProvider for HybridStorageCredentialProbeProvider {
         &self,
         binding: &BindingRecord,
         credential: &BindingCredentialRevisionRecord,
+        operation_id: &str,
         probe_token: &str,
     ) -> Result<StorageCredentialProbeEvidence> {
         anyhow::ensure!(
             credential.binding_id == binding.id,
             "credential probe binding mismatch"
         );
-        let secret = self.secrets.resolve(&credential.secret_version_ref).await?;
-        verify_secret_fingerprint(&secret, &credential.credential_fingerprint)?;
-        self.work
-            .probe_credential(binding, credential, &secret, probe_token)
-            .await
+        let check = || async {
+            let current_binding = self
+                .db
+                .binding(binding.id)
+                .await?
+                .context("probe binding absent")?;
+            let current_credential = self
+                .db
+                .current_binding_credential(binding.id, &credential.purpose)
+                .await?
+                .context("probe credential absent")?;
+            let now = aos_hub_core::clock::now_unix_secs();
+            let current = StorageBindingSnapshot::for_credential_probe(
+                self.work.deployment_id.clone(), &current_binding, &current_credential, now,
+            )?;
+            let original = StorageBindingSnapshot::for_credential_probe(
+                self.work.deployment_id.clone(), binding, credential, now,
+            )?;
+            anyhow::ensure!(
+                current_credential == *credential && current == original,
+                "probe SQL originals changed"
+            );
+            Ok::<(), anyhow::Error>(())
+        };
+        check().await?;
+        let evidence = self
+            .work
+            .probe_retained_credential(binding, credential, operation_id, probe_token)
+            .await?;
+        check().await?;
+        Ok(evidence)
     }
 }
 
@@ -1364,7 +1316,6 @@ fn validate_git_projection(
 pub struct HybridSurfaceProvider {
     db: Arc<Database>,
     work: Arc<RemoteStorageWorkClient>,
-    secrets: Arc<dyn SecretVersionResolver>,
 }
 
 impl HybridSurfaceProvider {
@@ -1373,9 +1324,8 @@ impl HybridSurfaceProvider {
     pub fn new(
         db: Arc<Database>,
         work: Arc<RemoteStorageWorkClient>,
-        secrets: Arc<dyn SecretVersionResolver>,
     ) -> Self {
-        Self { db, work, secrets }
+        Self { db, work }
     }
 }
 
@@ -1404,7 +1354,7 @@ impl SurfaceProvider for HybridSurfaceProvider {
             .context("hybrid placement references a missing storage binding")?;
         if !binding.is_instance_default {
             self.work
-                .ensure_binding_snapshot(&self.db, &binding, self.secrets.as_ref())
+                .ensure_remote_binding_snapshot(&self.db, &binding)
                 .await?;
         }
         Ok(Box::new(HybridSurfaceFetch {
@@ -1443,7 +1393,6 @@ impl SurfaceProvider for HybridSurfaceProvider {
             frozen_head::FrozenClaimSurface::open(
                 Arc::clone(&self.db),
                 Arc::clone(&self.work),
-                Arc::clone(&self.secrets),
                 access,
                 claim,
             )
