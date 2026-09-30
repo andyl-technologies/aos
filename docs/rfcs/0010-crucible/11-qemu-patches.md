@@ -306,6 +306,7 @@ RECENT PATCH COMPLETIONS                              class  enforces
   crucible-authenticate-fault-result-payloads every queued fault result authenticates the exact payload retained beside it, including prepare-time rejection evidence, so the host can classify a typed rejection without losing transaction ownership F QFP-RESULT, FAULT-ORDER
   crucible-clock-impulse-read-error-policies impulse clock transforms retain their effective monotonicity and overdue-timer policies in versioned clock VMState, while an x86 TSC read-error transition raises a deterministic guest #GP and internal projections retain the last source value F QFP-CLOCK-TRANSFORM, QFP-CLOCK-SOURCE, FAULT-ORDER
   crucible-qemu-11-api-port Crucible accelerator, fault, migration, timer, and plugin integrations use QEMU 11's public headers and current callback, atomic, TCG, and VMState APIs D DET-1, QEMU-43
+  crucible-qemu-11-runtime-semantics QEMU 11 translation success, realized ARM hardware-error dispatch, terminal VMState stream headers, and ordinary zero-budget TCG execution retain their runtime semantics D DET-1, QEMU-43
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
@@ -1704,6 +1705,25 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Inertness:** the patch only adapts Crucible integration points to upstream
   QEMU 11 interfaces. It adds no independently selectable behavior or protocol
   fields.
+- **Risk:** D.
+
+### crucible-qemu-11-runtime-semantics — preserve runtime contracts
+
+- **Patch:** `0117-crucible-qemu-11-runtime-semantics.patch`.
+- **Enforces:** [DET-1], [QEMU-43].
+- **Mechanism:** ARM translation recognizes QEMU 11's success return value;
+  realized ARM models expose their implemented hardware-error callbacks before
+  reset; terminal raw VMState export writes the caller-owned stream header;
+  and the RR loop distinguishes a denied positive service grant from ordinary
+  zero-budget execution.
+- **Micro-test:** real AArch64 Linux boots in ordinary TCG and sim mode, seeded
+  fingerprints remain reproducible under host preemption, ARM RAS mutations
+  reach the CPU, terminal VMState retains its stream header, and x86/ARM service
+  trajectories retain their declared ratios. The exact drop-one gate attributes
+  the patch against the full series without these repairs.
+- **Inertness:** fault-free translations and ordinary TCG retain upstream
+  semantics; opaque fingerprint domains and public protocol versions do not
+  change. A denied positive service grant still blocks execution.
 - **Risk:** D.
 
 ### crucible-canonical-rr-genesis-cursor — expose the unique genesis coordinate

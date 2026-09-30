@@ -402,6 +402,7 @@ in rec {
     qemu9pSyncKick = import ./phase2-qemu-9p-sync-kick.nix {inherit pkgs lib;};
     qemuWhiteboxGuestWrite = import ./phase2-qemu-whitebox-guest-write.nix {inherit pkgs lib;};
     qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {inherit pkgs lib;};
+    qemuRuntimeSemantics = import ./phase2-qemu-runtime-semantics.nix {inherit pkgs lib;};
     qemuRawStateExport = import ./phase2-qemu-raw-state-export.nix {inherit pkgs lib;};
     qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
     qemuDetIpi = import ./phase2-qemu-det-ipi.nix {inherit pkgs lib;};

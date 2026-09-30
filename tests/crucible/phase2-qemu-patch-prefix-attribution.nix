@@ -536,6 +536,10 @@
       kind = "recorded";
       symbols = [];
     };
+    "0117-crucible-qemu-11-runtime-semantics.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =
