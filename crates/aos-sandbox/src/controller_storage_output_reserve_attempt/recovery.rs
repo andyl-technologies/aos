@@ -11,9 +11,7 @@
 //! absent method46 profile -> UnsupportedHistoricalCarrier (same bytes)
 //! ```
 
-use aos_proto::aos::sandbox::local::v1::{
-    BrokerRequestEnvelope, ReserveStorageExecutionOutputRequestV1,
-};
+use aos_proto::aos::sandbox::local::v1::BrokerRequestEnvelope;
 use aos_sandbox_core::format::decode_broker_authorization_plan;
 use aos_sandbox_core::{
     BrokerAudience, DecodeLimits, ExecutionId, MediaType, ObjectDigest, OperationId,
@@ -22,8 +20,6 @@ use aos_sandbox_core::{
 use aos_sandbox_protocol::storage_output_reserve::authority_archive::{
     HistoricalStorageOutputArchiveErrorV1, HistoricalStorageOutputAuthorityArchiveV1,
 };
-use aos_sandbox_protocol::storage_output_reserve::storage_output_reserve_grant_v1;
-use buffa::Message as _;
 
 use crate::Journal;
 use crate::publication::{
@@ -34,7 +30,10 @@ use super::authority::{
     HistoricalStorageOutputRetentionErrorV1, NAMESPACE, require_fixed_controller_writer,
 };
 use super::publication_chunks::HistoricalOutputPublicationChunkViewV1;
-use super::{ControllerStorageOutputReserveAttemptV1, inspect_original};
+use super::{
+    CheckedOriginalStorageOutputV1, ControllerStorageOutputReserveAttemptV1,
+    inspect_original_checked,
+};
 
 /// Retains fully loaded historical original bytes without any effect authority.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -167,7 +166,7 @@ fn decode_selected(
         }
         return Ok(HistoricalStorageOutputArchiveStateV1::Absent);
     };
-    let attempt = ControllerStorageOutputReserveAttemptV1::decode(attempt_bytes)
+    let (attempt, original) = ControllerStorageOutputReserveAttemptV1::decode_checked(attempt_bytes)
         .map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
     if attempt.execution() != execution {
         return Err(HistoricalStorageOutputRetentionErrorV1::Invalid);
@@ -179,7 +178,7 @@ fn decode_selected(
         return Ok(HistoricalStorageOutputArchiveStateV1::LegacyAttemptOnly(attempt));
     };
     let companion = HistoricalStorageOutputAuthorityArchiveV1::decode(companion_bytes)?;
-    validate_attempt_companion(&attempt, &companion)?;
+    validate_attempt_companion_checked(&attempt, &companion, &original)?;
     let (publication, decoded_publication) = reconstruct_publication(
         attempt.execution,
         attempt.create_operation,
@@ -197,7 +196,12 @@ fn decode_selected(
         }
         Err(error) => Err(error.into()),
         Ok(carrier) => {
-            validate_carrier_message(&loaded.attempt, &loaded.companion, carrier.message())?;
+            validate_carrier_message_checked(
+                &loaded.attempt,
+                &loaded.companion,
+                carrier.message(),
+                &original,
+            )?;
             let quartet = carrier.message().authorization.as_option()
                 .ok_or(HistoricalStorageOutputRetentionErrorV1::Invalid)?;
             decoded_publication
@@ -216,6 +220,29 @@ pub(super) fn validate_carrier_message(
     attempt: &ControllerStorageOutputReserveAttemptV1,
     companion: &HistoricalStorageOutputAuthorityArchiveV1,
     message: &BrokerRequestEnvelope,
+) -> Result<(), HistoricalStorageOutputRetentionErrorV1> {
+    validate_carrier_message_with_original(attempt, companion, message, None)
+}
+
+/// Compares a carrier with checked parts paired by the enclosing pure phase.
+///
+/// # Errors
+///
+/// Rejects mismatched packet, signed plan, request identity or companion data.
+pub(super) fn validate_carrier_message_checked(
+    attempt: &ControllerStorageOutputReserveAttemptV1,
+    companion: &HistoricalStorageOutputAuthorityArchiveV1,
+    message: &BrokerRequestEnvelope,
+    original: &CheckedOriginalStorageOutputV1,
+) -> Result<(), HistoricalStorageOutputRetentionErrorV1> {
+    validate_carrier_message_with_original(attempt, companion, message, Some(original))
+}
+
+fn validate_carrier_message_with_original(
+    attempt: &ControllerStorageOutputReserveAttemptV1,
+    companion: &HistoricalStorageOutputAuthorityArchiveV1,
+    message: &BrokerRequestEnvelope,
+    original: Option<&CheckedOriginalStorageOutputV1>,
 ) -> Result<(), HistoricalStorageOutputRetentionErrorV1> {
     if message.body != attempt.canonical_body() || !message.descriptors.is_empty() {
         return Err(HistoricalStorageOutputRetentionErrorV1::Invalid);
@@ -237,22 +264,35 @@ pub(super) fn validate_carrier_message(
             .map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?,
         &quartet.broker_plan,
     );
-    let (_, records, _) = inspect_original(attempt.canonical_body())
-        .map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
-    let grant = storage_output_reserve_grant_v1(
-        records.assignment(), attempt.original_request_id(), attempt.canonical_body(),
-    ).map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
-    let body = ReserveStorageExecutionOutputRequestV1::decode_from_slice(attempt.canonical_body())
-        .map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
-    let header = body.header.as_option().ok_or(HistoricalStorageOutputRetentionErrorV1::Invalid)?;
+
+    // Raw compatibility callers inspect at the same point, after the plan.
+    // Archive callers borrow only the result from this same immutable phase.
+    let inspected;
+    let original = match original {
+        Some(original) => original,
+        None => {
+            inspected = inspect_original_checked(attempt.canonical_body())
+                .map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
+            &inspected
+        }
+    };
+    if original.request_id != attempt.original_request_id() {
+        return Err(HistoricalStorageOutputRetentionErrorV1::Invalid);
+    }
+    let header = original
+        .request
+        .header
+        .as_option()
+        .ok_or(HistoricalStorageOutputRetentionErrorV1::Invalid)?;
+
     if descriptor.digest() != attempt.signed_plan_digest()
         || plan.audience() != BrokerAudience::Storage
         || plan.protocol() != ProtocolId::StorageBroker
         || plan.protocol_version() != ProtocolVersion::new(1, 0)
-        || plan.assignment() != records.assignment()
-        || plan.grants() != [grant]
+        || plan.assignment() != original.records.assignment()
+        || plan.grants() != std::slice::from_ref(&original.grant)
         || plan.node().as_bytes() != &companion.controller_manifest().node_id()
-        || plan.node().as_bytes() != &records.attempt()[8 + 584..8 + 600]
+        || plan.node().as_bytes() != &original.records.attempt()[8 + 584..8 + 600]
         || header.deadline_boottime_nanoseconds
             != companion.original_coordinates().deadline_boottime_nanoseconds()
     {
@@ -265,16 +305,47 @@ pub(super) fn validate_attempt_companion(
     attempt: &ControllerStorageOutputReserveAttemptV1,
     companion: &HistoricalStorageOutputAuthorityArchiveV1,
 ) -> Result<(), HistoricalStorageOutputRetentionErrorV1> {
+    validate_attempt_companion_with_original(attempt, companion, None)
+}
+
+/// Compares a companion with the same phase's checked original records.
+///
+/// # Errors
+///
+/// Rejects mismatched coordinates, attempt digest, owner cut or deadline bound.
+pub(super) fn validate_attempt_companion_checked(
+    attempt: &ControllerStorageOutputReserveAttemptV1,
+    companion: &HistoricalStorageOutputAuthorityArchiveV1,
+    original: &CheckedOriginalStorageOutputV1,
+) -> Result<(), HistoricalStorageOutputRetentionErrorV1> {
+    validate_attempt_companion_with_original(attempt, companion, Some(original))
+}
+
+fn validate_attempt_companion_with_original(
+    attempt: &ControllerStorageOutputReserveAttemptV1,
+    companion: &HistoricalStorageOutputAuthorityArchiveV1,
+    original: Option<&CheckedOriginalStorageOutputV1>,
+) -> Result<(), HistoricalStorageOutputRetentionErrorV1> {
     let coordinates = companion.original_coordinates();
-    let (_, records, _) = inspect_original(attempt.canonical_body())
-        .map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
+    let inspected;
+    let original = match original {
+        Some(original) => original,
+        None => {
+            inspected = inspect_original_checked(attempt.canonical_body())
+                .map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
+            &inspected
+        }
+    };
+
     if attempt.execution != coordinates.execution()
         || attempt.create_operation != coordinates.create_operation()
         || attempt.original_request_id() != coordinates.request_id()
         || attempt.record_digest() != companion.attempt_digest()
-        || records.host_locator().host_boot_id() != companion.owner_cut_data().boot_id()
-        || records.assignment().digest() != companion.owner_cut_data().assignment_manifest_digest()
-        || coordinates.deadline_boottime_nanoseconds() > records.deadline_boottime_nanoseconds()
+        || original.records.host_locator().host_boot_id() != companion.owner_cut_data().boot_id()
+        || original.records.assignment().digest()
+            != companion.owner_cut_data().assignment_manifest_digest()
+        || coordinates.deadline_boottime_nanoseconds()
+            > original.records.deadline_boottime_nanoseconds()
     {
         return Err(HistoricalStorageOutputRetentionErrorV1::Invalid);
     }
@@ -509,5 +580,39 @@ mod tests {
         let selected = SelectedRecords { attempt: Some(&bytes), ..Default::default() };
         assert_eq!(decode_selected(attempt.execution(), selected).unwrap(),
             HistoricalStorageOutputArchiveStateV1::LegacyAttemptOnly(attempt));
+    }
+
+    #[test]
+    fn cold_checked_attempt_is_validated_before_a_malformed_companion() {
+        let attempt = ControllerStorageOutputReserveAttemptV1::from_original(
+            &super::super::tests::original_body(),
+            ObjectDigest::from_bytes([20; 32]),
+        )
+        .unwrap();
+        let bytes = attempt.encode();
+        let mut changed = bytes.clone();
+        changed[8] ^= 1;
+        let selected = SelectedRecords {
+            attempt: Some(&bytes),
+            companion: Some(b"malformed companion"),
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            decode_selected(attempt.execution(), selected),
+            Err(HistoricalStorageOutputRetentionErrorV1::Archive(
+                HistoricalStorageOutputArchiveErrorV1::Invalid,
+            )),
+        ));
+
+        let selected = SelectedRecords {
+            attempt: Some(&changed),
+            companion: Some(b"malformed companion"),
+            ..Default::default()
+        };
+        assert!(matches!(
+            decode_selected(attempt.execution(), selected),
+            Err(HistoricalStorageOutputRetentionErrorV1::Invalid),
+        ));
     }
 }
