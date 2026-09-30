@@ -88,6 +88,8 @@ test "$(bash "$root/aos-dev" list check build.aos-dev)" = $'build.aos-dev-cli\nb
 test "$(bash "$root/aos-dev" list check build.aos-dev-cli)" = 'build.aos-dev-cli'
 test "$(bash "$root/aos-dev" --release build package alpha --no-out-link)" = /tmp/aos-dev-test-output
 grep -Fq -- '-A pkgs.alpha --no-out-link' "$AOS_DEV_TEST_LOG"
+test "$(bash "$root/aos-dev" --release all checks --no-out-link)" = /tmp/aos-dev-test-output
+grep -Fq -- '-A allChecks --no-out-link' "$AOS_DEV_TEST_LOG"
 if bash "$root/aos-dev" --release build package darwin-runtimes --no-out-link >/dev/null 2>&1; then
   echo 'cross-only package was accepted without its target' >&2
   exit 1

@@ -10,7 +10,7 @@
 #   nix-build -A systems.server.build.toplevel       Build the server system
 #   nix-build -A systems.server.checks.boot-basics   Run a module check
 #   nix-build -A systems.server.checks.system-boot   Run a system-level check
-#   nix-build -A checks                              Run all tests
+#   nix-build -A allChecks                           Run all tests
 #   nix-build -A checks.eval                         Run evaluation checks only
 #
 # Architecture:
@@ -1392,8 +1392,15 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     if stdenv.isCross && hostPlatform.isDarwin
     then (import ./. {inherit system;}).systems.server.config.aos.config.evalAtBoot.baseLib
     else discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
-in {
+in rec {
   inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor allPackages;
+  # nix-build does not descend through arbitrary nested check attrsets. An
+  # explicit list reaches every gate while stopping at derivations, whose
+  # passthru attributes are metadata rather than additional checks.
+  allChecks = lib.collect (value: builtins.isAttrs value && lib.isDerivation value) {
+    repository = checks;
+    systems = lib.mapAttrs (_: system: system.checks) discoverSystems;
+  };
   packageQualificationCoverage = qualificationPackageCoverageReport;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
