@@ -7,7 +7,9 @@ use terrane_core::bucket::{BucketCapabilities, BucketKey};
 /// Selects locations without upgrading an existing namespace.
 #[derive(Clone, Copy)]
 pub(super) enum Access {
+    /// Permits effects only while the persisted namespace remains layout two.
     Writable,
+    /// Reads original layout-one locations without probes, locks, or mutations.
     LegacyReadOnly,
 }
 
