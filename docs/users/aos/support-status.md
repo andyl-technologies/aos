@@ -27,6 +27,7 @@ promise.
 | APM machine-wide packages | Add/remove reconciliation implemented; upgrade and rollback incomplete |
 | [Exposed APM service confinement](package-sandbox.md) | Implemented, early preview |
 | Stock unprivileged user package profile | Not provisioned |
+| Persistent home directories | `/root` always on the state volume; `/home` opt-in through `aos.homes` |
 | Configuration generation rollback | Implemented |
 | Durable image, kernel, and UKI upgrade | Early-preview A/B path implemented with boot counting and redundant ESP synchronization |
 | Image rollback | Early-preview path implemented |

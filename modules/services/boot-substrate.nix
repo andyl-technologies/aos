@@ -176,6 +176,12 @@
         # (modules/services/storage-topology.nix); it must exist before
         # local-fs.target, earlier than tmpfiles runs.
         mkdir -p /sysroot/var/{log,lib,tmp,srv}
+        # Backing directories for the /root and /home bind mounts
+        # (modules/base/homes.nix). Both always exist so a host can enable
+        # persistent homes from host.nix without a new image; either may
+        # itself be a mount point for a dedicated volume or dataset.
+        mkdir -p -m 0700 /sysroot/var/roothome
+        mkdir -p -m 0755 /sysroot/var/home
         # /var/etc is the host-persistent allowlist of the /etc
         # overlay (spec v12 §5.4) — created eagerly so
         # aos-machine-id and sshd-keygen find it on first boot.
