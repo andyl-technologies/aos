@@ -1662,8 +1662,10 @@ pub enum ImageRolloutStatus {
     CandidateBooted,
     /// The candidate passed strict activation and native ability health.
     Succeeded,
-    /// The candidate failed boot or strict health and the prior image returned.
+    /// The candidate failed strict health and the prior image returned.
     HealthFailed,
+    /// Counted boots exhausted before candidate activation; the prior image returned.
+    BootFailed,
 }
 
 /// Records one state-compatible, drained image rollout.

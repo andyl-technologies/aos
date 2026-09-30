@@ -1,609 +1,750 @@
-//! Package-owned command handler for checked single-host image rollouts.
+//! Native image rollout handler with durable observations of every unsafe phase.
 //!
-//! The generic dispatcher authenticates the executable and protocol envelope.
-//! This module owns the rollout-specific request, state, and host effects.
+//! This OS handler owns drain, physical boot selection, health, and fallback.
+//! Its aggregate operation stays pending across reboot. Started drain and reboot
+//! receipts prevent recovery from blindly repeating an uncertain host action.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::{self, Read as _, Write as _};
+use std::path::{Component, Path};
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context as _, Result, ensure};
-use aos_ability_model::{ABILITY_LIMITS_V1, AbilityValue, LocalKey};
-use aos_ability_runtime::adapter::RuntimeControl;
-use aos_provider_protocol::{
-    ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
-    AdmissionResult, AdmissionRevision, HANDLER_ABI_ARGUMENT, INVOCATION_SCHEMA, Invocation,
-    InvocationControl, InvocationDisposition, InvocationPurpose, InvocationResult, RESULT_SCHEMA,
-    SupportedPurposes, resource_set_digest, validate_admission_resource, validate_resource_context,
-    validate_resource_contexts,
-};
+use anyhow::{Context as _, Result, bail, ensure};
+use aos_ability_runtime::activation::{Action, Invocation};
+use aos_contract::Sha256Digest;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
-use super::ability::{AbilityRolloutOutcome, AbilityRolloutPhase, AbilityRolloutState};
-use super::{
-    ImageHealthObservation, ImageRolloutRequest, ImageRolloutTerminalRequest,
-    NativeImageRolloutBackend,
-};
-use crate::terminal_root::observe_package_root;
+use super::ability::{AbilityRolloutOutcome, AbilityRolloutPhase, PhysicalRolloutObservation};
+use super::{ImageRolloutRequest, NativeImageRolloutBackend};
+use crate::sysroot::write_atomic_durable;
 
-const OBSERVATION_SCHEMA: &str = "aos.ability.image-rollout-observation/v1";
-const TERMINAL_INTERFACE: &str = "aos.apm.ab-image-rollout-terminal";
-const PROVIDER_CONTEXT_SCHEMA: &str = "aos.image-rollout.provider-context/v1";
-const REALIZATION_SCHEMA: &str = "aos.image-rollout.realization/v1";
 const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
+const RECEIPT_SCHEMA: &str = "aos.native-image-rollout-receipt/v1";
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct RolloutRealization {
-    schema: String,
+struct Executable {
+    path: String,
+    arguments: Vec<String>,
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-struct ProviderContext {
-    schema: String,
-    image_profile: String,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct Input {
+    rollout: ImageRolloutRequest,
+    #[serde(default)]
+    retirement: bool,
+    platform_executable: String,
+    #[serde(default = "default_true")]
+    qualified: bool,
+    #[serde(default = "default_true")]
+    restart: bool,
+    #[serde(default)]
+    drain: Option<Executable>,
+    #[serde(default)]
+    drain_observation: Option<Executable>,
 }
 
-/// Runs one image-rollout provider request from process arguments and streams.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Receipt {
+    schema: String,
+    effect: String,
+    revision: String,
+    input_sha256: Sha256Digest,
+    input: Input,
+    phases: BTreeMap<String, bool>,
+}
+
+/// Runs one bounded native apply, remove, or observe invocation.
 ///
 /// # Errors
-///
-/// Returns an error when the protocol envelope, checked authority, rollout
-/// request, native state, or bounded host effect is invalid.
+/// Returns an error for invalid inputs, conflicting retained receipts, uncertain
+/// drain/reboot outcomes, incompatible images, or failed physical mutations.
 pub fn run_from_process() -> Result<()> {
-    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    ensure!(arguments.len() == 1, "expected apply, remove, or observe");
+    let mut bytes = Vec::new();
+    io::stdin().take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
     ensure!(
-        arguments.len() == 2 && arguments[0] == HANDLER_ABI_ARGUMENT,
-        "expected --aos-primitive-v1 and one purpose"
+        bytes.len() <= 1024 * 1024,
+        "rollout invocation exceeds its bound"
     );
-
-    let mut input = Vec::new();
-    io::stdin()
-        .take(ABILITY_LIMITS_V1.max_document_bytes + 1)
-        .read_to_end(&mut input)
-        .context("reading image-rollout handler request")?;
-    ensure!(
-        input.len() as u64 <= ABILITY_LIMITS_V1.max_document_bytes,
-        "image-rollout handler request exceeds the canonical document bound"
-    );
-
-    let output = match arguments[1].as_str() {
-        "observe-root" => serde_json::to_vec(&observe_package_root(
-            &input,
-            "image-rollout-terminal",
-            TERMINAL_INTERFACE,
-        )?)?,
-        "admit" => serde_json::to_vec(&admit(serde_json::from_slice(&input)?)?)?,
-        "effect" | "reconcile" | "cancel" => {
-            let invocation = serde_json::from_slice(&input)?;
-            serde_json::to_vec(&invoke(invocation, &arguments[1])?)?
+    let invocation: Invocation = serde_json::from_slice(&bytes)?;
+    let input: Input = serde_json::from_value(invocation.input.clone())?;
+    validate_operation(&input, &invocation.effect.identity)?;
+    validate(&input)?;
+    let backend = NativeImageRolloutBackend::new(IMAGE_PROFILE);
+    let output = match arguments[0].as_str() {
+        "apply" if input.retirement => retire(&backend, &input)?,
+        "apply" => apply(&backend, &input, &invocation)?,
+        "remove" if input.retirement => json!({}),
+        "remove" => {
+            backend.preflight_operation(&input.rollout, "retire", now_millis()?)?;
+            platform(&input, "release", None)?;
+            backend.retire(&input.rollout, now_millis()?)?;
+            json!({})
         }
-        _ => anyhow::bail!("unsupported image-rollout provider purpose"),
+        "observe" if input.retirement && matches!(invocation.action, Action::Remove) => {
+            json!({"status":"absent"})
+        }
+        "observe" if input.retirement => {
+            match backend.observe_operation(&input.rollout, "retire") {
+                Ok(_)
+                    if platform(&input, "observe-release", None)?
+                        .get("retired")
+                        .and_then(Value::as_bool)
+                        == Some(true) =>
+                {
+                    json!({"status":"current","outputs":retirement_output(&backend,&input)?})
+                }
+                Ok(_) => json!({"status":"indeterminate"}),
+                Err(_) => json!({"status":"retry-safe"}),
+            }
+        }
+        "observe" if matches!(invocation.action, Action::Remove) => {
+            match backend.observe_operation(&input.rollout, "retire") {
+                Ok(_) => {
+                    if platform(&input, "observe-release", None)?
+                        .get("retired")
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                    {
+                        json!({"status":"absent"})
+                    } else {
+                        json!({"status":"indeterminate"})
+                    }
+                }
+                Err(_) => {
+                    let storage = platform(&input, "observe-storage", None)?;
+                    let retained = storage.get("state").and_then(Value::as_str) == Some("retained");
+                    let released = if retained {
+                        false
+                    } else {
+                        platform(&input, "observe-release", None)?
+                            .get("retired")
+                            .and_then(Value::as_bool)
+                            == Some(true)
+                    };
+                    if retained || released {
+                        json!({"status":"retry-safe"})
+                    } else {
+                        json!({"status":"indeterminate"})
+                    }
+                }
+            }
+        }
+        "observe" => observe(&backend, &input, &invocation)?,
+        _ => bail!("expected apply, remove, or observe"),
     };
-    io::stdout()
-        .write_all(&output)
-        .context("writing image-rollout handler result")?;
+    io::stdout().write_all(&serde_json::to_vec(&output)?)?;
     Ok(())
 }
 
-fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
-    ensure!(
-        request.schema == ADMISSION_REQUEST_SCHEMA,
-        "admission schema differs from the selected ABI"
-    );
-    validate_admission_resource(&request)?;
-    validate_resource_contexts(&request.resources)?;
-    validate_method(&request.method)?;
+fn default_true() -> bool {
+    true
+}
 
-    let desired: ImageRolloutRequest = decode_value(&request.resource_spec.value)?;
-    let realization: RolloutRealization = decode_value(&request.resource_spec.realization)?;
+fn validate_operation(input: &Input, identity: &[String]) -> Result<()> {
     ensure!(
-        realization.schema == REALIZATION_SCHEMA,
-        "unsupported image-rollout realization schema"
+        identity.len() >= 4 && identity[identity.len() - 2] == "ensure",
+        "image handler has an invalid admitted operation identity"
     );
-    let backend = backend();
-    let observed = backend.observe_operation(&desired, request.method.method.as_str());
-    let (revision, observation) = match observed {
-        Ok(state) => (
-            AdmissionRevision::Present {
-                revision: request.resource_spec.revision,
-            },
-            observation(&state)?,
-        ),
-        Err(_error) if request.method.method.as_str() == "retain" => {
-            backend
-                .preflight_operation(&desired, "retain", system_now_millis())
-                .context("preflighting an absent rollout")?;
-            (AdmissionRevision::Absent, absent_observation(&desired)?)
-        }
-        Err(error) => return Err(error.context("observing admitted image rollout")),
+    let intent_matches = match identity[identity.len() - 3].as_str() {
+        "imageRollout" => input.qualified && !input.retirement,
+        "imageSelection" => !input.qualified && !input.retirement,
+        "imageRetirement" => input.retirement,
+        _ => false,
     };
-
-    Ok(AdmissionResult {
-        schema: ADMISSION_SCHEMA.into(),
-        disposition: AdmissionDisposition::Admitted,
-        revision,
-        incarnation: Some(request.assignment.incarnation),
-        observation,
-        native_context: ability_value(serde_json::to_value(ProviderContext {
-            schema: PROVIDER_CONTEXT_SCHEMA.into(),
-            image_profile: IMAGE_PROFILE.into(),
-        })?)?,
-        supported_purposes: SupportedPurposes::from_ordered(vec![
-            InvocationPurpose::Effect,
-            InvocationPurpose::Reconcile,
-            InvocationPurpose::Cancel,
-        ])
-        .context("image-rollout purpose set is not canonical")?,
-    })
+    ensure!(
+        intent_matches,
+        "image intent differs from its admitted operation contract"
+    );
+    Ok(())
 }
 
-fn invoke(invocation: Invocation, purpose: &str) -> Result<InvocationResult> {
+fn validate(input: &Input) -> Result<()> {
     ensure!(
-        invocation.schema == INVOCATION_SCHEMA
-            && purpose == purpose_name(invocation.purpose)
-            && invocation.method_is_bound(),
-        "invocation envelope differs from the selected ABI"
-    );
-    validate_method(&invocation.method)?;
-    validate_method(&invocation.request.method)?;
-    validate_resource_contexts(&invocation.request.resources)?;
-    ensure!(
-        resource_set_digest(&invocation.request.resources)?
-            == invocation.request.native_context_digest,
-        "rollout resource set differs from its authenticated digest"
-    );
-
-    let target = invocation
-        .request
-        .resources
-        .iter()
-        .find(|resource| resource.reference.resource == invocation.request.target.resource)
-        .context("rollout target context is absent")?;
-    let bound = validate_resource_context(target)?;
-    let realization: RolloutRealization = decode_value(&bound.resource_spec.realization)?;
-    let provider: ProviderContext = decode_value(&bound.provider_context)?;
-    ensure!(
-        realization.schema == REALIZATION_SCHEMA
-            && provider.schema == PROVIDER_CONTEXT_SCHEMA
-            && provider.image_profile == IMAGE_PROFILE,
-        "rollout provider context differs from the checked realization"
-    );
-    let terminal: ImageRolloutTerminalRequest = decode_value(&invocation.request.inputs)?;
-    ensure!(
-        ability_value(serde_json::to_value(&terminal.rollout)?)? == bound.resource_spec.value,
-        "rollout inputs differ from the admitted resource value"
+        input.retirement
+            || !input.qualified
+            || (input.drain.is_some() && input.drain_observation.is_some()),
+        "qualified rollout requires explicit drain and observation programs"
     );
     ensure!(
-        target.reference == invocation.request.target
-            && invocation.method.interface == invocation.request.method.interface
-            && invocation.method.interface == invocation.request.target.interface
-            && invocation
-                .request
-                .target
-                .operations
-                .binary_search(&invocation.method.method)
-                .is_ok(),
-        "rollout target authority differs from its admitted context"
+        input.retirement
+            || input.qualified
+            || input.rollout.predecessor.executor == input.rollout.candidate.executor,
+        "executor replacement requires qualified rollout"
     );
-    let desired = terminal.rollout;
-    let control = WireControl(&invocation.control);
-    let original_method = invocation.request.method.method.as_str();
-
-    if invocation.control.cancelled && invocation.purpose == InvocationPurpose::Effect {
-        return result(
-            &invocation,
-            absent_observation(&desired)?,
-            InvocationDisposition::RejectedBeforeEffect,
-            BTreeMap::new(),
-        );
-    }
-
-    match invocation.purpose {
-        InvocationPurpose::Effect => execute(
-            &invocation,
-            &desired,
-            terminal.entry.as_deref(),
-            terminal.platform.as_ref(),
-            terminal.health.as_ref(),
-            original_method,
-        ),
-        InvocationPurpose::Reconcile => reconcile(
-            &invocation,
-            &desired,
-            terminal.health.as_ref(),
-            original_method,
-            &control,
-        ),
-        InvocationPurpose::Cancel => cancel(&invocation, &desired, original_method, &control),
-        InvocationPurpose::Compensate | InvocationPurpose::ReconcileCompensation => {
-            anyhow::bail!("image-rollout provider does not implement compensation")
-        }
-    }
-}
-
-fn execute(
-    invocation: &Invocation,
-    request: &ImageRolloutRequest,
-    entry: Option<&str>,
-    platform: Option<&serde_json::Value>,
-    health: Option<&ImageHealthObservation>,
-    method: &str,
-) -> Result<InvocationResult> {
-    let backend = backend();
-    backend
-        .preflight_operation(request, method, system_now_millis())
-        .context("preflighting image-rollout effect")?;
-
-    let state = match method {
-        "retain" => {
-            ensure!(
-                platform.is_some(),
-                "rollout retention lacks boot-storage evidence"
-            );
-            backend.retain(request)
-        }
-        "prepare" => backend.prepare(request),
-        "drain" => backend.drain(request),
-        "select" => backend.select(
-            request,
-            entry.context("rollout selection lacks a provider-resolved boot entry")?,
-        ),
-        "observe-boot" => backend.reconcile(request),
-        "observe-health" => observe_health(&backend, request, health),
-        "withdraw" => backend.withdraw(request),
-        "hold" => backend.hold(request),
-        "retire" => {
-            ensure!(
-                platform.is_some(),
-                "rollout retirement lacks boot-storage evidence"
-            );
-            backend.retire(request, system_now_millis())
-        }
-        _ => anyhow::bail!("unsupported image-rollout method"),
-    }?;
-    complete_or_indeterminate(invocation, method, &state)
-}
-
-fn reconcile(
-    invocation: &Invocation,
-    request: &ImageRolloutRequest,
-    health: Option<&ImageHealthObservation>,
-    method: &str,
-    control: &dyn RuntimeControl,
-) -> Result<InvocationResult> {
-    if control.attempt_remaining_millis() == 0 || control.recovery_remaining_millis() == 0 {
-        return result(
-            invocation,
-            absent_observation(request)?,
-            InvocationDisposition::StillIndeterminate,
-            BTreeMap::new(),
-        );
-    }
-    let backend = backend();
-    let state = if method == "observe-health" {
-        observe_health(&backend, request, health)?
-    } else {
-        backend.observe_operation(request, method)?
-    };
-    complete_or_indeterminate(invocation, method, &state)
-}
-
-fn cancel(
-    invocation: &Invocation,
-    request: &ImageRolloutRequest,
-    method: &str,
-    _control: &dyn RuntimeControl,
-) -> Result<InvocationResult> {
-    match backend().observe_operation(request, method) {
-        Ok(state) if completion_ready(method, &state) => completed(invocation, method, &state),
-        Ok(state) => result(
-            invocation,
-            observation(&state)?,
-            InvocationDisposition::Indeterminate,
-            BTreeMap::new(),
-        ),
-        Err(_) => result(
-            invocation,
-            absent_observation(request)?,
-            InvocationDisposition::RejectedBeforeEffect,
-            BTreeMap::new(),
-        ),
-    }
-}
-
-fn complete_or_indeterminate(
-    invocation: &Invocation,
-    method: &str,
-    state: &AbilityRolloutState,
-) -> Result<InvocationResult> {
-    if completion_ready(method, state) {
-        completed(invocation, method, state)
-    } else {
-        result(
-            invocation,
-            observation(state)?,
-            InvocationDisposition::Indeterminate,
-            BTreeMap::new(),
-        )
-    }
-}
-
-fn completed(
-    invocation: &Invocation,
-    method: &str,
-    state: &AbilityRolloutState,
-) -> Result<InvocationResult> {
-    let evidence = observation(state)?;
-    let mut outputs = BTreeMap::from([(LocalKey::new("rollout-state")?, evidence.clone())]);
-    if method == "observe-health"
-        && let Some(healthy) = observed_health(state)
+    immutable_executable(&input.platform_executable)?;
+    for executable in [&input.drain, &input.drain_observation]
+        .into_iter()
+        .flatten()
     {
-        outputs.insert(
-            LocalKey::new("healthy")?,
-            ability_value(serde_json::Value::Bool(healthy))?,
+        immutable_executable(&executable.path)?;
+        ensure!(
+            executable.arguments.len() <= 256
+                && executable
+                    .arguments
+                    .iter()
+                    .all(|argument| argument.len() <= 16 * 1024 && !argument.contains('\0')),
+            "drain arguments exceed their bound"
         );
     }
-    result(
-        invocation,
-        evidence,
-        InvocationDisposition::Completed,
-        outputs,
+    ensure!(
+        !input.rollout.candidate.state_format.is_empty()
+            && input.rollout.candidate.state_format == input.rollout.predecessor.state_format,
+        "rollout state formats are incompatible"
+    );
+    Ok(())
+}
+
+fn immutable_executable(path: &str) -> Result<()> {
+    let path = Path::new(path);
+    ensure!(
+        path.is_absolute()
+            && path.starts_with("/nix/store")
+            && path
+                .components()
+                .all(|part| matches!(part, Component::RootDir | Component::Normal(_)))
+            && path.strip_prefix("/nix/store")?.components().count() > 1,
+        "rollout executable is not an immutable normalized file"
+    );
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_file(),
+        "rollout executable is not a regular file"
+    );
+    ensure!(
+        fs::canonicalize(path)? == path,
+        "rollout executable is not canonical"
+    );
+    Ok(())
+}
+
+fn load_receipt(
+    backend: &NativeImageRolloutBackend,
+    input: &Input,
+    invocation: &Invocation,
+) -> Result<Option<Receipt>> {
+    let path = backend
+        .execution_directory(&input.rollout)?
+        .join("native-receipt.json");
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    ensure!(
+        bytes.len() <= 64 * 1024,
+        "rollout receipt exceeds its bound"
+    );
+    let receipt: Receipt = serde_json::from_slice(&bytes)?;
+    ensure!(
+        receipt.schema == RECEIPT_SCHEMA
+            && receipt.effect == invocation.id
+            && receipt.revision == invocation.revision
+            && receipt.input_sha256 == Sha256Digest::of_bytes(&serde_json::to_vec(input)?),
+        "rollout receipt differs from native effect identity"
+    );
+    Ok(Some(receipt))
+}
+
+fn save_receipt(
+    backend: &NativeImageRolloutBackend,
+    input: &Input,
+    receipt: &Receipt,
+) -> Result<()> {
+    let path = backend
+        .execution_directory(&input.rollout)?
+        .join("native-receipt.json");
+    let bytes = serde_json::to_vec(receipt)?;
+    write_atomic_durable(&path, &bytes)?;
+    write_atomic_durable(
+        &Path::new(IMAGE_PROFILE).join("active-native-rollout.json"),
+        &bytes,
     )
 }
 
-fn result(
-    invocation: &Invocation,
-    evidence: AbilityValue,
-    disposition: InvocationDisposition,
-    outputs: BTreeMap<LocalKey, AbilityValue>,
-) -> Result<InvocationResult> {
-    Ok(InvocationResult {
-        schema: RESULT_SCHEMA.into(),
-        disposition,
-        evidence,
-        outputs,
-        native_context_digest: invocation.request.native_context_digest,
-    })
-}
-
-fn completion_ready(method: &str, state: &AbilityRolloutState) -> bool {
-    match method {
-        "select" | "observe-boot" => matches!(
-            state.phase,
-            AbilityRolloutPhase::CandidateBooted
-                | AbilityRolloutPhase::HealthyRetained
-                | AbilityRolloutPhase::FallbackRetained
-        ),
-        "observe-health" => state.outcome.is_some(),
-        "hold" => matches!(
-            state.phase,
-            AbilityRolloutPhase::HealthyRetained | AbilityRolloutPhase::FallbackRetained
-        ),
-        "withdraw" => state.phase == AbilityRolloutPhase::FallbackRetained,
-        "retire" => state.phase == AbilityRolloutPhase::Retired,
-        _ => true,
-    }
-}
-
-fn observation(state: &AbilityRolloutState) -> Result<AbilityValue> {
-    let (active_image, healthy) = match state.outcome {
-        Some(AbilityRolloutOutcome::CandidateHealthy) => ("candidate", Some(true)),
-        Some(AbilityRolloutOutcome::CandidateUnhealthy) => ("candidate", Some(false)),
-        Some(AbilityRolloutOutcome::PredecessorFallback) => ("predecessor", Some(false)),
-        None if matches!(
-            state.phase,
-            AbilityRolloutPhase::Retained
-                | AbilityRolloutPhase::Prepared
-                | AbilityRolloutPhase::Drained
-        ) =>
-        {
-            ("predecessor", None)
-        }
-        None => ("candidate", None),
-    };
-    let lease = (state.phase != AbilityRolloutPhase::Retired)
-        .then_some(state.request.retention_expires_at_millis);
-    ability_value(serde_json::json!({
-        "active-image": active_image,
-        "candidate-prepared": !matches!(state.phase, AbilityRolloutPhase::Retained),
-        "drained": !matches!(state.phase, AbilityRolloutPhase::Retained | AbilityRolloutPhase::Prepared),
-        "healthy": healthy,
-        "lease-expires-at-millis": lease,
-        "phase": phase_name(state.phase),
-        "schema": OBSERVATION_SCHEMA,
-    }))
-}
-
-fn absent_observation(request: &ImageRolloutRequest) -> Result<AbilityValue> {
-    ability_value(serde_json::json!({
-        "active-image": "predecessor",
-        "candidate-prepared": false,
-        "drained": false,
-        "healthy": null,
-        "lease-expires-at-millis": request.retention_expires_at_millis,
-        "phase": "retained",
-        "schema": OBSERVATION_SCHEMA,
-    }))
-}
-
-fn observed_health(state: &AbilityRolloutState) -> Option<bool> {
-    match state.outcome {
-        Some(AbilityRolloutOutcome::CandidateHealthy) => Some(true),
-        Some(
-            AbilityRolloutOutcome::CandidateUnhealthy | AbilityRolloutOutcome::PredecessorFallback,
-        ) => Some(false),
-        None => None,
-    }
-}
-
-fn observe_health(
+fn complete(
     backend: &NativeImageRolloutBackend,
-    request: &ImageRolloutRequest,
-    observation: Option<&ImageHealthObservation>,
-) -> Result<AbilityRolloutState> {
-    if let Some(state) = backend.health_assessment_if_recorded(request)? {
-        return Ok(state);
-    }
-    let observation = observation.context("rollout health observation is absent")?;
-    ensure!(
-        observation.schema == "aos.ability.image-health-observation/v1",
-        "unsupported rollout health observation schema"
-    );
-    backend.record_health(request, observation.healthy)
+    input: &Input,
+    receipt: &mut Receipt,
+    phase: &str,
+) -> Result<()> {
+    receipt.phases.insert(phase.into(), true);
+    save_receipt(backend, input, receipt)
 }
 
-fn validate_method(method: &aos_ability_model::MethodReference) -> Result<()> {
+fn retirement_output(backend: &NativeImageRolloutBackend, input: &Input) -> Result<Value> {
+    Ok(json!({"rollout":input.rollout,"outcome":"retired",
+        "retentionDirectory":backend.execution_directory(&input.rollout)?}))
+}
+
+fn retire(backend: &NativeImageRolloutBackend, input: &Input) -> Result<Value> {
+    if backend.observe_operation(&input.rollout, "retire").is_err() {
+        backend.preflight_operation(&input.rollout, "retire", now_millis()?)?;
+        platform(input, "release", None)?;
+        backend.retire(&input.rollout, now_millis()?)?;
+    }
     ensure!(
-        matches!(
-            method.method.as_str(),
-            "retain"
-                | "prepare"
-                | "drain"
-                | "select"
-                | "observe-boot"
-                | "observe-health"
-                | "withdraw"
-                | "hold"
-                | "retire"
-        ),
-        "unsupported image-rollout method"
+        platform(input, "observe-storage", None)?
+            .get("state")
+            .and_then(Value::as_str)
+            == Some("absent"),
+        "physical retention remains after retirement"
     );
+    retirement_output(backend, input)
+}
+
+fn apply(
+    backend: &NativeImageRolloutBackend,
+    input: &Input,
+    invocation: &Invocation,
+) -> Result<Value> {
+    platform(
+        input,
+        if input.qualified {
+            "validate"
+        } else {
+            "validate-selection"
+        },
+        None,
+    )?;
+    backend.preflight_operation(&input.rollout, "retain", now_millis()?)?;
+    let mut receipt = match load_receipt(backend, input, invocation)? {
+        Some(receipt) => receipt,
+        None => {
+            // Retention is idempotent and precedes every host-side mutation.
+            platform(input, "retain", None)?;
+            backend.retain(&input.rollout)?;
+            let receipt = Receipt {
+                schema: RECEIPT_SCHEMA.into(),
+                effect: invocation.id.clone(),
+                revision: invocation.revision.clone(),
+                input_sha256: Sha256Digest::of_bytes(&serde_json::to_vec(input)?),
+                input: input.clone(),
+                phases: BTreeMap::new(),
+            };
+            save_receipt(backend, input, &receipt)?;
+            receipt
+        }
+    };
+    let mut state = backend.observe_operation(&input.rollout, "retain")?;
+    if state.phase == AbilityRolloutPhase::Retained {
+        state = backend.prepare(&input.rollout)?;
+    }
+    if !input.qualified {
+        if state.phase == AbilityRolloutPhase::Prepared {
+            backend.select_unqualified(&input.rollout)?;
+        }
+        ensure_selection(input)?;
+        complete(backend, input, &mut receipt, "selection")?;
+        if input.restart {
+            request_restart(backend, input, &mut receipt, "candidate-restart")?;
+        }
+        return selected_output(backend, input);
+    }
+    let drain = input
+        .drain
+        .as_ref()
+        .context("qualified drain program is absent")?;
+    let drain_observation = input
+        .drain_observation
+        .as_ref()
+        .context("qualified drain observation is absent")?;
+    if state.phase == AbilityRolloutPhase::Prepared {
+        match receipt.phases.get("drain") {
+            Some(true) => {}
+            Some(false) => ensure!(
+                run_drain_observation(drain_observation)?,
+                "interrupted drain has no completed observation"
+            ),
+            None => {
+                receipt.phases.insert("drain".into(), false);
+                save_receipt(backend, input, &receipt)?;
+                let status = Command::new(&drain.path)
+                    .env_clear()
+                    .args(&drain.arguments)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::inherit())
+                    .status()?;
+                ensure!(
+                    status.success(),
+                    "configured workload drain failed: {status}"
+                );
+            }
+        }
+        complete(backend, input, &mut receipt, "drain")?;
+        state = backend.drain(&input.rollout)?;
+    }
+    if state.phase == AbilityRolloutPhase::Drained {
+        let resolved = platform(input, "resolve", None)?;
+        let entry = resolved
+            .get("entry")
+            .and_then(Value::as_str)
+            .context("platform omitted resolved boot entry")?;
+        backend.select(&input.rollout, entry)?;
+        // Native authority is durable before the idempotent physical selection.
+        platform(input, "select", Some(entry))?;
+        complete(backend, input, &mut receipt, "selection")?;
+    }
+    if state.phase == AbilityRolloutPhase::Selected && boot_counter_exhausted(input)? {
+        backend.record_boot_failure(&input.rollout)?;
+        platform(input, "select-fallback", None)?;
+    }
+    match backend.observe(&input.rollout)? {
+        PhysicalRolloutObservation::AwaitingBoot => {
+            ensure_selection(input)?;
+            request_restart(backend, input, &mut receipt, "candidate-restart")?;
+            bail!("rollout awaits authenticated candidate boot");
+        }
+        PhysicalRolloutObservation::CandidateBooted => {
+            backend.reconcile(&input.rollout)?;
+            let assessed = match backend.health_assessment_if_recorded(&input.rollout)? {
+                Some(state) => state,
+                None => {
+                    let health = platform(input, "health", None)?;
+                    let healthy = health
+                        .get("healthy")
+                        .and_then(Value::as_bool)
+                        .context("platform omitted typed health outcome")?;
+                    backend.record_health(&input.rollout, healthy)?
+                }
+            };
+            if assessed.outcome == Some(AbilityRolloutOutcome::CandidateUnhealthy) {
+                backend.withdraw(&input.rollout)?;
+                platform(input, "select-fallback", None)?;
+                request_restart(backend, input, &mut receipt, "fallback-restart")?;
+                bail!("rollout awaits authenticated predecessor fallback");
+            }
+            backend.hold(&input.rollout)?;
+        }
+        PhysicalRolloutObservation::FallbackPendingCommit
+        | PhysicalRolloutObservation::Fallback => {
+            backend.reconcile(&input.rollout)?;
+            backend.withdraw(&input.rollout)?;
+            backend.hold(&input.rollout)?;
+        }
+        PhysicalRolloutObservation::Healthy => {
+            backend.hold(&input.rollout)?;
+        }
+    }
+    platform(input, "mark", None)?;
+    complete(backend, input, &mut receipt, "success")?;
+    output(backend, input)
+}
+
+fn boot_counter_exhausted(input: &Input) -> Result<bool> {
+    let observation = platform(input, "observe-boot-failure", None)?;
+    observation
+        .get("exhausted")
+        .and_then(Value::as_bool)
+        .context("platform omitted typed pre-boot failure observation")
+}
+
+fn ensure_selection(input: &Input) -> Result<()> {
+    let resolved = platform(input, "resolve", None)?;
+    let entry = resolved
+        .get("entry")
+        .and_then(Value::as_str)
+        .context("platform omitted resolved boot entry")?;
+    let selected = platform(input, "observe-selection", Some(entry))?;
+    if selected.get("state").and_then(Value::as_str) != Some("selected") {
+        platform(input, "select", Some(entry))?;
+    }
     Ok(())
 }
 
-fn decode_value<T: serde::de::DeserializeOwned>(value: &AbilityValue) -> Result<T> {
-    serde_json::from_value(value.as_json().clone()).context("decoding image-rollout value")
+fn request_restart(
+    backend: &NativeImageRolloutBackend,
+    input: &Input,
+    receipt: &mut Receipt,
+    phase: &str,
+) -> Result<()> {
+    if receipt.phases.contains_key(phase) {
+        // Both accepted and uncertain requests require physical boot evidence.
+        // Repeated restart commands could interrupt recovery or fallback.
+        return Ok(());
+    }
+    receipt.phases.insert(phase.into(), false);
+    save_receipt(backend, input, receipt)?;
+    platform(input, "restart", None)?;
+    complete(backend, input, receipt, phase)
 }
 
-fn ability_value(value: serde_json::Value) -> Result<AbilityValue> {
-    AbilityValue::new(value).map_err(anyhow::Error::msg)
-}
-
-fn backend() -> NativeImageRolloutBackend {
-    NativeImageRolloutBackend::new(IMAGE_PROFILE)
-}
-
-fn purpose_name(purpose: InvocationPurpose) -> &'static str {
-    match purpose {
-        InvocationPurpose::Effect => "effect",
-        InvocationPurpose::Reconcile => "reconcile",
-        InvocationPurpose::Cancel => "cancel",
-        InvocationPurpose::Compensate => "compensate",
-        InvocationPurpose::ReconcileCompensation => "reconcile-compensation",
+fn run_drain_observation(executable: &Executable) -> Result<bool> {
+    let status = Command::new(&executable.path)
+        .env_clear()
+        .args(&executable.arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()?;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => bail!("drain observation returned an indeterminate status"),
     }
 }
 
-const fn phase_name(phase: AbilityRolloutPhase) -> &'static str {
-    match phase {
-        AbilityRolloutPhase::Retained => "retained",
-        AbilityRolloutPhase::Prepared => "prepared",
-        AbilityRolloutPhase::Drained => "drained",
-        AbilityRolloutPhase::Selected => "selected",
-        AbilityRolloutPhase::CandidateBooted => "booted",
-        AbilityRolloutPhase::HealthyRetained => "healthy-retained",
-        AbilityRolloutPhase::FallbackRetained => "fallback-retained",
-        AbilityRolloutPhase::Retiring => "retiring",
-        AbilityRolloutPhase::Retired => "retired",
-    }
+fn selected_output(backend: &NativeImageRolloutBackend, input: &Input) -> Result<Value> {
+    Ok(json!({"rollout":input.rollout,"outcome":"selected",
+        "retentionDirectory":backend.execution_directory(&input.rollout)?}))
 }
 
-struct WireControl<'a>(&'a InvocationControl);
-
-impl RuntimeControl for WireControl<'_> {
-    fn is_cancelled(&self) -> bool {
-        self.0.cancelled
-    }
-
-    fn elapsed_millis(&self) -> u64 {
-        0
-    }
-
-    fn attempt_remaining_millis(&self) -> u64 {
-        self.0.attempt_remaining_millis
-    }
-
-    fn recovery_remaining_millis(&self) -> u64 {
-        self.0.recovery_remaining_millis
-    }
+fn output(backend: &NativeImageRolloutBackend, input: &Input) -> Result<Value> {
+    let state = backend.observe_operation(&input.rollout, "hold")?;
+    let outcome = match state.outcome {
+        Some(AbilityRolloutOutcome::CandidateHealthy) => "candidate-healthy",
+        Some(AbilityRolloutOutcome::PredecessorFallback) => "predecessor-fallback",
+        _ => bail!("rollout has no retained terminal outcome"),
+    };
+    Ok(json!({"rollout":input.rollout,"outcome":outcome,
+        "retentionDirectory":backend.execution_directory(&input.rollout)?}))
 }
 
-#[allow(
-    clippy::disallowed_methods,
-    reason = "rollout admission uses restart-stable host time outside deterministic planning"
-)]
-fn system_now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(u64::MAX, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
+fn observe(
+    backend: &NativeImageRolloutBackend,
+    input: &Input,
+    invocation: &Invocation,
+) -> Result<Value> {
+    observe_with_transport(backend, input, invocation, platform)
+}
+
+fn observe_with_transport(
+    backend: &NativeImageRolloutBackend,
+    input: &Input,
+    invocation: &Invocation,
+    mut transport: impl FnMut(&Input, &str, Option<&str>) -> Result<Value>,
+) -> Result<Value> {
+    let Some(receipt) = load_receipt(backend, input, invocation)? else {
+        return Ok(json!({"status":"retry-safe"}));
+    };
+    if receipt.phases.get("selection") == Some(&true)
+        || receipt.phases.get("success") == Some(&true)
+    {
+        // Firmware preference or a success marker cannot authenticate the
+        // payload lease. Lost-result recovery requires its actual retained
+        // bytes before returning the original invocation's outputs.
+        let storage = transport(input, "observe-storage", None)?;
+        if storage.get("state").and_then(Value::as_str) != Some("retained") {
+            return Ok(json!({"status":"indeterminate"}));
+        }
+    }
+    if !input.qualified && receipt.phases.get("selection") == Some(&true) {
+        let resolved = transport(input, "resolve", None)?;
+        let entry = resolved
+            .get("entry")
+            .and_then(Value::as_str)
+            .context("missing resolved entry")?;
+        let observed = transport(input, "observe-selection", Some(entry))?;
+        if observed.get("state").and_then(Value::as_str) == Some("selected") {
+            return Ok(json!({"status":"current","outputs":selected_output(backend,input)?}));
+        }
+    }
+    if receipt.phases.get("success") == Some(&true) {
+        let marked = transport(input, "observe-success", None)?;
+        if marked.get("state").and_then(Value::as_str) == Some("marked") {
+            return Ok(json!({"status":"current","outputs":output(backend,input)?}));
+        }
+    }
+    let state = backend.observe_operation(&input.rollout, "retain")?;
+    if state.phase == AbilityRolloutPhase::Prepared
+        && receipt.phases.get("drain") == Some(&false)
+        && !run_drain_observation(
+            input
+                .drain_observation
+                .as_ref()
+                .context("missing drain observation")?,
+        )?
+    {
+        return Ok(json!({"status":"indeterminate"}));
+    }
+    if state.phase == AbilityRolloutPhase::Selected
+        && receipt.phases.contains_key("candidate-restart")
+        && boot_counter_exhausted(input)?
+    {
+        // The pending apply must publish the distinct failure branch; observing
+        // the physical witness alone never manufactures a finished receipt.
+        return Ok(json!({"status":"retry-safe"}));
+    }
+    if matches!(
+        state.phase,
+        AbilityRolloutPhase::Selected | AbilityRolloutPhase::CandidateBooted
+    ) && backend.observe(&input.rollout)? == PhysicalRolloutObservation::AwaitingBoot
+        && receipt.phases.contains_key("candidate-restart")
+        && !boot_counter_exhausted(input)?
+    {
+        return Ok(json!({"status":"indeterminate"}));
+    }
+    Ok(json!({"status":"retry-safe"}))
+}
+
+fn platform(input: &Input, operation: &str, entry: Option<&str>) -> Result<Value> {
+    let mut child = Command::new(&input.platform_executable)
+        .env_clear()
+        .arg(operation)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    serde_json::to_writer(
+        child.stdin.take().context("platform stdin is absent")?,
+        &json!({"rollout":input.rollout,"entry":entry}),
+    )?;
+    let mut output = Vec::new();
+    child
+        .stdout
+        .take()
+        .context("platform stdout is absent")?
+        .take(64 * 1024 + 1)
+        .read_to_end(&mut output)?;
+    let status = child.wait()?;
+    ensure!(
+        status.success() && output.len() <= 64 * 1024,
+        "boot platform operation failed or exceeded its output bound"
+    );
+    serde_json::from_slice(&output).context("decoding boot platform operation result")
+}
+
+fn now_millis() -> Result<u64> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_millis()
+        .try_into()?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::RolloutImageIdentity;
-
     use super::*;
 
-    fn image(seed: char) -> RolloutImageIdentity {
-        RolloutImageIdentity {
-            toplevel: format!("/nix/store/{}-system", seed.to_string().repeat(32)),
-            boot_artifact_contract: format!(
-                "/nix/store/{}-boot-artifact-contract",
-                seed.to_string().repeat(32)
-            ),
-            executor: format!("/nix/store/{}-executor", seed.to_string().repeat(32)),
+    fn input() -> Input {
+        let identity = RolloutImageIdentity {
+            toplevel: "/nix/store/image".into(),
+            boot_artifact_contract: "/nix/store/contract".into(),
+            executor: "/nix/store/executor".into(),
             state_format: "7".into(),
-        }
-    }
-
-    fn request() -> ImageRolloutRequest {
-        ImageRolloutRequest {
-            predecessor: image('a'),
-            candidate: image('b'),
-            retention_expires_at_millis: 2_000,
-        }
-    }
-
-    fn state(phase: AbilityRolloutPhase) -> AbilityRolloutState {
-        AbilityRolloutState {
-            schema: "aos.ability.native-image-rollout-state/v1".into(),
-            request: request(),
-            predecessor_generation: 1,
-            candidate_generation: 2,
-            phase,
-            outcome: None,
+        };
+        Input {
+            rollout: ImageRolloutRequest {
+                predecessor: identity.clone(),
+                candidate: identity,
+                retention_expires_at_millis: 2_000,
+            },
+            platform_executable: "/invalid-platform".into(),
+            retirement: false,
+            qualified: true,
+            restart: true,
+            drain: None,
+            drain_observation: None,
         }
     }
 
     #[test]
-    fn absent_admission_evidence_is_schema_shaped_without_creating_state() {
-        let evidence = absent_observation(&request()).expect("absent evidence is bounded");
-
-        assert_eq!(evidence.as_json()["schema"], OBSERVATION_SCHEMA);
-        assert_eq!(evidence.as_json()["candidate-prepared"], false);
-        assert_eq!(evidence.as_json()["active-image"], "predecessor");
+    fn retirement_contract_cannot_dispatch_selection() {
+        let mut input = input();
+        let identity = vec![
+            "profile".into(),
+            "system".into(),
+            "aos".into(),
+            "imageRetirement".into(),
+            "ensure".into(),
+            "lease".into(),
+        ];
+        assert!(validate_operation(&input, &identity).is_err());
+        input.retirement = true;
+        validate_operation(&input, &identity).unwrap();
+        let selection = vec![
+            "profile".into(),
+            "system".into(),
+            "aos".into(),
+            "imageSelection".into(),
+            "ensure".into(),
+            "selected".into(),
+        ];
+        assert!(validate_operation(&input, &selection).is_err());
     }
 
     #[test]
-    fn completion_waits_for_boot_and_terminal_health() {
-        assert!(!completion_ready(
-            "select",
-            &state(AbilityRolloutPhase::Selected)
-        ));
-        assert!(completion_ready(
-            "select",
-            &state(AbilityRolloutPhase::CandidateBooted)
-        ));
-        assert!(!completion_ready(
-            "observe-health",
-            &state(AbilityRolloutPhase::CandidateBooted)
-        ));
+    fn absent_drain_is_rejected_before_any_platform_invocation() {
+        let error = validate(&input()).unwrap_err();
+        assert!(error.to_string().contains("explicit drain and observation"));
+    }
 
-        let mut healthy = state(AbilityRolloutPhase::HealthyRetained);
-        healthy.outcome = Some(AbilityRolloutOutcome::CandidateHealthy);
-        assert!(completion_ready("observe-health", &healthy));
-        assert_eq!(observed_health(&healthy), Some(true));
+    #[test]
+    fn uncertain_and_accepted_restarts_are_never_reissued() {
+        let directory = tempfile::tempdir().unwrap();
+        let backend = NativeImageRolloutBackend::new(directory.path());
+        let input = input();
+        for completed in [false, true] {
+            let mut receipt = Receipt {
+                schema: RECEIPT_SCHEMA.into(),
+                effect: "effect".into(),
+                revision: "revision".into(),
+                input_sha256: Sha256Digest::of_bytes(b"input"),
+                input: input.clone(),
+                phases: BTreeMap::from([("candidate-restart".into(), completed)]),
+            };
+            request_restart(&backend, &input, &mut receipt, "candidate-restart").unwrap();
+            assert_eq!(receipt.phases.get("candidate-restart"), Some(&completed));
+            assert!(fs::read_dir(directory.path()).unwrap().next().is_none());
+        }
+    }
+
+    #[test]
+    fn lost_results_require_retained_payloads_before_selection_or_success_proofs() {
+        let directory = tempfile::tempdir().unwrap();
+        let backend = NativeImageRolloutBackend::new(directory.path());
+        let input = input();
+        let effect = serde_json::from_value(json!({
+            "owner": "aos", "identity": ["test", "aos", "imageRollout", "ensure", "qualified"],
+            "input": {}, "inputs": {},
+            "input_type": {"kind":"submodule", "open":false, "fields":{}},
+            "after": [], "results": {},
+            "handler": {"kind":"process", "artifact":"/nix/store/fixture", "executable":"/nix/store/fixture/bin/handler"},
+            "dependencies": [], "revision":"revision", "lifetime":"persistent", "timeout_ms":1000
+        })).unwrap();
+        let invocation = Invocation {
+            id: "effect".into(),
+            effect,
+            input: serde_json::to_value(&input).unwrap(),
+            revision: "revision".into(),
+            action: Action::Apply,
+            previous: None,
+        };
+        let execution = backend.execution_directory(&input.rollout).unwrap();
+        fs::create_dir_all(&execution).unwrap();
+
+        for phase in ["selection", "success"] {
+            let receipt = Receipt {
+                schema: RECEIPT_SCHEMA.into(),
+                effect: invocation.id.clone(),
+                revision: invocation.revision.clone(),
+                input_sha256: Sha256Digest::of_bytes(serde_json::to_vec(&input).unwrap()),
+                input: input.clone(),
+                phases: BTreeMap::from([(phase.into(), true)]),
+            };
+            fs::write(
+                execution.join("native-receipt.json"),
+                serde_json::to_vec(&receipt).unwrap(),
+            )
+            .unwrap();
+            let mut calls = Vec::new();
+            let result =
+                observe_with_transport(&backend, &input, &invocation, |_, operation, _| {
+                    calls.push(operation.to_owned());
+                    Ok(json!({"state":"absent"}))
+                })
+                .unwrap();
+
+            assert_eq!(result, json!({"status":"indeterminate"}));
+            assert_eq!(calls, ["observe-storage"]);
+        }
     }
 }

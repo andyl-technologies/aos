@@ -1,36 +1,22 @@
 //! Systemd and ESP implementations of provider-neutral image rollout platform effects.
 
-use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};
-use aos_ability_model::{AbilityValue, AccessMode, LocalKey, MethodReference, MethodSemantics};
 use aos_contract::Sha256Digest;
-use aos_provider_protocol::{
-    ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
-    AdmissionResult, AdmissionRevision, INVOCATION_SCHEMA, Invocation, InvocationDisposition,
-    InvocationPurpose, InvocationResult, REQUEST_SCHEMA, RESULT_SCHEMA, SupportedPurposes,
-    resource_set_digest, validate_admission_resource, validate_resource_context,
-    validate_resource_contexts,
-};
 use serde::{Deserialize, Serialize};
-
-use crate::executable::validate_store_executable;
-use crate::{decode_value, target_context, value};
 
 const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
 const BOOT_ROOT: &str = "/boot";
 const RETENTION_ROOT: &str = "EFI/.aos-rollout-retention";
 const BOOT_ARTIFACT_CONTRACT: &str = "contract.json";
 const MAX_BOOT_ARTIFACT_CONTRACT_BYTES: u64 = 64 * 1024;
-
-const CONTEXT_SCHEMA: &str = "aos.systemd.image-rollout-platform-context/v1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BootPlatformRole {
@@ -62,7 +48,9 @@ struct RolloutRequest {
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct BootArtifactContract {
     schema: String,
-    health_executable: PathBuf,
+    health_executable: Option<PathBuf>,
+    #[serde(default)]
+    health_arguments: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,27 +61,21 @@ struct SelectionRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RestartRequest {
-    reason: RestartReason,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum RestartReason {
-    ActivateImage,
-    RestoreImage,
-}
-
-#[derive(Debug, Deserialize)]
 struct ImageState {
     generations: Vec<ImageGeneration>,
     running: u32,
+    #[serde(default)]
+    pending: Option<u32>,
+    #[serde(default)]
+    active_rollout: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ImageGeneration {
     number: u32,
+    toplevel: String,
+    native_executor_ref: String,
+    state_version: String,
     boot_artifact_contract: String,
     boot_provider_state: ProviderStateEnvelope,
 }
@@ -108,13 +90,18 @@ struct ProviderStateEnvelope {
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct SystemdBootGenerationEvidence {
     installed_entry: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct ProviderContext {
-    schema: String,
-    role: String,
-    tools: BootPlatformTools,
+    #[serde(default, rename = "uki-source-path")]
+    uki_source_path: Option<String>,
+    #[serde(default)]
+    uki_sha256: Option<String>,
+    #[serde(default)]
+    uki_byte_size: Option<u64>,
+    #[serde(default)]
+    retired: bool,
+    #[serde(default, rename = "slot")]
+    _slot: Option<String>,
+    #[serde(default, rename = "recovery")]
+    _recovery: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -215,165 +202,111 @@ struct RetentionManifest {
     predecessor_sha256: Sha256Digest,
 }
 
-pub(crate) fn admit(
-    role: BootPlatformRole,
-    request: AdmissionRequest,
-    tools: Option<&BootPlatformTools>,
-) -> Result<AdmissionResult> {
+/// Executes one directly selected OS boot operation using retained tools.
+///
+/// # Errors
+/// Returns an error for malformed bounded input, unretained tools, inconsistent
+/// physical boot evidence, or a failed platform mutation.
+pub(crate) fn run_from_process() -> Result<()> {
+    let mut arguments = std::env::args_os().collect::<Vec<_>>();
+    let tools = BootPlatformTools::from_launcher_arguments(&mut arguments)?
+        .context("boot platform launcher omitted retained tools")?;
     ensure!(
-        request.schema == ADMISSION_REQUEST_SCHEMA,
-        "unsupported admission request schema"
+        arguments.len() == 2,
+        "boot platform requires exactly one operation"
     );
-    validate_admission_resource(&request)?;
-    validate_resource_contexts(&request.resources)?;
-    require_method(role, &request.method, &request.semantics)?;
-    let observation_schema = request
-        .contract
-        .observation_discriminator()
-        .context("selected boot-platform method has no exact observation discriminator")?;
-
-    let rollout: RolloutRequest = decode_value(&request.resource_spec.value)?;
-    validate_rollout(&rollout)?;
-    let tools = tools
-        .context("selected systemd launcher omitted the boot tool context")?
-        .clone();
-    let observation = observe_role(role, observation_schema, &rollout, None)?;
-    let supported_purposes = SupportedPurposes::from_ordered(vec![
-        InvocationPurpose::Effect,
-        InvocationPurpose::Reconcile,
-    ])
-    .context("boot platform purpose set is not canonical")?;
-
-    Ok(AdmissionResult {
-        schema: ADMISSION_SCHEMA.to_string(),
-        disposition: AdmissionDisposition::Admitted,
-        revision: AdmissionRevision::Unknown,
-        incarnation: Some(request.assignment.incarnation),
-        observation,
-        native_context: value(&ProviderContext {
-            schema: CONTEXT_SCHEMA.to_string(),
-            role: role_name(role).to_string(),
-            tools,
-        })?,
-        supported_purposes,
-    })
-}
-
-pub(crate) fn invoke(role: BootPlatformRole, invocation: Invocation) -> Result<InvocationResult> {
+    let operation = arguments[1].to_str().context("operation is not UTF-8")?;
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .take(64 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
     ensure!(
-        invocation.schema == INVOCATION_SCHEMA && invocation.request.schema == REQUEST_SCHEMA,
-        "unsupported invocation schema"
+        bytes.len() <= 64 * 1024,
+        "boot platform input exceeds its bound"
     );
-    ensure!(
-        invocation.method_is_bound(),
-        "invocation method is not bound to its recovery contract"
-    );
-    ensure!(
-        resource_set_digest(&invocation.request.resources)?
-            == invocation.request.native_context_digest,
-        "invocation resource-set digest does not match"
-    );
-    validate_resource_contexts(&invocation.request.resources)?;
-    require_method(role, &invocation.method, &invocation.semantics)?;
-    require_method(
-        role,
-        &invocation.request.method,
-        &invocation.request.semantics,
-    )?;
-    let observation_schema = invocation
-        .contract
-        .observation_discriminator()
-        .context("selected boot-platform method has no exact observation discriminator")?;
-
-    let target = target_context(&invocation)?;
-    let bound = validate_resource_context(target)?;
-    let rollout: RolloutRequest = decode_value(&bound.resource_spec.value)?;
-    validate_rollout(&rollout)?;
-    let provider: ProviderContext = decode_value(&bound.provider_context)?;
-    ensure!(
-        provider.schema == CONTEXT_SCHEMA && provider.role == role_name(role),
-        "boot platform context differs from the selected role"
-    );
-    provider.tools.validate()?;
-
-    let method = invocation.method.method.as_str();
-    let selected_entry = validate_inputs(role, method, &rollout, &invocation.request.inputs)?;
-    let observation = match invocation.purpose {
-        InvocationPurpose::Effect => apply(
-            role,
-            observation_schema,
-            method,
-            &rollout,
-            selected_entry.as_deref(),
-            &provider.tools,
-        )?,
-        InvocationPurpose::Reconcile => observe_role(
-            role,
-            observation_schema,
-            &rollout,
-            selected_entry.as_deref(),
-        )?,
-        _ => bail!("boot platform role does not advertise this invocation purpose"),
+    let request: SelectionRequest = serde_json::from_slice(&bytes)?;
+    validate_rollout(&request.rollout)?;
+    let (role, method) = match operation {
+        "retain" => (BootPlatformRole::ArtifactStorage, "retain"),
+        "release" => (BootPlatformRole::ArtifactStorage, "release"),
+        "observe-storage" => (BootPlatformRole::ArtifactStorage, "observe"),
+        "select" => (BootPlatformRole::Selection, "select"),
+        "observe-selection" => (BootPlatformRole::Selection, "observe"),
+        "mark" => (BootPlatformRole::Success, "mark"),
+        "observe-success" => (BootPlatformRole::Success, "observe"),
+        "observe-release" => {
+            let retired = physical_release_observed(&request.rollout)?;
+            serde_json::to_writer(
+                std::io::stdout().lock(),
+                &serde_json::json!({"retired": retired}),
+            )?;
+            return Ok(());
+        }
+        "health" => (BootPlatformRole::HealthObservation, "observe"),
+        "restart" => (BootPlatformRole::HostRestart, "request"),
+        "validate-selection" => {
+            installed_entry(&request.rollout.candidate)?;
+            installed_entry(&request.rollout.predecessor)?;
+            serde_json::to_writer(std::io::stdout().lock(), &serde_json::json!({"valid":true}))?;
+            return Ok(());
+        }
+        "validate" => {
+            let (root, contract) = boot_artifact_contract(&request.rollout.candidate)?;
+            contract_health_executable(&root, &contract)?;
+            installed_entry(&request.rollout.candidate)?;
+            installed_entry(&request.rollout.predecessor)?;
+            serde_json::to_writer(std::io::stdout().lock(), &serde_json::json!({"valid":true}))?;
+            return Ok(());
+        }
+        "select-fallback" => {
+            let entry = stable_entry(&installed_entry(&request.rollout.predecessor)?)?;
+            with_writable_boot(&tools, || {
+                run(
+                    &tools.bootctl,
+                    &["set-preferred", &entry],
+                    "selecting retained fallback",
+                )
+            })?;
+            let result = selection_observation(
+                "aos.systemd.boot-operation/v1",
+                &request.rollout,
+                Some(&entry),
+            )?;
+            serde_json::to_writer(std::io::stdout().lock(), &result)?;
+            return Ok(());
+        }
+        "observe-boot-failure" => {
+            let exhausted = exhausted_candidate_boot(&request.rollout)?;
+            serde_json::to_writer(
+                std::io::stdout().lock(),
+                &serde_json::json!({"exhausted":exhausted}),
+            )?;
+            return Ok(());
+        }
+        "resolve" => {
+            let entry = resolve_candidate_entry(&request.rollout)?;
+            serde_json::to_writer(
+                std::io::stdout().lock(),
+                &serde_json::json!({"entry": entry}),
+            )?;
+            return Ok(());
+        }
+        _ => bail!("unsupported boot platform operation"),
     };
-    let mut outputs = BTreeMap::from([(LocalKey::new("observation")?, observation.clone())]);
-    if role == BootPlatformRole::Selection && method == "resolve" {
-        outputs.insert(
-            LocalKey::new("entry")?,
-            AbilityValue::new(serde_json::Value::String(resolve_candidate_entry(
-                &rollout,
-            )?))
-            .map_err(anyhow::Error::msg)?,
-        );
-    }
-
-    Ok(InvocationResult {
-        schema: RESULT_SCHEMA.to_string(),
-        disposition: InvocationDisposition::Completed,
-        evidence: observation,
-        outputs,
-        native_context_digest: invocation.request.native_context_digest,
-    })
+    let result = apply(
+        role,
+        "aos.systemd.boot-operation/v1",
+        method,
+        &request.rollout,
+        request.entry.as_deref(),
+        &tools,
+    )?;
+    serde_json::to_writer(std::io::stdout().lock(), &result)?;
+    Ok(())
 }
 
-fn validate_inputs(
-    role: BootPlatformRole,
-    method: &str,
-    rollout: &RolloutRequest,
-    inputs: &AbilityValue,
-) -> Result<Option<String>> {
-    match role {
-        BootPlatformRole::ArtifactStorage
-        | BootPlatformRole::Success
-        | BootPlatformRole::HealthObservation => {
-            let requested: RolloutRequest = decode_value(inputs)?;
-            ensure!(
-                &requested == rollout,
-                "boot platform inputs differ from the checked rollout"
-            );
-            Ok(None)
-        }
-        BootPlatformRole::Selection => {
-            let requested: SelectionRequest = decode_value(inputs)?;
-            ensure!(
-                requested.rollout == *rollout,
-                "boot selection inputs differ from the checked rollout"
-            );
-            if method == "select" {
-                ensure!(
-                    requested.entry.is_some(),
-                    "boot selection requires a resolved entry"
-                );
-            }
-            Ok(requested.entry)
-        }
-        BootPlatformRole::HostRestart => {
-            let request: RestartRequest = decode_value(inputs)?;
-            match request.reason {
-                RestartReason::ActivateImage | RestartReason::RestoreImage => {}
-            }
-            Ok(None)
-        }
-    }
+fn value<T: Serialize>(value: &T) -> Result<serde_json::Value> {
+    serde_json::to_value(value).map_err(Into::into)
 }
 
 fn apply(
@@ -383,7 +316,7 @@ fn apply(
     rollout: &RolloutRequest,
     entry: Option<&str>,
     tools: &BootPlatformTools,
-) -> Result<AbilityValue> {
+) -> Result<serde_json::Value> {
     match (role, method) {
         (BootPlatformRole::ArtifactStorage, "retain") => {
             with_writable_boot(tools, || retain_payloads(rollout))?;
@@ -410,9 +343,18 @@ fn apply(
                 "resolved boot entry changed before selection"
             );
             with_writable_boot(tools, || {
+                promote_candidate(
+                    &rollout.candidate,
+                    selected_entry()?.as_deref() != Some(entry),
+                )?;
                 run(
                     &tools.bootctl,
-                    &["set-default", entry],
+                    &["set-oneshot", ""],
+                    "clearing obsolete one-shot selection",
+                )?;
+                run(
+                    &tools.bootctl,
+                    &["set-preferred", entry],
                     "selecting the next boot entry",
                 )
             })?;
@@ -466,25 +408,10 @@ fn apply(
     }
 }
 
-fn observe_role(
-    role: BootPlatformRole,
+fn storage_observation(
     observation_schema: &str,
     rollout: &RolloutRequest,
-    entry: Option<&str>,
-) -> Result<AbilityValue> {
-    match role {
-        BootPlatformRole::ArtifactStorage => storage_observation(observation_schema, rollout),
-        BootPlatformRole::Selection => selection_observation(observation_schema, rollout, entry),
-        BootPlatformRole::Success => success_observation(observation_schema, rollout),
-        BootPlatformRole::HealthObservation => health_observation(observation_schema, rollout),
-        BootPlatformRole::HostRestart => value(&RestartObservation {
-            schema: observation_schema,
-            state: "not-requested",
-        }),
-    }
-}
-
-fn storage_observation(observation_schema: &str, rollout: &RolloutRequest) -> Result<AbilityValue> {
+) -> Result<serde_json::Value> {
     let manifest = retention_directory(rollout)?.join("manifest.json");
     match fs::read(&manifest) {
         Ok(bytes) => {
@@ -510,7 +437,7 @@ fn selection_observation(
     observation_schema: &str,
     rollout: &RolloutRequest,
     expected: Option<&str>,
-) -> Result<AbilityValue> {
+) -> Result<serde_json::Value> {
     let selected = selected_entry()?;
     let candidate = resolve_candidate_entry(rollout)?;
     let requested = expected.unwrap_or(&candidate);
@@ -525,7 +452,10 @@ fn selection_observation(
     })
 }
 
-fn success_observation(observation_schema: &str, rollout: &RolloutRequest) -> Result<AbilityValue> {
+fn success_observation(
+    observation_schema: &str,
+    rollout: &RolloutRequest,
+) -> Result<serde_json::Value> {
     let running = running_entry(rollout)?;
     let selected = selected_entry()?;
     value(&SuccessObservation {
@@ -539,12 +469,40 @@ fn success_observation(observation_schema: &str, rollout: &RolloutRequest) -> Re
     })
 }
 
-fn health_observation(observation_schema: &str, rollout: &RolloutRequest) -> Result<AbilityValue> {
+fn health_observation(
+    observation_schema: &str,
+    rollout: &RolloutRequest,
+) -> Result<serde_json::Value> {
     let (root, contract) = boot_artifact_contract(&rollout.candidate)?;
     let executable = contract_health_executable(&root, &contract)?;
-    let status = Command::new(executable)
-        .status()
+    ensure!(
+        contract.health_arguments.len() <= 256
+            && contract
+                .health_arguments
+                .iter()
+                .all(|argument| argument.len() <= 16 * 1024 && !argument.contains('\0')),
+        "health arguments exceed their bound"
+    );
+    let mut child = Command::new(executable)
+        .env_clear()
+        .args(&contract.health_arguments)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
         .context("observing candidate image health")?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill()?;
+            child.wait()?;
+            bail!("image health program exceeded its 30-second bound");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
     let healthy = health_from_exit_code(status.code())?;
 
     value(&HealthObservation {
@@ -611,8 +569,11 @@ fn boot_artifact_contract(identity: &ImageIdentity) -> Result<(PathBuf, BootArti
 }
 
 fn contract_health_executable(root: &Path, contract: &BootArtifactContract) -> Result<PathBuf> {
-    let metadata = fs::symlink_metadata(&contract.health_executable)
-        .context("inspecting image health executable")?;
+    let selected = contract
+        .health_executable
+        .as_ref()
+        .context("qualified rollout has no explicit site health program")?;
+    let metadata = fs::symlink_metadata(selected).context("inspecting image health executable")?;
     ensure!(
         metadata.file_type().is_file(),
         "image health executable is not a regular file"
@@ -621,8 +582,7 @@ fn contract_health_executable(root: &Path, contract: &BootArtifactContract) -> R
         metadata.permissions().mode() & 0o111 != 0,
         "image health executable is not executable"
     );
-    let executable =
-        validate_store_executable(&contract.health_executable, "image health executable")?;
+    let executable = validate_store_executable(selected, "image health executable")?;
     ensure!(
         executable.starts_with(root),
         "image health executable is outside its authenticated contract"
@@ -639,40 +599,6 @@ fn validate_rollout(request: &RolloutRequest) -> Result<()> {
     Ok(())
 }
 
-fn require_method(
-    role: BootPlatformRole,
-    method: &MethodReference,
-    semantics: &MethodSemantics,
-) -> Result<()> {
-    let access = match (role, method.method.as_str()) {
-        (BootPlatformRole::ArtifactStorage, "observe")
-        | (BootPlatformRole::Selection, "resolve" | "observe")
-        | (BootPlatformRole::Success, "observe")
-        | (BootPlatformRole::HealthObservation, "observe")
-        | (BootPlatformRole::HostRestart, "observe") => AccessMode::Read,
-        (BootPlatformRole::ArtifactStorage, "retain" | "release")
-        | (BootPlatformRole::Selection, "select" | "clear")
-        | (BootPlatformRole::Success, "mark")
-        | (BootPlatformRole::HostRestart, "request") => AccessMode::ExclusiveWrite,
-        _ => bail!("handler invocation selects an unsupported boot platform method"),
-    };
-    ensure!(
-        *semantics == MethodSemantics::ordinary(access),
-        "boot platform method carries mismatched semantics"
-    );
-    Ok(())
-}
-
-const fn role_name(role: BootPlatformRole) -> &'static str {
-    match role {
-        BootPlatformRole::ArtifactStorage => "artifact-storage",
-        BootPlatformRole::Selection => "selection",
-        BootPlatformRole::Success => "success",
-        BootPlatformRole::HealthObservation => "health-observation",
-        BootPlatformRole::HostRestart => "host-restart",
-    }
-}
-
 fn image_state() -> Result<ImageState> {
     let path = Path::new(IMAGE_PROFILE).join("state.json");
     serde_json::from_slice(&fs::read(&path).with_context(|| format!("reading {}", path.display()))?)
@@ -686,7 +612,12 @@ fn generation_for<'a>(
     let matches = state
         .generations
         .iter()
-        .filter(|generation| generation.boot_artifact_contract == identity.boot_artifact_contract)
+        .filter(|generation| {
+            generation.boot_artifact_contract == identity.boot_artifact_contract
+                && generation.toplevel == identity.toplevel
+                && generation.native_executor_ref == identity.executor
+                && generation.state_version == identity.state_format
+        })
         .collect::<Vec<_>>();
     let [generation] = matches.as_slice() else {
         bail!("rollout image has no unique physical boot entry");
@@ -701,7 +632,20 @@ fn installed_entry(identity: &ImageIdentity) -> Result<String> {
         generation.boot_provider_state.schema == "aos.systemd.boot-generation-state/v1",
         "unsupported selected boot generation state"
     );
-    let recorded = safe_entry_path(&generation.boot_provider_state.evidence.installed_entry)?;
+    let evidence = &generation.boot_provider_state.evidence;
+    ensure!(!evidence.retired, "boot generation is physically retired");
+    let recorded = safe_entry_path(&evidence.installed_entry)?;
+    if let Some(source) = &evidence.uki_source_path {
+        let source = safe_source_path(source)?;
+        if source.starts_with("EFI/.aos-candidates") {
+            checked_staged_bytes(evidence, &Path::new(BOOT_ROOT).join(source))?;
+            return recorded
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(ToOwned::to_owned)
+                .context("invalid intended entry");
+        }
+    }
     let exact = Path::new(BOOT_ROOT).join(&recorded);
     if exact.is_file() {
         return recorded
@@ -736,6 +680,111 @@ fn installed_entry(identity: &ImageIdentity) -> Result<String> {
 
 fn resolve_candidate_entry(rollout: &RolloutRequest) -> Result<String> {
     stable_entry(&installed_entry(&rollout.candidate)?)
+}
+
+// A counted filename alone does not authorize fallback: bind the exact bytes,
+// firmware preference, actually booted entry, immutable root, and physical slot.
+fn exhausted_candidate_boot(rollout: &RolloutRequest) -> Result<bool> {
+    let state = image_state()?;
+    let predecessor = generation_for(&state, &rollout.predecessor)?;
+    let candidate = generation_for(&state, &rollout.candidate)?;
+    if state.running != predecessor.number {
+        return Ok(false);
+    }
+    let expected = stable_entry(&installed_entry(&rollout.candidate)?)?;
+    if firmware_entry("LoaderEntryPreferred")?.as_deref() != Some(&expected) {
+        return Ok(false);
+    }
+    let stem = expected
+        .strip_suffix(".efi")
+        .context("candidate entry has no suffix")?;
+    let directory = Path::new(BOOT_ROOT).join("EFI/Linux");
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(&directory)? {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("boot filename is not UTF-8"))?;
+        if name.ends_with(".efi") && (name == expected || name.starts_with(&format!("{stem}+"))) {
+            ensure!(
+                stable_entry(&name)? == expected,
+                "counted candidate filename changed"
+            );
+            entries.push(name);
+        }
+    }
+    ensure!(
+        entries.len() == 1,
+        "candidate counted entry is absent or ambiguous"
+    );
+    if !exhausted_entry(&entries[0])? {
+        return Ok(false);
+    }
+    let running_entry = stable_entry(&installed_entry(&rollout.predecessor)?)?;
+    ensure!(
+        firmware_entry("LoaderEntrySelected")?.as_deref() == Some(&running_entry),
+        "exhausted candidate did not boot the retained predecessor"
+    );
+    ensure!(
+        fs::read_link("/run/current-system")? == Path::new(&rollout.predecessor.toplevel),
+        "running immutable root differs from retained predecessor"
+    );
+    let active = aos_boot_identity::parse_normal(&fs::read_to_string("/proc/cmdline")?)?;
+    let slot = match active.slot {
+        aos_boot_identity::BootSlot::A => "A",
+        aos_boot_identity::BootSlot::B => "B",
+    };
+    ensure!(
+        predecessor.boot_provider_state.evidence._slot.as_deref() == Some(slot)
+            && candidate
+                .boot_provider_state
+                .evidence
+                ._slot
+                .as_deref()
+                .is_some_and(|candidate_slot| candidate_slot != slot),
+        "exhausted boot slot differs from retained physical pair"
+    );
+    let retained: RetentionManifest = serde_json::from_slice(&fs::read(
+        retention_directory(rollout)?.join("manifest.json"),
+    )?)?;
+    validate_retention(
+        rollout,
+        &retention_directory(rollout)?.join("manifest.json"),
+        &retained,
+    )?;
+    for (path, digest) in [
+        (directory.join(&entries[0]), retained.candidate_sha256),
+        (
+            directory.join(installed_entry(&rollout.predecessor)?),
+            retained.predecessor_sha256,
+        ),
+    ] {
+        ensure!(
+            fs::symlink_metadata(&path)?.is_file()
+                && Sha256Digest::of_bytes(&fs::read(&path)?) == digest,
+            "exhausted boot payload differs from authenticated retention"
+        );
+    }
+    Ok(true)
+}
+
+fn exhausted_entry(entry: &str) -> Result<bool> {
+    stable_entry(entry)?;
+    let stem = entry
+        .strip_suffix(".efi")
+        .context("boot entry has no suffix")?;
+    let Some((_, count)) = stem.rsplit_once('+') else {
+        return Ok(false);
+    };
+    let Some((left, done)) = count.split_once('-') else {
+        return Ok(false);
+    };
+    let left: u32 = left.parse().context("boot tries exceed their bound")?;
+    let done: u32 = done
+        .parse()
+        .context("completed boot tries exceed their bound")?;
+    Ok(left == 0 && done > 0)
 }
 
 fn running_entry(rollout: &RolloutRequest) -> Result<String> {
@@ -793,7 +842,12 @@ fn stable_entry(entry: &str) -> Result<String> {
         .context("boot entry has no .efi suffix")?;
     let stable = match stem.rsplit_once('+') {
         Some((base, tries))
-            if !base.is_empty() && tries.bytes().all(|byte| byte.is_ascii_digit()) =>
+            if !base.is_empty()
+                && !tries.is_empty()
+                && tries.split('-').count() <= 2
+                && tries.split('-').all(|part| {
+                    !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+                }) =>
         {
             base
         }
@@ -816,8 +870,16 @@ fn retain_payloads(rollout: &RolloutRequest) -> Result<()> {
     fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
     let predecessor_entry = installed_entry(&rollout.predecessor)?;
     let candidate_entry = installed_entry(&rollout.candidate)?;
-    let predecessor_digest = copy_payload(&predecessor_entry, &directory.join("predecessor.efi"))?;
-    let candidate_digest = copy_payload(&candidate_entry, &directory.join("candidate.efi"))?;
+    let predecessor_digest = copy_identity_payload(
+        &rollout.predecessor,
+        &predecessor_entry,
+        &directory.join("predecessor.efi"),
+    )?;
+    let candidate_digest = copy_identity_payload(
+        &rollout.candidate,
+        &candidate_entry,
+        &directory.join("candidate.efi"),
+    )?;
     let manifest = RetentionManifest {
         schema: "aos.boot.artifact-storage-manifest/v1".to_string(),
         candidate: rollout.candidate.boot_artifact_contract.clone(),
@@ -831,6 +893,185 @@ fn retain_payloads(rollout: &RolloutRequest) -> Result<()> {
         &directory.join("manifest.json"),
         &aos_contract::canonical::to_vec(&manifest)?,
     )
+}
+
+fn safe_source_path(value: &str) -> Result<PathBuf> {
+    if let Ok(path) = safe_entry_path(value) {
+        return Ok(path);
+    }
+    let parts = value.split('/').collect::<Vec<_>>();
+    ensure!(
+        parts.len() == 4
+            && parts[0] == "EFI"
+            && parts[1] == ".aos-candidates"
+            && parts[3] == "candidate.efi",
+        "invalid staged UKI source"
+    );
+    let generation: u32 = parts[2].parse()?;
+    ensure!(
+        generation > 0 && generation.to_string() == parts[2],
+        "invalid staged generation"
+    );
+    Ok(PathBuf::from(value))
+}
+
+fn checked_staged_bytes(
+    evidence: &SystemdBootGenerationEvidence,
+    source: &Path,
+) -> Result<Vec<u8>> {
+    ensure!(
+        fs::symlink_metadata(source)?.is_file(),
+        "staged UKI is not regular"
+    );
+    let size = evidence.uki_byte_size.context("staged UKI size missing")?;
+    ensure!(
+        size > 0 && size <= 512 * 1024 * 1024,
+        "staged UKI exceeds its byte bound"
+    );
+    let mut source_file = OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(source)?;
+    let mut bytes = Vec::new();
+    std::io::Read::by_ref(&mut source_file)
+        .take(size + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 == evidence.uki_byte_size.context("staged UKI size missing")?,
+        "staged UKI size changed"
+    );
+    let digest = evidence
+        .uki_sha256
+        .as_deref()
+        .context("staged UKI digest missing")?;
+    ensure!(
+        Sha256Digest::of_bytes(&bytes).to_string()
+            == if digest.starts_with("sha256:") {
+                digest.to_owned()
+            } else {
+                format!("sha256:{digest}")
+            },
+        "staged UKI digest changed"
+    );
+    Ok(bytes)
+}
+
+fn promote_candidate(identity: &ImageIdentity, reset_count: bool) -> Result<()> {
+    let state = image_state()?;
+    let evidence = &generation_for(&state, identity)?
+        .boot_provider_state
+        .evidence;
+    let Some(source) = &evidence.uki_source_path else {
+        return Ok(());
+    };
+    let source = safe_source_path(source)?;
+    if !source.starts_with("EFI/.aos-candidates") {
+        return Ok(());
+    }
+    let bytes = checked_staged_bytes(evidence, &Path::new(BOOT_ROOT).join(&source))?;
+    let destination = Path::new(BOOT_ROOT).join(safe_entry_path(&evidence.installed_entry)?);
+    if !prepare_counted_payload(
+        destination
+            .parent()
+            .context("candidate destination has no parent")?,
+        destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("candidate name is not UTF-8")?,
+        &bytes,
+        reset_count,
+    )? {
+        return Ok(());
+    }
+    for suffix in [".measurement", ".measurement.sig"] {
+        let sidecar = PathBuf::from(format!(
+            "{}{suffix}",
+            Path::new(BOOT_ROOT).join(&source).display()
+        ));
+        ensure!(
+            fs::symlink_metadata(&sidecar)?.is_file(),
+            "staged measurement sidecar is not regular"
+        );
+        write_atomic(
+            &PathBuf::from(format!("{}{suffix}", destination.display())),
+            &fs::read(sidecar)?,
+        )?;
+    }
+    write_atomic(&destination, &bytes)
+}
+
+// Replaying the same preferred selection preserves systemd's consumed tries.
+// A newly admitted selection from another preferred entry may reset only the
+// exact authenticated payload, after removing its old counted variant.
+fn prepare_counted_payload(
+    directory: &Path,
+    intended: &str,
+    bytes: &[u8],
+    reset: bool,
+) -> Result<bool> {
+    let stable = stable_entry(intended)?;
+    let stem = stable.strip_suffix(".efi").context("entry has no suffix")?;
+    let mut matches = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("entry name is not UTF-8"))?;
+        if name.ends_with(".efi") && (name == stable || name.starts_with(&format!("{stem}+"))) {
+            ensure!(
+                stable_entry(&name)? == stable,
+                "counted entry name is malformed"
+            );
+            ensure!(
+                entry.file_type()?.is_file() && fs::read(entry.path())? == bytes,
+                "existing counted payload differs from authenticated candidate"
+            );
+            matches.push(entry.path());
+        }
+    }
+    ensure!(
+        matches.len() <= 1,
+        "candidate has ambiguous counted entries"
+    );
+    if !reset && !matches.is_empty() {
+        return Ok(false);
+    }
+    for path in matches {
+        remove_regular_payload(&path)?;
+        for suffix in [".measurement", ".measurement.sig"] {
+            remove_regular_payload(&PathBuf::from(format!("{}{suffix}", path.display())))?;
+        }
+    }
+    Ok(true)
+}
+
+fn copy_identity_payload(
+    identity: &ImageIdentity,
+    entry: &str,
+    destination: &Path,
+) -> Result<Sha256Digest> {
+    let state = image_state()?;
+    let evidence = &generation_for(&state, identity)?
+        .boot_provider_state
+        .evidence;
+    if let Some(source) = &evidence.uki_source_path {
+        let source = safe_source_path(source)?;
+        if source.starts_with("EFI/.aos-candidates") {
+            let bytes = checked_staged_bytes(evidence, &Path::new(BOOT_ROOT).join(source))?;
+            let digest = Sha256Digest::of_bytes(&bytes);
+            if destination.exists() {
+                ensure!(
+                    fs::read(destination)? == bytes,
+                    "retained staged UKI changed"
+                );
+            } else {
+                write_atomic(destination, &bytes)?;
+            }
+            return Ok(digest);
+        }
+    }
+    copy_payload(entry, destination)
 }
 
 fn copy_payload(entry: &str, destination: &Path) -> Result<Sha256Digest> {
@@ -869,12 +1110,85 @@ fn release_payloads(rollout: &RolloutRequest) -> Result<()> {
     }
     if let Some(retained) = retained.as_ref() {
         remove_inactive_payload(rollout, retained)?;
+    } else {
+        ensure!(
+            physical_release_observed(rollout)?,
+            "missing retention manifest does not prove physical release"
+        );
     }
     match fs::remove_dir_all(&directory) {
         Ok(()) => sync_parent(&directory),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).with_context(|| format!("removing {}", directory.display())),
     }
+}
+
+// A missing private manifest alone cannot authorize discarding a physical
+// lease. Its exact inactive generation must already record completed retirement,
+// with both normal/counting and hidden payload namespaces durably empty.
+fn physical_release_observed(rollout: &RolloutRequest) -> Result<bool> {
+    let state = image_state()?;
+    if now_millis()? < rollout.retention_expires_at_millis {
+        return Ok(false);
+    }
+    let candidate = generation_for(&state, &rollout.candidate)?;
+    let predecessor = generation_for(&state, &rollout.predecessor)?;
+    let inactive = if state.running == candidate.number {
+        predecessor
+    } else if state.running == predecessor.number {
+        candidate
+    } else {
+        bail!("running image is outside the checked release pair");
+    };
+    if !inactive.boot_provider_state.evidence.retired
+        || state.pending == Some(inactive.number)
+        || state.active_rollout.is_some()
+    {
+        return Ok(false);
+    }
+    match fs::symlink_metadata(retention_directory(rollout)?) {
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    retired_payload_is_absent(Path::new(BOOT_ROOT), inactive)
+}
+
+fn retired_payload_is_absent(boot_root: &Path, inactive: &ImageGeneration) -> Result<bool> {
+    let evidence = &inactive.boot_provider_state.evidence;
+    let entry = safe_entry_path(&evidence.installed_entry)?;
+    let filename = entry
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("retired generation entry is not UTF-8")?;
+    let stable = stable_entry(filename)?;
+    let stem = stable.strip_suffix(".efi").context("entry has no suffix")?;
+    for member in fs::read_dir(boot_root.join("EFI/Linux"))? {
+        let member = member?;
+        let name = member.file_name();
+        let name = name.to_str().context("boot payload name is not UTF-8")?;
+        let payload = name
+            .strip_suffix(".measurement.sig")
+            .or_else(|| name.strip_suffix(".measurement"))
+            .unwrap_or(name);
+        if payload == stable
+            || (payload.starts_with(&format!("{stem}+")) && payload.ends_with(".efi"))
+        {
+            stable_entry(payload)?;
+            return Ok(false);
+        }
+    }
+    if let Some(source) = &evidence.uki_source_path {
+        let source = boot_root.join(safe_source_path(source)?);
+        for suffix in ["", ".measurement", ".measurement.sig"] {
+            match fs::symlink_metadata(PathBuf::from(format!("{}{suffix}", source.display()))) {
+                Ok(_) => return Ok(false),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(true)
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -952,22 +1266,105 @@ fn validate_retention(
 }
 
 fn remove_inactive_payload(rollout: &RolloutRequest, retained: &RetentionManifest) -> Result<()> {
+    let lock = rustix::fs::open(
+        Path::new(IMAGE_PROFILE).join("candidate-stage.lock"),
+        rustix::fs::OFlags::RDWR
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::from_raw_mode(0o600),
+    )?;
+    rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+        .context("another physical image mutation is active")?;
     let state = image_state()?;
     let candidate = generation_for(&state, &rollout.candidate)?;
     let predecessor = generation_for(&state, &rollout.predecessor)?;
-    let entry = if state.running == candidate.number {
-        &retained.predecessor_entry
+    let (inactive, entry) = if state.running == candidate.number {
+        (predecessor, &retained.predecessor_entry)
     } else if state.running == predecessor.number {
-        &retained.candidate_entry
+        (candidate, &retained.candidate_entry)
     } else {
         bail!("running image is outside the checked rollout pair");
     };
-    stable_entry(entry)?;
-    let path = Path::new(BOOT_ROOT).join("EFI/Linux").join(entry);
-    match fs::remove_file(&path) {
-        Ok(()) => sync_parent(&path),
+    let state_path = Path::new(IMAGE_PROFILE).join("state.json");
+    let mut document: serde_json::Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    ensure!(
+        document.get("pending").and_then(serde_json::Value::as_u64)
+            != Some(u64::from(inactive.number)),
+        "cannot retire a pending boot candidate"
+    );
+    ensure!(
+        document
+            .get("active_rollout")
+            .is_none_or(serde_json::Value::is_null),
+        "cannot retire an active rollout participant"
+    );
+    let stable = stable_entry(entry)?;
+    let stem = stable
+        .strip_suffix(".efi")
+        .context("invalid inactive entry")?;
+    for member in fs::read_dir(Path::new(BOOT_ROOT).join("EFI/Linux"))? {
+        let member = member?;
+        let Some(name) = member.file_name().to_str().map(ToOwned::to_owned) else {
+            continue;
+        };
+        let payload = name
+            .strip_suffix(".measurement.sig")
+            .or_else(|| name.strip_suffix(".measurement"))
+            .unwrap_or(&name);
+        if payload == stable
+            || (payload.starts_with(&format!("{stem}+")) && payload.ends_with(".efi"))
+        {
+            stable_entry(payload)?;
+            remove_regular_payload(&member.path())?;
+        }
+    }
+    if let Some(source) = &inactive.boot_provider_state.evidence.uki_source_path {
+        let source = safe_source_path(source)?;
+        if source.starts_with("EFI/.aos-candidates") {
+            let path = Path::new(BOOT_ROOT).join(source);
+            for suffix in ["", ".measurement", ".measurement.sig"] {
+                remove_regular_payload(&PathBuf::from(format!("{}{suffix}", path.display())))?;
+            }
+            if let Some(parent) = path.parent() {
+                match fs::remove_dir(parent) {
+                    Ok(()) => sync_parent(parent)?,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+    }
+    // Publish retirement only after inactive physical bytes are durably absent.
+    // The historical native sources remain available for profile provenance.
+    let generations = document
+        .get_mut("generations")
+        .and_then(serde_json::Value::as_array_mut)
+        .context("image state omits generation index")?;
+    let generation = generations
+        .iter_mut()
+        .find(|generation| {
+            generation.get("number").and_then(serde_json::Value::as_u64)
+                == Some(u64::from(inactive.number))
+        })
+        .context("inactive generation disappeared")?;
+    let evidence = generation
+        .pointer_mut("/boot_provider_state/evidence")
+        .and_then(serde_json::Value::as_object_mut)
+        .context("inactive generation omits evidence")?;
+    evidence.insert("retired".into(), serde_json::Value::Bool(true));
+    write_atomic(&state_path, &serde_json::to_vec(&document)?)
+}
+
+fn remove_regular_payload(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            ensure!(metadata.is_file(), "inactive boot payload is not regular");
+            fs::remove_file(path)?;
+            sync_parent(path)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("removing {}", path.display())),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -985,26 +1382,65 @@ fn sync_parent(path: &Path) -> Result<()> {
 }
 
 fn selected_entry() -> Result<Option<String>> {
-    let path = Path::new(BOOT_ROOT).join("loader/loader.conf");
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
-    };
-    let defaults = text
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            line.strip_prefix("default ")
-                .map(str::trim)
-                .filter(|entry| !entry.is_empty())
-        })
+    // bootctl stores the preferred/default selection in firmware, overriding
+    // loader.conf. Preferred honors boot counts, preserving exhausted-entry fallback.
+    for name in [
+        "LoaderEntryOneShot",
+        "LoaderEntryPreferred",
+        "LoaderEntryDefault",
+    ] {
+        let path = Path::new("/sys/firmware/efi/efivars")
+            .join(format!("{name}-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"));
+        match fs::read(&path) {
+            Ok(bytes) => return Ok(Some(parse_efi_entry(&bytes)?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("reading selected boot entry EFI variable"),
+        }
+    }
+    Ok(None)
+}
+
+fn firmware_entry(name: &str) -> Result<Option<String>> {
+    let path = Path::new("/sys/firmware/efi/efivars")
+        .join(format!("{name}-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"));
+    match fs::read(path) {
+        Ok(bytes) => parse_efi_entry(&bytes).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).context("reading actual boot entry EFI variable"),
+    }
+}
+
+fn parse_efi_entry(bytes: &[u8]) -> Result<String> {
+    ensure!(
+        bytes.len() >= 6 && bytes.len() <= 4096 && bytes.len() % 2 == 0,
+        "boot entry EFI variable has an invalid length"
+    );
+    let words = bytes[4..]
+        .chunks_exact(2)
+        .map(|part| u16::from_le_bytes([part[0], part[1]]))
         .collect::<Vec<_>>();
     ensure!(
-        defaults.len() <= 1,
-        "boot loader configuration has ambiguous defaults"
+        words.last() == Some(&0) && !words[..words.len() - 1].contains(&0),
+        "boot entry EFI variable is not one terminated string"
     );
-    Ok(defaults.first().map(|entry| (*entry).to_string()))
+    let entry = String::from_utf16(&words[..words.len() - 1])?;
+    ensure!(
+        !entry.is_empty()
+            && matches!(
+                Path::new(&entry)
+                    .components()
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                [Component::Normal(_)]
+            ),
+        "EFI selected entry is malformed"
+    );
+    // systemd may expose a type-2 ID with or without its filename suffix.
+    stable_entry(&if entry.ends_with(".efi") {
+        entry
+    } else {
+        format!("{entry}.efi")
+    })
 }
 
 fn with_writable_boot<T>(
@@ -1034,6 +1470,10 @@ fn with_writable_boot<T>(
 
 fn run(executable: &Path, arguments: &[&str], action: &str) -> Result<()> {
     let status = Command::new(executable)
+        .env_clear()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
         .args(arguments)
         .status()
         .with_context(|| action.to_string())?;
@@ -1044,6 +1484,121 @@ fn run(executable: &Path, arguments: &[&str], action: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn firmware_selection_parser_rejects_ambiguous_strings() {
+        let mut bytes = vec![7, 0, 0, 0];
+        bytes.extend(
+            "candidate-gen12+2-1.efi"
+                .encode_utf16()
+                .chain([0])
+                .flat_map(u16::to_le_bytes),
+        );
+        assert_eq!(parse_efi_entry(&bytes).unwrap(), "candidate-gen12.efi");
+        bytes.extend([0, 0]);
+        assert!(parse_efi_entry(&bytes).is_err());
+        assert!(parse_efi_entry(&[7, 0, 0, 0, 1]).is_err());
+    }
+
+    #[test]
+    fn staged_source_is_confined_and_bound_to_exact_bytes() {
+        assert!(safe_source_path("EFI/.aos-candidates/12/candidate.efi").is_ok());
+        for path in [
+            "EFI/.aos-candidates/0/candidate.efi",
+            "EFI/.aos-candidates/01/candidate.efi",
+            "EFI/.aos-candidates/12/other.efi",
+            "EFI/.aos-candidates/../candidate.efi",
+        ] {
+            assert!(safe_source_path(path).is_err());
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("candidate.efi");
+        fs::write(&path, b"authenticated UKI").unwrap();
+        let evidence = SystemdBootGenerationEvidence {
+            installed_entry: "EFI/Linux/candidate-gen12+3.efi".into(),
+            uki_source_path: Some("EFI/.aos-candidates/12/candidate.efi".into()),
+            uki_sha256: Some(Sha256Digest::of_bytes(b"authenticated UKI").to_string()),
+            uki_byte_size: Some(17),
+            retired: false,
+            _slot: Some("A".into()),
+            _recovery: None,
+        };
+        assert_eq!(
+            checked_staged_bytes(&evidence, &path).unwrap(),
+            b"authenticated UKI"
+        );
+        fs::write(&path, b"substituted bytes").unwrap();
+        assert!(checked_staged_bytes(&evidence, &path).is_err());
+    }
+
+    #[test]
+    fn selection_replay_preserves_counts_and_new_selection_resets_only_owned_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let consumed = directory.path().join("candidate+0-3.efi");
+        fs::write(&consumed, b"signed candidate").unwrap();
+        assert!(
+            !prepare_counted_payload(
+                directory.path(),
+                "candidate+3.efi",
+                b"signed candidate",
+                false
+            )
+            .unwrap()
+        );
+        assert!(consumed.exists());
+        assert!(
+            prepare_counted_payload(
+                directory.path(),
+                "candidate+3.efi",
+                b"other candidate",
+                true
+            )
+            .is_err()
+        );
+        assert!(consumed.exists());
+        assert!(
+            prepare_counted_payload(
+                directory.path(),
+                "candidate+3.efi",
+                b"signed candidate",
+                true
+            )
+            .unwrap()
+        );
+        assert!(!consumed.exists());
+    }
+
+    #[test]
+    fn exhaustion_requires_zero_remaining_and_actual_completed_tries() {
+        assert!(exhausted_entry("candidate+0-3.efi").unwrap());
+        for name in [
+            "candidate+3.efi",
+            "candidate+1-2.efi",
+            "candidate+0-0.efi",
+            "candidate.efi",
+            "candidate+0.efi",
+        ] {
+            assert!(!exhausted_entry(name).unwrap(), "{name}");
+        }
+        for name in [
+            "candidate+0-3-1.efi",
+            "candidate+0-.efi",
+            "candidate+0-9999999999999.efi",
+        ] {
+            assert!(exhausted_entry(name).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn counted_entry_names_preserve_systemd_retry_progress() {
+        assert_eq!(
+            stable_entry("candidate-gen12+2-1.efi").unwrap(),
+            "candidate-gen12.efi"
+        );
+        for name in ["candidate+.efi", "candidate+2-.efi", "candidate+2-1-1.efi"] {
+            assert!(stable_entry(name).is_err());
+        }
+    }
 
     #[test]
     fn stable_entry_removes_only_a_terminal_boot_count() {
@@ -1075,4 +1630,82 @@ mod tests {
         assert!(health_from_exit_code(Some(2)).is_err());
         assert!(health_from_exit_code(None).is_err());
     }
+    #[test]
+    fn completed_release_requires_all_owned_payload_variants_and_sidecars_absent() {
+        let directory = tempfile::tempdir().unwrap();
+        let boot = directory.path();
+        let installed = boot.join("EFI/Linux");
+        let hidden = boot.join("EFI/.aos-candidates/2");
+        fs::create_dir_all(&installed).unwrap();
+        fs::create_dir_all(&hidden).unwrap();
+        let generation: ImageGeneration = serde_json::from_value(serde_json::json!({
+            "number":2, "toplevel":"/nix/store/image", "native_executor_ref":"/nix/store/executor",
+            "state_version":"1", "boot_artifact_contract":"/nix/store/contract",
+            "boot_provider_state": {"schema":"aos.systemd.boot-generation-state/v1",
+                "evidence":{"installed-entry":"EFI/Linux/gen2+3.efi", "uki-source-path":"EFI/.aos-candidates/2/candidate.efi", "retired":true}}
+        })).unwrap();
+        fs::write(installed.join("foreign.efi"), b"foreign payload").unwrap();
+        assert!(retired_payload_is_absent(boot, &generation).unwrap());
+
+        let counted = installed.join("gen2+0-3.efi");
+        fs::write(&counted, b"owned payload").unwrap();
+        assert!(!retired_payload_is_absent(boot, &generation).unwrap());
+        fs::remove_file(&counted).unwrap();
+        let sidecar = installed.join("gen2+0-3.efi.measurement.sig");
+        fs::write(&sidecar, b"owned measurement").unwrap();
+        assert!(!retired_payload_is_absent(boot, &generation).unwrap());
+        fs::remove_file(&sidecar).unwrap();
+        let hidden_sidecar = hidden.join("candidate.efi.measurement");
+        fs::write(&hidden_sidecar, b"staged measurement").unwrap();
+        assert!(!retired_payload_is_absent(boot, &generation).unwrap());
+        fs::remove_file(&hidden_sidecar).unwrap();
+
+        assert!(retired_payload_is_absent(boot, &generation).unwrap());
+        assert_eq!(
+            fs::read(installed.join("foreign.efi")).unwrap(),
+            b"foreign payload"
+        );
+    }
+}
+
+fn validate_store_executable(path: &Path, label: &str) -> Result<PathBuf> {
+    ensure!(path.is_absolute(), "{label} path is not absolute");
+    ensure!(
+        path.components()
+            .all(|component| matches!(component, Component::RootDir | Component::Normal(_))),
+        "{label} path is not normalized"
+    );
+
+    let store = Path::new("/nix/store");
+    let relative = path
+        .strip_prefix(store)
+        .with_context(|| format!("{label} is outside the immutable store"))?;
+    let package = relative
+        .components()
+        .next()
+        .and_then(|component| match component {
+            Component::Normal(package) => Some(package),
+            _ => None,
+        })
+        .with_context(|| format!("{label} store path has no package identity"))?;
+    ensure!(
+        relative.components().count() > 1,
+        "{label} does not name a file inside its package"
+    );
+
+    let package_root = fs::canonicalize(store.join(package))
+        .with_context(|| format!("resolving {label} package root"))?;
+    let executable = fs::canonicalize(path).with_context(|| format!("resolving {label}"))?;
+    ensure!(
+        executable.starts_with(package_root),
+        "{label} escapes its selected package"
+    );
+    let metadata = fs::metadata(&executable).with_context(|| format!("inspecting {label}"))?;
+    ensure!(metadata.is_file(), "{label} is not a regular file");
+    ensure!(
+        metadata.permissions().mode() & 0o111 != 0,
+        "{label} is not executable"
+    );
+
+    Ok(executable)
 }

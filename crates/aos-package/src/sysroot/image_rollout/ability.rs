@@ -60,7 +60,7 @@ pub(crate) enum AbilityRolloutOutcome {
     CandidateHealthy,
     /// The candidate failed health and must return authority to the predecessor.
     CandidateUnhealthy,
-    /// The predecessor remains active after candidate health failure.
+    /// The predecessor remains active after candidate boot or health failure.
     PredecessorFallback,
 }
 
@@ -270,6 +270,7 @@ impl NativeImageRolloutBackend {
         request: &ImageRolloutRequest,
         _entry_id: &str,
     ) -> Result<AbilityRolloutState> {
+        let _image_lock = self.image_mutation_lock()?;
         let mut execution = self.require_state(request)?;
         if execution.phase == AbilityRolloutPhase::Selected {
             return Ok(execution);
@@ -290,6 +291,39 @@ impl NativeImageRolloutBackend {
             &mut images,
             execution.candidate_generation,
             rollout,
+        )?;
+        execution.phase = AbilityRolloutPhase::Selected;
+        self.write_state(&execution)?;
+        Ok(execution)
+    }
+
+    /// Selects an admitted ordinary candidate after durable preparation.
+    ///
+    /// # Errors
+    /// Returns an error for changed executor identity, an unprepared candidate,
+    /// conflicting image intent, or failure to durably publish the selection.
+    pub(crate) fn select_unqualified(
+        &self,
+        request: &ImageRolloutRequest,
+    ) -> Result<AbilityRolloutState> {
+        let _image_lock = self.image_mutation_lock()?;
+        let mut execution = self.require_state(request)?;
+        if execution.phase == AbilityRolloutPhase::Selected {
+            return Ok(execution);
+        }
+        ensure!(
+            execution.phase == AbilityRolloutPhase::Prepared,
+            "ordinary selection is not prepared"
+        );
+        ensure!(
+            request.predecessor.executor == request.candidate.executor,
+            "executor replacement requires qualified rollout"
+        );
+        let mut images = self.authenticate_pair(request)?;
+        crate::sysroot::record_pending_unqualified_image_selection(
+            &self.image_profile,
+            &mut images,
+            execution.candidate_generation,
         )?;
         execution.phase = AbilityRolloutPhase::Selected;
         self.write_state(&execution)?;
@@ -331,7 +365,7 @@ impl NativeImageRolloutBackend {
                     );
                     PhysicalRolloutObservation::CandidateBooted
                 }
-                ImageRolloutStatus::HealthFailed => {
+                ImageRolloutStatus::HealthFailed | ImageRolloutStatus::BootFailed => {
                     if images.running == execution.candidate_generation {
                         PhysicalRolloutObservation::CandidateBooted
                     } else {
@@ -360,7 +394,7 @@ impl NativeImageRolloutBackend {
                 );
                 PhysicalRolloutObservation::Healthy
             }
-            ImageRolloutStatus::HealthFailed => {
+            ImageRolloutStatus::HealthFailed | ImageRolloutStatus::BootFailed => {
                 ensure!(
                     images.running == execution.predecessor_generation,
                     "failed rollout does not name the running predecessor"
@@ -369,6 +403,50 @@ impl NativeImageRolloutBackend {
             }
             _ => bail!("terminal rollout carries a nonterminal status"),
         })
+    }
+
+    /// Records an authenticated exhausted boot counter without claiming candidate health.
+    ///
+    /// The selected platform must have independently observed the exhausted
+    /// candidate payload and the running predecessor before this mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the exact retained pair remains selected with
+    /// the predecessor running and no candidate health assessment recorded.
+    pub(crate) fn record_boot_failure(&self, request: &ImageRolloutRequest) -> Result<()> {
+        let mut state = self.require_state(request)?;
+        let mut images = self.authenticate_pair(request)?;
+        self.authenticate_retention(request)?;
+        ensure!(
+            state.phase == AbilityRolloutPhase::Selected
+                && state.outcome.is_none()
+                && images.running == state.predecessor_generation
+                && images.pending == Some(state.candidate_generation),
+            "exhausted boot observation differs from selected retained pair"
+        );
+        let rollout = images
+            .active_rollout
+            .as_mut()
+            .context("exhausted boot has no active rollout")?;
+        ensure!(
+            rollout.candidate == state.candidate_generation
+                && rollout.prior == state.predecessor_generation
+                && rollout.state_version == request.candidate.state_format
+                && matches!(
+                    rollout.status,
+                    ImageRolloutStatus::Staged | ImageRolloutStatus::CandidateBooted
+                ),
+            "boot failure would replace a different rollout or candidate health result"
+        );
+        rollout.status = ImageRolloutStatus::BootFailed;
+        write_atomic_durable(
+            &self.image_profile.join(crate::sysroot::IMAGE_STATE_FILE),
+            &serde_json::to_vec_pretty(&images)?,
+        )?;
+        state.phase = AbilityRolloutPhase::FallbackRetained;
+        state.outcome = Some(AbilityRolloutOutcome::PredecessorFallback);
+        self.write_state(&state)
     }
 
     /// Requires a physically finalized rollout outcome.
@@ -769,13 +847,21 @@ impl NativeImageRolloutBackend {
         ensure!(
             matches!(
                 state.phase,
-                AbilityRolloutPhase::HealthyRetained
+                AbilityRolloutPhase::Selected
+                    | AbilityRolloutPhase::HealthyRetained
                     | AbilityRolloutPhase::FallbackRetained
                     | AbilityRolloutPhase::Retiring
             ),
             "only a terminal rollout lease can retire"
         );
         let expected_active = match state.outcome {
+            None if matches!(
+                state.phase,
+                AbilityRolloutPhase::Selected | AbilityRolloutPhase::Retiring
+            ) && request.candidate.executor == request.predecessor.executor =>
+            {
+                "candidate"
+            }
             Some(AbilityRolloutOutcome::CandidateHealthy)
                 if matches!(
                     state.phase,
@@ -873,7 +959,9 @@ impl NativeImageRolloutBackend {
             "durable rollout generations differ from authenticated images"
         );
         ensure!(
-            images.running == predecessor.number || images.running == candidate.number,
+            state.phase == AbilityRolloutPhase::Retired
+                || images.running == predecessor.number
+                || images.running == candidate.number,
             "current active image is outside the retained rollout pair"
         );
         Ok(())
@@ -903,6 +991,22 @@ impl NativeImageRolloutBackend {
         request: &ImageRolloutRequest,
         state: &AbilityRolloutState,
     ) -> Result<()> {
+        // A final retired receipt remains historical proof when later images run.
+        // Active and retiring leases still require the original physical outcome.
+        if state.phase == AbilityRolloutPhase::Retired {
+            return Ok(());
+        }
+        if state.outcome.is_none() {
+            let images = self.authenticate_pair(request)?;
+            ensure!(
+                request.candidate.executor == request.predecessor.executor
+                    && images.pending.is_none()
+                    && images.active_rollout.is_none()
+                    && images.running == state.candidate_generation,
+                "ordinary image selection has not completed authenticated boot"
+            );
+            return Ok(());
+        }
         let expected = match self.observe_terminal_outcome(request)? {
             PhysicalRolloutObservation::Healthy => AbilityRolloutOutcome::CandidateHealthy,
             PhysicalRolloutObservation::Fallback => AbilityRolloutOutcome::PredecessorFallback,
@@ -923,11 +1027,6 @@ impl NativeImageRolloutBackend {
         let running = images
             .running_generation()
             .context("image state has no running generation")?;
-        if !image_matches(running, &request.candidate)
-            && !image_matches(running, &request.predecessor)
-        {
-            bail!("current active image is outside the retained rollout pair")
-        }
         self.authenticate_ordinary_image_roots(running)?;
 
         let directory = self.execution_directory(request)?;
@@ -948,7 +1047,36 @@ impl NativeImageRolloutBackend {
             .image_profile
             .join(format!("image-gen-{}", image.number));
         require_exact_root(&directory.join("toplevel"), &image.toplevel)?;
-        require_exact_root(&directory.join("executor"), &image.native_executor_ref)
+        require_exact_root(
+            &directory.join("native-executor"),
+            &image.native_executor_ref,
+        )?;
+        require_exact_root(
+            &directory.join("boot-artifact-contract"),
+            &image.boot_artifact_contract,
+        )?;
+        require_exact_root(
+            &directory.join("module-library"),
+            &image.module_library.store_path,
+        )?;
+        require_exact_root(
+            &directory.join("evaluation-descriptor"),
+            &image.evaluation_descriptor,
+        )
+    }
+
+    fn image_mutation_lock(&self) -> Result<fs::File> {
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(self.image_profile.join("candidate-stage.lock"))?;
+        rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+            .context("another physical image mutation is active")?;
+        Ok(lock)
     }
 
     fn authenticate_pair(&self, request: &ImageRolloutRequest) -> Result<ImageGenerationState> {
@@ -1229,12 +1357,13 @@ mod tests {
             ),
             registry: "test".into(),
             kernel_path: None,
-            evaluator_ref: format!(
-                "/nix/store/{}-base",
-                char::from(b'p' + seed).to_string().repeat(32)
-            ),
-            module_abi: 1,
-            base_lib_abi_hash: "sha256:test".into(),
+            module_library: crate::types::ModuleLibraryIdentity {
+                store_path: "/nix/store/11111111111111111111111111111111-module-library".into(),
+                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                nar_size: 1,
+            },
+            evaluation_descriptor:
+                "/nix/store/22222222222222222222222222222222-evaluation/evaluation.json".into(),
             created_at: "2026-09-10T00:00:00Z".into(),
         }
     }
@@ -1397,6 +1526,77 @@ mod tests {
         if publications > 4 {
             fixture.backend.retain(&fixture.request).unwrap();
         }
+    }
+
+    #[test]
+    fn exhausted_boot_fallback_never_records_candidate_health() {
+        let fixture = Fixture::new();
+        fixture.backend.retain(&fixture.request).unwrap();
+        fixture.backend.prepare(&fixture.request).unwrap();
+        fixture.backend.drain(&fixture.request).unwrap();
+        fixture
+            .backend
+            .select(&fixture.request, "installed-entry-2")
+            .unwrap();
+        fixture
+            .backend
+            .record_boot_failure(&fixture.request)
+            .unwrap();
+
+        let images = fixture.images();
+        assert_eq!(images.running, 1);
+        assert_eq!(
+            images.active_rollout.as_ref().unwrap().status,
+            ImageRolloutStatus::BootFailed
+        );
+        let state = fixture.backend.require_state(&fixture.request).unwrap();
+        assert_eq!(state.phase, AbilityRolloutPhase::FallbackRetained);
+        assert_eq!(
+            state.outcome,
+            Some(AbilityRolloutOutcome::PredecessorFallback)
+        );
+        assert_eq!(
+            fixture.backend.observe(&fixture.request).unwrap(),
+            PhysicalRolloutObservation::FallbackPendingCommit
+        );
+        fixture
+            .backend
+            .verify_boot_commit(&fixture.request, 1)
+            .unwrap();
+        fixture.backend.hold(&fixture.request).unwrap();
+        assert!(
+            fixture
+                .backend
+                .record_health(&fixture.request, false)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn exhausted_boot_cannot_replace_a_running_candidate_health_branch() {
+        let fixture = Fixture::new();
+        fixture.backend.retain(&fixture.request).unwrap();
+        fixture.backend.prepare(&fixture.request).unwrap();
+        fixture.backend.drain(&fixture.request).unwrap();
+        fixture
+            .backend
+            .select(&fixture.request, "installed-entry-2")
+            .unwrap();
+        let mut images = fixture.images();
+        images.running = 2;
+        images.active_rollout.as_mut().unwrap().status = ImageRolloutStatus::CandidateBooted;
+        fixture.write_images(&images);
+
+        assert!(
+            fixture
+                .backend
+                .record_boot_failure(&fixture.request)
+                .is_err()
+        );
+        assert_eq!(
+            fixture.images().active_rollout.unwrap().status,
+            ImageRolloutStatus::CandidateBooted
+        );
     }
 
     #[test]
@@ -1765,6 +1965,86 @@ mod tests {
                 .is_err()
         );
         assert_eq!(fs::read(&state_path).unwrap(), before);
+    }
+
+    #[test]
+    fn historical_retirement_remains_observable_after_a_later_image_boots() {
+        let fixture = Fixture::new();
+        complete_terminal_rollout(&fixture, 2, ImageRolloutStatus::Succeeded);
+        fixture.backend.retire(&fixture.request, 2_000).unwrap();
+        let mut images = fixture.images();
+        let mut third = images.generations[1].clone();
+        third.number = 3;
+        third.toplevel = "/nix/store/33333333333333333333333333333333-third-image".into();
+        crate::store::create_image_gc_roots(
+            &fixture.backend.image_profile.join("image-gen-3"),
+            &third,
+        )
+        .unwrap();
+        images.generations.push(third);
+        images.running = 3;
+        fixture.write_images(&images);
+
+        let observed = fixture
+            .backend
+            .observe_operation(&fixture.request, "retire")
+            .unwrap();
+        assert_eq!(observed.phase, AbilityRolloutPhase::Retired);
+        assert_eq!(
+            observed.outcome,
+            Some(AbilityRolloutOutcome::CandidateHealthy)
+        );
+        assert!(
+            fixture
+                .backend
+                .preflight_operation(&fixture.request, "select", 2_000)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn ordinary_retirement_requires_actual_boot_and_expired_retention() {
+        let mut fixture = Fixture::new();
+        fixture.request.candidate.executor = fixture.request.predecessor.executor.clone();
+        let mut images = fixture.images();
+        images.generations[1].native_executor_ref = fixture.request.candidate.executor.clone();
+        fixture.write_images(&images);
+        let executor_root = fixture
+            .backend
+            .image_profile
+            .join("image-gen-2/native-executor");
+        fs::remove_file(&executor_root).unwrap();
+        std::os::unix::fs::symlink(&fixture.request.candidate.executor, &executor_root).unwrap();
+
+        fixture.backend.retain(&fixture.request).unwrap();
+        fixture.backend.prepare(&fixture.request).unwrap();
+        fixture
+            .backend
+            .select_unqualified(&fixture.request)
+            .unwrap();
+        assert!(
+            fixture
+                .backend
+                .preflight_operation(&fixture.request, "retire", 2_000)
+                .is_err()
+        );
+        images = fixture.images();
+        images.running = 2;
+        images.pending = None;
+        fixture.write_images(&images);
+        assert!(fixture.backend.retire(&fixture.request, 1_999).is_err());
+
+        let retired = fixture.backend.retire(&fixture.request, 2_000).unwrap();
+        assert_eq!(retired.phase, AbilityRolloutPhase::Retired);
+        assert_eq!(retired.outcome, None);
+        fixture
+            .backend
+            .observe_operation(&fixture.request, "retire")
+            .unwrap();
+        assert_eq!(
+            fs::read_link(fixture.backend.image_profile.join("image-gen-2/toplevel")).unwrap(),
+            Path::new(&fixture.request.candidate.toplevel)
+        );
     }
 
     #[test]
