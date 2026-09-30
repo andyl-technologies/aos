@@ -112,6 +112,15 @@ enum Command {
         /// HMAC key used to authorize Native-issued storage plans.
         #[arg(long, env = "HUB_STORAGE_WORK_KEY_FILE")]
         storage_work_key_file: Option<PathBuf>,
+        /// Read independently signed direct provider/runtime acceptance entries.
+        #[arg(long, env = "HUB_DIRECT_UPLOAD_ACCEPTANCE_FILE")]
+        direct_upload_acceptance_file: Option<PathBuf>,
+        /// Read the separately trusted direct qualification reviewer public keys.
+        #[arg(long, env = "HUB_DIRECT_UPLOAD_REVIEW_KEYS_FILE")]
+        direct_upload_review_keys_file: Option<PathBuf>,
+        /// Read the independent physical guard challenge and reply key.
+        #[arg(long, env = "HUB_DIRECT_UPLOAD_GUARD_KEY_FILE")]
+        direct_upload_guard_key_file: Option<PathBuf>,
         /// PEM certificate chain for native TLS termination.
         #[arg(long, env = "HUB_TLS_CERTIFICATE_FILE")]
         tls_certificate_file: Option<PathBuf>,
@@ -303,6 +312,14 @@ enum Provider {
 enum WorkerCommand {
     /// Render a hybrid Worker profile for a prebuilt shim.mjs artifact.
     RenderHybridConfig(HybridConfigArgs),
+    /// Provision selected hybrid resources and update its protected Worker secrets.
+    DeployHybrid(HybridDeployArgs),
+    /// Install a hybrid Worker with explicit protected Native-matched secrets.
+    InstallHybrid(HybridDeployArgs),
+    /// Publish independent acceptance for the exact unchanged deployed Worker.
+    ActivateHybridDirectUpload(ActivateHybridDirectArgs),
+    /// Capture current protected direct upload bindings for independent review.
+    InspectHybridDirectUpload(InspectHybridDirectArgs),
     /// Provision provider resources, deploy the Worker, and set its secrets.
     ///
     /// Provider-specific only: `HubDb` applies the closed schema on first use.
@@ -361,6 +378,183 @@ struct HybridConfigArgs {
     /// Read reviewed direct upload transport clock coordinates from JSON.
     #[arg(long)]
     direct_upload_clock_file: Option<PathBuf>,
+    /// Read independently signed Worker runtime acceptance from closed JSON.
+    #[arg(long)]
+    direct_upload_acceptance_file: Option<PathBuf>,
+    /// Read the independently trusted Ed25519 reviewer public key as hex text.
+    #[arg(long, requires = "direct_upload_acceptance_namespace_id")]
+    direct_upload_qualification_public_key_file: Option<PathBuf>,
+    /// Select the purpose-specific Cloudflare KV acceptance namespace ID.
+    #[arg(long, requires = "direct_upload_qualification_public_key_file")]
+    direct_upload_acceptance_namespace_id: Option<String>,
+    /// Select the dedicated bulk verification queue name.
+    #[arg(long, requires_all = ["direct_upload_metadata_queue", "direct_upload_maximum_parallel_objects"])]
+    direct_upload_bulk_queue: Option<String>,
+    /// Select the separate semantic metadata verification queue name.
+    #[arg(long, requires_all = ["direct_upload_bulk_queue", "direct_upload_maximum_parallel_objects"])]
+    direct_upload_metadata_queue: Option<String>,
+    /// Set the bounded queue concurrency ceiling to measure and accept.
+    #[arg(long, requires_all = ["direct_upload_bulk_queue", "direct_upload_metadata_queue"])]
+    direct_upload_maximum_parallel_objects: Option<u32>,
+    /// Enable the separately authenticated hosted SDK measurement endpoint.
+    #[arg(long)]
+    direct_upload_conformance: bool,
+    /// Enable separately authenticated isolated qualification fixtures.
+    #[arg(long, requires_all = ["direct_upload_qualification_maximum_provider_requests", "direct_upload_qualification_maximum_object_bytes"])]
+    direct_upload_qualification: bool,
+    /// Set the fixed candidate provider request capacity before measurement.
+    #[arg(long, requires = "direct_upload_qualification")]
+    direct_upload_qualification_maximum_provider_requests: Option<u32>,
+    /// Set the fixed candidate object size bound before measurement.
+    #[arg(long, requires = "direct_upload_qualification")]
+    direct_upload_qualification_maximum_object_bytes: Option<u64>,
+}
+
+impl HybridConfigArgs {
+    fn to_config(&self) -> Result<aos_hub::cloudflare::HybridDeployConfig> {
+        use aos_hub::cloudflare;
+
+        let trust = match (
+            &self.direct_upload_qualification_public_key_file,
+            &self.direct_upload_acceptance_namespace_id,
+        ) {
+            (Some(path), Some(namespace)) => Some(
+                cloudflare::HybridDirectUploadTrustConfig::from_public_key_file(
+                    path,
+                    namespace.clone(),
+                )?,
+            ),
+            (None, None) => None,
+            _ => anyhow::bail!(
+                "direct reviewer key and acceptance namespace must be selected together"
+            ),
+        };
+        let queues = match (
+            &self.direct_upload_bulk_queue,
+            &self.direct_upload_metadata_queue,
+            self.direct_upload_maximum_parallel_objects,
+        ) {
+            (Some(bulk), Some(metadata), Some(maximum_parallel_objects)) => {
+                Some(cloudflare::HybridDirectUploadQueueConfig {
+                    bulk: bulk.clone(),
+                    metadata: metadata.clone(),
+                    maximum_parallel_objects,
+                })
+            }
+            (None, None, None) => None,
+            _ => anyhow::bail!(
+                "direct bulk/metadata queues and measured concurrency must be selected together"
+            ),
+        };
+        let qualification = match (
+            self.direct_upload_qualification,
+            self.direct_upload_qualification_maximum_provider_requests,
+            self.direct_upload_qualification_maximum_object_bytes,
+        ) {
+            (true, Some(requests), Some(bytes)) => {
+                Some(cloudflare::HybridDirectUploadQualificationConfig {
+                    maximum_provider_requests: aos_hub_core::direct_upload::WireInteger::new(
+                        u64::from(requests),
+                    ),
+                    maximum_object_bytes: aos_hub_core::direct_upload::WireInteger::new(bytes),
+                })
+            }
+            (false, None, None) => None,
+            _ => anyhow::bail!(
+                "direct isolated qualification requires explicit opt-in and both candidate bounds"
+            ),
+        };
+        Ok(cloudflare::HybridDeployConfig {
+            name: self.name.clone(),
+            bucket: self.bucket.clone(),
+            deployment_id: self.deployment_id.clone(),
+            external_url: self.external_url.clone(),
+            native_origin_url: self.native_origin_url.clone(),
+            custom_domains: self.domains.clone(),
+            serve_assets: self.serve_assets,
+            direct_upload: self
+                .direct_upload_profile_file
+                .as_deref()
+                .map(cloudflare::HybridDirectUploadDeployConfig::from_file)
+                .transpose()?,
+            direct_upload_clock: self
+                .direct_upload_clock_file
+                .as_deref()
+                .map(cloudflare::HybridDirectUploadClockConfig::from_file)
+                .transpose()?,
+            direct_upload_trust: trust,
+            direct_upload_queues: queues,
+            direct_upload_acceptance: self
+                .direct_upload_acceptance_file
+                .as_deref()
+                .map(cloudflare::HybridDirectUploadAcceptanceConfig::from_file)
+                .transpose()?,
+            direct_upload_conformance: self.direct_upload_conformance,
+            direct_upload_qualification: qualification,
+        })
+    }
+}
+
+#[derive(Args)]
+struct HybridDeployArgs {
+    #[command(flatten)]
+    config: HybridConfigArgs,
+    /// Read the Native-matched ingress key from an owner-private file.
+    #[arg(long)]
+    hybrid_ingress_key_file: Option<PathBuf>,
+    /// Read the Native-matched storage work key from an owner-private file.
+    #[arg(long)]
+    storage_work_key_file: Option<PathBuf>,
+    /// Read the separate Native-matched physical guard key from a private file.
+    #[arg(long)]
+    direct_upload_guard_key_file: Option<PathBuf>,
+    /// Read the separate durable journal authentication key from a private file.
+    #[arg(long)]
+    direct_upload_journal_key_file: Option<PathBuf>,
+    /// Read the persistent scoped S3 access key ID from an owner-private file.
+    #[arg(long, requires = "direct_upload_secret_access_key_file")]
+    direct_upload_access_key_id_file: Option<PathBuf>,
+    /// Read the matching persistent scoped S3 secret key from a private file.
+    #[arg(long, requires = "direct_upload_access_key_id_file")]
+    direct_upload_secret_access_key_file: Option<PathBuf>,
+    /// Read the separate hosted measurement control key from a private file.
+    #[arg(long)]
+    direct_upload_conformance_key_file: Option<PathBuf>,
+}
+
+impl HybridDeployArgs {
+    fn secret_files(&self) -> aos_hub::cloudflare::HybridDeploySecretFiles {
+        aos_hub::cloudflare::HybridDeploySecretFiles {
+            hybrid_ingress_key_file: self.hybrid_ingress_key_file.clone(),
+            storage_work_key_file: self.storage_work_key_file.clone(),
+            direct_upload_guard_key_file: self.direct_upload_guard_key_file.clone(),
+            direct_upload_journal_key_file: self.direct_upload_journal_key_file.clone(),
+            direct_upload_access_key_id_file: self.direct_upload_access_key_id_file.clone(),
+            direct_upload_secret_access_key_file: self.direct_upload_secret_access_key_file.clone(),
+            direct_upload_conformance_key_file: self.direct_upload_conformance_key_file.clone(),
+        }
+    }
+}
+
+#[derive(Args)]
+struct ActivateHybridDirectArgs {
+    #[command(flatten)]
+    config: HybridConfigArgs,
+    /// Authenticate current protected Worker bindings with the existing guard key.
+    #[arg(long)]
+    direct_upload_guard_key_file: PathBuf,
+}
+
+#[derive(Args)]
+struct InspectHybridDirectArgs {
+    #[command(flatten)]
+    config: HybridConfigArgs,
+    /// Authenticate current protected Worker bindings with the existing guard key.
+    #[arg(long)]
+    direct_upload_guard_key_file: PathBuf,
+    /// Read exact independently selected external profiles to inspect from JSON.
+    #[arg(long)]
+    direct_upload_external_selectors_file: Option<PathBuf>,
 }
 
 /// The provider selector for `worker` subcommands that take no other options.
@@ -687,6 +881,9 @@ async fn main() -> Result<()> {
             hybrid_worker_url,
             hybrid_origin_url,
             storage_work_key_file,
+            direct_upload_acceptance_file,
+            direct_upload_review_keys_file,
+            direct_upload_guard_key_file,
             tls_certificate_file,
             tls_private_key_file,
             deployment_id,
@@ -752,6 +949,9 @@ async fn main() -> Result<()> {
             } else {
                 None
             };
+            let mut direct_runtime: Option<
+                Arc<dyn aos_hub::direct_upload::DirectUploadTransportFactory>,
+            > = None;
             let hybrid_runtime = if hybrid {
                 anyhow::ensure!(
                     cli.database_url.as_deref().is_some_and(|url| {
@@ -790,6 +990,19 @@ async fn main() -> Result<()> {
                     aos_hub::auth::seal::read_secret_file(&ingress_key_file)?,
                 )?;
                 let storage_key = aos_hub::auth::seal::read_secret_file(&storage_key_file)?;
+                match (direct_upload_acceptance_file, direct_upload_review_keys_file, direct_upload_guard_key_file) {
+                    (Some(acceptance_file), Some(review_keys_file), Some(guard_key_file)) => {
+                        let acceptances = aos_hub::direct_upload::authority::NativeDirectUploadAcceptances::from_files(
+                            &acceptance_file, &review_keys_file,
+                        )?;
+                        let guard_key = aos_hub::auth::seal::read_secret_file(&guard_key_file)?;
+                        direct_runtime = Some(Arc::new(aos_hub::direct_upload::authority::NativeDirectUploadRuntime::new(
+                            &worker_url, &deployment_id, &storage_key, &guard_key, acceptances,
+                        )?));
+                    }
+                    (None, None, None) => {}
+                    _ => anyhow::bail!("direct acceptance, review keys and independent guard key files must be configured together"),
+                }
                 let work = aos_hub::storage_work::RemoteStorageWorkClient::new(
                     &worker_url,
                     deployment_id.clone(),
@@ -798,6 +1011,12 @@ async fn main() -> Result<()> {
                 work.check_console_ready().await?;
                 Some((deployment_id, Arc::new(ingress_key), Arc::new(work)))
             } else {
+                anyhow::ensure!(
+                    direct_upload_acceptance_file.is_none()
+                        && direct_upload_review_keys_file.is_none()
+                        && direct_upload_guard_key_file.is_none(),
+                    "direct runtime qualification requires hybrid topology"
+                );
                 None
             };
             let tls = match (tls_certificate_file, tls_private_key_file) {
@@ -1543,8 +1762,14 @@ async fn main() -> Result<()> {
                 };
                 let app = match hybrid_runtime {
                     Some((deployment_id, key, work)) => {
-                        aos_hub::server::router_with_hybrid_ingress(state, key, deployment_id, work)
-                            .await
+                        aos_hub::server::router_with_hybrid_ingress_and_direct(
+                            state,
+                            key,
+                            deployment_id,
+                            work,
+                            direct_runtime,
+                        )
+                        .await
                     }
                     None => aos_hub::server::router_with_transport(state, Some(transport)).await,
                 };
@@ -1556,8 +1781,14 @@ async fn main() -> Result<()> {
             } else {
                 let app = match hybrid_runtime {
                     Some((deployment_id, key, work)) => {
-                        aos_hub::server::router_with_hybrid_ingress(state, key, deployment_id, work)
-                            .await
+                        aos_hub::server::router_with_hybrid_ingress_and_direct(
+                            state,
+                            key,
+                            deployment_id,
+                            work,
+                            direct_runtime,
+                        )
+                        .await
                     }
                     None => router(state).await,
                 };
@@ -1669,27 +1900,55 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
     use aos_hub::cloudflare;
 
     if let WorkerCommand::RenderHybridConfig(args) = &command {
-        let direct_upload = args
-            .direct_upload_profile_file
-            .as_deref()
-            .map(cloudflare::HybridDirectUploadDeployConfig::from_file)
-            .transpose()?;
-        let config = cloudflare::HybridDeployConfig {
-            name: args.name.clone(),
-            bucket: args.bucket.clone(),
-            deployment_id: args.deployment_id.clone(),
-            external_url: args.external_url.clone(),
-            native_origin_url: args.native_origin_url.clone(),
-            custom_domains: args.domains.clone(),
-            serve_assets: args.serve_assets,
-            direct_upload,
-            direct_upload_clock: args
-                .direct_upload_clock_file
-                .as_deref()
-                .map(cloudflare::HybridDirectUploadClockConfig::from_file)
-                .transpose()?,
-        };
+        let config = args.to_config()?;
         print!("{}", cloudflare::render_hybrid_wrangler_toml(&config)?);
+        return Ok(());
+    }
+    if let WorkerCommand::DeployHybrid(args) | WorkerCommand::InstallHybrid(args) = &command {
+        let config = args.config.to_config()?;
+        let mode = if matches!(&command, WorkerCommand::InstallHybrid(_)) {
+            cloudflare::DeployMode::Install
+        } else {
+            cloudflare::DeployMode::Update
+        };
+        cloudflare::deploy_hybrid(
+            &cloudflare::Assets::from_env()?,
+            &config,
+            &args.secret_files(),
+            mode,
+        )
+        .await?;
+        println!("hybrid Worker deployed; direct uploads require independent acceptance for its final version");
+        return Ok(());
+    }
+    if let WorkerCommand::ActivateHybridDirectUpload(args) = &command {
+        let config = args.config.to_config()?;
+        cloudflare::activate_hybrid_direct_upload(
+            &cloudflare::Assets::from_env()?,
+            &config,
+            &args.direct_upload_guard_key_file,
+        )
+        .await?;
+        println!(
+            "independently signed acceptance published for the current unchanged Worker version"
+        );
+        return Ok(());
+    }
+    if let WorkerCommand::InspectHybridDirectUpload(args) = &command {
+        let config = args.config.to_config()?;
+        let selectors = args
+            .direct_upload_external_selectors_file
+            .as_deref()
+            .map(cloudflare::read_hybrid_direct_upload_selectors)
+            .transpose()?
+            .unwrap_or_default();
+        let identity = cloudflare::inspect_hybrid_direct_upload(
+            &config,
+            &args.direct_upload_guard_key_file,
+            selectors,
+        )
+        .await?;
+        println!("{}", serde_json::to_string_pretty(&identity)?);
         return Ok(());
     }
 
@@ -1746,6 +2005,10 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         WorkerCommand::BootstrapRoot(_)
         | WorkerCommand::BackupBookmark(_)
         | WorkerCommand::RestoreBookmark(_)
+        | WorkerCommand::DeployHybrid(_)
+        | WorkerCommand::InstallHybrid(_)
+        | WorkerCommand::ActivateHybridDirectUpload(_)
+        | WorkerCommand::InspectHybridDirectUpload(_)
         | WorkerCommand::RenderHybridConfig(_) => Provider::Cloudflare,
     };
     // Only Cloudflare is implemented; the match documents the extension point
@@ -1763,6 +2026,10 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         WorkerCommand::BootstrapRoot(_)
         | WorkerCommand::BackupBookmark(_)
         | WorkerCommand::RestoreBookmark(_)
+        | WorkerCommand::DeployHybrid(_)
+        | WorkerCommand::InstallHybrid(_)
+        | WorkerCommand::ActivateHybridDirectUpload(_)
+        | WorkerCommand::InspectHybridDirectUpload(_)
         | WorkerCommand::RenderHybridConfig(_) => {}
         WorkerCommand::Provision(args) => {
             let cfg = provision_worker(&assets, args).await?;
@@ -2319,8 +2586,30 @@ mod production_vm_coverage {
         }
     }
 
+    enum NativeCommandQualification {
+        NativeOperationsVm,
+        OfflineSnapshotCustody {
+            dispatch_arm: &'static str,
+            operation: &'static str,
+        },
+    }
+
+    fn command_qualification(leaf: &str) -> NativeCommandQualification {
+        match leaf {
+            "snapshot capture-sqlite" => NativeCommandQualification::OfflineSnapshotCustody {
+                dispatch_arm: "SnapshotCommand::CaptureSqlite",
+                operation: "workflow::capture",
+            },
+            "snapshot verify-capture" => NativeCommandQualification::OfflineSnapshotCustody {
+                dispatch_arm: "SnapshotCommand::VerifyCapture",
+                operation: "workflow::verify",
+            },
+            _ => NativeCommandQualification::NativeOperationsVm,
+        }
+    }
+
     #[test]
-    fn every_native_command_leaf_is_owned_by_the_native_vm_test() {
+    fn every_native_command_leaf_has_executable_qualification_ownership() {
         let mut leaves = Vec::new();
         collect_native_leaves(&Cli::command(), &mut Vec::new(), &mut leaves);
         leaves.sort();
@@ -2335,14 +2624,33 @@ mod production_vm_coverage {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
+        let snapshot_dispatch =
+            fs::read_to_string(repository.join("crates/aos-hub/src/snapshot_input.rs"))
+                .expect("offline snapshot command dispatch must be readable");
+        let snapshot_qualification =
+            fs::read_to_string(repository.join("crates/aos-hub/src/snapshot/tests.rs"))
+                .expect("offline snapshot custody qualification must be readable");
         let missing = leaves
             .into_iter()
-            .filter(|leaf| !source.contains(leaf))
+            .filter(|leaf| match command_qualification(leaf) {
+                NativeCommandQualification::NativeOperationsVm => !source.contains(leaf),
+                NativeCommandQualification::OfflineSnapshotCustody { dispatch_arm, operation } => {
+                    // These commands run before Hub initialization. Their real
+                    // encrypted capture/readback and custody qualification has
+                    // its own executable fixture rather than a running server.
+                    !snapshot_dispatch.contains(dispatch_arm)
+                        || !snapshot_dispatch.contains(operation)
+                        || !snapshot_qualification.contains(
+                            "async fn actual_capture_publishes_private_files_and_verifies_without_source_mutation()",
+                        )
+                        || !snapshot_qualification.contains(operation)
+                }
+            })
             .collect::<Vec<_>>();
 
         assert!(
             missing.is_empty(),
-            "native aos-hub commands without executable VM ownership:\n{}",
+            "native aos-hub commands without executable qualification ownership:\n{}",
             missing.join("\n")
         );
     }

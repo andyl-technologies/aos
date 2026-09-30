@@ -191,6 +191,7 @@ fn capabilities() -> DirectUploadCapabilities {
         maximum_batch_items: 64,
         maximum_batch_parts: 64,
         maximum_object_bytes: WireInteger::new(MAX_DIRECT_OBJECT_BYTES),
+        minimum_object_bytes: WireInteger::new(0),
         minimum_part_bytes: WireInteger::new(MIN_DIRECT_PART_BYTES),
         maximum_part_bytes: WireInteger::new(MAX_DIRECT_PART_BYTES),
         profiles: vec![DirectProviderProfile {
@@ -229,6 +230,59 @@ fn descriptor() -> Descriptor {
     serde_json::from_value(serde_json::json!({
         "mediaType":"application/octet-stream", "digest":aos_oci_types::Sha256Digest::digest(b"private-object").to_string(), "size":14,
     })).unwrap()
+}
+
+#[tokio::test]
+async fn coordinator_checks_object_bounds_before_oci_allocation_or_empty_begin() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    for minimum in [0, 1] {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let empty_source = directory.path().join("empty-object");
+        std::fs::write(&empty_source, []).unwrap();
+        let server = Server::start(|_| vec![]).await;
+        let hub = HubClient::connect_with_token(&server.origin, "original-oci-token").unwrap();
+        let mut capabilities = capabilities();
+        capabilities.minimum_object_bytes = WireInteger::new(minimum);
+        capabilities.maximum_object_bytes = WireInteger::new(1);
+        let coordinator = DirectUploadCoordinator::open(
+            &hub,
+            capabilities,
+            &directory.path().join("direct.sqlite"),
+            ProviderOptions::default(),
+        )
+        .await
+        .unwrap();
+        let empty_sha = aos_oci_types::Sha256Digest::digest(b"").encoded();
+
+        let allocation = coordinator.prepare_oci_allocation(&empty_sha, 0).await;
+
+        if minimum == 0 {
+            assert!(allocation.unwrap().upload_id.is_none());
+        } else {
+            assert_eq!(allocation.unwrap_err(), DirectClientError::Invalid);
+            let result = coordinator
+                .stage_paths(vec![aos_remote::DirectStagePath {
+                    source: empty_source,
+                    expected_sha256: Some(empty_sha.clone()),
+                    target: DirectUploadTarget::OciBlob {
+                        upload_id: "retained-upload".into(),
+                    },
+                    phase: DirectDependencyPhase::Content,
+                }])
+                .await;
+            assert_eq!(result, Err(DirectClientError::Invalid));
+        }
+        assert_eq!(
+            coordinator
+                .prepare_oci_allocation(&empty_sha, 2)
+                .await
+                .unwrap_err(),
+            DirectClientError::Invalid
+        );
+        assert!(server.requests().is_empty());
+    }
 }
 
 #[tokio::test]
@@ -718,7 +772,8 @@ async fn manifest_document_bound_is_enforced_before_network_and_accepts_exact_li
 
 #[tokio::test]
 async fn local_stage_paths_refuses_fifo_before_any_control_or_provider_effect() {
-    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+
     let directory = tempfile::tempdir().unwrap();
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let fifo = directory.path().join("source.fifo");
@@ -736,7 +791,17 @@ async fn local_stage_paths_refuses_fifo_before_any_control_or_provider_effect() 
         metrics: metrics.clone(),
         ..Default::default()
     };
-    let coordinator = options.open(&hub, capabilities()).await.unwrap();
+    let opened = options.open(&hub, capabilities()).await;
+    let root_owner = std::fs::metadata("/").unwrap().uid();
+    if ![0, rustix::process::geteuid().as_raw()].contains(&root_owner) {
+        // Custody must refuse a foreign sandbox root before opening any source.
+        assert_eq!(opened.unwrap_err(), DirectClientError::Checkpoint);
+        assert!(!directory.path().join("direct.sqlite").exists());
+        assert!(server.requests().is_empty());
+        assert_eq!(metrics.snapshot().provider_attempts, 0);
+        return;
+    }
+    let coordinator = opened.unwrap();
 
     let result = tokio::time::timeout(
         Duration::from_secs(1),

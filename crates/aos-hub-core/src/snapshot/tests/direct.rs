@@ -13,7 +13,7 @@ fn credential(purpose: &str) -> DirectCredentialRevision {
     }
 }
 
-fn admission() -> DirectUploadAdmission {
+pub(super) fn admission() -> DirectUploadAdmission {
     let placement = DirectPlacement {
         placement_id: WireInteger::new(1),
         placement_resource_version: WireInteger::new(2),

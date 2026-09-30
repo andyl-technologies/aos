@@ -20,6 +20,29 @@ pub(crate) const SOURCE_CHUNK_BYTES: usize = 64 * 1024;
 /// Stable protocol geometry, above the provider's minimum nonfinal part size.
 pub(crate) const BROWSER_PART_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Checks the original file size against its authenticated direct upload policy.
+///
+/// # Errors
+/// Returns an explicit direct upload error when the file falls outside the
+/// advertised object bounds. Refusal does not authorize another transfer mode.
+pub(crate) fn validate_object_size(
+    capabilities: &DirectUploadCapabilities,
+    byte_size: u64,
+) -> Result<(), String> {
+    if byte_size < capabilities.minimum_object_bytes.get() {
+        return Err(format!(
+            "The direct upload minimum file size is {} bytes for these destinations",
+            capabilities.minimum_object_bytes.get()
+        ));
+    }
+
+    if byte_size > capabilities.maximum_object_bytes.get() {
+        return Err("The selected file exceeds the direct upload limit".into());
+    }
+
+    Ok(())
+}
+
 /// Original checksum identity of one source range, independent of placement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -304,6 +327,7 @@ pub(crate) struct DirectActorProof {
     principal: String,
     target: DirectCapabilitiesTarget,
     valid_until: u64,
+    capabilities: DirectUploadCapabilities,
 }
 
 impl std::fmt::Debug for DirectActorProof {
@@ -339,7 +363,27 @@ impl DirectActorProof {
             principal: principal.into(),
             target: target.clone(),
             valid_until: capabilities.valid_until.get(),
+            capabilities: capabilities.clone(),
         })
+    }
+
+    /// Preserves the original reviewed authority while renewing its lifetime.
+    ///
+    /// # Errors
+    /// Refuses changed actor, owner, provider profiles or admission limits before
+    /// an original control request can be replayed with the renewed bearer.
+    pub(crate) fn validate_capabilities(
+        &self,
+        original: &DirectUploadCapabilities,
+    ) -> Result<(), String> {
+        let mut expected = original.clone();
+        expected.valid_until = self.capabilities.valid_until;
+
+        if expected != self.capabilities {
+            return Err("The original direct upload policy changed during renewal".into());
+        }
+
+        Ok(())
     }
 
     /// Checks whether a memory proof still binds the exact captured bearer/scope.
@@ -894,6 +938,238 @@ mod tests {
             .push(&vec![0; SOURCE_CHUNK_BYTES + 1])
             .is_err());
     }
+
+    #[test]
+    fn object_policy_accepts_managed_empty_and_refuses_external_empty_and_oversize() {
+        let mut capabilities = actor_capabilities(&"aa".repeat(32));
+
+        validate_object_size(&capabilities, 0).unwrap();
+        validate_object_size(&capabilities, MAX_DIRECT_OBJECT_BYTES).unwrap();
+        assert!(validate_object_size(&capabilities, MAX_DIRECT_OBJECT_BYTES + 1).is_err());
+
+        capabilities.minimum_object_bytes = WireInteger::new(1);
+
+        let error = validate_object_size(&capabilities, 0).unwrap_err();
+        assert!(error.contains("The direct upload minimum file size is 1 bytes"));
+        validate_object_size(&capabilities, 1).unwrap();
+        validate_object_size(&capabilities, MAX_DIRECT_OBJECT_BYTES).unwrap();
+        assert!(validate_object_size(&capabilities, MAX_DIRECT_OBJECT_BYTES + 1).is_err());
+    }
+
+    #[test]
+    fn actor_proof_pins_every_reviewed_limit_and_profile_except_expiry() {
+        let original = actor_capabilities(&"aa".repeat(32));
+        for change in 0..7 {
+            let mut renewed = original.clone();
+            renewed.valid_until = WireInteger::new(original.valid_until.get() + 60);
+            match change {
+                0 => {}
+                1 => renewed.minimum_object_bytes = WireInteger::new(1),
+                2 => renewed.maximum_object_bytes = WireInteger::new(1024),
+                3 => renewed.minimum_part_bytes = WireInteger::new(BROWSER_PART_BYTES),
+                4 => renewed.maximum_batch_items = 32,
+                5 => renewed.config_generation = WireInteger::new(2),
+                _ => renewed.profiles[0].profile_fingerprint = "bb".repeat(32),
+            }
+            let proof = DirectActorProof::from_authenticated(
+                "renewed-bearer",
+                &original.deployment_id,
+                &original.principal_id,
+                &original.target,
+                &renewed,
+                CURRENT_SIGNED_AT,
+            )
+            .unwrap();
+
+            assert_eq!(proof.validate_capabilities(&original).is_ok(), change == 0);
+            // A cached proof must pass the same pin check as a fresh proof.
+            assert_eq!(
+                proof.clone().validate_capabilities(&original).is_ok(),
+                change == 0
+            );
+        }
+    }
+
+    #[test]
+    fn http_renewal_with_raised_minimum_sends_no_original_empty_begin_replay() {
+        use std::io::{Read as _, Write as _};
+        use std::net::{TcpListener, TcpStream};
+
+        fn exchange(
+            address: std::net::SocketAddr,
+            path: &str,
+            bearer: &str,
+            body: &[u8],
+        ) -> (u16, Vec<u8>) {
+            let mut stream = TcpStream::connect(address).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            write!(stream, "POST {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {bearer}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+            stream.write_all(body).unwrap();
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).unwrap();
+            let end = response
+                .windows(4)
+                .position(|bytes| bytes == b"\r\n\r\n")
+                .unwrap();
+            let status = std::str::from_utf8(&response[..end])
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .parse()
+                .unwrap();
+            (status, response[end + 4..].to_vec())
+        }
+
+        for renewed_bearer in ["original-bearer", "renewed-bearer"] {
+            let original = actor_capabilities(&"aa".repeat(32));
+            let mut renewed = original.clone();
+            renewed.minimum_object_bytes = WireInteger::new(1);
+            let reply = encode_direct_control(&renewed).unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let worker = std::thread::spawn(move || {
+                let mut requests = Vec::new();
+                for (status, body) in [(401, Vec::new()), (200, reply)] {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                        .unwrap();
+                    let mut request = Vec::new();
+                    loop {
+                        let mut bytes = [0u8; 4096];
+                        let count = stream.read(&mut bytes).unwrap();
+                        assert!(count > 0);
+                        request.extend_from_slice(&bytes[..count]);
+                        assert!(request.len() <= MAX_DIRECT_CONTROL_BYTES + 8192);
+                        let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                        else {
+                            continue;
+                        };
+                        let length: usize = std::str::from_utf8(&request[..end])
+                            .unwrap()
+                            .lines()
+                            .find_map(|line| line.strip_prefix("Content-Length: "))
+                            .unwrap()
+                            .parse()
+                            .unwrap();
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                    requests.push(request);
+                    write!(stream, "HTTP/1.1 {status} Reply\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                    stream.write_all(&body).unwrap();
+                }
+                listener.set_nonblocking(true).unwrap();
+                assert_eq!(
+                    listener.accept().unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock
+                );
+                requests
+            });
+            let mut retained = head();
+            retained.deployment_id = original.deployment_id.clone();
+            retained.principal_id = original.principal_id.clone();
+            retained.intent.byte_size = WireInteger::new(0);
+            retained.intent.expected_sha256 = hex::encode(Sha256::digest(b""));
+            let before = retained.clone();
+            let begin = DirectBeginBatch {
+                operation_id: operation_id("begin", &retained.run_nonce, &retained.intent).unwrap(),
+                items: vec![retained.intent.clone()],
+            };
+            let body = encode_direct_control(&begin).unwrap();
+            let proof = DirectActorProof::from_authenticated(
+                "original-bearer",
+                &original.deployment_id,
+                &original.principal_id,
+                &original.target,
+                &original,
+                CURRENT_SIGNED_AT,
+            )
+            .unwrap();
+            proof.validate_capabilities(&original).unwrap();
+            let initial = proof
+                .dispatch_with(
+                    "original-bearer",
+                    &original.deployment_id,
+                    &original.principal_id,
+                    &original.target,
+                    CURRENT_SIGNED_AT,
+                    |bearer| {
+                        exchange(
+                            address,
+                            aos_proto_types::DIRECT_UPLOAD_SERVICE_BEGIN_BATCH_PATH,
+                            bearer,
+                            &body,
+                        )
+                    },
+                )
+                .unwrap();
+            assert_eq!(initial.0, 401);
+            let request = encode_direct_control(&DirectGetCapabilities {
+                target: original.target.clone(),
+            })
+            .unwrap();
+            let (status, bytes) = exchange(
+                address,
+                aos_proto_types::DIRECT_UPLOAD_SERVICE_GET_CAPABILITIES_PATH,
+                renewed_bearer,
+                &request,
+            );
+            assert_eq!(status, 200);
+            let discovered: DirectUploadCapabilities = decode_direct_control(&bytes).unwrap();
+            let renewed_proof = DirectActorProof::from_authenticated(
+                renewed_bearer,
+                &original.deployment_id,
+                &original.principal_id,
+                &original.target,
+                &discovered,
+                CURRENT_SIGNED_AT,
+            )
+            .unwrap();
+
+            let replay = renewed_proof
+                .validate_capabilities(&original)
+                .and_then(|()| {
+                    renewed_proof.dispatch_with(
+                        renewed_bearer,
+                        &original.deployment_id,
+                        &original.principal_id,
+                        &original.target,
+                        CURRENT_SIGNED_AT,
+                        |bearer| {
+                            exchange(
+                                address,
+                                aos_proto_types::DIRECT_UPLOAD_SERVICE_BEGIN_BATCH_PATH,
+                                bearer,
+                                &body,
+                            )
+                        },
+                    )
+                });
+
+            assert!(replay.is_err());
+            assert_eq!(retained, before);
+            let captured = worker.join().unwrap();
+            assert_eq!(captured.len(), 2);
+            let original_request = String::from_utf8(captured[0].clone()).unwrap();
+            assert_eq!(
+                original_request
+                    .split_once("\r\n\r\n")
+                    .unwrap()
+                    .1
+                    .as_bytes(),
+                body
+            );
+            assert!(String::from_utf8(captured[1].clone())
+                .unwrap()
+                .contains(&format!("Authorization: Bearer {renewed_bearer}")));
+        }
+    }
+
     fn head() -> ResumeHead {
         ResumeHead {
             scope: "aa".repeat(32),
@@ -1203,6 +1479,7 @@ mod tests {
             maximum_batch_items: MAX_DIRECT_BATCH_ITEMS as u32,
             maximum_batch_parts: MAX_DIRECT_BATCH_PARTS as u32,
             maximum_object_bytes: WireInteger::new(MAX_DIRECT_OBJECT_BYTES),
+            minimum_object_bytes: WireInteger::new(0),
             minimum_part_bytes: WireInteger::new(MIN_DIRECT_PART_BYTES),
             maximum_part_bytes: WireInteger::new(MAX_DIRECT_PART_BYTES),
             profiles: vec![DirectProviderProfile {

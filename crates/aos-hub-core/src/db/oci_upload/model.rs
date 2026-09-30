@@ -30,6 +30,10 @@ pub struct OciUploadRecord {
     pub maximum_size: u64,
     /// Contiguous accepted byte count.
     pub uploaded_size: u64,
+    /// Independently authenticated storage-local source SHA-256 for direct uploads.
+    pub authenticated_source_sha256: Option<Sha256Digest>,
+    /// Independently counted storage-local source bytes, separate from streamed progress.
+    pub authenticated_source_bytes: Option<u64>,
     /// Placement reserved for every immutable staging chunk.
     ///
     /// Hybrid manifest admission freezes this address before the Worker writes.
@@ -268,6 +272,9 @@ pub(super) fn row_to_oci_upload(row: &Row) -> Result<OciUploadRecord> {
         expected_size: row.get::<Option<i64>>(8)?.map(parse_size).transpose()?,
         maximum_size: parse_size(row.get(9)?)?,
         uploaded_size,
+        authenticated_source_sha256: row.get::<Option<String>>(38)?
+            .map(|value| parse_digest(format!("sha256:{value}"))).transpose()?,
+        authenticated_source_bytes: row.get::<Option<i64>>(39)?.map(parse_size).transpose()?,
         staging_placement_id: row.get(11)?,
         staging_placement_resource_version: row.get(12)?,
         staging_binding_id: row.get(13)?,

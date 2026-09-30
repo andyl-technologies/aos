@@ -52,6 +52,20 @@ impl DurableObject for ExternalObjectGuard {
     }
 
     async fn fetch(&self, mut request: Request) -> worker::Result<Response> {
+        let path = request.url()?.path().to_owned();
+        if path == "/direct-guard-turn" {
+            let _gate = self.gate.lock().await;
+            return crate::direct_guard::physical_fetch(&mut request, &self.env, &self.state).await;
+        }
+        if matches!(
+            path.as_str(),
+            aos_hub_core::direct_upload::DIRECT_FINAL_GUARD_PATH
+                | aos_hub_core::direct_upload::DIRECT_AUTHORITY_LOOKUP_PATH
+        ) {
+            let _gate = self.gate.lock().await;
+            return crate::direct_guard::physical_lookup(&mut request, &self.env, &self.state)
+                .await;
+        }
         if request.url()?.path() == "/observation-turn" {
             return self.observation_fetch(&mut request).await;
         }
@@ -103,6 +117,7 @@ impl ExternalObjectGuard {
         let prior = load_head(&storage).await?;
         match message.operation {
             GuardOperation::Begin { intent, lease } => {
+                crate::direct_guard::deny_legacy(&storage).await?;
                 ensure!(intent.scope == message.scope, "begin scope differs");
                 intent.validate()?;
                 let existing = load_receipt(&storage, &intent.operation_id).await?;

@@ -122,13 +122,39 @@ pub(crate) async fn prepare_stage_request(
     .await
 }
 
-/// Prepares fresh authentication/read authority for an exact interrupted stage read.
-///
-/// A read-only probe must find the original pending verification; it is never a
-/// dispatch permit. Begin repeats eligibility under the physical guard's CAS.
+/// Prepares a stage turn bounded by the original foreground invocation.
 ///
 /// # Errors
-/// Returns a value-free refusal for missing/changed pending read or fresh authority.
+///
+/// Returns an error when stage authority cannot be prepared or the original
+/// cutoff has expired before preparation completes.
+pub(crate) async fn prepare_stage_request_with_cutoff(
+    env: &Env,
+    admission: &DirectUploadAdmission,
+    placement_id: WireInteger,
+    operation_id: String,
+    operation: ExternalStageOperation,
+    expires_at: WireInteger,
+) -> Result<ExternalStageRequest> {
+    let mut work =
+        prepare_stage_request(env, admission, placement_id, operation_id, operation).await?;
+    work.expires_at = WireInteger::new(work.expires_at.get().min(expires_at.get()));
+    work.validate(
+        &env.var("HUB_DEPLOYMENT_ID")?.to_string(),
+        aos_hub_core::clock::now_unix_secs(),
+    )?;
+    Ok(work)
+}
+
+/// Prepares fresh authentication/read authority for an exact interrupted stage read.
+///
+/// A read-only probe must find the original pending verification or its exact
+/// terminal receipt. A pending probe is never a dispatch permit; Begin repeats
+/// eligibility under the physical guard's CAS. Terminal replay admits no Begin.
+///
+/// # Errors
+/// Returns a value-free refusal for a missing or changed original read, or failed
+/// fresh authentication or read authority.
 pub(crate) async fn prepare_stage_read_recovery(
     env: &Env,
     admission: &DirectUploadAdmission,
@@ -176,11 +202,35 @@ async fn prepare_stage_with_mode(
                 context: context.clone(),
                 operation: operation.clone(),
             };
-            recovery_read(env, &intent).await?;
-            (
-                String::new(),
-                acquire_lease(env, &object, domain, &domain.read_cohort).await?,
+            let retained = call(
+                env,
+                &protocol::Request {
+                    domain: protocol::DOMAIN.into(),
+                    scope: intent.scope()?,
+                    operation: Operation::Lookup {
+                        intent: intent.clone(),
+                    },
+                },
             )
+            .await?;
+            let read_lease = match retained {
+                Reply::Terminal { receipt } => {
+                    receipt.validate()?;
+                    ensure!(
+                        receipt.turn.intent == intent,
+                        "immutable read terminal changed"
+                    );
+                    // Historical positive replay needs only fresh bounded
+                    // authentication. Empty leases cannot admit another Begin.
+                    String::new()
+                }
+                Reply::Unsettled => {
+                    recovery_read(env, &intent).await?;
+                    acquire_lease(env, &object, domain, &domain.read_cohort).await?
+                }
+                _ => anyhow::bail!("immutable read original lookup differs"),
+            };
+            (String::new(), read_lease)
         } else if now < i64::try_from(admission.expires_at.get())? {
             (
                 acquire_lease(env, &object, domain, &domain.write_cohort).await?,

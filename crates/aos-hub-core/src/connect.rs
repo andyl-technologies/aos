@@ -1835,6 +1835,18 @@ pub fn rpc_browse_router(service: Arc<RpcService>) -> Router {
     build(service, true)
 }
 
+// Deployment adapters intercept these metadata controls with the independently
+// configured signed transport. The bare shared router has no physical authority
+// dependencies and never admits provider work or bulk request bytes.
+async fn protected_direct_upload_required(headers: HeaderMap) -> Response {
+    if let Err(response) = validate_connect_headers(&headers) {
+        return response;
+    }
+    error_response(&RpcError::Unavailable(
+        "direct upload protected transport is unavailable".into(),
+    ))
+}
+
 /// Builds the shared router with optional browse and token-exchange surfaces.
 ///
 /// `mount_browse` adds the no-JS browse routes (the hub home `/`, the `/{slug}`
@@ -2000,6 +2012,35 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r,
         "/aos.hub.v1.SigningKeyService/SetSigningKeyUsage",
         apply_set_signing_key_usage
+    );
+    // DirectUploadService uses the deployment's protected metadata dispatch.
+    r = r.route(
+        "/aos.hub.v1.DirectUploadService/GetCapabilities",
+        post(protected_direct_upload_required),
+    );
+    r = r.route(
+        "/aos.hub.v1.DirectUploadService/BeginBatch",
+        post(protected_direct_upload_required),
+    );
+    r = r.route(
+        "/aos.hub.v1.DirectUploadService/StatusBatch",
+        post(protected_direct_upload_required),
+    );
+    r = r.route(
+        "/aos.hub.v1.DirectUploadService/GrantPartsBatch",
+        post(protected_direct_upload_required),
+    );
+    r = r.route(
+        "/aos.hub.v1.DirectUploadService/ReportPartsBatch",
+        post(protected_direct_upload_required),
+    );
+    r = r.route(
+        "/aos.hub.v1.DirectUploadService/CompleteBatch",
+        post(protected_direct_upload_required),
+    );
+    r = r.route(
+        "/aos.hub.v1.DirectUploadService/Abort",
+        post(protected_direct_upload_required),
     );
     // RegistryMirrorService — registry-owned upstream synchronization.
     r = rpc_route!(

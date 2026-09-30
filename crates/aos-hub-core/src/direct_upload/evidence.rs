@@ -234,12 +234,50 @@ impl DirectUploadLogicalReply {
         ensure!(
             self.admissions.len() <= MAX_DIRECT_BATCH_ITEMS
                 && self.sessions.len() <= MAX_DIRECT_BATCH_ITEMS
+                && self.session_summaries.len() <= MAX_DIRECT_BATCH_ITEMS
                 && self.authorizations.len() <= MAX_DIRECT_BATCH_ITEMS
                 && self.errors.len() <= MAX_DIRECT_BATCH_ITEMS,
             "direct logical reply count exceeds limit"
         );
         for admission in &self.admissions {
             admission.validate(deployment)?;
+        }
+        let mut summary_sessions = std::collections::BTreeSet::new();
+        for summary in &self.session_summaries {
+            ensure!(
+                summary_sessions.insert(&summary.session.session_id),
+                "direct summary session duplicated"
+            );
+            let admission = self
+                .admissions
+                .iter()
+                .find(|original| original.session_id == summary.session.session_id)
+                .ok_or_else(|| anyhow::anyhow!("direct summary original absent"))?;
+            summary.status(admission, deployment)?;
+            let authorization = self
+                .authorizations
+                .iter()
+                .find(|item| item.session == summary.session)
+                .ok_or_else(|| anyhow::anyhow!("direct summary authorization absent"))?;
+            let intent = authorization
+                .complete_intent
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("direct summary complete original absent"))?;
+            intent.fingerprint()?;
+            ensure!(
+                intent.session == summary.session
+                    && intent.operation_id == authorization.operation_id
+                    && Some(intent.expected_resource_version)
+                        == authorization.expected_resource_version,
+                "direct summary complete authorization mismatch"
+            );
+            ensure!(
+                !self
+                    .sessions
+                    .iter()
+                    .any(|status| status.session == summary.session),
+                "direct summary repeats full status"
+            );
         }
         let mut count = 0usize;
         for status in &self.sessions {

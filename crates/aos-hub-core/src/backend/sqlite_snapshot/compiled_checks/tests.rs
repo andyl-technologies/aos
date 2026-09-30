@@ -159,7 +159,7 @@ async fn current_compiled_catalogue_preserves_every_declared_check() {
 
     // This exact count binds the current four-migration catalogue. A future
     // constraint change requires reviewing extraction coverage alongside it.
-    assert_eq!(checks.values().map(Vec::len).sum::<usize>(), 657);
+    assert_eq!(checks.values().map(Vec::len).sum::<usize>(), 662);
     for name in checks.keys() {
         assert!(tables.iter().any(|table| &table.name == name));
     }
@@ -168,6 +168,11 @@ async fn current_compiled_catalogue_preserves_every_declared_check() {
     // This declaration uses `CHECK (` rather than the adjacent token spelling.
     assert_eq!(checks["delivery_workflows"].len(), 1);
     assert!(checks.contains_key("storage_authority_admission_revisions"));
+    assert_eq!(checks["direct_upload_baselines"], ["activated_at > 0"]);
+    assert_eq!(checks["direct_upload_abort_intents"].len(), 2);
+    assert!(checks["oci_upload_sessions"]
+        .iter()
+        .any(|check| check.contains("authenticated_source_bytes >= 0")));
 }
 
 #[tokio::test]

@@ -492,6 +492,7 @@ fn discovery(destinations: &[DirectPlacementRef]) -> DirectUploadCapabilities {
         maximum_batch_items: MAX_DIRECT_BATCH_ITEMS as u32,
         maximum_batch_parts: MAX_DIRECT_BATCH_PARTS as u32,
         maximum_object_bytes: WireInteger::new(MAX_DIRECT_OBJECT_BYTES),
+        minimum_object_bytes: WireInteger::new(0),
         minimum_part_bytes: WireInteger::new(MIN_DIRECT_PART_BYTES),
         maximum_part_bytes: WireInteger::new(MAX_DIRECT_PART_BYTES),
         profiles: destinations
@@ -575,6 +576,57 @@ async fn multipart_and_multiplacement_streams_are_bounded_parallel_and_exact() {
     assert_eq!(provider.bytes.load(Ordering::SeqCst), bytes.len() * 20);
     assert!((2..=32).contains(&provider.maximum.load(Ordering::SeqCst)));
     assert_eq!(provider.attempts.load(Ordering::SeqCst), 40);
+}
+
+#[tokio::test]
+async fn object_minimum_refuses_empty_before_admission_begin_or_provider_upload() {
+    let destinations = placements(1);
+    let mut source = objects(1, b"", &destinations, 0).await;
+    source[0].discovery.minimum_object_bytes = WireInteger::new(1);
+    let control = Control::new(destinations);
+    let store = Store::default();
+    let provider = Provider::default();
+
+    assert_eq!(
+        upload_direct_batch(&control, &store, &provider, source).await,
+        Err(DirectClientError::Invalid)
+    );
+
+    assert!(store.0.lock().unwrap().intents.is_empty());
+    assert!(control.state.lock().unwrap().controls.is_empty());
+    assert_eq!(provider.attempts.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn zero_object_minimum_stages_empty_without_provider_parts() {
+    let destinations = placements(1);
+    let source = objects(1, b"", &destinations, 0).await;
+    let control = Control::new(destinations);
+    let store = Store::default();
+    let provider = Provider::default();
+
+    let result = upload_direct_batch(&control, &store, &provider, source)
+        .await
+        .unwrap();
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].state, DirectSessionState::StagedVerified);
+    assert_eq!(result[0].intent.byte_size.get(), 0);
+    assert_eq!(store.0.lock().unwrap().intents.len(), 1);
+    assert_eq!(provider.attempts.load(Ordering::SeqCst), 0);
+    let state = control.state.lock().unwrap();
+    assert!(
+        state
+            .controls
+            .iter()
+            .any(|request| matches!(request, DirectUploadRequest::BeginBatch(_)))
+    );
+    assert!(
+        state
+            .controls
+            .iter()
+            .all(|request| !matches!(request, DirectUploadRequest::GrantPartsBatch(_)))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

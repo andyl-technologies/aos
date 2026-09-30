@@ -380,8 +380,11 @@ fn private_phase_requires_staging_and_correlates_current_baseline() {
             action: DirectLogicalAction::Complete,
             complete_step: Some(DirectCompleteStep::Baseline),
             stage_evidence: vec![stage],
+            retained_stage_digests: Vec::new(),
             baseline_evidence: vec![],
             baseline_witnesses: vec![],
+            baseline_witness_refs: Vec::new(),
+            settled_placements: vec![],
             sessions: vec![DirectSessionAuthorization {
                 session: complete.session.clone(),
                 expected_resource_version: Some(complete.expected_resource_version),
@@ -394,14 +397,33 @@ fn private_phase_requires_staging_and_correlates_current_baseline() {
     let witness = witness(&baseline);
     if let DirectUploadLogicalRequest::Authorize {
         complete_step,
+        stage_evidence,
+        retained_stage_digests,
         baseline_evidence,
-        baseline_witnesses,
+        baseline_witness_refs,
         ..
     } = &mut envelope.request
     {
         *complete_step = Some(DirectCompleteStep::Promote);
+        retained_stage_digests
+            .push(DirectRetainedStageDigest::from_evidence(&stage_evidence[0]).unwrap());
+        let reference = &retained_stage_digests[0];
+        assert_eq!(
+            reference.expand(&stage_evidence[0]).unwrap(),
+            stage_evidence[0]
+        );
+        let mut changed_source = stage_evidence[0].clone();
+        changed_source.sha256 = "f".repeat(64);
+        assert!(reference.expand(&changed_source).is_err());
+        stage_evidence.clear();
         baseline_evidence.push(baseline.clone());
-        baseline_witnesses.push(witness);
+        baseline_witness_refs.push(DirectBaselineWitnessRef::from_witness(&witness).unwrap());
+        assert_eq!(baseline_witness_refs[0].expand(&baseline).unwrap(), witness);
+        let mut substituted_binding = baseline.clone();
+        substituted_binding.binding.final_key_digest = "f".repeat(64);
+        assert!(baseline_witness_refs[0]
+            .expand(&substituted_binding)
+            .is_err());
     }
     // An authenticated producer cannot smuggle object facts into Missing.
     for forbidden in ["sha256", "guardStamp", "providerVersion"] {
@@ -446,21 +468,22 @@ fn private_phase_requires_staging_and_correlates_current_baseline() {
     .is_err());
     let mut aliased = envelope.clone();
     if let DirectUploadLogicalRequest::Authorize {
-        baseline_witnesses, ..
+        baseline_witness_refs,
+        ..
     } = &mut aliased.request
     {
-        baseline_witnesses[0].observation_operation_id =
+        baseline_witness_refs[0].observation_operation_id =
             baseline.binding.reservation_operation_id.clone();
     }
     assert!(sign_direct_logical_request(&key, &aliased).is_err());
     if let DirectUploadLogicalRequest::Authorize {
         baseline_evidence,
-        baseline_witnesses,
+        baseline_witness_refs,
         ..
     } = &mut envelope.request
     {
         baseline_evidence.push(baseline);
-        baseline_witnesses.push(baseline_witnesses[0].clone());
+        baseline_witness_refs.push(baseline_witness_refs[0].clone());
     }
     assert!(sign_direct_logical_request(&key, &envelope).is_err());
 }
@@ -487,6 +510,7 @@ fn signed_permission_requires_exact_native_authorization_and_request_nonce() {
         reply: DirectUploadLogicalReply {
             admissions: vec![],
             sessions: vec![],
+            session_summaries: Vec::new(),
             authorizations: vec![authorization],
             baseline_permissions: vec![permission],
             errors: vec![],
@@ -543,4 +567,48 @@ fn logical_owner_preserves_existing_managed_wire_vector_and_exact_original_tuple
         &"22".repeat(32)
     )
     .is_err());
+}
+
+#[test]
+fn fresh_lookup_challenge_can_follow_the_original_current_witness() {
+    let (admission, complete, baseline, _) = fixture();
+    let witness = witness(&baseline);
+    let request = crate::direct_upload::DirectAuthorityLookup {
+        deployment_id: "deployment".into(),
+        request_nonce: "de".repeat(32),
+        issued_at: WireInteger::new(205),
+        expires_at: WireInteger::new(215),
+        operation: crate::direct_upload::DirectAuthorityLookupOperation::Baseline {
+            admission,
+            complete,
+            evidence: baseline,
+            witness,
+        },
+    };
+    let key = StorageWorkKey::new([17; 32]).unwrap();
+    let signed = crate::direct_upload::sign_direct_authority_lookup(&key, &request).unwrap();
+    let verified = crate::direct_upload::verify_direct_authority_lookup(
+        &key,
+        &signed.signature,
+        &signed.body,
+        "deployment",
+        206,
+    )
+    .unwrap();
+    assert_eq!(verified, request);
+    assert!(crate::direct_upload::verify_direct_authority_lookup(
+        &key,
+        &signed.signature,
+        &signed.body,
+        "deployment",
+        215,
+    )
+    .is_err());
+    let mut future = request;
+    if let crate::direct_upload::DirectAuthorityLookupOperation::Baseline { witness, .. } =
+        &mut future.operation
+    {
+        witness.issued_at = WireInteger::new(207);
+    }
+    assert!(future.validate("deployment", 206).is_err());
 }

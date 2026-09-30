@@ -93,6 +93,30 @@ impl DurableObject for HybridObjectGuard {
         }
 
         let _permit = acquire_gate(Arc::clone(&self.gate)).await;
+        let path = request.url()?.path().to_owned();
+        #[cfg(feature = "do-e2e")]
+        if path == "/_e2e/direct-guard" {
+            return crate::direct_guard::conformance_physical_fetch(
+                &mut request,
+                &self.env,
+                &self.state,
+            )
+            .await;
+        }
+        if path == "/direct-guard-turn" {
+            return crate::direct_guard::physical_fetch(&mut request, &self.env, &self.state).await;
+        }
+        if matches!(
+            path.as_str(),
+            aos_hub_core::direct_upload::DIRECT_FINAL_GUARD_PATH
+                | aos_hub_core::direct_upload::DIRECT_AUTHORITY_LOOKUP_PATH
+        ) {
+            return crate::direct_guard::physical_lookup(&mut request, &self.env, &self.state)
+                .await;
+        }
+        crate::direct_guard::deny_legacy(&self.state.storage())
+            .await
+            .map_err(storage_error)?;
         let bucket = self
             .env
             .bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;

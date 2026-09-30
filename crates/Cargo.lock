@@ -468,6 +468,7 @@ dependencies = [
  "hex",
  "http 1.4.1",
  "js-sys",
+ "md-5 0.11.0",
  "rand 0.9.4",
  "semver",
  "send_wrapper",

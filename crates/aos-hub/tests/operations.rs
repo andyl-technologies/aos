@@ -807,7 +807,7 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
     )
     .await
     .unwrap();
-    let (_id, secret) = db
+    let (token_id, secret) = db
         .create_token(
             Principal::service_account(sa),
             &common::registry_scope(&db, "acme/infra/prod/cdn").await,
@@ -822,13 +822,11 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
     // round-trip. The typed publication remains intentionally uncommitted: the
     // export test concerns physical-byte copying, not signed-index promotion.
     let app = router(app_state(Arc::clone(&db)).await).await;
-    let token = bearer(
-        &db,
-        Principal::service_account(sa),
-        &common::registry_scope(&db, "acme/infra/prod/cdn").await,
-        &[Permission::Publish],
-    )
-    .await;
+    // Authenticate with the token whose metadata and redaction are tested.
+    let auth = db.validate_token(&secret).await.unwrap().unwrap();
+    let token = JwtKeys::from_secret(TEST_JWT_SECRET)
+        .mint(&auth, 900)
+        .unwrap();
     let objects = [
         ("objects/ab/cd", b"surface-bytes".as_slice(), "immutable"),
         ("info/refs", b"".as_slice(), "mutable_pointer"),
@@ -872,6 +870,7 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
         .iter()
         .any(|m| m.scope == org.stable_id && m.role == "owner"));
     assert_eq!(manifest.tokens.len(), 1);
+    assert_eq!(manifest.tokens[0].id, token_id);
     assert_eq!(
         manifest.tokens[0].scope,
         common::registry_scope(&db, "acme/infra/prod/cdn").await

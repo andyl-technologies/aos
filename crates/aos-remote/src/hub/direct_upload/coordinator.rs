@@ -210,6 +210,7 @@ impl DirectUploadCoordinator {
             intent.validate().map_err(|_| DirectClientError::Invalid)?;
             if !identities.insert(intent.client_operation_id.clone())
                 || !target_matches(&intent.target, &self.capabilities.target)
+                || intent.byte_size.get() < self.capabilities.minimum_object_bytes.get()
                 || intent.byte_size.get() > self.capabilities.maximum_object_bytes.get()
                 || intent.part_size.get() != self.part_size()
             {
@@ -601,6 +602,7 @@ mod pending_restart_tests {
             maximum_batch_items: 64,
             maximum_batch_parts: 64,
             maximum_object_bytes: WireInteger::new(MAX_DIRECT_OBJECT_BYTES),
+            minimum_object_bytes: WireInteger::new(0),
             minimum_part_bytes: WireInteger::new(MIN_DIRECT_PART_BYTES),
             maximum_part_bytes: WireInteger::new(MAX_DIRECT_PART_BYTES),
             profiles: vec![profile.clone()],
@@ -832,7 +834,9 @@ impl DirectUploadCoordinator {
         if !matches!(
             self.target(),
             DirectCapabilitiesTarget::OciRepository { .. }
-        ) {
+        ) || byte_size < self.capabilities.minimum_object_bytes.get()
+            || byte_size > self.capabilities.maximum_object_bytes.get()
+        {
             return Err(DirectClientError::Invalid);
         }
         self.store.prepare_oci_allocation(sha256, byte_size).await

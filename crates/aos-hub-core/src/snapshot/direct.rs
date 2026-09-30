@@ -10,9 +10,9 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::direct_upload::{
-    encode_direct_control, DirectCompleteRequest, DirectCompletionEvidence, DirectDependencyPhase,
-    DirectPlacement, DirectUploadAdmission, DirectUploadIntent, DirectUploadTarget,
-    DirectVerifiedStageEvidence,
+    encode_direct_control, DirectAbortRequest, DirectCompleteRequest, DirectCompletionEvidence,
+    DirectDependencyPhase, DirectDestinationBaselineEvidence, DirectPlacement,
+    DirectUploadAdmission, DirectUploadIntent, DirectUploadTarget, DirectVerifiedStageEvidence,
 };
 use crate::value::{FromValue, Row, Value};
 
@@ -53,6 +53,22 @@ pub(super) fn validate_row(name: &str, table: &TableContract, row: &Row) -> Resu
         "direct_upload_sessions" => session(&cells)?,
         "direct_upload_session_placements" => placement(&cells)?,
         "direct_upload_completion_intents" => complete(&cells)?,
+        "direct_upload_abort_intents" => abort(&cells)?,
+        "direct_upload_baselines" => {
+            let evidence: DirectDestinationBaselineEvidence = cells.document("evidence_json")?;
+            evidence.validate()?;
+            ensure!(
+                evidence.binding.deployment_id == cells.get::<String>("deployment_id")?
+                    && evidence.binding.session.session_id == cells.get::<String>("session_id")?
+                    && evidence.binding.placement.placement_id.get()
+                        == cells.counter("placement_id")?
+                    && evidence.binding.complete_operation_id
+                        == cells.get::<String>("complete_operation_id")?
+                    && evidence.fingerprint()? == cells.get::<String>("baseline_digest")?
+                    && cells.counter("activated_at")? > 0,
+                "snapshot direct baseline scalar mismatch"
+            );
+        }
         "direct_upload_stage_receipts" => {
             let proof: DirectVerifiedStageEvidence = cells.document("evidence_json")?;
             proof.validate()?;
@@ -66,6 +82,32 @@ pub(super) fn validate_row(name: &str, table: &TableContract, row: &Row) -> Resu
         "direct_upload_completion_receipts" => {
             let proof: DirectCompletionEvidence = cells.document("evidence_json")?;
             proof.validate()?;
+            let guards: Vec<crate::direct_upload::DirectFinalGuardRecord> =
+                cells.document("final_guards_json")?;
+            ensure!(
+                guards.len() == proof.placements.len()
+                    && cells.counter("committed_at")? > 0
+                    && cells.counter("resulting_resource_version")? > 1,
+                "snapshot direct final required set or lifecycle mismatch"
+            );
+            for (guard, placement) in guards.iter().zip(&proof.placements) {
+                guard.validate()?;
+                ensure!(
+                    guard.reservation.deployment_id == cells.get::<String>("deployment_id")?
+                        && guard.reservation.reservation_operation_id
+                            == placement.promotion_operation_id
+                        && guard.selected.session.session_id == proof.session_id
+                        && guard.selected.session.logical_fingerprint == proof.logical_fingerprint
+                        && guard.selected.operation_id == proof.operation_id
+                        && guard.selected.manifest == placement.manifest
+                        && guard.sha256 == proof.sha256
+                        && guard.byte_size == proof.byte_size
+                        && guard.source_incarnation == placement.staging_incarnation
+                        && guard.final_incarnation == placement.final_incarnation
+                        && guard.final_etag == placement.final_etag,
+                    "snapshot direct final receipt original mismatch"
+                );
+            }
             evidence_identity(
                 &cells,
                 &proof.session_id,
@@ -74,7 +116,34 @@ pub(super) fn validate_row(name: &str, table: &TableContract, row: &Row) -> Resu
             )?;
         }
         "oci_image_config_projections" => config_summary(&cells)?,
+        "oci_upload_sessions" => oci_authenticated_source(&cells)?,
         _ => {}
+    }
+    Ok(())
+}
+
+fn oci_authenticated_source(cells: &Cells<'_>) -> Result<()> {
+    if !cells.has("authenticated_source_sha256") {
+        return Ok(());
+    }
+    let sha: Option<String> = cells.get("authenticated_source_sha256")?;
+    let size: Option<i64> = cells.get("authenticated_source_bytes")?;
+    ensure!(
+        sha.is_some() == size.is_some(),
+        "snapshot OCI source identity is incomplete"
+    );
+    if let (Some(sha), Some(size)) = (sha, size) {
+        ensure!(
+            crate::direct_upload::valid_direct_digest(&sha)
+                && (0..=16 * 1024 * 1024 * 1024).contains(&size)
+                && cells.get::<String>("state")? == "complete"
+                && cells.counter("uploaded_size")? == 0
+                && cells.counter("sha256_total_bytes")? == 0
+                && cells.get::<String>("final_digest")? == format!("sha256:{sha}")
+                && cells.get::<Option<i64>>("expected_size")? == Some(size)
+                && cells.get::<Option<String>>("expected_digest")? == Some(format!("sha256:{sha}")),
+            "snapshot OCI authenticated source scalar mismatch"
+        );
     }
     Ok(())
 }
@@ -232,6 +301,35 @@ fn placement(cells: &Cells<'_>) -> Result<()> {
             && placement.fingerprint(&deployment)?
                 == cells.get::<String>("placement_fingerprint")?,
         "snapshot direct placement scalar mismatch"
+    );
+    Ok(())
+}
+
+fn abort(cells: &Cells<'_>) -> Result<()> {
+    let intent: DirectAbortRequest = cells.document("intent_json")?;
+    intent.session.validate()?;
+    ensure!(
+        crate::direct_upload::valid_direct_digest(&intent.operation_id)
+            && intent.expected_resource_version.get() > 0
+            && intent.session.session_id == cells.get::<String>("session_id")?
+            && intent.operation_id == cells.get::<String>("operation_id")?
+            && intent.expected_resource_version.get()
+                == cells.counter("expected_resource_version")?
+            && cells.get::<String>("intent_digest")?
+                == hex::encode(Sha256::digest(encode_direct_control(&intent)?))
+            && cells.counter("admitted_at")? > 0,
+        "snapshot direct abort scalar mismatch"
+    );
+    let terminal: Option<String> = cells.get("terminal_receipt_digest")?;
+    let settled: Option<i64> = cells.get("settled_at")?;
+    let admitted: i64 = cells.get("admitted_at")?;
+    ensure!(
+        terminal.is_some() == settled.is_some()
+            && terminal
+                .as_ref()
+                .is_none_or(|digest| crate::direct_upload::valid_direct_digest(digest))
+            && settled.is_none_or(|time| time >= admitted),
+        "snapshot direct abort terminal receipt mismatch"
     );
     Ok(())
 }

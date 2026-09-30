@@ -1,5 +1,6 @@
 //! Typed private Native phases; public bodies cannot choose provider effects.
 
+use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
 use super::*;
@@ -60,6 +61,16 @@ pub struct DirectAbortEvidence {
     pub receipt_digest: Option<String>,
 }
 
+/// Positively published original placement retained during partial promotion replay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DirectSettledPlacement {
+    /// Exact positive original promotion receipt for one required destination.
+    pub evidence: DirectPlacementEvidence,
+    /// Independently readable final guard bound to the original reservation.
+    pub guard: DirectFinalGuardRecord,
+}
+
 /// Exact private logical phase selected by a protected signed request header.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -80,14 +91,22 @@ pub enum DirectUploadLogicalRequest {
         action: DirectLogicalAction,
         /// Complete-only fresh authorization before freeze or final promotion.
         complete_step: Option<DirectCompleteStep>,
-        /// Baseline/Promote-only exact parsed immutable stage proofs, before finals.
+        /// Baseline-only exact parsed immutable stage proofs, before finals.
         stage_evidence: Vec<DirectVerifiedStageEvidence>,
+        /// Promote-only exact commitments to the independently retained verified stages.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        retained_stage_digests: Vec<DirectRetainedStageDigest>,
         /// Immutable first destination observations; Native requires them for cache Promote.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         baseline_evidence: Vec<DirectDestinationBaselineEvidence>,
         /// Distinct current witnesses for the same first baselines and held reservations.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         baseline_witnesses: Vec<DirectDestinationBaselineWitness>,
+        /// Promote-only fresh witnesses omitting their already paired full baseline binding.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        baseline_witness_refs: Vec<DirectBaselineWitnessRef>,
+        /// Positively published destinations; fresh witnesses cover only remaining destinations.
+        settled_placements: Vec<DirectSettledPlacement>,
         /// Exact logical sessions and mutation CAS versions.
         sessions: Vec<DirectSessionAuthorization>,
     },
@@ -95,6 +114,12 @@ pub enum DirectUploadLogicalRequest {
     Commit {
         /// Broker-signed independent source and final promotion proofs.
         evidence: Vec<DirectCompletionEvidence>,
+        /// Original final reservations and exact guard receipts; Native performs
+        /// a fresh independent lookup before committing any logical target.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        final_guards: Vec<DirectFinalGuardRecord>,
+        /// Exact full-record commitments expanded from Native-retained original reservations.
+        final_guard_refs: Vec<DirectFinalGuardRef>,
     },
     /// Abort-only compact effect reporting, preserving unknown/provider history.
     AbortReport {
@@ -103,14 +128,66 @@ pub enum DirectUploadLogicalRequest {
     },
 }
 
+/// Compact retained Freeze status paired with the full original admission.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DirectLogicalSessionSummary {
+    /// Exact retained session and logical fingerprint.
+    pub session: DirectSessionRef,
+    /// Current Native resource version, never reconstructed by the broker.
+    pub resource_version: WireInteger,
+    /// Current retained lifecycle state.
+    pub state: DirectSessionState,
+    /// Native's current grant fence projection.
+    pub outstanding_grants: bool,
+}
+
+impl DirectLogicalSessionSummary {
+    /// Reconstructs public status from an exactly correlated immutable admission.
+    ///
+    /// # Errors
+    /// Returns an error for a foreign original, malformed retained status or projection.
+    pub fn status(
+        &self,
+        admission: &DirectUploadAdmission,
+        deployment: &str,
+    ) -> Result<DirectSessionStatus> {
+        admission.validate(deployment)?;
+        ensure!(
+            self.session.session_id == admission.session_id
+                && self.session.logical_fingerprint == admission.logical_fingerprint,
+            "direct summary original admission mismatch"
+        );
+        let status = DirectSessionStatus {
+            session: self.session.clone(),
+            resource_version: self.resource_version,
+            intent: admission.intent.clone(),
+            placements: admission
+                .placements
+                .iter()
+                .map(|placement| placement.public_ref(deployment))
+                .collect::<Result<Vec<_>>>()?,
+            state: self.state,
+            parts: Vec::new(),
+            next_cursor: None,
+            outstanding_grants: self.outstanding_grants,
+        };
+        status.validate()?;
+        Ok(status)
+    }
+}
+
 /// Exact private reply consumed by the broker before provider/control effects.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectUploadLogicalReply {
-    /// Resolved immutable admission snapshots; never provider credentials.
+    /// Originals omitted from Complete Baseline and Promote; never provider credentials.
     pub admissions: Vec<DirectUploadAdmission>,
-    /// Authoritative logical statuses and versions after admission/commit/abort.
+    /// Authoritative statuses, omitted from Complete Baseline and Promote replies.
     pub sessions: Vec<DirectSessionStatus>,
+    /// Compact Freeze states and versions paired with exact full admissions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub session_summaries: Vec<DirectLogicalSessionSummary>,
     /// Exact session/action authorizations, empty for non-authorize phases.
     pub authorizations: Vec<DirectSessionAuthorization>,
     /// Exact committed Native baseline activations and fresh per-placement permissions.

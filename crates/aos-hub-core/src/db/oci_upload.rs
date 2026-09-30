@@ -10,6 +10,8 @@ use super::*;
 mod claim;
 #[path = "oci_upload/direct.rs"]
 mod direct;
+#[path = "oci_upload/direct_completion.rs"]
+mod direct_completion;
 
 pub use direct::BeginDirectOciUpload;
 #[path = "oci_upload/model.rs"]
@@ -236,7 +238,7 @@ impl Database {
         token_id: &str,
         now: i64,
     ) -> Result<Option<OciUploadRecord>> {
-        self.backend
+        let upload = self.backend
             .query_opt(
                 &format!(
                     "SELECT {OCI_UPLOAD_COLUMNS} FROM oci_upload_sessions
@@ -248,7 +250,11 @@ impl Database {
             .await?
             .as_ref()
             .map(row_to_oci_upload)
-            .transpose()
+            .transpose()?;
+        if let Some(upload) = &upload {
+            self.validate_direct_oci_source(upload).await?;
+        }
+        Ok(upload)
     }
 
     /// Returns a live manifest reservation only to its exact writer and token.
@@ -265,7 +271,7 @@ impl Database {
         owner: &str,
         now: i64,
     ) -> Result<Option<OciUploadRecord>> {
-        self.backend
+        let upload = self.backend
             .query_opt(
                 &format!(
                     "SELECT {OCI_UPLOAD_COLUMNS} FROM oci_upload_sessions
@@ -278,7 +284,11 @@ impl Database {
             .await?
             .as_ref()
             .map(row_to_oci_upload)
-            .transpose()
+            .transpose()?;
+        if let Some(upload) = &upload {
+            self.validate_direct_oci_source(upload).await?;
+        }
+        Ok(upload)
     }
 
     async fn oci_upload_by_idempotency(
@@ -287,7 +297,7 @@ impl Database {
         writer_id: &str,
         idempotency_key: &str,
     ) -> Result<Option<OciUploadRecord>> {
-        self.backend
+        let upload = self.backend
             .query_opt(
                 &format!(
                     "SELECT {OCI_UPLOAD_COLUMNS} FROM oci_upload_sessions
@@ -299,7 +309,11 @@ impl Database {
             .await?
             .as_ref()
             .map(row_to_oci_upload)
-            .transpose()
+            .transpose()?;
+        if let Some(upload) = &upload {
+            self.validate_direct_oci_source(upload).await?;
+        }
+        Ok(upload)
     }
 
     /// Atomically appends an immutable staging chunk and advances the portable
@@ -835,15 +849,58 @@ impl Database {
         observed_etag: &str,
         now: i64,
     ) -> Result<OciUploadedObjectEvidence> {
+        let statements = Self::record_oci_uploaded_object_statements(
+            registry_id, placement_id, digest, byte_size, observed_etag, now,
+            portable_relational_id(Uuid::new_v4()),
+        )?;
+        if let Err(error) = self.backend.checked_batch(&statements).await {
+            if let Some(existing) = self
+                .oci_uploaded_object_evidence(
+                    registry_id,
+                    placement_id,
+                    digest,
+                    byte_size,
+                    observed_etag,
+                )
+                .await?
+            {
+                return Ok(existing);
+            }
+            return Err(error).context("recording OCI uploaded-object evidence");
+        }
+        self.oci_uploaded_object_evidence(
+            registry_id,
+            placement_id,
+            digest,
+            byte_size,
+            observed_etag,
+        )
+        .await?
+        .context("recorded OCI uploaded-object evidence disappeared")
+    }
+
+    /// Builds immutable OCI writer evidence without separately committing presence.
+    ///
+    /// # Errors
+    /// Returns an error for invalid observation identity or object size.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_oci_uploaded_object_statements(
+        registry_id: i64,
+        placement_id: i64,
+        digest: Sha256Digest,
+        byte_size: u64,
+        observed_etag: &str,
+        now: i64,
+        surface_object_id: i64,
+    ) -> Result<Vec<CheckedStatement>> {
         validate_session_identity(observed_etag, "uploaded object etag", 255)?;
         if registry_id <= 0 || placement_id <= 0 || now <= 0 {
             bail!("OCI uploaded-object evidence identity is invalid");
         }
         let size = checked_u64(byte_size, "uploaded object size")?;
         let object_key = oci_blob_object_key(digest);
-        let surface_object_id = portable_relational_id(Uuid::new_v4());
         let partition_key = Sha256::digest(object_key.as_bytes()).to_vec();
-        let statements = vec![
+        Ok(vec![
             Statement::new(
                 "INSERT INTO oci_registry_state
                    (registry_id, mutation_epoch, charged_bytes,
@@ -971,31 +1028,7 @@ impl Database {
                 ],
             )
             .expecting(1),
-        ];
-        if let Err(error) = self.backend.checked_batch(&statements).await {
-            if let Some(existing) = self
-                .oci_uploaded_object_evidence(
-                    registry_id,
-                    placement_id,
-                    digest,
-                    byte_size,
-                    observed_etag,
-                )
-                .await?
-            {
-                return Ok(existing);
-            }
-            return Err(error).context("recording OCI uploaded-object evidence");
-        }
-        self.oci_uploaded_object_evidence(
-            registry_id,
-            placement_id,
-            digest,
-            byte_size,
-            observed_etag,
-        )
-        .await?
-        .context("recorded OCI uploaded-object evidence disappeared")
+        ])
     }
 
     async fn oci_uploaded_object_evidence(
@@ -1192,6 +1225,51 @@ impl Database {
     /// absent exact placement evidence, a conflicting immutable identity, or
     /// database failure.
     pub async fn complete_oci_upload(&self, input: &CompleteOciUpload) -> Result<OciUploadRecord> {
+        let statements = Self::complete_oci_upload_statements(input)?;
+        if let Err(error) = self.backend.checked_batch(&statements).await {
+            if let Some(existing) = self
+                .oci_upload(
+                    &input.upload_id,
+                    &input.writer_id,
+                    &input.token_id,
+                    input.now,
+                )
+                .await?
+            {
+                if existing.state == "complete"
+                    && existing.final_digest == Some(input.digest)
+                    && (existing.uploaded_size == input.byte_size
+                        || (existing.authenticated_source_bytes == Some(input.byte_size)
+                            && existing.authenticated_source_sha256 == Some(input.digest)))
+                    && existing
+                        .expected_size
+                        .is_none_or(|size| size == input.byte_size)
+                    && existing
+                        .expected_digest
+                        .is_none_or(|digest| digest == input.digest)
+                {
+                    return Ok(existing);
+                }
+            }
+            return Err(error).context("completing OCI upload");
+        }
+        self.oci_upload(
+            &input.upload_id,
+            &input.writer_id,
+            &input.token_id,
+            input.now,
+        )
+        .await?
+        .context("completed OCI upload disappeared")
+    }
+
+    /// Builds blob linkage, quota settlement, GC fencing and upload completion.
+    ///
+    /// # Errors
+    /// Returns an error for invalid current time, CAS version or byte length.
+    pub fn complete_oci_upload_statements(
+        input: &CompleteOciUpload,
+    ) -> Result<Vec<CheckedStatement>> {
         if input.now <= 0 || input.expected_resource_version < 1 {
             bail!("OCI upload completion metadata is invalid");
         }
@@ -1199,7 +1277,7 @@ impl Database {
         let digest = input.digest.to_string();
         let encoded = input.digest.encoded();
         let object_key = oci_blob_object_key(input.digest);
-        let statements = vec![
+        Ok(vec![
             Statement::new(
                 "INSERT INTO oci_blobs
                    (registry_id, digest, byte_size, media_type, surface_object_id,
@@ -1219,7 +1297,9 @@ impl Database {
                    AND upload.token_id = ?3 AND upload.state = 'completing'
                    AND upload.resource_version = ?10
                    AND upload.expires_at > ?7 AND upload.final_digest = ?4
-                   AND upload.uploaded_size = ?5
+                   AND (upload.uploaded_size = ?5 OR
+                     (upload.authenticated_source_bytes = ?5
+                      AND upload.authenticated_source_sha256 = ?12))
                    AND (upload.expected_size IS NULL OR upload.expected_size = ?5)
                    AND (upload.expected_digest IS NULL OR upload.expected_digest = ?4)
                    AND object.object_key = ?11 AND object.object_kind = 'immutable'
@@ -1432,40 +1512,7 @@ impl Database {
                 vals![input.upload_id],
             )
             .unchecked(),
-        ];
-        if let Err(error) = self.backend.checked_batch(&statements).await {
-            if let Some(existing) = self
-                .oci_upload(
-                    &input.upload_id,
-                    &input.writer_id,
-                    &input.token_id,
-                    input.now,
-                )
-                .await?
-            {
-                if existing.state == "complete"
-                    && existing.final_digest == Some(input.digest)
-                    && existing.uploaded_size == input.byte_size
-                    && existing
-                        .expected_size
-                        .is_none_or(|size| size == input.byte_size)
-                    && existing
-                        .expected_digest
-                        .is_none_or(|digest| digest == input.digest)
-                {
-                    return Ok(existing);
-                }
-            }
-            return Err(error).context("completing OCI upload");
-        }
-        self.oci_upload(
-            &input.upload_id,
-            &input.writer_id,
-            &input.token_id,
-            input.now,
-        )
-        .await?
-        .context("completed OCI upload disappeared")
+        ])
     }
 
     /// Cancels an active upload and releases its quota reservation atomically.
@@ -1490,6 +1537,7 @@ impl Database {
             Some(expected_resource_version),
             now,
             "cancelled",
+            false,
             false,
             false,
         );
@@ -1586,6 +1634,7 @@ fn release_upload_statements(
     terminal_state: &'static str,
     require_expired: bool,
     allow_completing: bool,
+    independently_settled_direct: bool,
 ) -> Vec<CheckedStatement> {
     let expiry_operator = if require_expired { "<=" } else { ">" };
     let ownership = if writer_id.is_some() {
@@ -1599,9 +1648,17 @@ fn release_upload_statements(
     } else {
         "upload.state = 'active'"
     };
+    let horizon = if independently_settled_direct {
+        String::new()
+    } else {
+        format!("AND upload.expires_at {expiry_operator} ?5
+            AND NOT EXISTS (SELECT 1 FROM direct_upload_sessions session
+              WHERE session.oci_upload_id = upload.id
+                AND session.state NOT IN ('committed', 'aborted'))")
+    };
     let eligible = format!(
         "upload.id = ?1 {ownership} AND {eligible_states}
-         AND upload.expires_at {expiry_operator} ?5"
+         {horizon}"
     );
     let update_eligible = eligible.replace("upload.", "oci_upload_sessions.");
     vec![

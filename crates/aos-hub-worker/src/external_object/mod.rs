@@ -30,10 +30,18 @@ pub use storage::ExternalObjectGuard;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use stage::resolve_external_profiles;
 #[cfg(target_arch = "wasm32")]
+pub(crate) use stage::{admit_stage_read, read_stage_metadata};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use stage::{
+    check_direct_available, direct_abort, direct_baseline, direct_final, direct_source,
+    prepare_direct_destination,
+};
+#[cfg(target_arch = "wasm32")]
 pub(crate) use stage::{execute_stage, fetch as fetch_stage};
 #[cfg(target_arch = "wasm32")]
 pub(crate) use stage::{
-    prepare_stage_read_recovery, prepare_stage_request, presign_registered_parts,
+    prepare_stage_read_recovery, prepare_stage_request, prepare_stage_request_with_cutoff,
+    presign_registered_parts,
 };
 
 #[cfg(test)]

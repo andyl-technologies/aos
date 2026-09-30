@@ -30,6 +30,11 @@ pub(crate) struct PartStreamVerification {
 }
 
 impl PartStreamVerification {
+    /// Cancels the exact source while retaining callback ownership for settlement.
+    pub(crate) fn cancel(&self) {
+        self.shared.cancel();
+    }
+
     /// Waits for exact SHA, checksum, byte count and clean source EOF.
     ///
     /// The caller must also require its provider's positive UploadPart receipt.

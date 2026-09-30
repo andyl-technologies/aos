@@ -219,3 +219,71 @@ before variable payloads are loaded. Normal SQLite WAL lock coordination is
 allowed; the reader does not write database or WAL contents. This database
 input contract alone does not classify secrets, close object references or
 authorize a restored deployment.
+
+### Direct runtime qualification and Native guard configuration
+
+Hybrid direct uploads require an independently reviewed acceptance artifact in
+addition to the ordinary logical ingress and storage-work configuration. Native
+uses `HUB_DIRECT_UPLOAD_ACCEPTANCE_FILE` for the bounded version-one acceptance
+set, `HUB_DIRECT_UPLOAD_REVIEW_KEYS_FILE` for a separate operator-selected map of
+reviewer identities to hexadecimal Ed25519 public keys, and
+`HUB_DIRECT_UPLOAD_GUARD_KEY_FILE` for the protected readback authentication key.
+Configure all three together. Leaving them absent preserves the ordinary Native
+and Worker configurations. The guard key differs from the broker's
+`HUB_STORAGE_WORK_KEY`; it does not confer provider credentials on Native.
+
+The acceptance file is the shared closed `DirectWorkerQualificationArtifact`,
+including its exact deployment/executor coordinates, source and hosted script
+identities, reviewer identity, bounded clock/runtime/queue/provider measurements,
+full protected profiles, validity interval, canonical evidence commitment and
+Ed25519 signature. Native resolves `reviewerKeyId` against its independently
+configured review key map and invokes the shared artifact verifier. The Worker
+checks the same artifact against separately installed reviewer trust and the
+actual running source/script identity. The shared domain-separated
+`signing_bytes()` encoder defines the signature contract; independently reviewed
+artifact publication does not redeploy the measured Worker version. A file
+cannot introduce a review key. No provider credentials or private signing seeds
+belong in the artifact.
+
+An operator first collects actual ordinary-SDK upload/checksum, private-stage
+policy, independent durable guard, clock, cancellation/settlement, and bounded
+runtime/concurrency evidence from the exact provider/runtime being deployed.
+An independent reviewer accepts those measured limits and the complete
+protected profile, including credential revisions and executor coordinates.
+Native then obtains fresh authenticated Worker discovery and requires exact
+profile equality before admitting new effects. Changing credentials, origin,
+private policy or runtime ceilings requires another acceptance. Discovery is
+shared only within one original invocation; each use rechecks current acceptance
+and invocation expiry. It is never a mutation permission or a persisted cache.
+
+Hosted managed acceptance requires an actual Managed R2 profile.
+`emulated_external` accepts only an
+External profile whose provider closure contract starts with `emulated-` and
+whose read/write DNS aliases are `localhost`, end in `.localhost`, or end in
+`.test`. That class can qualify a separately measured emulator deployment; it
+cannot qualify Managed R2 or a production provider endpoint. Hosted external acceptance cannot relabel an `emulated-` contract as production evidence. Configured fixture
+names, certificates, synthetic timing bounds or SDK package availability are
+not measured qualification. Hosted R2 acceptance remains a separate explicit
+input until genuine live evidence is reviewed.
+
+Before logical visibility, Native independently challenges the physical stage,
+original baseline reservation/current witness, and final guard journal using
+the guard key. Final readback binds the immutable original admission, exact full
+selected Complete, original destination reservation, independently verified
+source hash/size/incarnation, and exact final key/incarnation/ETag. A broker MAC,
+configured profile digest, stage visibility or old HEAD cannot replace that
+fresh terminal readback. Live target IAM and placement fences execute atomically
+with target accounting and the retained session receipt.
+
+Discovery advertises `minimumObjectBytes: 1` whenever any required placement is
+external. Native refuses an empty object before retaining an admission, preparing
+a publication pointer, or reserving cache/OCI accounting. External empty-object
+deletion has no independently qualified exact-incarnation settlement receipt.
+Managed-only plans advertise zero and retain their qualified SDK deletion path.
+The complete physical plan is pinned across publication preparation; a changed
+plan requires fresh admission rather than substituting storage after the check.
+
+Acceptance expiry stops new effects. It neither proves outstanding delegated
+URLs or multipart sessions have settled nor releases pending, unknown-effect,
+cleanup or guard journals. Exact terminal replay preserves its original receipt
+and requires current actor/target IAM without issuing provider readiness probes.

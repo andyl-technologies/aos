@@ -305,8 +305,11 @@ fn validate_phase(envelope: &DirectLogicalRequestEnvelope) -> Result<()> {
             action,
             complete_step,
             stage_evidence,
+            retained_stage_digests,
             baseline_evidence,
             baseline_witnesses,
+            baseline_witness_refs,
+            settled_placements,
             sessions,
         } => {
             let expected = match action {
@@ -356,15 +359,20 @@ fn validate_phase(envelope: &DirectLogicalRequestEnvelope) -> Result<()> {
                 }
             }
             let promote = *complete_step == Some(DirectCompleteStep::Promote);
-            let stage_required = matches!(
-                complete_step,
-                Some(DirectCompleteStep::Baseline | DirectCompleteStep::Promote)
-            );
+            let stage_required = *complete_step == Some(DirectCompleteStep::Baseline);
             ensure!(
-                (!stage_required && stage_evidence.is_empty())
-                    || (stage_required && stage_evidence.len() == sessions.len()),
-                "direct promotion stage evidence count mismatch"
+                stage_evidence.len() == if stage_required { sessions.len() } else { 0 }
+                    && retained_stage_digests.len() == if promote { sessions.len() } else { 0 },
+                "direct stage phase reference count mismatch"
             );
+            for (reference, session) in retained_stage_digests.iter().zip(sessions) {
+                reference.validate()?;
+                ensure!(
+                    reference.session == session.session
+                        && reference.operation_id == session.operation_id,
+                    "direct retained stage original correlation mismatch"
+                );
+            }
             for (evidence, session) in stage_evidence.iter().zip(sessions) {
                 evidence.validate()?;
                 ensure!(
@@ -386,13 +394,16 @@ fn validate_phase(envelope: &DirectLogicalRequestEnvelope) -> Result<()> {
                 );
             }
             ensure!(
-                (promote || baseline_evidence.is_empty())
-                    && baseline_evidence.len() == baseline_witnesses.len()
+                (promote || (baseline_evidence.is_empty() && settled_placements.is_empty()))
+                    && baseline_witnesses.is_empty()
+                    && baseline_evidence.len() == baseline_witness_refs.len()
+                    && settled_placements.len() <= MAX_DIRECT_BATCH_ITEMS * MAX_DIRECT_PLACEMENTS
                     && baseline_evidence.len() <= MAX_DIRECT_BATCH_ITEMS * MAX_DIRECT_PLACEMENTS,
                 "direct baseline phase or count mismatch"
             );
             let mut unique = std::collections::BTreeSet::new();
-            for (baseline, witness) in baseline_evidence.iter().zip(baseline_witnesses) {
+            for (baseline, reference) in baseline_evidence.iter().zip(baseline_witness_refs) {
+                let witness = reference.expand(baseline)?;
                 baseline.validate()?;
                 witness.validate()?;
                 let binding = &baseline.binding;
@@ -427,8 +438,56 @@ fn validate_phase(envelope: &DirectLogicalRequestEnvelope) -> Result<()> {
                     "direct baseline original or current witness mismatch"
                 );
             }
+            for item in settled_placements {
+                item.guard.validate()?;
+                let selected = &item.guard.selected;
+                let session = sessions
+                    .iter()
+                    .find(|session| session.session == selected.session)
+                    .ok_or_else(|| anyhow::anyhow!("direct settled session absent"))?;
+                let complete = session
+                    .complete_intent
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("direct settled Complete absent"))?;
+                ensure!(
+                    unique.insert((
+                        &selected.session.session_id,
+                        item.evidence.placement_id.get()
+                    )) && selected.operation_id == complete.operation_id
+                        && selected.expected_resource_version == complete.expected_resource_version
+                        && selected.complete_intent_digest == complete.fingerprint()?
+                        && complete.manifests.contains(&item.evidence.manifest)
+                        && selected.manifest == item.evidence.manifest
+                        && item.guard.reservation.deployment_id == envelope.context.deployment_id
+                        && item.guard.reservation.reservation_operation_id
+                            == item.evidence.promotion_operation_id
+                        && item.guard.source_incarnation == item.evidence.staging_incarnation
+                        && item.guard.final_incarnation == item.evidence.final_incarnation
+                        && item.guard.final_etag == item.evidence.final_etag,
+                    "direct settled original receipt mismatch"
+                );
+            }
+            if promote {
+                let expected = sessions
+                    .iter()
+                    .map(|session| {
+                        session
+                            .complete_intent
+                            .as_ref()
+                            .map_or(0, |intent| intent.manifests.len())
+                    })
+                    .sum::<usize>();
+                ensure!(
+                    unique.len() == expected,
+                    "direct Promote required partition incomplete"
+                );
+            }
         }
-        DirectUploadLogicalRequest::Commit { evidence } => {
+        DirectUploadLogicalRequest::Commit {
+            evidence,
+            final_guards,
+            final_guard_refs,
+        } => {
             ensure!(
                 method == Some("CompleteBatch")
                     && !evidence.is_empty()
@@ -437,6 +496,34 @@ fn validate_phase(envelope: &DirectLogicalRequestEnvelope) -> Result<()> {
             );
             for item in evidence {
                 item.validate()?;
+            }
+            let expected = evidence
+                .iter()
+                .map(|item| item.placements.len())
+                .sum::<usize>();
+            ensure!(
+                final_guards.is_empty() && final_guard_refs.len() == expected,
+                "direct final guard required set mismatch"
+            );
+            let mut unique = std::collections::BTreeSet::new();
+            for guard in final_guard_refs {
+                guard.validate()?;
+                ensure!(
+                    unique.insert((&guard.session.session_id, guard.placement_id.get())),
+                    "duplicate direct final guard receipt"
+                );
+                let original = evidence
+                    .iter()
+                    .find(|item| item.session_id == guard.session.session_id)
+                    .ok_or_else(|| anyhow::anyhow!("direct final guard session absent"))?;
+                ensure!(
+                    original.logical_fingerprint == guard.session.logical_fingerprint
+                        && original
+                            .placements
+                            .iter()
+                            .any(|item| item.placement_id == guard.placement_id),
+                    "direct final guard original mismatch"
+                );
             }
         }
         DirectUploadLogicalRequest::AbortReport { outcomes } => {
@@ -506,12 +593,14 @@ fn valid_public_authority(authority: &str) -> bool {
 fn validate_baseline_times(envelope: &DirectLogicalRequestEnvelope, latest_now: u64) -> Result<()> {
     if let DirectUploadLogicalRequest::Authorize {
         baseline_evidence,
-        baseline_witnesses,
+        baseline_witness_refs,
         ..
     } = &envelope.request
     {
-        for (baseline, witness) in baseline_evidence.iter().zip(baseline_witnesses) {
-            witness.validate_for(baseline, &envelope.context, latest_now)?;
+        for (baseline, reference) in baseline_evidence.iter().zip(baseline_witness_refs) {
+            reference
+                .expand(baseline)?
+                .validate_for(baseline, &envelope.context, latest_now)?;
         }
     }
     Ok(())

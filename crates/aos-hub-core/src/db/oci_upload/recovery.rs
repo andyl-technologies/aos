@@ -15,7 +15,7 @@ impl Database {
     pub async fn expire_oci_upload(&self, upload_id: &str, now: i64) -> Result<()> {
         self.backend
             .checked_batch(&release_upload_statements(
-                upload_id, None, None, None, now, "failed", true, true,
+                upload_id, None, None, None, now, "failed", true, true, false,
             ))
             .await
             .context("expiring OCI upload")
@@ -40,6 +40,9 @@ impl Database {
             .query(
                 "SELECT id FROM oci_upload_sessions
                  WHERE state IN('active', 'completing') AND expires_at <= ?1
+                   AND NOT EXISTS (SELECT 1 FROM direct_upload_sessions session
+                     WHERE session.oci_upload_id = oci_upload_sessions.id
+                       AND session.state NOT IN ('committed', 'aborted'))
                  ORDER BY expires_at, id LIMIT ?2",
                 &vals![now, i64::from(limit)],
             )

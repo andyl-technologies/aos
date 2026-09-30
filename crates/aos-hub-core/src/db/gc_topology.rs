@@ -1323,6 +1323,31 @@ impl Database {
         intended_object_hash: Option<&str>,
         now: i64,
     ) -> Result<CacheWriteTicketRecord> {
+        let statements = Self::activate_cache_write_ticket_statements(
+            ticket_id, expected_version, quota_org_id, quota_delta_bytes,
+            quota_delta_objects, prior_object, intended_object_hash, now,
+        )?;
+        self.backend.checked_batch(&statements).await?;
+        self.cache_write_ticket(ticket_id)
+            .await?
+            .context("activated cache write ticket disappeared")
+    }
+
+    /// Builds exact baseline activation and quota reservation statements.
+    ///
+    /// # Errors
+    /// Returns an error for invalid baseline identity or quota deltas.
+    #[allow(clippy::too_many_arguments)]
+    pub fn activate_cache_write_ticket_statements(
+        ticket_id: &str,
+        expected_version: i64,
+        quota_org_id: Option<i64>,
+        quota_delta_bytes: i64,
+        quota_delta_objects: i64,
+        prior_object: Option<&WriteObjectIdentity>,
+        intended_object_hash: Option<&str>,
+        now: i64,
+    ) -> Result<Vec<CheckedStatement>> {
         validate_write_identities(prior_object, intended_object_hash)?;
         if quota_delta_objects < 0
             || (quota_org_id.is_none() && (quota_delta_bytes != 0 || quota_delta_objects != 0))
@@ -1383,10 +1408,7 @@ impl Database {
             )
             .expecting(1),
         );
-        self.backend.checked_batch(&statements).await?;
-        self.cache_write_ticket(ticket_id)
-            .await?
-            .context("activated cache write ticket disappeared")
+        Ok(statements)
     }
 
     /// Creates a durable direct-origin PUT fence with exact write and presign pins.
@@ -1684,6 +1706,9 @@ impl Database {
                  WHERE cache_id = ?1 AND state IN ('observing', 'active', 'completing')
                    AND active_cache_slot = 1 AND expires_at <= ?2
                    AND recovery_after <= ?2
+                   AND NOT EXISTS (SELECT 1 FROM direct_upload_sessions session
+                     WHERE session.cache_ticket_id = cache_write_tickets.ticket_id
+                       AND session.state NOT IN ('committed', 'aborted'))
                    AND (expires_at > ?3 OR (expires_at = ?3 AND ticket_id > ?4))
                  ORDER BY expires_at, ticket_id LIMIT ?5",
                 &vals![cache_id, now, after_expires_at, after_ticket_id, limit],
@@ -1724,6 +1749,9 @@ impl Database {
                  FROM cache_write_tickets
                  WHERE state IN ('observing', 'active', 'completing') AND active_cache_slot = 1
                    AND expires_at <= ?1 AND recovery_after <= ?1
+                   AND NOT EXISTS (SELECT 1 FROM direct_upload_sessions session
+                     WHERE session.cache_ticket_id = cache_write_tickets.ticket_id
+                       AND session.state NOT IN ('committed', 'aborted'))
                    AND (expires_at > ?2 OR (expires_at = ?2 AND ticket_id > ?3))
                  ORDER BY expires_at, ticket_id LIMIT ?4",
                 &vals![now, after_expires_at, after_ticket_id, limit],
@@ -1853,7 +1881,10 @@ impl Database {
                        resource_version = resource_version + 1
                      WHERE ticket_id = ?1 AND resource_version = ?2
                        AND state IN ('active', 'completing') AND active_cache_slot = 1
-                       AND expires_at <= ?3",
+                       AND expires_at <= ?3
+                       AND NOT EXISTS (SELECT 1 FROM direct_upload_sessions session
+                         WHERE session.cache_ticket_id = cache_write_tickets.ticket_id
+                           AND session.state NOT IN ('committed', 'aborted'))",
                     vals![ticket_id, expected_version, now],
                 )
                 .expecting(1),
@@ -1894,7 +1925,10 @@ impl Database {
                        active_cache_slot = NULL, finished_at = ?3,
                        resource_version = resource_version + 1
                      WHERE ticket_id = ?1 AND resource_version = ?2
-                       AND state IN ('active', 'completing') AND active_cache_slot = 1",
+                       AND state IN ('active', 'completing') AND active_cache_slot = 1
+                       AND NOT EXISTS (SELECT 1 FROM direct_upload_sessions session
+                         WHERE session.cache_ticket_id = cache_write_tickets.ticket_id
+                           AND session.state NOT IN ('committed', 'aborted'))",
                     vals![ticket_id, expected_version, now],
                 )
                 .expecting(1),
@@ -2517,7 +2551,29 @@ impl Database {
         now: i64,
     ) -> Result<()> {
         self.backend
-            .checked_batch(&[
+            .checked_batch(&Self::complete_cache_write_ticket_statements(
+                ticket_id, expected_version, now,
+            )?)
+            .await
+    }
+
+    /// Builds the existing ticket settlement and cache epoch transaction.
+    ///
+    /// Callers append these statements to a larger checked transaction when
+    /// logical upload completion must share its atomic visibility boundary.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid ticket, CAS version, or current time.
+    pub fn complete_cache_write_ticket_statements(
+        ticket_id: &str,
+        expected_version: i64,
+        now: i64,
+    ) -> Result<Vec<CheckedStatement>> {
+        validate_key_bytes(ticket_id, "cache write ticket id", 64)?;
+        if expected_version <= 0 || now <= 0 {
+            bail!("cache write completion metadata is invalid");
+        }
+        Ok(vec![
                 Statement::new(
                     "UPDATE cache_write_tickets SET state = 'completed',
                        observed_final_size = CASE WHEN upload_kind = 'single'
@@ -2576,8 +2632,7 @@ impl Database {
                     vals![ticket_id, now],
                 )
                 .expecting(1),
-            ])
-            .await
+        ])
     }
 
     /// Releases a ticket after a backend-confirmed abort or pre-write failure.
@@ -2592,11 +2647,37 @@ impl Database {
         state: &str,
         now: i64,
     ) -> Result<()> {
+        let mut statements = Self::abort_cache_write_ticket_statements(
+            ticket_id, expected_version, state, now,
+        )?;
+        statements.insert(0, Statement::new(
+            "UPDATE cache_write_tickets SET resource_version = resource_version
+             WHERE ticket_id = ?1 AND resource_version = ?2
+               AND NOT EXISTS (SELECT 1 FROM direct_upload_sessions session
+                 WHERE session.cache_ticket_id = cache_write_tickets.ticket_id
+                   AND session.state NOT IN ('committed', 'aborted'))",
+            vals![ticket_id, expected_version],
+        ).expecting(1));
+        self.backend.checked_batch(&statements).await
+    }
+
+    /// Builds quota release for an independently settled direct cache abort.
+    ///
+    /// The caller must atomically retain the authenticated terminal receipt.
+    /// Ordinary failure recovery uses the guarded asynchronous wrapper above.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid terminal state.
+    pub fn abort_cache_write_ticket_statements(
+        ticket_id: &str,
+        expected_version: i64,
+        state: &str,
+        now: i64,
+    ) -> Result<Vec<CheckedStatement>> {
         if !matches!(state, "aborted" | "failed") {
             bail!("cache write terminal state is invalid");
         }
-        self.backend
-            .checked_batch(&[
+        Ok(vec![
                 Statement::new(
                     "UPDATE org_usage
                      SET used_bytes = CASE
@@ -2628,7 +2709,6 @@ impl Database {
                 )
                 .expecting(1),
             ])
-            .await
     }
 
     async fn cache_gc_generation_topology_digest(

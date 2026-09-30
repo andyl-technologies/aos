@@ -6,8 +6,8 @@ use serde::Serialize;
 use web_sys::File;
 
 use crate::direct_upload_model::{
-    operation_id, GrantLifetime, PartCheckpoint, PartDispatchContext, PartReceipt, ResumeHead,
-    SourcePart, BROWSER_PART_BYTES,
+    operation_id, validate_object_size, GrantLifetime, PartCheckpoint, PartDispatchContext,
+    PartReceipt, ResumeHead, SourcePart, BROWSER_PART_BYTES,
 };
 use crate::transport::ApiClient;
 
@@ -36,24 +36,28 @@ pub(crate) async fn upload(
     target
         .validate()
         .map_err(|_| "The cache object path is invalid".to_string())?;
+    let client = client.with_direct_upload_capabilities(capabilities.clone());
     let scope = operation_id(
         "scope",
         &capabilities.deployment_id,
         &(&capabilities.principal_id, &target),
     )?;
     let active_key = format!("{scope}:active");
+    let size = source::file_size(&file)?;
+    validate_object_size(&capabilities, size)?;
     let checkpoint = Checkpoint::open().await?;
     let (sha256, parts) = source::inspect(&file).await?;
-    let size = source::file_size(&file)?;
     let fresh = discovery(&client, capabilities.target.clone()).await?;
     fresh
         .validate_actor_for(&capabilities.deployment_id, &capabilities.principal_id)
         .map_err(|_| "The authenticated upload actor changed".to_string())?;
     if fresh.transfer_mode != DirectAdvertisedTransferMode::DirectRequired
         || fresh.profiles != capabilities.profiles
+        || fresh.minimum_object_bytes != capabilities.minimum_object_bytes
     {
         return Err("The reviewed upload destinations changed while the source was read".into());
     }
+    validate_object_size(&fresh, size)?;
 
     let mut head = match checkpoint.get::<ResumeHead>(&active_key).await? {
         Some(head) => {

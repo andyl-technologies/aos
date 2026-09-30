@@ -71,7 +71,13 @@ use tokio::process::Command;
 mod direct_upload;
 
 /// Secret-free managed R2 configuration for the hybrid direct upload broker.
-pub use direct_upload::{HybridDirectUploadClockConfig, HybridDirectUploadDeployConfig};
+pub use direct_upload::{
+    activate_hybrid_direct_upload, deploy_hybrid, inspect_hybrid_direct_upload,
+    read_hybrid_direct_upload_selectors, HybridDeploySecretFiles,
+    HybridDirectUploadAcceptanceConfig, HybridDirectUploadClockConfig,
+    HybridDirectUploadDeployConfig, HybridDirectUploadQualificationConfig,
+    HybridDirectUploadQueueConfig, HybridDirectUploadTrustConfig,
+};
 
 /// The R2 binding name — must match the Worker's bindings.
 const R2_BINDING: &str = aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT;
@@ -259,8 +265,8 @@ pub struct DeployConfig {
 
 /// The Worker edge profile paired with one Native PostgreSQL Hub.
 ///
-/// This profile has no Durable Object database, job queue, KV session store,
-/// or Worker-side SQL authority. The Native service owns those decisions.
+/// Native owns SQL authority and sessions. Optional direct uploads use a
+/// purpose-specific signed acceptance registry and separate verification queues.
 #[derive(Clone, Debug)]
 pub struct HybridDeployConfig {
     /// Public Cloudflare Worker name.
@@ -281,6 +287,17 @@ pub struct HybridDeployConfig {
     pub direct_upload: Option<HybridDirectUploadDeployConfig>,
     /// Independent transport clock for an external-only direct upload broker.
     pub direct_upload_clock: Option<HybridDirectUploadClockConfig>,
+    /// Stable independently installed reviewer and acceptance registry binding.
+    pub direct_upload_trust: Option<HybridDirectUploadTrustConfig>,
+    /// Separate bounded queue bindings installed before qualification.
+    pub direct_upload_queues: Option<HybridDirectUploadQueueConfig>,
+    /// Optional checked acceptance for matching the intended deployment bindings.
+    /// The artifact is published separately without replacing the Worker version.
+    pub direct_upload_acceptance: Option<HybridDirectUploadAcceptanceConfig>,
+    /// Enables only the separately authenticated hosted measurement endpoint.
+    pub direct_upload_conformance: bool,
+    /// Separately enabled bounded isolated qualification fixtures, never production authority.
+    pub direct_upload_qualification: Option<HybridDirectUploadQualificationConfig>,
 }
 
 /// Renders a hybrid Worker profile without Worker-only stateful bindings.
@@ -288,8 +305,10 @@ pub struct HybridDeployConfig {
 /// Secrets `HUB_HYBRID_INGRESS_KEY` and `HUB_STORAGE_WORK_KEY` are applied
 /// separately and must match the Native origin's key files.
 /// Direct upload additionally requires the separately installed Worker secrets
-/// `HUB_DIRECT_UPLOAD_R2_ACCESS_KEY_ID` and `HUB_DIRECT_UPLOAD_R2_SECRET_ACCESS_KEY`.
-/// Rendering a reviewed profile is not provider qualification or Native pinning.
+/// `HUB_DIRECT_UPLOAD_R2_ACCESS_KEY_ID`, `HUB_DIRECT_UPLOAD_R2_SECRET_ACCESS_KEY`,
+/// `HUB_DIRECT_UPLOAD_GUARD_KEY` and `HUB_DIRECT_UPLOAD_JOURNAL_KEY`.
+/// Production dispatch requires independent acceptance of this exact unchanged
+/// hosted Worker version in the purpose-specific KV registry.
 ///
 /// # Errors
 ///
@@ -352,7 +371,7 @@ pub fn render_hybrid_wrangler_toml(cfg: &HybridDeployConfig) -> Result<String> {
             );
         }
     }
-    let (direct_variables, direct_binding) = match &cfg.direct_upload {
+    let (mut direct_variables, direct_binding) = match &cfg.direct_upload {
         Some(profile) => {
             profile.validate(&cfg.deployment_id, &cfg.bucket)?;
             (
@@ -368,6 +387,64 @@ pub fn render_hybrid_wrangler_toml(cfg: &HybridDeployConfig) -> Result<String> {
             None => (String::new(), ""),
         },
     };
+    let direct_enabled = cfg.direct_upload.is_some() || cfg.direct_upload_clock.is_some();
+    let mut direct_bindings = direct_binding.to_string();
+    if direct_enabled {
+        let trust = cfg
+            .direct_upload_trust
+            .as_ref()
+            .context("direct upload requires independent reviewer trust and acceptance registry")?;
+        let queues = cfg
+            .direct_upload_queues
+            .as_ref()
+            .context("direct upload requires separate bounded verification queues")?;
+        trust.validate()?;
+        queues.validate()?;
+        if let Some(limits) = &cfg.direct_upload_qualification {
+            limits.validate()?;
+            direct_variables.push_str(&format!(
+                "HUB_DIRECT_QUALIFY_MAX_PROVIDER_REQUESTS = {}\nHUB_DIRECT_QUALIFY_MAX_OBJECT_BYTES = {}\n",
+                toml_string(&limits.maximum_provider_requests.get().to_string()),
+                toml_string(&limits.maximum_object_bytes.get().to_string()),
+            ));
+        }
+        direct_variables.push_str(&format!(
+            "HUB_DIRECT_UPLOAD_QUALIFICATION_ENABLED = {}\n",
+            toml_string(if cfg.direct_upload_qualification.is_some() {
+                "true"
+            } else {
+                "false"
+            }),
+        ));
+        direct_variables.push_str(&format!(
+            "HUB_DIRECT_UPLOAD_PUBLIC_ORIGIN = {}\nHUB_DIRECT_UPLOAD_QUALIFICATION_PUBLIC_KEY = {}\nHUB_DIRECT_VERIFY_BULK_NAME = {}\nHUB_DIRECT_VERIFY_METADATA_NAME = {}\nHUB_DIRECT_VERIFY_MAX_PARALLEL_OBJECTS = {}\nHUB_DIRECT_UPLOAD_CONFORMANCE_ENABLED = {}\n",
+            toml_string(&cfg.external_url), toml_string(&trust.public_key),
+            toml_string(&queues.bulk), toml_string(&queues.metadata),
+            toml_string(&queues.maximum_parallel_objects.to_string()),
+            toml_string(if cfg.direct_upload_conformance { "true" } else { "false" }),
+        ));
+        direct_bindings.push_str(&format!(
+            "\n[[kv_namespaces]]\nbinding = \"HUB_DIRECT_UPLOAD_ACCEPTANCE\"\nid = {}\n\n[version_metadata]\nbinding = \"CF_VERSION_METADATA\"\n",
+            toml_string(&trust.namespace_id),
+        ));
+        direct_bindings.push_str(&queues.render_bindings());
+    } else {
+        anyhow::ensure!(
+            cfg.direct_upload_trust.is_none()
+                && cfg.direct_upload_queues.is_none()
+                && cfg.direct_upload_acceptance.is_none()
+                && cfg.direct_upload_qualification.is_none()
+                && !cfg.direct_upload_conformance,
+            "direct upload bindings require a managed profile or transport clock"
+        );
+    }
+    anyhow::ensure!(
+        !cfg.direct_upload_conformance || cfg.direct_upload.is_some(),
+        "hosted SDK conformance requires managed R2 profile coordinates"
+    );
+    if let Some(acceptance) = &cfg.direct_upload_acceptance {
+        acceptance.validate(cfg)?;
+    }
     Ok(format!(
         "# Generated hybrid AOS Hub Worker profile.\n\
          name = {name}\n\
@@ -406,7 +483,7 @@ pub fn render_hybrid_wrangler_toml(cfg: &HybridDeployConfig) -> Result<String> {
          \n[[migrations]]\n\
          tag = \"hybrid-authority-state-v1\"\n\
          new_sqlite_classes = [\"HybridAuthorityState\"]\n\
-         {direct_binding}\
+         {direct_bindings}\
          \n[observability]\n\
          enabled = true\n\
          head_sampling_rate = 1.0\n",
@@ -1905,6 +1982,11 @@ mod tests {
             serve_assets: true,
             direct_upload: None,
             direct_upload_clock: None,
+            direct_upload_trust: None,
+            direct_upload_queues: None,
+            direct_upload_acceptance: None,
+            direct_upload_conformance: false,
+            direct_upload_qualification: None,
         };
         let source = render_hybrid_wrangler_toml(&cfg).unwrap();
         let parsed: toml::Value = toml::from_str(&source).unwrap();

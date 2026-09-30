@@ -22,6 +22,7 @@ pub struct ApiClient {
     csrf: String,
     session: Arc<Mutex<aos_proto_types::BrowserSessionTokenResponse>>,
     direct_actor_proof: Arc<Mutex<Option<crate::direct_upload_model::DirectActorProof>>>,
+    direct_capabilities: Option<aos_proto_types::direct_upload::DirectUploadCapabilities>,
     upload_policy: Arc<Mutex<Option<crate::direct_upload_model::InitialUploadPolicy>>>,
     require_legacy_upload_policy: bool,
 }
@@ -42,6 +43,15 @@ impl std::fmt::Debug for ApiClient {
 }
 
 impl ApiClient {
+    /// Pins this upload run's reviewed authority independently of shared tokens.
+    pub(crate) fn with_direct_upload_capabilities(
+        mut self,
+        capabilities: aos_proto_types::direct_upload::DirectUploadCapabilities,
+    ) -> Self {
+        self.direct_capabilities = Some(capabilities);
+        self
+    }
+
     /// Chooses upload discovery from one positive authenticated WhoAmI policy.
     ///
     /// `None` means explicit legacy or the successful older-server compatibility
@@ -280,6 +290,11 @@ impl ApiClient {
                 .map_err(|_| TransportError::SessionExpired)?;
             bearer = refreshed.access_token.clone();
             *self.session_guard() = refreshed;
+            // Even an unchanged JWT must reprove the policy after an actual401.
+            *self
+                .direct_actor_proof
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
             result = self
                 .send_direct_as_actor(path, &bearer, &body, actor)
                 .await?;
@@ -324,6 +339,13 @@ impl ApiClient {
             // Only an actual401 may invoke the single legitimate refresh budget.
             return Ok(None);
         };
+        if let Some(original) = &self.direct_capabilities {
+            proof.validate_capabilities(original).map_err(|_| {
+                TransportError::DirectUpload(
+                    "The original direct upload policy changed during renewal",
+                )
+            })?;
+        }
         let send = proof
             .dispatch_with(
                 bearer,
@@ -502,6 +524,7 @@ impl ApiClient {
             csrf: "test-csrf".to_string(),
             session: Arc::new(Mutex::new(session)),
             direct_actor_proof: Arc::new(Mutex::new(None)),
+            direct_capabilities: None,
             upload_policy: Arc::new(Mutex::new(None)),
             require_legacy_upload_policy: false,
         }
@@ -522,6 +545,7 @@ impl ApiClient {
             csrf: csrf.to_string(),
             session: Arc::new(Mutex::new(session)),
             direct_actor_proof: Arc::new(Mutex::new(None)),
+            direct_capabilities: None,
             upload_policy: Arc::new(Mutex::new(None)),
             require_legacy_upload_policy: false,
         })

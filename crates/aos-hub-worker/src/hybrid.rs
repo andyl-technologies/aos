@@ -113,8 +113,22 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if path == STORAGE_FROZEN_CLEANUP_PATH {
         return frozen_cleanup_head(request, env).await;
     }
+    if path == aos_hub_core::direct_upload::DIRECT_FINAL_GUARD_PATH
+        || path == aos_hub_core::direct_upload::DIRECT_AUTHORITY_LOOKUP_PATH
+    {
+        return crate::direct_guard::fetch(request, env).await;
+    }
+    if path == crate::direct_upload::conformance::PATH {
+        return crate::direct_upload::conformance::fetch(request, env).await;
+    }
+    if path == aos_hub_core::direct_upload::DIRECT_WORKER_DEPLOYMENT_PATH {
+        return crate::direct_upload::deployment::fetch(request, env).await;
+    }
     if path.starts_with("/_internal/storage/") {
         return Response::error("not found", 404);
+    }
+    if path.starts_with("/aos.hub.v1.DirectUploadService/") && !path.ends_with("/GetCapabilities") {
+        return crate::direct_upload::fetch(request, env).await;
     }
     if path.starts_with("/aos.hub.v1.BinaryCacheService/UploadObject/") {
         return upload_cache_object(request, env).await;
@@ -962,13 +976,16 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
     let Some(signature) = request.headers().get(STORAGE_WORK_SIGNATURE_HEADER)? else {
         return Response::error("storage work signature is required", 401);
     };
-    let Some(body) = read_bounded_body(&mut request, STORAGE_CAPABILITIES_CHALLENGE.len()).await?
+    let Some(body) = read_bounded_body(&mut request, aos_hub_core::direct_upload::MAX_DIRECT_CAPABILITY_BYTES).await?
     else {
         return Response::error("storage capability challenge is invalid", 401);
     };
     let key = StorageWorkKey::new(env.secret("HUB_STORAGE_WORK_KEY")?.to_string())
         .map_err(|error| worker::Error::RustError(error.to_string()))?;
-    if body != STORAGE_CAPABILITIES_CHALLENGE || key.verify_body(&signature, &body).is_err() {
+    if body != STORAGE_CAPABILITIES_CHALLENGE {
+        return crate::direct_upload::broker::capabilities(&request, env, &key, &signature, &body).await;
+    }
+    if key.verify_body(&signature, &body).is_err() {
         return Response::error("storage capability challenge is invalid", 401);
     }
     let _bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
@@ -1261,7 +1278,7 @@ pub async fn proxy(request: Request, env: &Env) -> Result<Response> {
     proxy_with_upload_phase(request, env, None).await
 }
 
-async fn proxy_upload_phase(request: Request, env: &Env, phase: &str) -> Result<Response> {
+pub(crate) async fn proxy_upload_phase(request: Request, env: &Env, phase: &str) -> Result<Response> {
     match proxy_with_upload_phase(request, env, Some(phase)).await {
         Ok(response) => Ok(response),
         Err(error) => {
@@ -1548,7 +1565,7 @@ async fn deliver_storage(
     crate::bridge::to_worker(response).await
 }
 
-async fn read_bounded_response(mut response: Response, maximum: usize) -> Result<Option<Vec<u8>>> {
+pub(crate) async fn read_bounded_response(mut response: Response, maximum: usize) -> Result<Option<Vec<u8>>> {
     if response
         .headers()
         .get("content-length")?

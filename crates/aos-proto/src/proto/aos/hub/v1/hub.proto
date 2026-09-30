@@ -5902,6 +5902,9 @@ message DirectUploadCapabilities {
   string deployment_id = 14;
   string principal_id = 15;
   optional string requested_delivery_url = 16;
+  // Required external placements reject empty objects until exact-incarnation
+  // empty-object deletion is independently qualified. Managed placements use 0.
+  uint64 minimum_object_bytes = 17;
 }
 
 // Shared bounded direct_upload projection; server validates closed semantics.

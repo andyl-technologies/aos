@@ -424,6 +424,7 @@ fn capabilities() -> DirectUploadCapabilities {
         maximum_batch_items: MAX_DIRECT_BATCH_ITEMS as u32,
         maximum_batch_parts: MAX_DIRECT_BATCH_PARTS as u32,
         maximum_object_bytes: WireInteger::new(MAX_DIRECT_OBJECT_BYTES),
+        minimum_object_bytes: WireInteger::new(0),
         minimum_part_bytes: WireInteger::new(MIN_DIRECT_PART_BYTES),
         maximum_part_bytes: WireInteger::new(MAX_DIRECT_PART_BYTES),
         profiles: vec![DirectProviderProfile {
@@ -439,6 +440,27 @@ fn capabilities() -> DirectUploadCapabilities {
             private_policy_digest: reference.private_policy_digest,
         }],
     }
+}
+
+#[test]
+fn reusable_discovery_enforces_explicit_complete_object_minimum() {
+    let mut discovery = capabilities();
+    assert_eq!(discovery.minimum_object_bytes.get(), 0);
+    discovery.minimum_object_bytes = WireInteger::new(1);
+    discovery.validate().unwrap();
+    let document = serde_json::to_value(&discovery).unwrap();
+    assert_eq!(
+        document["minimumObjectBytes"],
+        serde_json::to_value(WireInteger::new(1)).unwrap()
+    );
+    let generated = crate::hub_v1::DirectUploadCapabilities::try_from(discovery.clone()).unwrap();
+    assert_eq!(
+        DirectUploadCapabilities::try_from(generated).unwrap(),
+        discovery
+    );
+
+    discovery.minimum_object_bytes = WireInteger::new(discovery.maximum_object_bytes.get() + 1);
+    assert!(discovery.validate().is_err());
 }
 
 #[test]

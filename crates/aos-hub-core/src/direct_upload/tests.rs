@@ -296,8 +296,11 @@ fn changed_rpc_or_promote_step_cannot_reuse_freeze_authority() {
             action: DirectLogicalAction::Complete,
             complete_step: Some(DirectCompleteStep::Freeze),
             stage_evidence: vec![],
+            retained_stage_digests: Vec::new(),
             baseline_evidence: vec![],
             baseline_witnesses: vec![],
+            baseline_witness_refs: Vec::new(),
+            settled_placements: vec![],
             sessions: vec![DirectSessionAuthorization {
                 session: DirectSessionRef {
                     session_id: "s".into(),
@@ -470,10 +473,13 @@ fn verified_stage_and_final_evidence_require_exact_original_required_destination
         context: context("CompleteBatch"),
         request: DirectUploadLogicalRequest::Authorize {
             action: DirectLogicalAction::Complete,
-            complete_step: Some(DirectCompleteStep::Promote),
+            complete_step: Some(DirectCompleteStep::Baseline),
             stage_evidence: vec![stage.clone()],
+            retained_stage_digests: Vec::new(),
             baseline_evidence: vec![],
             baseline_witnesses: vec![],
+            baseline_witness_refs: Vec::new(),
+            settled_placements: vec![],
             sessions: vec![DirectSessionAuthorization {
                 session: complete.session.clone(),
                 expected_resource_version: Some(complete.expected_resource_version),
@@ -484,6 +490,14 @@ fn verified_stage_and_final_evidence_require_exact_original_required_destination
     };
     let key = StorageWorkKey::new([7; 32]).unwrap();
     sign_direct_logical_request(&key, &request).unwrap();
+    // Promote must additionally carry the complete destination partition.
+    let mut incomplete_promotion = request.clone();
+    if let DirectUploadLogicalRequest::Authorize { complete_step, .. } =
+        &mut incomplete_promotion.request
+    {
+        *complete_step = Some(DirectCompleteStep::Promote);
+    }
+    assert!(sign_direct_logical_request(&key, &incomplete_promotion).is_err());
     let mut changed = request.clone();
     if let DirectUploadLogicalRequest::Authorize { stage_evidence, .. } = &mut changed.request {
         stage_evidence[0].placements[0].manifest.manifest_digest = "bb".repeat(32);
@@ -678,6 +692,7 @@ fn old_private_mac_domains_and_changed_reply_authority_cannot_be_reused() {
         reply: DirectUploadLogicalReply {
             admissions: vec![],
             sessions: vec![],
+            session_summaries: Vec::new(),
             authorizations: vec![],
             baseline_permissions: vec![],
             errors: vec![],
@@ -828,6 +843,7 @@ fn reply_preserves_exact_foreground_identity_and_rejects_old_response_domain() {
         reply: DirectUploadLogicalReply {
             admissions: vec![],
             sessions: vec![],
+            session_summaries: Vec::new(),
             authorizations: vec![],
             baseline_permissions: vec![],
             errors: vec![],

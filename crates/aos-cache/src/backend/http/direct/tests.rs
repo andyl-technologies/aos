@@ -347,6 +347,7 @@ async fn changed_actor_target_reply_never_adopts_legacy_or_sends_cache_bytes() {
             maximum_batch_items: 64,
             maximum_batch_parts: 64,
             maximum_object_bytes: WireInteger::new(MAX_DIRECT_OBJECT_BYTES),
+            minimum_object_bytes: WireInteger::new(0),
             minimum_part_bytes: WireInteger::new(MIN_DIRECT_PART_BYTES),
             maximum_part_bytes: WireInteger::new(MAX_DIRECT_PART_BYTES),
             profiles: vec![DirectProviderProfile {

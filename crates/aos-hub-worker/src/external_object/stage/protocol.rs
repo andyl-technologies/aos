@@ -288,6 +288,8 @@ pub(super) enum Reply {
         turn: Turn,
         floor: EpochLeaseFloor,
         source: Option<SourceProof>,
+        #[serde(default)]
+        direct_permission_expires_at: Option<WireInteger>,
     },
     Terminal {
         receipt: Receipt,

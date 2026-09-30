@@ -8,7 +8,9 @@ use std::os::fd::OwnedFd;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use aos_net::direct_upload::{AdmittedSource, SourceWaveBudget};
+use aos_net::direct_upload::{
+    AdmittedSource, DirectTransferMetrics, DirectTransferSummary, SourceWaveBudget,
+};
 use aos_remote::hub_types::direct_upload::{
     DirectDependencyPhase, DirectUploadTarget, WireInteger,
 };
@@ -115,9 +117,45 @@ pub(super) async fn upload_if_required(
     }
     if staged {
         coordinator.finish(Duration::from_secs(3600)).await?;
-        eprintln!("Direct upload client: {}", coordinator.diagnostic_summary());
     }
     Ok(true)
+}
+
+/// Reports the invocation's shared counters after its terminal result or failure.
+pub(super) fn report_on_completion(
+    options: &DirectUploadOptions,
+) -> InvocationReport<impl FnOnce(DirectTransferSummary)> {
+    InvocationReport::new(options, |summary| {
+        eprintln!("Direct upload client: {summary}");
+    })
+}
+
+/// Retains original metrics across early errors and final publication controls.
+pub(super) struct InvocationReport<F: FnOnce(DirectTransferSummary)> {
+    metrics: std::sync::Arc<DirectTransferMetrics>,
+    report: Option<F>,
+}
+
+impl<F: FnOnce(DirectTransferSummary)> InvocationReport<F> {
+    fn new(options: &DirectUploadOptions, report: F) -> Self {
+        Self {
+            metrics: std::sync::Arc::clone(&options.metrics),
+            report: Some(report),
+        }
+    }
+
+    /// Suppresses direct diagnostics after positive Legacy policy discovery.
+    pub(super) fn suppress(&mut self) {
+        self.report = None;
+    }
+}
+
+impl<F: FnOnce(DirectTransferSummary)> Drop for InvocationReport<F> {
+    fn drop(&mut self) {
+        if let Some(report) = self.report.take() {
+            report(self.metrics.snapshot());
+        }
+    }
 }
 
 struct PublicationAuthentication(HubAccessArgs);
@@ -149,5 +187,116 @@ pub(super) fn options(access: &HubAccessArgs) -> DirectUploadOptions {
         provider_policy: access.direct_provider_policy.clone(),
         new_run: access.new_direct_upload_run,
         ..DirectUploadOptions::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use aos_net::direct_upload::DirectControlKind;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn invocation_summary_observes_terminal_commit_after_staging() {
+        let options = DirectUploadOptions::default();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let summaries = Arc::clone(&observed);
+
+        let result: Result<()> = async {
+            let _report = InvocationReport::new(&options, move |summary| {
+                summaries.lock().unwrap().push(summary);
+            });
+            options
+                .metrics
+                .record_control_attempt(DirectControlKind::Complete);
+            assert!(observed.lock().unwrap().is_empty());
+            assert_eq!(
+                options
+                    .metrics
+                    .snapshot()
+                    .control_attempts(DirectControlKind::PublicationCommit),
+                0
+            );
+
+            tokio::task::yield_now().await;
+            options
+                .metrics
+                .record_control_attempt(DirectControlKind::PublicationCommit);
+            assert!(observed.lock().unwrap().is_empty());
+            Ok(())
+        }
+        .await;
+
+        result.unwrap();
+        let summaries = observed.lock().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries[0].control_attempts(DirectControlKind::Complete),
+            1
+        );
+        assert_eq!(
+            summaries[0].control_attempts(DirectControlKind::PublicationCommit),
+            1
+        );
+        assert_eq!(
+            options
+                .metrics
+                .snapshot()
+                .control_attempts(DirectControlKind::PublicationCommit),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn invocation_summary_preserves_original_attempts_on_early_and_terminal_failures() {
+        for failed_control in [
+            DirectControlKind::ManifestBegin,
+            DirectControlKind::PublicationCommit,
+        ] {
+            let options = DirectUploadOptions::default();
+            let observed = Arc::new(Mutex::new(Vec::new()));
+            let summaries = Arc::clone(&observed);
+
+            let result: Result<()> = async {
+                let _report = InvocationReport::new(&options, move |summary| {
+                    summaries.lock().unwrap().push(summary);
+                });
+                options
+                    .metrics
+                    .record_control_attempt(DirectControlKind::Identity);
+                tokio::task::yield_now().await;
+                options.metrics.record_control_attempt(failed_control);
+                anyhow::bail!("publication control was refused")
+            }
+            .await;
+
+            assert!(result.is_err());
+            let summaries = observed.lock().unwrap();
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(
+                summaries[0].control_attempts(DirectControlKind::Identity),
+                1
+            );
+            assert_eq!(summaries[0].control_attempts(failed_control), 1);
+            assert_eq!(summaries[0].provider_successes, 0);
+            assert_eq!(summaries[0].acknowledged_payload_bytes, 0);
+            assert_eq!(
+                options.metrics.snapshot().control_attempts(failed_control),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn positive_legacy_policy_suppresses_direct_invocation_summary() {
+        let options = DirectUploadOptions::default();
+        let mut report = InvocationReport::new(&options, |_| {
+            panic!("Legacy policy emitted direct upload diagnostics");
+        });
+
+        report.suppress();
+        drop(report);
     }
 }

@@ -5,6 +5,8 @@ use crate::db::unix_now;
 use crate::direct_upload::WireInteger;
 use crate::domain::{Permission, Principal};
 
+mod completion_tests;
+
 async fn fixture() -> (Database, BeginDirectOciUpload) {
     fixture_with_database(Database::open_in_memory().await.unwrap()).await
 }
@@ -224,4 +226,92 @@ async fn restart_preserves_the_original_allocation_and_expiry() {
     assert_eq!(count(&reopened, "direct_oci_allocations").await, 1);
     assert_eq!(count(&reopened, "oci_upload_sessions").await, 1);
     assert_eq!(count(&reopened, "oci_quota_reservations").await, 1);
+}
+
+#[tokio::test]
+async fn direct_source_reservation_is_exact_and_quota_failure_preserves_stream_state() {
+    let (db, input) = fixture().await;
+    let upload = db.begin_direct_oci_upload(&input).await.unwrap();
+    let org = db
+        .registry_by_id(input.registry_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .org_id
+        .unwrap();
+    db.set_org_quota(
+        org,
+        &crate::db::OrgQuota {
+            max_bytes: Some(15),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(db
+        .reserve_direct_oci_source(&upload, input.now)
+        .await
+        .is_err());
+    let reservation = db
+        .backend
+        .query_opt(
+            "SELECT reserved_bytes FROM oci_quota_reservations WHERE id = ?1",
+            &vals![upload.quota_reservation_id],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reservation.get::<i64>(0).unwrap(), 0);
+    db.set_org_quota(
+        org,
+        &crate::db::OrgQuota {
+            max_bytes: Some(16),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    db.reserve_direct_oci_source(&upload, input.now)
+        .await
+        .unwrap();
+    db.reserve_direct_oci_source(&upload, input.now + 1)
+        .await
+        .unwrap();
+    let usage = db
+        .backend
+        .query_opt(
+            "SELECT used_bytes, object_count FROM org_usage WHERE org_id = ?1",
+            &vals![org],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(usage.get::<i64>(0).unwrap(), 16);
+    assert_eq!(usage.get::<i64>(1).unwrap(), 1);
+    let retained = db
+        .oci_upload(&upload.id, &upload.writer_id, &upload.token_id, input.now)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.uploaded_size, 0);
+    assert_eq!(retained.sha256.total_bytes, 0);
+    assert!(retained.authenticated_source_sha256.is_none());
+}
+
+#[tokio::test]
+async fn cold_oci_read_refuses_invented_authenticated_source_without_final_receipt() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("source-provenance.db");
+    let (db, input) = fixture_with_database(Database::open(&path).await.unwrap()).await;
+    let upload = db.begin_direct_oci_upload(&input).await.unwrap();
+    db.backend.execute("UPDATE oci_upload_sessions SET authenticated_source_sha256 = ?2, authenticated_source_bytes = ?3 WHERE id = ?1",
+        &vals![upload.id, input.expected_digest.encoded(), i64::try_from(input.expected_size).unwrap()]).await.unwrap();
+    drop(db);
+
+    let db = Database::open(&path).await.unwrap();
+    assert!(db
+        .oci_upload(&upload.id, &upload.writer_id, &upload.token_id, input.now)
+        .await
+        .is_err());
+    assert!(db.begin_direct_oci_upload(&input).await.is_err());
 }

@@ -52,6 +52,11 @@ CREATE TABLE direct_upload_sessions(
   CHECK((state = 'committed' AND completed_at IS NOT NULL) OR (state <> 'committed' AND completed_at IS NULL))
 );
 
+-- An OCI allocation has one retained direct owner for its entire lifetime;
+-- another session cannot release quota still fenced by an uncertain original.
+CREATE UNIQUE INDEX direct_upload_sessions_oci_owner
+  ON direct_upload_sessions(oci_upload_id);
+
 -- Full immutable placement snapshots are typed/canonical application documents;
 -- duplicated scalar pins are checked against them on every load and mutation.
 CREATE TABLE direct_upload_session_placements(
@@ -88,6 +93,25 @@ CREATE TABLE direct_upload_completion_intents(
   CHECK(expected_resource_version > 0 AND admitted_at > 0)
 );
 
+-- Abort intent retains its original CAS and operation before any provider
+-- effect. Unknown outcomes cannot be replaced by a fresh operation or expiry.
+CREATE TABLE direct_upload_abort_intents(
+  deployment_id KEYTEXT255 NOT NULL,
+  session_id KEYTEXT64 NOT NULL PRIMARY KEY,
+  operation_id KEYTEXT64 NOT NULL,
+  expected_resource_version BIGINT NOT NULL,
+  intent_digest KEYTEXT64 NOT NULL,
+  intent_json LONGTEXT NOT NULL,
+  admitted_at BIGINT NOT NULL,
+  terminal_receipt_digest KEYTEXT64,
+  settled_at BIGINT,
+  FOREIGN KEY(session_id, deployment_id)
+    REFERENCES direct_upload_sessions(session_id, deployment_id) ON DELETE RESTRICT,
+  CHECK(expected_resource_version > 0 AND admitted_at > 0),
+  CHECK((terminal_receipt_digest IS NULL AND settled_at IS NULL)
+    OR (terminal_receipt_digest IS NOT NULL AND settled_at >= admitted_at))
+);
+
 -- Verified private staging is reportable before other batches close the
 -- publication graph. Retaining this proof does not publish any final key.
 CREATE TABLE direct_upload_stage_receipts(
@@ -103,6 +127,22 @@ CREATE TABLE direct_upload_stage_receipts(
   CHECK(verified_at > 0)
 );
 
+-- Immutable first held destination observations and quota activation commit
+-- together. Fresh witnesses never overwrite the original observation.
+CREATE TABLE direct_upload_baselines(
+  deployment_id KEYTEXT255 NOT NULL,
+  session_id KEYTEXT64 NOT NULL,
+  placement_id INTEGER NOT NULL REFERENCES surface_placements(id) ON DELETE RESTRICT,
+  complete_operation_id KEYTEXT64 NOT NULL,
+  baseline_digest KEYTEXT64 NOT NULL,
+  evidence_json LONGTEXT NOT NULL,
+  activated_at BIGINT NOT NULL,
+  PRIMARY KEY(session_id, placement_id),
+  FOREIGN KEY(session_id, deployment_id)
+    REFERENCES direct_upload_sessions(session_id, deployment_id) ON DELETE RESTRICT,
+  CHECK(activated_at > 0)
+);
+
 -- Only authenticated, independently verified compact completion evidence is
 -- retained. The original semantic operation identity survives fresh nonces and
 -- exact replay never manufactures a newer provider observation.
@@ -113,6 +153,7 @@ CREATE TABLE direct_upload_completion_receipts(
   logical_fingerprint KEYTEXT64 NOT NULL,
   evidence_digest KEYTEXT64 NOT NULL,
   evidence_json LONGTEXT NOT NULL,
+  final_guards_json LONGTEXT NOT NULL,
   committed_at BIGINT NOT NULL,
   resulting_resource_version BIGINT NOT NULL,
   FOREIGN KEY(session_id, deployment_id)
@@ -187,3 +228,11 @@ CREATE TABLE direct_oci_allocations(
   CHECK(declared_size >= 0 AND declared_size <= 17179869184),
   CHECK(created_at > 0)
 );
+
+-- Storage-local verification is distinct from Native streamed SHA continuation.
+-- Only the final direct transaction records this source identity; no bulk bytes
+-- or fabricated resumable hashing state enter Native SQL.
+ALTER TABLE oci_upload_sessions ADD COLUMN authenticated_source_sha256 KEYTEXT64
+    CHECK(authenticated_source_sha256 IS NULL OR LENGTH(authenticated_source_sha256) = 64);
+ALTER TABLE oci_upload_sessions ADD COLUMN authenticated_source_bytes BIGINT
+    CHECK(authenticated_source_bytes IS NULL OR authenticated_source_bytes >= 0);

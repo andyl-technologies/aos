@@ -205,12 +205,33 @@ impl ExternalObjectGuard {
                 read_lease,
                 source,
             } => {
+                intent.validate()?;
+                let existing = load_receipt(&storage, &intent.operation_id).await?;
+                // This provider contract proves multipart Abort, but does not
+                // prove an exact-incarnation empty-object deletion receipt.
+                // Refuse new empty effects before retaining or dispatching Put.
+                ensure!(
+                    existing.is_some()
+                        || intent.context.intent.byte_size.get() != 0
+                        || !matches!(
+                            intent.operation,
+                            ExternalStageOperation::CreateStage
+                                | ExternalStageOperation::CreateDestination { .. }
+                        ),
+                    "external empty-object deletion is not qualified"
+                );
+                let direct_permission_expires_at = crate::direct_guard::check_external_stage(
+                    &storage,
+                    &intent.operation_id,
+                    &intent.context,
+                    &intent.operation,
+                    existing.is_some(),
+                )
+                .await?;
                 ensure!(
                     intent.scope()? == message.scope,
                     "stage begin scope changed"
                 );
-                intent.validate()?;
-                let existing = load_receipt(&storage, &intent.operation_id).await?;
                 let head = match &prior {
                     Some(head) => head.clone(),
                     None => {
@@ -348,6 +369,7 @@ impl ExternalObjectGuard {
                     turn,
                     floor,
                     source,
+                    direct_permission_expires_at,
                 })
             }
             Operation::Terminal { receipt } => {
@@ -727,7 +749,7 @@ async fn add_receipt(
     Ok(())
 }
 
-async fn load_receipt(storage: &Storage, operation: &str) -> Result<Option<Receipt>> {
+pub(super) async fn load_receipt(storage: &Storage, operation: &str) -> Result<Option<Receipt>> {
     let receipt: Option<Receipt> =
         decode(raw(storage, &receipt_key(operation)?).await?, MAX_MESSAGE)?;
     if let Some(receipt) = &receipt {

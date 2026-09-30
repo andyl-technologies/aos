@@ -516,12 +516,15 @@ mod snapshot_insert_tests {
 }
 
 mod cache_write_admission;
+mod direct_target;
 pub use cache_write_admission::*;
 mod delivery_identity;
 pub use delivery_identity::*;
 mod delivery_workflow;
 mod direct_delivery;
 mod direct_identity;
+mod direct_upload;
+pub use direct_upload::*;
 mod session_identity;
 pub use delivery_workflow::*;
 mod egress_nonce;
@@ -7323,13 +7326,35 @@ impl Database {
         observed_at: i64,
         fence: Option<(i64, i64)>,
     ) -> Result<()> {
+        self.backend
+            .checked_batch(&Self::registry_publication_object_presence_statements(
+                publication_id, surface_object_id, placement_id, observed_hash,
+                observed_size, etag, observed_at, fence,
+            )?)
+            .await
+    }
+
+    /// Builds publication presence and immutable receipt evidence atomically.
+    ///
+    /// # Errors
+    /// Returns an error for malformed publication or observed object identity.
+    #[allow(clippy::too_many_arguments)]
+    pub fn registry_publication_object_presence_statements(
+        publication_id: &str,
+        surface_object_id: i64,
+        placement_id: i64,
+        observed_hash: &str,
+        observed_size: i64,
+        etag: Option<&str>,
+        observed_at: i64,
+        fence: Option<(i64, i64)>,
+    ) -> Result<Vec<CheckedStatement>> {
         validate_key_bytes(publication_id, "publication id", 64)?;
         validate_key_bytes(observed_hash, "observed object hash", 128)?;
         if observed_size < 0 {
             bail!("observed object size cannot be negative");
         }
-        self.backend
-            .checked_batch(&[
+        Ok(vec![
                 Statement::new(
                     "DELETE FROM object_placements
                      WHERE surface_object_id = ?2 AND placement_id = ?3
@@ -7426,8 +7451,7 @@ impl Database {
                     ],
                 )
                 .expecting(1),
-            ])
-            .await
+        ])
     }
 
     /// Binds reusable placement evidence to a newly admitted publication.
@@ -10712,7 +10736,7 @@ impl Database {
                 "INSERT INTO surface_objects (registry_id, cache_id, object_key,
                 object_kind, partition_key, content_hash, size,
                 mutable_publication_id, created_at, updated_at)
-             SELECT ?1, ?2, ?3, ?4, ?8, ?5, ?6, ?7, ?9, ?9
+             SELECT ?1, ?2, ?3, ?4, ?8, ?5, ?6, CAST(?7 AS VARCHAR), ?9, ?9
              WHERE EXISTS (SELECT 1 FROM registries WHERE id = ?1)
                 AND (?4 = 'immutable' OR EXISTS (
                   SELECT 1 FROM registry_publications pub

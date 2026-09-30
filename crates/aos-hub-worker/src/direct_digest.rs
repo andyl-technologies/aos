@@ -9,7 +9,7 @@
 //! Runtime contract: <https://developers.cloudflare.com/workers/runtime-apis/web-crypto/>.
 //! The extension is explicitly feature-checked; absence has no buffered fallback.
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context as _, Result};
 use aos_hub_core::direct_upload::{
     DirectChecksumAlgorithm, DirectManifestPart, DirectUploadIntent,
 };
@@ -28,6 +28,55 @@ pub(crate) use forward::{forward_part, PartStreamVerification};
 pub(crate) struct VerifiedStreamDigest {
     pub(crate) sha256: String,
     pub(crate) byte_size: u64,
+}
+
+/// Hashes a native stream with an exact conservative byte ceiling.
+///
+/// The caller independently owns source immutability and same-GET identity.
+/// This supports factual baseline hashing when no prior source digest exists.
+///
+/// # Errors
+/// Returns an error for unavailable native interfaces or excessive/failed bytes.
+pub(crate) async fn hash_response(
+    response: Response,
+    maximum_bytes: u64,
+) -> Result<VerifiedStreamDigest> {
+    ensure!(
+        response.status_code() == 200,
+        "native hash observation refused"
+    );
+    let full = Digest::new("SHA-256")?;
+    let (_, body) = response.into_parts();
+    let reader = match body {
+        ResponseBody::Stream(stream) => Some(Reader::new(stream.into())?),
+        ResponseBody::Empty => None,
+        _ => anyhow::bail!("native hash requires stream"),
+    };
+    let mut counted = 0_u64;
+    if let Some(reader) = reader {
+        loop {
+            let (value, done) = reader.read().await?;
+            ensure!(
+                value.length() <= CHUNK_BYTES,
+                "native hash chunk exceeds bound"
+            );
+            counted = counted
+                .checked_add(u64::from(value.length()))
+                .ok_or_else(|| anyhow::anyhow!("native hash size overflow"))?;
+            ensure!(counted <= maximum_bytes, "native hash source exceeds bound");
+            if value.length() > 0 {
+                full.write(&value).await?;
+            }
+            if done {
+                break;
+            }
+            ensure!(value.length() > 0, "native hash empty unfinished chunk");
+        }
+    }
+    Ok(VerifiedStreamDigest {
+        sha256: hex::encode(full.finish().await?),
+        byte_size: counted,
+    })
 }
 
 /// Reads compact native response metadata with a bound before Rust body copies.
@@ -247,7 +296,9 @@ impl Digest {
             .map_err(|_| refused())?;
         let args = Array::new();
         args.push(&JsValue::from_str(algorithm));
-        let stream = Reflect::construct(&constructor, &args).map_err(|_| refused())?;
+        let stream = Reflect::construct(&constructor, &args)
+            .map_err(|_| refused())
+            .context("native digest constructor failed")?;
         let promise = Reflect::get(&stream, &JsValue::from_str("digest"))
             .map_err(|_| refused())?
             .dyn_into::<Promise>()
@@ -319,14 +370,17 @@ impl Reader {
         )
         .map_err(|_| refused())?;
         Ok(Self {
-            reader: invoke(&stream, "getReader", &[options.into()])?,
+            reader: invoke(&stream, "getReader", &[options.into()])
+                .context("native BYOB reader unavailable")?,
             ended: std::cell::Cell::new(false),
         })
     }
 
     async fn read(&self) -> Result<(Uint8Array, bool)> {
         let buffer = Uint8Array::new_with_length(CHUNK_BYTES);
-        let result = awaited(invoke(&self.reader, "read", &[buffer.into()])?).await?;
+        let result = awaited(invoke(&self.reader, "read", &[buffer.into()])?)
+            .await
+            .context("native BYOB read failed")?;
         let done = Reflect::get(&result, &JsValue::from_str("done"))
             .map_err(|_| refused())?
             .as_bool()

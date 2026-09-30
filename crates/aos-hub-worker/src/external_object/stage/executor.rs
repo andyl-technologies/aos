@@ -176,13 +176,14 @@ pub(crate) async fn execute_stage(
         },
     )
     .await?;
-    let (turn, floor, source) = match reply {
+    let (turn, floor, source, direct_permission_expires_at) = match reply {
         Reply::Terminal { receipt } => return checked_result(&intent, &receipt),
         Reply::Dispatch {
             turn,
             floor,
             source,
-        } => (turn, floor, source),
+            direct_permission_expires_at,
+        } => (turn, floor, source, direct_permission_expires_at),
         _ => anyhow::bail!("stage begin reply differs"),
     };
     ensure!(
@@ -254,6 +255,7 @@ pub(crate) async fn execute_stage(
         &floor,
         source.as_ref(),
         &parts,
+        direct_permission_expires_at,
     )
     .await?;
     let receipt = Receipt { turn, outcome };
@@ -314,6 +316,7 @@ async fn dispatch(
     floor: &EpochLeaseFloor,
     source: Option<&SourceProof>,
     parts: &[DirectManifestPart],
+    direct_permission_expires_at: Option<aos_hub_core::direct_upload::WireInteger>,
 ) -> Result<Outcome> {
     let now = object.clock().observed_at;
     let domain = config.domain(&work.context)?;
@@ -323,11 +326,7 @@ async fn dispatch(
         Action::CreateStage | Action::CreateDestination { .. }
             if work.context.intent.byte_size.get() == 0 =>
         {
-            body = Some(Vec::new());
-            (
-                surface.object_url(S3Method::Put, relative, now)?,
-                Method::Put,
-            )
+            anyhow::bail!("external empty-object deletion is not qualified")
         }
         Action::CreateStage | Action::CreateDestination { .. } => {
             let signed = surface.direct_create_multipart_request(
@@ -457,9 +456,23 @@ async fn dispatch(
     // before a fresh scalar observation. Actual JS Fetch starts synchronously.
     let final_clock = object.clock();
     work.check_dispatch_time(&publication.snapshot, &validated, floor, final_clock)?;
+    ensure!(
+        u64::try_from(final_clock.observed_at)?
+            .saturating_add(u64::try_from(final_clock.uncertainty)?)
+            < work.expires_at.get(),
+        "external original invocation expired before Fetch"
+    );
     if let Some(validated) = source_validated.as_ref() {
         let source = source.ok_or_else(|| anyhow::anyhow!("destination lost source floor"))?;
         work.check_dispatch_time(&publication.snapshot, validated, &source.floor, final_clock)?;
+    }
+    if let Some(expires_at) = direct_permission_expires_at {
+        ensure!(
+            u64::try_from(final_clock.observed_at)?
+                .saturating_add(u64::try_from(final_clock.uncertainty)?)
+                < expires_at.get(),
+            "direct external Native publication permission expired before Fetch"
+        );
     }
     let response = Fetch::Request(request).send().await?;
     match &work.operation {

@@ -455,6 +455,7 @@ let
   # under a Darwin platform key.
   buildOnly = [
     "aos-hub-dialect-tests"
+    "aos-hub-direct-guard-e2e"
     "aos-hub-e2e"
     "aos-hub-worker-do-e2e"
     "aos-secret-reference-test"

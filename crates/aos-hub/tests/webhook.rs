@@ -792,6 +792,9 @@ async fn webhook_rpc_create_list_delete_with_authz() {
         .create_user("webhook-viewer@acme.test", None)
         .await
         .unwrap();
+    db.grant_membership("user", viewer_id, &org_scope, "viewer")
+        .await
+        .unwrap();
     let viewer = bearer(
         &db,
         Principal::user(viewer_id),
@@ -799,9 +802,6 @@ async fn webhook_rpc_create_list_delete_with_authz() {
         &[Permission::Read],
     )
     .await;
-    db.grant_membership("user", viewer_id, &org_scope, "viewer")
-        .await
-        .unwrap();
     let (status, _body) = rpc(
         &app,
         "WebhookService/PlanCreateWebhook",

@@ -59,7 +59,8 @@ const OCI_UPLOAD_COLUMNS: &str = "id, registry_id, repository_id, publication_id
     materialization_binding_write_revision, sha256_state_version, sha256_h0,
     sha256_h1, sha256_h2, sha256_h3, sha256_h4, sha256_h5, sha256_h6,
     sha256_h7, sha256_total_bytes, sha256_tail_hex, state, expires_at, created_at,
-    finished_at, cleanup_state, cleanup_finished_at, resource_version";
+    finished_at, cleanup_state, cleanup_finished_at, resource_version, authenticated_source_sha256,
+    authenticated_source_bytes";
 const OCI_PUBLICATION_COLUMNS: &str = "id, registry_id, repository_id, writer_id,
     token_id, target_tag, expected_tag_version, expected_tag_digest, root_digest,
     catalog_digest, release_tag, sidecar_sha256, confirmation_hash, topology_digest,

@@ -13,6 +13,11 @@ Worker artifact, and AOS-built provider tooling.
 Read [Trust an internal AOS Hub deployment](trust.md) before provisioning
 hosted signing keys, administrative identities, or client trust anchors.
 
+For a Worker paired with a Native Hub, follow
+[Qualify and activate hybrid direct uploads](direct-upload.md). Its deployment
+commands preserve Native SQL authority and use separate protected direct upload
+qualification and verification bindings.
+
 ## Install the Worker
 
 Build the installer:

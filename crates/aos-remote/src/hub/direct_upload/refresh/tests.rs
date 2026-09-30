@@ -47,6 +47,7 @@ fn capabilities(expiry: u64) -> DirectUploadCapabilities {
         maximum_batch_items: 64,
         maximum_batch_parts: 64,
         maximum_object_bytes: WireInteger::new(MAX_DIRECT_OBJECT_BYTES),
+        minimum_object_bytes: WireInteger::new(0),
         minimum_part_bytes: WireInteger::new(MIN_DIRECT_PART_BYTES),
         maximum_part_bytes: WireInteger::new(MAX_DIRECT_PART_BYTES),
         profiles: vec![DirectProviderProfile {
@@ -138,13 +139,14 @@ async fn elapsed_real_expiry_renews_same_actor_and_profile_from_original_authent
 
 #[tokio::test]
 async fn renewed_actor_or_provider_profile_cannot_be_adopted_even_after_expiry() {
-    for changed in [0, 1, 2] {
+    for changed in [0, 1, 2, 3] {
         let original = capabilities(now());
         let mut renewed = capabilities(now() + 600);
         match changed {
             0 => renewed.principal_id = "11".repeat(32),
             1 => renewed.profiles[0].profile_fingerprint = "12".repeat(32),
-            _ => renewed.maximum_batch_parts = 32,
+            2 => renewed.maximum_batch_parts = 32,
+            _ => renewed.minimum_object_bytes = WireInteger::new(1),
         }
         let (origin, requests, worker) =
             server(vec![(200, encode_direct_control(&renewed).unwrap())]);
@@ -219,4 +221,62 @@ async fn actual_unauthorized_control_rotates_only_auth_and_replays_original_byte
     );
     assert_eq!(provider.0.load(Ordering::SeqCst), 1);
     worker.join().unwrap();
+}
+
+#[tokio::test]
+async fn changed_minimum_refuses_original_empty_begin_replay_after_authentication_renewal() {
+    let original = capabilities(now() + 600);
+    let mut renewed = original.clone();
+    renewed.minimum_object_bytes = WireInteger::new(1);
+    let intent = DirectUploadIntent {
+        version: 1,
+        client_operation_id: "aa".repeat(32),
+        target: DirectUploadTarget::PublicationObject {
+            publication_id: "publication".into(),
+            surface_object_id: WireInteger::new(1),
+            path: "empty-object".into(),
+        },
+        expected_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
+        byte_size: WireInteger::new(0),
+        part_size: WireInteger::new(8 * 1024 * 1024),
+        dependency_phase: DirectDependencyPhase::Content,
+        transfer_mode: DirectTransferMode::DirectRequired,
+    };
+    let request = DirectUploadRequest::BeginBatch(DirectBeginBatch {
+        operation_id: "bb".repeat(32),
+        items: vec![intent.clone()],
+    });
+    let (origin, requests, worker) = server(vec![
+        (401, vec![]),
+        (200, encode_direct_control(&renewed).unwrap()),
+    ]);
+    let hub = HubClient::connect_with_token(&origin, "original-private-jwt").unwrap();
+    let control = RefreshingControl::new(
+        &hub,
+        original,
+        Some(Arc::new(Authentication(AtomicUsize::new(0)))),
+        Arc::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        control.execute(&request).await,
+        Err(DirectClientError::Invalid)
+    );
+
+    let first = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+    let end = first
+        .windows(4)
+        .position(|bytes| bytes == b"\r\n\r\n")
+        .unwrap();
+    let original_begin: DirectBeginBatch = decode_direct_control(&first[end + 4..]).unwrap();
+    assert_eq!(original_begin.items, vec![intent]);
+    let renewal = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(
+        String::from_utf8(renewal)
+            .unwrap()
+            .starts_with("POST /aos.hub.v1.DirectUploadService/GetCapabilities")
+    );
+    worker.join().unwrap();
+    assert!(requests.try_recv().is_err());
 }

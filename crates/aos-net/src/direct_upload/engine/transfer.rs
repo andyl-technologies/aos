@@ -81,6 +81,7 @@ pub async fn upload_direct_batch<
             .validate_at_for(&helpers::discovery_target(&object.discovery), latest_now()?)
             .map_err(|_| DirectClientError::Invalid)?;
         if object.discovery.transfer_mode != DirectAdvertisedTransferMode::DirectRequired
+            || object.intent.byte_size.get() < object.discovery.minimum_object_bytes.get()
             || object.intent.byte_size.get() > object.discovery.maximum_object_bytes.get()
             || object.intent.part_size.get() < object.discovery.minimum_part_bytes.get()
             || object.intent.part_size.get() > object.discovery.maximum_part_bytes.get()

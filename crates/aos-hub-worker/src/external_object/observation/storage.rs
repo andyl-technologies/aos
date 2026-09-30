@@ -82,6 +82,7 @@ impl ExternalObjectGuard {
         prior.validate(&config, &message.scope)?;
         match message.operation {
             Operation::Begin { intent, lease } => {
+                crate::direct_guard::deny_legacy(&storage).await?;
                 intent.validate()?;
                 ensure!(
                     intent.object.scope == message.scope,

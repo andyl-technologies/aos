@@ -258,6 +258,8 @@ in
           export AOS_HUB_CONSOLE_JS="${buildConsoleDist}/hub-console.js"
           export AOS_HUB_CONSOLE_WASM="${buildConsoleDist}/hub-console_bg.wasm"
           export AOS_HUB_CONSOLE_CSS="${buildConsoleDist}/hub-console.css"
+          # Bind accepted provider/clock/capacity evidence to the exact sources.
+          export AOS_HUB_WORKER_SOURCE_DIGEST="${builtins.hashString "sha256" (toString src)}"
           export CARGO_PROFILE_RELEASE_OPT_LEVEL="s"
           export CARGO_PROFILE_RELEASE_LTO="fat"
           export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="1"

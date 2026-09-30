@@ -219,7 +219,7 @@ mod generation_tests {
             .unwrap();
 
         assert_eq!(historical.schema().tables.len(), 267);
-        assert_eq!(current.schema().tables.len(), 273);
+        assert_eq!(current.schema().tables.len(), 275);
         assert!(
             !historical
                 .definitions()

@@ -166,6 +166,9 @@ pub struct DirectUploadCapabilities {
     pub maximum_batch_items: u32,
     /// Aggregate provider parts/grants per batch after placement fanout.
     pub maximum_batch_parts: u32,
+    /// Minimum complete object size; one when any required external destination cannot abort empty puts.
+    #[serde(default)]
+    pub minimum_object_bytes: WireInteger,
     /// Maximum full object size.
     #[serde(default)]
     pub maximum_object_bytes: WireInteger,
@@ -308,6 +311,7 @@ impl DirectUploadCapabilities {
                 && self.maximum_batch_parts as usize <= MAX_DIRECT_BATCH_PARTS
                 && self.maximum_object_bytes.get() > 0
                 && self.maximum_object_bytes.get() <= MAX_DIRECT_OBJECT_BYTES
+                && self.minimum_object_bytes.get() <= self.maximum_object_bytes.get()
                 && self.minimum_part_bytes.get() >= MIN_DIRECT_PART_BYTES
                 && self.maximum_part_bytes.get() <= MAX_DIRECT_PART_BYTES
                 && self.minimum_part_bytes.get() <= self.maximum_part_bytes.get(),

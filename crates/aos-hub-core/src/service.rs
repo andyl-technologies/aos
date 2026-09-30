@@ -40,6 +40,7 @@ mod delivery_workflow;
 mod delivery_workflow_tests;
 mod hybrid_cache_upload;
 mod hybrid_publication_upload;
+mod direct_target;
 mod instance_settings;
 mod publication_manifest;
 mod registry_metadata;

@@ -509,9 +509,20 @@ async fn retained_completion_lookup_preserves_original_identity_after_restart() 
 
 #[test]
 fn directory_admission_creates_private_levels_and_refuses_link_or_writable_ancestors() {
+    use std::os::unix::fs::MetadataExt as _;
+
     let directory = directory();
     let path = directory.path().join("run/state");
-    super::ensure_private_checkpoint_directory(&path).unwrap();
+    let admitted = super::ensure_private_checkpoint_directory(&path);
+    let root_owner = std::fs::metadata("/").unwrap().uid();
+    if ![0, rustix::process::geteuid().as_raw()].contains(&root_owner) {
+        // A foreign sandbox root cannot establish trusted absolute ancestry.
+        assert_eq!(admitted, Err(DirectClientError::Checkpoint));
+        assert!(!path.exists());
+        return;
+    }
+
+    admitted.unwrap();
     assert_eq!(
         std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o700

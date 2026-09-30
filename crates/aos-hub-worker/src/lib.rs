@@ -140,6 +140,12 @@ pub mod consoleports;
 pub mod coordinatorobj;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod direct_digest;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod direct_upload;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod direct_guard;
+#[cfg(target_arch = "wasm32")]
+pub use direct_upload::HybridDirectUpload;
 #[cfg(all(target_arch = "wasm32", feature = "do-e2e"))]
 mod e2e_surface;
 #[cfg(target_arch = "wasm32")]
@@ -1287,6 +1293,11 @@ mod entry {
         }
 
         #[cfg(feature = "do-e2e")]
+        if req.method() == Method::Post && req.url()?.path() == "/_e2e/direct-guard" {
+            return crate::direct_guard::conformance_fetch(req, &env).await;
+        }
+
+        #[cfg(feature = "do-e2e")]
         if req.method() == Method::Post && req.url()?.path() == "/_e2e/direct-egress" {
             return match crate::consoleports::e2e_assert_direct_egress().await {
                 Ok(()) => Response::ok("ok"),
@@ -1458,9 +1469,7 @@ mod entry {
     ) -> Result<()> {
         crate::tracinglog::init();
         if hybrid_mode(&env)? {
-            return Err(worker::Error::RustError(
-                "hybrid topology does not consume Worker-only jobs".into(),
-            ));
+            return crate::direct_upload::verification::consume(&batch, &env).await;
         }
         #[derive(serde::Deserialize)]
         #[serde(untagged)]

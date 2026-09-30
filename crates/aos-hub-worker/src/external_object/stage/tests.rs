@@ -237,7 +237,7 @@ fn context(object: &Config, count: u32) -> ExternalStageContext {
     } else {
         u64::from(count) * 8 * 1024 * 1024
     };
-    let value = ExternalStageContext {
+    let mut value = ExternalStageContext {
         deployment_id: DEPLOYMENT.into(),
         session_id: "retained-session-one".into(),
         principal_id: "principal-one".into(),
@@ -278,6 +278,7 @@ fn context(object: &Config, count: u32) -> ExternalStageContext {
                 policy_digest: "6".repeat(64),
                 namespace: "private-stage-namespace".into(),
             },
+            protected_profile_digest: String::new(),
             checksum_algorithm: DirectChecksumAlgorithm::Md5,
             physical: DirectPhysicalContext::External {
                 write_cohort: Box::new(object.cohorts[0].clone()),
@@ -288,8 +289,51 @@ fn context(object: &Config, count: u32) -> ExternalStageContext {
             presign_credential: credential("presign"),
         },
     };
+
+    let stage = staging(object, &value);
+    value.placement.protected_profile_digest = protected_profile(object, &stage.domains[0])
+        .digest()
+        .unwrap();
     value.validate().unwrap();
     value
+}
+
+fn protected_profile(object: &Config, domain: &Domain) -> DirectProtectedProfile {
+    let external = DirectExternalStorageCapabilities {
+        selector: DirectExternalProfileSelector {
+            physical_authority_id: domain.write_cohort.authority.authority_id.clone(),
+            association: domain.write_cohort.association.clone(),
+            write_credential: domain.write_credential.clone(),
+            read_credential: domain.read_credential.clone(),
+            presign_credential: domain.presign_credential.clone(),
+        },
+        issuer_installation: domain.issuer_installation.clone(),
+        issuer_key_id: object.issuer_key_id.clone(),
+        issuer_public_key: object.issuer_public_key.clone(),
+        write_cohort: domain.write_cohort.clone(),
+        read_cohort: domain.read_cohort.clone(),
+        private_stage_policy: domain.private_stage_policy.clone(),
+        staging_prefix: domain.staging_prefix.clone(),
+        checksum_algorithm: domain.checksum_algorithm,
+        maximum_grant_lifetime: domain.maximum_grant_lifetime,
+        provider_contract_id: domain.provider_contract.contract_id.clone(),
+        provider_contract_evidence_digest: domain.provider_contract.evidence_digest.clone(),
+        timing_profile: object.timing_profile.clone(),
+        clock_uncertainty: integer(object.clock_uncertainty),
+    };
+
+    // Static test reference; these bounds establish no provider or runtime qualification.
+    let runtime = DirectRuntimeQualification {
+        version: 1,
+        qualification_digest: "8".repeat(64),
+        maximum_object_bytes: WireInteger::new(MAX_DIRECT_OBJECT_BYTES),
+        maximum_verification_seconds: WireInteger::new(10),
+        settlement_reserve_seconds: WireInteger::new(8),
+        maximum_parallel_objects: WireInteger::new(4),
+        maximum_parallel_provider_requests: WireInteger::new(8),
+        cache_destination_policy: DirectCacheDestinationPolicy::RetainedOriginalBaseline,
+    };
+    DirectProtectedProfile::external(external, runtime).unwrap()
 }
 
 fn staging(object: &Config, context: &ExternalStageContext) -> StageConfig {

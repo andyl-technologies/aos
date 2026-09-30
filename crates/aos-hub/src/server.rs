@@ -179,6 +179,20 @@ pub async fn router_with_hybrid_ingress(
     deployment_id: String,
     work: Arc<crate::storage_work::RemoteStorageWorkClient>,
 ) -> Router {
+    router_with_hybrid_ingress_and_direct(state, key, deployment_id, work, None).await
+}
+
+/// Builds the paired Native origin with configured metadata-only direct upload.
+///
+/// The logical handler runs inside the verified ingress boundary and cannot
+/// accept a request from a standalone Native listener or arbitrary public body.
+pub async fn router_with_hybrid_ingress_and_direct(
+    state: Arc<AppState>,
+    key: Arc<aos_hub_core::hybrid_ingress::HybridIngressKey>,
+    deployment_id: String,
+    work: Arc<crate::storage_work::RemoteStorageWorkClient>,
+    direct: Option<Arc<dyn crate::direct_upload::DirectUploadTransportFactory>>,
+) -> Router {
     let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
         Arc::new(crate::storage_work::HybridSurfaceProvider::new(
             Arc::clone(&state.db),
@@ -190,7 +204,7 @@ pub async fn router_with_hybrid_ingress(
     );
     let ingress_db = Arc::clone(&state.db);
     let control_url = state.external_url.clone();
-    let app = router_with_ports(state, None, Some(surface), Some(writes)).await;
+    let app = router_with_ports(state, None, Some(surface), Some(writes), direct).await;
     Router::new()
         .fallback_service(app)
         .layer(axum::middleware::from_fn(move |request, next| {
@@ -199,7 +213,15 @@ pub async fn router_with_hybrid_ingress(
             let ingress_db = Arc::clone(&ingress_db);
             let control_url = control_url.clone();
             async move {
-                verify_hybrid_ingress(key, deployment_id, control_url, Some(ingress_db), request, next).await
+                verify_hybrid_ingress(
+                    key,
+                    deployment_id,
+                    control_url,
+                    Some(ingress_db),
+                    request,
+                    next,
+                )
+                .await
             }
         }))
 }
@@ -254,7 +276,9 @@ async fn verify_hybrid_ingress(
         request.method(),
         request.uri(),
         request.headers(),
-    ).await {
+    )
+    .await
+    {
         Ok(limit) => limit,
         Err(status) => return status.into_response(),
     };
@@ -308,6 +332,7 @@ async fn verify_hybrid_ingress(
     parts
         .extensions
         .insert(aos_hub_core::hybrid_ingress::HybridOriginRequest);
+    parts.extensions.insert(assertion.clone());
     let Ok(public_host) = aos_hub_core::connect::attested_authority_host(&assertion.authority)
     else {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -379,7 +404,7 @@ pub async fn router_with_transport(
     state: Arc<AppState>,
     transport: Option<aos_hub_core::connect::DeliveryTransportEvidence>,
 ) -> Router {
-    router_with_ports(state, transport, None, None).await
+    router_with_ports(state, transport, None, None, None).await
 }
 
 async fn router_with_ports(
@@ -387,6 +412,7 @@ async fn router_with_ports(
     transport: Option<aos_hub_core::connect::DeliveryTransportEvidence>,
     surface_override: Option<Arc<dyn aos_hub_core::fetch::SurfaceProvider>>,
     write_override: Option<Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>>,
+    direct_factory: Option<Arc<dyn crate::direct_upload::DirectUploadTransportFactory>>,
 ) -> Router {
     let hybrid_delivery = surface_override.is_some();
     let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
@@ -484,6 +510,24 @@ async fn router_with_ports(
         rpc_service = rpc_service.with_release_evidence(Arc::clone(authority));
     }
     let rpc_service = Arc::new(rpc_service);
+    let direct = match (direct_factory, state.deployment_id.as_deref()) {
+        (Some(factory), Some(deployment)) => match factory.build(
+            Arc::clone(&state.db),
+            Arc::clone(&rpc_service),
+            state.auth.jwt_keys.clone(),
+            deployment,
+        ) {
+            Ok(transport) => Some(transport),
+            Err(_) => {
+                tracing::error!("direct upload runtime configuration is invalid");
+                return Router::new().fallback(|| async { StatusCode::SERVICE_UNAVAILABLE });
+            }
+        },
+        (Some(_), None) => {
+            return Router::new().fallback(|| async { StatusCode::SERVICE_UNAVAILABLE })
+        }
+        (None, _) => None,
+    };
     // The shared router owns `/aos.hub.v1.*` and browse routes and carries its
     // own `Arc<RpcService>` state. It has no resource-slug delivery wildcard.
     // Kept for the outermost domain-routing layer below (it captures the service
@@ -536,6 +580,24 @@ async fn router_with_ports(
         // The shared browser router carries its own `ConsoleDeps` state and is
         // merged after `with_state`; the outer security layers wrap it too.
         .merge(console_router)
+        .layer(axum::middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                let direct = direct.clone();
+                async move {
+                    if request
+                        .uri()
+                        .path()
+                        .starts_with("/aos.hub.v1.DirectUploadService/")
+                    {
+                        match direct {
+                            Some(transport) => return transport.handle(request).await,
+                            None => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                        }
+                    }
+                    next.run(request).await
+                }
+            },
+        ))
         // Dispatch nested registry settings before the shared browse wildcard
         // can claim `/{org}/{registry}/-/{*rest}`. The middleware passes every
         // non-console browse request through with its original body intact.
@@ -1095,38 +1157,45 @@ mod hybrid_ingress_tests {
     #[tokio::test]
     async fn hybrid_origin_preserves_console_scope_and_replaces_transport_evidence() {
         let key = Arc::new(HybridIngressKey::new([9; 32]).unwrap());
-        let app =
-            Router::new()
-                .route(
-                    "/header-probe",
-                    get(|headers: HeaderMap| async move {
-                        assert_eq!(headers["x-aos-console-route"], "/-/instance");
-                        assert_eq!(headers["x-aos-csrf"], "session-bound-proof");
-                        assert_eq!(headers[header::ORIGIN], "https://hub.example.test");
-                        assert_eq!(headers[header::HOST], "hub.example.test");
-                        assert_eq!(headers["x-forwarded-for"], "192.0.2.7");
-                        assert_eq!(headers["x-forwarded-proto"], "https");
-                        for name in [
-                            HYBRID_INGRESS_HEADER,
-                            HYBRID_DELIVERY_HEADER,
-                            HYBRID_NATIVE_DURATION_HEADER,
-                            "x-aos-delivery-attestation",
-                            "forwarded",
-                        ] {
-                            assert!(!headers.contains_key(name), "{name}");
-                        }
-                        StatusCode::NO_CONTENT
-                    }),
-                )
-                .layer(axum::middleware::from_fn({
-                    let key = Arc::clone(&key);
-                    move |request, next| {
-                        let key = Arc::clone(&key);
-                        async move {
-                            verify_hybrid_ingress(key, "deployment-1".into(), "https://hub.example.test".into(), None, request, next).await
-                        }
+        let app = Router::new()
+            .route(
+                "/header-probe",
+                get(|headers: HeaderMap| async move {
+                    assert_eq!(headers["x-aos-console-route"], "/-/instance");
+                    assert_eq!(headers["x-aos-csrf"], "session-bound-proof");
+                    assert_eq!(headers[header::ORIGIN], "https://hub.example.test");
+                    assert_eq!(headers[header::HOST], "hub.example.test");
+                    assert_eq!(headers["x-forwarded-for"], "192.0.2.7");
+                    assert_eq!(headers["x-forwarded-proto"], "https");
+                    for name in [
+                        HYBRID_INGRESS_HEADER,
+                        HYBRID_DELIVERY_HEADER,
+                        HYBRID_NATIVE_DURATION_HEADER,
+                        "x-aos-delivery-attestation",
+                        "forwarded",
+                    ] {
+                        assert!(!headers.contains_key(name), "{name}");
                     }
-                }));
+                    StatusCode::NO_CONTENT
+                }),
+            )
+            .layer(axum::middleware::from_fn({
+                let key = Arc::clone(&key);
+                move |request, next| {
+                    let key = Arc::clone(&key);
+                    async move {
+                        verify_hybrid_ingress(
+                            key,
+                            "deployment-1".into(),
+                            "https://hub.example.test".into(),
+                            None,
+                            request,
+                            next,
+                        )
+                        .await
+                    }
+                }
+            }));
 
         let now = aos_hub_core::clock::now_unix_secs();
         let assertion = HybridIngressAssertion {
@@ -1227,7 +1296,36 @@ mod hybrid_ingress_tests {
             .body(axum::body::Body::empty())
             .unwrap();
         let response = app.clone().oneshot(upload).await.unwrap();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        upload_assertion.upload_phase = Some("preflight".into());
+        let preflight = axum::http::Request::builder()
+            .method(Method::PUT)
+            .uri(upload_path)
+            .header(HYBRID_INGRESS_HEADER, key.sign(&upload_assertion).unwrap())
+            .header(
+                aos_hub_core::hybrid_ingress::HYBRID_UPLOAD_PHASE_HEADER,
+                "preflight",
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(preflight).await.unwrap();
+        // A valid metadata phase reaches the real live cache/ticket lookup.
+        // The nonexistent target is refused without admitting an upload.
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let mismatched_phase = axum::http::Request::builder()
+            .method(Method::PUT)
+            .uri(upload_path)
+            .header(HYBRID_INGRESS_HEADER, key.sign(&upload_assertion).unwrap())
+            .header(
+                aos_hub_core::hybrid_ingress::HYBRID_UPLOAD_PHASE_HEADER,
+                "admit",
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(mismatched_phase).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
         let mismatched = axum::http::Request::builder()
             .uri("/metrics")
@@ -1266,7 +1364,15 @@ mod hybrid_ingress_tests {
                 move |request, next| {
                     let key = Arc::clone(&key);
                     async move {
-                        verify_hybrid_ingress(key, "deployment-1".into(), "https://hub.example.test".into(), None, request, next).await
+                        verify_hybrid_ingress(
+                            key,
+                            "deployment-1".into(),
+                            "https://hub.example.test".into(),
+                            None,
+                            request,
+                            next,
+                        )
+                        .await
                     }
                 }
             }));
