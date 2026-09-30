@@ -26,7 +26,7 @@ use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
 use aos_core::output::{OutputMode, Printer};
@@ -940,6 +940,7 @@ fn format_size(bytes: u64) -> String {
 mod tests {
     use super::*;
     use crate::types::BootProviderState;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     fn boot_provider_state() -> BootProviderState {
