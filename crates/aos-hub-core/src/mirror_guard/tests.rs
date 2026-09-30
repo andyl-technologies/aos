@@ -115,6 +115,10 @@ fn independent_mac_and_exact_fresh_body_binding() {
     .is_err());
     let proof =
         verify_mirror_guard_reply(&key, &signed.signature, &signed.body, &request, 106).unwrap();
+    assert_eq!(proof.remaining_validity_seconds(106).unwrap(), 23);
+    assert_eq!(proof.remaining_validity_seconds(128).unwrap(), 1);
+    assert!(proof.remaining_validity_seconds(129).is_err());
+    assert!(proof.remaining_validity_seconds(u64::MAX).is_err());
     proof
         .validate_for(&request.original, &request.expected, 128)
         .unwrap();

@@ -186,6 +186,24 @@ impl VerifiedMirrorGuardProof {
     pub fn observed_at(&self) -> u64 {
         self.reply.observed_at
     }
+
+    /// Returns the exclusive remaining deadline at raw UTC time.
+    ///
+    /// The retained uncertainty is projected exactly once. A caller can bound
+    /// SQL capacity and execution waits without renewing the signed challenge.
+    ///
+    /// # Errors
+    /// Returns an error for stale proof, clock overflow or future observation.
+    pub fn remaining_validity_seconds(&self, now: u64) -> Result<u64> {
+        let latest_now = now
+            .checked_add(self.request.clock_uncertainty_seconds)
+            .ok_or_else(|| anyhow::anyhow!("mirror guard proof clock overflow"))?;
+        validate_reply(&self.reply, &self.request, latest_now)?;
+        self.request
+            .expires_at
+            .checked_sub(latest_now)
+            .ok_or_else(|| anyhow::anyhow!("mirror guard proof deadline elapsed"))
+    }
 }
 
 /// Signs one canonical fresh mirror guard challenge.
