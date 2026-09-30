@@ -11,6 +11,7 @@ mod startup;
 mod genesis;
 mod preparation;
 mod collector;
+mod comparison;
 
 pub use startup::{
     ProductionRuntimeDeploymentStartupCaptureV1, ProductionRuntimeDeploymentStartupPartsV1,
@@ -19,6 +20,10 @@ pub use startup::{
 pub use collector::{
     InstalledCollectorStartupErrorV1, ProductionInstalledCollectorStartupCaptureV1,
     ProductionInstalledCollectorStartupPartsV1, ProductionInstalledCollectorStartupV1,
+};
+pub use comparison::{
+    HeldRuntimeDeploymentAppendComparisonV1, HeldRuntimeDeploymentMainComparisonV1,
+    RuntimeDeploymentComparisonErrorV1, RuntimeDeploymentComparisonOriginsV1,
 };
 
 pub(crate) use genesis::VerifiedDeploymentGenesisV1;

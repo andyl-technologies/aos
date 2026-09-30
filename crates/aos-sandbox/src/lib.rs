@@ -167,8 +167,10 @@ pub mod tpm_nv_custody;
 
 #[cfg(target_os = "linux")]
 pub use runtime_deployment::{
+    HeldRuntimeDeploymentAppendComparisonV1, HeldRuntimeDeploymentMainComparisonV1,
     ProductionRuntimeDeploymentStartupCaptureV1, ProductionRuntimeDeploymentStartupPartsV1,
-    ProductionRuntimeDeploymentStartupV1, RuntimeDeploymentStartupErrorV1,
+    ProductionRuntimeDeploymentStartupV1, RuntimeDeploymentComparisonErrorV1,
+    RuntimeDeploymentComparisonOriginsV1, RuntimeDeploymentStartupErrorV1,
 };
 
 #[cfg(target_os = "linux")]
