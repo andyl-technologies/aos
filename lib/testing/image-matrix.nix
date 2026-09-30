@@ -71,7 +71,6 @@
       toplevel = toString system.build.toplevel;
       version = config.aos.system.version;
       kernel = system.build.kernel.version;
-      moduleAbi = config.aos.system.moduleAbi;
       role =
         if config.aos.roles.edge.enable
         then "edge"
@@ -92,6 +91,7 @@
     };
     guestTools = {
       apm = "${pkgs.aos.apm}/bin/apm";
+      packageRuntime = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime";
       enroll =
         if secureBoot.enable
         then "${config.aos.config.artifacts.secure-boot-enroll}/bin/aos-sb-enroll"
