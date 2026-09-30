@@ -509,7 +509,168 @@ fn domain_reference_boundary_acl_narrowing() {
         Err(Error::Authority)
     );
     validate_boundary_transition(&private, &child, true).expect("ancestor admin");
-    validate_boundary_transition(&child, &private, false).expect("narrow ACL");
+    assert_eq!(
+        validate_boundary_transition(&child, &private, false),
+        Err(Error::Authority)
+    );
+}
+
+fn acl(grants: &[(&str, u8)]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    cbor::write_array(&mut bytes, grants.len());
+    for (principal, verbs) in grants {
+        cbor::write_array(&mut bytes, 2);
+        cbor::write_text(&mut bytes, principal);
+        cbor::write_uint(&mut bytes, u64::from(*verbs));
+    }
+    bytes
+}
+
+fn acl_properties(grants: &[u8]) -> [Property<'_>; 1] {
+    [Property {
+        name: "acl",
+        value: grants,
+    }]
+}
+
+fn acl_policy<'a>(properties: &'a [Property<'a>]) -> EffectiveProperties<'a> {
+    resolve(
+        &[RootLayer {
+            properties,
+            overrides: &[],
+        }],
+        defaults(),
+    )
+    .expect("ACL policy")
+}
+
+#[test]
+fn domain_reference_equivalent_admin_masks_preserve_authority() {
+    for parent_mask in [16, 20, 31] {
+        let parent_bytes = acl(&[("owner", parent_mask)]);
+        let parent_properties = acl_properties(&parent_bytes);
+        let parent = acl_policy(&parent_properties);
+
+        for child_mask in [31, 20, 16] {
+            let child_bytes = acl(&[("owner", child_mask)]);
+            let child_properties = acl_properties(&child_bytes);
+            let child = acl_policy(&child_properties);
+
+            for ancestor_admin in [false, true] {
+                assert_eq!(
+                    validate_boundary_transition(&parent, &child, ancestor_admin),
+                    Ok(()),
+                    "equivalent Admin masks {parent_mask} -> {child_mask}, caller Admin {ancestor_admin}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn domain_reference_repeated_grants_union_semantic_verbs() {
+    let parent_bytes = acl(&[("owner", 1), ("owner", 16), ("writer", 1), ("writer", 4)]);
+    let parent_properties = acl_properties(&parent_bytes);
+    let parent = acl_policy(&parent_properties);
+    let child_bytes = acl(&[
+        ("owner", 0),
+        ("owner", 4),
+        ("owner", 1),
+        ("owner", 2),
+        ("owner", 8),
+        ("owner", 16),
+        ("writer", 4),
+    ]);
+    let child_properties = acl_properties(&child_bytes);
+    let child = acl_policy(&child_properties);
+
+    assert_eq!(validate_boundary_transition(&parent, &child, false), Ok(()));
+
+    let narrowed_bytes = acl(&[("owner", 16)]);
+    let narrowed_properties = acl_properties(&narrowed_bytes);
+    let narrowed = acl_policy(&narrowed_properties);
+
+    assert_eq!(
+        validate_boundary_transition(&parent, &narrowed, false),
+        Ok(())
+    );
+}
+
+fn assert_ancestor_admin_rights_preserved(ancestor_admin: bool) {
+    let parent_bytes = acl(&[("owner", 16), ("writer", 4)]);
+    let parent_properties = acl_properties(&parent_bytes);
+    let parent = acl_policy(&parent_properties);
+
+    for child_grants in [
+        vec![("owner", 4)],
+        vec![],
+        vec![("owner", 0)],
+        vec![("owner", 15)],
+        vec![("writer", 16)],
+    ] {
+        let child_bytes = acl(&child_grants);
+        let child_properties = acl_properties(&child_bytes);
+        let child = acl_policy(&child_properties);
+
+        assert_eq!(
+            validate_boundary_transition(&parent, &child, ancestor_admin),
+            Err(Error::Authority),
+            "inherited Admin rights removed by {child_grants:?}, caller Admin {ancestor_admin}"
+        );
+    }
+}
+
+#[test]
+fn domain_reference_ancestor_admin_principals_cannot_lose_rights() {
+    assert_ancestor_admin_rights_preserved(false);
+}
+
+#[test]
+fn domain_reference_ancestor_admin_principals_preserved_with_admin_caller() {
+    assert_ancestor_admin_rights_preserved(true);
+}
+
+#[test]
+fn domain_reference_commit_to_admin_requires_ancestor_authority() {
+    let parent_bytes = acl(&[("writer", 4)]);
+    let parent_properties = acl_properties(&parent_bytes);
+    let parent = acl_policy(&parent_properties);
+    let child_bytes = acl(&[("writer", 16)]);
+    let child_properties = acl_properties(&child_bytes);
+    let child = acl_policy(&child_properties);
+
+    assert_eq!(
+        validate_boundary_transition(&parent, &child, false),
+        Err(Error::Authority)
+    );
+    assert_eq!(validate_boundary_transition(&parent, &child, true), Ok(()));
+}
+
+#[test]
+fn domain_reference_admin_equivalence_cannot_widen_disclosure() {
+    let parent_bytes = acl(&[("owner", 16)]);
+    let parent_properties = acl_properties(&parent_bytes);
+    let parent = acl_policy(&parent_properties);
+    let public_bytes = text("public");
+    let child_bytes = acl(&[("owner", 31)]);
+    let child_properties = [
+        Property {
+            name: "domain",
+            value: &public_bytes,
+        },
+        Property {
+            name: "acl",
+            value: &child_bytes,
+        },
+    ];
+    let child = acl_policy(&child_properties);
+
+    for ancestor_admin in [false, true] {
+        assert_eq!(
+            validate_boundary_transition(&parent, &child, ancestor_admin),
+            Err(Error::Domain)
+        );
+    }
 }
 
 fn binding(value: &[u8], inherit: bool) -> Vec<u8> {

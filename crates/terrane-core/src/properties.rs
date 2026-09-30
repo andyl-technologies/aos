@@ -14,6 +14,7 @@ pub use validation::{
     validate_commit, validate_commit_with_context,
 };
 
+use crate::auth::{Verb, Verbs};
 use crate::cbor;
 use crate::tree_format::{MAX_GRAFT_DEPTH, Property};
 use alloc::vec::Vec;
@@ -38,7 +39,7 @@ pub enum Error {
     UnknownAttribute,
     /// A reference or domain transition would widen disclosure.
     Domain,
-    /// A descendant widens commit or admin grants without authority.
+    /// A descendant widens grants without authority or removes ancestor Admin rights.
     Authority,
 }
 
@@ -59,7 +60,7 @@ impl fmt::Display for Error {
             Self::IncompleteContext => "incomplete property validation context",
             Self::UnknownAttribute => "unregistered attribute",
             Self::Domain => "disclosure domain violation",
-            Self::Authority => "unauthorized ACL widening",
+            Self::Authority => "unauthorized ACL transition",
         })
     }
 }
@@ -298,10 +299,13 @@ pub fn validate_domain_policy(properties: &EffectiveProperties<'_>) -> Result<()
 /// Checks the domain and ACL transition between effective ancestor policies.
 ///
 /// Repository callers pass the committing principal's verified `admin` grant
-/// on the ancestor. Read resolution does not perform authorization checks.
+/// on the actual governing ancestor. Administrator rights inherited from that
+/// ancestor are preserved regardless of the committing principal's authority.
+/// Read resolution does not perform authorization checks.
 ///
 /// # Errors
-/// Rejects disclosure widening or unauthorized widening of commit/admin grants.
+/// Rejects disclosure widening, removal of inherited administrator rights, or
+/// widening of commit/admin grants without ancestor administration.
 pub fn validate_boundary_transition(
     parent: &EffectiveProperties<'_>,
     child: &EffectiveProperties<'_>,
@@ -310,24 +314,47 @@ pub fn validate_boundary_transition(
     if !child.domain()?.permits_reference(parent.domain()?) {
         return Err(Error::Domain);
     }
-    if ancestor_admin {
-        return Ok(());
-    }
+
     let (Some(Value::Grants(parent_grants)), Some(Value::Grants(child_grants))) =
         (parent.get(PropertyName::Acl), child.get(PropertyName::Acl))
     else {
         return Err(Error::InvalidValue);
     };
-    for (principal, verbs) in child_grants {
-        let inherited = parent_grants
-            .iter()
-            .filter(|(name, _)| name == principal)
-            .fold(0u8, |mask, (_, verbs)| mask | verbs);
-        if verbs & 20 & !inherited != 0 {
+
+    // AUTH-22 makes Admin imply every verb. Retaining Admin therefore preserves
+    // all inherited administrator rights, even when the caller may widen grants.
+    for (principal, verbs) in parent_grants {
+        if Verbs::new(*verbs).is_ok_and(|verbs| verbs.contains(Verb::Admin))
+            && !acl_allows(child_grants, principal, Verb::Admin)
+        {
             return Err(Error::Authority);
         }
     }
+
+    if ancestor_admin {
+        return Ok(());
+    }
+
+    for (principal, _) in child_grants {
+        for verb in [Verb::Commit, Verb::Admin] {
+            if acl_allows(child_grants, principal, verb)
+                && !acl_allows(parent_grants, principal, verb)
+            {
+                return Err(Error::Authority);
+            }
+        }
+    }
+
     Ok(())
+}
+
+/// Evaluates the union of a principal's grants with AUTH-22 implications.
+fn acl_allows(grants: &[(&str, u8)], principal: &str, verb: Verb) -> bool {
+    grants
+        .iter()
+        .filter(|(name, _)| *name == principal)
+        // ACL values may contain a zero mask, which confers no authority.
+        .any(|(_, mask)| Verbs::new(*mask).is_ok_and(|verbs| verbs.contains(verb)))
 }
 
 /// Validates a later-version property map while preserving unsupported bytes.
