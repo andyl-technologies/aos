@@ -158,6 +158,7 @@ impl Journal {
             Journal::open_existing_protected_at_for_uid(directory, NAME, hold_limits(), *uid)?;
         #[cfg(test)]
         let (mut gate, _) = Journal::open_protected_directory(
+            directory,
             state
                 .protected
                 .as_ref()
