@@ -163,9 +163,15 @@ fn scenario_layers_stay_structurally_orthogonal() -> Result<(), Box<dyn std::err
     let toml = form.to_canonical_toml()?;
     let value: toml::Value = toml::from_str(&toml)?;
 
-    let world_layer = value["world"].as_table().unwrap();
-    let plan_layer = value["plan"].as_table().unwrap();
-    let properties_layer = value["properties"].as_table().unwrap();
+    let world_layer = value["world"]
+        .as_table()
+        .unwrap_or_else(|| panic!("world layer must be a TOML table"));
+    let plan_layer = value["plan"]
+        .as_table()
+        .unwrap_or_else(|| panic!("plan layer must be a TOML table"));
+    let properties_layer = value["properties"]
+        .as_table()
+        .unwrap_or_else(|| panic!("properties layer must be a TOML table"));
     assert!(world_layer.contains_key("link"));
     assert!(plan_layer.contains_key("event"));
     assert!(properties_layer.contains_key("assertion"));
@@ -310,7 +316,7 @@ fn serializable_scenario_form_round_trips_and_rejects_host_paths()
     assert_eq!(parsed_binary.to_canonical_toml()?, toml);
     let kernel = world.vm_nodes()[0]
         .kernel
-        .expect("fixture has a content-addressed kernel");
+        .unwrap_or_else(|| panic!("fixture has a content-addressed kernel"));
     let invalid_path_toml = toml.replacen(&kernel.to_uri(), "/tmp/host-kernel", 1);
     assert!(matches!(
         ScenarioDefForm::from_canonical_toml(&invalid_path_toml),
@@ -323,7 +329,9 @@ fn serializable_scenario_form_round_trips_and_rejects_host_paths()
     ] {
         assert!(toml.contains(&format!(
             "{field} = \"{}\"",
-            reference.expect("fixture image reference").to_uri()
+            reference
+                .unwrap_or_else(|| panic!("fixture image reference"))
+                .to_uri()
         )));
     }
     let wrong_hash = ContentHash::from_bytes(b"wrong-serialized-id");
