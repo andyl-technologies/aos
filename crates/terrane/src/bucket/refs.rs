@@ -23,14 +23,18 @@ fn corrupt(name: &str) -> StoreFailure {
 
 fn branch(name: &str) -> Result<bool, StoreFailure> {
     let name = RefName::parse(name).map_err(|_| files::malformed())?;
-    Ok(matches!(name.class(), RefClass::Heads | RefClass::Jobs | RefClass::Conflicts | RefClass::Derived))
+    Ok(matches!(
+        name.class(),
+        RefClass::Heads | RefClass::Jobs | RefClass::Conflicts | RefClass::Derived
+    ))
 }
 
 fn log_key(name: &str, record: &RefRecord) -> Result<BucketKey, StoreFailure> {
     match &record.candidate_id {
         Some(candidate) => BucketKey::reflog_candidate(name, record.seq, candidate),
         None => BucketKey::reflog(name, record.seq),
-    }.map_err(|_| files::malformed())
+    }
+    .map_err(|_| files::malformed())
 }
 
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
@@ -43,9 +47,16 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .transpose()
     }
 
-    async fn read_log(&self, name: &str, selected: &RefRecord) -> Result<RefLogRecord, StoreFailure> {
+    async fn read_log(
+        &self,
+        name: &str,
+        selected: &RefRecord,
+    ) -> Result<RefLogRecord, StoreFailure> {
         let key = log_key(name, selected)?;
-        let bytes = self.read_optional(&key).await?.ok_or_else(|| corrupt(name))?;
+        let bytes = self
+            .read_optional(&key)
+            .await?
+            .ok_or_else(|| corrupt(name))?;
         let log = RefLogRecord::decode(&bytes).map_err(|_| corrupt(name))?;
         if &log.record != selected {
             return Err(corrupt(name));
@@ -55,7 +66,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
 
     // Each selected record identifies its exact predecessor. Legacy numbered
     // records are traversed only after a selected legacy endpoint is reached.
-    async fn committed_logs(&self, name: &str, mut selected: RefRecord) -> Result<Vec<RefLogRecord>, StoreFailure> {
+    async fn committed_logs(
+        &self,
+        name: &str,
+        mut selected: RefRecord,
+    ) -> Result<Vec<RefLogRecord>, StoreFailure> {
         let mut records = Vec::new();
         loop {
             let log = self.read_log(name, &selected).await?;
@@ -63,9 +78,15 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 log.selected_previous().map_err(|_| corrupt(name))?.cloned()
             } else if selected.seq > 1 {
                 let key = BucketKey::reflog(name, selected.seq - 1).map_err(|_| corrupt(name))?;
-                let bytes = self.read_optional(&key).await?.ok_or_else(|| corrupt(name))?;
-                let previous = RefLogRecord::decode(&bytes).map_err(|_| corrupt(name))?.record;
-                RefRecord::validate_successor(Some(&previous), &selected).map_err(|_| corrupt(name))?;
+                let bytes = self
+                    .read_optional(&key)
+                    .await?
+                    .ok_or_else(|| corrupt(name))?;
+                let previous = RefLogRecord::decode(&bytes)
+                    .map_err(|_| corrupt(name))?
+                    .record;
+                RefRecord::validate_successor(Some(&previous), &selected)
+                    .map_err(|_| corrupt(name))?;
                 if previous.candidate_id.is_some() || log.previous_commit != Some(previous.commit) {
                     return Err(corrupt(name));
                 }
@@ -86,7 +107,6 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         records.reverse();
         Ok(records)
     }
-
 }
 
 #[cfg_attr(feature = "send", async_trait::async_trait)]
@@ -121,7 +141,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 return Err(files::malformed());
             }
             let proposal = self.read_log(name, new).await?;
-            proposal.validate_candidate(expect, new).map_err(|_| files::malformed())?;
+            proposal
+                .validate_candidate(expect, new)
+                .map_err(|_| files::malformed())?;
         }
         let bytes = new.encode().map_err(|_| files::malformed())?;
         if !self.install(&key, &bytes, current.is_some()).await? {
@@ -149,7 +171,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         }
         if record.record.candidate_id.is_some() {
             let previous = record.selected_previous().map_err(|_| files::malformed())?;
-            record.validate_candidate(previous, &record.record).map_err(|_| files::malformed())?;
+            record
+                .validate_candidate(previous, &record.record)
+                .map_err(|_| files::malformed())?;
         } else if seq > 1 {
             let previous_key = BucketKey::reflog(name, seq - 1).map_err(|_| files::malformed())?;
             let previous_bytes = self
@@ -193,7 +217,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             return Ok(Vec::new());
         }
         let records = self.committed_logs(name, current).await?;
-        Ok(records.into_iter().filter(|log| log.record.seq >= from_seq).collect())
+        Ok(records
+            .into_iter()
+            .filter(|log| log.record.seq >= from_seq)
+            .collect())
     }
 
     async fn ref_watch(&self, name: &str, from_seq: u64) -> Result<Self::Watch, StoreFailure> {

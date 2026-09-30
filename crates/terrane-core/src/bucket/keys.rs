@@ -180,13 +180,19 @@ impl BucketKey {
     /// # Errors
     /// Rejects unsafe names, nonbranch classes, and a zero sequence.
     pub fn reflog_candidate(name: &str, seq: u64, candidate: &[u8; 32]) -> Result<Self, KeyError> {
-        let candidate: String = candidate.iter().map(|byte| alloc::format!("{byte:02x}")).collect();
+        let candidate: String = candidate
+            .iter()
+            .map(|byte| alloc::format!("{byte:02x}"))
+            .collect();
         Self::parse(&alloc::format!("logs/{name}/{seq:020}:{candidate}"))
     }
 }
 
 fn branch(class: RefClass) -> bool {
-    matches!(class, RefClass::Heads | RefClass::Jobs | RefClass::Conflicts | RefClass::Derived)
+    matches!(
+        class,
+        RefClass::Heads | RefClass::Jobs | RefClass::Conflicts | RefClass::Derived
+    )
 }
 
 fn digest_shard(value: &str) -> bool {
@@ -250,11 +256,14 @@ mod tests {
         for name in [
             "refs/heads/_/main",
             "refs/jobs/_/build",
-            "refs/conflicts/_/00000000000000000001",
+            "refs/conflicts/_/main/00000000000000000001",
             "refs/derived/_/shared",
         ] {
             let key = BucketKey::reflog_candidate(name, 1, &[17; 32]).unwrap();
-            assert!(key.as_str().ends_with(&alloc::format!("/00000000000000000001:{}", "11".repeat(32))));
+            assert!(
+                key.as_str()
+                    .ends_with(&alloc::format!("/00000000000000000001:{}", "11".repeat(32)))
+            );
             assert_eq!(key.mutability(), Mutability::CreateOnce);
         }
         for name in ["refs/tags/_/release", "refs/notes/memos/_/memo"] {
@@ -264,14 +273,31 @@ mod tests {
         assert!(BucketKey::parse(&key.as_str().to_uppercase()).is_err());
         assert!(BucketKey::reflog_candidate("refs/heads/_/main", 0, &[17; 32]).is_err());
         assert!(BucketKey::parse("logs/refs/jobs/_/build/00000000000000000001").is_err());
-        assert!(BucketKey::parse(&alloc::format!("logs/refs/heads/_/main/00000000000000000001/{}", "11".repeat(32))).is_err());
+        assert!(
+            BucketKey::parse(&alloc::format!(
+                "logs/refs/heads/_/main/00000000000000000001/{}",
+                "11".repeat(32)
+            ))
+            .is_err()
+        );
     }
 
     #[test]
     fn gc_state_and_checkpoint_revisions_keep_the_registered_write_classes() {
-        assert_eq!(BucketKey::parse("gc/1/state").unwrap().mutability(), Mutability::CompareAndSwap);
-        assert_eq!(BucketKey::parse("gc/1/mark/255/0").unwrap().mutability(), Mutability::CreateOnce);
-        for key in ["gc/01/state", "gc/1/mark/256/0", "gc/1/mark/1/00", "gc/1/marks/00"] {
+        assert_eq!(
+            BucketKey::parse("gc/1/state").unwrap().mutability(),
+            Mutability::CompareAndSwap
+        );
+        assert_eq!(
+            BucketKey::parse("gc/1/mark/255/0").unwrap().mutability(),
+            Mutability::CreateOnce
+        );
+        for key in [
+            "gc/01/state",
+            "gc/1/mark/256/0",
+            "gc/1/mark/1/00",
+            "gc/1/marks/00",
+        ] {
             assert!(BucketKey::parse(key).is_err(), "{key}");
         }
     }

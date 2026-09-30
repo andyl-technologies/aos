@@ -12,6 +12,7 @@ struct FaultFs {
     fail_sync: AtomicBool,
     hide_listing: bool,
     fail_manifest: AtomicBool,
+    fail_ref_directory_sync: AtomicBool,
     overwrite_existing: AtomicBool,
 }
 
@@ -74,6 +75,13 @@ impl LocalFs for FaultFs {
     }
 
     async fn sync_directory(&self, path: &Path) -> std::io::Result<()> {
+        if path.ends_with("refs/heads/_")
+            && self.fail_ref_directory_sync.swap(false, Ordering::SeqCst)
+        {
+            return Err(std::io::Error::other(
+                "injected post-rename ref-directory sync failure",
+            ));
+        }
         TokioLocalFs.sync_directory(path).await
     }
 
@@ -102,6 +110,7 @@ async fn unsynced_temporary_write_never_changes_visible_ref() {
         fail_sync: AtomicBool::new(false),
         hide_listing: false,
         fail_manifest: AtomicBool::new(false),
+        fail_ref_directory_sync: AtomicBool::new(false),
         overwrite_existing: AtomicBool::new(false),
     };
     let bucket = FileBucket::open(config(root.clone()), fs, TokioClock, Validator)
@@ -114,7 +123,14 @@ async fn unsynced_temporary_write_never_changes_visible_ref() {
         .unwrap();
     let second = first.advance([2; 32], 2).unwrap().selected();
 
-    bucket.ref_log_append("refs/heads/_/main", second.seq, &super::tests::log(second.clone(), Some(first.clone()))).await.unwrap();
+    bucket
+        .ref_log_append(
+            "refs/heads/_/main",
+            second.seq,
+            &super::tests::log(second.clone(), Some(first.clone())),
+        )
+        .await
+        .unwrap();
     bucket.inner.fs.fail_sync.store(true, Ordering::SeqCst);
     assert!(
         bucket
@@ -144,6 +160,7 @@ async fn content_fixture(hide_listing: bool) -> FileBucket<FaultFs, TokioClock, 
         fail_sync: AtomicBool::new(false),
         hide_listing,
         fail_manifest: AtomicBool::new(false),
+        fail_ref_directory_sync: AtomicBool::new(false),
         overwrite_existing: AtomicBool::new(false),
     };
     FileBucket::open(config(root), fs, TokioClock, Validator)
@@ -161,6 +178,7 @@ async fn startup_refuses_a_binding_that_overwrites_create_once_keys() {
         fail_sync: AtomicBool::new(false),
         hide_listing: false,
         fail_manifest: AtomicBool::new(false),
+        fail_ref_directory_sync: AtomicBool::new(false),
         overwrite_existing: AtomicBool::new(true),
     };
     let result = FileBucket::open(config(root.clone()), broken, TokioClock, Validator).await;
@@ -295,6 +313,50 @@ async fn partial_generation_is_unpublished_and_retry_uses_a_fresh_generation() {
             .generation
             .unwrap()
             > old_generation + 1
+    );
+    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_final_cas_sync_requires_authoritative_reread_after_possible_application() {
+    let bucket = content_fixture(false).await;
+    let name = "refs/heads/_/main";
+    let first = RefRecord::first([1; 32], 1, Locality::default()).selected();
+    bucket.prepared_cas(name, None, &first).await.unwrap();
+    let next = first.advance([2; 32], 2).unwrap().selected();
+    bucket
+        .ref_log_append(
+            name,
+            next.seq,
+            &super::tests::log(next.clone(), Some(first.clone())),
+        )
+        .await
+        .unwrap();
+
+    bucket
+        .inner
+        .fs
+        .fail_ref_directory_sync
+        .store(true, Ordering::SeqCst);
+    let failure = bucket.ref_cas(name, Some(&first), &next).await.unwrap_err();
+    assert_eq!(failure.kind(), &StoreErrorKind::Unavailable);
+    assert_eq!(bucket.ref_get(name).await.unwrap(), Some(next.clone()));
+    let reopened = FileBucket::open(
+        config(bucket.root().to_owned()),
+        TokioLocalFs,
+        TokioClock,
+        Validator,
+    )
+    .await
+    .unwrap();
+    assert_eq!(reopened.ref_get(name).await.unwrap(), Some(next.clone()));
+    assert_eq!(
+        reopened.ref_log_read(name, 2).await.unwrap(),
+        vec![super::tests::log(next.clone(), Some(first.clone()))]
+    );
+    assert_eq!(
+        reopened.ref_cas(name, Some(&first), &next).await.unwrap(),
+        crate::store::RefCasOutcome::Conflict(Some(Box::new(next)))
     );
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
 }

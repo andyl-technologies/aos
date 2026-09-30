@@ -542,7 +542,8 @@ async fn portable_copy_reopens_as_the_same_bucket_layout() {
         .unwrap();
     use super::tests::{PreparedCas, Selected};
     let record = terrane_core::refs::RefRecord::first([1; 32], 1, Locality::default()).selected();
-    bucket.prepared_cas("refs/heads/tenant/main", None, &record)
+    bucket
+        .prepared_cas("refs/heads/tenant/main", None, &record)
         .await
         .unwrap();
     let destination = bucket.root().with_extension("copy");
