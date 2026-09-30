@@ -14,6 +14,7 @@ pub use mount_request::{
     MountProviderRequestProjectionV2, MountProviderRequestSendRecoveryV2,
     MountProviderSessionProjectionV2, MountProviderSignerProjectionV2, PendingNativeMountAcquireV3,
     OriginalNativeReceivedOutcomeV5, PreparedMountProviderRequestV2, ReceivedMountProviderOutcomePartsV2,
+    OriginalInventoryPreparationV6, OriginalInventorySendV6, OriginalInventoryReceivedOutcomeV6,
     RecoveredMountProviderOutcomePartsV2, RecoveredMountProviderOutcomeV2,
     ReopenedMountSourceRootV2, ReservedMountProviderRequestV2, RetainedRootRecoveryAuthorizationV2,
     RootAcceptedNativeExportFenceV1, SentMountProviderRequestV2, VerifiedMountProviderOutcomeV2,

@@ -234,6 +234,35 @@ impl<W: MountWorker> MountBroker<W> {
         encode_mount_inventory_response(response).map_err(Into::into)
     }
 
+    /// Lends Query's retained owner and revokes actual Session on every returned error.
+    ///
+    /// This dormant crate-private boundary includes errors before the generic
+    /// owner closure. The inherited generic closure-unwind custody limitation
+    /// remains unsupported; it is not repaired by a failure flag or restart.
+    ///
+    /// # Errors
+    /// Revokes Session and all available runtime owners on any returned broker,
+    /// writer, custody or operation failure, including before closure entry.
+    pub(crate) fn with_original_inventory_source_owner_v6<R>(
+        &mut self,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        operation: impl for<'journal> FnOnce(
+            &mut crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2<'journal>,
+            &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        ) -> Result<R>,
+    ) -> Result<R> {
+        let result = self.with_fixed_source_acquisition_owner(|owner| operation(owner, session));
+        if result.is_err() {
+            if let Some(runtime) = self.source_runtime.as_mut() {
+                runtime.invalidate_original_inventory_v6(session);
+            } else {
+                session.invalidate_original_inventory_continuation_v6(None);
+            }
+        }
+
+        result
+    }
+
     /// Lends the sole protected Mount journal to the source-acquisition owner.
     ///
     /// The first borrow replays the complete source graph. Later borrows

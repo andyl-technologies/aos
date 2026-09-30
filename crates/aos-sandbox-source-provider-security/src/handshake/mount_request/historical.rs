@@ -8,9 +8,9 @@ use super::*;
 
 impl CurrentRootMountSourceProviderSessionV1 {
     #[allow(clippy::too_many_arguments)]
-    fn authorize_historical_mount_acquisition_v2(
+    pub(in crate::handshake::mount_request) fn authorize_historical_mount_acquisition_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
         journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
         acquisition_key: Vec<u8>,
         acquisition_record: Vec<u8>,
@@ -116,10 +116,10 @@ impl CurrentRootMountSourceProviderSessionV1 {
             && graph.provider_sessions.get(&predecessor_session.session_id)
                 == Some(&predecessor_session)
             && journal
-                .validate_mount_source_acquisition_snapshot(&journal_snapshot)
+                .validate_current_snapshot(&journal_snapshot)
                 .is_ok()
-            && journal.get(&acquisition_key).ok().flatten() == Some(acquisition_record.as_slice())
-            && journal.get(&predecessor_session_key).ok().flatten()
+            && journal.current_value(&acquisition_key).ok().flatten() == Some(acquisition_record.as_slice())
+            && journal.current_value(&predecessor_session_key).ok().flatten()
                 == Some(predecessor_session_record.as_slice());
         if !stable_successor || !protected_records_match {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));

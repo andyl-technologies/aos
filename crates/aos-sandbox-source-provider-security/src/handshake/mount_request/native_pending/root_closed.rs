@@ -75,6 +75,137 @@ impl OriginalNativeReceivedOutcomeV5 {
 }
 
 impl CurrentRootMountSourceProviderSessionV1 {
+    /// Checks genuine original custody under the distinct current Query cut.
+    pub(in crate::handshake::mount_request) fn require_original_root_closed_for_inventory_v6(
+        &mut self,
+        writer: &aos_sandbox::MountOriginalInventoryJournalAuthorityV6<'_>,
+        original: (
+            &AuthorizedMountProviderOutcomeV2,
+            &OriginalNativeReceivedOutcomeV5,
+            &OriginalRootProtectedReadbackV5,
+        ),
+    ) -> Result<(), SourceProviderSecurityError> {
+        let (authorization, retained, origin) = original;
+        let result = (|| {
+            let snapshot = writer
+                .snapshot()
+                .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            writer
+                .validate_original_root_closed_origin_v6(origin)
+                .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            let current = writer
+                .current_graph()
+                .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            if retained.failed.get()
+                || !matches!(retained.closed.signature, SignatureState::Signed(_))
+                || retained.closed.send != SendState::Sent
+            {
+                return Err(SourceProviderSecurityError::SessionContinuity);
+            }
+            self.require_original_pending_receipt_owner_v5(
+                authorization,
+                retained,
+                &current,
+                origin.attempt(),
+            )?;
+            let outcome = retained
+                .verified_pending()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let attempt = current
+                .legacy()
+                .provider_attempts
+                .get(&origin.attempt())
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            require_received_pending_attempt_v5(authorization, outcome, attempt, false)?;
+
+            // The archived Head belongs to first R, not today's Query Head.
+            let sidecar = origin
+                .graph()
+                .sidecars()
+                .get(&origin.attempt())
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let cut = retained
+                .pending_cut
+                .as_ref()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let captured = cut
+                .reconstruct(origin.graph().legacy(), origin.attempt())
+                .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            require_current_companions(origin.graph(), &captured)?;
+            let root1 = sidecar
+                .suffix()
+                .control(Kind::RootPrepared)
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let unsigned = retained
+                .unsigned_closed()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let signed = retained
+                .signed_closed()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let disposition = retained
+                .disposition
+                .as_ref()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let disposition_bytes = disposition
+                .to_canonical_bytes()
+                .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            if sidecar.suffix().phase() != 11
+                || sidecar.settlement().is_some()
+                || sidecar.terminal_verifier().is_some()
+                || unsigned.kind() != Kind::RootClosed
+                || unsigned.scope() != sidecar.original_scope()
+                || unsigned.scope().original_source_session != self.session.binding()
+                || unsigned.predecessor() != root1.digest()
+                || unsigned.signer() != root1.prepared().signer()
+                || unsigned.sections().len() != 3
+                || unsigned.section(Tag::RootPrepared) != Some(root1.to_canonical_bytes().as_slice())
+                || unsigned.section(Tag::RootDispositionAssertion)
+                    != Some(disposition_bytes.as_slice())
+                || signed.prepared() != unsigned
+                || sidecar.suffix().control(Kind::RootClosed) != Some(signed)
+                || sidecar.suffix().prepared().is_some()
+                || sidecar.suffix().controls().len() != 2
+            {
+                return Err(SourceProviderSecurityError::SessionContinuity);
+            }
+            let witness = NativeHeldOwnerWitnessV1::from_canonical_bytes(
+                NativeHeldOwnerV1::Root,
+                unsigned
+                    .section(Tag::Witness)
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?,
+            )
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            let NativeHeldOwnerWitnessV1::Root(witness) = witness else {
+                return Err(SourceProviderSecurityError::SessionContinuity);
+            };
+            let expected = NativeHeldOwnerWitnessV1::Root(
+                retained.original.original_root_witness(
+                    captured.witnesses().clone(),
+                    witness.journal_sequence,
+                ),
+            )
+            .to_canonical_bytes()
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            if unsigned.section(Tag::Witness) != Some(expected.as_slice()) {
+                return Err(SourceProviderSecurityError::SessionContinuity);
+            }
+            self.require_current_root_mount_record_role_v5(unsigned.signer())?;
+            self.require_original_pending_receipt_owner_v5(
+                authorization,
+                retained,
+                &current,
+                origin.attempt(),
+            )?;
+            writer
+                .validate_snapshot(&snapshot)
+                .map_err(|_| SourceProviderSecurityError::SessionContinuity)
+        })();
+        if result.is_err() {
+            self.invalidate_original_inventory_continuation_v6(Some(retained));
+        }
+        result
+    }
+
     /// Rechecks the actual original Pending cut, role and retained Closed bytes.
     ///
     /// Phase10 binds the unsigned Witness to the actual first-R sequence;

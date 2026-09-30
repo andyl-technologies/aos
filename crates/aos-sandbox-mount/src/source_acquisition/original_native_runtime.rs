@@ -56,6 +56,7 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
         &mut self,
         session: &mut CurrentRootMountSourceProviderSessionV1,
     ) -> Result<bool> {
+        self.require_no_original_inventory_v6(session)?;
         let flight = self
             .runtime
             .pending_original_native
@@ -99,6 +100,7 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
         &mut self,
         session: &mut CurrentRootMountSourceProviderSessionV1,
     ) -> Result<bool> {
+        self.require_no_original_inventory_v6(session)?;
         let flight = self
             .runtime
             .pending_original_native
@@ -132,6 +134,7 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
         &mut self,
         session: &mut CurrentRootMountSourceProviderSessionV1,
     ) -> Result<bool> {
+        self.require_no_original_inventory_v6(session)?;
         let result = (|| {
             let flight = self
                 .runtime
