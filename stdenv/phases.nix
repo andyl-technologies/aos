@@ -632,6 +632,62 @@ in rec {
                 exec 8>&-
                 sleep 1
               done
+
+              # CMake install steps can also reset directory modes. Restore
+              # access while this UID still owns them, including after failure,
+              # and retain the source lock until this exit handler finishes.
+              finishSharedCargoCache() {
+                cargoCacheExitStatus=$?
+                trap - EXIT
+
+                if ! find "$CARGO_TARGET_DIR" -type d -user "$(id -u)" \
+                    ! -perm -0777 -exec chmod a+rwx {} \;; then
+                  echo "could not restore shared Cargo directory permissions" >&2
+                  if [ "$cargoCacheExitStatus" -eq 0 ]; then
+                    cargoCacheExitStatus=1
+                  fi
+                fi
+
+                exit "$cargoCacheExitStatus"
+              }
+
+              trap finishSharedCargoCache EXIT
+
+              # Build scripts can copy vendor files into OUT_DIR and reset
+              # their permissions. The current Nix build UID must own those
+              # outputs even when inherited ACLs already allow writes. Repair
+              # them under the source lock, preserving bytes and freshness.
+              find "$CARGO_TARGET_DIR" -type f -name '*.aos-writable.*' -delete
+              find "$CARGO_TARGET_DIR" -type f \
+                \( ! -writable -o \( -path "*/build/*/out/*" ! -user "$(id -u)" \) \) \
+                -exec "$CONFIG_SHELL" -e -c '
+                  writableFile=
+
+                  cleanupCacheFile() {
+                    rm -f -- "$writableFile"
+                  }
+
+                  trap cleanupCacheFile EXIT
+
+                  for cachedFile do
+                    writableFile=$(mktemp "$cachedFile.aos-writable.XXXXXX")
+
+                    if [ ! -r "$cachedFile" ] && \
+                        [ "''${cachedFile##*/incremental/}" != "$cachedFile" ] && \
+                        [ "''${cachedFile%.lock}" != "$cachedFile" ] && \
+                        [ ! -s "$cachedFile" ]; then
+                      # rustc creates empty incremental lock files as 0600.
+                      # The source lock excludes active users of this tree.
+                      touch --reference="$cachedFile" "$writableFile"
+                    else
+                      cp --reflink=auto --preserve=mode,timestamps \
+                        -- "$cachedFile" "$writableFile"
+                    fi
+
+                    chmod a+rw "$writableFile"
+                    mv -f -- "$writableFile" "$cachedFile"
+                  done
+                ' aos-cargo-cache {} +
             ''
           }
             # The top-level mtime is the target tree's last-use marker for
@@ -754,7 +810,10 @@ in rec {
                     fi
                   ''
                 }
+                # Nix may give builders a PTY. Animated progress then hides
+                # failures from streamed logs and repeats captured output.
                 cargo nextest run \
+                  --show-progress none \
                   ${
                   if checkType == "release"
                   then "--cargo-profile release"
