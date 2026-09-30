@@ -168,18 +168,12 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         | PackageCommand::Verify { .. }
         | PackageCommand::Source { .. }
         | PackageCommand::Credential(_) => false,
-        PackageCommand::Eval { .. }
-        | PackageCommand::EvalRetained { .. }
-        | PackageCommand::EvalService { .. }
-        | PackageCommand::Materialize { .. }
-        | PackageCommand::AbilityActivationPreflight { .. }
-        | PackageCommand::AbilityActivate { .. }
+        PackageCommand::ApplyDeployment(..)
+        | PackageCommand::VerifyDeployment(..)
+        | PackageCommand::DeploymentCurrent { .. }
+        | PackageCommand::DeploymentResult { .. }
         | PackageCommand::Switch { .. }
-        | PackageCommand::Config { .. }
-        | PackageCommand::AbilityMaterializeSourceStage { .. }
-        | PackageCommand::AbilityStageRun { .. }
-        | PackageCommand::AbilityStageValidate { .. }
-        | PackageCommand::AbilityStageReceive { .. } => true,
+        | PackageCommand::Config { .. } => true,
     }
 }
 
@@ -201,7 +195,9 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Held { .. }
         | PackageCommand::Orphans { .. }
         | PackageCommand::Verify { .. }
-        | PackageCommand::AbilityStageValidate { .. } => true,
+        | PackageCommand::VerifyDeployment(..)
+        | PackageCommand::DeploymentCurrent { .. }
+        | PackageCommand::DeploymentResult { .. } => true,
         PackageCommand::Docs { command } => documentation_is_read_only(command),
         PackageCommand::Options { .. } | PackageCommand::Schema { .. } => true,
         PackageCommand::Config { command } => runtime_config_is_read_only(command),
@@ -214,6 +210,7 @@ fn is_read_only(command: &PackageCommand) -> bool {
         PackageCommand::Credential(CredentialCommand::Encrypt { output, .. }) => output.is_none(),
         PackageCommand::Registry { command, .. } => apm_registry_is_read_only(command),
         PackageCommand::Install { .. }
+        | PackageCommand::ApplyDeployment(..)
         | PackageCommand::Remove { .. }
         | PackageCommand::Autoremove
         | PackageCommand::Reinstall { .. }
@@ -224,16 +221,7 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Unhold { .. }
         | PackageCommand::Clean { .. }
         | PackageCommand::Gc
-        | PackageCommand::Eval { .. }
-        | PackageCommand::EvalRetained { .. }
-        | PackageCommand::EvalService { .. }
-        | PackageCommand::Materialize { .. }
-        | PackageCommand::AbilityActivationPreflight { .. }
-        | PackageCommand::AbilityActivate { .. }
-        | PackageCommand::Switch { .. }
-        | PackageCommand::AbilityMaterializeSourceStage { .. }
-        | PackageCommand::AbilityStageRun { .. }
-        | PackageCommand::AbilityStageReceive { .. } => false,
+        | PackageCommand::Switch { .. } => false,
     }
 }
 
@@ -446,9 +434,9 @@ mod tests {
             .expect("unset marker preserves system behavior");
         boundary
             .validate(&command(&[
-                "__ability-activation-preflight",
-                "--manifest",
-                "/tmp/manifest.json",
+                "deployment-current",
+                "--profile",
+                "/tmp/profile",
             ]))
             .expect("unset marker preserves hidden behavior");
     }
@@ -474,12 +462,16 @@ mod tests {
             &["docs", "search", "hello", "--system"][..],
             &["install", "hello", "--image", "raw"][..],
             &["attest", "quote", "--nonce", "00", "--output-dir", "/tmp/q"][..],
+            &["deployment-current", "--profile", "/tmp/profile"][..],
             &[
-                "__ability-activation-preflight",
-                "--manifest",
-                "/tmp/manifest.json",
+                "deployment-result",
+                "--profile",
+                "/tmp/profile",
+                "--generation",
+                "1",
+                "--effect",
+                "effect",
             ][..],
-            &["__ability-activate", "--module-abi", "1"][..],
         ] {
             let error = boundary
                 .validate(&command(arguments))
