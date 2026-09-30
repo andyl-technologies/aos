@@ -384,6 +384,7 @@
   requiredUnits = builtins.map (unit: unit.unit_name) handoff.realization.required_units;
   stageInputPaths = handoff.paths.initrd;
   stageBundleDestination = lib.escapeShellArg ("root" + stageInputPaths.bundle);
+  stageBundleParent = lib.escapeShellArg ("root" + builtins.dirOf stageInputPaths.bundle);
   requiredUnitChecks =
     lib.concatMapStringsSep "\n" (unit: ''
       unit_path=root/etc/systemd/system/${unit}
@@ -630,8 +631,8 @@
           OSREL
           cp root/etc/os-release root/etc/initrd-release
 
-          mkdir -p ${stageBundleDestination}
-          cp -a ${deploymentBundle}/. ${stageBundleDestination}/
+          mkdir -p ${stageBundleParent}
+          ln -s ${deploymentBundle} ${stageBundleDestination}
           install -D -m 0444 ${registration}/registration root/lib/aos/initrd/registration
           registrationDigest=$(sha256sum root/lib/aos/initrd/registration)
           printf '%s\n' "''${registrationDigest%% *}" > root/lib/aos/initrd/registration.sha256

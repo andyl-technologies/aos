@@ -212,29 +212,81 @@ pub fn digest_regular_file_beneath(root: &Path, relative: &Path) -> Result<(u64,
 
 /// Hashes a native document alias without resolving links on the host.
 ///
-/// Only the final alias may link, and its absolute target must lie in the Nix
-/// store copied into the extracted image. Every target component is opened
-/// without following links, so an archive cannot redirect validation elsewhere.
+/// The fixed image bundle directory may link to its immutable store root.
+/// Document aliases are then followed only inside the copied Nix store, with a
+/// bounded chain and no linked store parents. Host paths are never resolved.
 ///
 /// # Errors
-/// Returns an error for linked parents, a non-store target, changed aliases,
-/// missing or special documents, or failed point-in-time hashing.
+/// Returns an error for unexpected linked parents, a non-store target, cyclic
+/// or changed aliases, missing or special documents, or failed hashing.
 pub(crate) fn digest_native_document_beneath(
     root: &Path,
     relative: &Path,
     store_directory: &Path,
 ) -> Result<(u64, Sha256Digest)> {
+    digest_native_alias(root, relative, store_directory, 0, true)
+}
+
+fn digest_native_alias(
+    root: &Path,
+    relative: &Path,
+    store_directory: &Path,
+    depth: usize,
+    allow_bundle: bool,
+) -> Result<(u64, Sha256Digest)> {
+    if depth >= 8 {
+        bail!("native document alias chain exceeds its limit");
+    }
+
     let mut directory = File::from(open(
         root,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )?);
     let mut components = relative.components().peekable();
+    let mut traversed = PathBuf::new();
     while let Some(component) = components.next() {
         let Component::Normal(name) = component else {
             bail!("native alias path is not normalized");
         };
+        traversed.push(name);
         if components.peek().is_some() {
+            let bundle_directory = allow_bundle
+                && matches!(
+                    traversed.to_str(),
+                    Some(
+                        "lib/aos/initrd/deployment"
+                            | "usr/lib/aos/initrd/deployment"
+                            | "usr/lib/aos/host/deployment"
+                    )
+                );
+            if bundle_directory {
+                match readlinkat(&directory, name, Vec::new()) {
+                    Ok(target) => {
+                        let target_text = target
+                            .to_str()
+                            .context("native bundle alias is not UTF-8")?;
+                        aos_release::artifact::require_store_path(target_text, false)?;
+                        let suffix = target_text
+                            .strip_prefix("/nix/store/")
+                            .context("native bundle alias escapes store")?;
+                        let remaining: PathBuf = components.map(|part| part.as_os_str()).collect();
+                        let identity = digest_native_alias(
+                            root,
+                            &store_directory.join(suffix).join(remaining),
+                            store_directory,
+                            depth + 1,
+                            false,
+                        )?;
+                        if readlinkat(&directory, name, Vec::new())? != target {
+                            bail!("native bundle alias changed while hashing");
+                        }
+                        return Ok(identity);
+                    }
+                    Err(rustix::io::Errno::INVAL) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
             directory = File::from(openat(
                 &directory,
                 name,
@@ -259,7 +311,13 @@ pub(crate) fn digest_native_document_beneath(
             .next()
             .context("native document alias lacks root")?;
         aos_release::artifact::require_store_path(&format!("/nix/store/{component}"), false)?;
-        let identity = digest_regular_file_beneath(root, &store_directory.join(suffix))?;
+        let identity = digest_native_alias(
+            root,
+            &store_directory.join(suffix),
+            store_directory,
+            depth + 1,
+            false,
+        )?;
         if readlinkat(&directory, name, Vec::new())? != target {
             bail!("native document alias changed while hashing");
         }
@@ -463,6 +521,67 @@ mod tests {
                 tree,
                 Path::new("lib/aos/initrd/deployment/transaction.json"),
                 Path::new("nix/store")
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_bundle_directory_preserves_immutable_alias_chains() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let tree = temporary.path();
+        let bundle = "00000000000000000000000000000000-native-bundle";
+        let payload = "11111111111111111111111111111111-native-document";
+        let bundle_root = tree.join("nix/store").join(bundle);
+        let payload_root = tree.join("nix/store").join(payload);
+        std::fs::create_dir_all(&bundle_root)?;
+        std::fs::create_dir_all(&payload_root)?;
+        std::fs::create_dir_all(tree.join("lib/aos/initrd"))?;
+
+        let document = payload_root.join("transaction.json");
+        std::fs::write(&document, b"immutable native transaction")?;
+        symlink(
+            format!("/nix/store/{payload}/transaction.json"),
+            bundle_root.join("transaction.json"),
+        )?;
+        let directory_alias = tree.join("lib/aos/initrd/deployment");
+        symlink(format!("/nix/store/{bundle}"), &directory_alias)?;
+
+        let relative = Path::new("lib/aos/initrd/deployment/transaction.json");
+        assert_eq!(
+            digest_native_document_beneath(tree, relative, Path::new("nix/store"))?,
+            digest_regular_file(&document)?
+        );
+
+        std::fs::remove_file(&directory_alias)?;
+        symlink("/etc", &directory_alias)?;
+        assert!(digest_native_document_beneath(tree, relative, Path::new("nix/store")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn native_bundle_document_cycle_fails_closed() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let tree = temporary.path();
+        let bundle = "00000000000000000000000000000000-native-bundle";
+        let bundle_root = tree.join("nix/store").join(bundle);
+        std::fs::create_dir_all(&bundle_root)?;
+        std::fs::create_dir_all(tree.join("lib/aos/initrd"))?;
+        symlink(
+            format!("/nix/store/{bundle}/transaction.json"),
+            bundle_root.join("transaction.json"),
+        )?;
+        symlink(
+            format!("/nix/store/{bundle}"),
+            tree.join("lib/aos/initrd/deployment"),
+        )?;
+
+        assert!(
+            digest_native_document_beneath(
+                tree,
+                Path::new("lib/aos/initrd/deployment/transaction.json"),
+                Path::new("nix/store"),
             )
             .is_err()
         );
