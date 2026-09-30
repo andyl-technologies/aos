@@ -9,6 +9,7 @@
   zstd,
   libxml2,
   libedit,
+  gcc-libs,
 }: let
   mkLLVM = import ./_llvm.nix {
     inherit fetchurl buildPackages bootstrapTools stdenv zlib;
@@ -26,8 +27,14 @@ in
     # Add device code generation without changing the ordinary LLVM package
     # used by the bootstrap and Rust toolchains.
     targets = ["X86" "AArch64" "BPF" "WebAssembly" "AMDGPU" "NVPTX"];
-    extraRuntimeDeps = [zstd libxml2 libedit];
+    # The bootstrap G++ otherwise finds its static libstdc++ before the
+    # separately built shared library. LLVM must share C++ runtime state with
+    # graphics clients that also link libstdc++.
+    extraRuntimeDeps = [gcc-libs zstd libxml2 libedit];
     extraCmakeFlags = [
+      "-DCMAKE_EXE_LINKER_FLAGS=-L${gcc-libs}/lib"
+      "-DCMAKE_SHARED_LINKER_FLAGS=-L${gcc-libs}/lib"
+      "-DCMAKE_MODULE_LINKER_FLAGS=-L${gcc-libs}/lib"
       "-DLLVM_ENABLE_ZSTD=FORCE_ON"
       "-Dzstd_INCLUDE_DIR=${zstd}/include"
       "-Dzstd_LIBRARY=${zstd}/lib/libzstd.so"
