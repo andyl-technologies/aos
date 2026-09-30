@@ -191,7 +191,7 @@
   abilityModule = {name, ...}: {
     _module.strict = true;
     options.operations = mkOption {
-      type = types.attrsOf (types.submodule (operationModule name));
+      type = types.lazyAttrsOf (types.submodule (operationModule name));
       default = {};
       description = "Operation contracts and their selected interpretations.";
     };
@@ -199,7 +199,7 @@
 in {
   options.aos = {
     abilities = mkOption {
-      type = types.attrsOf (types.submodule abilityModule);
+      type = types.lazyAttrsOf (types.submodule abilityModule);
       default = {};
       extensible = true;
       description = "Module-composed abilities; each owns its operations, handlers, and effects.";

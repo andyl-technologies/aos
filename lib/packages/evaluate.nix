@@ -39,6 +39,9 @@ in
     evaluated
     // {
       documentation = {
+        schema = "aos.module.documentation";
+        inherit scope system;
+        packages = builtins.map (artifact: {inherit (artifact) name version;}) packageArtifacts;
         options = declarations;
         abilities = documentation.abilities evaluated.config.aos.abilities;
       };

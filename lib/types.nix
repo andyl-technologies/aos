@@ -201,6 +201,28 @@ in rec {
     };
   };
 
+  ## Signed integer refinements with bounds retained across the runtime boundary.
+  ## Unlike arbitrary predicates, both Nix and the portable validator can check these.
+  ints = rec {
+    between = minimum: maximum:
+      if !builtins.isInt minimum || !builtins.isInt maximum || minimum > maximum
+      then throw "types.ints.between requires ordered integer bounds"
+      else
+        (addCheck int (value: value >= minimum && value <= maximum))
+        // {
+          name = "intBetween";
+          description = "integer between ${toString minimum} and ${toString maximum}";
+          _portable = true;
+          _aosDocType = {
+            kind = "integer";
+            min = minimum;
+            max = maximum;
+          };
+        };
+    unsigned = between 0 9223372036854775807;
+    positive = between 1 9223372036854775807;
+  };
+
   float = {
     name = "float";
     description = "floating point number";
@@ -489,6 +511,80 @@ in rec {
     };
   };
 
+  ## Constrains a mergeable list while preserving its element module type.
+  listWith = {
+    elemType,
+    maxItems,
+    unique ? false,
+    canonicalOrder ? false,
+  }: let
+    base = listOf elemType;
+    valid = value: let
+      encoded = builtins.map builtins.toJSON value;
+      names = builtins.attrNames (builtins.listToAttrs (builtins.map (name: {
+          inherit name;
+          value = true;
+        })
+        encoded));
+    in
+      builtins.length value
+      <= maxItems
+      && (!unique || builtins.length names == builtins.length encoded)
+      && (!canonicalOrder || encoded == builtins.sort builtins.lessThan encoded);
+  in
+    assert builtins.isInt maxItems && maxItems >= 0;
+    assert !canonicalOrder || unique;
+      (addCheck base valid)
+      // {
+        _portable = true;
+        _aosDocType =
+          base._aosDocType
+          // {
+            max_items = maxItems;
+            inherit unique;
+            canonical_order = canonicalOrder;
+          };
+      };
+
+  ## Constrains dynamic keys and cardinality without changing per-key merging.
+  attrsWith = {
+    elemType,
+    maxEntries,
+    keyMaxLength,
+    keySyntax ? null,
+  }: let
+    base = attrsOf elemType;
+    keyValid = key:
+      builtins.stringLength key
+      <= keyMaxLength
+      && (
+        if keySyntax == null
+        then builtins.match ".*[[:cntrl:]].*" key == null
+        else if keySyntax == "local-key-v1"
+        then builtins.stringLength key <= 128 && builtins.match "[A-Za-z0-9._-]+" key != null
+        else throw "Unsupported map key syntax '${keySyntax}'."
+      );
+    valid = value:
+      builtins.length (builtins.attrNames value)
+      <= maxEntries
+      && builtins.all keyValid (builtins.attrNames value);
+  in
+    assert builtins.isInt maxEntries && maxEntries >= 0;
+    assert builtins.isInt keyMaxLength && keyMaxLength > 0;
+      (addCheck base valid)
+      // {
+        _portable = true;
+        _aosDocType = {
+          kind = "map";
+          key = {
+            max_length = keyMaxLength;
+            syntax = keySyntax;
+          };
+          max_entries = maxEntries;
+          value = elemType._aosDocType;
+        };
+      };
+
   ## A list of `elemType` that must contain at least one element after
   ## merging. Delegates checking and merging to `listOf` and rejects an
   ## empty result at evaluation time.
@@ -658,6 +754,7 @@ in rec {
   ## # Type
   ## `type -> type -> type`
   either = type1: type2: {
+    _alternativeTypes = [type1 type2];
     name = "either(${type1.name},${type2.name})";
     description = "${type1.description} or ${type2.description}";
     check = v: type1.check v || type2.check v;
@@ -686,6 +783,7 @@ in rec {
   ## # Type
   ## `[type] -> type`
   oneOf = types: {
+    _alternativeTypes = types;
     name = "oneOf(${builtins.concatStringsSep "," (builtins.map (t: t.name) types)})";
     description = "one of ${builtins.concatStringsSep ", " (builtins.map (t: t.description) types)}";
     check = v: builtins.any (t: t.check v) types;
@@ -719,6 +817,39 @@ in rec {
             }
         )
         types;
+    };
+  };
+
+  ## A record union whose discriminator is merged before its selected module.
+  ## Each variant remains a normal mergeable option type. Definitions may
+  ## supply different fields, but conflicting discriminator values are errors.
+  taggedUnion = tag: variants: {
+    name = "taggedUnion(${tag})";
+    description = "record selected by '${tag}'";
+    mergeProvenanceByKey = true;
+    _variantTypes = variants;
+    check = value:
+      builtins.isAttrs value
+      && builtins.hasAttr tag value
+      && builtins.isString value.${tag}
+      && builtins.hasAttr value.${tag} variants
+      && variants.${value.${tag}}.check value;
+    merge = loc: definitions: let
+      active = peelProperties definitions;
+      tagDefinitions = dischargeProperties (builtins.concatMap (definition:
+        if builtins.isAttrs definition.value && builtins.hasAttr tag definition.value
+        then [(definition // {value = definition.value.${tag};})]
+        else [])
+      active);
+      selected = mergeEqualOption (loc ++ [tag]) tagDefinitions;
+    in
+      if !(builtins.isString selected && builtins.hasAttr selected variants)
+      then throw "The option '${showLoc loc}' has an unknown '${tag}' variant."
+      else variants.${selected}.merge loc active;
+    _aosDocType = {
+      kind = "tagged-union";
+      inherit tag;
+      variants = builtins.mapAttrs (_: type: type._aosDocType) variants;
     };
   };
 
@@ -849,6 +980,23 @@ in rec {
         then value
         else throw "The option '${showLoc loc}' does not satisfy its type's additional check.";
     };
+
+  ## Bounds UTF-8 bytes and optionally checks a whole-string pattern.
+  strWith = {
+    maxLength,
+    pattern ? null,
+  }: let
+    base =
+      if pattern == null
+      then str
+      else strMatching pattern;
+  in
+    assert builtins.isInt maxLength && maxLength > 0;
+      (addCheck base (value: builtins.stringLength value <= maxLength))
+      // {
+        _portable = true;
+        _aosDocType = base._aosDocType // {max_length = maxLength;};
+      };
 
   ## A string that matches a regular expression (POSIX ERE).
   ## # Type

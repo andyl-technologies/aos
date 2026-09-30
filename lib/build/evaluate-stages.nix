@@ -14,14 +14,12 @@
 }: let
   packageModuleLib = import ./package-modules.nix {};
   callerModules = packageModuleLib.canonicalize packageModules;
-  selectedPackages = packages:
-    builtins.filter (package: builtins.isAttrs package && package ? module) packages;
   declaredPackages =
     builtins.map (selection: selection.package)
     (builtins.attrValues (lib.filterAttrs (_: selection: selection.enable || selection.bundle)
         selectionEvaluation.config.aos.packages));
-  hostPackages = selectedPackages (selectionEvaluation.config.environment.systemPackages ++ declaredPackages);
-  initrdPackages = selectedPackages selectionEvaluation.config.aos.boot.initrd.packageRoots;
+  hostPackages = selectionEvaluation.config.environment.systemPackages ++ declaredPackages;
+  initrdPackages = selectionEvaluation.config.aos.boot.initrd.packageRoots;
   recordsFor = packages:
     packageModuleLib.canonicalize (
       builtins.map (record: let
@@ -41,20 +39,27 @@
   initrdPackageModules = recordsFor initrdPackages;
   hostScope = [systemName "host"];
   initrdScope = [systemName "initrd"];
-  hostConfigurationModules = selectionEvaluation.config.aos.activation.stages.host.modules;
-  initrdConfigurationModules = selectionEvaluation.config.aos.activation.stages.initrd.modules;
+  hostConfigurationModules = selectionEvaluation.config.aos.activation.stages.host.modules or [];
+  initrdConfigurationModules = selectionEvaluation.config.aos.activation.stages.initrd.modules or [];
   evaluate = scope: packages: configurationModules:
     lib.evalModules {
       modules = modules ++ moduleList ++ [baseLibProbe {aos.activation.scope = scope;}] ++ configurationModules;
       inherit pkgs lib operatorModules runtimeModules;
       packageModules = packages;
-      specialArgs = moduleSpecialArgs;
+      specialArgs =
+        moduleSpecialArgs
+        // {
+          inherit hostPackages initrdPackages initrdPackageModules;
+          hostPackageModules = finalPackageModules;
+        };
     };
   hostAbilityEvaluation = evaluate hostScope finalPackageModules hostConfigurationModules;
   initrdAbilityEvaluation = evaluate initrdScope initrdPackageModules initrdConfigurationModules;
 in {
   inherit
     finalPackageModules
+    hostPackages
+    initrdPackages
     initrdPackageModules
     hostScope
     initrdScope
