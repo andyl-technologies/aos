@@ -311,7 +311,7 @@ in
       pkgs.jq
       pkgs.pkg-config
       pkgs.qemu-crucible
-      pkgs.socat
+      pkgs.python3
     ];
 
     BLOCK_IMAGE = "${blockImage}/block.img";
@@ -360,15 +360,8 @@ in
             socket="$1"
             request="$2"
             response="$3"
-            response_err="$response.err"
-
-            {
-              sleep 0.1
-              printf '{"execute":"qmp_capabilities"}\r\n'
-              sleep 0.1
-              printf '%s\r\n' "$request"
-              sleep 0.25
-            } | socat -T 10 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
+            ${pkgs.python3}/bin/python3 ${./_qmp-command.py} \
+              "$socket" "$request" > "$response" 2> "$response.err" || true
           }
 
           qmp_cmd() {
@@ -376,35 +369,25 @@ in
             request="$2"
             response="$3"
             response_err="$response.err"
-            attempts=0
 
-            while [ "$attempts" -lt 20 ]; do
-              qmp_exchange "$socket" "$request" "$response"
-
-              if [ ! -s "$response" ]; then
-                attempts=$((attempts + 1))
-                sleep 0.25
-                continue
-              fi
-
-              if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
-                cat "$response" >&2
-                return 1
-              fi
-              if jq -e -s '[.[] | select(has("return"))] | length >= 2' "$response" >/dev/null; then
-                return 0
-              fi
-
-              attempts=$((attempts + 1))
-              sleep 0.25
-            done
-
-            if [ -s "$response" ]; then
-              cat "$response" >&2
-            else
+            # A loaded builder can delay migration admission beyond one second.
+            # Wait for the matching QMP reply rather than a transport idle gap.
+            if ! ${pkgs.python3}/bin/python3 ${./_qmp-command.py} \
+              "$socket" "$request" > "$response" 2> "$response_err"; then
               cat "$response_err" >&2
+              return 1
             fi
-            return 1
+
+            if [ ! -s "$response" ]; then
+              cat "$response_err" >&2
+              return 1
+            fi
+
+            if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
+              cat "$response" >&2
+              return 1
+            fi
+            jq -e -s '[.[] | select(has("return"))] | length >= 2' "$response" >/dev/null
           }
 
           qmp_job_started() {
