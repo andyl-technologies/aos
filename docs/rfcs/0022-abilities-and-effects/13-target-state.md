@@ -120,16 +120,14 @@ effects. Transaction views show execution order, dependencies, lifetimes, and
 implementation artifacts. Neither is evidence of observed live state. Conditional
 uses absent from the fixed point cannot be invented by the documentation layer.
 
-The current local CLI and Hub import viewer inspect these artifacts directly.
-Authenticated publication, installed-package documentation, release search, and
-live inspection consumers must eventually read these native outputs as part of
-their ordinary paths. A separate authored documentation model or silent adapter
+The CLI, Hub import viewer, authenticated release index, package reference pages,
+and deployment reports use these native outputs through the shared reader. A separate authored documentation model or silent adapter
 for the obsolete registry schemas is not the target.
 
 ## Completion boundary
 
-The native infrastructure and artifact inspection path are implemented. Existing
-package recipes, OS handlers, registry metadata/indexing, production APM and boot
-orchestration remain consumer migration work. No qualification or platform support
+The native infrastructure, package domains, publication, APM, and generated
+documentation paths are implemented. Final boot handoff and qualification
+consumer integration remain tracked in the migration checklist. No qualification or platform support
 claim follows merely from having the interface. Current journals are bounded
 without automatic compaction; current process transport uses Linux facilities.

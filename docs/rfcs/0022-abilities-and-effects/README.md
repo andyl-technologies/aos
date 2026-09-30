@@ -44,9 +44,8 @@ version within this change.
 3. [Infrastructure cutover](infrastructure-cutover.md): concrete build and Rust APIs.
 4. [Implementation contract](implementation-contract.md) and
    [execution contract](execution-contract.md): source boundaries and runtime protocol.
-5. [Consumer migration](consumer-migration.md): work intentionally left for the next pass.
+5. [Consumer migration](consumer-migration.md): remaining integration and qualification work.
 
-Chapters 02, 03, 04, 06, and 07 summarize the current native design. The remaining
-numbered chapters and the old completeness audit retain earlier design analysis
-and qualification goals; their banners identify them as historical. They are
-not API specifications or evidence that the new path boots an existing system.
+The numbered chapters describe the same native design at each boundary. The
+[completion criteria](implementation-completeness.md) distinguish implementation
+checks from qualification of an actual image and its handlers.
