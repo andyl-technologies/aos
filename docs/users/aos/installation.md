@@ -81,10 +81,9 @@ corresponding hardware accelerator should be an error.
 Use `aos --json image list` or `aos --json image show` for automation. The
 record includes the store and NAR identity, ordered cache URLs, format, target
 compatibility, media type, compression, exact size, SHA-256, release-signature
-and boot verification states, the associated integrity-bound
-`image-info.json`, and,
-for Secure Boot plus dm-verity images, paired recovery UKI and authenticated
-recovery-bundle metadata.
+and boot verification states, and the associated integrity-bound
+`image-delivery.json` and provider `image-info.json`. Secure Boot plus dm-verity
+images also include paired recovery UKI and authenticated recovery-bundle metadata.
 
 ## Choose an image format
 
@@ -102,7 +101,9 @@ Use the format published for the target. Raw images are delivered as
 therefore add almost no transfer cost. The CLI verifies the compressed object's
 signed size and SHA-256. Publication also verifies that decompression produces
 the exact `virtualSizeBytes` and `logicalDiskSha256` recorded in
-`image-info.json`. Retain that metadata with the deployment record. UEFI
+`image-delivery.json`. The provider's `image-info.json` separately records the
+root, disk layout, and boot artifacts; disk-format conversion preserves that
+contract. Retain both documents with the deployment record. UEFI
 firmware is required; do not pass a separate kernel or initrd.
 
 ## Size the target

@@ -6,7 +6,7 @@
 - **Normative design:** [Target state](13-target-state.md).
 - **Implemented APIs and limits:** [Infrastructure cutover](infrastructure-cutover.md).
 - **End-to-end guide:** [Runtime abilities](../../users/aos/runtime-abilities.md).
-- **Next work:** [Consumer migration handoff](consumer-migration.md).
+- **Integration and qualification:** [Migration status](consumer-migration.md).
 
 A package distributes built software and an optional immutable Nix module.
 Interface, implementation, package, and operator modules compose through one
