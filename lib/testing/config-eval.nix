@@ -37,11 +37,11 @@ in
             export AOS_NIX_STORE=${pkgs.nix}/bin/nix-store
             export AOS_NIX_INSTANTIATE=${pkgs.nix}/bin/nix-instantiate
 
-            # The production evaluator hashes retained sources, projects native
-            # options, validates the deployment, and returns before activation.
+            # An explicit Nix suite must suffice even when PATH cannot supply
+            # evaluator tools. This also exercises Nix's multicall entry points.
             for evaluation in first second; do
               echo "Checking native read-only evaluation: $evaluation"
-              if ! ${pkgs.coreutils}/bin/timeout 60 \
+              if ! PATH=/no-evaluator-on-path ${pkgs.coreutils}/bin/timeout 60 \
                 ${driver}/bin/package_deployment_check --evaluate-only \
                 ${fixture}/fixture.json ${pkgs.nix}/bin/nix-store \
                 > "$out/$evaluation.json" 2> "$out/$evaluation.stderr"; then

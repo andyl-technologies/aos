@@ -42,8 +42,13 @@ impl SourceViews {
             .prefix("evaluation-sources-")
             .tempdir_in(staging)?;
         let mut roots = BTreeMap::new();
-        let executable =
-            std::fs::canonicalize(nix_store).context("resolving the selected Nix source reader")?;
+        let selected = aos_core::nix::identity::store_command(nix_store)?;
+        // Nix selects its legacy command mode from argv[0]. Resolving this
+        // symlink to the multicall `nix` binary would change --restore semantics.
+        let executable = Path::new(selected.get_program())
+            .parent()
+            .context("selected Nix suite has no directory")?
+            .join("nix-store");
 
         for identity in paths {
             let (root, _) = store_root_and_suffix(identity)?;
