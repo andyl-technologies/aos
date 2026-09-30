@@ -1062,6 +1062,23 @@ is added rather than editing history.
     retain existing bytes; proposal IDs are not immutable content identities.
     This draft correction precedes T1's record/key and T3's wire freezes.
 
+- **[D-66] Distinguish initial draft corrections from released revisions.**
+  - **Status:** Decided
+  - **Decision:** Before the initial format freeze and first conforming
+    release, an explicit D-n-backed correction may advance the draft number
+    without replacing the affected version-one media type. Unaffected legacy
+    bytes retain their interpretation and identities. Implementation freezes
+    remain binding regardless of draft status; released formats follow the
+    existing media-type and specification-version revision rules.
+  - **Rationale:** The initial implementation exposed missing fields and
+    contradictory draft requirements before any frozen or conforming release.
+    Requiring a separate released-format version for each such correction
+    would falsely imply multiple supported releases. Silent draft changes
+    would instead erase the compatibility obligation. Recording each change
+    and preserving unaffected bytes makes the distinction explicit.
+  - **Affects:** README versioning and the pre-freeze corrections recorded
+    in D-35 through D-65. No existing requirement ID or identity is changed.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

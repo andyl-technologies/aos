@@ -1,8 +1,8 @@
 # Terrane Specification
 
-- **Version:** 1.0-draft-1
+- **Version:** 1.0-draft-2
 - **Status:** Draft
-- **Date:** 2026-09-25
+- **Date:** 2026-09-29
 
 Terrane is a content-addressed chunk store with a filesystem namespace that
 composes like a version-control branch. This document set is the normative
@@ -156,7 +156,17 @@ for the gates it names.
 ## Versioning
 
 The specification version is `MAJOR.MINOR-draft-N` until 1.0 is published.
-Any change to bytes on the wire or at rest, or to the identity of any object,
+Before the initial format freeze and the first conforming release, a
+D-n-backed correction to an unreleased draft MAY advance only the draft
+number while retaining its media-type version. This exception applies only
+to corrections that preserve the interpretation and identity of unaffected
+legacy bytes and explicitly document changed fields and compatibility.
+Draft status alone
+does not reopen an implementation freeze. This exception does not apply
+after the initial format freeze or to a published conforming release.
+
+Otherwise, any change to bytes on the wire or at rest, or to the identity of
+any object,
 requires a new media-type version for the affected object and a `MINOR`
 increment. Adding a surface, property, or backend that does not change
 existing identities is a `MINOR` increment. Requirement IDs are never reused.
