@@ -16,6 +16,8 @@
 //! version-6 rows cannot infer an anchor or supply positive recovery authority.
 //! Mixed graphs retain version-5 baseline records; older readers reject the
 //! new native body and cannot silently activate it.
+//! Separate envelope9/body1 retains pre-Requested Source closure DATA; only its
+//! explicit cold decoder accepts it, without constructing a live native request.
 //!
 //! The seven baseline closed bodies use these exact semantic orders; `authority` is a
 //! 56-byte authority tuple, `signer` is the protocol's canonical 120-byte
@@ -690,7 +692,7 @@ fn decode_envelope<'a>(
     decode_envelope_version(key, bytes, None)
 }
 
-// Only the separate pure held decoder supplies version8. The legacy decoder
+// Separate pure held/cold decoders supply version8/9. The legacy decoder
 // continues deriving its exact5/6/7 member from the legacy body magic.
 pub(super) fn decode_envelope_version<'a>(
     key: &'a [u8],

@@ -11,6 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
+use ledger::native_completion::pre_requested_cold::{
+    self as cold, SourcePreRequestedColdArchiveV1,
+};
+
 pub use aos_sandbox_source_provider_protocol::{
     MAXIMUM_NORMALIZED_ACQUISITION_INTENT_BYTES, NormalizedAcquisitionIntentV1,
 };
@@ -99,7 +103,7 @@ pub fn validate_prospective_transition<'current, 'prospective>(
 }
 
 // The strict public entry point authenticates the legacy profile above. Held
-// proposals use this same current-owner/history core after their actual-profile
+// and cold proposals use this current-owner/history core after their own full
 // graph checks; it never produces a public legacy validation seal.
 pub(crate) fn validate_transition_structure(
     current: &BTreeMap<Vec<u8>, Vec<u8>>,
@@ -107,8 +111,12 @@ pub(crate) fn validate_transition_structure(
 ) -> Result<(), LedgerFormatErrorV1> {
     use ledger::model::DecodedRecordV1;
 
+    let current_cold = cold::graph::validated_archives(current)?;
+    let prospective_cold = cold::graph::validated_archives(prospective)?;
+
     let current_authority = current
         .iter()
+        .filter(|(key, _)| !current_cold.contains_key(*key))
         .find_map(
             |(key, value)| match decode_current_record(key, value).ok()? {
                 DecodedRecordV1::Authority(authority) => Some(authority),
@@ -118,6 +126,7 @@ pub(crate) fn validate_transition_structure(
         .ok_or(LedgerFormatErrorV1::Corrupt("missing current authority"))?;
     let prospective_authority = prospective
         .iter()
+        .filter(|(key, _)| !prospective_cold.contains_key(*key))
         .find_map(
             |(key, value)| match decode_current_record(key, value).ok()? {
                 DecodedRecordV1::Authority(authority) => Some(authority),
@@ -167,6 +176,7 @@ pub(crate) fn validate_transition_structure(
 
     let current_catalog = current
         .iter()
+        .filter(|(key, _)| !current_cold.contains_key(*key))
         .find_map(
             |(key, value)| match decode_current_record(key, value).ok()? {
                 DecodedRecordV1::Catalog(catalog)
@@ -180,6 +190,7 @@ pub(crate) fn validate_transition_structure(
         .ok_or(LedgerFormatErrorV1::Corrupt("missing current catalog"))?;
     let prospective_catalog = prospective
         .iter()
+        .filter(|(key, _)| !prospective_cold.contains_key(*key))
         .find_map(
             |(key, value)| match decode_current_record(key, value).ok()? {
                 DecodedRecordV1::Catalog(catalog)
@@ -207,6 +218,9 @@ pub(crate) fn validate_transition_structure(
     }
 
     for (key, current_value) in current {
+        if current_cold.contains_key(key) {
+            continue;
+        }
         let DecodedRecordV1::Session(current_session) = decode_current_record(key, current_value)?
         else {
             continue;
@@ -245,9 +259,19 @@ pub(crate) fn validate_transition_structure(
     }
 
     for (key, current_value) in current {
+        if let Some(old) = current_cold.get(key) {
+            let next = prospective_cold.get(key).ok_or(LedgerFormatErrorV1::Corrupt(
+                "cold archive cannot be forgotten or replaced",
+            ))?;
+            cold::graph::validate_retained_transition(current, prospective, key, old, next)?;
+            continue;
+        }
         let decoded = decode_current_record(key, current_value)?;
         match decoded {
             DecodedRecordV1::NativeCompletion(native) => {
+                if prospective_cold.contains_key(key) {
+                    return Err(LedgerFormatErrorV1::Corrupt("native profile cannot change"));
+                }
                 let next = prospective.get(key).ok_or(LedgerFormatErrorV1::Corrupt(
                     "native completion cannot be forgotten",
                 ))?;
@@ -277,8 +301,10 @@ pub(crate) fn validate_transition_structure(
             }
             DecodedRecordV1::Catalog(catalog) if prospective.get(key) != Some(current_value) => {
                 let rewritten = prospective.contains_key(key);
-                let still_referenced =
-                    prospective.iter().any(|(candidate_key, candidate_value)| {
+                let still_referenced = prospective
+                    .iter()
+                    .filter(|(candidate_key, _)| !prospective_cold.contains_key(*candidate_key))
+                    .any(|(candidate_key, candidate_value)| {
                         match decode_current_record(candidate_key, candidate_value) {
                             Ok(DecodedRecordV1::Attempt(attempt)) => {
                                 attempt.response_catalog_generation == catalog.catalog_generation
@@ -303,15 +329,18 @@ pub(crate) fn validate_transition_structure(
             DecodedRecordV1::SessionHistory(history)
                 if prospective.get(key) != Some(current_value) =>
             {
-                let was_current = current.iter().any(|(candidate_key, candidate_value)| {
-                    matches!(
-                        decode_current_record(candidate_key, candidate_value),
-                        Ok(DecodedRecordV1::Session(ref session))
-                            if session.provider == history.provider
-                                && session.holder == history.holder
-                                && session.session_binding == history.session_binding
-                    )
-                });
+                let was_current = current
+                    .iter()
+                    .filter(|(candidate_key, _)| !current_cold.contains_key(*candidate_key))
+                    .any(|(candidate_key, candidate_value)| {
+                        matches!(
+                            decode_current_record(candidate_key, candidate_value),
+                            Ok(DecodedRecordV1::Session(ref session))
+                                if session.provider == history.provider
+                                    && session.holder == history.holder
+                                    && session.session_binding == history.session_binding
+                        )
+                    });
                 if !was_current {
                     return Err(LedgerFormatErrorV1::Corrupt(
                         "finalized AOSSPL session history was rewritten",
@@ -323,6 +352,10 @@ pub(crate) fn validate_transition_structure(
     }
     for (key, value) in prospective {
         if current.contains_key(key) {
+            continue;
+        }
+        if let Some(archive) = prospective_cold.get(key) {
+            cold::graph::validate_initial_transition(current, prospective, key, archive)?;
             continue;
         }
         if ledger::native_held_completion::graph::is_held(value) {
@@ -455,6 +488,11 @@ pub(crate) fn decode_current_record(
 ) -> Result<ledger::model::DecodedRecordV1, LedgerFormatErrorV1> {
     use ledger::model::DecodedRecordV1;
 
+    if cold::is_cold(value) {
+        return Err(LedgerFormatErrorV1::Corrupt(
+            "cold profile requires its separate DATA decoder",
+        ));
+    }
     if ledger::native_held_completion::graph::is_held(value) {
         let held = ledger::native_held_completion::SourceNativeHeldCompletionRecordV1::from_canonical_bytes(key, value)?;
         if held.to_canonical_bytes()? != value {
@@ -487,6 +525,7 @@ pub(crate) fn validate_current_records(
     let mut acquisition_sequences = BTreeSet::new();
     let mut release_ids = BTreeSet::new();
     let mut native_completion_ids = BTreeSet::new();
+    let mut cold_archives = BTreeMap::new();
 
     for (key, value) in records {
         record_count = record_count
@@ -507,6 +546,14 @@ pub(crate) fn validate_current_records(
             return Err(LedgerFormatErrorV1::LimitExceeded(
                 "prospective ledger aggregate bounds",
             ));
+        }
+        if cold::is_cold(value) {
+            let archive = SourcePreRequestedColdArchiveV1::from_canonical_bytes(key, value)?;
+            if !native_completion_ids.insert(archive.prepared().claims().acquisition_id) {
+                return Err(LedgerFormatErrorV1::Corrupt("duplicate native completion"));
+            }
+            cold_archives.insert(key.clone(), archive);
+            continue;
         }
         let record = decode_current_record(key, value)?;
         match &record {
@@ -593,6 +640,11 @@ pub(crate) fn validate_current_records(
     }
     let provider_id =
         provider_id.ok_or(LedgerFormatErrorV1::Corrupt("missing provider authority"))?;
+    for archive in cold_archives.values() {
+        if archive.prepared().claims().provider_id != provider_id {
+            return Err(LedgerFormatErrorV1::Corrupt("foreign provider cold archive"));
+        }
+    }
     for record in &decoded {
         let record_provider = match record {
             DecodedRecordV1::Authority(value) => value.provider.authority_id(),
@@ -756,6 +808,9 @@ pub(crate) fn validate_current_records(
             _ => None,
         })
         .collect();
+    for archive in cold_archives.values() {
+        cold::graph::validate_companions(canonical, archive)?;
+    }
     for native in decoded.iter().filter_map(|record| match record {
         DecodedRecordV1::NativeCompletion(value) => Some(value),
         _ => None,
@@ -951,6 +1006,9 @@ pub(crate) fn validate_current_records(
         if dispatch_id_matches
             && acquisition.state != ProviderAcquisitionStateV1::Applying
             && native.is_none()
+            && !cold_archives.contains_key(
+                &ledger::native_completion::native_completion_key_v2(acquisition.acquisition_id),
+            )
         {
             return Err(LedgerFormatErrorV1::Corrupt(
                 "native acquisition missing completion",
@@ -1058,7 +1116,10 @@ pub(crate) fn validate_current_records(
         authority.catalog_digest,
         canonical
             .iter()
-            .filter(|(_, value)| !ledger::native_held_completion::graph::is_held(value))
+            .filter(|(key, value)| {
+                !ledger::native_held_completion::graph::is_held(value)
+                    && !cold_archives.contains_key(*key)
+            })
             .map(|(key, value)| (key.as_slice(), value.as_slice())),
         limits::MAXIMUM_INVENTORY_TOMBSTONES_PER_HOLDER,
     )?;
