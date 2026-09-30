@@ -159,7 +159,8 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
     def hybrid_query(sql):
         wrapped = "SELECT COALESCE(json_agg(row_to_json(observation)), '[]') FROM (" + sql + ") observation"
         output = native.succeed(
-            f"{tools['postgres']}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+            f"{tools['postgres']}/psql -h {tools.get('postgres_host', '127.0.0.1')} "
+            "-U postgres -d postgres -At "
             f"-c {shlex.quote(wrapped)}",
             timeout=60,
         )

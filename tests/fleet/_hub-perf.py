@@ -140,6 +140,7 @@ def report_page_observations(label, observations):
         summaries[name] = {
             "p50": statistics.median(values),
             "p95": values[math.ceil(len(values) * 0.95) - 1],
+            "p99": values[math.ceil(len(values) * 0.99) - 1],
             "max": values[-1],
         }
     print(f"hybrid {label} paired phase seconds:", summaries)
