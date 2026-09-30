@@ -48,6 +48,28 @@ fn invalid_chunk(error: crate::codec::FrameError) -> StoreFailure {
     )
 }
 
+// Missing or corrupt dependency evidence is an admission failure. Backend
+// availability and capability failures retain their closed STORE-7 outcomes.
+fn dictionary_admission_failure(error: StoreFailure) -> StoreFailure {
+    match error.kind() {
+        StoreErrorKind::Absent(_) | StoreErrorKind::Corrupt(_) => StoreFailure::with_source(
+            StoreErrorKind::Invalid(InvalidReason::Upload { rule_id: "CDC-9" }),
+            error,
+        ),
+        _ => error,
+    }
+}
+
+fn dictionary_read_failure(identity: &Identity, error: StoreFailure) -> StoreFailure {
+    match error.kind() {
+        StoreErrorKind::Absent(_) | StoreErrorKind::Corrupt(_) => StoreFailure::with_source(
+            StoreErrorKind::Corrupt(CorruptSubject::Identity(identity.clone())),
+            error,
+        ),
+        _ => error,
+    }
+}
+
 fn entry_kind(kind: IdentityKind) -> Result<EntryKind, StoreFailure> {
     match kind {
         IdentityKind::Chunk => Ok(EntryKind::Chunk),
@@ -230,7 +252,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 (body, plaintext_len) = self
                     .encoded_body(catalog, &current)
                     .await
-                    .map_err(|_| corrupt(identity))?;
+                    .map_err(|error| dictionary_read_failure(identity, error))?;
             }
         }
         let mut dictionary = None;
@@ -264,7 +286,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let encoded = self
             .verified_body(catalog, &identity)
             .await
-            .map_err(|_| invalid("CDC-9"))?;
+            .map_err(dictionary_admission_failure)?;
         // Dictionary chunks may themselves name a dictionary. The chain has
         // already been verified above; decode its authoritative encoded body
         // using the same iterative resolver for plaintext assembly.
@@ -291,7 +313,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             body = self
                 .verified_body(catalog, &current)
                 .await
-                .map_err(|_| invalid("CDC-9"))?;
+                .map_err(dictionary_admission_failure)?;
         }
         let mut dictionary = None;
         for (identity, body, length) in chain.into_iter().rev() {
