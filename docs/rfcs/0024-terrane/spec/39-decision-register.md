@@ -1383,6 +1383,25 @@ is added rather than editing history.
     Physical deletion and current-authority qualification are still governed
     by their original requirements.
 
+- **[D-81] Preserve the recorded seed of a named chunk profile.**
+  - **Status:** Decided
+  - **Decision:** Interpret `cdc-1m` as the registered fixed sizes, mask span
+    and normalization with the exact 32-byte seed stored in its profile
+    record. Correct the registry's zero-seed restatement and distinguish the
+    golden vectors' all-zero seed from a constraint on stored profiles.
+    Preserve every golden byte, gear-table value and boundary offset.
+  - **Rationale:** CDC-2 and the `store-profile` CDDL carry the actual seed,
+    and complete Guard snapshots retain that same seeded profile. Replacing
+    it with an implicit zero seed changes chunk boundaries and can invalidate
+    existing stored profiles. The registry's fixed-zero cell and vector
+    introduction contradicted the owning requirement; the zero-seed witnesses
+    establish one reproducible profile instance, not all permitted instances.
+  - **Affects:** CDC-1 to CDC-3, the chunk-profile registry and golden-vector
+    introduction. Requirement IDs, gate names, encodings, immutable identity
+    domains and all existing golden values remain unchanged. A recorded seed
+    remains immutable under CDC-3. This correction precedes T1's initial
+    identity and encoding freeze.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

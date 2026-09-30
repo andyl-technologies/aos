@@ -75,10 +75,14 @@ fixed for the life of any chunk cut with the profile
 
 | Name | Minimum | Target | Maximum | Mask span | Normalization | Seed |
 | --- | --- | --- | --- | --- | --- | --- |
-| `cdc-1m` | 262 144 | 1 048 576 | 4 194 304 | 48 | 2 | 32 zero bytes |
+| `cdc-1m` | 262 144 | 1 048 576 | 4 194 304 | 48 | 2 | the 32-byte value in the profile record |
 
 The gear table for a profile is derived from its seed as in
 [`golden-vectors.md`](golden-vectors.md) §gear-table.
+The registered name fixes the sizes, mask span and normalization; it does
+not replace the recorded seed. The all-zero seed is used by the golden
+vectors. Any recorded 32-byte seed is valid, and CDC-3 fixes it for the
+lifetime of chunks cut with that stored profile.
 
 ## Codecs and dictionary classes
 

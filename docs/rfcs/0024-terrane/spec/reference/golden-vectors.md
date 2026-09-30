@@ -35,8 +35,9 @@ bytes   = BLAKE3-XOF( "terrane-gear-v1" || 0x00 || seed, 2048 bytes )
 gear[i] = u64le( bytes[8*i .. 8*i + 8] )        for i in 0 .. 256
 ```
 
-The `cdc-1m` profile ([`property-registry.md`](property-registry.md)
-§chunk profiles) uses the all-zero 32-byte seed. For that seed:
+The `cdc-1m` vectors ([`property-registry.md`](property-registry.md)
+§chunk profiles) use the all-zero 32-byte seed. A store uses its recorded
+seed (CDC-2); these witnesses do not restrict that seed. For the vector seed:
 
 | i | `gear[i]` |
 | --- | --- |

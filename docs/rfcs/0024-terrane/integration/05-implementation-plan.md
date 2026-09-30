@@ -142,7 +142,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 - [x] **T-CDC-1** FastCDC chunker with the seeded gear table, codec bytes,
   dictionary identities, canonical object manifests, and receiver-side
   validation. Content-class dictionary selection is completed jointly with
-  T-DRV-1. — satisfies OBJ-11 to OBJ-18, CDC-1 to CDC-20;
+  T-DRV-1. D-81 corrects the registry to retain the stored profile seed;
+  all existing zero-seed golden values remain unchanged. — satisfies
+  OBJ-11 to OBJ-18, CDC-1 to CDC-20;
   `checks.terrane.gates.object-identity-from-manifest`,
   `checks.terrane.gates.cdc-boundaries`,
   `checks.terrane.gates.chunk-codec`, `checks.terrane.gates.chunk-bomb-cap`,
