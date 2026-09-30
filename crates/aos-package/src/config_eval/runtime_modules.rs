@@ -165,7 +165,7 @@ pub fn snapshot(
     sync_directory_tree(&staging)?;
 
     let output = std::process::Command::new("nix-store")
-        .envs(aos_core::nix::aos_nix_env())
+        .envs(aos_core::nix::aos_management_nix_env())
         .args(["--add-fixed", "--recursive", "sha256"])
         .arg(&staging)
         .output()

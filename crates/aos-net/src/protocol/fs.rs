@@ -4,14 +4,21 @@
 //! - Async read/write with streaming chunks
 //! - File copy with progress
 //! - Atomic writes (write to temp file, rename)
+//! - Conditional writes (`If-Match` / `If-None-Match: *`) evaluated under an
+//!   exclusive sibling lock file; see [`super::conditional`]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use super::conditional::{
+    content_version, lock_attempts, lock_file_contents, lock_file_name, lock_timeout_error,
+    precondition_failed_result, written_result, WritePrecondition, LOCK_POLL, LOCK_WAIT,
+};
 use super::{ByteStream, Protocol};
 use crate::auth::Credential;
 use crate::types::{Method, TransferBody, TransferOutput, TransferRequest, TransferResult};
@@ -82,13 +89,139 @@ async fn atomic_write(destination: &std::path::Path, data: &[u8]) -> Result<()> 
     )
 }
 
+/// Exclusive lock file that serializes conditional writes of one target.
+///
+/// The lock is a sibling created with `O_CREAT | O_EXCL`, so exactly one
+/// writer holds it at a time. It is removed by [`release`](Self::release),
+/// or on drop if the owning future is cancelled first. Unconditional writes
+/// do not take the lock.
+struct ConditionalWriteLock {
+    path: PathBuf,
+    held: bool,
+}
+
+impl ConditionalWriteLock {
+    /// Acquires the lock at `path`, polling while another writer holds it.
+    ///
+    /// Fails once `wait` elapses rather than blocking forever: a lock left
+    /// behind by a crashed writer needs an operator decision.
+    async fn acquire(path: PathBuf, wait: Duration) -> Result<Self> {
+        for attempt in 1..=lock_attempts(wait) {
+            if attempt > 1 {
+                tokio::time::sleep(LOCK_POLL).await;
+            }
+
+            let opened = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .await;
+
+            match opened {
+                Ok(mut file) => {
+                    // Own the lock before writing its diagnostic contents, so
+                    // a failed write still removes it.
+                    let lock = Self { path, held: true };
+                    file.write_all(lock_file_contents().as_bytes())
+                        .await
+                        .with_context(|| format!("writing lock file {}", lock.path.display()))?;
+                    return Ok(lock);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("creating lock file {}", path.display()));
+                }
+            }
+        }
+
+        Err(lock_timeout_error(&path.display().to_string(), wait))
+    }
+
+    /// Removes the lock file.
+    async fn release(mut self) -> Result<()> {
+        self.held = false;
+        tokio::fs::remove_file(&self.path)
+            .await
+            .with_context(|| format!("removing lock file {}", self.path.display()))
+    }
+}
+
+impl Drop for ConditionalWriteLock {
+    fn drop(&mut self) {
+        if self.held {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Writes `data` to `destination` only if `precondition` holds.
+///
+/// The current version is read and compared while holding the target's
+/// [`ConditionalWriteLock`], and the replacement is an atomic temp-file
+/// rename, so readers observe either the old or the new bytes.
+async fn conditional_write(
+    destination: &Path,
+    data: &[u8],
+    precondition: &WritePrecondition,
+    lock_wait: Duration,
+) -> Result<TransferResult> {
+    let parent = destination
+        .parent()
+        .context("filesystem transfer destination has no parent directory")?;
+    let filename = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("filesystem transfer destination filename is not UTF-8")?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .with_context(|| format!("creating directory {}", parent.display()))?;
+
+    let lock =
+        ConditionalWriteLock::acquire(parent.join(lock_file_name(filename)), lock_wait).await?;
+    let outcome = compare_and_write(destination, data, precondition).await;
+
+    // A leftover lock blocks later conditional writers with an explicit
+    // timeout that names it, so a failed removal must not misreport a write
+    // that already committed.
+    if let Err(error) = lock.release().await {
+        tracing::warn!("{error:#}");
+    }
+
+    outcome
+}
+
+/// Compares the current version of `destination` with `precondition` and
+/// replaces it with `data` when it matches. Callers hold the target lock.
+async fn compare_and_write(
+    destination: &Path,
+    data: &[u8],
+    precondition: &WritePrecondition,
+) -> Result<TransferResult> {
+    let current = match tokio::fs::read(destination).await {
+        Ok(bytes) => Some(content_version(&bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_context(|| format!("reading {}", destination.display()));
+        }
+    };
+
+    if !precondition.is_satisfied_by(current.as_deref()) {
+        return Ok(precondition_failed_result(current));
+    }
+
+    atomic_write(destination, data).await?;
+    Ok(written_result(content_version(data), data.len() as u64))
+}
+
 /// Chunk size for streaming file reads.
 const FS_CHUNK_SIZE: usize = 64 * 1024; // 64KB
 
 /// Local filesystem protocol handler.
 ///
 /// Maps transfer methods onto local file operations: `Get` reads a
-/// file, `Put` writes one atomically (temp file + rename), `Head`
+/// file, `Put` writes one atomically (temp file + rename, conditionally
+/// when the request carries a [`super::conditional`] header), `Head`
 /// stats it (404 result if missing), and `Delete` unlinks it. POST is
 /// rejected. Parent directories are created as needed on writes.
 pub struct FsProtocol;
@@ -198,6 +331,10 @@ impl Protocol for FsProtocol {
                     }
                     None => Vec::new(),
                 };
+
+                if let Some(precondition) = WritePrecondition::from_headers(&request.headers)? {
+                    return conditional_write(&local_path, &data, &precondition, LOCK_WAIT).await;
+                }
 
                 let data_len = data.len() as u64;
 
@@ -436,5 +573,77 @@ mod tests {
             collected.extend_from_slice(&chunk.unwrap());
         }
         assert_eq!(collected, content.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn conditional_put_creates_only_absent_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("channels/edge/generation");
+        let url = format!("file://{}", path.display());
+        let proto = FsProtocol::new();
+        let create =
+            || TransferRequest::put(&url, b"one".to_vec()).with_header("If-None-Match", "*");
+
+        let created = proto.execute(&create(), None).await.unwrap();
+        let refused = proto.execute(&create(), None).await.unwrap();
+
+        assert_eq!(created.status, 200);
+        assert_eq!(
+            created.header("ETag"),
+            Some(content_version(b"one").as_str())
+        );
+        assert_eq!(refused.status, 412);
+        assert_eq!(
+            refused.header("ETag"),
+            Some(content_version(b"one").as_str())
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"one");
+        assert!(!dir.path().join("channels/edge/.generation.lock").exists());
+    }
+
+    #[tokio::test]
+    async fn conditional_put_replaces_only_the_expected_version() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("generation");
+        std::fs::write(&path, b"one").unwrap();
+        let url = format!("file://{}", path.display());
+        let proto = FsProtocol::new();
+        let current = content_version(b"one");
+
+        let stale = TransferRequest::put(&url, b"two".to_vec()).with_header("If-Match", "stale");
+        let fresh = TransferRequest::put(&url, b"two".to_vec()).with_header("If-Match", &current);
+        let stale_result = proto.execute(&stale, None).await.unwrap();
+        let fresh_result = proto.execute(&fresh, None).await.unwrap();
+
+        assert_eq!(stale_result.status, 412);
+        assert_eq!(stale_result.header("ETag"), Some(current.as_str()));
+        assert_eq!(fresh_result.status, 200);
+        assert_eq!(
+            fresh_result.header("ETag"),
+            Some(content_version(b"two").as_str())
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"two");
+        assert!(!dir.path().join(".generation.lock").exists());
+    }
+
+    #[tokio::test]
+    async fn conditional_put_fails_closed_while_another_writer_holds_the_lock() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("generation");
+        let lock = dir.path().join(".generation.lock");
+        std::fs::write(&lock, b"held elsewhere").unwrap();
+
+        let error = conditional_write(
+            &path,
+            b"one",
+            &WritePrecondition::Absent,
+            Duration::from_millis(150),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("conditional-write lock"));
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(&lock).unwrap(), b"held elsewhere");
     }
 }

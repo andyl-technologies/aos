@@ -5,7 +5,7 @@
 ##! verified `host.nix` WITHOUT touching the from-source build graph. The
 ##! derivation bundles:
 ##!
-##!   - the AOS `lib`, `modules`, `systems`, and `pkgs` *source* trees (the
+##!   - the AOS `lib`, `modules`, `systems`, `containers`, and `pkgs` source trees (the
 ##!     module engine + every module definition; `pkgs` source is needed only
 ##!     for the handful of path literals modules reference — no package is
 ##!     built on-host),
@@ -47,6 +47,7 @@
   # Evaluate the schema first so the ABI hash is available to the complete
   # image-baseline evaluation below without introducing a recursive value.
   schemaEval = lib.evalModules {
+    specialArgs = {inherit systemName;};
     modules =
       baseModules
       ++ systemModules
@@ -75,6 +76,7 @@
   baseLibOut = builtins.placeholder "out";
   placeholderBaseLibDigest = builtins.hashString "sha256" baseLibOut;
   realEval = lib.evalModules {
+    specialArgs = {inherit systemName;};
     modules =
       baseModules
       ++ systemModules
@@ -189,11 +191,12 @@ in
     # Bundle the source trees the on-host eval imports. `--no-preserve=mode` so
     # the copied files are writable enough for the store (the originals are
     # read-only store paths). Modules reference `../../pkgs/...` and
-    # `../../lib/...` path literals, so all four trees must be present even
+    # `../../lib/...` and pure container definitions, so these trees must be present even
     # though no package is built.
     cp -rL --no-preserve=mode ${../../lib} "$out/lib"
     cp -rL --no-preserve=mode ${../../modules} "$out/modules"
     cp -rL --no-preserve=mode ${../../systems} "$out/systems"
+    cp -rL --no-preserve=mode ${../../containers} "$out/containers"
     cp -rL --no-preserve=mode ${../../pkgs} "$out/pkgs"
 
     ${pkgs.sed}/bin/sed \

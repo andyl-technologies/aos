@@ -106,9 +106,8 @@ crates/aos/src/commands/release/
   build.rs
   finalize.rs
   author.rs
-  stage.rs
-  qualify.rs
-  promote.rs
+  publish.rs
+  qualification_run.rs
   channel.rs
   timestamp.rs
   status.rs
@@ -123,7 +122,7 @@ output.
 
 ### Plan
 
-`ReleasePlanV1` freezes all authority and completeness inputs before a build:
+`ReleasePlan` freezes all authority and completeness inputs before a build:
 
 - schema version, release id, SemVer, and release class;
 - `andyl/main` registry identity and exact base commit/generation;
@@ -218,35 +217,38 @@ completion decision additionally binds the exact rolling journal-head digest,
 which anchors the whole predecessor chain before the deterministic final entry
 is appended.
 
-The state implementation permits only:
+The state implementation permits only one global build lifecycle followed by
+one lifecycle per planned destination:
 
 ```text
-planned -> built -> finalized -> staged -> qualified -> promoted -> rolling -> complete
+global:        planned -> built -> finalized
+destination:   finalized -> published -> rolling -> rolling -> complete
 ```
 
-Any active state may transition to terminal `failed`. Resumption requires the
+A production destination is published only after a staging destination holds
+a publication. Any active state may transition to terminal `failed`. Resumption requires the
 same plan, bundle, previous journal digest, external public state, and immutable
 object receipts. A failed version is not reusable.
 
 ## CLI contract
 
-The top-level command surface is:
+The porcelain (`aos release new`, `advance`, `status`, `explain`, `review`,
+and `fitness`) drives these leaf commands in process from a maintainer
+configuration and a work directory. The leaf command surface is:
 
 | Command | Effect |
 | --- | --- |
-| `aos release plan` | Read-only evaluation; writes a new plan only to an explicitly named output. |
-| `aos release build` | Realizes the planned matrix twice as required and records build evidence. |
-| `aos release finalize` | Uses role-bound external signers, finalizes images and registry metadata, and emits the closed bundle. |
-| `aos release compose-surface` | Verifies and atomically composes the registry/cache base, delegated manifest target, immutable TUF set, and fresh timestamp. |
-| `aos release stage` | Uploads the exact bundle to the staging Hub and records its receipt. |
-| `aos release qualify-run` | Dispatches every planned gate to native Linux and Darwin adapters over exact public staging bytes and signs the aggregate result. |
-| `aos release qualify` | Admits a complete signed aggregate qualification to staging and advances the journal. |
-| `aos release promote` | Imports the qualified bundle into production without build, conversion, metadata generation, or content signing. |
-| `aos release channel advance` | Performs one reviewed compare-and-swap partition transition after production read-back. |
-| `aos release channel complete` | Verifies the full signed rollout and threshold-approved retention/handoff evidence before closing the journal. |
-| `aos release timestamp refresh` | Refreshes only an already-authorized snapshot with the restricted timestamp role. |
-| `aos release status` | Reconciles the journal with immutable local and public state without mutation. |
-| `aos release verify` | Verifies plan, bundle, evidence, signatures, receipts, matrix completeness, and state transitions offline. |
+| `aos release step plan` | Read-only evaluation; writes a new plan only to an explicitly named output. |
+| `aos release step build` | Realizes the planned matrix twice as required and records build evidence. |
+| `aos release step finalize` | Uses role-bound external signers, finalizes images and registry metadata, and emits the closed bundle. |
+| `aos release step compose-surface --to` | Verifies and atomically composes the registry/cache base, delegated manifest target, immutable TUF set, and fresh timestamp for one destination's surface. |
+| `aos release step publish --to` | Uploads the exact bundle to one destination's surface, admitting the signed staging qualification for a production destination, and records its receipt. |
+| `aos release step qualify-run --to` | Dispatches one destination's gates for a phase to native Linux and Darwin adapters over exact public bytes and signs the aggregate result. |
+| `aos release step channel advance --to --ring` | Performs one planned ring's compare-and-swap partition transition after public read-back. |
+| `aos release step channel complete --to` | Verifies the full signed rollout and threshold-approved retention/handoff evidence before closing the destination. |
+| `aos release step timestamp refresh --to` | Signs a timestamp over an already-authorized snapshot with the restricted timestamp role. |
+| `aos release step status` | Reconciles the journal with immutable local and public state without mutation. |
+| `aos release step verify` | Verifies plan, bundle, evidence, signatures, receipts, matrix completeness, and state transitions offline. |
 
 Every command supports stable JSON results. Mutating commands require an exact
 journal precondition and refuse ambiguous discovery. High-level commands do not
@@ -363,7 +365,7 @@ snapshot.
 Channel operations remain Git-native continuity and rollout records, but their
 verifier also requires a compatible TUF release authorization:
 
-- `stable` accepts only stable-authorized final or emergency releases;
+- `stable` accepts only stable-authorized final releases;
 - `candidate` accepts candidate- or stable-authorized releases; and
 - `edge` accepts any valid release class.
 

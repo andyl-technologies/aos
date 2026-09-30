@@ -672,7 +672,7 @@ class Scenario:
         if self.package_mode:
             if (
                 self.case.get("schema_version")
-                != "aos.release.qualification-case/v2"
+                != "aos.release.qualification-case/v1"
                 or self.case["requirement_id"] != "package-function"
                 or self.case["phase"] != "staging"
                 or self.case["platform"] != PLATFORM
@@ -1826,7 +1826,7 @@ http {
             "release_id": self.request["release_id"],
             "staging_receipt_digest": self.request["staging_receipt_digest"],
             "manifest_digest": self.request["manifest_digest"],
-            "case_digest": digest("aos.release.qualification-case/v2", self.case),
+            "case_digest": digest("aos.release.qualification-case/v1", self.case),
             "started_at": self.started_at,
             "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(finished)),
             "observed_seconds": int(finished - self.started),

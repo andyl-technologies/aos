@@ -157,8 +157,8 @@ pub fn validate_claims(contract: &QualificationContract) -> Result<()> {
                 .iter()
                 .find(|requirement| &requirement.id == id)
                 .ok_or_else(|| anyhow::anyhow!("claim references an unknown requirement: {id}"))?;
-            if requirement.scope != expected_scope || requirement.production_only {
-                bail!("claim requirements must share its artifact scope and release applicability");
+            if requirement.scope != expected_scope {
+                bail!("claim requirements must share its artifact scope");
             }
             if claim.minimum_assurance >= AssuranceLevel::A2 && requirement.phase > claim.phase {
                 bail!("execution claim cannot admit a function before its required hold point");

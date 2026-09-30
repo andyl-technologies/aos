@@ -1,31 +1,33 @@
 //! Read-only inspection and canonical export of the shared release contract.
+//!
+//! Without `--to` the command prints the registry tier's destination table
+//! (surface, channel, profile, `after`). With `--to <destination>` it prints
+//! that destination's profile and the gate identities it derives without a
+//! change scope, that is, with every population affecting.
 
 use std::io::Write as _;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use aos_core::{nix::NixRunner, output::Printer};
-use aos_release::qualification::QualificationContract;
-use aos_release::{canonical, plan::ReleaseClass};
+use aos_release::canonical;
+use aos_release::qualification::{ContractDestination, QualificationContract};
+use aos_release::registry::{channel_kind, registry_policy};
 
 use crate::cli::ReleaseContractArgs;
 
 pub(super) fn run(args: &ReleaseContractArgs, nix: &NixRunner, printer: &Printer) -> Result<()> {
     let contract: QualificationContract = match &args.input {
-        Some(path) => canonical::from_slice(
-            &super::capture::control_file(path, "qualification contract")?,
-            "qualification contract",
-        )?,
-        None => serde_json::from_value(nix.eval_json("releaseQualification")?)
-            .context("decoding Nix qualification contract")?,
+        Some(path) => {
+            let contract: QualificationContract = canonical::from_slice(
+                &super::capture::control_file(path, "qualification contract")?,
+                "qualification contract",
+            )?;
+            contract.validate()?;
+            contract
+        }
+        None => export(nix)?,
     };
-    contract.validate()?;
-    let class = match args.release_class.as_str() {
-        "edge" => ReleaseClass::Edge,
-        "candidate" => ReleaseClass::Candidate,
-        "stable" => ReleaseClass::Stable,
-        "emergency" => ReleaseClass::Emergency,
-        _ => bail!("unknown release class"),
-    };
+    let tier = registry_policy(&args.registry)?.tier();
     let bytes = canonical::to_vec(&contract)?;
     if let Some(path) = &args.output {
         let parent = path
@@ -40,44 +42,102 @@ pub(super) fn run(args: &ReleaseContractArgs, nix: &NixRunner, printer: &Printer
             .map_err(|error| error.error)?;
     }
     let digest = contract.digest()?;
+
+    let Some(name) = &args.to else {
+        let destinations: Vec<&ContractDestination> = contract.destinations_for(tier).collect();
+        if printer.json_if_active(&serde_json::json!({
+            "schema_version": "aos.release.contract-result/v1",
+            "registry": args.registry,
+            "public_evidence_policy_digest": digest,
+            "destinations": destinations,
+        })) {
+            return Ok(());
+        }
+        printer.success(&format!(
+            "{} ({}) policy {}",
+            contract.id, args.registry, digest
+        ));
+        for destination in destinations {
+            println!(
+                "{}: profile {}{}",
+                destination.name_for(&destination.channel),
+                destination.profile,
+                if destination.after.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " after {}",
+                        destination
+                            .after
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            );
+        }
+        return Ok(());
+    };
+
+    let (surface, channel) = aos_release::plan::parse_destination_name(name)?;
+    let cell = contract.destination(tier, surface, channel_kind(channel)?)?;
+    let profile = contract.profile(&cell.profile)?;
+    let gates = contract.gates(cell, None).or_else(|_| {
+        // Change-scoped profiles need a scope; show the fail-closed one.
+        contract.gates(
+            cell,
+            Some(&aos_release::qualification::ChangeScope {
+                schema_version: aos_release::qualification::change_scope::CHANGE_SCOPE.to_owned(),
+                predecessor_manifest_digest: None,
+                image_affecting: true,
+                container_affecting: true,
+                changed_package_cells: Vec::new(),
+                reason: "contract inspection: every population is affecting".to_owned(),
+            }),
+        )
+    })?;
     if printer.json_if_active(&serde_json::json!({
         "schema_version": "aos.release.contract-result/v1",
-        "contract": contract,
-        "release_class": class,
         "registry": args.registry,
+        "destination": name,
         "public_evidence_policy_digest": digest,
-        "gates": contract.gates(&args.registry, class)?,
+        "profile": profile,
+        "profile_digest": profile.digest()?,
+        "gates": gates,
     })) {
         return Ok(());
     }
     printer.success(&format!(
-        "{} ({} {}) policy {}",
-        contract.id, args.registry, args.release_class, digest
+        "{name} ({}) profile {} policy {}",
+        args.registry, profile.name, digest
     ));
-    for requirement in contract.selected(&args.registry, class)? {
+    println!("{}", profile.description);
+    println!(
+        "claims {:?}, soak {}s, reviews {}, complete matrix {}, transaction review {}",
+        profile.claims,
+        profile.soak_seconds,
+        profile.review_threshold,
+        profile.require_complete_matrix,
+        profile.review_registry_transaction
+    );
+    for (ring, policy) in profile.rollout.rings.iter().enumerate() {
         println!(
-            "{:?}: {} ({:?}, {:?})",
-            requirement.phase, requirement.id, requirement.scope, requirement.method
+            "ring {}: {} partitions, observe {}s",
+            ring + 1,
+            policy.partitions,
+            policy.observe_seconds
         );
-        for check in &requirement.checks {
-            println!("  [ ] {check}");
-        }
-        for (name, bound) in &requirement.measurements {
-            match bound.maximum {
-                Some(maximum) => println!("  {name}: {}..={maximum}", bound.minimum),
-                None => println!("  {name}: >= {}", bound.minimum),
-            }
-        }
     }
-    for claim in &contract.claims {
+    for (kind, fitness) in &profile.fitness {
+        println!("fitness {kind}: max age {}s", fitness.max_age_seconds);
+    }
+    for gate in &gates {
         println!(
-            "{:?}: {} on {} requires {:?} ({})",
-            claim.phase,
-            claim.id,
-            claim.target,
-            claim.minimum_assurance,
-            if claim.blocks_release {
-                "release-blocking"
+            "gate {} ({})",
+            gate.policy_id,
+            if gate.blocking {
+                "blocking"
             } else {
                 "advisory"
             }
@@ -87,4 +147,17 @@ pub(super) fn run(args: &ReleaseContractArgs, nix: &NixRunner, printer: &Printer
         "Qualification status: not evaluated. This contract describes requirements, not passing evidence."
     );
     Ok(())
+}
+
+/// Evaluates and validates the repository's exported qualification contract.
+///
+/// # Errors
+/// Returns an error when Nix evaluation fails or the export is not a valid
+/// contract.
+pub(super) fn export(nix: &NixRunner) -> Result<QualificationContract> {
+    let contract: QualificationContract =
+        serde_json::from_value(nix.eval_json("releaseQualification")?)
+            .context("decoding Nix qualification contract")?;
+    contract.validate()?;
+    Ok(contract)
 }

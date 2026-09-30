@@ -1,8 +1,7 @@
 //! Exact Nix realization and repeat-build evidence.
 //!
 //! The build report binds every planned Nix output to the observed NAR
-//! identity, closure size, references, and an explicit repeat-build result.
-//! Staging-only publication records `not-checked` without claiming reproducibility.
+//! identity, closure size, references, and a successful Nix check rebuild.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -10,7 +9,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::digest::Sha256Digest;
-use crate::plan::ReleasePlanV1;
+use crate::plan::ReleasePlan;
 use crate::platform::Platform;
 
 /// Schema identifier for a complete build report.
@@ -22,8 +21,6 @@ pub const BUILD_REPORT_V1: &str = "aos.release.build-report/v1";
 pub enum ReproducibilityResult {
     /// Nix proved the repeat output byte-identical.
     Reproduced,
-    /// Publication captured an existing realization without repeat qualification.
-    NotChecked,
 }
 
 /// Observed identity and closure facts for one planned output.
@@ -98,7 +95,7 @@ impl BuildReportV1 {
     /// Returns an error for identity drift, missing, extra, reordered, or
     /// duplicate outputs, a planned Nix identity mismatch, malformed NAR
     /// facts, unsorted references, or an empty completion time.
-    pub fn validate(&self, plan: &ReleasePlanV1, plan_digest: Sha256Digest) -> Result<()> {
+    pub fn validate(&self, plan: &ReleasePlan, plan_digest: Sha256Digest) -> Result<()> {
         if self.schema_version != BUILD_REPORT_V1
             || self.plan_digest != plan_digest
             || self.source_commit != plan.source.commit
@@ -114,9 +111,6 @@ impl BuildReportV1 {
             bail!("build report outputs must exactly match and sort the plan");
         }
         for output in &self.outputs {
-            if output.reproducibility == ReproducibilityResult::NotChecked && !plan.staging_only {
-                bail!("qualified releases require repeat-build evidence");
-            }
             let Some(planned) = expected.get(output.id.as_str()) else {
                 bail!("build report contains unplanned output {}", output.id);
             };
@@ -202,7 +196,7 @@ pub struct PlannedNixOutput<'a> {
 ///
 /// Returns an error when the plan repeats an artifact id or contains no Nix
 /// outputs.
-pub fn planned_nix_outputs(plan: &ReleasePlanV1) -> Result<BTreeMap<&str, PlannedNixOutput<'_>>> {
+pub fn planned_nix_outputs(plan: &ReleasePlan) -> Result<BTreeMap<&str, PlannedNixOutput<'_>>> {
     let mut expected = BTreeMap::new();
     for package in &plan.packages {
         let Some(publication) = package.publication.as_ref() else {
