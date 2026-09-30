@@ -7,7 +7,7 @@
   image,
 }: let
   mediaTypes = {
-    abilities = "application/vnd.aos.container.static-abilities.v1+json";
+    deployment = "application/vnd.aos.artifact.deployment.v1+json";
     closure = "application/vnd.aos.nix-closure.v1+json";
     sbom = "application/spdx+json";
     source = "application/vnd.aos.source-closure.v1+json";
@@ -129,27 +129,27 @@ in
           index_digest=$(jq -r .digest ${evidence}/index-descriptor.json)
           ${verifyArtifacts}
 
-          ability_contract_digest=$(sha256sum ${evidence}/evidence/abilities.payload.json | cut -d ' ' -f 1)
+          deployment_digest=$(sha256sum ${evidence}/evidence/deployment.payload.json | cut -d ' ' -f 1)
           jq -e '
-            .schema == "aos.container.static-abilities/v1"
-            and .runtime_grants == []
+            .schema == "aos.artifact.deployment/v1"
+            and .artifactClass == "container"
+            and .executionStage == null
             and (.platforms | length) == 1
             and all(.platforms[];
-              ([.packages[].manifest.store_path] == ([.packages[].manifest.store_path] | sort | unique))
-              and ([.abilities[].package.store_path] == ([.abilities[].package.store_path] | sort))
-              and all(.unresolved_launch_obligations[];
-                .disposition == "external-launch-obligation"
-                and .requirement.strength == "required"
-              )
+              .transaction.schema == "aos.package.transaction"
+              and .transaction.artifacts == .packages.artifacts
+              and .transaction.packages == .packages.modules
+              and (.transaction.graph.nodes | type) == "object"
+              and (.documentation.abilities | type) == "object"
             )
-          ' ${evidence}/evidence/abilities.payload.json >/dev/null
+          ' ${evidence}/evidence/deployment.payload.json >/dev/null
           jq -e \
-            --arg digest "sha256:$ability_contract_digest" '
-              .annotations."dev.andyl.aos.ability-contract.digest" == $digest
-              and .annotations."dev.andyl.aos.ability-contract.media-type"
-                == "application/vnd.aos.container.static-abilities.v1+json"
-              and .annotations."dev.andyl.aos.ability-contract.schema"
-                == "aos.container.static-abilities/v1"
+            --arg digest "sha256:$deployment_digest" '
+              .annotations."dev.andyl.aos.deployment.digest" == $digest
+              and .annotations."dev.andyl.aos.deployment.media-type"
+                == "application/vnd.aos.artifact.deployment.v1+json"
+              and .annotations."dev.andyl.aos.deployment.schema"
+                == "aos.artifact.deployment/v1"
             ' ${image}/image-index.json >/dev/null
 
           jq -e '
@@ -255,8 +255,8 @@ in
               and (.nix.definition.derivationPath | test("^/nix/store/[0-9a-z]{32}-.*[.]drv$"))
               and .nix.output.name == "out"
               and (.nix.output.storePath | test("^/nix/store/[0-9a-z]{32}-"))
-              and .evidence.abilities.artifactType
-                == "application/vnd.aos.container.static-abilities.v1+json"
+              and .evidence.deployment.artifactType
+                == "application/vnd.aos.artifact.deployment.v1+json"
               and (.evidence | has("signature") | not)
             ' ${evidence}/signature-input.json >/dev/null
           input_hex=$(sha256sum ${evidence}/signature-input.json | cut -d ' ' -f 1)

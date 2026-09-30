@@ -337,8 +337,9 @@ in
           test ! -e production-metadata/etc/resolv.conf
           grep -Fx ${lib.escapeShellArg "AOS_STATE_VERSION=${systemIdentity.stateVersion}"} \
             production-metadata/etc/os-release >/dev/null
-          grep -Fx ${lib.escapeShellArg "AOS_MODULE_ABI=${toString systemIdentity.moduleAbi}"} \
-            production-metadata/etc/os-release >/dev/null
+          if grep -q '^AOS_MODULE_ABI=' production-metadata/etc/os-release; then
+            fail "production metadata retains the retired module ABI"
+          fi
 
           for command in aos apm apr; do
             test -L "production-facade/usr/bin/$command" \
@@ -358,11 +359,10 @@ in
 
           jq -e \
             --arg version ${lib.escapeShellArg systemIdentity.version} \
-            --arg stateVersion ${lib.escapeShellArg systemIdentity.stateVersion} \
-            --arg moduleAbi ${lib.escapeShellArg (toString systemIdentity.moduleAbi)} '
+            --arg stateVersion ${lib.escapeShellArg systemIdentity.stateVersion} '
               .config.Labels["org.opencontainers.image.version"] == $version
               and .config.Labels["dev.andyl.aos.state-version"] == $stateVersion
-              and .config.Labels["dev.andyl.aos.module-abi"] == $moduleAbi
+              and (.config.Labels | has("dev.andyl.aos.module-abi") | not)
               and (.config.Env | index("NIX_REMOTE=local") != null)
               and (.config.Env | index("PATH=/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin") != null)
               and (.config | has("Volumes") | not)

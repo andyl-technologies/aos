@@ -14,9 +14,10 @@
   jq,
   tar,
   common,
+  deploymentChecker,
 }: {
   image,
-  abilityContract,
+  deploymentArtifact,
   referenceGraph,
   sourceGraph,
   closureLayers,
@@ -47,19 +48,19 @@
     if builtins.isAttrs image && (image._type or null) == "aos-oci-image-index"
     then image
     else common.fail "image must be produced by mkMultiPlatformIndex";
-  checkedAbilityContract =
+  checkedDeploymentArtifact =
     if
-      builtins.isAttrs abilityContract
-      && (abilityContract._type or null) == "aos-oci-static-ability-contract"
-      && builtins.isAttrs (abilityContract.artifact or null)
-    then abilityContract
-    else common.fail "abilityContract must be produced by mkStaticAbilityContract";
-  subjectAbilityContractCheck =
+      builtins.isAttrs deploymentArtifact
+      && (deploymentArtifact._type or null) == "aos-oci-deployment-artifact"
+      && builtins.isAttrs (deploymentArtifact.artifact or null)
+    then deploymentArtifact
+    else common.fail "deploymentArtifact must be produced by mkDeploymentArtifact";
+  subjectDeploymentArtifactCheck =
     if
-      builtins.toString checkedImage.checkedAbilityContract.artifact
-      == builtins.toString checkedAbilityContract.artifact
+      builtins.toString checkedImage.checkedDeploymentArtifact.artifact
+      == builtins.toString checkedDeploymentArtifact.artifact
     then true
-    else common.fail "abilityContract must be the exact contract bound to the subject image";
+    else common.fail "deploymentArtifact must be the exact contract bound to the subject image";
   checkedReferenceGraph =
     if builtins.isAttrs referenceGraph && (referenceGraph.passthru.referenceGraph or false)
     then referenceGraph
@@ -93,10 +94,10 @@
       outputPath = builtins.unsafeDiscardStringContext (builtins.toString checkedImage);
     };
     packageCatalog = checkedCatalog;
-    abilityContract = {
-      path = builtins.unsafeDiscardStringContext (builtins.toString checkedAbilityContract.artifact);
-      mediaType = checkedAbilityContract.mediaType;
-      schema = "aos.container.static-abilities/v1";
+    deploymentArtifact = {
+      path = builtins.unsafeDiscardStringContext (builtins.toString checkedDeploymentArtifact.artifact);
+      mediaType = checkedDeploymentArtifact.mediaType;
+      schema = "aos.artifact.deployment/v1";
     };
   };
   layerArguments =
@@ -104,7 +105,7 @@
     (layer: lib.escapeShellArg (builtins.toString layer))
     checkedLayers;
 in
-  builtins.deepSeq [checkedImage checkedAbilityContract subjectAbilityContractCheck checkedReferenceGraph checkedSourceGraph checkedLayers evidenceSpec] (mkDerivation {
+  builtins.deepSeq [checkedImage checkedDeploymentArtifact subjectDeploymentArtifactCheck checkedReferenceGraph checkedSourceGraph checkedLayers evidenceSpec] (mkDerivation {
     inherit pname;
     version = "1";
     src = null;
@@ -121,7 +122,7 @@ in
         name = "assemble";
         script = ''
           export AOS_EVIDENCE_IMAGE=${lib.escapeShellArg (builtins.toString checkedImage)}
-          export AOS_EVIDENCE_ABILITY_CONTRACT=${lib.escapeShellArg (builtins.toString checkedAbilityContract.artifact)}
+          export AOS_EVIDENCE_DEPLOYMENT=${lib.escapeShellArg (builtins.toString checkedDeploymentArtifact.artifact)}
           export AOS_EVIDENCE_REFERENCE_GRAPH=${lib.escapeShellArg (builtins.toString checkedReferenceGraph)}
           export AOS_EVIDENCE_SOURCE_GRAPH=${lib.escapeShellArg (builtins.toString checkedSourceGraph)}
           export AOS_EVIDENCE_PLATFORM_VALIDATOR=${./evidence-platforms.sh}

@@ -1,7 +1,6 @@
 ##! tests/containers/oci-builders.nix -- focused hermetic OCI builder checks.
 ##!
-##! This check is intentionally standalone until the container evaluator owns
-##! the repository-wide check wiring.  It builds a real reference-graph delta,
+##! The container.oci-builders check builds a real reference-graph delta,
 ##! two equivalent layers under different derivation names, typed metadata, two
 ##! platform manifests, and a multi-platform layout.
 {
@@ -10,17 +9,26 @@
 }: let
   oci = pkgs.ociTools;
   originResolution = import ./package-origin-resolution.nix {inherit pkgs lib;};
+  nativeBackend =
+    (lib.evalPackageModules {
+      packages = [pkgs.aos-oci-backend];
+      scope = ["profile" "system"];
+    })
+    .config
+    .aos
+    .artifacts
+    .backend;
   malformedBackend = builtins.tryEval (builtins.deepSeq
     ((lib.evalModules {
         inherit lib;
         modules = [
-          ../../modules/base/artifact-backend.nix
+          ../../pkgs/containers/_aos-oci-backend/backend-option.nix
           {
             config.aos.artifacts.backend = {
               _type = "aos-package-artifact-backend";
               name = "partial";
               package = "/nix/store/00000000000000000000000000000000-partial";
-              buildStaticContract = _: {};
+              buildDeploymentArtifact = _: {};
             };
           }
         ];
@@ -31,6 +39,74 @@
       .backend)
     true);
 
+  nativeHandler = pkgs.mkDerivation {
+    pname = "oci-native-fixture";
+    version = "1";
+    src = null;
+    module = ./_native-fixture;
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/bin"
+          printf '%s\n' 'fixture handler' > "$out/bin/fixture-handler"
+          chmod 0555 "$out/bin/fixture-handler"
+        '';
+      }
+    ];
+    meta = {
+      mainProgram = "fixture-handler";
+      license = "Apache-2.0";
+    };
+  };
+  namedOutputFixture = pkgs.mkDerivation {
+    pname = "oci-profile-output-fixture";
+    version = "1";
+    outputs = ["out" "dev"];
+    src = null;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "The selected payload and development header.";
+        operation = "Read both exact retained output files.";
+        expected = "Both files contain their declared fixture bytes.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@python@" "-c" "from pathlib import Path; assert Path('@out@/share/payload').read_text() == 'payload\\n'; assert Path('@output:dev@/include/header').read_text() == 'header\\n'"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "A missing payload file.";
+        operation = "Attempt to read an undeclared fixture member.";
+        expected = "Opening the missing member fails.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@python@" "-c" "from pathlib import Path; Path('@out@/share/missing').read_bytes()"];
+            exit_code = 1;
+            observes_rejection = true;
+          }
+        ];
+      };
+    };
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/share" "$dev/include"
+          printf '%s\n' payload > "$out/share/payload"
+          printf '%s\n' header > "$dev/include/header"
+        '';
+      }
+    ];
+    meta.license = "Apache-2.0";
+  };
   base = pkgs.runCommand "oci-builder-fixture-base" {} ''
     mkdir -p "$out/bin" "$out/share"
     printf '%s\n' 'base payload' > "$out/bin/base-tool"
@@ -78,7 +154,7 @@
     layerName = "fixture-application";
   };
   abilityLayer = oci.mkClosureLayer {
-    roots = [pkgs.ability-package-smoke];
+    roots = [nativeHandler];
     pname = "oci-fixture-ability-layer";
     layerName = "fixture-ability";
   };
@@ -124,7 +200,7 @@
   runtimeAudit = lib.build.runtimeClosureAudit {
     inherit pkgs;
     name = "oci-builder-fixture";
-    roots = [application pkgs.ability-package-smoke];
+    roots = [application nativeHandler];
     maxClosureMiB = 32;
     maxDevelopmentPayloadMiB = 1;
     allowTestArtifacts = true;
@@ -132,241 +208,57 @@
   changedRuntimeAudit = lib.build.runtimeClosureAudit {
     inherit pkgs;
     name = "oci-builder-changed-fixture";
-    roots = [changedApplication pkgs.ability-package-smoke];
+    roots = [changedApplication nativeHandler];
     maxClosureMiB = 32;
     maxDevelopmentPayloadMiB = 1;
     allowTestArtifacts = true;
   };
-  abilityPackageSmokeProvider = pkgs.ability-package-smoke-provider;
-  smokePackageProjection =
-    lib.abilities.authenticatedPackageProjectionFor pkgs.ability-package-smoke;
-  abilityContractFor = {
-    architecture,
-    applicationRoot ? application,
-  }:
-    oci.mkStaticAbilityContract {
-      pname = "oci-fixture-${architecture}-static-abilities";
+  profileScope = ["profile" "system"];
+  profilePackages = [application nativeHandler namedOutputFixture.dev];
+  profileDescriptor = import ../../pkgs/containers/_aos-oci-backend/evaluation-input.nix {
+    inherit lib pkgs;
+    packages = profilePackages;
+    scope = profileScope;
+    system = lib.platform.system;
+  };
+  profileEvaluation = lib.evalPackageModules {
+    scope = profileScope;
+    packages = profilePackages;
+    evaluationInput = profileDescriptor;
+    evaluationInputs = [lib.packageModuleLibrary profileDescriptor];
+  };
+  profileBundle = import ../../pkgs/containers/_aos-oci-backend/deployment-bundle.nix {
+    inherit lib pkgs;
+    packages = profilePackages;
+    scope = profileScope;
+    inherit (profileEvaluation.deployment) graph system inputs;
+    evaluationInput = profileDescriptor;
+    withProfileRecords = true;
+  };
+  artifactFor = architecture: applicationRoot:
+    oci.mkDeploymentArtifact {
+      inherit pkgs;
+      pname = "oci-fixture-${architecture}-deployment";
       platform = {
         inherit architecture;
         os = "linux";
       };
-      packageProjections = [smokePackageProjection];
-      runtimeRoots = [applicationRoot pkgs.ability-package-smoke];
+      scope = ["container" "oci-fixture"];
+      packages = [applicationRoot nativeHandler];
     };
-  amd64AbilityContract = abilityContractFor {architecture = "amd64";};
-  bootableAbilityContract = oci.mkStaticAbilityContract {
-    pname = "bootable-static-abilities-reference-fixture";
-    artifactClass = "bootable";
-    executionStage = "host";
-    platform = {
-      os = "linux";
-      architecture = "amd64";
-    };
-    targetPlatform = {
-      system = "linux";
-      architecture = "x86_64";
-    };
-    packageProjections = [smokePackageProjection];
-    runtimeRoots = [application pkgs.ability-package-smoke];
+  amd64Deployment = artifactFor "amd64" application;
+  arm64Deployment = artifactFor "arm64" application;
+  changedDeployment = artifactFor "amd64" changedApplication;
+  aggregateDeployment = oci.mkDeploymentArtifact {
+    pname = "oci-fixture-aggregate-deployment";
+    contracts = [arm64Deployment amd64Deployment];
   };
-  bootableContractClosure = lib.build.closureInfo {inherit pkgs;} {
-    rootPaths = [bootableAbilityContract.artifact];
-  };
-  initrdAbilityContract = oci.mkStaticAbilityContract {
-    pname = "initrd-static-abilities-reference-fixture";
-    artifactClass = "bootable";
-    executionStage = "initrd";
-    platform = {
-      os = "linux";
-      architecture = "amd64";
-    };
-    targetPlatform = {
-      system = "linux";
-      architecture = "x86_64";
-    };
-    packageProjections = [smokePackageProjection];
-    runtimeRoots = [application pkgs.ability-package-smoke];
-  };
-  bootableResolvedPackageDocument =
-    builtins.head bootableAbilityContract.retainedPackageContractArtifacts;
-  resolvedSmokePackageDocument =
-    builtins.head amd64AbilityContract.retainedPackageContractArtifacts;
-  changedAmd64AbilityContract = abilityContractFor {
-    architecture = "amd64";
-    applicationRoot = changedApplication;
-  };
-  arm64AbilityContract = abilityContractFor {architecture = "arm64";};
-  multiPlatformAbilityContract = oci.mkStaticAbilityContract {
-    pname = "oci-fixture-multi-platform-static-abilities";
-    contracts = [arm64AbilityContract amd64AbilityContract];
-  };
-  # Recompute the descriptor after mutation so only semantic validation can
-  # reject these otherwise self-consistent forged contracts.
-  rewriteStaticAbilityContract = pname: sourceContract: filter: let
-    rewrittenArtifact =
-      pkgs.runCommand pname {
-        buildDeps = [pkgs.coreutils pkgs.jq];
-      } ''
-        mkdir -p "$out"
-        jq -cS ${lib.escapeShellArg filter} \
-          ${sourceContract.artifact}/contract.json > "$out/contract.with-newline.json"
-        size=$(stat -c %s "$out/contract.with-newline.json")
-        truncate -s "$((size - 1))" "$out/contract.with-newline.json"
-        mv "$out/contract.with-newline.json" "$out/contract.json"
-
-        contract_size=$(stat -c %s "$out/contract.json")
-        contract_hex=$(sha256sum "$out/contract.json" | cut -d ' ' -f 1)
-        jq -cS -n \
-          --arg mediaType ${lib.escapeShellArg sourceContract.mediaType} \
-          --arg digest "sha256:$contract_hex" \
-          --argjson size "$contract_size" \
-          '{mediaType: $mediaType, digest: $digest, size: $size}' \
-          > "$out/descriptor.json"
-      '';
-  in
-    sourceContract
-    // {artifact = rewrittenArtifact;};
-  forgeStaticAbilityContract = pname: sourceContract:
-    rewriteStaticAbilityContract
-    pname
-    sourceContract
-    ".platforms[0].semantic_validation_was_bypassed = true";
-  forgedPlatformAbilityContract =
-    forgeStaticAbilityContract
-    "oci-fixture-forged-platform-static-abilities"
-    amd64AbilityContract;
-  forgedAggregateAbilityContract =
-    (forgeStaticAbilityContract
-      "oci-fixture-forged-aggregate-static-abilities"
-      multiPlatformAbilityContract)
-    // {
-      inputContractPaths = map builtins.toString [
-        arm64AbilityContract.artifact
-        forgedPlatformAbilityContract.artifact
-      ];
-    };
-  reorderedPlatformAbilityContract =
-    rewriteStaticAbilityContract
-    "oci-fixture-reordered-platform-static-abilities"
-    multiPlatformAbilityContract
-    ".platforms |= reverse";
-  requirementObligation = acceptedInterfaces: ''
-    .platforms[0].packages[0].manifest as $manifest
-    | .platforms[0].unresolved_launch_obligations = ([{
-        kind: "ability-requirement",
-        consumer: {package: $manifest},
-        requirement: {
-          alias: "semantic-order-probe",
-          accepted_interfaces: ${acceptedInterfaces},
-          methods: [],
-          guarantees: [],
-          strength: "required",
-          fallback: null
-        },
-        disposition: "external-launch-obligation"
-      }] + .platforms[0].unresolved_launch_obligations)
-  '';
-  reorderedRequirementAbilityContract =
-    rewriteStaticAbilityContract
-    "oci-fixture-reordered-requirement-static-abilities"
-    amd64AbilityContract
-    (requirementObligation ''      [
-            {
-              name: "aos.test.zzz",
-              abi: 1,
-              descriptor: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-            },
-            {
-              name: "aos.test.aaa",
-              abi: 1,
-              descriptor: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-            }
-          ]'');
-  duplicateRequirementAbilityContract =
-    rewriteStaticAbilityContract
-    "oci-fixture-duplicate-requirement-static-abilities"
-    amd64AbilityContract
-    (requirementObligation ''      [
-            {
-              name: "aos.test.duplicate",
-              abi: 1,
-              descriptor: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-            },
-            {
-              name: "aos.test.duplicate",
-              abi: 1,
-              descriptor: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-            }
-          ]'');
-  changedPackageIdentityAbilityContract =
-    rewriteStaticAbilityContract
-    "oci-fixture-changed-package-identity-static-abilities"
-    amd64AbilityContract
-    ".platforms[0].packages[0].name = \"forged-package\"";
-  changedProviderIdentityAbilityContract =
-    rewriteStaticAbilityContract
-    "oci-fixture-changed-provider-identity-static-abilities"
-    amd64AbilityContract
-    ".platforms[0].abilities[0].implementation = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"";
-  changedRequiredRequirementAbilityContract =
-    rewriteStaticAbilityContract
-    "oci-fixture-changed-required-requirement-static-abilities"
-    amd64AbilityContract
-    ''
-      .platforms[0].packages[0].manifest as $manifest
-      | .platforms[0].unresolved_launch_obligations = ([{
-          kind: "ability-requirement",
-          consumer: {package: $manifest},
-          requirement: {
-            alias: "canonical-edge",
-            accepted_interfaces: [{
-              name: "aos.test.canonical-edge",
-              abi: 4294967295,
-              descriptor: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-            }],
-            methods: [],
-            guarantees: [],
-            strength: "required",
-            fallback: null
-          },
-          disposition: "external-launch-obligation"
-        }] + .platforms[0].unresolved_launch_obligations)
-    '';
-
-  # The probe makes the integration call observable while the production
-  # validator assertions below establish that the same forged bytes fail.
-  semanticValidationProbe = pkgs.writeShellScriptBin "aos-ability-contract-validator" ''
-    set -eu
-    test "$1" = static-contract
-    if ${pkgs.jq}/bin/jq -e '.platforms[] | has("semantic_validation_was_bypassed")' "$2" >/dev/null; then
-      . "$NIX_ATTRS_SH_FILE"
-      touch "''${outputs[out]}/semantic-validator-observed-forged-marker"
-    fi
-  '';
-  probeOci = pkgs.mkOciTools {
-    abilityContractValidator = semanticValidationProbe;
-  };
-
-  mkPlatformImage = {
-    architecture,
-    pname ? "oci-fixture-${architecture}-image",
-    applicationLayer ? applicationDelta,
-    audit ? runtimeAudit,
-    abilityContract ? (
-      if architecture == "amd64"
-      then amd64AbilityContract
-      else arm64AbilityContract
-    ),
-  }:
+  mkPlatformImage = architecture: pname: applicationLayer: audit: deploymentArtifact:
     oci.mkImageLayout {
-      inherit pname;
+      inherit pname deploymentArtifact;
       layers = [baseLayerA applicationLayer abilityLayer metadata];
       runtimeAudit = audit;
-      inherit abilityContract;
       referenceName = "aos-fixture:latest";
-      annotations = {
-        "org.opencontainers.image.title" = "AOS OCI builder fixture";
-      };
       config = {
         entrypoint = ["/bin/base-tool"];
         cmd = ["--version"];
@@ -376,140 +268,35 @@
         };
         user = "0:0";
         workingDir = "/work";
-        stopSignal = "SIGTERM";
         exposedPorts = ["8080/tcp"];
-        labels = {
-          "org.opencontainers.image.vendor" = "Andyl, Inc.";
-        };
       };
     };
-  amd64Image = mkPlatformImage {architecture = "amd64";};
-  equivalentAmd64Image = mkPlatformImage {
-    architecture = "amd64";
-    pname = "oci-fixture-amd64-image-equivalent-name";
-  };
-  changedAmd64Image = mkPlatformImage {
-    architecture = "amd64";
-    pname = "oci-fixture-amd64-image-changed-app";
-    applicationLayer = changedApplicationDelta;
-    audit = changedRuntimeAudit;
-    abilityContract = changedAmd64AbilityContract;
-  };
-  arm64Image = mkPlatformImage {architecture = "arm64";};
-  forgedAmd64Image = let
-    forgedArtifact =
-      pkgs.runCommand "oci-fixture-forged-amd64-image" {
-        buildDeps = [pkgs.coreutils pkgs.jq];
-      } ''
-        cp -a ${amd64Image}/. "$out"
-        chmod -R u+w "$out"
-        cp ${forgedPlatformAbilityContract.artifact}/contract.json "$out/static-ability-contract.json"
-        cp ${forgedPlatformAbilityContract.artifact}/descriptor.json \
-          "$out/static-ability-contract.descriptor.json"
-
-        contract_digest=$(jq -r .digest ${forgedPlatformAbilityContract.artifact}/descriptor.json)
-        jq -cS \
-          --arg digest "$contract_digest" \
-          '.annotations."dev.andyl.aos.ability-contract.digest" = $digest' \
-          ${amd64Image}/manifest.json > "$out/manifest.with-newline.json"
-        manifest_size=$(stat -c %s "$out/manifest.with-newline.json")
-        truncate -s "$((manifest_size - 1))" "$out/manifest.with-newline.json"
-        mv "$out/manifest.with-newline.json" "$out/manifest.json"
-
-        manifest_size=$(stat -c %s "$out/manifest.json")
-        manifest_hex=$(sha256sum "$out/manifest.json" | cut -d ' ' -f 1)
-        cp "$out/manifest.json" "$out/layout/blobs/sha256/$manifest_hex"
-        jq -cS \
-          --arg digest "sha256:$manifest_hex" \
-          --argjson size "$manifest_size" \
-          '.digest = $digest | .size = $size' \
-          ${amd64Image}/manifest-descriptor.json > "$out/manifest-descriptor.with-newline.json"
-        descriptor_size=$(stat -c %s "$out/manifest-descriptor.with-newline.json")
-        truncate -s "$((descriptor_size - 1))" "$out/manifest-descriptor.with-newline.json"
-        mv "$out/manifest-descriptor.with-newline.json" "$out/manifest-descriptor.json"
-      '';
-  in
-    amd64Image
-    // forgedArtifact
-    // {
-      artifact = forgedArtifact;
-      checkedAbilityContract = forgedPlatformAbilityContract;
-    };
-  forgedMarkerImageProbe = probeOci.mkImageLayout {
-    pname = "oci-fixture-forged-marker-image-probe";
-    layers = [baseLayerA applicationDelta abilityLayer metadata];
-    runtimeAudit = runtimeAudit;
-    abilityContract = forgedPlatformAbilityContract;
-    config.entrypoint = ["/bin/base-tool"];
-  };
+  amd64Image = mkPlatformImage "amd64" "oci-fixture-amd64-image" applicationDelta runtimeAudit amd64Deployment;
+  equivalentAmd64Image = mkPlatformImage "amd64" "oci-fixture-equivalent-image" applicationDelta runtimeAudit amd64Deployment;
+  changedAmd64Image = mkPlatformImage "amd64" "oci-fixture-changed-image" changedApplicationDelta changedRuntimeAudit changedDeployment;
+  arm64Image = mkPlatformImage "arm64" "oci-fixture-arm64-image" applicationDelta runtimeAudit arm64Deployment;
   multiPlatform = oci.mkMultiPlatformIndex {
-    pname = "oci-fixture-multi-platform";
     images = [arm64Image amd64Image];
-    abilityContract = multiPlatformAbilityContract;
+    deploymentArtifact = aggregateDeployment;
     referenceName = "aos-fixture:latest";
-    annotations = {
-      "org.opencontainers.image.title" = "AOS multi-platform fixture";
-    };
+    pname = "oci-fixture-multi-platform";
   };
-  forgedMarkerIndexProbe = probeOci.mkMultiPlatformIndex {
-    pname = "oci-fixture-forged-marker-index-probe";
-    images = [arm64Image forgedAmd64Image];
-    abilityContract = forgedAggregateAbilityContract;
-  };
-  # With one platform and identical empty index annotations, the composed
-  # image-index blob is byte-identical to the input layout's index blob. This
-  # freezes verified same-digest reuse instead of a read-only overwrite.
   singlePlatform = oci.mkMultiPlatformIndex {
-    pname = "oci-fixture-single-platform";
     images = [amd64Image];
-    abilityContract = amd64AbilityContract;
+    deploymentArtifact = amd64Deployment;
     referenceName = "aos-fixture:latest";
+    pname = "oci-fixture-single-platform";
   };
   dockerArchive = oci.mkDockerArchive {
-    pname = "oci-fixture-docker-archive";
     image = amd64Image;
     references = ["aos-fixture:latest"];
+    pname = "oci-fixture-docker-archive";
   };
   tryBuilder = value: builtins.tryEval (builtins.deepSeq value true);
-  absentAbilityPayload = tryBuilder (oci.mkStaticAbilityContract {
-    pname = "oci-absent-ability-payload-eval";
-    platform = {
-      architecture = "amd64";
-      os = "linux";
-    };
-    packageProjections = [smokePackageProjection];
-    runtimeRoots = [application];
-  });
   aggregateContractMismatch = tryBuilder (oci.mkMultiPlatformIndex {
-    pname = "oci-aggregate-contract-mismatch-eval";
     images = [arm64Image amd64Image];
-    abilityContract = amd64AbilityContract;
+    deploymentArtifact = amd64Deployment;
   });
-  evidenceReferenceGraph = oci.mkReferenceGraph {
-    pname = "oci-evidence-contract-mismatch-reference-graph";
-    rootPaths = [application];
-  };
-  evidenceSourceGraph = oci.mkEvidenceSourceGraph {
-    pname = "oci-evidence-contract-mismatch-source-graph";
-    referenceGraph = evidenceReferenceGraph;
-    packageCatalog = [];
-    candidateSources = [];
-  };
-  evidenceContractMismatch = tryBuilder (oci.mkEvidenceLayout {
-    pname = "oci-evidence-contract-mismatch-eval";
-    image = multiPlatform;
-    abilityContract = arm64AbilityContract;
-    referenceGraph = evidenceReferenceGraph;
-    sourceGraph = evidenceSourceGraph;
-    closureLayers = [baseLayerA];
-    packageCatalog = [];
-    definitionAttribute = "systems.fixture.build.containers.aos-fixture";
-    releaseIdentity = "fixture";
-    packageName = "aos";
-    packageVersion = "0.1.0";
-    imageName = "aos-fixture";
-  });
-
   validStickyMode = builtins.tryEval (oci.mkRootMetadataLayer {
     pname = "oci-valid-sticky-mode-eval";
     directories = [
@@ -594,35 +381,19 @@
     vendor = "forged";
   };
   evalContracts = assert originResolution;
+  assert nativeBackend.name == "oci";
+  assert builtins.toString nativeBackend.artifact == builtins.toString pkgs.aos-oci-backend;
   assert !malformedBackend.success;
   assert validStickyMode.success;
-  assert !(amd64AbilityContract ? outPath);
-  assert builtins.isAttrs amd64AbilityContract.artifact;
-  assert amd64AbilityContract.artifact ? outPath;
-  assert builtins.all (
-    contractArtifact: builtins.isAttrs contractArtifact && contractArtifact ? outPath
-  )
-  amd64AbilityContract.retainedPackageContractArtifacts;
-  assert !(builtins.elem
-    (builtins.toString abilityPackageSmokeProvider)
-    amd64AbilityContract.runtimeRootPaths);
   assert !invalidMode.success;
   assert !unsafePath.success;
   assert !symlinkParent.success;
   assert !missingFilePayload.success;
   assert !ambiguousFilePayload.success;
   assert !hostFileSource.success;
-  assert openPlatform
-  == {
-    os = "otheros";
-    architecture = "riscv64";
-    variant = null;
-  };
   assert !missingPlatformOs.success;
   assert !inventedPlatformField.success;
-  assert !absentAbilityPayload.success;
   assert !aggregateContractMismatch.success;
-  assert !evidenceContractMismatch.success;
   assert lib.all (accepts oci.common.validateRepository) referenceVectors.repositories.valid;
   assert lib.all (value: !accepts oci.common.validateRepository value) referenceVectors.repositories.invalid;
   assert lib.all (accepts oci.common.validateTag) referenceVectors.tags.valid;
@@ -643,8 +414,8 @@ in
       pkgs.grep
       pkgs.jq
       pkgs.tar
-      pkgs.aos-ability-contract-validator
-      bootableContractClosure
+      pkgs.aos-deployment-check
+      profileBundle
       baseLayerA
       baseLayerB
       applicationDelta
@@ -657,326 +428,262 @@ in
       changedAmd64Image
       arm64Image
       multiPlatform
-      forgedPlatformAbilityContract.artifact
-      forgedAggregateAbilityContract.artifact
-      reorderedPlatformAbilityContract.artifact
-      reorderedRequirementAbilityContract.artifact
-      duplicateRequirementAbilityContract.artifact
-      changedPackageIdentityAbilityContract.artifact
-      changedProviderIdentityAbilityContract.artifact
-      changedRequiredRequirementAbilityContract.artifact
-      forgedAmd64Image
-      forgedMarkerImageProbe
-      forgedMarkerIndexProbe
+      singlePlatform
       dockerArchive
     ];
     dontStrip = true;
     dontNukeRefs = true;
-    exportReferencesGraph.bootableContract = [bootableAbilityContract.artifact];
-    exportReferencesGraph.initrdContract = [initrdAbilityContract.artifact];
-
     phases = [
       {
         name = "check";
         script = ''
           set -eu
           export LC_ALL=C
-
-          fail() {
-            echo "FAIL: $1" >&2
-            exit 1
-          }
-
-          jq -e --arg path ${lib.escapeShellArg (builtins.toString bootableResolvedPackageDocument)} \
-            '.bootableContract | any(.path == $path)' "$NIX_ATTRS_JSON_FILE" >/dev/null \
-            || fail "bootable contract did not retain its checked package document"
-          jq -e '
-            .package.source
-            | (keys == ["closure", "content", "nar_hash"])
-              and all(.[]; startswith("sha256:"))
-          ' ${bootableResolvedPackageDocument}/package.json >/dev/null \
-            || fail "runtime package document did not retain exact source identity"
-          if grep -Fx ${lib.escapeShellArg (builtins.toString pkgs.ability-package-smoke.drvPath)} \
-            ${bootableContractClosure}/store-paths >/dev/null; then
-            fail "bootable contract retained the package build-source closure"
-          fi
-          jq -e --arg path ${lib.escapeShellArg (builtins.toString application)} \
-            '.bootableContract | any(.path == $path)' "$NIX_ATTRS_JSON_FILE" >/dev/null \
-            || fail "bootable contract did not retain its runtime root"
-          jq -e --arg path ${lib.escapeShellArg (builtins.toString initrdAbilityContract.artifact)} \
-            '.initrdContract | map(.path) == [$path]' "$NIX_ATTRS_JSON_FILE" >/dev/null \
-            || fail "initrd contract retained image-time evidence in its runtime closure"
-
-          test -f ${forgedMarkerImageProbe}/semantic-validator-observed-forged-marker \
-            || fail "image layout bypassed static ability semantic validation"
-          test -f ${forgedMarkerIndexProbe}/semantic-validator-observed-forged-marker \
-            || fail "multi-platform index bypassed static ability semantic validation"
-          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${forgedPlatformAbilityContract.artifact}/contract.json \
-            container - linux amd64 - 2>/dev/null; then
-            fail "forged image-layout static ability contract passed semantic validation"
-          fi
-          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${forgedAggregateAbilityContract.artifact}/contract.json \
-            container - 2>/dev/null; then
-            fail "forged aggregate static ability contract passed semantic validation"
-          fi
-          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${reorderedPlatformAbilityContract.artifact}/contract.json \
-            container - 2>/dev/null; then
-            fail "rehashed contract with reordered platforms passed semantic validation"
-          fi
-          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${reorderedRequirementAbilityContract.artifact}/contract.json \
-            container - linux amd64 - 2>/dev/null; then
-            fail "rehashed contract with reordered requirement members passed semantic validation"
-          fi
-          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${duplicateRequirementAbilityContract.artifact}/contract.json \
-            container - linux amd64 - 2>/dev/null; then
-            fail "rehashed contract with duplicate requirement members passed semantic validation"
-          fi
-          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${changedPackageIdentityAbilityContract.artifact}/contract.json \
-            container - linux amd64 - 2>/dev/null; then
-            fail "rehashed contract with changed package identity passed artifact validation"
-          fi
-          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${changedProviderIdentityAbilityContract.artifact}/contract.json \
-            container - linux amd64 - 2>/dev/null; then
-            fail "rehashed contract with changed provider identity passed artifact validation"
-          fi
-          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${changedRequiredRequirementAbilityContract.artifact}/contract.json \
-            container - linux amd64 - 2>/dev/null; then
-            fail "rehashed contract with changed required requirement passed artifact validation"
-          fi
+          fail() { echo "FAIL: $1" >&2; exit 1; }
+          ${builtins.readFile ../../pkgs/containers/_aos-oci-backend/oci/deployment-validation.sh}
+          validate_deployment_artifact ${amd64Deployment.artifact}/deployment.json ${pkgs.aos-deployment-check}/bin/aos-deployment-check ${pkgs.jq}/bin/jq
+          for mutation in \
+            '.platforms += [.platforms[0]]' \
+            '.platforms[0].transaction.graph.order += [.platforms[0].transaction.graph.order[0]]' \
+            '.platforms[0].packages.artifacts[0].version = "forged"'; do
+            jq "$mutation" ${amd64Deployment.artifact}/deployment.json > mutated-deployment.json
+            if validate_deployment_artifact mutated-deployment.json ${pkgs.aos-deployment-check}/bin/aos-deployment-check ${pkgs.jq}/bin/jq; then
+              fail "native deployment accepted mutation: $mutation"
+            fi
+          done
+          test -f ${profileBundle}/transaction.json
+          test -f ${profileBundle}/packages.json
+          test -f ${profileBundle}/evaluation.json
+          jq -e '.schema == "aos.package.evaluation-input" and .scope == ["profile","system"]
+            and (.libraryNarHash | test("^sha256:[0-9a-f]{64}$"))' \
+            ${profileBundle}/evaluation.json >/dev/null
+          jq -e 'length == 4 and ([.[] | select(.apm.explicit)] | length) == 3
+            and ([.[] | select(.apm.name == "oci-profile-output-fixture")] | length) == 2
+            and ([.[] | select(.apm.qualification != null)] | length) == 2
+            and all(.[];
+            .apm.registry == "image"
+            and (.apm.deployment.store_path | startswith("/nix/store/"))
+            and (.apm.deployment.document_sha256 | test("^sha256:[0-9a-f]{64}$")))' \
+            ${profileBundle}/installed.json >/dev/null
+          jq -c '.[] | .apm.deployment, (.apm.module_documentation // empty), (.apm.qualification // empty)' ${profileBundle}/installed.json |
+          while IFS= read -r locator; do
+            root=$(printf '%s\n' "$locator" | jq -r .store_path)
+            expected=$(printf '%s\n' "$locator" | jq -r .document_sha256)
+            document="$root/deployment.json"
+            if [ ! -f "$document" ]; then document="$root/options.json"; fi
+            if [ ! -f "$document" ]; then document="$root/qualification.json"; fi
+            test "$expected" = "sha256:$(sha256sum "$document" | cut -d ' ' -f 1)"
+            printf '%s\n' "$locator" > locator.json
+            jq -e --slurpfile locator locator.json '
+              any(.roots[]; .storePath == $locator[0].store_path
+                and .narHash == $locator[0].nar_hash and .narSize == $locator[0].nar_size
+                and .references == $locator[0].references)
+            ' ${profileBundle}/admission.json >/dev/null
+          done
+          jq -n --slurpfile packages ${profileBundle}/packages.json \
+            --slurpfile transaction ${profileBundle}/transaction.json \
+            '{packages:$packages[0],transaction:$transaction[0]}' |
+            ${pkgs.aos-deployment-check}/bin/aos-deployment-check
 
           ${oci.common.realizedStorePolicyScript}
 
-          mkdir -p invalid-ability/interfaces
-          cp ${resolvedSmokePackageDocument}/interfaces/*.json \
-            invalid-ability/interfaces/
-          jq -cS \
-            '.exports[0].implementation = "sha256:0000000000000000000000000000000000000000000000000000000000000000"' \
-            ${resolvedSmokePackageDocument}/package.json \
-            > invalid-ability/package.with-newline.json
-          invalid_size=$(stat -c %s invalid-ability/package.with-newline.json)
-          truncate -s "$((invalid_size - 1))" invalid-ability/package.with-newline.json
-          mv invalid-ability/package.with-newline.json invalid-ability/package.json
-          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            package-source invalid-ability/package.json invalid-ability/interfaces 2>/dev/null; then
-            fail "canonical package bypassed the shared Rust semantic validator"
-          fi
+                validate_disjoint_layer_inventories \
+                  policy-valid \
+                  ${baseLayerA} ${applicationDelta}
+                if validate_disjoint_layer_inventories \
+                  policy-overlap \
+                  ${baseLayerA} ${baseLayerA} 2>/dev/null; then
+                  fail "realized store-path overlap was accepted"
+                fi
+                if validate_store_symlink_target \
+                  policy-valid.allowed \
+                  /nix/store/00000000000000000000000000000000-missing/bin/tool \
+                  1 2>/dev/null; then
+                  fail "facade target absent from the image closure was accepted"
+                fi
+                if validate_store_symlink_target \
+                  policy-valid.allowed \
+                  ${base}/share/non-executable \
+                  1 2>/dev/null; then
+                  fail "non-executable facade target was accepted"
+                fi
+                validate_store_symlink_target \
+                  policy-valid.allowed \
+                  ${base}/bin/base-tool \
+                  1
 
-          validate_disjoint_layer_inventories \
-            policy-valid \
-            ${baseLayerA} ${applicationDelta}
-          if validate_disjoint_layer_inventories \
-            policy-overlap \
-            ${baseLayerA} ${baseLayerA} 2>/dev/null; then
-            fail "realized store-path overlap was accepted"
-          fi
-          if validate_store_symlink_target \
-            policy-valid.allowed \
-            /nix/store/00000000000000000000000000000000-missing/bin/tool \
-            1 2>/dev/null; then
-            fail "facade target absent from the image closure was accepted"
-          fi
-          if validate_store_symlink_target \
-            policy-valid.allowed \
-            ${base}/share/non-executable \
-            1 2>/dev/null; then
-            fail "non-executable facade target was accepted"
-          fi
-          validate_store_symlink_target \
-            policy-valid.allowed \
-            ${base}/bin/base-tool \
-            1
+                assert_compact_sorted_json() {
+                  json_path="$1"
+                  jq -cS . "$json_path" > canonical.with-newline
+                  canonical_size=$(stat -c %s canonical.with-newline)
+                  truncate -s "$((canonical_size - 1))" canonical.with-newline
+                  cmp canonical.with-newline "$json_path" \
+                    || fail "$json_path is not compact sorted JSON"
+                }
 
-          assert_compact_sorted_json() {
-            json_path="$1"
-            jq -cS . "$json_path" > canonical.with-newline
-            canonical_size=$(stat -c %s canonical.with-newline)
-            truncate -s "$((canonical_size - 1))" canonical.with-newline
-            cmp canonical.with-newline "$json_path" \
-              || fail "$json_path is not compact sorted JSON"
-          }
+                verify_descriptor_blob() {
+                  descriptor="$1"
+                  blob="$2"
+                  expected_digest=$(jq -r .digest "$descriptor")
+                  expected_size=$(jq -r .size "$descriptor")
+                  actual_digest="sha256:$(sha256sum "$blob" | cut -d ' ' -f 1)"
+                  actual_size=$(stat -c %s "$blob")
+                  test "$expected_digest" = "$actual_digest" \
+                    || fail "descriptor digest mismatch for $blob"
+                  test "$expected_size" -eq "$actual_size" \
+                    || fail "descriptor size mismatch for $blob"
+                }
 
-          verify_descriptor_blob() {
-            descriptor="$1"
-            blob="$2"
-            expected_digest=$(jq -r .digest "$descriptor")
-            expected_size=$(jq -r .size "$descriptor")
-            actual_digest="sha256:$(sha256sum "$blob" | cut -d ' ' -f 1)"
-            actual_size=$(stat -c %s "$blob")
-            test "$expected_digest" = "$actual_digest" \
-              || fail "descriptor digest mismatch for $blob"
-            test "$expected_size" -eq "$actual_size" \
-              || fail "descriptor size mismatch for $blob"
-          }
+                # Derivation names do not enter layer or package-document identity.
+                diff -r ${baseLayerA} ${baseLayerB} \
+                  || fail "equivalent closure layers differ by derivation name"
+                diff -r ${amd64Image} ${equivalentAmd64Image} \
+                  || fail "equivalent images differ by derivation name"
+                assert_compact_sorted_json ${baseLayerA}/descriptor.json
+                assert_compact_sorted_json ${baseLayerA}/closure.json
+                verify_descriptor_blob ${baseLayerA}/descriptor.json ${baseLayerA}/blob
 
-          # Derivation names do not enter layer or package-document identity.
-          diff -r ${baseLayerA} ${baseLayerB} \
-            || fail "equivalent closure layers differ by derivation name"
-          diff -r ${amd64Image} ${equivalentAmd64Image} \
-            || fail "equivalent images differ by derivation name"
-          assert_compact_sorted_json ${baseLayerA}/descriptor.json
-          assert_compact_sorted_json ${baseLayerA}/closure.json
-          verify_descriptor_blob ${baseLayerA}/descriptor.json ${baseLayerA}/blob
+                jq -e --arg base ${lib.escapeShellArg (builtins.toString base)} '
+                  (.paths | length) == 1 and .paths[0].path == $base
+                ' ${baseLayerA}/closure.json >/dev/null \
+                  || fail "base closure inventory is incorrect"
+                jq -e --arg app ${lib.escapeShellArg (builtins.toString application)} --arg base ${lib.escapeShellArg (builtins.toString base)} '
+                  (.paths | length) == 1
+                  and .paths[0].path == $app
+                  and ([.paths[].path] | index($base) | not)
+                ' ${applicationDelta}/closure.json >/dev/null \
+                  || fail "closure subtraction did not produce the exact delta"
 
-          jq -e --arg base ${lib.escapeShellArg (builtins.toString base)} '
-            (.paths | length) == 1 and .paths[0].path == $base
-          ' ${baseLayerA}/closure.json >/dev/null \
-            || fail "base closure inventory is incorrect"
-          jq -e --arg app ${lib.escapeShellArg (builtins.toString application)} --arg base ${lib.escapeShellArg (builtins.toString base)} '
-            (.paths | length) == 1
-            and .paths[0].path == $app
-            and ([.paths[].path] | index($base) | not)
-          ' ${applicationDelta}/closure.json >/dev/null \
-            || fail "closure subtraction did not produce the exact delta"
+                original_base_digest=$(jq -r '.layers[0].digest' ${amd64Image}/manifest.json)
+                changed_base_digest=$(jq -r '.layers[0].digest' ${changedAmd64Image}/manifest.json)
+                original_app_digest=$(jq -r '.layers[1].digest' ${amd64Image}/manifest.json)
+                changed_app_digest=$(jq -r '.layers[1].digest' ${changedAmd64Image}/manifest.json)
+                test "$original_base_digest" = "$changed_base_digest" \
+                  || fail "changed application invalidated the canonical base layer"
+                test "$original_app_digest" != "$changed_app_digest" \
+                  || fail "changed application did not produce a changed delta layer"
 
-          original_base_digest=$(jq -r '.layers[0].digest' ${amd64Image}/manifest.json)
-          changed_base_digest=$(jq -r '.layers[0].digest' ${changedAmd64Image}/manifest.json)
-          original_app_digest=$(jq -r '.layers[1].digest' ${amd64Image}/manifest.json)
-          changed_app_digest=$(jq -r '.layers[1].digest' ${changedAmd64Image}/manifest.json)
-          test "$original_base_digest" = "$changed_base_digest" \
-            || fail "changed application invalidated the canonical base layer"
-          test "$original_app_digest" != "$changed_app_digest" \
-            || fail "changed application did not produce a changed delta layer"
+                mkdir metadata-root
+                gzip -dc ${metadata}/blob | tar --same-permissions --no-same-owner -xf - -C metadata-root
+                test "$(stat -c %a metadata-root/tmp)" = 1777 \
+                  || fail "metadata layer lost sticky /tmp mode"
+                test "$(readlink metadata-root/bin/base-tool)" = ${lib.escapeShellArg "${base}/bin/base-tool"} \
+                  || fail "metadata layer changed an authored symlink"
+                test -f metadata-root/etc/os-release
+                grep -Fx 'generated registration bytes' metadata-root/aos-registration >/dev/null \
+                  || fail "store-backed metadata source bytes changed"
+                test ! -e metadata-root/etc/hosts
+                test ! -e metadata-root/etc/resolv.conf
 
-          mkdir metadata-root
-          gzip -dc ${metadata}/blob | tar --same-permissions --no-same-owner -xf - -C metadata-root
-          test "$(stat -c %a metadata-root/tmp)" = 1777 \
-            || fail "metadata layer lost sticky /tmp mode"
-          test "$(readlink metadata-root/bin/base-tool)" = ${lib.escapeShellArg "${base}/bin/base-tool"} \
-            || fail "metadata layer changed an authored symlink"
-          test -f metadata-root/etc/os-release
-          grep -Fx 'generated registration bytes' metadata-root/aos-registration >/dev/null \
-            || fail "store-backed metadata source bytes changed"
-          test ! -e metadata-root/etc/hosts
-          test ! -e metadata-root/etc/resolv.conf
+                for image in ${amd64Image} ${arm64Image}; do
+                  test -f "$image/layout/oci-layout"
+                  test -f "$image/layout/index.json"
+                  test -f "$image/image.oci.tar"
+                  test -z "$(find "$image/layout" -type l -print -quit)" \
+                    || fail "OCI layout contains a symlink"
+                  assert_compact_sorted_json "$image/config.json"
+                  assert_compact_sorted_json "$image/manifest.json"
+                  assert_compact_sorted_json "$image/layout/index.json"
+                  jq -e '
+                    .rootfs.type == "layers"
+                    and (.rootfs.diff_ids | length) == 4
+                    and .config.Entrypoint == ["/bin/base-tool"]
+                    and .config.ExposedPorts == {"8080/tcp": {}}
+                  ' "$image/config.json" >/dev/null \
+                    || fail "image config contract is incorrect"
+                  jq -e '(.layers | length) == 4' "$image/manifest.json" >/dev/null \
+                    || fail "platform manifest layer count is incorrect"
 
-          for image in ${amd64Image} ${arm64Image}; do
-            test -f "$image/layout/oci-layout"
-            test -f "$image/layout/index.json"
-            test -f "$image/image.oci.tar"
-            test -z "$(find "$image/layout" -type l -print -quit)" \
-              || fail "OCI layout contains a symlink"
-            assert_compact_sorted_json "$image/config.json"
-            assert_compact_sorted_json "$image/manifest.json"
-            assert_compact_sorted_json "$image/layout/index.json"
-            jq -e '
-              .rootfs.type == "layers"
-              and (.rootfs.diff_ids | length) == 4
-              and .config.Entrypoint == ["/bin/base-tool"]
-              and .config.ExposedPorts == {"8080/tcp": {}}
-            ' "$image/config.json" >/dev/null \
-              || fail "image config contract is incorrect"
-            jq -e '(.layers | length) == 4' "$image/manifest.json" >/dev/null \
-              || fail "platform manifest layer count is incorrect"
+                  for blob in "$image/layout/blobs/sha256/"*; do
+                    test "$(sha256sum "$blob" | cut -d ' ' -f 1)" = "''${blob##*/}" \
+                      || fail "layout blob filename does not equal its digest"
+                  done
 
-            for blob in "$image/layout/blobs/sha256/"*; do
-              test "$(sha256sum "$blob" | cut -d ' ' -f 1)" = "''${blob##*/}" \
-                || fail "layout blob filename does not equal its digest"
-            done
+                  mkdir extracted-layout
+                  tar -xf "$image/image.oci.tar" -C extracted-layout
+                  diff -r "$image/layout" extracted-layout \
+                    || fail "OCI archive does not reproduce its layout"
+                  rm -rf extracted-layout
+                done
 
-            mkdir extracted-layout
-            tar -xf "$image/image.oci.tar" -C extracted-layout
-            diff -r "$image/layout" extracted-layout \
-              || fail "OCI archive does not reproduce its layout"
-            rm -rf extracted-layout
-          done
+                manifest_hex=$(jq -r '.digest | sub("^sha256:"; "")' ${amd64Image}/manifest-descriptor.json)
+                cp ${amd64Image}/manifest.json mismatched-manifest-sidecar.json
+                jq -cS '.annotations."dev.andyl.aos.deployment.digest" = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"' \
+                  mismatched-manifest-sidecar.json > mismatched-manifest-sidecar.next.json
+                mv mismatched-manifest-sidecar.next.json mismatched-manifest-sidecar.json
+                if cmp mismatched-manifest-sidecar.json ${amd64Image}/layout/blobs/sha256/$manifest_hex; then
+                  fail "mismatched platform manifest sidecar/blob fixture was accepted"
+                fi
 
-          manifest_hex=$(jq -r '.digest | sub("^sha256:"; "")' ${amd64Image}/manifest-descriptor.json)
-          cp ${amd64Image}/manifest.json mismatched-manifest-sidecar.json
-          jq -cS '.annotations."dev.andyl.aos.ability-contract.digest" = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"' \
-            mismatched-manifest-sidecar.json > mismatched-manifest-sidecar.next.json
-          mv mismatched-manifest-sidecar.next.json mismatched-manifest-sidecar.json
-          if cmp mismatched-manifest-sidecar.json ${amd64Image}/layout/blobs/sha256/$manifest_hex; then
-            fail "mismatched platform manifest sidecar/blob fixture was accepted"
-          fi
+                assert_compact_sorted_json ${multiPlatform}/image-index.json
+                assert_compact_sorted_json ${multiPlatform}/layout/index.json
+                deployment_hex=$(sha256sum ${multiPlatform}/deployment.json | cut -d ' ' -f 1)
+                jq -e --arg handler ${lib.escapeShellArg (builtins.toString nativeHandler)} '
+                  .schema == "aos.artifact.deployment/v1"
+                  and (.platforms | length) == 2
+                  and all(.platforms[];
+                    .transaction.artifacts == .packages.artifacts
+                    and (.transaction.graph.nodes | length) == 1
+                    and any(.transaction.artifacts[]; .path == $handler)
+                  )
+                ' ${multiPlatform}/deployment.json >/dev/null || fail "native graph identities were lost"
+                jq -e --arg abilityDigest "sha256:$deployment_hex" '
+                  (.manifests | length) == 2
+                  and .manifests[0].platform.architecture == "amd64"
+                  and .manifests[1].platform.architecture == "arm64"
+                  and .annotations."dev.andyl.aos.deployment.digest" == $abilityDigest
+                ' ${multiPlatform}/image-index.json >/dev/null \
+                  || fail "multi-platform descriptors are missing or not canonical"
+                jq -e '
+                  (.manifests | length) == 1
+                  and .manifests[0].mediaType == "application/vnd.oci.image.index.v1+json"
+                ' ${multiPlatform}/layout/index.json >/dev/null \
+                  || fail "layout root does not point at the multi-platform index"
+                jq -e \
+                  --slurpfile descriptor ${multiPlatform}/index-descriptor.json \
+                  --slurpfile index ${multiPlatform}/image-index.json '
+                    .manifests == [$descriptor[0]]
+                    and $descriptor[0].annotations == $index[0].annotations
+                    and $descriptor[0].annotations."org.opencontainers.image.ref.name"
+                      == "aos-fixture:latest"
+                  ' ${multiPlatform}/layout/index.json >/dev/null \
+                  || fail "layout root descriptor annotations diverge from the image index"
+                index_digest=$(jq -r .digest ${multiPlatform}/index-descriptor.json)
+                index_hex=''${index_digest#sha256:}
+                verify_descriptor_blob \
+                  ${multiPlatform}/index-descriptor.json \
+                  ${multiPlatform}/layout/blobs/sha256/$index_hex
 
-          assert_compact_sorted_json ${multiPlatform}/image-index.json
-          assert_compact_sorted_json ${multiPlatform}/layout/index.json
-          assert_compact_sorted_json ${multiPlatform}/static-ability-contract.json
-          ability_contract_hex=$(sha256sum ${multiPlatform}/static-ability-contract.json | cut -d ' ' -f 1)
-          jq -e --arg provider ${lib.escapeShellArg (builtins.toString abilityPackageSmokeProvider)} '
-            .schema == "aos.container.static-abilities/v1"
-            and .runtime_grants == []
-            and (.platforms | length) == 2
-            and all(.platforms[];
-              . as $platform
-              | ($platform.packages | length) == 1
-                and ($platform.abilities | length) == 1
-                and $platform.abilities[0].export == "default"
-                and $platform.abilities[0].interface.name == "aos.test.package-smoke"
-                and $platform.abilities[0].implementation_artifact.store_path == $provider
-                and $platform.abilities[0].availability == "unresolved-at-launch"
-                and any($platform.unresolved_launch_obligations[];
-                  .kind == "implementation-artifact"
-                  and .consumer.ability == $platform.abilities[0].interface
-                )
-            )
-          ' ${multiPlatform}/static-ability-contract.json >/dev/null \
-            || fail "static ability contract lost selected package ability identities"
-          jq -e --arg abilityDigest "sha256:$ability_contract_hex" '
-            (.manifests | length) == 2
-            and .manifests[0].platform.architecture == "amd64"
-            and .manifests[1].platform.architecture == "arm64"
-            and .annotations."dev.andyl.aos.ability-contract.digest" == $abilityDigest
-          ' ${multiPlatform}/image-index.json >/dev/null \
-            || fail "multi-platform descriptors are missing or not canonical"
-          jq -e '
-            (.manifests | length) == 1
-            and .manifests[0].mediaType == "application/vnd.oci.image.index.v1+json"
-          ' ${multiPlatform}/layout/index.json >/dev/null \
-            || fail "layout root does not point at the multi-platform index"
-          jq -e \
-            --slurpfile descriptor ${multiPlatform}/index-descriptor.json \
-            --slurpfile index ${multiPlatform}/image-index.json '
-              .manifests == [$descriptor[0]]
-              and $descriptor[0].annotations == $index[0].annotations
-              and $descriptor[0].annotations."org.opencontainers.image.ref.name"
-                == "aos-fixture:latest"
-            ' ${multiPlatform}/layout/index.json >/dev/null \
-            || fail "layout root descriptor annotations diverge from the image index"
-          index_digest=$(jq -r .digest ${multiPlatform}/index-descriptor.json)
-          index_hex=''${index_digest#sha256:}
-          verify_descriptor_blob \
-            ${multiPlatform}/index-descriptor.json \
-            ${multiPlatform}/layout/blobs/sha256/$index_hex
+                single_index_digest=$(jq -r .digest ${singlePlatform}/index-descriptor.json)
+                single_index_hex=''${single_index_digest#sha256:}
+                verify_descriptor_blob \
+                  ${singlePlatform}/index-descriptor.json \
+                  ${singlePlatform}/layout/blobs/sha256/$single_index_hex
+                test "$(find ${singlePlatform}/layout/blobs/sha256 -name "$single_index_hex" | wc -l)" -eq 1 \
+                  || fail "single-platform index did not reuse its identical input blob"
 
-          single_index_digest=$(jq -r .digest ${singlePlatform}/index-descriptor.json)
-          single_index_hex=''${single_index_digest#sha256:}
-          verify_descriptor_blob \
-            ${singlePlatform}/index-descriptor.json \
-            ${singlePlatform}/layout/blobs/sha256/$single_index_hex
-          test "$(find ${singlePlatform}/layout/blobs/sha256 -name "$single_index_hex" | wc -l)" -eq 1 \
-            || fail "single-platform index did not reuse its identical input blob"
+                base_digest=$(jq -r .digest ${baseLayerA}/descriptor.json)
+                base_hex=''${base_digest#sha256:}
+                test -f ${multiPlatform}/layout/blobs/sha256/$base_hex \
+                  || fail "shared base layer is absent from the composed layout"
+                test "$(find ${multiPlatform}/layout/blobs/sha256 -name "$base_hex" | wc -l)" -eq 1 \
+                  || fail "shared base layer was copied more than once"
 
-          base_digest=$(jq -r .digest ${baseLayerA}/descriptor.json)
-          base_hex=''${base_digest#sha256:}
-          test -f ${multiPlatform}/layout/blobs/sha256/$base_hex \
-            || fail "shared base layer is absent from the composed layout"
-          test "$(find ${multiPlatform}/layout/blobs/sha256 -name "$base_hex" | wc -l)" -eq 1 \
-            || fail "shared base layer was copied more than once"
-
-          mkdir docker-root
-          tar -xf ${dockerArchive}/image.docker.tar -C docker-root
-          assert_compact_sorted_json docker-root/manifest.json
-          jq -e '
-            length == 1
-            and .[0].RepoTags == ["aos-fixture:latest"]
-            and (.[0].Layers | length) == 4
-          ' docker-root/manifest.json >/dev/null \
-            || fail "Docker archive manifest is incorrect"
-          jq -r '.[0].Layers[]' docker-root/manifest.json | while IFS= read -r layer; do
-            test -f "docker-root/$layer" \
-              || fail "Docker archive layer is missing: $layer"
-          done
-          test -f ${amd64Image}/runtime-closure-audit.json \
-            || fail "image did not retain its required runtime audit report"
+                mkdir docker-root
+                tar -xf ${dockerArchive}/image.docker.tar -C docker-root
+                assert_compact_sorted_json docker-root/manifest.json
+                jq -e '
+                  length == 1
+                  and .[0].RepoTags == ["aos-fixture:latest"]
+                  and (.[0].Layers | length) == 4
+                ' docker-root/manifest.json >/dev/null \
+                  || fail "Docker archive manifest is incorrect"
+                jq -r '.[0].Layers[]' docker-root/manifest.json | while IFS= read -r layer; do
+                  test -f "docker-root/$layer" \
+                    || fail "Docker archive layer is missing: $layer"
+                done
+                test -f ${amd64Image}/runtime-closure-audit.json \
+                  || fail "image did not retain its required runtime audit report"
 
           mkdir -p "$out"
           cp ${multiPlatform}/index-descriptor.json "$out/index-descriptor.json"
@@ -984,6 +691,5 @@ in
         '';
       }
     ];
-
-    meta.description = "Focused deterministic AOS OCI builder conformance check";
+    meta.description = "Deterministic OCI builders with native deployment preflight";
   })

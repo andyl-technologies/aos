@@ -10,7 +10,10 @@
   buildPkgs,
   oci,
   runtimeClosureAudit,
-  packageProjections,
+  operatorModules ? [],
+  configuration ? [],
+  runtimeConfiguration ? [],
+  evaluationInput ? null,
   container,
   systemIdentity,
   definitionAttribute,
@@ -37,13 +40,14 @@
     lib.uniqueBy (value:
       builtins.unsafeDiscardStringContext (builtins.toString value));
 
-  auditRoots = uniqueByPath (builtins.concatMap (layer: layer.roots) container.layers);
+  deploymentLayer = {
+    name = "native-deployment";
+    roots = [deploymentArtifact.artifact];
+    subtractRoots = container.packageRoots;
+  };
+  imageLayers = container.layers ++ [deploymentLayer];
+  auditRoots = uniqueByPath (builtins.concatMap (layer: layer.roots) imageLayers);
   packageRootPaths = map builtins.toString container.packageRoots;
-  retainedPackageProjections =
-    builtins.filter (
-      projection: builtins.elem (builtins.toString projection.payload) packageRootPaths
-    )
-    packageProjections;
   # Audits and OCI assemblers execute on the coordinator. Target packages stay
   # as data dependencies through exportReferencesGraph and store-path inputs.
   runtimeAudit = runtimeClosureAudit {
@@ -57,7 +61,7 @@
   bakedRootInventory = buildPkgs.writeTextFile {
     name = "aos-container-${container.name}-baked-roots";
     text =
-      builtins.concatStringsSep "\n" (map builtins.toString container.packageRoots)
+      builtins.concatStringsSep "\n" (map builtins.toString (container.packageRoots ++ [deploymentArtifact.artifact]))
       + "\n";
     destination = "/baked-roots";
   };
@@ -189,6 +193,7 @@
   initScript = import ./init-script.nix {
     inherit lib pkgs;
     defaultCommand = container.runtime.command;
+    deploymentPath = "/usr/lib/aos-container/native-deployment";
   };
   initSource = buildPkgs.writeTextFile {
     name = "aos-container-${container.name}-init";
@@ -196,12 +201,33 @@
     destination = "/init";
     executable = true;
   };
-  staticAbilityContract = oci.mkStaticAbilityContract {
-    pname = "aos-container-${container.name}-static-abilities";
-    platform = {
-      inherit (container.platform) os architecture;
-    };
-    packageProjections = retainedPackageProjections;
+  preparedInput =
+    if evaluationInput != null
+    then evaluationInput
+    else
+      import ../evaluation-input.nix {
+        inherit lib pkgs configuration runtimeConfiguration;
+        packages = container.packageRoots;
+        scope = ["container" container.name];
+        system = lib.platform.system;
+      };
+  evaluatedDeployment = lib.evalPackageModules {
+    scope = ["container" container.name];
+    packages = container.packageRoots;
+    operatorModules = operatorModules ++ configuration;
+    runtimeModules = runtimeConfiguration;
+    evaluationInput = preparedInput;
+    evaluationInputs = [lib.packageModuleLibrary preparedInput];
+  };
+  deploymentArtifact = oci.mkDeploymentArtifact {
+    pname = "aos-container-${container.name}-deployment";
+    inherit pkgs;
+    evaluated = evaluatedDeployment;
+    evaluationInput = preparedInput;
+    inherit configuration runtimeConfiguration;
+    packages = container.packageRoots;
+    scope = ["container" container.name];
+    platform = {inherit (container.platform) os architecture;};
     runtimeRoots = auditRoots;
   };
   osRelease = ''
@@ -215,7 +241,6 @@
     AOS_CONTAINER=1
     AOS_SYSTEM=${container.platform.aosSystem}
     AOS_STATE_VERSION=${systemIdentity.stateVersion}
-    AOS_MODULE_ABI=${toString systemIdentity.moduleAbi}
     ${releaseOsMetadata}
   '';
   releaseAnnotations =
@@ -225,17 +250,21 @@
       "dev.andyl.aos.release.name" = systemIdentity.name;
       "dev.andyl.aos.release.version" = systemIdentity.version;
       "dev.andyl.aos.state-version" = systemIdentity.stateVersion;
-      "dev.andyl.aos.module-abi" = toString systemIdentity.moduleAbi;
     };
   referenceName = "${container.publication.repository}:${container.publication.referenceTag}";
 
-  packageEvidence = import ./package-evidence.nix {
+  payloadEvidence = import ./package-evidence.nix {
     inherit lib pkgs;
     # Build-only fixtures are not public target roots and may be specific to
     # the coordinator architecture. Evidence qualification still rejects any
     # runtime path without one unique package and source identity.
     packageNames = pkgs.platformSupport.publicationEligibleNames container.platform.aosSystem pkgs.allPackageNames;
     overrides = container.publication.evidenceOverrides;
+  };
+
+  packageEvidence = {
+    catalog = payloadEvidence.catalog ++ deploymentArtifact.evidence.catalog;
+    sourcePaths = uniqueByPath (payloadEvidence.sourcePaths ++ deploymentArtifact.evidence.sourcePaths);
   };
 
   mkPlatformBuild = suffix: let
@@ -251,7 +280,7 @@
           layerName = layer.name;
           inherit (layer) roots subtractRoots;
         })
-      container.layers;
+      imageLayers;
     referenceGraph = oci.mkReferenceGraph {
       pname = "aos-container-${container.name}-runtime-reference-graph${suffixPart}";
       rootPaths = auditRoots;
@@ -311,9 +340,9 @@
         source = "${bakedRootInventory}/baked-roots";
       }
       {
-        path = "/usr/lib/aos-container/static-ability-contract.json";
+        path = "/usr/lib/aos-container/deployment.json";
         mode = "0444";
-        source = "${staticAbilityContract.artifact}/contract.json";
+        source = "${deploymentArtifact.artifact}/deployment.json";
       }
       {
         path = "/usr/lib/aos-container/store-paths";
@@ -337,14 +366,21 @@
       layerName = "root-metadata";
       directories = standardDirectories ++ container.filesystem.directories;
       files = metadataFiles;
-      symlinks = compatibilitySymlinks;
+      symlinks =
+        compatibilitySymlinks
+        ++ [
+          {
+            path = "/usr/lib/aos-container/native-deployment";
+            target = builtins.toString deploymentArtifact.artifact;
+          }
+        ];
       storeLayers = closureLayers;
     };
     image = oci.mkImageLayout {
       pname = "aos-container-${container.name}-${container.platform.architecture}${suffixPart}";
       layers = closureLayers ++ [facadeLayer metadataLayer];
       inherit runtimeAudit;
-      abilityContract = staticAbilityContract;
+      deploymentArtifact = deploymentArtifact;
       inherit referenceName;
       annotations = releaseAnnotations;
       indexAnnotations = releaseAnnotations;
@@ -366,7 +402,7 @@
     ociIndex = oci.mkMultiPlatformIndex {
       pname = "aos-container-${container.name}-${container.platform.architecture}-index${suffixPart}";
       images = [image];
-      abilityContract = staticAbilityContract;
+      deploymentArtifact = deploymentArtifact;
       inherit referenceName;
       annotations = releaseAnnotations;
     };
@@ -389,7 +425,7 @@
     oci.mkEvidenceLayout {
       inherit pname;
       image = primary.ociIndex;
-      abilityContract = staticAbilityContract;
+      deploymentArtifact = deploymentArtifact;
       inherit (platformBuild) referenceGraph sourceGraph closureLayers;
       packageCatalog = packageEvidence.catalog;
       inherit definitionAttribute;
@@ -536,11 +572,11 @@ in {
     ociArchive = primary.image;
     dockerArchive = primary.dockerArchive;
     image = primary.image;
-    inherit metadata evidence staticAbilityContract;
+    inherit metadata evidence deploymentArtifact;
     inherit publicationInputs;
   };
   ociIndex = primary.ociIndex;
-  inherit evidence publicationInputs staticAbilityContract;
+  inherit evidence publicationInputs deploymentArtifact;
   qualification = {
     primaryImage = primary.image;
     repeatImage = repeat.image;
@@ -565,7 +601,7 @@ in {
     packageVersion = pkgs.aos.version;
     inherit definitionAttribute;
     indexAnnotations = builtins.removeAttrs releaseAnnotations ["dev.andyl.aos.system"];
-    inherit staticAbilityContract;
+    inherit deploymentArtifact;
   };
   checks = {
     inherit runtimeAudit evidence evidenceRepeat reproducibility;

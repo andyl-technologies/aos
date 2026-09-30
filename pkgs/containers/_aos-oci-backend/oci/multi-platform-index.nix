@@ -3,7 +3,7 @@
 ##! This builder composes already-built platform manifests without unpacking a
 ##! layer.  Platform descriptors are sorted by canonical platform identity, and
 ##! every referenced blob is copied into the resulting layout with digest and
-##! collision verification.  Static ability semantics are rerun for both the
+##! collision verification.  Native deployment envelopes are checked for both the
 ##! aggregate contract and each input image contract.
 {
   lib,
@@ -13,19 +13,19 @@
   gzip,
   jq,
   tar,
-  abilityContractValidator,
   common,
+  deploymentChecker,
 }: {
   images,
-  abilityContract,
+  deploymentArtifact,
   annotations ? {},
   referenceName ? null,
   pname ? "aos-oci-multi-platform-image",
 }: let
   imagePaths = map builtins.toString images;
-  imageAbilityContractPaths =
+  imageDeploymentArtifactPaths =
     lib.sort builtins.lessThan
-    (map (image: builtins.toString image.checkedAbilityContract.artifact) images);
+    (map (image: builtins.toString image.checkedDeploymentArtifact.artifact) images);
   validateAnnotations = values: let
     checked =
       if builtins.isAttrs values
@@ -52,12 +52,12 @@
     then common.fail "annotations exceeds the 64 KiB aggregate limit"
     else checked;
   checkedAnnotations = validateAnnotations annotations;
-  abilityAnnotationNames = [
-    "dev.andyl.aos.ability-contract.digest"
-    "dev.andyl.aos.ability-contract.media-type"
-    "dev.andyl.aos.ability-contract.schema"
+  deploymentAnnotationNames = [
+    "dev.andyl.aos.deployment.digest"
+    "dev.andyl.aos.deployment.media-type"
+    "dev.andyl.aos.deployment.schema"
   ];
-  authoredAbilityAnnotations = builtins.filter (name: checkedAnnotations ? ${name}) abilityAnnotationNames;
+  authoredDeploymentAnnotations = builtins.filter (name: checkedAnnotations ? ${name}) deploymentAnnotationNames;
   referenceAnnotations =
     if referenceName == null
     then {}
@@ -76,13 +76,13 @@
       common.fail
       "annotations org.opencontainers.image.ref.name conflicts with referenceName"
     else checkedAnnotations // referenceAnnotations;
-  checkedAbilityContract =
+  checkedDeploymentArtifact =
     if
-      builtins.isAttrs abilityContract
-      && (abilityContract._type or null) == "aos-oci-static-ability-contract"
-      && builtins.isAttrs (abilityContract.artifact or null)
-    then abilityContract
-    else common.fail "abilityContract must be produced by mkStaticAbilityContract";
+      builtins.isAttrs deploymentArtifact
+      && (deploymentArtifact._type or null) == "aos-oci-deployment-artifact"
+      && builtins.isAttrs (deploymentArtifact.artifact or null)
+    then deploymentArtifact
+    else common.fail "deploymentArtifact must be produced by mkDeploymentArtifact";
   validated =
     if !builtins.isList images
     then common.fail "images must be a list"
@@ -94,18 +94,18 @@
     then common.fail "images contains the same derivation more than once"
     else if !lib.all (image: builtins.isAttrs image && (image._type or null) == "aos-oci-image") images
     then common.fail "every input must be produced by mkImageLayout"
-    else if authoredAbilityAnnotations != []
-    then common.fail "static ability contract annotations are builder-owned"
+    else if authoredDeploymentAnnotations != []
+    then common.fail "native deployment artifact annotations are builder-owned"
     else if
       !(
         (builtins.length images
           == 1
-          && builtins.toString checkedAbilityContract.artifact == builtins.head imageAbilityContractPaths)
-        || (lib.sort builtins.lessThan checkedAbilityContract.inputContractPaths
-          == imageAbilityContractPaths)
+          && builtins.toString checkedDeploymentArtifact.artifact == builtins.head imageDeploymentArtifactPaths)
+        || (lib.sort builtins.lessThan checkedDeploymentArtifact.inputContractPaths
+          == imageDeploymentArtifactPaths)
       )
-    then common.fail "abilityContract must be the exact aggregate of the input image contracts"
-    else builtins.deepSeq [coordinatedAnnotations checkedAbilityContract] true;
+    then common.fail "deploymentArtifact must be the exact aggregate of the input image contracts"
+    else builtins.deepSeq [coordinatedAnnotations checkedDeploymentArtifact] true;
   indexSpec = {
     annotations = coordinatedAnnotations;
     descriptorAnnotations = coordinatedAnnotations;
@@ -120,8 +120,8 @@
     version = "1";
     src = null;
     buildDeps =
-      [abilityContractValidator coreutils findutils gzip jq tar]
-      ++ checkedAbilityContract.retainedPackageContractArtifacts;
+      [coreutils findutils gzip jq tar deploymentChecker]
+      ++ checkedDeploymentArtifact.retainedDeploymentArtifacts;
 
     outputChecks.out = {};
     inherit indexSpec;
@@ -144,31 +144,30 @@
 
           mkdir -p "$out/layout/blobs/sha256"
           jq '.indexSpec' "$NIX_ATTRS_JSON_FILE" > index-spec.input.json
-          test -f ${checkedAbilityContract.artifact}/contract.json
-          test -f ${checkedAbilityContract.artifact}/descriptor.json
-          ${abilityContractValidator}/bin/aos-ability-contract-validator \
-            static-contract ${checkedAbilityContract.artifact}/contract.json container -
-          contract_digest=$(jq -r .digest ${checkedAbilityContract.artifact}/descriptor.json)
-          contract_media_type=$(jq -r .mediaType ${checkedAbilityContract.artifact}/descriptor.json)
-          contract_size=$(jq -r .size ${checkedAbilityContract.artifact}/descriptor.json)
+          test -f ${checkedDeploymentArtifact.artifact}/deployment.json
+          test -f ${checkedDeploymentArtifact.artifact}/descriptor.json
+          contract_digest=$(jq -r .digest ${checkedDeploymentArtifact.artifact}/descriptor.json)
+          contract_media_type=$(jq -r .mediaType ${checkedDeploymentArtifact.artifact}/descriptor.json)
+          contract_size=$(jq -r .size ${checkedDeploymentArtifact.artifact}/descriptor.json)
           contract_hex=''${contract_digest#sha256:}
-          test "$(sha256sum ${checkedAbilityContract.artifact}/contract.json | cut -d ' ' -f 1)" = "$contract_hex"
-          test "$(stat -c %s ${checkedAbilityContract.artifact}/contract.json)" -eq "$contract_size"
-          jq -e '.schema == "aos.container.static-abilities/v1" and .runtime_grants == []' \
-            ${checkedAbilityContract.artifact}/contract.json >/dev/null
+          test "$(sha256sum ${checkedDeploymentArtifact.artifact}/deployment.json | cut -d ' ' -f 1)" = "$contract_hex"
+          test "$(stat -c %s ${checkedDeploymentArtifact.artifact}/deployment.json)" -eq "$contract_size"
+          ${builtins.readFile ./deployment-validation.sh}
+          validate_deployment_artifact ${checkedDeploymentArtifact.artifact}/deployment.json \
+            ${deploymentChecker}/bin/aos-deployment-check ${jq}/bin/jq
           jq -S \
             --arg digest "$contract_digest" \
             --arg mediaType "$contract_media_type" '
               .annotations += {
-                "dev.andyl.aos.ability-contract.digest": $digest,
-                "dev.andyl.aos.ability-contract.media-type": $mediaType,
-                "dev.andyl.aos.ability-contract.schema": "aos.container.static-abilities/v1"
+                "dev.andyl.aos.deployment.digest": $digest,
+                "dev.andyl.aos.deployment.media-type": $mediaType,
+                "dev.andyl.aos.deployment.schema": "aos.artifact.deployment/v1"
               }
               | .descriptorAnnotations = .annotations
             ' index-spec.input.json > index-spec.with-contract.json
           mv index-spec.with-contract.json index-spec.input.json
-          cp --reflink=auto ${checkedAbilityContract.artifact}/contract.json "$out/static-ability-contract.json"
-          cp --reflink=auto ${checkedAbilityContract.artifact}/descriptor.json "$out/static-ability-contract.descriptor.json"
+          cp --reflink=auto ${checkedDeploymentArtifact.artifact}/deployment.json "$out/deployment.json"
+          cp --reflink=auto ${checkedDeploymentArtifact.artifact}/descriptor.json "$out/deployment.descriptor.json"
           : > manifests.jsonl
           : > child-contract-platforms.jsonl
 
@@ -177,14 +176,11 @@
             test -d "$image_path/layout/blobs/sha256"
             test -f "$image_path/manifest-descriptor.json"
             test -f "$image_path/manifest.json"
-            test -f "$image_path/static-ability-contract.json"
-            test -f "$image_path/static-ability-contract.descriptor.json"
+            test -f "$image_path/deployment.json"
+            test -f "$image_path/deployment.descriptor.json"
             platform_os=$(jq -er .platform.os "$image_path/manifest-descriptor.json")
             platform_architecture=$(jq -er .platform.architecture "$image_path/manifest-descriptor.json")
             platform_variant=$(jq -r '.platform.variant // "-"' "$image_path/manifest-descriptor.json")
-            ${abilityContractValidator}/bin/aos-ability-contract-validator \
-              static-contract "$image_path/static-ability-contract.json" \
-              container - "$platform_os" "$platform_architecture" "$platform_variant"
             jq -e '
               type == "object"
               and .mediaType == ${builtins.toJSON common.manifestMediaType}
@@ -215,17 +211,17 @@
               exit 1
             }
 
-            child_contract_digest=$(jq -r .digest "$image_path/static-ability-contract.descriptor.json")
+            child_contract_digest=$(jq -r .digest "$image_path/deployment.descriptor.json")
             child_contract_hex=''${child_contract_digest#sha256:}
-            test "$(sha256sum "$image_path/static-ability-contract.json" | cut -d ' ' -f 1)" = "$child_contract_hex"
+            test "$(sha256sum "$image_path/deployment.json" | cut -d ' ' -f 1)" = "$child_contract_hex"
             jq -e \
               --arg digest "$child_contract_digest" '
-                .annotations."dev.andyl.aos.ability-contract.digest" == $digest
+                .annotations."dev.andyl.aos.deployment.digest" == $digest
               ' "$verified_manifest" >/dev/null || {
-                echo "platform image does not bind its static ability contract: $image_path" >&2
+                echo "platform image does not bind its native deployment artifact: $image_path" >&2
                 exit 1
               }
-            jq -c '.platforms[]' "$image_path/static-ability-contract.json" \
+            jq -c '.platforms[]' "$image_path/deployment.json" \
               >> child-contract-platforms.jsonl
 
             for source_blob in "$image_path/layout/blobs/sha256/"*; do
@@ -274,22 +270,23 @@
           jq -S -n \
             --slurpfile platforms child-contract-platforms.json '
               {
-                schema: "aos.container.static-abilities/v1",
-                platforms: $platforms[0],
-                runtime_grants: []
+                schema: "aos.artifact.deployment/v1",
+                artifactClass: "container",
+                executionStage: null,
+                platforms: $platforms[0]
               }
             ' > expected-contract.pretty.json
           write_compact_json expected-contract.pretty.json expected-contract.json
-          cmp expected-contract.json ${checkedAbilityContract.artifact}/contract.json || {
-            echo "aggregate static ability contract differs from the platform image contracts" >&2
+          cmp expected-contract.json ${checkedDeploymentArtifact.artifact}/deployment.json || {
+            echo "aggregate native deployment artifact differs from the platform image contracts" >&2
             exit 1
           }
           jq -e \
             --slurpfile manifests manifests.json '
               [.platforms[].platform]
               == [$manifests[0][].platform]
-            ' ${checkedAbilityContract.artifact}/contract.json >/dev/null || {
-              echo "aggregate static ability contract platform set differs from the image index" >&2
+            ' ${checkedDeploymentArtifact.artifact}/deployment.json >/dev/null || {
+              echo "aggregate native deployment artifact platform set differs from the image index" >&2
               exit 1
             }
 
@@ -356,6 +353,6 @@ in
     // {
       _type = "aos-oci-image-index";
       artifact = indexArtifact;
-      inherit checkedAbilityContract;
+      inherit checkedDeploymentArtifact;
       mediaType = common.indexMediaType;
     })

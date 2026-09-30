@@ -15,6 +15,7 @@
   jq,
   tar,
   common,
+  deploymentChecker,
 }: {
   directories ? [],
   files ? [],
