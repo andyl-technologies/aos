@@ -14,6 +14,9 @@
   perl,
   openssl,
   aos-landlock,
+  service-management,
+  aos-filesystem-provider,
+  aos-nix-store-provider,
   cmake,
   coreutils,
   libssh2,
@@ -122,51 +125,11 @@
     export AOS_PRLIMIT="${util-linux}/bin/prlimit"
     export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
   '';
-  abilityEvaluatorFixture = builtins.path {
-    path = ../../../tests/abilities/evaluator-provider;
-    name = "aos-ability-evaluator-fixture";
-  };
-  abilityConformanceCorpus = builtins.toFile "aos-ability-authoring-conformance-v1.json" (
-    builtins.toJSON {
-      schema = "aos.ability.authoring-conformance/v1";
-      cases = import ../../../tests/abilities/conformance/vectors.nix;
-    }
-  );
-  abilityConformanceFixture = mkDerivation {
-    pname = "aos-ability-authoring-conformance-fixture";
-    version = "1";
-    src = null;
-    phases = [
-      {
-        name = "install";
-        script = ''
-          mkdir -p "$out"
-          cp ${../../../tests/abilities/conformance/evaluator.nix} "$out/default.nix"
-          cp ${../../../lib/abilities/schema.nix} "$out/schema.nix"
-          cp ${../../../lib/abilities/diagnostic.nix} "$out/diagnostic.nix"
-          cp ${../../../lib/abilities/lifetime.nix} "$out/lifetime.nix"
-          cp ${abilityConformanceCorpus} "$out/corpus.json"
-        '';
-      }
-    ];
-  };
-  abilityEvaluatorIfdFixture = builtins.derivation {
-    name = "aos-ability-forbidden-ifd";
-    system = stdenv.buildPlatform.system;
-    # An empty built-in environment has no store inputs. The restricted
-    # evaluator can reconstruct its exact derivation in a private store.
-    builder = "builtin:buildenv";
-    derivations = "";
-    paths = "";
-    manifest = ".";
-  };
   applicationTestPackages = [
     "aos"
-    "aos-ability-inspect"
     "aos-ability-model"
     "aos-ability-plan"
     "aos-ability-runtime"
-    "aos-ability-validate"
     "aos-cache"
     "aos-contract"
     "aos-core"
@@ -330,7 +293,8 @@ in
 
     outputs = ["out" "apm" "apr" "packageRuntime" "testSupport"];
 
-    abilities = ./_abilities;
+    module = ./_abilities;
+    moduleDeps = [service-management aos-filesystem-provider aos-nix-store-provider];
 
     # Enforce command-surface separation after fixup and reference scrubbing.
     # Cross-linkers can leave build-environment paths in intermediate binaries;
@@ -463,15 +427,6 @@ in
           --ignored \
           --exact
 
-        cargo test \
-          --frozen \
-          --offline \
-          -p aos-package \
-          --lib \
-          config_eval::command_handler::tests::resolved_inputs_preserve_complete_resource_reference_authority \
-          -- \
-          --exact
-
         cleanup_pinned_bus
         trap - EXIT HUP INT TERM
       fi
@@ -492,13 +447,6 @@ in
       export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
       export PROTOC="${buildProtobuf}/bin/protoc"
       export AOS_NIX_INSTANTIATE="${buildNix}/bin/nix-instantiate"
-      export AOS_TEST_ABILITY_FIXTURE="${abilityEvaluatorFixture}"
-      export AOS_TEST_ABILITY_FIXTURE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityEvaluatorFixture})"
-      export AOS_TEST_ABILITY_CONFORMANCE_FIXTURE="${abilityConformanceFixture}"
-      export AOS_TEST_ABILITY_CONFORMANCE_FIXTURE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityConformanceFixture})"
-      export AOS_TEST_ABILITY_CONFORMANCE_CORPUS="${abilityConformanceFixture}/corpus.json"
-      export AOS_TEST_ABILITY_BUILD_SYSTEM=${lib.escapeShellArg stdenv.buildPlatform.system}
-      export AOS_TEST_ABILITY_CACHE="$NIX_BUILD_TOP/ability-evaluator-cache"
       ${lib.optionalString (!isCross) ''
         ability_nix_root="$NIX_BUILD_TOP/ability-retention-nix"
         ability_nix_state="$ability_nix_root/state"
@@ -514,19 +462,10 @@ in
         NIX_LOG_DIR="$ability_nix_log" \
         NIX_REMOTE=local \
           ${buildNix}/bin/nix-store --init
-        # Nix denies IFD even when the referenced output is already built.
-        # Realize this test input so source-derivation graphs remain valid.
-        test -d ${abilityEvaluatorIfdFixture}
-        export AOS_TEST_ABILITY_IFD_DERIVATION="${builtins.unsafeDiscardOutputDependency abilityEvaluatorIfdFixture.drvPath}"
         export AOS_TEST_ABILITY_NIX_STORE_DIR=/nix/store
         export AOS_TEST_ABILITY_NIX_STATE_DIR="$ability_nix_state"
         export AOS_TEST_ABILITY_NIX_LOG_DIR="$ability_nix_log"
         export AOS_TEST_ABILITY_NIX_REMOTE=local
-      ''}
-      export AOS_TEST_ABILITY_IFD_SYSTEM="${stdenv.buildPlatform.system}"
-      export AOS_ABILITY_EVALUATOR_SECRET="must-not-leak"
-      ${lib.optionalString isCross ''
-        export AOS_TEST_ABILITY_EVALUATOR_DISABLED=1
       ''}
       export AOS_MCOPY="${mtools}/bin/mcopy"
       ${lib.optionalString (!isDarwinCross) ''export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"''}
@@ -605,6 +544,7 @@ in
               case "$name" in
                 aos)
                   cat << 'AOS_ENVIRONMENT'
+      export AOS_NIX_STORE="${nix}/bin/nix-store"
       ${lib.optionalString (!isDarwinCross) ''export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"''}
       ${lib.optionalString (!isDarwinCross) ''
         export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
@@ -615,15 +555,23 @@ in
                   ;;
                 apr)
                   cat << 'APR_ENVIRONMENT'
+      export AOS_NIX_STORE="${nix}/bin/nix-store"
       export AOS_MCOPY="${mtools}/bin/mcopy"
       ${lib.optionalString (!isDarwinCross) ''export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"''}
       APR_ENVIRONMENT
                   ;;
-                apm|aos-package-runtime)
-                  cat << 'APM_ENVIRONMENT'
-      ${lib.optionalString (!isDarwinCross) ''export AOS_CREDENTIAL_ENCRYPT_PROVIDER="${systemd}/libexec/aos-systemd-provider"''}
+                aos-boot-configuration|aos-provisioning-configuration-evaluator)
+                  cat << 'PROVISIONING_ENVIRONMENT'
       export AOS_NIX_STORE="${nix}/bin/nix-store"
       export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
+      PROVISIONING_ENVIRONMENT
+                  ;;
+                apm|aos-package-runtime)
+                  cat << 'APM_ENVIRONMENT'
+      ${lib.optionalString (!isDarwinCross) ''export AOS_CREDENTIAL_ENCRYPT_PROVIDER="${systemd}/bin/aos-systemd-credential-encrypt"''}
+      export AOS_NIX_STORE="${nix}/bin/nix-store"
+      export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
+      export AOS_PACKAGE_MODULE_LIBRARY="${lib.packageModuleLibrary}"
       export AOS_MCOPY="${mtools}/bin/mcopy"
       ${lib.optionalString (!isDarwinCross) ''export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"''}
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
@@ -682,9 +630,12 @@ in
 
           ${lib.optionalString (!isDarwinCross) ''
           mkdir -p "$packageRuntime/libexec"
-          mv "$out/bin/aos-configuration-provider" "$packageRuntime/libexec/"
-          mv "$out/bin/aos-configuration-observer" "$packageRuntime/libexec/"
-          mv "$out/bin/aos-provisioning-configuration-evaluator" "$packageRuntime/libexec/"
+          # Native dispatch clears its environment. Pin the evaluator's store
+          # and pure-evaluation tools in its own retained executable wrapper.
+          install_cli aos-boot-configuration "$packageRuntime" \
+            ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 0
+          install_cli aos-provisioning-configuration-evaluator "$packageRuntime" \
+            ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 0
           mv \
             "$out/bin/aos-image-rollout-boot" \
             "$packageRuntime/libexec/.aos-image-rollout-boot-unwrapped"
@@ -694,10 +645,9 @@ in
         exec "$packageRuntime/libexec/.aos-image-rollout-boot-unwrapped" "\$@"
         ROLLOUT_BOOT
           chmod +x "$packageRuntime/libexec/aos-image-rollout-boot"
-          mv "$out/bin/aos-registry-snapshot-provider" "$packageRuntime/libexec/"
           mv "$out/bin/aos-package-attestation-provider" "$packageRuntime/libexec/"
           mv "$out/bin/aos-image-rollout-observer" "$packageRuntime/libexec/"
-          mv "$out/bin/aos-image-rollout-provider" "$packageRuntime/libexec/"
+          mv "$out/bin/aos-image-rollout-provider" "$packageRuntime/bin/"
           ln -s ${coreutils}/bin/env "$packageRuntime/libexec/aos-env"
           ln -s ${nftables}/bin/nft "$packageRuntime/libexec/aos-nft"
           ln -s ${util-linux}/bin/setpriv "$packageRuntime/libexec/aos-setpriv"
@@ -714,26 +664,24 @@ in
         test "$(readlink "$packageRuntime/libexec/aos-nft")" = "${nftables}/bin/nft"
         test "$(readlink "$packageRuntime/libexec/aos-setpriv")" = "${util-linux}/bin/setpriv"
         test "$(readlink "$packageRuntime/libexec/aos-socat")" = "${socat}/bin/socat"
-        test -x "$packageRuntime/libexec/aos-configuration-provider"
-        test -x "$packageRuntime/libexec/aos-configuration-observer"
-        test -x "$packageRuntime/libexec/aos-provisioning-configuration-evaluator"
+        test -x "$packageRuntime/bin/aos-provisioning-configuration-evaluator"
+        test -x "$packageRuntime/bin/aos-boot-configuration"
         test -x "$packageRuntime/libexec/aos-image-rollout-boot"
-        test -x "$packageRuntime/libexec/aos-registry-snapshot-provider"
         test -x "$packageRuntime/libexec/aos-package-attestation-provider"
         test -x "$packageRuntime/libexec/aos-image-rollout-observer"
-        test -x "$packageRuntime/libexec/aos-image-rollout-provider"
+        test -x "$packageRuntime/bin/aos-image-rollout-provider"
       ''}
           ${lib.optionalString (!isDarwinCross) ''
         grep -Fqx 'export AOS_PRLIMIT="${util-linux}/bin/prlimit"' "$packageRuntime/bin/aos-package-runtime"
       ''}
           ${lib.optionalString (!isCross) ''
-        if PATH=/unreachable "$apm/bin/.apm-unwrapped" __eval --help > /dev/null 2>&1; then
+        if PATH=/unreachable "$apm/bin/.apm-unwrapped" apply-deployment --help > /dev/null 2>&1; then
           echo "public apm entry point accepted a private runtime command" >&2
           exit 1
         fi
-        PATH=/unreachable "$apm/bin/.aos-package-runtime-unwrapped" __eval --help > /dev/null
-        PATH=/unreachable "$packageRuntime/bin/.aos-package-runtime-unwrapped" __eval --help > /dev/null
-        PATH=/unreachable "$packageRuntime/bin/aos-package-runtime" __eval --help > /dev/null
+        PATH=/unreachable "$apm/bin/.aos-package-runtime-unwrapped" apply-deployment --help > /dev/null
+        PATH=/unreachable "$packageRuntime/bin/.aos-package-runtime-unwrapped" apply-deployment --help > /dev/null
+        PATH=/unreachable "$packageRuntime/bin/aos-package-runtime" apply-deployment --help > /dev/null
       ''}
 
           # Release qualification fixtures belong only in the testSupport

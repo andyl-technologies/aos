@@ -256,3 +256,50 @@ fn inspection_never_creates_journals_and_distinguishes_pending_generation() {
     assert_eq!(snapshot.pending_sequence(), Some(2));
     assert!(snapshot.has_pending_work());
 }
+
+#[test]
+fn runtime_bindings_preserve_distinct_roles_for_the_same_package_name() {
+    let root = |name: &str| format!("/nix/store/00000000000000000000000000000000-{name}");
+    let artifact = |role: &str| {
+        json!({
+            "name":"system-image", "version":"1", "path":root(&format!("image-{role}")),
+            "outputs":{"out":root(&format!("image-{role}"))}, "mainProgram":null
+        })
+    };
+    let envelope = json!({
+        "schema":"aos.package.deployment", "system":"x86_64-linux",
+        "package":{"name":"image-backend","version":"1","path":root("backend"),
+            "outputs":{"out":root("backend")},"mainProgram":null},
+        "module":{"name":"image-backend","version":"1","source":root("backend-module"),"entrypoint":"module.nix"},
+        "runtimeDependencies":{"predecessor":artifact("1"),"candidate image":artifact("2")},
+        "moduleDependencies":[]
+    });
+    let decoded = Envelope::decode(&serde_json::to_vec(&envelope).unwrap()).unwrap();
+    assert_eq!(
+        decoded.runtime_dependencies["predecessor"].name,
+        "system-image"
+    );
+    assert_eq!(
+        decoded.runtime_dependencies["candidate image"].name,
+        "system-image"
+    );
+    let resolved = resolve_packages("x86_64-linux", vec![decoded], &mut NoDependencies).unwrap();
+    let mut document = json!({
+        "schema":"aos.package.transaction", "retire":[], "scope":["profile","system"],
+        "system":resolved.system,"artifacts":resolved.artifacts,"packages":resolved.modules,
+        "inputs":[],"graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}
+    });
+    Deployment::decode(&serde_json::to_vec(&document).unwrap(), &resolved).unwrap();
+
+    document["packages"][0]["artifacts"]["dependencies"]["candidate image"] = artifact("1");
+    assert!(Deployment::decode(&serde_json::to_vec(&document).unwrap(), &resolved).is_err());
+
+    let mut empty_binding = envelope;
+    let dependency = empty_binding["runtimeDependencies"]
+        .as_object_mut()
+        .unwrap()
+        .remove("predecessor")
+        .unwrap();
+    empty_binding["runtimeDependencies"][""] = dependency;
+    assert!(Envelope::decode(&serde_json::to_vec(&empty_binding).unwrap()).is_err());
+}

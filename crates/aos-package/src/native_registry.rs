@@ -302,7 +302,7 @@ impl ArtifactAdmission for RegistryAdmission {
 pub(crate) struct NativeRegistry<'a> {
     registries: &'a RegistrySet,
     admission: RegistryAdmission,
-    envelopes: BTreeMap<String, Envelope>,
+    envelopes: BTreeMap<(String, String, String), Envelope>,
     retained_inputs: BTreeSet<PathBuf>,
 }
 
@@ -355,11 +355,13 @@ impl<'a> NativeRegistry<'a> {
             self.admission
                 .capture_closure(registry, &documentation.store_path)?;
         }
-        let envelope = crate::native_artifact::read_envelope(
+        let envelope = crate::native_artifact::read_envelope_in(
             deployment,
             &meta.name,
             &meta.version,
             &meta.platform,
+            &self.admission.executable,
+            &aos_ability_runtime::adapter::CancellationToken::default(),
         )?;
         ensure!(
             envelope
@@ -371,14 +373,42 @@ impl<'a> NativeRegistry<'a> {
         );
         self.admission
             .capture_available(registry, envelope.package.outputs.values().cloned())?;
-        if let Some(previous) = self.envelopes.get(&meta.name) {
+        self.cache_envelope(envelope.clone())?;
+        Ok(envelope)
+    }
+
+    // Runtime roles may refer to different builds with identical name/version.
+    // Only exact artifact catalogs share a cache entry; module lookup separately
+    // requires one unambiguous package context for the pinned module source.
+    fn cache_envelope(&mut self, envelope: Envelope) -> Result<()> {
+        let key = (
+            envelope.package.name.clone(),
+            envelope.package.version.clone(),
+            envelope.package.canonical_catalog().path,
+        );
+        if let Some(previous) = self.envelopes.get(&key) {
             ensure!(
                 same_package_context(previous, &envelope),
-                "native selection contains conflicting package envelopes"
+                "native artifact coordinate has conflicting package envelopes"
             );
         }
-        self.envelopes.insert(meta.name.clone(), envelope.clone());
-        Ok(envelope)
+        self.envelopes.insert(key, envelope);
+        Ok(())
+    }
+
+    fn cached_module(&self, source: &ModuleSource) -> Result<Option<Envelope>> {
+        let mut matches = self
+            .envelopes
+            .values()
+            .filter(|envelope| envelope.module.as_ref() == Some(source));
+        let Some(envelope) = matches.next() else {
+            return Ok(None);
+        };
+        ensure!(
+            matches.all(|other| same_package_context(envelope, other)),
+            "pinned native module source has ambiguous artifact contexts"
+        );
+        Ok(Some(envelope.clone()))
     }
 
     pub(crate) fn into_admission(self) -> RegistryAdmission {
@@ -402,17 +432,20 @@ impl<'a> NativeRegistry<'a> {
         }) {
             return Ok(selected);
         }
-        let envelope = self
-            .envelopes
-            .values()
-            .find(|envelope| {
-                envelope
-                    .package
-                    .outputs
-                    .values()
-                    .any(|output| output == path)
-            })
+        let mut matches = self.envelopes.values().filter(|envelope| {
+            envelope
+                .package
+                .outputs
+                .values()
+                .any(|output| output == path)
+        });
+        let envelope = matches
+            .next()
             .context("native payload has no authenticated package envelope")?;
+        ensure!(
+            matches.all(|other| same_package_context(envelope, other)),
+            "native payload has ambiguous authenticated package contexts"
+        );
         let (registry, canonical) = self
             .registries
             .all_versions(&envelope.package.name)
@@ -485,11 +518,13 @@ impl<'a> NativeRegistry<'a> {
                 .insert(PathBuf::from(&documentation.store_path));
         }
         self.admission.admit(&artifact.store_path)?;
-        let envelope = crate::native_artifact::read_envelope(
+        let envelope = crate::native_artifact::read_envelope_in(
             artifact,
             &meta.name,
             &meta.version,
             &crate::platform::native_platform(),
+            &self.admission.executable,
+            &aos_ability_runtime::adapter::CancellationToken::default(),
         )?;
         ensure!(
             envelope
@@ -499,20 +534,14 @@ impl<'a> NativeRegistry<'a> {
                 .any(|path| path == &installed.store_path),
             "retained native envelope differs from installed payload"
         );
-        if let Some(previous) = self.envelopes.get(&meta.name) {
-            ensure!(
-                same_package_context(previous, &envelope),
-                "installed scope has conflicting native package envelopes"
-            );
-        }
-        self.envelopes.insert(meta.name.clone(), envelope.clone());
+        self.cache_envelope(envelope.clone())?;
         Ok(envelope)
     }
 }
 
 // Selected payload outputs do not change the package-owned module context.
 // Every other authenticated envelope field must remain identical.
-fn same_package_context(left: &Envelope, right: &Envelope) -> bool {
+pub(crate) fn same_package_context(left: &Envelope, right: &Envelope) -> bool {
     let mut package = left.package.clone();
     package.path.clone_from(&right.package.path);
     package == right.package
@@ -525,12 +554,8 @@ fn same_package_context(left: &Envelope, right: &Envelope) -> bool {
 
 impl PackageResolver for NativeRegistry<'_> {
     fn resolve(&mut self, source: &ModuleSource) -> Result<Envelope> {
-        if let Some(envelope) = self.envelopes.get(&source.name) {
-            ensure!(
-                envelope.module.as_ref() == Some(source),
-                "selected native dependency differs from pinned module source"
-            );
-            return Ok(envelope.clone());
+        if let Some(envelope) = self.cached_module(source)? {
+            return Ok(envelope);
         }
         let candidates = self
             .registries
@@ -540,11 +565,10 @@ impl PackageResolver for NativeRegistry<'_> {
             .map(|(registry, meta)| (registry.config.name.clone(), meta.clone()))
             .collect::<Vec<_>>();
         for (registry, meta) in candidates {
-            let envelope = self.package(&registry, &meta)?;
-            if envelope.module.as_ref() == Some(source) {
-                return Ok(envelope);
-            }
-            self.envelopes.remove(&source.name);
+            self.package(&registry, &meta)?;
+        }
+        if let Some(envelope) = self.cached_module(source)? {
+            return Ok(envelope);
         }
         anyhow::bail!(
             "exact native module dependency {}@{} is unavailable",
@@ -557,6 +581,78 @@ impl PackageResolver for NativeRegistry<'_> {
 #[cfg(test)]
 mod authority_tests {
     use super::*;
+
+    fn empty_admission() -> RegistryAdmission {
+        let executable = PathBuf::from("/nix/store/pinned/bin/nix-store");
+        RegistryAdmission {
+            image: crate::native_deployment::Admission::new(executable.clone()).unwrap(),
+            executable,
+            evidence: BTreeMap::new(),
+            available: BTreeMap::new(),
+        }
+    }
+
+    fn envelope(payload: &str, module: Option<ModuleSource>) -> Envelope {
+        let path = format!("/nix/store/{}-{payload}", "a".repeat(32));
+        Envelope {
+            schema: "aos.package.deployment".into(),
+            system: "x86_64-linux".into(),
+            package: crate::deployment::model::Artifact {
+                name: "system-image".into(),
+                version: "1".into(),
+                path: path.clone(),
+                outputs: BTreeMap::from([("out".into(), path)]),
+                main_program: None,
+            },
+            module,
+            runtime_dependencies: BTreeMap::new(),
+            module_dependencies: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn runtime_artifact_cache_preserves_same_coordinate_distinct_payloads() {
+        let registries = RegistrySet::new(Vec::new());
+        let admission = empty_admission();
+        let mut resolver = NativeRegistry::new(&registries, admission);
+        resolver
+            .cache_envelope(envelope("predecessor", None))
+            .unwrap();
+        resolver
+            .cache_envelope(envelope("candidate", None))
+            .unwrap();
+        assert_eq!(resolver.envelopes.len(), 2);
+    }
+
+    #[test]
+    fn module_resolution_rejects_ambiguous_artifact_contexts() {
+        let registries = RegistrySet::new(Vec::new());
+        let admission = empty_admission();
+        let mut resolver = NativeRegistry::new(&registries, admission);
+        let source = ModuleSource {
+            name: "system-image".into(),
+            version: "1".into(),
+            source: format!("/nix/store/{}-module", "b".repeat(32)),
+            entrypoint: "module.nix".into(),
+        };
+        resolver
+            .cache_envelope(envelope("predecessor", Some(source.clone())))
+            .unwrap();
+        assert_eq!(
+            resolver.resolve(&source).unwrap().package.path,
+            envelope("predecessor", None).package.path
+        );
+        resolver
+            .cache_envelope(envelope("candidate", Some(source.clone())))
+            .unwrap();
+        assert!(
+            resolver
+                .resolve(&source)
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous")
+        );
+    }
 
     #[test]
     fn repeated_observation_preserves_original_source_authority() {
