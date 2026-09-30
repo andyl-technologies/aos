@@ -10,9 +10,9 @@ use anyhow::{Context as _, Result, bail};
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::manifest::ManifestEnvelopeV1;
-use aos_release::plan::ReleasePlanV1;
+use aos_release::plan::ReleasePlan;
 use aos_release::signing::{
-    SIGNING_REQUEST_DOMAIN, SignerRequirement, SigningContext, SigningOperation, SigningRequestV1,
+    SIGNING_REQUEST_DOMAIN, SignerRequirement, SigningContext, SigningOperation, SigningRequest,
     TrustedEd25519Key,
 };
 use aos_release::tuf::{
@@ -40,7 +40,7 @@ pub(super) async fn run(args: &ReleaseTufArgs, printer: &aos_core::output::Print
     }
     let now = parse_utc(&args.now, "TUF verification time")?;
     let plan_bytes = read_canonical(&args.plan, "release plan")?;
-    let plan: ReleasePlanV1 = canonical::from_slice(&plan_bytes, "release plan")?;
+    let plan: ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
     plan.validate()?;
     let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
 
@@ -225,7 +225,7 @@ async fn sign_metadata<T: Serialize + Clone>(
     signed: T,
     role: TufRole,
     keys: &[(TrustedEd25519Key, String, String)],
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
     plan_digest: Sha256Digest,
     manifest_digest: Sha256Digest,
     external: &ExternalSigner,
@@ -236,7 +236,7 @@ async fn sign_metadata<T: Serialize + Clone>(
     let mut signatures = Vec::with_capacity(keys.len());
     for (key, identity, provider_revision) in keys {
         let nonce = fresh_nonce(nonces)?;
-        let request = SigningRequestV1 {
+        let request = SigningRequest {
             schema_version: SIGNING_REQUEST_DOMAIN.to_string(),
             request_id: format!("tuf-{}-{}", role.as_str(), &nonce[..20]),
             nonce,
@@ -274,7 +274,7 @@ fn metadata_version<T: Serialize>(metadata: &T) -> Result<u64> {
 
 fn role_keys(
     root: &RootMetadataV1,
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
     role: TufRole,
     specifications: &[String],
 ) -> Result<Vec<(TrustedEd25519Key, String, String)>> {
@@ -335,7 +335,7 @@ fn role_keys(
 /// Returns an error for a missing role or different key IDs or threshold.
 pub(super) fn require_policy_match(
     root: &RootMetadataV1,
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
     role: TufRole,
 ) -> Result<()> {
     let policy = root_policy(root, role)?;
@@ -360,7 +360,7 @@ fn root_policy(root: &RootMetadataV1, role: TufRole) -> Result<&TufRolePolicyV1>
         .with_context(|| format!("TUF root lacks {} policy", role.as_str()))
 }
 
-fn plan_requirement(plan: &ReleasePlanV1, role: TufRole) -> Result<&SignerRequirement> {
+fn plan_requirement(plan: &ReleasePlan, role: TufRole) -> Result<&SignerRequirement> {
     plan.signers
         .iter()
         .find(|requirement| requirement.role == role.signer_role())

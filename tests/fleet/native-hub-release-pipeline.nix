@@ -3,7 +3,10 @@
 # Two independently keyed native Hub instances terminate TLS for the canonical
 # staging and production names. A third machine receives four prebuilt package
 # closures only through the fleet's read-only 9p store mount, turns them into
-# release NARs, and drives every online `aos release` transition.
+# release NARs, and drives every online `aos release step` transition of a
+# release candidate: publication to `staging/candidate`, staging-phase
+# qualification, publication to `production/candidate` (functional profile,
+# with fitness attestations), rollout qualification, and its single ring.
 {
   lib,
   mkSystem,
@@ -444,27 +447,50 @@ in {
           printf '%s\\n' 'C1E62bSSQBXKCQLtB5BE06xdvsIwbwaUjBDajrbjny0=' > {channel_key}
       """))
 
-      # Stage and promote each publish and publicly read back a complete
+      BUNDLE = "/var/tmp/release-surface"
+      PLAN = f"{BUNDLE}/release-plan.json"
+      DESTINATION = "production/candidate"
+      TRUSTED = f"--trusted-key release-evidence-v1={release_key}"
+      QUALIFICATION_KEY = f"--qualification-key qualification-v1={qualification_key}"
+      STAGING_RECEIPT_KEY = f"staging-publication-v1={staging_key}"
+      PRODUCTION_RECEIPT_KEY = f"production-publication-v1={production_key}"
+
+      # The functional profile of production/candidate demands fresh
+      # storage-restore, alert-delivery, authority-recovery, and hub-restore
+      # attestations bound to the production Hub, the plan's signer roster,
+      # and the live identities the fixture reports for these flags.
+      fitness_flags = json.loads(publisher.succeed(
+          f"{FIXTURE} fitness {PLAN} /var/tmp/release-fitness"
+      ))
+      FITNESS = " ".join([
+          "--fitness /var/tmp/release-fitness",
+          f"--tooling-digest {fitness_flags['tooling_digest']}",
+          f"--alert-config-digest {fitness_flags['alert_config_digest']}",
+          f"--hub-schema {fitness_flags['hub_schema']}",
+      ])
+
+      # Both publications upload and publicly read back a complete
       # registry/cache snapshot. Cold two-vCPU Hub guests need explicit
       # headroom for that production-shaped object count; the narrower
       # qualification executors retain their separate 15-minute bound.
-      print("==> staging signed release publication")
+      print("==> publishing the signed bundle to staging/candidate")
       publisher.succeed(textwrap.dedent(f"""
-          {AOS} release verify /var/tmp/release-surface \\
-            --trusted-key release-evidence-v1={release_key}
-          {AOS} release stage --bundle /var/tmp/release-surface \\
-            --journal /var/tmp/release-trust/release-journal.jsonl \\
-            --trusted-key release-evidence-v1={release_key} \\
-            --hub-receipt-key staging-publication-v1={staging_key} \\
-            --token {shlex.quote(staging_token)} --output /var/tmp/staged
+          set -eu
+          {AOS} release step verify {BUNDLE} {TRUSTED}
+          {AOS} release step publish --to staging/candidate --bundle {BUNDLE} \\
+            --journal /var/tmp/release-trust/release-journal.jsonl {TRUSTED} \\
+            --receipt-key {STAGING_RECEIPT_KEY} \\
+            --token {shlex.quote(staging_token)} --output /var/tmp/staging-candidate
       """), timeout=1800)
-      def collect_and_sign(phase, journal, publication, receipt_key, output):
-          # The authority reviews the exact retained report before signing it.
+
+      def qualify(phase, publication, receipt_key, output, common="", collect=""):
+          # The release-evidence authority reviews the exact retained report
+          # before the qualification authority signs it. `collect` flags
+          # apply only while observations are gathered.
           command = textwrap.dedent(f"""
-          {AOS} release qualify-run --bundle /var/tmp/release-surface \\
-            --staging-receipt {publication} \\
-            --trusted-key release-evidence-v1={release_key} \\
-            --hub-receipt-key {receipt_key} \\
+          {AOS} release step qualify-run --to {DESTINATION} --phase {phase} \\
+            --bundle {BUNDLE} --publication-receipt {publication} {TRUSTED} \\
+            --receipt-key {receipt_key} \\
             --executor x86_64-linux={FIXTURE} --executor aarch64-linux={FIXTURE} \\
             --executor x86_64-darwin={FIXTURE} --executor aarch64-darwin={FIXTURE} \\
             --executor-identity x86_64-linux=fleet-executor-x86_64-linux \\
@@ -476,108 +502,79 @@ in {
             --authority-key qualification-v1={qualification_key} \\
             --authority-verification-identity fleet-qualification-authority \\
             --executor-nonce {'3' * 64} --authority-nonce {'4' * 64} \\
-            --qualified-at now --phase {phase} --journal {journal}
+            --qualified-at now {common}
           """).strip()
-          if phase == "rollout":
-              intent = json.dumps({"channel": "candidate", "prior_generation": 0,
-                                   "first_partition": 0, "last_partition": 255}, sort_keys=True, separators=(",", ":"))
-              publisher.succeed("printf %s " + shlex.quote(intent) + " > /var/tmp/qualification-rollout-intent.json")
-              command += " --rollout-intent /var/tmp/qualification-rollout-intent.json"
-          predecessor_phases = ("staging", "complete")
-          predecessor = (
-              " --predecessor-bundle /var/tmp/release-predecessor"
-              if phase in predecessor_phases else ""
-          )
-          publisher.succeed(command + predecessor +
-                            f" --prepare-only --output {output}-prepared", timeout=600)
-          publisher.succeed(f"{FIXTURE} review /var/tmp/release-surface/release-plan.json "
+          publisher.succeed(command + f" {collect} --prepare-only --output {output}-prepared", timeout=600)
+          publisher.succeed(f"{FIXTURE} review {PLAN} "
                             f"{output}-prepared/qualification-report.json {output}-review.json")
           publisher.succeed(command + f" --report-input {output}-prepared/qualification-report.json "
                             f"--review-receipt {output}-review.json --output {output}", timeout=300)
 
-      print("==> collecting, reviewing, and signing shared-contract qualification")
-      collect_and_sign("staging", "/var/tmp/staged/release-journal.jsonl",
-                       "/var/tmp/staged/staging-receipt.json",
-                       f"staging-publication-v1={staging_key}", "/var/tmp/qualification-run")
-      print("==> admitting signed qualification")
+      # The staging phase observes the staging Hub's exact bytes for the
+      # production destination; its image claims update from the retained
+      # qualification-snapshot predecessor.
+      print("==> collecting, reviewing, and signing staging-phase qualification")
+      qualify("staging", "/var/tmp/staging-candidate/receipt.json", STAGING_RECEIPT_KEY,
+              "/var/tmp/staging-qualification",
+              collect="--predecessor-bundle /var/tmp/release-predecessor")
+
+      print("==> publishing to production/candidate with staging continuity and fitness")
       publisher.succeed(textwrap.dedent(f"""
-          {AOS} release qualify --bundle /var/tmp/release-surface \\
-            --journal /var/tmp/staged/release-journal.jsonl \\
-            --staging-receipt /var/tmp/staged/staging-receipt.json \\
-            --signed-qualification /var/tmp/qualification-run/signed-qualification.json \\
-            --qualification-report /var/tmp/qualification-run/qualification-report.json \\
-            --trusted-key release-evidence-v1={release_key} \\
-            --hub-receipt-key staging-publication-v1={staging_key} \\
-            --qualification-key qualification-v1={qualification_key} \\
-            --token {shlex.quote(staging_token)} --output /var/tmp/qualified
-      """), timeout=900)
-      print("==> promoting release and advancing channel")
-      publisher.succeed(textwrap.dedent(f"""
-          {AOS} release promote --bundle /var/tmp/release-surface \\
-            --journal /var/tmp/qualified/release-journal.jsonl \\
-            --staging-receipt /var/tmp/staged/staging-receipt.json \\
-            --qualification-receipt /var/tmp/qualified/qualification-receipt.json \\
-            --signed-qualification /var/tmp/qualified/signed-qualification.json \\
-            --qualification-report /var/tmp/qualification-run/qualification-report.json \\
-            --trusted-key release-evidence-v1={release_key} \\
-            --staging-receipt-key staging-publication-v1={staging_key} \\
-            --qualification-key qualification-v1={qualification_key} \\
-            --production-receipt-key production-publication-v1={production_key} \\
-            --token {shlex.quote(production_token)} --output /var/tmp/promoted
-      """), timeout=1800)
-      collect_and_sign("rollout", "/var/tmp/promoted/release-journal.jsonl",
-                       "/var/tmp/promoted/production-receipt.json",
-                       f"production-publication-v1={production_key}", "/var/tmp/rollout-qualification")
-      publisher.succeed(textwrap.dedent(f"""
-          {AOS} release channel advance --bundle /var/tmp/release-surface \\
-            --qualification /var/tmp/rollout-qualification --qualification-key qualification-v1={qualification_key} \\
-            --journal /var/tmp/promoted/release-journal.jsonl \\
-            --production-receipt /var/tmp/promoted/production-receipt.json \\
-            --channel candidate --prior-generation 0 --first-partition 0 --last-partition 255 \\
-            --trusted-key release-evidence-v1={release_key} \\
-            --production-receipt-key production-publication-v1={production_key} \\
-            --channel-receipt-key production-channel-v1={channel_key} \\
-            --token {shlex.quote(production_token)} --output /var/tmp/rolling
-          {FIXTURE} completion /var/tmp/release-surface/release-plan.json \\
-            /var/tmp/release-surface/release-manifest.json \\
-            /var/tmp/promoted/production-receipt.json /var/tmp/rolling/channel-receipt.json \\
-            /var/tmp/rolling/release-journal.jsonl /var/tmp/completion-receipt.json
-      """), timeout=1800)
-      collect_and_sign("complete", "/var/tmp/rolling/release-journal.jsonl",
-                       "/var/tmp/promoted/production-receipt.json",
-                       f"production-publication-v1={production_key}", "/var/tmp/complete-qualification")
-      publisher.succeed(textwrap.dedent(f"""
-          {AOS} release channel complete --bundle /var/tmp/release-surface \\
-            --qualification /var/tmp/complete-qualification --qualification-key qualification-v1={qualification_key} \\
-            --journal /var/tmp/rolling/release-journal.jsonl \\
-            --production-receipt /var/tmp/promoted/production-receipt.json \\
-            --channel-receipt /var/tmp/rolling/channel-receipt.json \\
-            --completion-receipt /var/tmp/completion-receipt.json \\
-            --trusted-key release-evidence-v1={release_key} \\
-            --production-receipt-key production-publication-v1={production_key} \\
-            --channel-receipt-key production-channel-v1={channel_key} \\
-            --completion-key release-evidence-v1={release_key} \\
-            --output /var/tmp/complete
-          {AOS} release status --journal /var/tmp/complete/release-journal.jsonl
+          {AOS} release step publish --to {DESTINATION} --bundle {BUNDLE} \\
+            --journal /var/tmp/staging-candidate/release-journal.jsonl {TRUSTED} \\
+            --receipt-key {PRODUCTION_RECEIPT_KEY} \\
+            --predecessor-receipt /var/tmp/staging-candidate/receipt.json \\
+            --predecessor-receipt-key {STAGING_RECEIPT_KEY} \\
+            --evidence /var/tmp/staging-qualification {QUALIFICATION_KEY} \\
+            {FITNESS} \\
+            --token {shlex.quote(production_token)} --output /var/tmp/production-candidate
       """), timeout=1800)
 
+      # The functional profile rolls out in a single 256-partition ring and
+      # records `complete` right after that ring's public read-back; it has no
+      # complete-phase qualification and no completion approval.
+      print("==> qualifying and advancing the single production/candidate ring")
+      qualify("rollout", "/var/tmp/production-candidate/receipt.json", PRODUCTION_RECEIPT_KEY,
+              "/var/tmp/rollout-qualification",
+              common="--ring 1 --prior-generation 0 "
+                     "--journal /var/tmp/production-candidate/release-journal.jsonl")
+      publisher.succeed(textwrap.dedent(f"""
+          {AOS} release step channel advance --to {DESTINATION} --ring 1 --prior-generation 0 \\
+            --bundle {BUNDLE} --journal /var/tmp/production-candidate/release-journal.jsonl \\
+            --publication-receipt /var/tmp/production-candidate/receipt.json {TRUSTED} \\
+            --receipt-key {PRODUCTION_RECEIPT_KEY} \\
+            --channel-receipt-key production-channel-v1={channel_key} \\
+            --qualification /var/tmp/rollout-qualification {QUALIFICATION_KEY} \\
+            {FITNESS} \\
+            --token {shlex.quote(production_token)} --output /var/tmp/production-rollout
+      """), timeout=1800)
+
+      status = publisher.succeed(
+          f"{AOS} release step status --journal /var/tmp/production-rollout/release-journal.jsonl "
+          f"--plan {PLAN}"
+      ).splitlines()
+      assert "State: finalized" in status, status
+      assert "staging/candidate: published" in status, status
+      assert "production/candidate: complete" in status, status
+
       report = json.loads(publisher.succeed(
-          f"{JQ} -c . /var/tmp/qualification-run/qualification-report.json"
+          f"{JQ} -c . /var/tmp/staging-qualification/qualification-report.json"
       ))
-      assert report["schema_version"] == "aos.release.qualification-report/v3", report
-      assert len(report["evidence"]) == 11, report
+      assert report["schema_version"] == "aos.release.qualification-report/v1", report
+      assert report["destination"] == DESTINATION and report["phase"] == "staging", report
+      assert len(report["evidence"]) == 9, report
       assert len(report["claims"]) == 4, report
       assert all(claim["achieved_assurance"] == "A2" and claim["disposition"] == "passed"
                  and claim["environment_digest"] for claim in report["claims"]), report
       assert {item["platform"] for item in report["evidence"]} == {
           None, "x86_64-linux", "aarch64-linux", "x86_64-darwin", "aarch64-darwin",
       }, report
-      complete_report = json.loads(publisher.succeed(
-          f"{JQ} -c . /var/tmp/complete-qualification/qualification-report.json"
+      rollout_report = json.loads(publisher.succeed(
+          f"{JQ} -c . /var/tmp/rollout-qualification/qualification-report.json"
       ))
-      assert len(complete_report["claims"]) == 4, complete_report
-      assert all(claim["achieved_assurance"] == "A3" and claim["disposition"] == "passed"
-                 for claim in complete_report["claims"]), complete_report
+      assert rollout_report["destination"] == DESTINATION, rollout_report
+      assert rollout_report["phase"] == "rollout", rollout_report
+      assert [item["policy_id"] for item in rollout_report["evidence"]] == ["rollout-health"], rollout_report
       publisher.succeed(f"{CURL} -fsS {PRODUCTION}/andyl/main/channels/candidate/00 >/dev/null")
     '';
 }

@@ -2,9 +2,9 @@
 //! qualification evidence.
 //!
 //! The record is derived, never authored: every field is copied from the
-//! frozen plan, the final manifest, the signed qualification receipt, and the
-//! public report after each has been verified here exactly as promotion
-//! verifies them. The output is canonical JSON that `aos release tuf`
+//! frozen plan, the final manifest, the signed staging-phase qualification of
+//! one production destination, and the public report after each has been
+//! verified here as `step publish` verifies them. The output is canonical JSON that `aos release tuf`
 //! authorizes as a delegated target beside the manifest and `aos release
 //! compose-surface` serves at `releases/<class>/<version>/release-record.json`.
 
@@ -17,12 +17,10 @@ use anyhow::{Context as _, Result, bail};
 use aos_core::output::Printer;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
-use aos_release::evidence::QualificationReportV1;
+use aos_release::evidence::QualificationReport;
 use aos_release::manifest::ManifestEnvelopeV1;
-use aos_release::plan::ReleasePlanV1;
-use aos_release::receipt::{
-    HubEnvironment, PublicationReceiptV1, QualificationReceiptV1, verify_signed_receipt_with_key,
-};
+use aos_release::plan::ReleasePlan;
+use aos_release::receipt::{QualificationReceipt, verify_signed_receipt_with_key};
 use aos_release::record::ReleaseRecordV1;
 
 use super::{capture, verify};
@@ -43,44 +41,53 @@ pub(super) fn run(args: &ReleaseRecordArgs, printer: &Printer) -> Result<()> {
         &captured.files,
         &manifest_keys,
     )?;
-    let plan: ReleasePlanV1 = canonical::from_slice(&captured.plan_bytes, "release plan")?;
+    let plan: ReleasePlan = canonical::from_slice(&captured.plan_bytes, "release plan")?;
     plan.require_publishable_qualification()?;
     let manifest: ManifestEnvelopeV1 =
         canonical::from_slice(&captured.manifest_bytes, "release manifest")?;
     let bundle_digest =
         aos_release::verify::bundle_digest(&captured.manifest_bytes, &captured.files)?;
 
-    // The staging receipt is verified only for its digest, which the
-    // qualification receipt binds; the record does not restate it.
+    let destination = plan.destination(&args.to)?;
+    if destination.surface != aos_release::plan::SurfaceRole::Production {
+        bail!("release records describe production destinations");
+    }
+
+    // The staging receipt is checked only for the identities the signed
+    // qualification binds by digest; the record does not restate it.
     let staging_bytes = capture::control_file(&args.staging_receipt, "signed staging receipt")?;
     let staging_digest = Sha256Digest::of_bytes(&staging_bytes);
-    let staging: PublicationReceiptV1 =
-        canonical::from_slice(&receipt_payload(&staging_bytes)?, "staging receipt")?;
-    if staging.environment != HubEnvironment::Staging
-        || staging.registry != plan.registry
-        || staging.release_id != summary.release_id
-        || staging.manifest_digest != summary.manifest_digest
-        || staging.bundle_digest != bundle_digest
+    let staging: serde_json::Value = super::surface::receipt_payload(&staging_bytes)?;
+    if staging.get("registry").and_then(serde_json::Value::as_str) != Some(plan.registry.as_str())
+        || staging
+            .get("release_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(summary.release_id.as_str())
+        || staging
+            .get("manifest_digest")
+            .and_then(serde_json::Value::as_str)
+            != Some(summary.manifest_digest.to_string().as_str())
+        || staging
+            .get("bundle_digest")
+            .and_then(serde_json::Value::as_str)
+            != Some(bundle_digest.to_string().as_str())
     {
         bail!("staging receipt does not bind the exact release");
     }
 
-    let qualification_payload =
-        capture::control_file(&args.qualification_receipt, "qualification receipt")?;
-    canonical::require_canonical(&qualification_payload, "qualification receipt")?;
-    let qualification: QualificationReceiptV1 =
-        canonical::from_slice(&qualification_payload, "qualification receipt")?;
     let qualification_bytes =
         capture::control_file(&args.signed_qualification, "signed qualification receipt")?;
     let qualification_keys = key_map(&args.qualification_keys)?;
-    let (qualification_key_id, signed_qualification): (String, QualificationReceiptV1) =
+    let (qualification_key_id, qualification): (String, QualificationReceipt) =
         verify_signed_receipt_with_key(&qualification_bytes, &qualification_keys)?;
     qualification.validate()?;
     let report_bytes = capture::control_file(&args.qualification_report, "qualification report")?;
-    let report: QualificationReportV1 =
-        canonical::from_slice(&report_bytes, "qualification report")?;
+    let report: QualificationReport = canonical::from_slice(&report_bytes, "qualification report")?;
     if canonical::to_vec(&report)? != report_bytes {
         bail!("qualification report is not canonical JSON");
+    }
+    if report.destination != destination.name {
+        bail!("qualification report names a different destination");
     }
     report.validate(
         &plan,
@@ -88,8 +95,7 @@ pub(super) fn run(args: &ReleaseRecordArgs, printer: &Printer) -> Result<()> {
         staging_digest,
         summary.manifest_digest,
     )?;
-    if qualification != signed_qualification
-        || qualification_key_id != qualification.authority_id
+    if qualification_key_id != qualification.authority_id
         || qualification.staging_receipt_digest != staging_digest
         || qualification.manifest_digest != summary.manifest_digest
         || qualification.policy_digest != plan.public_evidence_policy_digest
@@ -128,13 +134,6 @@ pub(super) fn run(args: &ReleaseRecordArgs, printer: &Printer) -> Result<()> {
         args.output.display()
     ));
     Ok(())
-}
-
-/// Extracts the canonical payload bytes of a signed receipt envelope.
-fn receipt_payload(envelope: &[u8]) -> Result<Vec<u8>> {
-    let envelope: aos_release::receipt::SignedReceiptEnvelopeV1 =
-        canonical::from_slice(envelope, "signed receipt")?;
-    canonical::to_vec(&envelope.payload)
 }
 
 fn key_map(specifications: &[String]) -> Result<BTreeMap<String, [u8; 32]>> {
