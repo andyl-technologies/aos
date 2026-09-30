@@ -1,109 +1,60 @@
-//! Bounded private sequenced-packet framing for one retained TPM helper child.
+//! Method-46 policy adapter over the shared private v2 carrier codec.
 //!
-//! These bytes authenticate no TPM or child. Only the fixed-image/pidfd owner
-//! may interpret a response as an authenticated observation. The channel nonce
-//! and sequence reject crossed or stale replies within that retained carrier.
-//!
-//! ```text
-//! AOSBTH02 | version:2u16be | reserved:0u16be | nonce:32 |
-//! index:u32be | salt-handle:u32be | salt-Name:34 | reserved:34 |
-//! main-lock:(device:u64be,inode:u64be,uid:u32be) | sidecar-lock:same
-//! AOSBTK02 | version:2u16be | reserved:0u16be | nonce:32 | FD-count:2u16be | reserved:2
-//! AOSBTA02 | version:2u16be | reserved:0u16be | nonce:32 | index:u32be | index-auth:32
-//! AOSBTQ02 | version:2u16be | op:u8 | reserved:0u8 | nonce:32 |
-//! sequence:u64be | input:32
-//! AOSBTR02 | version:2u16be | op:u8 | reserved:0u8 | nonce:32 |
-//! sequence:u64be | NV-Name:34 | name-alg:u16be | attrs:u32be |
-//! size:u16be | policy-length:u16be | value:32
-//! ```
-//!
-//! HELLO carries no secret. The child validates its two empty lock loans and
-//! becomes nondumpable before ACK. Only then may the retained parent transmit
-//! AUTH on the same nonce-bound, descriptor-free carrier. Version 1 is rejected.
+//! The original caller API and error classifications remain unchanged. The
+//! common codec accepts no caller-selected handle; this adapter admits exactly
+//! the original Controller Storage and Storage broker roles.
 
 use zeroize::Zeroizing;
 
 use super::super::FloorErrorV1;
 use super::super::format::FloorEndpointV1;
+use crate::tpm_nv_custody::{NvCustodyEndpointV1, NvCustodyErrorV1};
+use crate::tpm_nv_custody::framing;
 
-pub(super) const HELLO_BYTES: usize = 160;
-pub(super) const LOCK_ACK_BYTES: usize = 48;
-pub(super) const AUTH_BYTES: usize = 80;
-pub(super) const REQUEST_BYTES: usize = 84;
-pub(super) const RESPONSE_BYTES: usize = 128;
+pub(super) use framing::{
+    AUTH_BYTES, HELLO_BYTES, LOCK_ACK_BYTES, REQUEST_BYTES, RESPONSE_BYTES,
+    HelperObservationV1, HelperOperationV1,
+};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum HelperOperationV1 {
-    Read = 1,
-    Extend = 2,
+fn endpoint(endpoint: FloorEndpointV1) -> NvCustodyEndpointV1 {
+    match endpoint {
+        FloorEndpointV1::ControllerStorageClient => NvCustodyEndpointV1::ControllerStorageClient,
+        FloorEndpointV1::StorageBroker => NvCustodyEndpointV1::StorageBroker,
+    }
+}
+
+fn floor_error(error: NvCustodyErrorV1) -> FloorErrorV1 {
+    match error {
+        NvCustodyErrorV1::Encoding => FloorErrorV1::Encoding,
+        NvCustodyErrorV1::Provisioning => FloorErrorV1::Provisioning,
+        NvCustodyErrorV1::Unavailable => FloorErrorV1::Unavailable,
+    }
 }
 
 pub(super) fn encode_hello_v2(
-    endpoint: FloorEndpointV1,
+    role: FloorEndpointV1,
     nonce: [u8; 32],
     salt_name: [u8; 34],
     locks: [(u64, u64, u32); 2],
 ) -> Result<Zeroizing<[u8; HELLO_BYTES]>, FloorErrorV1> {
-    if nonce == [0; 32]
-        || salt_name[..2] != 0x000b_u16.to_be_bytes()
-        || salt_name[2..] == [0; 32]
-        || locks.iter().any(|(_, inode, _)| *inode == 0)
-        || (locks[0].0, locks[0].1) == (locks[1].0, locks[1].1)
-        || locks[0].2 != locks[1].2
-    {
-        return Err(FloorErrorV1::Provisioning);
-    }
-    let mut bytes = Zeroizing::new([0; HELLO_BYTES]);
-    bytes[..8].copy_from_slice(b"AOSBTH02");
-    bytes[8..10].copy_from_slice(&2_u16.to_be_bytes());
-    bytes[12..44].copy_from_slice(&nonce);
-    bytes[44..48].copy_from_slice(&endpoint.nv_index().to_be_bytes());
-    bytes[48..52].copy_from_slice(&salt_handle_v1(endpoint).to_be_bytes());
-    bytes[52..86].copy_from_slice(&salt_name);
-    for (index, (device, inode, uid)) in locks.into_iter().enumerate() {
-        let offset = 120 + index * 20;
-        bytes[offset..offset + 8].copy_from_slice(&device.to_be_bytes());
-        bytes[offset + 8..offset + 16].copy_from_slice(&inode.to_be_bytes());
-        bytes[offset + 16..offset + 20].copy_from_slice(&uid.to_be_bytes());
-    }
-    Ok(bytes)
+    framing::encode_hello_v2(endpoint(role), nonce, salt_name, locks).map_err(floor_error)
 }
 
 pub(super) fn require_lock_ack_v2(bytes: &[u8], nonce: [u8; 32]) -> Result<(), FloorErrorV1> {
-    if bytes.len() != LOCK_ACK_BYTES
-        || &bytes[..8] != b"AOSBTK02"
-        || bytes[8..12] != [0, 2, 0, 0]
-        || nonce == [0; 32]
-        || bytes[12..44] != nonce
-        || bytes[44..48] != [0, 2, 0, 0]
-    {
-        return Err(FloorErrorV1::Encoding);
-    }
-    Ok(())
+    framing::require_lock_ack_v2(bytes, nonce).map_err(floor_error)
 }
 
 pub(super) fn encode_auth_v2(
-    endpoint: FloorEndpointV1,
+    role: FloorEndpointV1,
     nonce: [u8; 32],
     auth: &[u8; 32],
 ) -> Result<Zeroizing<[u8; AUTH_BYTES]>, FloorErrorV1> {
-    if nonce == [0; 32] || *auth == [0; 32] {
-        return Err(FloorErrorV1::Provisioning);
-    }
-    let mut bytes = Zeroizing::new([0; AUTH_BYTES]);
-    bytes[..8].copy_from_slice(b"AOSBTA02");
-    bytes[8..10].copy_from_slice(&2_u16.to_be_bytes());
-    bytes[12..44].copy_from_slice(&nonce);
-    bytes[44..48].copy_from_slice(&endpoint.nv_index().to_be_bytes());
-    bytes[48..80].copy_from_slice(auth);
-    Ok(bytes)
+    framing::encode_auth_v2(endpoint(role), nonce, auth).map_err(floor_error)
 }
 
-pub(super) const fn salt_handle_v1(endpoint: FloorEndpointV1) -> u32 {
-    match endpoint {
-        FloorEndpointV1::ControllerStorageClient => 0x8100_a046,
-        FloorEndpointV1::StorageBroker => 0x8100_a047,
-    }
+#[cfg(test)]
+pub(super) fn salt_handle_v1(role: FloorEndpointV1) -> u32 {
+    framing::salt_handle_v1(endpoint(role))
 }
 
 pub(super) fn encode_request_v2(
@@ -112,69 +63,16 @@ pub(super) fn encode_request_v2(
     sequence: u64,
     input: [u8; 32],
 ) -> Result<[u8; REQUEST_BYTES], FloorErrorV1> {
-    if nonce == [0; 32]
-        || sequence == 0
-        || sequence == u64::MAX
-        || operation == HelperOperationV1::Read && input != [0; 32]
-        || operation == HelperOperationV1::Extend && input == [0; 32]
-    {
-        return Err(FloorErrorV1::Encoding);
-    }
-    let mut bytes = [0; REQUEST_BYTES];
-    bytes[..8].copy_from_slice(b"AOSBTQ02");
-    bytes[8..10].copy_from_slice(&2_u16.to_be_bytes());
-    bytes[10] = operation as u8;
-    bytes[12..44].copy_from_slice(&nonce);
-    bytes[44..52].copy_from_slice(&sequence.to_be_bytes());
-    bytes[52..84].copy_from_slice(&input);
-    Ok(bytes)
+    framing::encode_request_v2(operation, nonce, sequence, input).map_err(floor_error)
 }
 
-/// Decodes only shape and correlation; it is not an authenticated-NV factory.
 pub(super) fn decode_response_v2(
     bytes: &[u8],
     operation: HelperOperationV1,
     nonce: [u8; 32],
     sequence: u64,
 ) -> Result<HelperObservationV1, FloorErrorV1> {
-    if bytes.len() != RESPONSE_BYTES
-        || &bytes[..8] != b"AOSBTR02"
-        || bytes[8..10] != 2_u16.to_be_bytes()
-        || bytes[10] != operation as u8
-        || bytes[11] != 0
-        || nonce == [0; 32]
-        || bytes[12..44] != nonce
-        || sequence == 0
-        || sequence == u64::MAX
-        || bytes[44..52] != sequence.to_be_bytes()
-    {
-        return Err(FloorErrorV1::Encoding);
-    }
-    Ok(HelperObservationV1 {
-        name: array(bytes, 52)?,
-        name_algorithm: u16::from_be_bytes(array(bytes, 86)?),
-        attributes: u32::from_be_bytes(array(bytes, 88)?),
-        size: u16::from_be_bytes(array(bytes, 92)?),
-        policy_length: u16::from_be_bytes(array(bytes, 94)?),
-        value: array(bytes, 96)?,
-    })
-}
-
-pub(super) struct HelperObservationV1 {
-    pub(super) name: [u8; 34],
-    pub(super) name_algorithm: u16,
-    pub(super) attributes: u32,
-    pub(super) size: u16,
-    pub(super) policy_length: u16,
-    pub(super) value: [u8; 32],
-}
-
-fn array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], FloorErrorV1> {
-    bytes
-        .get(offset..offset.checked_add(N).ok_or(FloorErrorV1::Encoding)?)
-        .ok_or(FloorErrorV1::Encoding)?
-        .try_into()
-        .map_err(|_| FloorErrorV1::Encoding)
+    framing::decode_response_v2(bytes, operation, nonce, sequence).map_err(floor_error)
 }
 
 #[cfg(test)]
