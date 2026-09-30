@@ -40,8 +40,6 @@
   # Image activation seeds the same profile later changed by package management.
   hostScope = ["profile" "system"];
   initrdScope = [systemName "initrd"];
-  hostConfigurationModules = selectionEvaluation.config.aos.activation.stages.host.modules or [];
-  initrdConfigurationModules = selectionEvaluation.config.aos.activation.stages.initrd.modules or [];
   buildStage = stage: packages: scope: let
     authored = selectionEvaluation.config.aos.activation.stages.${stage}.configuration or [];
     builders = selectionEvaluation.config.aos.activation.stages.${stage}.configurationBuilders or [];
@@ -77,9 +75,9 @@
     configuration = initrdConfigurationSources;
     runtimeConfiguration = [];
   };
-  evaluate = scope: packages: configurationModules: configurationSources: stageSpecialArgs:
+  evaluate = scope: packages: configurationSources: stageSpecialArgs:
     lib.evalModules {
-      modules = modules ++ moduleList ++ [{aos.activation.scope = scope;}] ++ configurationModules;
+      modules = modules ++ moduleList ++ [{aos.activation.scope = scope;}];
       inherit pkgs lib runtimeModules;
       operatorModules = operatorModules ++ configurationSources;
       packageModules = packages;
@@ -92,14 +90,13 @@
           hostPackageModules = finalPackageModules;
         };
     };
-  hostAbilityEvaluation = evaluate hostScope finalPackageModules hostConfigurationModules hostConfigurationSources hostStageSpecialArgs;
+  hostAbilityEvaluation = evaluate hostScope finalPackageModules hostConfigurationSources hostStageSpecialArgs;
   # Initrd admits its native scope directly. Importing the complete image
   # module list here would also import host-only effects and package selectors.
   initrdAbilityEvaluation = lib.evalPackageModules {
     packages = initrdPackages;
     packageModules = initrdPackageModules;
     scope = initrdScope;
-    modules = initrdConfigurationModules;
     operatorModules = initrdConfigurationSources;
     evaluationInput = initrdStageSpecialArgs.evaluationInput or null;
   };
@@ -113,10 +110,8 @@ in {
     initrdPackageModules
     hostScope
     initrdScope
-    hostConfigurationModules
     hostConfigurationSources
     initrdConfigurationSources
-    initrdConfigurationModules
     hostAbilityEvaluation
     initrdAbilityEvaluation
     ;

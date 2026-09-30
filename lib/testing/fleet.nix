@@ -462,6 +462,14 @@
     #   nix-build -E '((import ./. {}).checks.fleet.<suite>.driverInteractive) "ssh-..."'
     testDrv
     // {
+      # Expose the exact generated inputs for inspection without booting a VM.
+      testScript = testPyFile;
+      manifest = manifestFile;
+      effectiveSystems = builtins.listToAttrs (map (machine: {
+          inherit (machine) name;
+          value = machine.system;
+        })
+        machineBuilds);
       driverInteractive = sshAuthorizedKey:
         mkFleetTestInteractive {inherit spec sshAuthorizedKey;};
     };

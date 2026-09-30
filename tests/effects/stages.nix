@@ -20,6 +20,18 @@ let
   };
   packageModuleLib = import ../../lib/build/package-modules.nix {};
   record = packageModuleLib.recordFor package;
+  hostSource = builtins.path {
+    path = ./stage-host.nix;
+    name = "host-stage-policy.nix";
+  };
+  initrdSource = builtins.path {
+    path = ./stage-initrd.nix;
+    name = "initrd-stage-policy.nix";
+  };
+  stageConfiguration = {
+    host.configuration = [hostSource];
+    initrd.configuration = [initrdSource];
+  };
   base = {lib, ...}: {
     imports = [../../lib/effects/module.nix ../../modules/base/activation-stages.nix];
     options.marker = lib.mkOption {type = lib.types.str;};
@@ -27,15 +39,7 @@ let
       type = lib.types.bool;
       default = true;
     };
-    aos.activation.stages = {
-      host.modules = [{marker = "host";}];
-      initrd.modules = [
-        {
-          options.marker = lib.mkOption {type = lib.types.str;};
-          marker = "initrd";
-        }
-      ];
-    };
+    aos.activation.stages = stageConfiguration;
   };
   selectionEvaluation.config = {
     aos.packages.fixture = {
@@ -44,15 +48,7 @@ let
       inherit package;
     };
     aos.boot.initrd.packageRoots = [];
-    aos.activation.stages = {
-      host.modules = [{marker = "host";}];
-      initrd.modules = [
-        {
-          options.marker = lib.mkOption {type = lib.types.str;};
-          marker = "initrd";
-        }
-      ];
-    };
+    aos.activation.stages = stageConfiguration;
     environment.systemPackages = [package payload];
   };
   evaluateSelection = selected: packageModules:
@@ -78,7 +74,7 @@ let
           // {
             activation.stages = {
               host = {
-                modules = [{marker = "host";}];
+                configuration = [hostSource];
                 configurationBuilders = [
                   (_: {
                     packages = [payload];
@@ -91,12 +87,7 @@ let
                     })
                 ];
               };
-              initrd.modules = [
-                {
-                  options.marker = lib.mkOption {type = lib.types.str;};
-                  marker = "initrd";
-                }
-              ];
+              initrd.configuration = [initrdSource];
             };
           };
         environment.systemPackages = [package];
@@ -106,6 +97,8 @@ let
 in {
   stageIsolation = assert result.hostAbilityEvaluation.config.marker == "host";
   assert result.initrdAbilityEvaluation.config.marker == "initrd"; true;
+  retainedStageSources = assert result.hostConfigurationSources == [hostSource];
+  assert result.initrdConfigurationSources == [initrdSource]; true;
   identityScopes = assert result.hostAbilityEvaluation.config.aos.activation.scope == ["profile" "system"];
   assert result.initrdAbilityEvaluation.config.aos.activation.scope == ["fixture" "initrd"]; true;
   retainsPayloadOnly = assert builtins.elem payload result.hostPackages; true;
