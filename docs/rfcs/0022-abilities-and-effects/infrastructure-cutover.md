@@ -46,7 +46,8 @@ committing, and observes interrupted mutations before retrying them. Changed
 inputs or implementations receive previous state rather than automatically
 tearing it down. Transaction resources are removed after their consumers finish;
 instance resources are removed when their configuration disappears; persistent
-resources require explicit retirement.
+resources require explicit retirement. Artifact release is journaled separately
+so interrupted cleanup can be retried without repeating teardown.
 
 `aos-package::config_eval::module_activation` supplies the process adapter using
 the existing bounded subprocess transport. The host supplies artifact admission
@@ -75,7 +76,7 @@ The migration is not complete. Remaining work includes:
   production activation, boot, and reconfiguration entry points.
 - Migrate static stage contracts and source-stage materialization to the new
   graph format, then remove the old Rust planning and dispatch path.
-- Complete artifact-release recovery, bounded journal maintenance, negative
+- Complete bounded journal maintenance, negative
   graph tests, and production transport/lifecycle integration tests.
 - Migrate graph/documentation decoding in the hub API, UI, and CLI.
 

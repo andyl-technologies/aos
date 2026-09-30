@@ -43,7 +43,7 @@ pub trait HandlerArtifacts {
     /// Returns an error for unauthorized or unavailable artifacts or failed roots.
     fn retain(&mut self, effect: &Effect) -> Result<()>;
 
-    /// Releases a handler's recovery root after durable teardown.
+    /// Idempotently releases a handler root after durable teardown or replacement.
     ///
     /// # Errors
     /// Returns an error if the package store cannot release the root.

@@ -102,6 +102,10 @@
     outPaths = outPaths;
     inherit name;
     pname = drv.pname or name;
+    catalogName = drv.catalogName or name;
+    version = drv.version or null;
+    # Handler resolution must select the same binary before and after freezing.
+    mainProgram = drv.meta.mainProgram or null;
   };
 in {
   inherit encodeStorePaths decodeStorePaths encodeEmbeddedStorePaths decodeEmbeddedStorePaths;
@@ -153,9 +157,11 @@ in {
     # not allowed to refer to a store path"). The context is irrelevant here —
     # we only parse the bytes — so discard it.
     parsed = builtins.fromJSON (builtins.unsafeDiscardStringContext json);
-    mkOutput = nm: p: {
+    mkOutput = nm: p: metadata: {
       type = "derivation";
       name = nm;
+      inherit (metadata) pname;
+      meta = lib.optionalAttrs (metadata.mainProgram != null) {inherit (metadata) mainProgram;};
       outPath = p;
       __toString = _: p;
     };
@@ -168,13 +174,19 @@ in {
         type = "derivation";
         name = e.name or name;
         pname = e.pname or name;
+        catalogName = e.catalogName or name;
+        meta = lib.optionalAttrs ((e.mainProgram or null) != null) {inherit (e) mainProgram;};
         outPath = path;
         outputName = builtins.head outputs;
         __toString = _: path;
       }
+      // lib.optionalAttrs ((e.version or null) != null) {inherit (e) version;}
       // builtins.listToAttrs (builtins.map (o: {
           name = o;
-          value = mkOutput "${name}-${o}" (decodePath ((e.outPaths or {}).${o} or e.path));
+          value = mkOutput "${name}-${o}" (decodePath ((e.outPaths or {}).${o} or e.path)) {
+            pname = e.pname or name;
+            mainProgram = e.mainProgram or null;
+          };
         })
         outputs);
   in

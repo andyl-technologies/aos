@@ -1,6 +1,6 @@
 ##! Constructs exact package module inputs independently of activation contracts.
 {}: let
-  packageNameFor = package: package.pname or package.name;
+  packageNameFor = package: package.catalogName or package.pname or package.name;
 
   recordFor = package: let
     name = packageNameFor package;
@@ -123,4 +123,7 @@
       then throw "stage package '${name}' does not identify one exact authenticated package module record"
       else builtins.head matches)
     packages;
-in {inherit recordFor identity canonicalize select;}
+in {
+  inherit recordFor identity canonicalize select;
+  nameFor = packageNameFor;
+}
