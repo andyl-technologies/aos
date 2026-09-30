@@ -184,6 +184,7 @@ pub mod indexer;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod pitr;
 pub mod placeholder;
+mod hybrid_front;
 pub(crate) mod r2_adapter;
 #[cfg(target_arch = "wasm32")]
 mod remotebackend;

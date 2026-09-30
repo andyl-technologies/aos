@@ -1289,6 +1289,14 @@ pub(crate) async fn proxy_upload_phase(request: Request, env: &Env, phase: &str)
 }
 
 async fn proxy_with_upload_phase(
+    request: Request,
+    env: &Env,
+    upload_phase: Option<&str>,
+) -> Result<Response> {
+    crate::hybrid_front::proxy(request, env, upload_phase).await
+}
+
+pub(crate) async fn proxy_origin(
     mut request: Request,
     env: &Env,
     upload_phase: Option<&str>,
@@ -1438,7 +1446,24 @@ async fn proxy_with_upload_phase(
             request_body_bytes,
             origin_elapsed_ms,
         );
-        return deliver_storage(env, request.method(), requested_range.as_deref(), target).await;
+        // Authorization is always refreshed at Native before consulting a byte
+        // cache. Its key binds the exact approved source and response plan.
+        let cache_key = crate::hybrid_front::delivery_key(
+            &assertion.deployment_id,
+            &public_url,
+            &http::Method::from_bytes(request.method().as_ref().as_bytes())
+                .map_err(|error| worker::Error::RustError(error.to_string()))?,
+            &crate::hybrid_front::header_map(request.headers())?,
+            &target,
+        );
+        return deliver_storage(
+            env,
+            request.method(),
+            requested_range.as_deref(),
+            target,
+            cache_key,
+        )
+        .await;
     }
     let Some(body) = read_bounded_response(response, MAX_CONTROL_RESPONSE_BYTES).await? else {
         return Response::error("hybrid control response is too large", 502);
@@ -1479,7 +1504,13 @@ async fn deliver_storage(
     method: worker::Method,
     range_header: Option<&str>,
     target: HybridDeliveryTarget,
+    cache_key: Option<String>,
 ) -> Result<Response> {
+    if let Some(key) = cache_key.as_deref() {
+        if let Some(response) = crate::hybrid_front::cached_response(key).await? {
+            return Ok(response);
+        }
+    }
     let planned = target.planned_response.as_ref();
     if planned.is_some() && method == worker::Method::Head {
         return Response::error("invalid planned delivery method", 502);
@@ -1562,7 +1593,27 @@ async fn deliver_storage(
     let response = response
         .body(body)
         .map_err(|error| worker::Error::RustError(format!("hybrid delivery response: {error}")))?;
-    crate::bridge::to_worker(response).await
+    let response = crate::bridge::to_worker(response).await?;
+    let Some(key) = cache_key else {
+        return Ok(response);
+    };
+    // Only small immutable representations enter this cache. Larger objects
+    // retain the streaming path above and never wait for a full-body cache fill.
+    let headers = response.headers().clone();
+    let status = response.status_code();
+    let maximum = usize::try_from(target.object_size)
+        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+    let Some(bytes) = read_bounded_response(response, maximum).await? else {
+        return Response::error("hybrid immutable response exceeds its authorized size", 503);
+    };
+    if bytes.len() != maximum {
+        return Response::error("hybrid immutable response differs from its authorized size", 503);
+    }
+    let mut response = Response::from_bytes(bytes)?
+        .with_status(status)
+        .with_headers(headers);
+    crate::hybrid_front::store_response(&key, &mut response).await?;
+    Ok(response)
 }
 
 pub(crate) async fn read_bounded_response(mut response: Response, maximum: usize) -> Result<Option<Vec<u8>>> {
