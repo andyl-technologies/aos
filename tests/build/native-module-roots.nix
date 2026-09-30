@@ -34,6 +34,15 @@ in
           ' ${bundle}/evaluation.json > /dev/null
           digest=$(sha256sum ${bundle}/admission.json)
           test "sha256:''${digest%% *}" = "$(cat ${bundle}/admission-sha256)"
+          receipt_root=$(readlink -f ${bundle}/admission.json)
+          digest_root=$(dirname "$(readlink -f ${bundle}/admission-sha256)")
+          test "$receipt_root" != "$digest_root"
+          test -f "$receipt_root"
+          case "$receipt_root" in
+            /nix/store/*/*) exit 1 ;;
+            /nix/store/*) ;;
+            *) exit 1 ;;
+          esac
           mkdir -p "$out"
           printf 'PASS\n' > "$out/result"
         '';

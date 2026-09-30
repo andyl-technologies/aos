@@ -65,17 +65,9 @@
         type = lib.types.package;
         description = "Selected manager initrd artifact.";
       };
-      sourceStageBundle = lib.mkOption {
+      deploymentBundle = lib.mkOption {
         type = lib.types.package;
-        description = "Checked initrd source-stage bundle.";
-      };
-      staticAbilityContract = lib.mkOption {
-        type = lib.types.package;
-        description = "Selected initrd static ability contract.";
-      };
-      staticAbilityEvidence = lib.mkOption {
-        type = lib.types.listOf lib.types.package;
-        description = "Build-only package documents for contract validation.";
+        description = "Initrd transaction, resolved packages, and authenticated admission inputs.";
       };
     };
   };
@@ -213,6 +205,6 @@ in {
     readOnly = true;
     internal = true;
     extensible = true;
-    description = "Derived view of the manager selected by the checked ability binding.";
+    description = "Configuration and boot artifacts supplied by the selected manager package.";
   };
 }
