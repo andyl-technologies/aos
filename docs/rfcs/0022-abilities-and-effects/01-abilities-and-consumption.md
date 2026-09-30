@@ -8,8 +8,8 @@ program invocation or as a composition of other operations.
 A package can expose an operation, select an implementation, configure effects,
 or do several of these. These roles are ordinary module definitions rather than
 separate package registries. Independent modules can extend the same operation
-input or domain option tree. `moduleDeps` retains the exact module dependencies
-needed to evaluate those definitions.
+input or domain option tree. `moduleDeps` declares exact or explicitly compatible
+module dependencies needed to evaluate those definitions.
 
 Domain packages provide convenient configuration options and derive effects
 from the merged values. For example, a service implementation can reuse its

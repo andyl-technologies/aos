@@ -12,6 +12,14 @@ Every package may expose a native `module` directory and explicit `moduleDeps`.
 Its recipe continues to build ordinary payload outputs. Packages with no module
 remain valid payload-only members of an installation scope.
 
+Exact dependencies pin their source; explicitly compatible dependencies specify
+ability SemVer ranges and an exact build-time seed. Contract release versions are
+module-owned declarations, independent of package versions and effect revisions.
+A scope selects one version and declaring owner per ability. The resolver records
+exact choices and original requirements for offline replay. See
+[resolution and binding](04-resolution-and-binding.md) for scoped upgrades,
+registry discovery, and lock semantics.
+
 The module engine owns generic recursive evaluation, typed submodules,
 conditional definitions, priorities, provenance, deferred module values, and
 typed references. Domain interfaces belong to packages or system modules.

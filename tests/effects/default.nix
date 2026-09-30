@@ -9,6 +9,7 @@
     dependencyBarrier = import ./native-dependency-barrier.nix;
     packages = (import ./packages.nix).checks;
     abilityVersions = import ./ability-versions.nix;
+    abilityVersionRecipes = import ./ability-version-recipes.nix {inherit pkgs;};
     semver = import ./semver.nix;
     stages = import ./stages.nix;
     frozenHandler = import ./frozen-handler.nix;

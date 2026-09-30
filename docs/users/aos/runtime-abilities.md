@@ -259,6 +259,108 @@ mkDerivation {
 separate from `buildDeps` and `runtimeDeps`. An ordinary payload-only package
 needs no module; it still publishes a native deployment envelope.
 
+## Version and compose interfaces across packages
+
+The package that releases an ability declares its contract version in its module:
+
+```nix
+{ lib, ... }: {
+  aos.abilities.service = {
+    version = "1.4.0";
+    operations.ensure = {
+      # The input/result modules from the interface example above.
+    };
+  };
+}
+```
+
+This version describes the public contract, independently of the package release
+and an effect's automatic revision. Keep compatible additions within the same
+major version; breaking input, result, or behavioral changes require a new major
+version. SemVer is the author's compatibility promise, not a proof that arbitrary
+Nix modules are interchangeable. Modules can still extend shared option trees.
+Exactly one package declares the version for each versioned ability in a scope;
+other packages consume or extend it without repeating that declaration.
+
+A consumer can retain an exact dependency, `moduleDeps = [ service-interface ];`,
+or explicitly permit compatible releases:
+
+```nix
+{ mkDerivation, service-interface, ... }:
+mkDerivation {
+  pname = "web-server";
+  version = "3.0.0";
+  module = ./web-server-module;
+  moduleDeps = [
+    {
+      package = service-interface;
+      abilities.service = "^1.2";
+      packageVersion = ">=7.0.0, <9.0.0"; # Optional, independent constraint.
+    }
+  ];
+  # Ordinary source, dependencies, and build phases go here.
+}
+```
+
+`package` supplies the exact build-time seed. Nix checks that seed against every
+range. APM may select another authenticated release of the same package whose
+exported ability versions satisfy the ranges. For example, package `7.3.0`
+exporting `service` version `1.4.0` satisfies these requirements; package `8.0.0`
+exporting `service` version `2.0.0` does not. A package-only range is also possible
+by omitting `abilities`. Declare each dependency package once; combine constraints
+within that declaration. Existing unversioned interfaces remain usable through
+exact dependencies and cannot satisfy an ability-version requirement.
+
+Ranges use Rust SemVer syntax: caret, tilde, comparisons, wildcards, and
+comma-separated intersections. Prereleases require an explicit prerelease
+comparator for the same major/minor/patch. A version is bounded to 128 bytes and a
+range to 4,096 bytes and 32 comparators.
+
+Repositories can obtain interface packages through pinned Nix inputs. For
+example, a flake can pass an external AOS interface package to this recipe:
+
+```nix
+# Inside a flake's outputs, with `aosPkgs` the target AOS package set:
+aosPkgs.callPackage ./web-server.nix {
+  service-interface = inputs.interfaces.packages.${system}.service-interface;
+}
+```
+
+The external package must expose AOS's native `module` and deployment companions.
+Flakes acquire build inputs; they are not runtime header lookups. Publication
+retains the module source, original dependencies, generated ability exports, and
+documentation in authenticated package artifacts. Installation uses the configured
+registries, which may publish packages from different Git repositories. A
+dependency does not add registry URLs, signing keys, or trust settings. Package
+names remain scope-wide identities; aliases for local registries do not namespace
+them.
+
+Resolution selects **one version and declaring owner per ability per scope**, and
+one exact package identity per package name. It solves transitive ranges together,
+including constraints introduced by candidate packages. Conflicting consumers
+fail with dependency diagnostics before activation. The bounded solver reports
+search exhaustion separately from incompatible requirements. Ordinary installation
+prefers compatible retained choices; an explicit upgrade permits new selections,
+even when the application payload is unchanged. Upgrade filters, exclusions, and
+holds preserve the dependency choices of unaffected package owners. A shared
+dependency must still satisfy those retained choices. An unchanged resolution
+does not create a new generation.
+
+The resulting resolution lock records original requirements, exact selected
+module sources, and the requesters' deployment companions. Reconfiguration,
+boot, and rollback replay these choices without consulting newer registry
+contents. Build-time images lock their selected seeds using the same format.
+Handler selection remains ordinary module configuration; resolving a compatible
+interface does not discover or select an unrelated service manager, nor rewrite
+compiled runtime dependencies or literal store paths embedded in modules.
+
+`abilityContracts` and `moduleRequirements` in generated reference documentation
+come from these same declarations. `aos docs` and the Hub expose contract versions,
+requesting packages, dependencies, and links to their owners. There is no second
+manually maintained ability catalog.
+
+## Bind runtime dependencies
+
 A runtime dependency list uses each package's name as its module binding.
 Use a named attribute set when dependencies have distinct roles, including two
 artifacts from the same package:
