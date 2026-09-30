@@ -42,7 +42,7 @@ in
       inherit src;
       name = "aos-vendor-${version}";
       sourceRoot = "source/crates";
-      hash = "sha256-ZbQjc9BD1knsHycwKVRCpQf0IqUSAmiSBFGywu2Nxos=";
+      hash = "sha256-RNHgywLjICeDfB/qtvvP3Vtsd1M8uo/+IyFrVcZQ/QA=";
     };
 
     buildDeps = [
