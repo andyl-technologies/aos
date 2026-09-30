@@ -8,10 +8,11 @@
   releaseQualificationScenarios,
   releaseQualificationCaseScenarios,
   nativeAdapterMatrix,
+  nativeOperationSpec,
 }: let
   packageNames = pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
   contract = import ../../qualification {
-    inherit lib nativeAdapterMatrix;
+    inherit lib nativeAdapterMatrix nativeOperationSpec;
     inherit packageNames;
   };
   available = {checks = {inherit build fleet container;};};
@@ -37,14 +38,14 @@
     name = requirement.id;
     value = aggregate requirement.id (map resolve requirement.regressions);
   }) (builtins.filter (requirement: requirement.regressions != []) contract.requirements));
-  policy = import ./policy.nix {inherit pkgs lib nativeAdapterMatrix;};
+  policy = import ./policy.nix {inherit pkgs lib nativeAdapterMatrix nativeOperationSpec;};
   executorWiring = import ./executor-wiring.nix {
     inherit pkgs lib contract fleet releaseQualificationScenarios releaseQualificationCaseScenarios;
   };
   nativeAdapterMatrixArtifact = pkgs.writeTextFile {
     name = "aos-qualification-native-adapter-matrix";
     destination = "/matrix-spec.json";
-    text = nativeAdapterMatrix.canonical_json;
+    text = builtins.toJSON nativeOperationSpec;
   };
   k3sBindings = import ./k3s-bindings.nix {inherit pkgs;};
 in
