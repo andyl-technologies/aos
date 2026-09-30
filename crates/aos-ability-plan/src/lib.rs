@@ -9,6 +9,7 @@
 //! This crate performs no downloads, resource acquisition, or runtime effects.
 
 pub mod composition;
+pub mod module_graph;
 pub mod resolution;
 pub mod snapshot;
 pub mod source_stage;

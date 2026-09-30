@@ -5,6 +5,8 @@
   ...
 }: let
   inherit (lib) mkOption types;
+  projectType = import ../type-schema.nix {inherit lib;};
+  activation = config.aos.activation;
 
   operationModule = abilityName: {
     config,
@@ -29,7 +31,7 @@
       ...
     }: let
       effect = config;
-      identity = [abilityName operationName name];
+      identity = activation.scope ++ [abilityName operationName name];
       handlerModules = lib.optional (operation.handler != null) operation.handler;
       executionType = types.submodule (
         [
@@ -61,6 +63,16 @@
           default = [];
           description = "Deferred outputs that must be available before this effect.";
         };
+        lifetime = mkOption {
+          type = types.enum ["transaction" "instance" "persistent"];
+          default = "instance";
+          description = "Retention of established state after the effect's transaction.";
+        };
+        timeoutMs = mkOption {
+          type = types.addCheck types.int (value: value > 0 && value <= 3600000);
+          default = 60000;
+          description = "Maximum duration of one handler invocation in milliseconds.";
+        };
         execution = mkOption {
           type = executionType;
           default = {};
@@ -90,8 +102,7 @@
           builtins.mapAttrs (output: type: {
             _type = "aos-effect-output";
             inherit identity output;
-            schema = type._aosDocType
-            or (throw "Effect result '${abilityName}.${operationName}.${output}' needs a portable option type.");
+            schema = projectType type;
           })
           operation.results;
 
@@ -99,7 +110,8 @@
           inherit identity;
           handled = operation.handler != null;
           inputs = inputDocumentation;
-          results = builtins.mapAttrs (_: type: type._aosDocType) operation.results;
+          input_type = projectType (types.submodule operation.input);
+          results = builtins.mapAttrs (_: type: projectType type) operation.results;
         };
         children = builtins.mapAttrs (childName: module:
           (lib.evalModules {
@@ -165,6 +177,11 @@ in {
       type = types.attrs;
       readOnly = true;
       description = "Bound deferred effect graph derived from the final module configuration.";
+    };
+    activation.scope = mkOption {
+      type = types.listOf types.str;
+      default = [];
+      description = "Deployment and stage scope for logical activation identities.";
     };
   };
 

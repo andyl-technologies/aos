@@ -36,7 +36,6 @@ let
   lib = import ./lib {
     inherit system;
     bash = null;
-    abilityInterfaceDirectory = ./modules/abilities/_interfaces;
   };
 
   freeze = import ./lib/build/freeze-pkgs.nix {inherit lib;};
@@ -77,10 +76,6 @@ let
     freeze.decodeStorePaths
     (builtins.fromJSON
       (builtins.unsafeDiscardStringContext (builtins.readFile ./host-package-modules.json)));
-  hostProviderModules =
-    freeze.decodeStorePaths
-    (builtins.fromJSON
-      (builtins.unsafeDiscardStringContext (builtins.readFile ./host-provider-modules.json)));
   frozenHostEvaluationInputs =
     builtins.fromJSON
     (builtins.unsafeDiscardStringContext (builtins.readFile ./host-evaluation-inputs.json));
@@ -88,10 +83,6 @@ let
     freeze.decodeStorePaths
     (builtins.fromJSON
       (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-package-modules.json)));
-  initrdProviderModules =
-    freeze.decodeStorePaths
-    (builtins.fromJSON
-      (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-provider-modules.json)));
   frozenInitrdEvaluationInputs =
     builtins.fromJSON
     (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-evaluation-inputs.json));
@@ -112,7 +103,7 @@ let
   };
 
   # Replay the image constructor's package/stage selection pass. Stage
-  # contributions are ordinary module values and may close over current
+  # definitions are ordinary module values and may close over current
   # operator, runtime, fact, and package configuration. Derive them again from
   # those authoritative inputs instead of serializing a second representation
   # into the base library.
@@ -160,18 +151,11 @@ in rec {
   ## the full `evalModules` result; the caller forces
   ## `config.system.build.configManifest`.
   evalCompleteConfig = {
-    environment ? null,
+    scope,
     operatorModules ? [],
     runtimeModules ? [],
     packageModules ? [],
-    selectedProviderModules ? [],
     packageImportRoots ? {},
-    abilityInstances ? {},
-    abilityBindings ? {},
-    abilityRequests ? {},
-    abilityRequirements ? {},
-    abilitySelectionBindings ? abilityBindings,
-    enableAbilitySelection ? true,
     factsModules ? [],
     configurationModules ? [],
   }:
@@ -180,29 +164,13 @@ in rec {
         baseModules
         ++ systemModules
         ++ factsModules
-        ++ [baseLibraryModule]
-        ++ configurationModules
-        ++ lib.optional (environment != null) {
-          aos.abilities.environment = environment;
-        }
-        ++ lib.optional (abilityInstances != {} || abilityBindings != {}) {
-          aos.abilities = {
-            instances = abilityInstances;
-            bindings = abilityBindings;
-          };
-        };
+        ++ [baseLibraryModule {aos.activation.scope = scope;}]
+        ++ configurationModules;
       pkgs = frozenPkgs;
-      inherit lib operatorModules packageModules selectedProviderModules packageImportRoots;
-      inherit enableAbilitySelection;
-      inherit runtimeModules;
-      specialArgs.abilityResolution = {
-        bindings = abilitySelectionBindings;
-        requests = abilityRequests;
-        requirements = abilityRequirements;
-      };
+      inherit lib operatorModules runtimeModules packageModules packageImportRoots;
     };
 
-  ## Resolves selected provider modules around the complete host module graph.
+  ## Evaluates the host with its authenticated image and installed package modules.
   resolveHostConfig = {
     operatorModules ? [],
     runtimeModules ? [],
@@ -227,36 +195,15 @@ in rec {
       inherit packageImportRoots;
       packageModules = initialPackageModules;
     };
-    configurationModules = selectionEvaluation.config.aos.abilities.stages.host.modules;
-    resolution = import ./lib/build/resolve-ability-configuration.nix {
-      inherit lib initialPackageModules;
-      evaluate = {
-        packageModules,
-        providerModules,
-        selectionModule,
-        enableAbilitySelection,
-        selectionBindings,
-      }:
-        evalCompleteConfig {
-          environment = frozenHostEvaluationInputs.environment;
-          inherit operatorModules runtimeModules packageModules factsModules;
-          inherit packageImportRoots;
-          inherit configurationModules;
-          selectedProviderModules = builtins.map contextualize providerModules;
-          abilityInstances = selectionModule.module.aos.abilities.instances;
-          abilityBindings = selectionModule.module.aos.abilities.bindings;
-          abilitySelectionBindings = selectionBindings;
-          abilityRequests = selectionModule.requests;
-          abilityRequirements = selectionModule.requirements;
-          inherit enableAbilitySelection;
-        };
-    };
+    configurationModules = selectionEvaluation.config.aos.activation.stages.host.modules;
   in
-    builtins.seq resolution.checked resolution.evaluation;
+    evalCompleteConfig {
+      scope = frozenHostEvaluationInputs.scope;
+      inherit operatorModules runtimeModules factsModules packageImportRoots configurationModules;
+      packageModules = initialPackageModules;
+    };
 
-  ## Replays the image's selected host providers in one complete module graph.
-  ## Source transitions use this frozen selection rather than re-running the
-  ## bounded provider-selection loop for every transition batch.
+  ## Replays authenticated image modules in one complete host fixed point.
   evalCompleteHostConfig = {
     sourceModuleRoots ? {},
     packageImportRoots ? {},
@@ -270,12 +217,11 @@ in rec {
     selectionEvaluation = evalConfigurationSelection {
       inherit operatorModules runtimeModules factsModules packageModules packageImportRoots;
     };
-    stageConfigurationModules = selectionEvaluation.config.aos.abilities.stages.host.modules;
+    stageConfigurationModules = selectionEvaluation.config.aos.activation.stages.host.modules;
   in
     evalCompleteConfig {
       inherit operatorModules runtimeModules factsModules packageModules packageImportRoots;
-      inherit (frozenHostEvaluationInputs) environment abilityInstances abilityBindings abilityRequests abilityRequirements;
-      selectedProviderModules = builtins.map contextualize hostProviderModules;
+      inherit (frozenHostEvaluationInputs) scope;
       configurationModules = stageConfigurationModules ++ configurationModules;
     };
 
@@ -285,13 +231,8 @@ in rec {
     staticContractIdentity = frozenInitrdEvaluationInputs.staticContractIdentity;
     staticContract = storeViewLib.staticContractFor checked staticContractIdentity;
   in {
-    environment = frozenInitrdEvaluationInputs.environment;
-    abilityInstances = frozenInitrdEvaluationInputs.abilityInstances;
-    abilityBindings = frozenInitrdEvaluationInputs.abilityBindings;
-    abilityRequests = frozenInitrdEvaluationInputs.abilityRequests;
-    abilityRequirements = frozenInitrdEvaluationInputs.abilityRequirements;
+    scope = frozenInitrdEvaluationInputs.scope;
     packageModules = builtins.map (storeViewLib.mapAuthenticatedModule checked) initrdPackageModules;
-    selectedProviderModules = builtins.map (storeViewLib.mapAuthenticatedModule checked) initrdProviderModules;
     inherit staticContract;
   };
 
@@ -312,14 +253,13 @@ in rec {
       inherit packageImportRoots;
       packageModules = builtins.map contextualize hostPackageModules;
     };
-    stageConfigurationModules = selectionEvaluation.config.aos.abilities.stages.initrd.modules;
+    stageConfigurationModules = selectionEvaluation.config.aos.activation.stages.initrd.modules;
     evaluated = evalCompleteConfig {
       inherit operatorModules runtimeModules factsModules;
       inherit packageImportRoots;
       configurationModules = stageConfigurationModules ++ configurationModules;
-      inherit (frozen) environment abilityInstances abilityBindings abilityRequests abilityRequirements;
+      inherit (frozen) scope;
       packageModules = builtins.map contextualize frozen.packageModules;
-      selectedProviderModules = builtins.map contextualize frozen.selectedProviderModules;
     };
   in
     evaluated // {initrdStaticContract = frozen.staticContract;};

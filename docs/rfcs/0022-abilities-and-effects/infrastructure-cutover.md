@@ -33,23 +33,52 @@ extension, merged configuration, handler overrides and composition, typed output
 connections, disabled effects, missing handlers, cycles, and recursive expansion.
 The fixtures use synthetic derivation records and perform no host modifications.
 
-## Unfinished infrastructure
+## Runtime and stage evaluation
 
-This is a module/compiler checkpoint, not a completed activation implementation.
-The new graph is not yet accepted by the Rust executor. Before any system can use
-it, the infrastructure must:
+`aos-ability-plan::module_graph` decodes the native projection, checks identity
+and content hashes, validates portable option types, and checks every edge and
+execution position. It retains the original document so journal replay preserves
+its exact schema encoding. Documentation text is excluded from state revisions.
 
-- Adapt the checked runtime plan boundary, including artifact authentication and
-  runtime validation of inputs and results. The current graph contains native
-  option-type projections; these are not yet the existing runtime schema format.
-- Connect resource ownership, retention, transitions, observation, and recovery
-  to the existing lifecycle and journal machinery. A graph revision alone is not
-  a complete resource lifecycle model.
-- Replace the remaining image/on-host evaluation entry points that still call
-  the removed provider-selection API.
-- Adapt package contract projection and documentation consumers to the new
-  declaration and graph projections.
+`aos-ability-runtime::activation` uses the existing framed, locked, checksummed
+journal. It records exact invocations before dispatch, checks results before
+committing, and observes interrupted mutations before retrying them. Changed
+inputs or implementations receive previous state rather than automatically
+tearing it down. Transaction resources are removed after their consumers finish;
+instance resources are removed when their configuration disappears; persistent
+resources require explicit retirement.
 
-Existing runtime code remains in place for that adaptation. It must not be
-bypassed with an unjournaled script runner, nor treated as compatible with the
-new graph merely because both represent deferred operations.
+`aos-package::config_eval::module_activation` supplies the process adapter using
+the existing bounded subprocess transport. The host supplies artifact admission
+and retention through `HandlerArtifacts`. Programs receive `apply`, `remove`, or
+`observe` and a JSON invocation on stdin. This adapter is not yet connected to the
+production activation entry point.
+
+Image and on-host evaluation now compose ordinary authenticated package modules
+for each deployment stage. The provider-selection resolver and frozen parallel
+maps are removed. `modules/base/activation-stages.nix` owns the host/early-boot
+stage definitions, outside the generic effect library. Stage tests exercise
+isolation, identity scopes, package deduplication, and rejection of conflicting
+package records.
+
+Native option types project into the runtime type algebra. Opaque values,
+arbitrary Nix predicates, and string-pattern descriptions without a portable
+validator are rejected at this boundary rather than silently weakened.
+
+## Remaining infrastructure
+
+The migration is not complete. Remaining work includes:
+
+- Replace package contract construction, which still calls the removed registry
+  projection API, and generate its documentation from native module declarations.
+- Wire authenticated artifact retention and the new graph controller into the
+  production activation, boot, and reconfiguration entry points.
+- Migrate static stage contracts and source-stage materialization to the new
+  graph format, then remove the old Rust planning and dispatch path.
+- Complete artifact-release recovery, bounded journal maintenance, negative
+  graph tests, and production transport/lifecycle integration tests.
+- Migrate graph/documentation decoding in the hub API, UI, and CLI.
+
+The module fixture and runtime tests validate the new boundary independently;
+they do not establish that existing systems can boot through it. Existing domain
+consumers remain intentionally incompatible until their separate migration.

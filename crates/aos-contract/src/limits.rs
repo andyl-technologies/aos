@@ -77,6 +77,16 @@ impl Write for BoundedWriter {
 }
 
 impl JsonLimits {
+    /// Checks an existing JSON value without cloning or serializing it.
+    ///
+    /// # Errors
+    /// Returns an error when nesting, collection, or string limits are exceeded.
+    /// The encoded byte limit is checked separately by decoding or a bounded writer.
+    pub fn check_value(&self, value: &Value, label: &str) -> Result<()> {
+        let mut items = 0;
+        validate_value(value, self, 1, &mut items, label)
+    }
+
     /// Validates and decodes one strict JSON document.
     ///
     /// # Errors
@@ -92,8 +102,7 @@ impl JsonLimits {
         }
 
         let value = canonical::parse_json(bytes, label)?;
-        let mut items = 0_usize;
-        validate_value(&value, self, 1, &mut items, label)?;
+        self.check_value(&value, label)?;
         serde_json::from_value(value)
             .map_err(|error| anyhow::anyhow!("invalid {label} schema: {error}"))
     }

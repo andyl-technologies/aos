@@ -13,6 +13,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod activation;
 pub mod adapter;
 pub mod bundle;
 pub mod execution;

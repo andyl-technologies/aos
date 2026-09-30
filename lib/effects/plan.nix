@@ -24,6 +24,9 @@
       inherit identity;
       input = effect.input;
       inputs = effect.contract.inputs;
+      input_type = effect.contract.input_type;
+      lifetime = effect.lifetime;
+      timeout_ms = effect.timeoutMs;
       after = effect.after;
       results = effect.contract.results;
       handler =
@@ -130,7 +133,7 @@
     builtins.seq (checkExports node) (node
       // {
         dependencies = dependencies.${key};
-        revision = builtins.hashString "sha256" (builtins.toJSON node);
+        revision = builtins.hashString "sha256" (builtins.toJSON (builtins.removeAttrs node ["inputs"]));
       }))
   indexed;
 in

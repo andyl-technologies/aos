@@ -49,7 +49,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     || sharedAccacheDir != null;
   lib = import ./lib {
     inherit system;
-    abilityInterfaceDirectory = ./modules/abilities/_interfaces;
     # Every Nix builder executes on buildPlatform, including during a cross
     # build. Never select a target bash as the derivation builder.
     bash = buildStdenv.bash;
@@ -291,7 +290,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit pkgs lib operatorModules runtimeModules packageModules;
       specialArgs = moduleSpecialArgs;
     };
-    abilityEvaluation = import ./lib/build/complete-ability-evaluation.nix {
+    abilityEvaluation = import ./lib/build/evaluate-stages.nix {
       inherit
         lib
         pkgs
@@ -309,23 +308,12 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     inherit
       (abilityEvaluation)
       finalPackageModules
-      hostPackageEvaluation
       hostAbilityEvaluation
-      hostAbilityInstances
-      hostAbilityBindings
-      hostAbilityRequests
-      hostAbilityRequirements
       hostConfigurationModules
-      hostProviderModules
-      hostEnvironment
+      hostScope
       initrdPackageModules
-      initrdProviderModules
-      initrdAbilityInstances
-      initrdAbilityBindings
-      initrdAbilityRequests
-      initrdAbilityRequirements
       initrdConfigurationModules
-      initrdEnvironment
+      initrdScope
       initrdAbilityEvaluation
       ;
     # Determine the resolved image ABI from the complete caller module list.
@@ -359,24 +347,13 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit operatorModules runtimeModules;
       hostPackageModules = finalPackageModules;
       inherit hostConfigurationModules;
-      inherit
-        hostProviderModules
-        hostAbilityInstances
-        hostAbilityBindings
-        hostAbilityRequests
-        hostAbilityRequirements
-        ;
-      hostAbilityEnvironment = hostEnvironment;
+
+      inherit hostScope;
       inherit
         initrdPackageModules
-        initrdProviderModules
-        initrdAbilityInstances
-        initrdAbilityBindings
-        initrdAbilityRequests
-        initrdAbilityRequirements
         initrdConfigurationModules
         ;
-      initrdAbilityEnvironment = initrdEnvironment;
+      inherit initrdScope;
       inherit initrdStaticAbilityContract;
       hostOptionDeclarations = hostAbilityEvaluation._optionDecls;
       initrdOptionDeclarations = initrdAbilityEvaluation._optionDecls;
@@ -393,60 +370,43 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
               inherit baseLib;
               baseLibAbiHash = baseLib.passthru.abiHash;
             };
-            aos.abilities.environment = hostEnvironment;
-            aos.abilities.instances = hostAbilityInstances;
-            aos.abilities.bindings = hostAbilityBindings;
+            aos.activation.scope = hostScope;
           }
         ];
       inherit pkgs lib operatorModules runtimeModules;
       packageModules = finalPackageModules;
-      selectedProviderModules = hostProviderModules;
-      enableAbilitySelection = true;
       specialArgs =
         moduleSpecialArgs
         // {
           inherit initrdAbilityEvaluation initrdStaticContract;
           initrdEvaluationLib = baseLib.passthru.initrdEvaluation;
-          abilityResolution = {
-            bindings = hostAbilityBindings;
-            requests = hostAbilityRequests;
-            requirements = hostAbilityRequirements;
-          };
         };
     };
   in {
     qualificationProjection = abilityEvaluation.qualificationProjection;
     system =
-      builtins.seq
-      (lib.abilities.checkedProviderModuleEvaluation {
-        before = hostPackageEvaluation.config.aos.abilities;
-        after = finalHostEvaluation.config.aos.abilities;
-        # The final fixed point replaces the inert base-lib probe with its
-        # image path, which can change derived request values.
-        allowDerivedRequestValues = true;
-      })
-      (finalHostEvaluation
-        // {
-          # Extensions are ephemeral evaluation overlays. Rebuild every
-          # resolver stage while allowing the caller's inline module values.
-          extendModules = extension: let
-            extraModules = extension.modules or [];
-          in
-            (mkSystemState {allowInlineModules = true;} (
-              {
-                modules = moduleList ++ extraModules;
-                inherit
-                  specialArgs
-                  operatorModules
-                  runtimeModules
-                  packageModules
-                  systemName
-                  ;
-              }
-              // builtins.removeAttrs extension ["modules"]
-            ))
+      finalHostEvaluation
+      // {
+        # Extensions are ephemeral evaluation overlays. Rebuild every
+        # resolver stage while allowing the caller's inline module values.
+        extendModules = extension: let
+          extraModules = extension.modules or [];
+        in
+          (mkSystemState {allowInlineModules = true;} (
+            {
+              modules = moduleList ++ extraModules;
+              inherit
+                specialArgs
+                operatorModules
+                runtimeModules
+                packageModules
+                systemName
+                ;
+            }
+            // builtins.removeAttrs extension ["modules"]
+          ))
             .system;
-        });
+      };
   };
   mkSystem = args: (mkSystemState {} args).system;
   # Repository fixtures may layer ephemeral values that are never accepted as
