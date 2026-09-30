@@ -27,6 +27,7 @@ pub use contract::contract;
 /// constructor so the synthetic matrix is authored only once.
 pub(crate) fn native_adapter_matrix_spec() -> NativeAdapterMatrixSpec {
     let applicability = json!({
+        "required_actions": [],
         "required_resource_lifetimes": [],
         "requires_state_format": false,
     });
@@ -55,46 +56,31 @@ pub(crate) fn native_adapter_matrix_spec() -> NativeAdapterMatrixSpec {
             })
         })
         .collect::<Vec<_>>();
-    let adapters = [("fixture-a", 'a'), ("fixture-z", 'c')].map(|(name, digest_character)| {
-        let descriptor = format!("sha256:{}", digest_character.to_string().repeat(64));
+    let adapters = ["fixture-a", "fixture-z"].map(|name| {
+        let identity = vec!["fixture", "host", name, "fixture", name, "subject"];
+        let identity_digest = Sha256Digest::of_bytes(
+            crate::canonical::to_vec(&identity).expect("synthetic effect identity serializes")
+        ).to_string();
+        let effect_id = identity_digest.strip_prefix("sha256:")
+            .expect("canonical digest contains its algorithm");
+        let artifact = format!("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-{name}-handler");
         json!({
             "adapter": name,
             "conformance_families": ["durability-recovery"],
-            "interface_abi": 1,
-            "interface_descriptor": descriptor,
-            "interface_name": format!("aos.{name}-effects"),
-            "methods": [{
-                "required_target_access": "exclusive-write",
-                "method": "apply",
-            }],
-            "observation_kind": "fixture-observation",
-            "provider_contract": {
-                "lifecycle": {"persistent_delete_method": null},
+            "operation": {
+                "ability": "fixture",
+                "name": name,
+                "input_type": {"kind":"submodule","fields":{},"open":false},
+                "result_type": {"kind":"submodule","fields":{},"open":false},
+            },
+            "handler": {"kind":"process","artifact":artifact,"executable":format!("{artifact}/bin/handler")},
+            "effects": [{"id":effect_id,"identity":identity,"revision":"d".repeat(64),"lifetime":"persistent","dependencies":[]}],
+            "actions": ["apply"],
+            "state_contract": {
                 "resource_lifetimes": ["persistent"],
                 "state_format": format!("sha256:{}", "b".repeat(64)),
             },
-            "provider_implementation": {
-                "contract": format!(
-                    "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-{name}-abilities"
-                ),
-                "implementation": format!("{name}-implementation"),
-                "observer": {
-                    "artifact": {
-                        "path": format!(
-                            "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-{name}-observer"
-                        ),
-                        "selector": {
-                            "_type": "aos-package-output-selector",
-                            "output": "out",
-                            "package": format!("{name}-observer"),
-                        },
-                    },
-                    "entry_point": "bin/fixture-observer",
-                    "arguments": {"kind": "record"},
-                    "result": {"kind": "record"},
-                },
-            },
-            "scope": "host-resource",
+            "scope": ["fixture","host"],
         })
     });
     let cells = adapters
@@ -103,23 +89,16 @@ pub(crate) fn native_adapter_matrix_spec() -> NativeAdapterMatrixSpec {
             let name = adapter["adapter"]
                 .as_str()
                 .expect("synthetic adapter name is a string");
-            let interface = adapter["interface_name"]
-                .as_str()
-                .expect("synthetic interface name is a string");
             json!({
                 "id": format!(
-                    "{name}/{interface}/abi-1/apply/interrupt-before-acquisition"
+                    "{name}/fixture/{name}/apply/durability-recovery/interrupt-before-acquisition"
                 ),
-                "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+                "matrix_schema": "aos.qualification.native-operation-matrix",
                 "adapter": name,
-                "interface": {
-                    "name": interface,
-                    "abi": 1,
-                    "descriptor": adapter["interface_descriptor"],
-                },
-                "method": "apply",
-                "required_target_access": "exclusive-write",
-                "scope": "host-resource",
+                "operation": {"ability":"fixture","name":name},
+                "action": "apply",
+                "scenario": {"family":"durability-recovery","id":"interrupt-before-acquisition"},
+                "scope": ["fixture","host"],
                 "boundary": "before-acquisition",
                 "failure": "injected-interruption",
                 "predecessor": "same",
@@ -148,18 +127,22 @@ pub(crate) fn native_adapter_matrix_spec() -> NativeAdapterMatrixSpec {
         "predecessor": "same",
     });
     let value = json!({
-        "schema": "aos.qualification.native-adapter-matrix-spec/v1",
+        "schema": "aos.qualification.native-operation-matrix-spec",
+        "required_operations": [
+            {"ability":"fixture","name":"fixture-a"},
+            {"ability":"fixture","name":"fixture-z"},
+        ],
         "surface": {
             "adapters": adapters,
             "families": ["durability-recovery"],
             "invalidation_dimensions": ["subject", "policy", "executor", "environment"],
-            "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+            "matrix_schema": "aos.qualification.native-operation-matrix",
             "scenarios": [scenario],
-            "schema": "aos.qualification.native-adapter-surface/v1",
+            "schema": "aos.qualification.native-operation-matrix-surface",
         },
         "cells": cells,
         "applicability": {
-            "schema": "aos.qualification.native-adapter-matrix-applicability/v1",
+            "schema": "aos.qualification.native-operation-matrix-applicability",
             "applicable_cell_ids": applicable_cell_ids,
             "inapplicable_cells": [],
         },
@@ -333,4 +316,40 @@ pub fn assessment(case: &QualificationCase) -> Result<Option<CompatibilityAssess
             })
         })
         .transpose()
+}
+
+/// Builds an authored one-cohort qualification specification for protocol tests.
+pub(crate) fn native_operation_spec()
+-> aos_release::qualification_evidence::NativeOperationQualificationSpec {
+    let matrix_spec = native_adapter_matrix_spec();
+    aos_release::qualification_evidence::NativeOperationQualificationSpec {
+        schema: "aos.qualification.native-operation-spec".into(),
+        required_operations: matrix_spec.required_operations.clone(),
+        cohorts: vec![aos_release::qualification_evidence::NativeOperationCohortSpec {
+            id: "synthetic-cohort".into(),
+            matrix_spec,
+            selected_evaluation: aos_release::qualification_evidence::NativeSelectedEvaluation {
+                role: aos_release::qualification_evidence::NativeEvaluationRole::CandidateBaseline,
+                locator: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-synthetic-evaluation".into(),
+                scenario_sources: Vec::new(),
+            },
+        }],
+    }
+}
+
+/// Retains an observation in its exact synthetic authored cohort context.
+pub(crate) fn native_cohort_observation(
+    authored: &aos_release::qualification_evidence::NativeOperationCohortSpec,
+    cells: Vec<aos_release::qualification_evidence::NativeAdapterCellObservation>,
+) -> aos_release::qualification_evidence::NativeOperationCohortObservation {
+    aos_release::qualification_evidence::NativeOperationCohortObservation {
+        id: authored.id.clone(),
+        matrix_spec: authored.matrix_spec.clone(),
+        selected_evaluation: authored.selected_evaluation.clone(),
+        spec_digest: Sha256Digest::of_bytes(
+            crate::canonical::to_vec(&authored.matrix_spec).expect("synthetic matrix serializes"),
+        ),
+        candidate_digest: Sha256Digest::of_bytes("synthetic candidate bytes"),
+        cells,
+    }
 }

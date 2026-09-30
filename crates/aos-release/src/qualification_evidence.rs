@@ -13,7 +13,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
-use aos_ability_model::{AccessMode, LifecycleSemantics, ResourceLifetime};
+use aos_ability_model::OptionType;
+use aos_ability_plan::module_graph::Lifetime;
 use serde::{Deserialize, Serialize};
 
 use crate::artifact::{ArtifactKind, ArtifactRecord, ArtifactRelation};
@@ -67,7 +68,7 @@ pub struct QualificationCase {
     pub requirement_id: String,
     /// Exact evaluated matrix copied verbatim from the selected requirement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub matrix_spec: Option<NativeAdapterMatrixSpec>,
+    pub native_operation_spec: Option<NativeOperationQualificationSpec>,
     /// Exact class-bound requirement policy digest.
     pub policy_digest: Sha256Digest,
     /// Canonical frozen-plan identity, including release and trust domain.
@@ -132,18 +133,18 @@ pub struct CheckObservation {
 pub const NATIVE_ADAPTER_MATRIX_REQUIREMENT: &str = "ability-native-adapter-matrix";
 
 /// Canonical schema for an immutable native adapter matrix specification.
-pub const NATIVE_ADAPTER_MATRIX_SPEC_V1: &str = "aos.qualification.native-adapter-matrix-spec/v1";
+pub const NATIVE_ADAPTER_MATRIX_SPEC: &str = "aos.qualification.native-operation-matrix-spec";
 
 /// Canonical schema for the exact production applicability partition.
-pub const NATIVE_ADAPTER_MATRIX_APPLICABILITY_V1: &str =
-    "aos.qualification.native-adapter-matrix-applicability/v1";
+pub const NATIVE_ADAPTER_MATRIX_APPLICABILITY: &str =
+    "aos.qualification.native-operation-matrix-applicability";
 
 /// Canonical schema for observed native adapter matrix results.
 pub const NATIVE_ADAPTER_MATRIX_OBSERVATION_V1: &str =
     "aos.release.native-adapter-matrix-observation/v1";
 
-const NATIVE_ADAPTER_MATRIX_SCHEMA_V1: &str = "aos.qualification.native-adapter-matrix/v1";
-const NATIVE_ADAPTER_SURFACE_V1: &str = "aos.qualification.native-adapter-surface/v1";
+const NATIVE_ADAPTER_MATRIX_SCHEMA: &str = "aos.qualification.native-operation-matrix";
+const NATIVE_ADAPTER_SURFACE: &str = "aos.qualification.native-operation-matrix-surface";
 const NATIVE_ADAPTER_POSTCONDITION_PROBE_V1: &str =
     "aos.release.native-adapter-postcondition-probe/v1";
 const NATIVE_ADAPTER_CELL_COHORT_SUBJECT_V1: &str =
@@ -158,97 +159,115 @@ const NATIVE_ADAPTER_MATRIX_MAX_CELLS: usize = 1_048_576;
 const NATIVE_ADAPTER_MAX_PROBE_FACTS: usize = 32;
 const NATIVE_ADAPTER_MAX_PROBE_BYTES: usize = 64 * 1024;
 
-/// One exact interface identity in the native adapter matrix subject.
+/// Identifies one operation in the merged native ability declarations.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct NativeAdapterInterfaceIdentity {
-    /// Stable public interface name.
+pub struct NativeOperationIdentity {
+    /// Names the ability owning the operation.
+    pub ability: String,
+    /// Names the operation within that ability.
     pub name: String,
-    /// Public interface ABI version.
-    pub abi: u32,
-    /// Canonical interface document digest.
-    pub descriptor: Sha256Digest,
 }
 
-/// One method selected from an implementation's referenced interface.
+/// Retains the actual native input and result option types.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct NativeAdapterSurfaceMethod {
-    /// Exact target access declared by the authenticated interface method.
-    pub required_target_access: AccessMode,
-    /// Stable public method name.
-    pub method: String,
+pub struct NativeOperationDeclaration {
+    /// Names the ability owning the operation.
+    pub ability: String,
+    /// Names the operation within that ability.
+    pub name: String,
+    /// Projects the operation's merged argument options.
+    pub input_type: OptionType,
+    /// Projects the operation's merged result options.
+    pub result_type: OptionType,
 }
 
-/// Authenticated state-transfer metadata projected from one provider contract.
+/// Selects one terminal native handler protocol command.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativeOperationAction {
+    /// Establishes or updates the exact requested state.
+    Apply,
+    /// Releases state owned by the exact retained invocation.
+    Remove,
+}
+
+impl NativeOperationAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Apply => "apply",
+            Self::Remove => "remove",
+        }
+    }
+}
+
+/// Retains the exact executable selected by native handler evaluation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum NativeOperationHandler {
+    /// Dispatches a source-built executable in one retained artifact.
+    Process {
+        /// Names the immutable artifact containing the executable.
+        artifact: String,
+        /// Names the exact executable inside that artifact.
+        executable: String,
+    },
+}
+
+/// Records one configured native effect without exposing its argument values.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct NativeAdapterProviderContract {
-    /// Exact lifecycle semantics from the authenticated interface document.
-    pub lifecycle: LifecycleSemantics,
-    /// Sorted resource lifetimes declared by the interface's output ports.
-    pub resource_lifetimes: Vec<ResourceLifetime>,
-    /// Provider-implementation state-format descriptor, when one is declared.
+pub struct NativeOperationEffect {
+    /// Contains the logical identity hash used by the checked graph.
+    pub id: String,
+    /// Retains the installation scope, owner, and operation instance identity.
+    pub identity: Vec<String>,
+    /// Binds the checked desired value and handler interpretation.
+    pub revision: String,
+    /// Preserves the configured reuse and teardown lifetime.
+    pub lifetime: Lifetime,
+    /// Names the checked prerequisites of the configured effect.
+    pub dependencies: Vec<String>,
+}
+
+/// Records concrete effect lifetimes and explicit backend state-format evidence.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeOperationStateContract {
+    /// Lists the configured effect lifetimes in canonical order.
+    pub resource_lifetimes: Vec<Lifetime>,
+    /// Names an authenticated backend state format when one is explicitly known.
     pub state_format: Option<Sha256Digest>,
 }
 
-/// Candidate handler selected by a package implementation claim.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct NativeAdapterClaimHandler {
-    /// Resolved selected package output containing the executable.
-    pub artifact: serde_json::Value,
-    /// Relative executable path within the selected artifact.
-    pub entry_point: String,
-    /// Closed request schema accepted by the executable.
-    pub arguments: serde_json::Value,
-    /// Closed result schema returned by the executable.
-    pub result: serde_json::Value,
-}
-
-/// Package implementation projected into a native adapter surface.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct NativeAdapterImplementationClaim {
-    /// Selected package ability contract used to resolve implementation facts.
-    pub contract: String,
-    /// Package-local implementation declaration name in that contract.
-    pub implementation: String,
-    /// Package-owned qualification executable used for independent observations.
-    pub observer: NativeAdapterClaimHandler,
-}
-
-/// One native adapter and its exact public interface surface.
+/// Binds a merged operation to its selected native handler and configured effects.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeAdapterSurfaceAdapter {
-    /// Stable native adapter identity.
+    /// Names this exact operation and selected handler group.
     pub adapter: String,
-    /// Scenario families this implementation claims and must qualify.
+    /// Records scenario families that this subject must qualify.
     pub conformance_families: Vec<String>,
-    /// Public interface ABI version.
-    pub interface_abi: u32,
-    /// Canonical public interface document digest.
-    pub interface_descriptor: Sha256Digest,
-    /// Stable public interface name.
-    pub interface_name: String,
-    /// Sorted exact methods dispatched by this adapter.
-    pub methods: Vec<NativeAdapterSurfaceMethod>,
-    /// Typed observation record emitted by the package-owned observer.
-    pub observation_kind: String,
-    /// State-transfer facts from the authenticated production provider contract.
-    pub provider_contract: NativeAdapterProviderContract,
-    /// Exact selected package implementation and handler route.
-    pub provider_implementation: NativeAdapterImplementationClaim,
-    /// Native execution scope containing the adapter effects.
-    pub scope: String,
+    /// Retains the merged native operation declaration.
+    pub operation: NativeOperationDeclaration,
+    /// Retains the selected executable artifact and path.
+    pub handler: NativeOperationHandler,
+    /// Lists configured effects in logical identity hash order.
+    pub effects: Vec<NativeOperationEffect>,
+    /// Lists the native handler commands covered by this subject.
+    pub actions: Vec<NativeOperationAction>,
+    /// Retains the native installation scope containing these effects.
+    pub scope: Vec<String>,
+    /// Records concrete lifetimes and explicit backend state-format evidence.
+    pub state_contract: NativeOperationStateContract,
 }
 
-/// One failure, recovery, or lifecycle scenario expanded across every method.
+/// One failure, recovery, or lifecycle scenario expanded across native actions.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeAdapterSurfaceScenario {
-    /// Declared provider-contract predicates that select applicable cells.
+    /// Configured lifetime and state-format predicates that select applicable cells.
     pub applicability: NativeAdapterScenarioApplicability,
     /// Failure, recovery, or lifecycle boundary exercised by the scenario.
     pub boundary: String,
@@ -268,12 +287,14 @@ pub struct NativeAdapterSurfaceScenario {
     pub predecessor: String,
 }
 
-/// Declares the provider-contract facts required by one scenario.
+/// Declares the configured lifetimes and state-format evidence required by a scenario.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeAdapterScenarioApplicability {
-    /// Resource lifetimes that must occur in the authenticated interface.
-    pub required_resource_lifetimes: Vec<ResourceLifetime>,
+    /// Native actions supported by this scenario; an empty list permits both.
+    pub required_actions: Vec<NativeOperationAction>,
+    /// Effect lifetimes that must occur in the selected native operation group.
+    pub required_resource_lifetimes: Vec<Lifetime>,
     /// Whether the implementation must authenticate a state-format descriptor.
     pub requires_state_format: bool,
 }
@@ -296,7 +317,7 @@ pub enum NativeAdapterDispositionPolicy {
     },
 }
 
-/// One provider-neutral acceptance condition selected by scenario policy.
+/// One implementation-independent acceptance condition selected by scenario policy.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeAdapterPostconditionPolicy {
@@ -318,10 +339,20 @@ pub struct NativeAdapterSurfaceSpec {
     pub invalidation_dimensions: Vec<String>,
     /// Matrix semantics used to expand this surface.
     pub matrix_schema: String,
-    /// Ordered exact scenarios expanded across every method.
+    /// Ordered exact scenarios expanded across every native action.
     pub scenarios: Vec<NativeAdapterSurfaceScenario>,
     /// Exact native adapter surface schema.
     pub schema: String,
+}
+
+/// Selects one scenario without conflating identical names in different families.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeOperationScenarioIdentity {
+    /// Names the policy family containing this scenario.
+    pub family: String,
+    /// Names the exact scenario within that family.
+    pub id: String,
 }
 
 /// Immutable semantics of one native adapter qualification cell.
@@ -334,14 +365,14 @@ pub struct NativeAdapterCellSpec {
     pub matrix_schema: String,
     /// Native adapter implementation identity.
     pub adapter: String,
-    /// Exact public interface identity dispatched by the adapter.
-    pub interface: NativeAdapterInterfaceIdentity,
-    /// Interface method exercised by the cell.
-    pub method: String,
-    /// Exact target access declared by the authenticated interface method.
-    pub required_target_access: AccessMode,
+    /// Identifies the merged native operation selected for this cell.
+    pub operation: NativeOperationIdentity,
+    /// Selects the actual native handler command exercised by the cell.
+    pub action: NativeOperationAction,
+    /// Selects the exact policy scenario and its conformance family.
+    pub scenario: NativeOperationScenarioIdentity,
     /// Native execution scope containing the effect.
-    pub scope: String,
+    pub scope: Vec<String>,
     /// Failure, recovery, or lifecycle boundary exercised by the cell.
     pub boundary: String,
     /// Injected or naturally observed failure classification.
@@ -352,7 +383,7 @@ pub struct NativeAdapterCellSpec {
     pub candidate: String,
     /// Declares how the executor derives the expected terminal disposition.
     pub disposition: NativeAdapterDispositionPolicy,
-    /// Provider-contract predicates copied from the selected scenario.
+    /// Lifetime and state-format predicates copied from the selected scenario.
     pub applicability: NativeAdapterScenarioApplicability,
     /// Ordered acceptance conditions that determine the cell result.
     pub postconditions: Vec<String>,
@@ -362,13 +393,13 @@ pub struct NativeAdapterCellSpec {
     pub invalidated_by: Vec<String>,
 }
 
-/// One matrix cell excluded by an exact provider contract constraint.
+/// One matrix cell excluded by its configured lifetime or state-format constraints.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeAdapterInapplicableCell {
     /// Exact cell identity from the complete Cartesian matrix.
     pub cell_id: String,
-    /// Stable provider contract reason for the exclusion.
+    /// Stable lifetime or state-format reason for the exclusion.
     pub reason: String,
 }
 
@@ -380,7 +411,7 @@ pub struct NativeAdapterMatrixApplicability {
     pub schema: String,
     /// Ordered exact cells that require production VM evidence.
     pub applicable_cell_ids: Vec<String>,
-    /// Ordered exact cells whose provider contracts make adoption inapplicable.
+    /// Ordered exact cells whose native operation facts make the scenario inapplicable.
     pub inapplicable_cells: Vec<NativeAdapterInapplicableCell>,
 }
 
@@ -388,6 +419,11 @@ pub struct NativeAdapterMatrixApplicability {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeAdapterMatrixSpec {
+    /// Ordered semantic operations selected from the authenticated candidate graph.
+    ///
+    /// Composition operations select their terminal descendants. Graph custody
+    /// validators check that expansion; this document retains its exact policy.
+    pub required_operations: Vec<NativeOperationIdentity>,
     /// Exact matrix specification schema.
     pub schema: String,
     /// Full closed surface preimage selected by the Nix policy evaluator.
@@ -396,6 +432,73 @@ pub struct NativeAdapterMatrixSpec {
     pub cells: Vec<NativeAdapterCellSpec>,
     /// Exact partition that identifies production-applicable cells.
     pub applicability: NativeAdapterMatrixApplicability,
+}
+
+/// Source role of a case-selected immutable evaluation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativeEvaluationRole {
+    /// The evaluation captured from the signed candidate image baseline.
+    CandidateBaseline,
+    /// A locked evaluation derived from the baseline and case-owned sources.
+    Scenario,
+}
+
+/// Exact immutable evaluation and ordered scenario source custody.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeSelectedEvaluation {
+    /// Distinguishes boot baseline custody from a case-authored scenario.
+    pub role: NativeEvaluationRole,
+    /// Names the retained immutable deployment bundle.
+    pub locator: String,
+    /// Retains ordered immutable scenario module locators, excluding baseline sources.
+    pub scenario_sources: Vec<String>,
+}
+
+/// Closed independently evaluated operation cohort selected by release policy.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeOperationCohortSpec {
+    /// Names the cohort independently of its cell identities.
+    pub id: String,
+    /// Retains the complete candidate-specific operation matrix.
+    pub matrix_spec: NativeAdapterMatrixSpec,
+    /// Commits the exact baseline or scenario source evaluation.
+    pub selected_evaluation: NativeSelectedEvaluation,
+}
+
+/// Authored semantic coverage over independently admitted native cohorts.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeOperationQualificationSpec {
+    /// Identifies the native operation qualification specification.
+    pub schema: String,
+    /// Lists the semantic operations that must be covered by checked cohorts.
+    pub required_operations: Vec<NativeOperationIdentity>,
+    /// Lists independently checked closed matrices in cohort identity order.
+    pub cohorts: Vec<NativeOperationCohortSpec>,
+}
+
+/// Checked evidence for one exact authored cohort.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeOperationCohortObservation {
+    /// Names the authored cohort whose cells were exercised.
+    pub id: String,
+    /// Retains the exact authored matrix, without a cross-cohort graph union.
+    pub matrix_spec: NativeAdapterMatrixSpec,
+    /// Retains the exact authored source selection.
+    pub selected_evaluation: NativeSelectedEvaluation,
+    /// Commits canonical bytes of the independently checked matrix.
+    pub spec_digest: Sha256Digest,
+    /// Commits candidate bytes authenticated against case-selected artifact evidence.
+    ///
+    /// The executor checks captured bytes and source admissions before reporting;
+    /// this digest does not by itself authorize a self-claimed candidate.
+    pub candidate_digest: Sha256Digest,
+    /// Contains exactly one observation per applicable cell in this cohort.
+    pub cells: Vec<NativeAdapterCellObservation>,
 }
 
 /// Qualification state represented by a native adapter matrix environment.
@@ -469,7 +572,7 @@ pub struct NativeAdapterCellObservation {
     pub cell_digest: Sha256Digest,
     /// Digest of the actual production execution environment.
     pub environment_digest: Sha256Digest,
-    /// Canonical dynamic plan and author identity exercised by this cell.
+    /// Canonical dynamic execution subject exercised by this cell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cohort_subject: Option<serde_json::Value>,
     /// Exact postcondition results; their conjunction determines cell success.
@@ -526,7 +629,7 @@ pub struct NativeAdapterMatrixObservation {
     /// Typed execution environment whose digest appears in every cell.
     pub environment: NativeAdapterMatrixEnvironment,
     /// Ordered one-to-one observations for every production-applicable cell.
-    pub cells: Vec<NativeAdapterCellObservation>,
+    pub cohorts: Vec<NativeOperationCohortObservation>,
 }
 
 /// Structured evidence that accompanies a signed gate record.
@@ -628,7 +731,7 @@ pub fn cases(
         requirements.push((
             QualificationRequirement {
                 id: format!("claim-{}", claim.id),
-                matrix_spec: None,
+                native_operation_spec: None,
                 phase,
                 scope: match target.kind {
                     TargetKind::Image => QualificationScope::Images,
@@ -748,7 +851,7 @@ pub fn cases(
                 },
                 id: format!("{}/{suffix}", requirement.id),
                 requirement_id: requirement.id.clone(),
-                matrix_spec: requirement.matrix_spec.clone(),
+                native_operation_spec: requirement.native_operation_spec.clone(),
                 policy_digest: gate.policy_digest,
                 plan_digest: Sha256Digest::of_bytes(crate::canonical::to_vec(plan)?),
                 subjects_digest,
@@ -795,7 +898,6 @@ pub fn cases(
                                     anyhow::anyhow!("package lacks its criticality classification")
                                 })?;
                             let mut subjects = artifact.artifact_ids.clone();
-                            subjects.extend(package_contract_subjects(manifest, artifact)?);
                             if let Some(execution) = &rule.execution {
                                 let system_variant = execution.system_variant();
                                 let image = manifest
@@ -927,34 +1029,6 @@ pub fn cases(
     Ok(result)
 }
 
-/// Returns source artifacts selected by a package's native contract.
-fn package_contract_subjects(
-    manifest: &ReleaseManifestV1,
-    package: &crate::manifest::FinalArtifactSet,
-) -> Result<Vec<String>> {
-    let Some(contract) = &package.package_contract else {
-        return Ok(Vec::new());
-    };
-    let mut subjects = Vec::new();
-    for selector in &contract.selectors {
-        let matches = manifest
-            .artifacts
-            .iter()
-            .filter(|artifact| artifact.store_path.as_deref() == Some(selector.store_path.as_str()))
-            .collect::<Vec<_>>();
-        match matches.as_slice() {
-            [artifact] => subjects.push(artifact.id.clone()),
-            [] => bail!(
-                "package contract selector {}:{} lacks retained artifact evidence",
-                selector.package,
-                selector.output
-            ),
-            _ => bail!("package contract selector store path is ambiguous"),
-        }
-    }
-    Ok(subjects)
-}
-
 /// Binds every service package and published workload used by a K3s fleet.
 fn k3s_fleet_subjects(
     manifest: &ReleaseManifestV1,
@@ -980,17 +1054,7 @@ fn k3s_fleet_subjects(
         let MatrixCell::Artifact { artifact } = &cell.decision else {
             bail!("K3s fleet package {name}/{platform} is not an artifact");
         };
-        if let Some(package_module) = artifact
-            .package_contract
-            .as_ref()
-            .and_then(|contract| contract.package_module.as_ref())
-        {
-            if package_module.package != "self" && package_module.package != name {
-                bail!("K3s fleet {name} native package module belongs to another package");
-            }
-        }
         subjects.extend(artifact.artifact_ids.iter().cloned());
-        subjects.extend(package_contract_subjects(manifest, artifact)?);
     }
 
     let indexes = manifest
@@ -1047,8 +1111,8 @@ fn inherited_package_roles(
             let MatrixCell::Artifact { artifact } = &cell.decision else {
                 continue;
             };
-            let mut roots = artifact.artifact_ids.clone();
-            roots.extend(package_contract_subjects(manifest, artifact)?);
+            // Native artifact reference edges retain package module and dependency sources.
+            let roots = artifact.artifact_ids.clone();
             propagate_package_role(&artifacts, &roots, role, &mut roles)?;
         }
     }
@@ -1308,8 +1372,8 @@ pub fn validate_native_adapter_matrix_observation(
     executor_digest: Sha256Digest,
     observation: &NativeAdapterMatrixObservation,
 ) -> Result<bool> {
-    let spec = native_adapter_matrix_spec_for_case(case)?;
-    validate_native_adapter_matrix_spec(spec)?;
+    let qualification = native_operation_spec_for_case(case)?;
+    validate_native_operation_qualification_spec(qualification)?;
     if case.predecessor.is_none() {
         bail!("native adapter matrix case lacks its frozen predecessor");
     }
@@ -1323,14 +1387,46 @@ pub fn validate_native_adapter_matrix_observation(
         bail!("native adapter matrix environment differs from its observation identity");
     }
     validate_native_adapter_matrix_environment(case, executor_digest, observation)?;
+    if observation.cohorts.len() != qualification.cohorts.len() {
+        bail!("native cohort evidence differs from its authored population");
+    }
+
+    let mut passed = true;
+    for (authored, observed) in qualification.cohorts.iter().zip(&observation.cohorts) {
+        if observed.id != authored.id
+            || observed.matrix_spec != authored.matrix_spec
+            || observed.selected_evaluation != authored.selected_evaluation
+            || observed.spec_digest
+                != Sha256Digest::of_bytes(crate::canonical::to_vec(&authored.matrix_spec)?)
+        {
+            bail!("native cohort evidence differs from its exact authored context");
+        }
+        passed &= validate_native_cohort_cells(
+            case,
+            environment_digest,
+            &authored.matrix_spec,
+            &observed.cells,
+            observation.environment.status,
+        )?;
+    }
+    Ok(passed)
+}
+
+fn validate_native_cohort_cells(
+    case: &QualificationCase,
+    environment_digest: Sha256Digest,
+    spec: &NativeAdapterMatrixSpec,
+    cells: &[NativeAdapterCellObservation],
+    status: NativeAdapterMatrixEnvironmentStatus,
+) -> Result<bool> {
     let applicable_cells = native_adapter_applicable_cells(spec);
-    if observation.cells.len() != applicable_cells.len() {
+    if cells.len() != applicable_cells.len() {
         bail!("native adapter matrix result count differs from its specification");
     }
 
     let mut passed = true;
     let mut probe_digests = BTreeSet::new();
-    for (spec, result) in applicable_cells.into_iter().zip(&observation.cells) {
+    for (spec, result) in applicable_cells.into_iter().zip(cells) {
         if result.id != spec.id {
             bail!("native adapter matrix cells are missing, extra, duplicated, or reordered");
         }
@@ -1384,7 +1480,7 @@ pub fn validate_native_adapter_matrix_observation(
             None if passing_postconditions.is_empty() => None,
             _ => bail!("native adapter matrix cohort subject differs from cell success"),
         };
-        if observation.environment.status == NativeAdapterMatrixEnvironmentStatus::Unqualified
+        if status == NativeAdapterMatrixEnvironmentStatus::Unqualified
             && !passing_postconditions.is_empty()
         {
             bail!("unqualified native adapter matrix cells cannot carry passing postconditions");
@@ -1411,8 +1507,7 @@ pub fn validate_native_adapter_matrix_observation(
         passed &= passing_postconditions.len() == result.postconditions.len();
     }
 
-    if passed && observation.environment.status == NativeAdapterMatrixEnvironmentStatus::Unqualified
-    {
+    if passed && status == NativeAdapterMatrixEnvironmentStatus::Unqualified {
         bail!("an unqualified native adapter matrix environment cannot pass");
     }
 
@@ -1503,13 +1598,15 @@ pub fn native_adapter_matrix_check(
     passed: bool,
 ) -> Result<CheckObservation> {
     let passed_cells = observation
-        .cells
+        .cohorts
         .iter()
+        .flat_map(|cohort| &cohort.cells)
         .filter(|cell| cell.postconditions.values().all(|result| result.passed))
         .count();
     let postcondition_count = observation
-        .cells
+        .cohorts
         .iter()
+        .flat_map(|cohort| &cohort.cells)
         .try_fold(0_usize, |count, cell| {
             count.checked_add(cell.postconditions.len())
         })
@@ -1518,7 +1615,11 @@ pub fn native_adapter_matrix_check(
         passed,
         detail: format!(
             "derived {passed_cells}/{} native adapter cells and {postcondition_count} exact postconditions",
-            observation.cells.len()
+            observation
+                .cohorts
+                .iter()
+                .map(|cohort| cohort.cells.len())
+                .sum::<usize>()
         ),
     })
 }
@@ -1566,10 +1667,20 @@ pub fn validate_matrix_for_case(
         bail!("native adapter matrix aggregate check differs from its derived result");
     }
 
-    let cell_count = u64::try_from(matrix.cells.len())?;
-    let postcondition_count = matrix.cells.iter().try_fold(0_u64, |count, cell| {
-        Ok::<_, std::num::TryFromIntError>(count + u64::try_from(cell.postconditions.len())?)
-    })?;
+    let cell_count = u64::try_from(
+        matrix
+            .cohorts
+            .iter()
+            .map(|cohort| cohort.cells.len())
+            .sum::<usize>(),
+    )?;
+    let postcondition_count = matrix
+        .cohorts
+        .iter()
+        .flat_map(|cohort| &cohort.cells)
+        .try_fold(0_u64, |count, cell| {
+            Ok::<_, std::num::TryFromIntError>(count + u64::try_from(cell.postconditions.len())?)
+        })?;
     let mut expected_operation_names = case
         .measurements
         .keys()
@@ -1593,9 +1704,9 @@ pub fn validate_matrix_for_case(
     Ok(Some(passed))
 }
 
-fn native_adapter_matrix_spec_for_case(
+fn native_operation_spec_for_case(
     case: &QualificationCase,
-) -> Result<&NativeAdapterMatrixSpec> {
+) -> Result<&NativeOperationQualificationSpec> {
     if case.requirement_id != NATIVE_ADAPTER_MATRIX_REQUIREMENT {
         bail!("native adapter matrix case has the wrong requirement identity");
     }
@@ -1608,7 +1719,7 @@ fn native_adapter_matrix_spec_for_case(
     {
         bail!("native adapter matrix case lacks its stable acceptance check");
     }
-    case.matrix_spec
+    case.native_operation_spec
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("native adapter matrix case lacks its exact specification"))
 }
@@ -1673,20 +1784,111 @@ fn validate_native_adapter_matrix_environment(
     Ok(())
 }
 
-pub(crate) fn validate_native_adapter_matrix_spec(spec: &NativeAdapterMatrixSpec) -> Result<()> {
-    if spec.schema != NATIVE_ADAPTER_MATRIX_SPEC_V1 {
+/// Validates independently authored cohort custody and required semantic coverage.
+///
+/// # Errors
+/// Returns an error for malformed source locators, duplicate cohorts, matrix
+/// drift, or a semantic operation absent from all selected cohort policies.
+pub fn validate_native_operation_qualification_spec(
+    spec: &NativeOperationQualificationSpec,
+) -> Result<()> {
+    if spec.schema != "aos.qualification.native-operation-spec"
+        || spec.cohorts.is_empty()
+        || spec.cohorts.len() > 4096
+        || !strictly_sorted_by(&spec.cohorts, |cohort| cohort.id.clone())
+        || !valid_required_operations(&spec.required_operations)
+    {
+        bail!("native operation qualification specification is malformed");
+    }
+    let mut selected = BTreeSet::new();
+    for cohort in &spec.cohorts {
+        validate_native_adapter_matrix_spec(&cohort.matrix_spec)?;
+        if !matrix_token(&cohort.id)
+            || !immutable_source_locator(&cohort.selected_evaluation.locator)
+            || cohort.selected_evaluation.scenario_sources.len() > 4096
+            || !unique_by(&cohort.selected_evaluation.scenario_sources, Clone::clone)
+            || cohort
+                .selected_evaluation
+                .scenario_sources
+                .iter()
+                .any(|path| !immutable_source_locator(path))
+            || (cohort.selected_evaluation.role == NativeEvaluationRole::CandidateBaseline
+                && !cohort.selected_evaluation.scenario_sources.is_empty())
+            || (cohort.selected_evaluation.role == NativeEvaluationRole::Scenario
+                && cohort.selected_evaluation.scenario_sources.is_empty())
+        {
+            bail!("native cohort source custody is malformed");
+        }
+        selected.extend(
+            cohort
+                .matrix_spec
+                .required_operations
+                .iter()
+                .map(|operation| (&operation.ability, &operation.name)),
+        );
+    }
+    if spec
+        .required_operations
+        .iter()
+        .any(|operation| !selected.contains(&(&operation.ability, &operation.name)))
+    {
+        bail!("required native semantic operation lacks an independently selected cohort");
+    }
+    Ok(())
+}
+
+fn immutable_source_locator(path: &str) -> bool {
+    path.len() <= 4096
+        && path.starts_with("/nix/store/")
+        && !path.contains('\0')
+        && !path
+            .split('/')
+            .any(|component| matches!(component, "." | ".."))
+        && path.len() > "/nix/store/".len()
+}
+
+fn valid_required_operations(operations: &[NativeOperationIdentity]) -> bool {
+    !operations.is_empty()
+        && operations.len() <= NATIVE_ADAPTER_MATRIX_MAX_ADAPTERS
+        && strictly_sorted_by(operations, |operation| {
+            (operation.ability.clone(), operation.name.clone())
+        })
+        && operations.iter().all(|operation| {
+            [&operation.ability, &operation.name].iter().all(|value| {
+                value.len() <= 96
+                    && value
+                        .as_bytes()
+                        .first()
+                        .is_some_and(u8::is_ascii_alphabetic)
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+            })
+        })
+}
+
+/// Validates native operation subjects, exact scenario cells, and applicability.
+///
+/// # Errors
+/// Returns an error for malformed declarations, inconsistent selected handlers,
+/// forged effect identities, cell drift, or an incomplete applicability partition.
+pub fn validate_native_adapter_matrix_spec(spec: &NativeAdapterMatrixSpec) -> Result<()> {
+    if spec.schema != NATIVE_ADAPTER_MATRIX_SPEC {
         bail!("native adapter matrix specification has an unsupported schema");
     }
 
+    if !valid_required_operations(&spec.required_operations) {
+        bail!("native matrix required operations are empty, malformed, or unordered");
+    }
+
     let surface = &spec.surface;
-    if surface.schema != NATIVE_ADAPTER_SURFACE_V1
-        || surface.matrix_schema != NATIVE_ADAPTER_MATRIX_SCHEMA_V1
+    if surface.schema != NATIVE_ADAPTER_SURFACE
+        || surface.matrix_schema != NATIVE_ADAPTER_MATRIX_SCHEMA
         || surface.adapters.is_empty()
         || surface.adapters.len() > NATIVE_ADAPTER_MATRIX_MAX_ADAPTERS
         || surface.scenarios.is_empty()
         || surface.scenarios.len() > NATIVE_ADAPTER_MATRIX_MAX_SCENARIOS
         || !strictly_sorted_by(&surface.adapters, |adapter| adapter.adapter.clone())
-        || !unique_by(&surface.adapters, |adapter| adapter.interface_name.clone())
         || surface.families.is_empty()
         || !unique_by(&surface.families, |family| family.clone())
         || surface.families.iter().any(|family| !matrix_token(family))
@@ -1698,7 +1900,9 @@ pub(crate) fn validate_native_adapter_matrix_spec(spec: &NativeAdapterMatrixSpec
             .invalidation_dimensions
             .iter()
             .any(|dimension| !matrix_token(dimension))
-        || !unique_by(&surface.scenarios, |scenario| scenario.id.clone())
+        || !unique_by(&surface.scenarios, |scenario| {
+            (scenario.family.clone(), scenario.id.clone())
+        })
     {
         bail!("native adapter matrix surface has inconsistent schemas or ordering");
     }
@@ -1728,6 +1932,7 @@ pub(crate) fn validate_native_adapter_matrix_spec(spec: &NativeAdapterMatrixSpec
             || scenario.postconditions.iter().any(|postcondition| {
                 !matrix_token(&postcondition.name) || !matrix_token(&postcondition.evidence_kind)
             })
+            || scenario.applicability.required_actions.windows(2).any(|pair| pair[0] >= pair[1])
             || scenario
                 .applicability
                 .required_resource_lifetimes
@@ -1761,22 +1966,23 @@ pub(crate) fn validate_native_adapter_matrix_spec(spec: &NativeAdapterMatrixSpec
             .iter()
             .find(|adapter| adapter.adapter == cell.adapter)
             .ok_or_else(|| anyhow::anyhow!("native adapter cell references an absent adapter"))?;
-        let method = adapter
-            .methods
-            .iter()
-            .find(|method| method.method == cell.method)
-            .ok_or_else(|| anyhow::anyhow!("native adapter cell references an absent method"))?;
+        if !adapter.actions.contains(&cell.action) {
+            bail!("native operation cell references an absent handler action");
+        }
         let scenario = surface
             .scenarios
             .iter()
-            .find(|scenario| scenario.id == cell.id.rsplit('/').next().unwrap_or_default())
+            .find(|scenario| {
+                scenario.id == cell.scenario.id && scenario.family == cell.scenario.family
+            })
             .ok_or_else(|| anyhow::anyhow!("native adapter cell references an absent scenario"))?;
         let expected_id = format!(
-            "{}/{}/abi-{}/{}/{}",
+            "{}/{}/{}/{}/{}/{}",
             adapter.adapter,
-            adapter.interface_name,
-            adapter.interface_abi,
-            method.method,
+            adapter.operation.ability,
+            adapter.operation.name,
+            cell.action.as_str(),
+            scenario.family,
             scenario.id
         );
         let expected_postconditions = scenario
@@ -1796,10 +2002,8 @@ pub(crate) fn validate_native_adapter_matrix_spec(spec: &NativeAdapterMatrixSpec
             .collect::<BTreeMap<_, _>>();
         if cell.id != expected_id
             || cell.matrix_schema != surface.matrix_schema
-            || cell.interface.name != adapter.interface_name
-            || cell.interface.abi != adapter.interface_abi
-            || cell.interface.descriptor != adapter.interface_descriptor
-            || cell.required_target_access != method.required_target_access
+            || cell.operation.ability != adapter.operation.ability
+            || cell.operation.name != adapter.operation.name
             || cell.scope != adapter.scope
             || cell.boundary != scenario.boundary
             || cell.failure != scenario.failure
@@ -1835,7 +2039,7 @@ pub(crate) fn validate_native_adapter_matrix_spec(spec: &NativeAdapterMatrixSpec
         .union(&inapplicable_ids)
         .copied()
         .collect::<BTreeSet<_>>();
-    if applicability.schema != NATIVE_ADAPTER_MATRIX_APPLICABILITY_V1
+    if applicability.schema != NATIVE_ADAPTER_MATRIX_APPLICABILITY
         || applicability.applicable_cell_ids.is_empty()
         || !strictly_sorted_by(&applicability.applicable_cell_ids, Clone::clone)
         || applicability.applicable_cell_ids.len() != applicable_ids.len()
@@ -1847,13 +2051,24 @@ pub(crate) fn validate_native_adapter_matrix_spec(spec: &NativeAdapterMatrixSpec
         || applicability.inapplicable_cells.iter().any(|entry| {
             !matches!(
                 entry.reason.as_str(),
-                "required-resource-lifetime-unavailable" | "missing-authenticated-state-format"
+                "required-resource-lifetime-unavailable" | "missing-authenticated-state-format" | "unsupported-scenario-action"
             )
         })
         || !applicable_ids.is_disjoint(&inapplicable_ids)
         || partition != cell_ids
     {
         bail!("native adapter applicability is not an exact cell partition");
+    }
+
+    for cell in &spec.cells {
+        let action_supported = cell.applicability.required_actions.is_empty()
+            || cell.applicability.required_actions.contains(&cell.action);
+        let exclusion = applicability.inapplicable_cells.iter().find(|entry| entry.cell_id == cell.id);
+        if (!action_supported && exclusion.map(|entry| entry.reason.as_str()) != Some("unsupported-scenario-action"))
+            || (action_supported && exclusion.is_some_and(|entry| entry.reason == "unsupported-scenario-action"))
+        {
+            bail!("native scenario action applicability contradicts its authored action predicate");
+        }
     }
 
     Ok(())
@@ -1877,67 +2092,94 @@ pub fn native_adapter_applicable_cells(
 }
 
 fn valid_native_adapter(adapter: &NativeAdapterSurfaceAdapter) -> bool {
-    if !matrix_token(&adapter.adapter)
-        || !matrix_token(&adapter.interface_name)
-        || adapter.interface_abi != 1
-        || adapter.conformance_families.is_empty()
-        || !unique_by(&adapter.conformance_families, |family| family.clone())
-        || !matrix_token(&adapter.scope)
-        || !matrix_token(&adapter.observation_kind)
-        || adapter
-            .provider_contract
+    let NativeOperationHandler::Process {
+        artifact,
+        executable,
+    } = &adapter.handler;
+    let expected_lifetimes = adapter
+        .effects
+        .iter()
+        .map(|effect| effect.lifetime)
+        .collect::<BTreeSet<_>>();
+    let declared_lifetimes = adapter
+        .state_contract
+        .resource_lifetimes
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+
+    matrix_token(&adapter.adapter)
+        && native_identity_part(&adapter.operation.ability)
+        && native_identity_part(&adapter.operation.name)
+        && !adapter.conformance_families.is_empty()
+        && unique_by(&adapter.conformance_families, Clone::clone)
+        && adapter.scope.iter().all(|part| native_identity_part(part))
+        && artifact.starts_with("/nix/store/")
+        && artifact.len() <= 4096
+        && !artifact.contains(['\n', '\0'])
+        && executable.starts_with(&format!("{artifact}/"))
+        && executable.len() <= 4096
+        && !executable.split('/').any(|part| matches!(part, "." | ".."))
+        && !adapter.effects.is_empty()
+        && strictly_sorted_by(&adapter.effects, |effect| effect.id.clone())
+        && adapter
+            .effects
+            .iter()
+            .all(|effect| valid_native_effect(adapter, effect))
+        && !adapter.actions.is_empty()
+        && strictly_sorted_by(&adapter.actions, |action| *action)
+        && adapter
+            .state_contract
             .resource_lifetimes
             .windows(2)
-            .any(|pair| pair[0] >= pair[1])
-        || adapter.methods.is_empty()
-        || !strictly_sorted_by(&adapter.methods, |method| method.method.clone())
-        || !valid_native_adapter_implementation(&adapter.provider_implementation)
+            .all(|pair| native_lifetime_name(pair[0]) < native_lifetime_name(pair[1]))
+        && expected_lifetimes == declared_lifetimes
+}
+
+fn valid_native_effect(
+    adapter: &NativeAdapterSurfaceAdapter,
+    effect: &NativeOperationEffect,
+) -> bool {
+    let expected_length = adapter.scope.len() + 4;
+    if effect.identity.len() != expected_length
+        || effect.identity[..adapter.scope.len()] != adapter.scope
+        || effect.identity[expected_length - 3] != adapter.operation.ability
+        || effect.identity[expected_length - 2] != adapter.operation.name
+        || effect
+            .identity
+            .iter()
+            .any(|part| !native_identity_part(part))
+        || !native_graph_hash(&effect.id)
+        || !native_graph_hash(&effect.revision)
+        || effect.dependencies.iter().any(|id| !native_graph_hash(id))
+        || !strictly_sorted_by(&effect.dependencies, Clone::clone)
     {
         return false;
     }
 
-    adapter
-        .methods
-        .iter()
-        .all(|method| matrix_token(&method.method))
-}
-
-fn valid_native_adapter_implementation(claim: &NativeAdapterImplementationClaim) -> bool {
-    claim.contract.starts_with("/nix/store/")
-        && claim.contract.len() <= 4096
-        && matrix_token(&claim.implementation)
-        && valid_native_adapter_artifact(&claim.observer.artifact)
-        && !claim.observer.entry_point.is_empty()
-        && claim.observer.arguments.is_object()
-        && claim.observer.result.is_object()
-}
-
-fn valid_native_adapter_artifact(value: &serde_json::Value) -> bool {
-    let Some(artifact) = value.as_object() else {
+    let Ok(identity_bytes) = crate::canonical::to_vec(&effect.identity) else {
         return false;
     };
-    let Some(selector) = artifact
-        .get("selector")
-        .and_then(serde_json::Value::as_object)
-    else {
-        return false;
-    };
-    artifact.len() == 2
-        && artifact
-            .get("path")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|path| path.starts_with("/nix/store/"))
-        && selector.len() == 3
-        && selector.get("_type").and_then(serde_json::Value::as_str)
-            == Some("aos-package-output-selector")
-        && selector
-            .get("package")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(matrix_component_version)
-        && selector
-            .get("output")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(matrix_component_version)
+    Sha256Digest::of_bytes(identity_bytes).to_string() == format!("sha256:{}", effect.id)
+}
+
+fn native_lifetime_name(lifetime: Lifetime) -> &'static str {
+    match lifetime {
+        Lifetime::Instance => "instance",
+        Lifetime::Persistent => "persistent",
+        Lifetime::Transaction => "transaction",
+    }
+}
+
+fn native_identity_part(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 4096 && !value.contains('\0')
+}
+
+fn native_graph_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn matrix_token(value: &str) -> bool {

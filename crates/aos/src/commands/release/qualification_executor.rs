@@ -52,6 +52,26 @@ struct ScenarioRegistry {
     scenarios: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     case_scenarios: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    fixture_inputs: BTreeMap<String, ScenarioFixtureInputs>,
+}
+
+/// Build-produced immutable fixture bytes selected by the trusted executor registry.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ScenarioFixtureInputs {
+    archive: ScenarioFixtureFile,
+    inventory: ScenarioFixtureFile,
+    evaluations: ScenarioFixtureFile,
+}
+
+/// Original file identity committed before scenario execution begins.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ScenarioFixtureFile {
+    path: String,
+    sha256: Sha256Digest,
+    size_bytes: u64,
 }
 
 /// Common evidence fields embedded in every canonical native scenario report.
@@ -739,6 +759,21 @@ fn select<'a>(
     if !executable.starts_with("/nix/store/") || executable.contains("/../") {
         bail!("scenario executable must belong to an immutable Nix closure");
     }
+    if let Some(inputs) = registry.fixture_inputs.get(executable) {
+        for file in [&inputs.archive, &inputs.inventory, &inputs.evaluations] {
+            if !file.path.starts_with("/nix/store/") || file.path.len() > 4096
+                || file.path.contains('\0') || file.path.split('/').any(|component| matches!(component, "." | ".."))
+                || file.size_bytes == 0
+            {
+                bail!("scenario fixture identity is malformed or mutable");
+            }
+        }
+    } else if request.qualification_case.as_ref()
+        .and_then(|case| case.native_operation_spec.as_ref())
+        .is_some_and(|spec| spec.cohorts.iter().any(|cohort| cohort.selected_evaluation.role == aos_release::qualification_evidence::NativeEvaluationRole::Scenario))
+    {
+        bail!("native scenario lacks its original executor-bound fixture inputs");
+    }
     Ok(executable)
 }
 
@@ -766,7 +801,7 @@ mod tests {
             target: None,
             subjects: vec!["package/example/x86_64-linux".into()],
             checks: vec!["anonymous-download".into(), "functional-behavior".into()],
-            matrix_spec: None,
+            native_operation_spec: None,
             method: aos_release::qualification::QualificationMethod::Automated,
             predecessor: None,
         }
@@ -828,55 +863,32 @@ mod tests {
     fn matrix_spec() -> Result<aos_release::qualification_evidence::NativeAdapterMatrixSpec> {
         use aos_release::qualification_evidence::NativeAdapterSurfaceSpec;
 
-        let interface = serde_json::json!({
-            "name": "aos.fixture-effects",
-            "abi": 1,
-            "descriptor": Sha256Digest::of_bytes(b"interface descriptor"),
-        });
+        let operation = serde_json::json!({"ability":"fixture","name":"ensure"});
+        let identity = vec!["fixture", "host", "fixture", "fixture", "ensure", "subject"];
+        let identity_digest =
+            Sha256Digest::of_bytes(aos_release::canonical::to_vec(&identity)?).to_string();
+        let effect_id = identity_digest
+            .strip_prefix("sha256:")
+            .context("effect digest lacks algorithm")?;
+        let artifact = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-fixture-handler";
         let surface = serde_json::from_value::<NativeAdapterSurfaceSpec>(serde_json::json!({
             "adapters": [{
                 "adapter": "fixture",
                 "conformance_families": ["durability-recovery"],
-                "interface_abi": 1,
-                "interface_descriptor": Sha256Digest::of_bytes(b"interface descriptor"),
-                "interface_name": "aos.fixture-effects",
-                "methods": [{
-                    "required_target_access": "exclusive-write",
-                    "method": "apply",
-                }],
-                "observation_kind": "fixture-state",
-                "provider_contract": {
-                    "lifecycle": {
-                        "persistent_delete_method": null,
-                    },
-                    "resource_lifetimes": ["persistent"],
-                    "state_format": Sha256Digest::of_bytes(b"state format"),
-                },
-                "provider_implementation": {
-                    "contract": "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-fixture-abilities",
-                    "implementation": "fixture-implementation",
-                    "observer": {
-                        "artifact": {
-                            "path": "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-fixture-observer",
-                            "selector": {
-                                "_type": "aos-package-output-selector",
-                                "package": "fixture-observer",
-                                "output": "out",
-                            },
-                        },
-                        "entry_point": "libexec/fixture-handler",
-                        "arguments": {"kind": "record"},
-                        "result": {"kind": "record"},
-                    },
-                },
-                "scope": "host-resource",
+                "operation": {"ability":"fixture","name":"ensure","input_type":{"kind":"submodule","fields":{},"open":false},"result_type":{"kind":"submodule","fields":{},"open":false}},
+                "handler": {"kind":"process","artifact":artifact,"executable":format!("{artifact}/bin/handler")},
+                "effects": [{"id":effect_id,"identity":identity,"revision":"d".repeat(64),"lifetime":"persistent","dependencies":[]}],
+                "actions": ["apply"],
+                "state_contract": {"resource_lifetimes":["persistent"],"state_format":null},
+                "scope": ["fixture","host"],
             }],
             "families": ["durability-recovery"],
             "invalidation_dimensions": ["subject", "policy", "executor", "environment"],
-            "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+            "matrix_schema": "aos.qualification.native-operation-matrix",
             "scenarios": [{
                 "applicability": {
-                    "required_resource_lifetimes": [],
+                    "required_actions": [],
+        "required_resource_lifetimes": [],
                     "requires_state_format": false,
                 },
                 "boundary": "before-external-effect",
@@ -894,26 +906,27 @@ mod tests {
                 }],
                 "predecessor": "same",
             }],
-            "schema": "aos.qualification.native-adapter-surface/v1",
+            "schema": "aos.qualification.native-operation-matrix-surface",
         }))?;
         Ok(serde_json::from_value(serde_json::json!({
-            "schema": "aos.qualification.native-adapter-matrix-spec/v1",
+            "schema": "aos.qualification.native-operation-matrix-spec",
+            "required_operations": [{"ability":"fixture","name":"ensure"}],
             "applicability": {
-                "schema": "aos.qualification.native-adapter-matrix-applicability/v1",
+                "schema": "aos.qualification.native-operation-matrix-applicability",
                 "applicable_cell_ids": [
-                    "fixture/aos.fixture-effects/abi-1/apply/interruption"
+                    "fixture/fixture/ensure/apply/durability-recovery/interruption"
                 ],
                 "inapplicable_cells": [],
             },
             "surface": surface,
             "cells": [{
-                "id": "fixture/aos.fixture-effects/abi-1/apply/interruption",
-                "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+                "id": "fixture/fixture/ensure/apply/durability-recovery/interruption",
+                "matrix_schema": "aos.qualification.native-operation-matrix",
                 "adapter": "fixture",
-                "interface": interface,
-                "method": "apply",
-                "required_target_access": "exclusive-write",
-                "scope": "host-resource",
+                "operation": operation,
+                "action": "apply",
+                "scenario": {"family":"durability-recovery","id":"interruption"},
+                "scope": ["fixture","host"],
                 "boundary": "before-external-effect",
                 "failure": "injected-interruption",
                 "predecessor": "same",
@@ -923,7 +936,8 @@ mod tests {
                     "value": "rejected-before-acquisition",
                 },
                 "applicability": {
-                    "required_resource_lifetimes": [],
+                    "required_actions": [],
+        "required_resource_lifetimes": [],
                     "requires_state_format": false,
                 },
                 "postconditions": [
@@ -937,6 +951,29 @@ mod tests {
         }))?)
     }
 
+    fn native_operation_spec(
+        matrix_spec: aos_release::qualification_evidence::NativeAdapterMatrixSpec,
+    ) -> aos_release::qualification_evidence::NativeOperationQualificationSpec {
+        use aos_release::qualification_evidence::{
+            NativeEvaluationRole, NativeOperationCohortSpec, NativeOperationQualificationSpec,
+            NativeSelectedEvaluation,
+        };
+        NativeOperationQualificationSpec {
+            schema: "aos.qualification.native-operation-spec".into(),
+            required_operations: matrix_spec.required_operations.clone(),
+            cohorts: vec![NativeOperationCohortSpec {
+                id: "synthetic-cohort".into(),
+                matrix_spec,
+                selected_evaluation: NativeSelectedEvaluation {
+                    role: NativeEvaluationRole::CandidateBaseline,
+                    locator: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-synthetic-evaluation"
+                        .into(),
+                    scenario_sources: Vec::new(),
+                },
+            }],
+        }
+    }
+
     fn matrix_case() -> Result<aos_release::qualification_evidence::QualificationCase> {
         let spec = matrix_spec()?;
         let mut case = package_case();
@@ -945,7 +982,7 @@ mod tests {
         case.package_role = None;
         case.subjects = vec!["package/example/x86_64-linux".into()];
         case.checks = vec![NATIVE_ADAPTER_MATRIX_CHECK.into()];
-        case.matrix_spec = Some(spec);
+        case.native_operation_spec = Some(native_operation_spec(spec));
         case.predecessor = Some(
             aos_release::qualification_evidence::QualificationPredecessor {
                 registry: "andyl/testing".into(),
@@ -1014,18 +1051,29 @@ mod tests {
         let matrix = NativeAdapterMatrixObservation {
             schema_version: NATIVE_ADAPTER_MATRIX_OBSERVATION_V1.into(),
             environment: environment.clone(),
-            cells,
+            cohorts: vec![
+                aos_release::qualification_evidence::NativeOperationCohortObservation {
+                    id: "synthetic-cohort".into(),
+                    matrix_spec: spec.clone(),
+                    selected_evaluation: native_operation_spec(spec.clone()).cohorts[0]
+                        .selected_evaluation
+                        .clone(),
+                    spec_digest: Sha256Digest::of_bytes(canonical::to_vec(&spec)?),
+                    candidate_digest: Sha256Digest::of_bytes("synthetic candidate bytes"),
+                    cells,
+                },
+            ],
         };
         let mut report = package_report();
         report["case_digest"] = serde_json::to_value(case.digest()?)?;
         report["checks"] = serde_json::json!({});
-        let postcondition_count = matrix
+        let postcondition_count = matrix.cohorts[0]
             .cells
             .iter()
             .map(|cell| cell.postconditions.len())
             .sum::<usize>();
         report["operations"] = serde_json::json!({
-            "matrix_cells_reported": matrix.cells.len(),
+            "matrix_cells_reported": matrix.cohorts[0].cells.len(),
             "matrix_postconditions_reported": postcondition_count,
         });
         report["environment"] = serde_json::to_value(environment)?;
@@ -1076,6 +1124,7 @@ mod tests {
                 "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-scenario/bin/run".into(),
             )]),
             case_scenarios: BTreeMap::new(),
+            fixture_inputs: BTreeMap::new(),
         };
         let mut request = QualificationExecutorRequestV1 {
             schema_version: aos_release::evidence::QUALIFICATION_EXECUTOR_REQUEST_V1.into(),
@@ -1123,6 +1172,7 @@ mod tests {
             platform: Platform::X86_64Linux,
             scenarios: BTreeMap::from([("package-function".into(), generic.into())]),
             case_scenarios: BTreeMap::from([(case_id, recovery.into())]),
+            fixture_inputs: BTreeMap::new(),
         };
 
         assert_eq!(select(&registry, &request)?, recovery);

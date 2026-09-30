@@ -321,7 +321,6 @@ pub(crate) mod tests {
 
     fn planned(ids: &[String]) -> PlannedArtifactSet {
         PlannedArtifactSet {
-            package_contract: None,
             artifacts: ids
                 .iter()
                 .map(|id| PlannedArtifact {
@@ -337,7 +336,6 @@ pub(crate) mod tests {
 
     fn final_set(ids: &[String]) -> FinalArtifactSet {
         FinalArtifactSet {
-            package_contract: None,
             artifact_ids: ids.to_vec(),
         }
     }
@@ -720,7 +718,6 @@ pub(crate) mod tests {
             canonical::from_slice(&fixture.envelope, "fixture manifest")?;
         let mut manifest = envelope.payload;
         let mut policy = crate::test_support::qualification::contract()?;
-        let native_matrix_spec = crate::test_support::qualification::native_adapter_matrix_spec();
         let native_matrix_requirement = policy
             .requirements
             .iter_mut()
@@ -730,7 +727,8 @@ pub(crate) mod tests {
             .context("fixture contract lacks the native-adapter matrix")?;
         native_matrix_requirement.checks =
             vec![crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_CHECK.into()];
-        native_matrix_requirement.matrix_spec = Some(native_matrix_spec);
+        native_matrix_requirement.native_operation_spec =
+            Some(crate::test_support::qualification::native_operation_spec());
         policy.package_rules = plan
             .packages
             .iter()
@@ -836,10 +834,8 @@ pub(crate) mod tests {
                 let native_adapter_matrix = if case.requirement_id
                     == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_REQUIREMENT
                 {
-                    let spec = case
-                        .matrix_spec
-                        .clone()
-                        .context("matrix fixture case lacks its exact specification")?;
+                    let authored = &case.native_operation_spec.as_ref().context("matrix fixture case lacks its exact specification")?.cohorts[0];
+                    let spec = authored.matrix_spec.clone();
                     let component = |name: &str, component_digest: Sha256Digest| {
                         crate::qualification_evidence::NativeAdapterMatrixComponentIdentity {
                             name: name.into(),
@@ -977,7 +973,7 @@ pub(crate) mod tests {
                                 crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_OBSERVATION_V1
                                     .into(),
                             environment: matrix_environment,
-                            cells,
+                            cohorts: vec![crate::test_support::qualification::native_cohort_observation(authored, cells)],
                         };
                     let passed =
                         crate::qualification_evidence::validate_native_adapter_matrix_observation(
@@ -1003,11 +999,11 @@ pub(crate) mod tests {
                     operations = BTreeMap::from([
                         (
                             "matrix_cells_reported".into(),
-                            u64::try_from(matrix.cells.len())?,
+                            u64::try_from(matrix.cohorts[0].cells.len())?,
                         ),
                         (
                             "matrix_postconditions_reported".into(),
-                            matrix.cells.iter().try_fold(0_u64, |count, cell| {
+                            matrix.cohorts[0].cells.iter().try_fold(0_u64, |count, cell| {
                                 Ok::<_, std::num::TryFromIntError>(
                                     count + u64::try_from(cell.postconditions.len())?,
                                 )

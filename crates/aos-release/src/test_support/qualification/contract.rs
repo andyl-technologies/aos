@@ -49,7 +49,8 @@ pub fn contract() -> Result<QualificationContract> {
         });
         if id == "ability-native-adapter-matrix" {
             requirement["checks"] = json!(["native-adapter-matrix"]);
-            requirement["matrix_spec"] = serde_json::to_value(super::native_adapter_matrix_spec())?;
+            requirement["native_operation_spec"] =
+                serde_json::to_value(super::native_operation_spec())?;
         }
         Ok(requirement)
     })
