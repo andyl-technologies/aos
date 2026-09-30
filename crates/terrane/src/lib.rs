@@ -16,6 +16,7 @@ pub mod derived;
 pub mod domain;
 pub mod gc;
 pub mod guard;
+pub mod model;
 pub mod pack;
 #[cfg(feature = "std")]
 pub mod ref_advance;
