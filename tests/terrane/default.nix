@@ -28,21 +28,44 @@
       pname = "terrane-gate-${name}";
       version = "0.1.0";
       src = pkgs.terrane.src;
-      buildDeps = [pkgs.rust pkgs.rust.dev pkgs.python3];
+      buildDeps = [pkgs.rust pkgs.rust.dev pkgs.python3 pkgs.util-linux];
       phases = [
         {
           name = "check";
           script = ''
             set -eu
+            mkdir -p "$out"
+            terrane_check_script="$TMPDIR/terrane-check.sh"
+            cat > "$terrane_check_script" <<'TERRANE_CHECK'
+            set -eu
+            cd "$TMPDIR"
             cp -r "$src" source
             chmod -R u+w source
             cd source
             export CARGO_HOME="$TMPDIR/cargo-home"
             export CARGO_TARGET_DIR="$TMPDIR/cargo-target"
-            mkdir -p "$CARGO_HOME" crates/.cargo "$out"
+            mkdir -p "$CARGO_HOME" crates/.cargo
             sed 's|@vendor@|${pkgs.terrane.passthru.cargoDeps}|g' \
               ${pkgs.terrane.passthru.cargoDeps}/.cargo/config.toml > crates/.cargo/config.toml
             ${script}
+            TERRANE_CHECK
+
+            # The outer sandbox root may have an unmapped owner. Give native
+            # ownership checks a real protected root in a private user namespace;
+            # preserve the sandbox's input mounts and network isolation.
+            unshare --user --map-root-user --mount "$CONFIG_SHELL" -c '
+              set -eu
+              terrane_test_root="$TMPDIR/terrane-protected-root"
+              mkdir -m 700 "$terrane_test_root"
+              mkdir -p "$terrane_test_root/nix/store" "$terrane_test_root$TMPDIR" \
+                "$terrane_test_root/dev" "$terrane_test_root/proc" "$terrane_test_root/tmp"
+              # Recursive binds retain locked submounts inherited from Nix.
+              mount --rbind /nix/store "$terrane_test_root/nix/store"
+              mount --bind "$TMPDIR" "$terrane_test_root$TMPDIR"
+              mount --rbind /dev "$terrane_test_root/dev"
+              mount --rbind /proc "$terrane_test_root/proc"
+              chroot "$terrane_test_root" "$CONFIG_SHELL" "$1"
+            ' terrane-check "$terrane_check_script"
           '';
         }
       ];
