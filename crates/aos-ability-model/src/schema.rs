@@ -831,14 +831,8 @@ pub enum ValueSchema {
     },
     /// Accepts an immutable [`crate::ArtifactReference`].
     ArtifactReference,
-    /// Accepts a scoped [`crate::ResourceReference`].
-    ResourceReference,
-    /// Accepts the closed shape of a [`crate::ProviderAssignment`] record.
-    ProviderAssignment,
     /// Accepts a runtime-generated [`crate::TransactionBlobReference`].
     TransactionBlobReference,
-    /// Accepts a typed [`crate::OperationResultReference`].
-    OperationResultReference,
 }
 
 const fn is_false(value: &bool) -> bool {
@@ -970,10 +964,7 @@ impl ValueSchema {
                 | Self::Integer { .. }
                 | Self::String { .. }
                 | Self::ArtifactReference
-                | Self::ResourceReference
-                | Self::ProviderAssignment
-                | Self::TransactionBlobReference
-                | Self::OperationResultReference => {}
+                | Self::TransactionBlobReference => {}
                 Self::StringEnum { values } => {
                     item_count = item_count.saturating_add(values.len() as u64);
                     if item_count > max_items {
@@ -1002,10 +993,7 @@ impl ValueSchema {
             | Self::DocumentRecord { .. }
             | Self::TaggedUnion { .. }
             | Self::ArtifactReference
-            | Self::ResourceReference
-            | Self::ProviderAssignment
-            | Self::TransactionBlobReference
-            | Self::OperationResultReference => Some(JsonValueKind::Object),
+            | Self::TransactionBlobReference => Some(JsonValueKind::Object),
             Self::Refined { value, .. } => value.top_level_json_kind(),
             Self::DisjointUnion { .. } | Self::Optional { .. } => None,
         }

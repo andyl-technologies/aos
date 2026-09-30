@@ -1,20 +1,14 @@
-//! Portable data contracts for AOS abilities and structured effects.
+//! Portable module types and realized artifact-consumption evidence.
 //!
 //! This crate contains only closed versioned, serializable data and
 //! invariant-bearing identifiers. It performs no package lookup, Nix
 //! evaluation, resource acquisition, or runtime effects.
 //!
-//! # Module map
-//!
-//! - [`artifact_consumption`] defines realized build-gate evidence for exact
-//!   artifact-use mechanisms.
-//! - [`document`] owns the closed versioned document envelopes.
-//! - [`identity`] defines stable logical identities and scoped references.
-//! - [`interface`] defines public interfaces and provider implementations.
-//! - [`plan`] defines bindings, resources, and finite operation graphs.
-//! - [`schema`] defines the portable value-schema vocabulary.
-//! - [`transition`] defines fresh authority for retiring prior providers.
-//! - [`value`] defines typed values carried by plans.
+//! [`option`] and [`schema`] define the native module type vocabulary;
+//! [`value`] and [`identity`] preserve bounded literals and immutable artifact
+//! identities. [`artifact_consumption`] uses the independent canonical evidence
+//! codec in [`document`]. [`transaction_blob`] defines bounded durable content
+//! references, while [`limits`] and [`diagnostic`] carry shared admission rules.
 
 #![forbid(unsafe_code)]
 
@@ -22,13 +16,10 @@ pub mod artifact_consumption;
 pub mod diagnostic;
 pub mod document;
 pub mod identity;
-pub mod interface;
 pub mod limits;
 pub mod option;
-pub mod plan;
 pub mod schema;
 pub mod transaction_blob;
-pub mod transition;
 pub mod value;
 
 pub use artifact_consumption::{
@@ -40,26 +31,11 @@ pub use artifact_consumption::{
     HELPER_EXECUTION_FEATURE, IMMUTABLE_DATA_INPUT_FEATURE, ObservedPathConsumptionContract,
     ObservedPathConsumptionObservation, RUNTIME_PLUGIN_LOAD_FEATURE,
 };
-pub use diagnostic::{Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase};
-pub use document::{
-    AggregateOutput, BindingPlanDocument, BranchSelection, DesiredStateDocument,
-    EffectPlanDocument, EnvironmentDocument, ExecutionDocument, FEATURE_ABILITIES_V1,
-    FEATURE_ABILITY_EFFECTS_V1, InterfaceDocument, MergeRecord, ModuleLocator, PackageDocument,
-    RequiredFeature, SkippedOperationRecord, VersionedDocument, decode_canonical, encode_canonical,
-};
-pub use identity::{
-    AggregateId, DeclarationAuthority, EnvironmentId, ExecutionStage, IncarnationId, InstanceId,
-    InterfaceKey, InterfaceName, InterfaceSelector, LocalKey, OperationId, PlanId, RelativePath,
-    RequestId, ResourceId, RevisionId, ScopePath, ScopedOperationKey, TransactionId,
-};
-pub use interface::*;
+pub use diagnostic::DiagnosticCode;
+pub use document::{RequiredFeature, VersionedDocument, decode_canonical, encode_canonical};
+pub use identity::{LocalKey, RelativePath, TransactionId};
 pub use limits::{ABILITY_LIMITS_V1, LimitProfile, MAX_SAFE_INTEGER};
-pub use option::{
-    DocumentedValue, OptionEnumValue, OptionSource, OptionType, OptionVisibility,
-    PackageOptionDeclaration, validate_package_option_declarations,
-};
-pub use plan::*;
+pub use option::{OptionEnumValue, OptionType, OptionVisibility};
 pub use schema::*;
 pub use transaction_blob::*;
-pub use transition::*;
 pub use value::*;

@@ -5,12 +5,9 @@ members = [
     "aos-oci",
     "aos-oci-types",
     "aos-contract",
-    "aos-package-store-model",
     "aos-ability-model",
-    "aos-ability-validate",
     "aos-ability-plan",
     "aos-ability-runtime",
-    "aos-ability-inspect",
     "aos-ability-crucible",
     "aos-maintain",
     "aos-core",
@@ -39,8 +36,7 @@ members = [
     "aos-hub-console",
     "aos-profile",
     "aos-systemd",
-    "aos-provider-protocol",
-    "aos-configuration-provider",
+    "aos-configuration-lower",
     "aos-filesystem-provider",
     "aos-kubernetes-provider",
     "aos-kernel-tunable-provider",
@@ -226,12 +222,9 @@ rcgen = "0.14"
 
 # Internal crates
 aos-contract = { path = "aos-contract" }
-aos-package-store-model = { path = "aos-package-store-model" }
 aos-ability-model = { path = "aos-ability-model" }
-aos-ability-validate = { path = "aos-ability-validate" }
 aos-ability-plan = { path = "aos-ability-plan" }
 aos-ability-runtime = { path = "aos-ability-runtime" }
-aos-ability-inspect = { path = "aos-ability-inspect" }
 aos-ability-crucible = { path = "aos-ability-crucible" }
 aos-maintain = { path = "aos-maintain" }
 crucible-cas = { path = "crucible-cas" }
@@ -251,7 +244,7 @@ aos-package = { path = "aos-package" }
 aos-metadata = { path = "aos-metadata" }
 aos-metadata-provider = { path = "aos-metadata-provider" }
 aos-storage-provisioning = { path = "aos-storage-provisioning" }
-aos-configuration-provider = { path = "aos-configuration-provider" }
+aos-configuration-lower = { path = "aos-configuration-lower" }
 aos-filesystem-provider = { path = "aos-filesystem-provider" }
 aos-nix-store-provider = { path = "aos-nix-store-provider" }
 aos-boot-preparation-provider = { path = "aos-boot-preparation-provider" }
@@ -264,7 +257,6 @@ aos-release-signer = { path = "aos-release-signer" }
 aos-image-finalizer = { path = "aos-image-finalizer" }
 aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
-aos-provider-protocol = { path = "aos-provider-protocol" }
 aos-kubernetes-provider = { path = "aos-kubernetes-provider" }
 
 [workspace.lints.clippy]

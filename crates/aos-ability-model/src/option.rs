@@ -1,52 +1,14 @@
-//! Authenticated module option declarations and their portable type algebra.
-//!
-//! This module is the single wire and documentation authority for option types,
-//! safe defaults and examples, visibility, and declaration source provenance.
+//! Portable module option types, visibility, and closed value admission.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::document::{DocumentError, PackageDocument, VersionedDocument};
-use crate::identity::{LocalKey, RelativePath};
+use crate::identity::LocalKey;
 use crate::limits::LimitProfile;
 use crate::schema::{JsonValueKind, StringConstraint, ValueConstraint, ValueSchema};
 use crate::value::{AbilityValue, ArtifactReference};
-
-/// Records one package-owned module option from the authenticated evaluator.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageOptionDeclaration {
-    /// Carries the exact option path segments.
-    pub path: Vec<String>,
-    /// Preserves the module engine's stable type signature.
-    pub type_signature: String,
-    /// Preserves the closed structured type declaration.
-    pub structured_type: OptionType,
-    /// Preserves the declaration's public prose.
-    pub description: String,
-    /// Preserves a safe literal or documented computed default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default: Option<DocumentedValue>,
-    /// Preserves a safe literal or documented example.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub example: Option<DocumentedValue>,
-    /// Selects the option's documentation visibility.
-    pub visibility: OptionVisibility,
-    /// Records whether the module engine rejects external definitions.
-    pub read_only: bool,
-    /// Records whether another authenticated package may define values below the option.
-    pub extensible: bool,
-    /// Carries an optional deprecation notice.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deprecated: Option<String>,
-    /// Names the replacement option path when the declaration is deprecated.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replacement: Option<Vec<String>>,
-    /// Locates the declaration within the authenticated package module artifact.
-    pub source: OptionSource,
-}
 
 /// Selects the visibility of one authenticated package option declaration.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -214,12 +176,6 @@ pub enum OptionType {
     },
     /// Immutable artifact reference.
     ArtifactReference,
-    /// Scoped resource reference.
-    ResourceReference,
-    /// Checked provider assignment.
-    ProviderAssignment,
-    /// Typed operation-result reference.
-    OperationResultReference,
 }
 
 /// Describes one value in a package option enumeration.
@@ -228,23 +184,6 @@ pub enum OptionType {
 pub struct OptionEnumValue {
     /// Carries the exact enumerated value.
     pub value: String,
-}
-
-/// Preserves one bounded literal or explanatory computed option value.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum DocumentedValue {
-    /// Carries a canonical JSON-compatible literal.
-    Literal {
-        /// Carries the exact literal value.
-        #[schemars(with = "serde_json::Value")]
-        value: AbilityValue,
-    },
-    /// Carries stable explanatory text for a computed value.
-    Text {
-        /// Describes the computed value without evaluating it.
-        text: String,
-    },
 }
 
 impl OptionType {
@@ -457,10 +396,7 @@ impl OptionType {
                 | Self::Duration
                 | Self::Cidr
                 | Self::OpaqueReference
-                | Self::ArtifactReference
-                | Self::ResourceReference
-                | Self::ProviderAssignment
-                | Self::OperationResultReference => {}
+                | Self::ArtifactReference => {}
             }
         }
 
@@ -618,15 +554,6 @@ impl OptionType {
             Self::ArtifactReference => {
                 serde_json::from_value::<ArtifactReference>(value.clone()).is_ok()
             }
-            Self::ResourceReference => {
-                serde_json::from_value::<crate::ResourceReference>(value.clone()).is_ok()
-            }
-            Self::ProviderAssignment => {
-                serde_json::from_value::<crate::ProviderAssignment>(value.clone()).is_ok()
-            }
-            Self::OperationResultReference => {
-                serde_json::from_value::<crate::OperationResultReference>(value.clone()).is_ok()
-            }
         }
     }
 
@@ -649,10 +576,7 @@ impl OptionType {
             | Self::Record { .. }
             | Self::DocumentRecord { .. }
             | Self::TaggedUnion { .. }
-            | Self::ArtifactReference
-            | Self::ResourceReference
-            | Self::ProviderAssignment
-            | Self::OperationResultReference => Some(JsonValueKind::Object),
+            | Self::ArtifactReference => Some(JsonValueKind::Object),
             Self::Json
             | Self::Nullable { .. }
             | Self::Optional { .. }
@@ -701,10 +625,7 @@ impl OptionType {
                 | Self::Cidr
                 | Self::OpaqueReference
                 | Self::Enum { .. }
-                | Self::ArtifactReference
-                | Self::ResourceReference
-                | Self::ProviderAssignment
-                | Self::OperationResultReference => {}
+                | Self::ArtifactReference => {}
             }
         }
 
@@ -751,10 +672,7 @@ fn refinements_are_compatible(option_type: &OptionType) -> bool {
         | OptionType::OpaqueReference
         | OptionType::Enum { .. }
         | OptionType::Opaque { .. }
-        | OptionType::ArtifactReference
-        | OptionType::ResourceReference
-        | OptionType::ProviderAssignment
-        | OptionType::OperationResultReference => true,
+        | OptionType::ArtifactReference => true,
     }
 }
 
@@ -871,9 +789,6 @@ fn option_type_as_value_schema(option_type: &OptionType) -> Option<ValueSchema> 
             constraints: constraints.clone(),
         },
         OptionType::ArtifactReference => ValueSchema::ArtifactReference,
-        OptionType::ResourceReference => ValueSchema::ResourceReference,
-        OptionType::ProviderAssignment => ValueSchema::ProviderAssignment,
-        OptionType::OperationResultReference => ValueSchema::OperationResultReference,
         OptionType::Json
         | OptionType::AttrsOf { .. }
         | OptionType::Submodule { open: true, .. }
@@ -884,102 +799,4 @@ fn option_type_as_value_schema(option_type: &OptionType) -> Option<ValueSchema> 
 
 fn key_accepts(constraint: &StringConstraint, value: &str) -> bool {
     constraint.admits(value)
-}
-
-/// Locates one option declaration below the authenticated package module root.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct OptionSource {
-    /// Names the normalized source file below the package module artifact.
-    #[schemars(with = "String")]
-    pub path: RelativePath,
-}
-
-/// Validates the canonical package-owned option declaration surface.
-///
-/// # Errors
-///
-/// Returns an error when paths are repeated or unordered or any declaration
-/// value exceeds the versioned bounds.
-pub fn validate_package_option_declarations(
-    declarations: &[PackageOptionDeclaration],
-    limits: &LimitProfile,
-) -> Result<(), DocumentError> {
-    let bounded_prose = |value: &str| {
-        !value.trim().is_empty()
-            && value.len() as u64 <= limits.max_string_bytes
-            && !value
-                .chars()
-                .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
-    };
-
-    if declarations.len() as u64 > limits.max_collection_items {
-        return Err(DocumentError::Limit {
-            label: PackageDocument::SCHEMA.to_string(),
-            limit: "collection item",
-        });
-    }
-    for pair in declarations.windows(2) {
-        if pair[0].path >= pair[1].path {
-            return Err(DocumentError::Decode {
-                label: PackageDocument::SCHEMA.to_string(),
-                source: anyhow::anyhow!(
-                    "package option declarations must be strictly ordered by path"
-                ),
-            });
-        }
-    }
-    for declaration in declarations {
-        let path_is_valid = !declaration.path.is_empty()
-            && declaration.path.iter().all(|segment| {
-                !segment.is_empty()
-                    && segment.len() as u64 <= limits.max_string_bytes
-                    && !segment.chars().any(char::is_control)
-            });
-        let strings_are_valid = !declaration.type_signature.is_empty()
-            && declaration.type_signature.len() as u64 <= limits.max_string_bytes
-            && !declaration.type_signature.chars().any(char::is_control)
-            && bounded_prose(&declaration.description)
-            && declaration.deprecated.as_deref().is_none_or(bounded_prose);
-        let structured_type_is_valid = declaration.structured_type.is_within_limits(limits)
-            && refinements_are_compatible(&declaration.structured_type);
-        let replacement_is_valid = declaration.replacement.as_ref().is_none_or(|path| {
-            !path.is_empty()
-                && path.iter().all(|segment| {
-                    !segment.is_empty()
-                        && segment.len() as u64 <= limits.max_string_bytes
-                        && !segment.chars().any(char::is_control)
-                })
-        });
-        let documented_value_is_valid = |value: &DocumentedValue| match value {
-            DocumentedValue::Literal { value } => declaration.structured_type.admits(value),
-            DocumentedValue::Text { text } => bounded_prose(text),
-        };
-        if !path_is_valid
-            || !strings_are_valid
-            || !structured_type_is_valid
-            || !replacement_is_valid
-            || declaration
-                .default
-                .as_ref()
-                .is_some_and(|value| !documented_value_is_valid(value))
-            || declaration
-                .example
-                .as_ref()
-                .is_some_and(|value| !documented_value_is_valid(value))
-            || (declaration.visibility == OptionVisibility::Public
-                && declaration.structured_type.contains_opaque())
-            || (declaration.replacement.is_some() && declaration.deprecated.is_none())
-        {
-            return Err(DocumentError::Decode {
-                label: PackageDocument::SCHEMA.to_string(),
-                source: anyhow::anyhow!(
-                    "package option declaration '{}' is invalid",
-                    declaration.path.join(".")
-                ),
-            });
-        }
-    }
-
-    Ok(())
 }
