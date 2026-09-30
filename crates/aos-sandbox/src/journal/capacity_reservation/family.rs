@@ -11,6 +11,7 @@ use super::native_held::{
     NativeHeldCapacityRecordV3, OriginalRootCapacityRecordV5, OriginalSourceCapacityRecordV5,
 };
 use super::ordinary::OrdinaryCapacityRecordV4;
+use super::query::QueryCapacityRecordV6;
 use super::{
     DecodedCapacityReservationV1, GlobalCapacityReservationRequestV1, decode_reservation,
     reservation_id, reservation_key,
@@ -27,6 +28,7 @@ pub(in crate::journal) enum CanonicalCapacityFamily {
     Ordinary4(OrdinaryCapacityRecordV4),
     OriginalRoot5(OriginalRootCapacityRecordV5),
     OriginalSource5(OriginalSourceCapacityRecordV5),
+    Query6(QueryCapacityRecordV6),
 }
 
 impl CanonicalCapacityFamily {
@@ -73,6 +75,7 @@ impl CanonicalCapacityFamily {
                     "unknown original capacity family tuple",
                 )),
             },
+            [0, 6] => Ok(Self::Query6(QueryCapacityRecordV6::decode(key, value)?)),
             _ => Err(JournalError::MalformedRecord(
                 "unknown capacity family version",
             )),
@@ -86,7 +89,8 @@ impl CanonicalCapacityFamily {
             Self::Native3(_)
             | Self::Ordinary4(_)
             | Self::OriginalRoot5(_)
-            | Self::OriginalSource5(_) => None,
+            | Self::OriginalSource5(_)
+            | Self::Query6(_) => None,
         }
     }
 
@@ -106,7 +110,9 @@ impl CanonicalCapacityFamily {
                 request.owner_namespace
             }
             Self::Native3(record) => record.request().purpose.owner_namespace(),
-            Self::Ordinary4(_) | Self::OriginalRoot5(_) => RecordNamespace::MountSourceAcquisition,
+            Self::Ordinary4(_) | Self::OriginalRoot5(_) | Self::Query6(_) => {
+                RecordNamespace::MountSourceAcquisition
+            }
             Self::OriginalSource5(_) => RecordNamespace::SourceProviderAuthority,
         }
     }
@@ -118,6 +124,7 @@ impl CanonicalCapacityFamily {
             Self::Ordinary4(record) => record.reservation_id(),
             Self::OriginalRoot5(record) => record.reservation_id(),
             Self::OriginalSource5(record) => record.reservation_id(),
+            Self::Query6(record) => record.reservation_id(),
         }
     }
 
@@ -164,6 +171,14 @@ impl CanonicalCapacityFamily {
                         .max(data.maximum_retained_growth_entries),
                     data.remaining_append_bytes
                         .max(data.maximum_retained_growth_bytes),
+                    data.remaining_transactions,
+                )
+            }
+            Self::Query6(record) => {
+                let data = record.data();
+                (
+                    data.remaining_record_frames.max(data.maximum_retained_growth_entries),
+                    data.remaining_append_bytes.max(data.maximum_retained_growth_bytes),
                     data.remaining_transactions,
                 )
             }

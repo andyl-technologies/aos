@@ -23,7 +23,8 @@
 //! writer. Scalar commitments do not prove their preimages, signed custody,
 //! currentness, owner/replay rejoin, admission under the eight opened limits,
 //! sequence headroom, protected readback, or any append/signer authority.
-//! Global capacity dispatch deliberately continues to reject version 6.
+//! The named writer separately rejoins the canonical query and original rows;
+//! generic admission continues to refuse this family.
 
 use aos_sandbox_protocol::mount_source_acquisition_state::format::{
     MAXIMUM_ACQUISITION_VALUE_BYTES, MAXIMUM_PROVIDER_ATTEMPT_VALUE_BYTES,
@@ -34,8 +35,8 @@ use aos_sandbox_protocol::mount_source_acquisition_state::{
 };
 
 use super::super::{
-    JournalError, JournalRecord, JournalTransaction, RecordNamespace,
-    encoded_transaction_append_bytes,
+    JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
+    encode_record, encoded_transaction_append_bytes,
 };
 use super::fixed300::{FixedCapacityBody, VALUE_BYTES, floor_identity};
 use super::{reservation_key, take};
@@ -111,6 +112,32 @@ impl QueryCapacityProfileV6 {
                     .ok_or(JournalError::JournalTooLarge)
             }
         }
+    }
+
+    /// Checks every promised envelope against the opened per-record/TX bounds.
+    ///
+    /// # Errors
+    /// Rejects opened key, payload, record-count or aggregate TX-byte limits
+    /// below either required future envelope, including framing overflow.
+    pub(in crate::journal) fn validate_limits(self, limits: JournalLimits) -> Result<(), JournalError> {
+        validate_envelope_limits(
+            &retained_envelope()?,
+            &[
+                MAXIMUM_PROVIDER_ATTEMPT_VALUE_BYTES,
+                MAXIMUM_PROVIDER_HEAD_VALUE_BYTES,
+                MAXIMUM_PROVIDER_ATTEMPT_VALUE_BYTES,
+                MAXIMUM_ACQUISITION_VALUE_BYTES,
+            ],
+            limits,
+        )?;
+        if self == Self::StatusOrComplete {
+            validate_envelope_limits(
+                &status_envelope()?,
+                &[MAXIMUM_PROVIDER_ATTEMPT_VALUE_BYTES, MAXIMUM_PROVIDER_HEAD_VALUE_BYTES],
+                limits,
+            )?;
+        }
+        Ok(())
     }
 
     fn from_byte(value: u8) -> Result<Self, JournalError> {
@@ -332,6 +359,35 @@ fn framed_envelope_bytes(
             total.checked_add(bytes).ok_or(JournalError::JournalTooLarge)
         },
     )
+}
+
+fn validate_envelope_limits(
+    transaction: &JournalTransaction,
+    owner_bounds: &[usize],
+    limits: JournalLimits,
+) -> Result<(), JournalError> {
+    if transaction.records().len() > limits.maximum_records_per_transaction {
+        return Err(JournalError::LimitExceeded("query promised records per transaction"));
+    }
+    let mut bounds = owner_bounds.iter();
+    let mut total = 0_usize;
+    for record in transaction.records() {
+        let bound = if record.namespace() == RecordNamespace::MountSourceAcquisition {
+            *bounds.next().ok_or_else(|| invalid("query envelope owner bounds"))?
+        } else {
+            0
+        };
+        let bytes = encode_record(record)?.len().checked_add(bound)
+            .ok_or(JournalError::JournalTooLarge)?;
+        if record.key().len() > limits.maximum_key_bytes || bytes > limits.maximum_record_bytes {
+            return Err(JournalError::LimitExceeded("query promised record geometry"));
+        }
+        total = total.checked_add(bytes).ok_or(JournalError::JournalTooLarge)?;
+    }
+    if bounds.next().is_some() || total > limits.maximum_transaction_bytes {
+        return Err(JournalError::LimitExceeded("query promised transaction geometry"));
+    }
+    Ok(())
 }
 
 // These framing templates contain no canonical owner values or valid floor.

@@ -85,6 +85,15 @@ impl PendingStoreData {
     }
 }
 
+/// Reuses the existing original8 DATA producer for sibling Query vectors only.
+pub(in crate::journal) fn phase11_funded_data() -> State {
+    let data = PendingStoreData::new();
+    let (transaction, _, _) = continuation(
+        &data.state, &data.owners(), data.attempt, JournalLimits::default(),
+    ).unwrap();
+    materialize_coupled_data(&data.state, transaction.records())
+}
+
 #[test]
 fn exact_store_has_three_records_native_two_and_preserves_first_r_witness() {
     let data = PendingStoreData::new();

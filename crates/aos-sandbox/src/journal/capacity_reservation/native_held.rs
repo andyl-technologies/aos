@@ -30,7 +30,7 @@ mod root_v2;
 #[cfg(test)]
 pub(in crate::journal) use root_v2::tests::Original as NativeRootDataFixture;
 mod transfer;
-pub(in crate::journal) use transfer::check_transfer;
+pub(in crate::journal) use transfer::{check_bounded_transfer, check_transfer};
 
 pub use admission::{
     NativeHeldProviderAdmissionDataV3, provider_native_capacity_admission_v3,

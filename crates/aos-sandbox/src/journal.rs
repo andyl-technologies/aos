@@ -37,7 +37,12 @@ pub mod canonical_map;
 pub(crate) mod mount_manager_startup;
 mod prepared_transaction;
 mod root_local_recovery;
+mod root_original_inventory;
 mod root_original_native;
+pub use root_original_inventory::{
+    MountOriginalInventoryJournalAuthorityV6, OriginalInventoryProtectedReadbackV6,
+    PreparedOriginalInventoryAppendV6,
+};
 pub use root_original_native::{
     MountOriginalNativeJournalAuthorityV5, OriginalRootProtectedReadbackV5,
     PreparedOriginalRootAppendV5,
@@ -966,6 +971,7 @@ enum ProtectedAuthorityScope {
     RootLocalRecoveryKind2,
     RootLocalRecoveryKind5,
     RootOriginalNativeV5,
+    RootOriginalInventoryV6,
     SourceProviderHeldReadOnly,
     MountSourceConsumption,
     MountSourceMigration,
@@ -977,6 +983,11 @@ enum ProtectedAuthorityScope {
 enum RootOwnerEdge {
     Local(root_local_recovery::Edge),
     OriginalNative([u8; 32]),
+    OriginalInventory {
+        root: [u8; 32],
+        query: [u8; 32],
+        kind: aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::OriginalInventoryTransitionKindV6,
+    },
 }
 
 fn validate_root_owner_edge(
@@ -985,12 +996,19 @@ fn validate_root_owner_edge(
     edge: RootOwnerEdge,
     limits: JournalLimits,
 ) -> Result<Option<[u8; 32]>, JournalError> {
-    match edge {
+    let settling = match edge {
         RootOwnerEdge::Local(edge) => root_local_recovery::validate_edge(state, transaction, edge),
         RootOwnerEdge::OriginalNative(attempt) => {
             root_original_native::validate_edge(state, transaction, attempt, limits)
         }
+        RootOwnerEdge::OriginalInventory { root, query, kind } => {
+            root_original_inventory::validate_edge(state, transaction, root, query, kind, limits)
+        }
+    }?;
+    if !matches!(edge, RootOwnerEdge::OriginalInventory { .. }) {
+        root_original_inventory::preserve_other_owner(state, transaction, limits)?;
     }
+    Ok(settling)
 }
 
 /// Proves the protected authority snapshot observed at one journal sequence.
@@ -2513,6 +2531,9 @@ impl Journal {
         } else {
             root_local_recovery::require_fences(&self.state, transaction)?;
             root_original_native::require_generic_transaction(&self.state, transaction)?;
+            root_original_inventory::require_generic_transaction(
+                &self.state, transaction, self.limits,
+            )?;
             native_held::require_legacy_transaction(&self.state, transaction)?;
             settling_reservation
         };
@@ -2594,6 +2615,9 @@ impl Journal {
         let following_sequence = commit_sequence
             .checked_add(1)
             .ok_or(JournalError::SequenceExhausted)?;
+        root_original_inventory::require_append_sequence_headroom(
+            &self.state, transaction, following_sequence,
+        )?;
         let additional_bytes = frames
             .iter()
             .try_fold(0_u64, |total, frame| total.checked_add(frame.len() as u64));
@@ -2829,6 +2853,9 @@ impl Journal {
             } else {
                 root_local_recovery::require_fences(&state, transaction)?;
                 root_original_native::require_generic_transaction(&state, transaction)?;
+                root_original_inventory::require_generic_transaction(
+                    &state, transaction, self.limits,
+                )?;
                 native_held::require_legacy_transaction(&state, transaction)?;
                 settling_reservation
             };
@@ -2890,6 +2917,11 @@ impl Journal {
             let frames = encode_transaction(transaction, next_sequence)?;
             let frame_count = u64::try_from(frames.len())
                 .map_err(|_| JournalError::LimitExceeded("transaction frame count"))?;
+            root_original_inventory::require_append_sequence_headroom(
+                &state,
+                transaction,
+                next_sequence.checked_add(frame_count).ok_or(JournalError::SequenceExhausted)?,
+            )?;
             let additional_bytes = frames
                 .iter()
                 .try_fold(0_u64, |total, frame| total.checked_add(frame.len() as u64));
@@ -2942,6 +2974,14 @@ impl Journal {
         self.ensure_healthy()?;
         root_local_recovery::pending(&self.state)?;
         root_original_native::pending(&self.state, self.limits)?;
+        root_original_inventory::validate_rejoined_capacity(
+            &self.state,
+            self.materialized_bytes,
+            self.file.metadata()?.len(),
+            self.committed_transactions,
+            self.limits,
+            self.next_sequence,
+        )?;
         source_tree_genesis::require_no_compaction(&self.state)?;
         source_project_admission_challenge::require_no_compaction(&self.state)?;
         controller_source_genesis::require_no_compaction(&self.state)?;
@@ -2959,6 +2999,14 @@ impl Journal {
         root_local_recovery::pending(&self.state).inspect_err(|_| self.poisoned = true)?;
         root_original_native::pending(&self.state, self.limits)
             .inspect_err(|_| self.poisoned = true)?;
+        root_original_inventory::validate_rejoined_capacity(
+            &self.state,
+            self.materialized_bytes,
+            self.file.metadata()?.len(),
+            self.committed_transactions,
+            self.limits,
+            self.next_sequence,
+        ).inspect_err(|_| self.poisoned = true)?;
         Ok(())
     }
 
@@ -3146,6 +3194,7 @@ impl ProtectedJournalAuthority<'_> {
                     | ProtectedAuthorityScope::RootLocalRecoveryKind2
                     | ProtectedAuthorityScope::RootLocalRecoveryKind5
                     | ProtectedAuthorityScope::RootOriginalNativeV5
+                    | ProtectedAuthorityScope::RootOriginalInventoryV6
                     | ProtectedAuthorityScope::MountSourceConsumption
                     | ProtectedAuthorityScope::MountSourceMigration
             ) | (
@@ -4413,6 +4462,8 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
                     records: transaction.records,
                 };
                 validate_transaction(&replay_transaction, limits)?;
+                let mut query_edge = None;
+                let mut logical_replay = false;
                 let mut compaction_id = [0_u8; 16];
                 compaction_id[..8].copy_from_slice(&compaction_index.to_le_bytes());
                 compaction_id[8..].copy_from_slice(b"compact1");
@@ -4441,18 +4492,30 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
                     if materialized_compaction {
                         root_local_recovery::pending(&state)?;
                         root_original_native::pending(&state, limits)?;
+                        root_original_inventory::validate_rejoined_capacity(
+                            &state, materialized_bytes, durable_end, committed_transactions,
+                            limits, durable_next_sequence,
+                        )?;
                         materialized_compaction = false;
                     }
                     compaction_prefix = false;
-                    if !root_original_native::validate_replayed_transaction(
-                        &state,
-                        &replay_transaction,
-                        limits,
-                        expected_sequence,
-                    )? {
+                    logical_replay = true;
+                    query_edge = root_original_inventory::replay_edge(
+                        &state, &replay_transaction, limits,
+                    )?;
+                    if query_edge.is_none()
+                        && !root_original_native::validate_replayed_transaction(
+                            &state, &replay_transaction, limits, expected_sequence,
+                        )?
+                    {
                         root_local_recovery::validate_replayed_transaction(
                             &state,
                             &replay_transaction,
+                        )?;
+                    }
+                    if query_edge.is_none() {
+                        root_original_inventory::preserve_other_owner(
+                            &state, &replay_transaction, limits,
                         )?;
                     }
                 }
@@ -4466,6 +4529,31 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
                     &replay_transaction.records,
                     limits,
                 )?;
+                if logical_replay {
+                    let prospective = root_original_inventory::materialize(&state, &replay_transaction);
+                    if query_edge.is_some()
+                        || root_original_inventory::has_query_floor(&state)?
+                        || root_original_inventory::has_query_floor(&prospective)?
+                    {
+                        // Exact owner/settlement validation already ran above.
+                        // Empty-change accounting charges that exact post-state;
+                        // no new settlement interpretation or authority follows.
+                        validate_reserved_capacity(
+                            &prospective,
+                            materialized_bytes,
+                            &[],
+                            None,
+                            offset,
+                            committed_transactions.checked_add(1)
+                                .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
+                            limits,
+                            None,
+                        )?;
+                        root_original_inventory::require_sequence_headroom(
+                            &prospective, expected_sequence,
+                        )?;
+                    }
+                }
                 for record in &replay_transaction.records {
                     committed_namespaces.insert(record.namespace());
                     apply_record(&mut state, &mut idempotency, record)?;
@@ -4487,6 +4575,10 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
 
     root_local_recovery::pending(&state)?;
     root_original_native::pending(&state, limits)?;
+    root_original_inventory::validate_rejoined_capacity(
+        &state, materialized_bytes, durable_end, committed_transactions, limits,
+        durable_next_sequence,
+    )?;
     Ok(ReplayState {
         durable_end,
         next_sequence: durable_next_sequence,

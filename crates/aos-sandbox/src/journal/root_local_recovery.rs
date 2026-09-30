@@ -93,7 +93,11 @@ fn map_record(map: &mut Map, record: StoredRecordV2) -> Result<(), JournalError>
     Ok(())
 }
 
-fn map_bytes(namespace: RecordNamespace, map: &Map) -> Result<Vec<u8>, JournalError> {
+/// Encodes typed, sorted optional-row maps without assigning owner policy.
+///
+/// # Errors
+/// Rejects map counts or key/value lengths outside the canonical framing widths.
+pub(super) fn map_bytes(namespace: RecordNamespace, map: &Map) -> Result<Vec<u8>, JournalError> {
     let mut bytes = u16::try_from(map.len())
         .map_err(|_| invalid())?
         .to_be_bytes()
@@ -119,8 +123,20 @@ fn map_bytes(namespace: RecordNamespace, map: &Map) -> Result<Vec<u8>, JournalEr
 }
 
 fn commitment(suffix: &str, payload: &[u8]) -> Result<[u8; 32], JournalError> {
+    scoped_commitment(b"aos.journal.root-ordinary-capacity.v4.r1.", suffix, payload)
+}
+
+/// Shares framing mechanics only; callers retain their own domains and policies.
+///
+/// # Errors
+/// Rejects a payload length outside the commitment's canonical u32 framing.
+pub(super) fn scoped_commitment(
+    domain: &[u8],
+    suffix: &str,
+    payload: &[u8],
+) -> Result<[u8; 32], JournalError> {
     let mut hash = Sha256::new();
-    hash.update(b"aos.journal.root-ordinary-capacity.v4.r1.");
+    hash.update(domain);
     hash.update(suffix.as_bytes());
     hash.update([0]);
     hash.update(
@@ -132,7 +148,7 @@ fn commitment(suffix: &str, payload: &[u8]) -> Result<[u8; 32], JournalError> {
     Ok(hash.finalize().into())
 }
 
-fn scope_bytes(scope: ProviderScopeV2) -> Vec<u8> {
+pub(super) fn scope_bytes(scope: ProviderScopeV2) -> Vec<u8> {
     let mut bytes = scope.holder_authority_id.to_vec();
     bytes.extend_from_slice(&scope.provider_authority_id);
     bytes.extend_from_slice(&scope.route_id);

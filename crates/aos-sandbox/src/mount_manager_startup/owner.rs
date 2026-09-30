@@ -124,6 +124,40 @@ impl<'journal> MountManagerStartupJournalBorrowV1<'journal> {
     > {
         Ok(crate::journal::MountOriginalNativeJournalAuthorityV5::claim(self.journal)?)
     }
+
+    /// Borrows original Query metadata from the same fixed held Mount journal.
+    ///
+    /// # Errors
+    /// Rejects wrong location/owner/limits, unavailable currentness, startup
+    /// replay or malformed/unfunded Query and original metadata.
+    pub fn borrow_fixed_root_original_inventory_v6(
+        journal: &'journal mut Journal,
+    ) -> Result<Self, MountManagerSourceInventoryError> {
+        journal.require_protected_location(
+            Path::new(PROTECTED_MOUNT_MANAGER_ROOT),
+            MOUNT_MANAGER_JOURNAL,
+            0,
+            mount_manager_journal_limits(),
+        )?;
+        {
+            crate::journal::MountOriginalInventoryJournalAuthorityV6::claim(journal)?;
+        }
+        Ok(Self { journal })
+    }
+
+    /// Lends only exact Q/H plus Query6 floor edges through the retained lock.
+    ///
+    /// # Errors
+    /// Rejects unavailable currentness, invalid startup/graph/floor joins or debt.
+    pub fn root_original_inventory_authority_v6(
+        &mut self,
+    ) -> Result<
+        crate::journal::MountOriginalInventoryJournalAuthorityV6<'_>,
+        MountManagerSourceInventoryError,
+    > {
+        Ok(crate::journal::MountOriginalInventoryJournalAuthorityV6::claim(self.journal)?)
+    }
+
     /// Borrows the same fixed writer for mixed-floor kind2 local recovery.
     ///
     /// Old legacy claims remain closed. This lends no native original admission

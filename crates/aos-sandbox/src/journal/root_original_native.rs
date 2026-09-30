@@ -10,7 +10,8 @@ use std::path::Path;
 
 use aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::{
     RootNativeCutKindV1, RootNativeCutV1, RootNativeHeldGraphV2, RootNativeHeldSidecarV2,
-    RootNativeTransitionKindV2 as Kind, native_root_sidecar_key_v2, original_root_remaining_v5,
+    RootNativeTransitionKindV2 as Kind, has_original_pending_closed_cut_v5,
+    native_root_sidecar_key_v2, original_root_remaining_v5,
     validate_native_root_graph_v2, validate_original_root_transition_v5,
 };
 use aos_sandbox_source_provider_protocol::native_held_completion::{
@@ -36,6 +37,9 @@ type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
 mod pending_v5;
 mod root_closed_v5;
 
+#[cfg(test)]
+pub(super) use root_closed_v5::phase11_funded_data;
+
 fn invalid() -> JournalError {
     JournalError::MalformedRecord("invalid original Root native owner edge")
 }
@@ -48,8 +52,20 @@ fn graph(state: &State) -> Result<RootNativeHeldGraphV2, JournalError> {
     .map_err(|_| invalid())
 }
 
-fn require_named_funding(state: &State) -> Result<(), JournalError> {
-    for family in canonical_reservations(state)? {
+fn require_named_funding(state: &State, limits: JournalLimits) -> Result<(), JournalError> {
+    // Query coexistence is a complete metadata join, never a generic allowance.
+    super::root_original_inventory::pending(state, limits)?;
+    require_supported_funding_families(&canonical_reservations(state)?)
+}
+
+/// Shares only the closed family policy after complete canonical traversal.
+///
+/// # Errors
+/// Rejects unsupported Source5, Mount Native3 and non-kind2/kind5 Ordinary4.
+pub(super) fn require_supported_funding_families(
+    families: &[CanonicalCapacityFamily],
+) -> Result<(), JournalError> {
+    for family in families {
         match family {
             // Source5 is pure DATA only until its own named writer is implemented.
             CanonicalCapacityFamily::OriginalSource5(_) => {
@@ -260,7 +276,7 @@ fn admission(
     prepared: PreparedNativeHeldControlV1,
     limits: JournalLimits,
 ) -> Result<(JournalTransaction, OriginalRootCapacityRecordV5), JournalError> {
-    require_named_funding(state)?;
+    require_named_funding(state, limits)?;
     let before = graph(state)?;
     pending(state, limits)?;
     super::root_local_recovery::require_fences(state, owners)?;
@@ -360,7 +376,7 @@ fn derive_continuation(
     ),
     JournalError,
 > {
-    require_named_funding(state)?;
+    require_named_funding(state, limits)?;
     let old = pending(state, limits)?
         .into_iter()
         .find(|floor| floor.request().owner_id == attempt)
@@ -612,7 +628,7 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
     /// Rejects stale physical names, unknown owner funding or invalid full graphs.
     pub fn current_graph(&self) -> Result<RootNativeHeldGraphV2, JournalError> {
         self.require_current()?;
-        require_named_funding(&self.authority.journal.state)?;
+        require_named_funding(&self.authority.journal.state, self.authority.journal.limits)?;
         pending(&self.authority.journal.state, self.authority.journal.limits)?;
         graph(&self.authority.journal.state)
     }
@@ -1007,6 +1023,76 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
         }
         Ok(())
     }
+}
+
+/// Checks historical origin without weakening any current V5 snapshot method.
+///
+/// # Errors
+/// Rejects replaced instances, wrong historical scope/phase, changed original
+/// rows or Root5 bytes, and malformed current Query or original metadata.
+pub(super) fn require_original_root_closed_origin_v6(
+    origin: &OriginalRootProtectedReadbackV5,
+    journal: &Journal,
+) -> Result<(), JournalError> {
+    if !std::sync::Arc::ptr_eq(&origin.snapshot.instance, &journal.authority_instance)
+        || origin.snapshot.namespace != RecordNamespace::MountSourceAcquisition
+        || origin.snapshot.scope != ProtectedAuthorityScope::RootOriginalNativeV5
+        || origin.snapshot.sequence > journal.snapshot_sequence()
+    {
+        return Err(JournalError::StaleAuthoritySnapshot);
+    }
+    let floor = origin.floor.as_ref().ok_or_else(invalid)?;
+    let sidecar = origin.graph.sidecars().get(&origin.attempt).ok_or_else(invalid)?;
+    if floor.request().owner_id != origin.attempt
+        || floor.request().future_transactions != 2
+        || sidecar.suffix().phase() != 11
+        || sidecar.suffix().prepared().is_some()
+        || sidecar.suffix().control(NativeHeldControlKindV1::RootClosed).is_none()
+        || sidecar.suffix().control(NativeHeldControlKindV1::ProviderHeld).is_some()
+        || sidecar.suffix().control(NativeHeldControlKindV1::RootAccepted).is_some()
+        || sidecar.settlement().is_some()
+        || sidecar.terminal_verifier().is_some()
+        || sidecar.no_interest_terminal().is_some()
+        || !has_original_pending_closed_cut_v5(&origin.graph, sidecar).map_err(|_| invalid())?
+        || original_root_remaining_v5(&origin.graph, origin.attempt).map_err(|_| invalid())? != 2
+    {
+        return Err(invalid());
+    }
+    floor.validate_graph(&origin.graph, journal.limits)?;
+    let current = graph(&journal.state)?;
+    pending(&journal.state, journal.limits)?;
+    super::root_original_inventory::pending(&journal.state, journal.limits)?;
+    floor.validate_graph(&current, journal.limits)?;
+    let floor_record = floor.to_journal_record()?;
+    let sidecar_key = native_root_sidecar_key_v2(origin.attempt).map_err(|_| invalid())?;
+    if journal.get(floor_record.namespace(), floor_record.key()) != floor_record.value()
+        || current.canonical_records().get(&sidecar_key)
+            != origin.graph.canonical_records().get(&sidecar_key)
+    {
+        return Err(invalid());
+    }
+
+    let cut = sidecar.disposition_cut().ok_or_else(invalid)?;
+    let captured = cut.reconstruct(origin.graph.legacy(), origin.attempt)
+        .map_err(|_| invalid())?;
+    let scope = origin.graph.legacy().provider_attempts.get(&origin.attempt)
+        .ok_or_else(invalid)?.scope;
+    let head_key = aos_sandbox_protocol::mount_source_acquisition_state::provider_head_key(
+        scope.holder_authority_id, scope.provider_authority_id,
+    );
+    if captured.canonical_records().len() != 4 {
+        return Err(invalid());
+    }
+    for (key, bytes) in captured.canonical_records() {
+        if origin.graph.canonical_records().get(key) != Some(bytes)
+            || (*key != head_key && current.canonical_records().get(key) != Some(bytes))
+        {
+            return Err(invalid());
+        }
+    }
+    // Captured H/R/W remain historical. Current H has its independent complete
+    // Query graph/rejoin check above, at the named writer's bracketed cut.
+    Ok(())
 }
 
 impl OriginalRootProtectedReadbackV5 {

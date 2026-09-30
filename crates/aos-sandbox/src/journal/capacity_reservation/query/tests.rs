@@ -370,7 +370,7 @@ fn ordinary_kind7_bytes_domain_and_version_are_preserved_and_not_interchangeable
 }
 
 #[test]
-fn global_dispatch_accounting_and_generic_capacity_gate_remain_closed_to_version6() {
+fn global_query_accounting_remains_distinct_from_generic_admission() {
     let ordinary = ordinary_recovery().to_journal_record();
     assert!(CanonicalCapacityFamily::decode(ordinary.key(), ordinary.value().unwrap()).is_ok());
     for profile in [
@@ -387,12 +387,17 @@ fn global_dispatch_accounting_and_generic_capacity_gate_remain_closed_to_version
         assert!(QueryCapacityRecordV6::from_journal_record(&row).is_ok());
         assert!(matches!(
             CanonicalCapacityFamily::decode(row.key(), value),
-            Err(JournalError::MalformedRecord("unknown capacity family version"))
+            Ok(CanonicalCapacityFamily::Query6(_))
         ));
-        assert!(accounting_reservation(row.key(), value).is_err());
-        assert!(accounting_reservations(&state).is_err());
-        assert!(decode_capacity_record(row.key(), value).is_err());
-        assert!(validate_all_reservations(&state).is_err());
+        let accounting = accounting_reservation(row.key(), value).unwrap();
+        assert_eq!(accounting.maximum_records, profile.remaining_record_frames() as usize);
+        assert_eq!(accounting.maximum_bytes, profile.remaining_append_bytes().unwrap());
+        assert_eq!(accounting.maximum_transactions, profile.remaining_transactions() as usize);
+        assert!(accounting_reservations(&state).is_ok());
+        assert!(decode_capacity_record(row.key(), value).is_ok());
+        assert!(validate_all_reservations(&state).is_ok());
         assert!(require_legacy_transaction(&BTreeMap::new(), &transaction).is_err());
+        assert!(crate::journal::root_original_inventory::pending(&state,
+            crate::journal::JournalLimits::default()).is_err());
     }
 }
