@@ -207,6 +207,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         new: PackIndexSnapshot,
         inventory: PackInventoryEntry,
     ) -> Result<(), StoreFailure> {
+        if self.physically_excluded(&catalog, new.header().id().as_bytes()) {
+            // Even an exact artifact collision cannot re-admit an excluded
+            // physical incarnation as the supposedly fresh placement.
+            return Err(StoreFailure::new(crate::store::StoreErrorKind::Unsupported));
+        }
         let generation = self.next_generation(&catalog).await?;
         let mut prefixes = BTreeSet::from([0]);
         prefixes.extend(catalog.shards.iter().map(MergedShard::shard));
@@ -233,7 +238,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             for record in terrane_core::pack_format::decode_shard(&delta.encode(), prefix)
                 .map_err(|_| files::layout_corrupt())?
             {
-                // Fresh verified admission replaces only a GC-retired placement.
+                // Fresh verified admission replaces only a retired placement;
+                // physical authority overrides even a stale Live row.
                 // Quarantine and other live entries remain authoritative; the old
                 // physical pack's durable trash evidence is retained separately.
                 match records.entry(record.record.hash) {
@@ -241,7 +247,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                         entry.insert(record);
                     }
                     std::collections::btree_map::Entry::Occupied(mut entry)
-                        if entry.get().state == RecordState::Tombstone as u8 =>
+                        if entry.get().state != RecordState::Quarantine as u8
+                            && (entry.get().state == RecordState::Tombstone as u8
+                                || self.physically_excluded(&catalog, &entry.get().pack)) =>
                     {
                         // Unknown legacy completeness cannot discard the final
                         // exact evidence that the previous physical pack retired.

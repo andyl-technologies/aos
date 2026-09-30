@@ -355,3 +355,88 @@ async fn legacy_unknown_retirement_never_loses_its_last_physical_evidence() {
     assert_eq!(reopened.catalog().await.unwrap().exclusions, None);
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
 }
+
+#[tokio::test]
+async fn physical_exclusion_overrides_live_rows_during_fresh_admission() {
+    let bucket = fixture().await;
+    let body = b"live row cannot acknowledge a physically retired placement";
+    let other = b"another old member remains physically excluded";
+    let identity = chunk_identity(body);
+    let other_identity = chunk_identity(other);
+    let old = publish_members(&bucket, &[body, other]).await;
+    let guard = bucket.exclusive().await.unwrap();
+    let mut catalog = bucket.catalog().await.unwrap();
+    let exclusion = PackExclusion {
+        pack_id: *old.as_bytes(),
+        cycle: 201,
+        epoch: 9,
+    };
+    // Physical authority must fence even a selected legacy or mixed-state row
+    // that still says Live. Fresh admission cannot preserve that unavailable row.
+    catalog.exclusions = Some(vec![exclusion.clone()]);
+    let generation = bucket.next_generation(&catalog).await.unwrap();
+    let shards = catalog
+        .shards
+        .iter()
+        .map(|shard| {
+            crate::pack::MergedShard::decode(&shard.encode(), generation, shard.shard()).unwrap()
+        })
+        .collect::<Vec<_>>();
+    bucket
+        .publish_shards(catalog, generation, &shards)
+        .await
+        .unwrap();
+    drop(guard);
+    assert_eq!(
+        bucket
+            .has(&[identity.clone(), other_identity.clone()])
+            .await
+            .unwrap(),
+        vec![false, false]
+    );
+
+    bucket
+        .put(upload(
+            &raw(body),
+            &identity,
+            body.len(),
+            &bucket.inner.config.chunk_profile,
+            ChunkPosition::Final,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(bucket.get(&identity, None).await.unwrap(), raw(body));
+    let selected = bucket.catalog().await.unwrap();
+    assert_eq!(selected.exclusions, Some(vec![exclusion.clone()]));
+    let placement = selected
+        .shards
+        .iter()
+        .flat_map(|shard| shard.entries())
+        .find(|entry| entry.entry().hash() == &identity.terrane_v1_digest().unwrap())
+        .unwrap();
+    assert_ne!(placement.pack(), old);
+    assert_eq!(placement.state(), crate::pack::RecordState::Live);
+    assert_eq!(
+        bucket
+            .has(&[identity.clone(), other_identity.clone()])
+            .await
+            .unwrap(),
+        vec![true, false]
+    );
+
+    let reopened = FileBucket::open(
+        config(bucket.root().to_owned()),
+        TokioLocalFs,
+        TokioClock,
+        Validator,
+    )
+    .await
+    .unwrap();
+    assert_eq!(reopened.get(&identity, None).await.unwrap(), raw(body));
+    assert_eq!(
+        reopened.catalog().await.unwrap().exclusions,
+        Some(vec![exclusion])
+    );
+    assert_eq!(reopened.has(&[other_identity]).await.unwrap(), vec![false]);
+    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+}
