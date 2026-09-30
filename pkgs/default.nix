@@ -167,7 +167,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
             value = dependency;
           }) ((item.value.runtimeDeps or [])
             ++ (item.value.buildDeps or [])
-            ++ (item.value.propagatedDeps or []) ++ (item.value.moduleDeps or []));
+            ++ (item.value.propagatedDeps or [])
+            ++ (map (import ../lib/packages/module-dependencies.nix).seed (item.value.moduleDeps or [])));
       };
       retainOutput = item: knownOutputs: output: let
         selector = {
@@ -215,8 +216,17 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   artifactLib = import ../lib/packages/artifacts.nix {};
   nativeArtifactsFor = package: let
     deploymentLib = import ../lib {system = stdenv.hostPlatform.system;};
+    contracts = import ../lib/packages/ability-contracts.nix {lib = deploymentLib;};
     packageName = artifactLib.nameFor package;
-    deployment = artifactLib.envelope package;
+    declarationContracts =
+      if !(package ? module) && (package.moduleDeps or []) == []
+      then {}
+      else contracts.forPackages [package];
+    deployment = assert contracts.checkSeeds [package] declarationContracts;
+      (artifactLib.envelope package)
+      // {
+        abilityExports = contracts.owned package declarationContracts;
+      };
     documentation =
       (deploymentLib.evalPackageModules {
         scope = ["package" packageName];

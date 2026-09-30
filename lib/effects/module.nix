@@ -188,13 +188,44 @@
     };
   };
 
-  abilityModule = {name, ...}: {
+  abilityModule = {
+    config,
+    name,
+    ...
+  }: {
     _module.strict = true;
+    options.version = mkOption {
+      type = types.nullOr (types.strWith {maxLength = 128;});
+      default = null;
+      description = "Semantic version of this ability contract, independent of package and effect revisions.";
+    };
+    options.versionOwner = mkOption {
+      type = types.nullOr types.str;
+      readOnly = true;
+      internal = true;
+      description = "Module provenance owner of the versioned contract.";
+    };
     options.operations = mkOption {
       type = types.lazyAttrsOf (types.submodule (operationModule name));
       default = {};
       description = "Operation contracts and their selected interpretations.";
     };
+    config.versionOwner =
+      if config.version == null
+      then null
+      else let
+        checked = (import ../packages/semver.nix).parseVersion config.version;
+        owners =
+          lib.unique (map (definition: definition.owner)
+            (provenance.definitionsOfNestedAttr ["aos" "abilities"] [name "version"]));
+      in
+        builtins.deepSeq checked (
+          if !(import ../packages/module-dependencies.nix).validAbilityName name
+          then throw "Versioned ability '${name}' must use a stable name of at most 256 ASCII letters, digits, dots, underscores, or hyphens."
+          else if builtins.length owners == 1
+          then builtins.head owners
+          else throw "Versioned ability '${name}' must have exactly one declaring module owner."
+        );
   };
 in {
   imports = [../modules/checks.nix];

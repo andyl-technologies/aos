@@ -1,22 +1,64 @@
 ##! Exact package module records and their explicit module dependency closure.
-{}: let
+{verifyMetadata ? true}: let
   artifacts = import ../packages/artifacts.nix {};
+  dependencies = import ../packages/module-dependencies.nix;
   inherit (artifacts) nameFor;
-  recordFor = package: {
-    name = nameFor package;
-    version = package.version or "0";
-    configRoot = "${package.module}";
-    module = "${package.module}/module.nix";
-    artifacts = {
-      package = artifacts.canonicalReference package;
-      dependencies = artifacts.canonicalDependencies package;
-    };
-  };
+  packageReference =
+    if verifyMetadata
+    then artifacts.canonicalReference
+    else package: artifacts.canonical (artifacts.reference package);
+  runtimeReferences =
+    if verifyMetadata
+    then artifacts.canonicalDependencies
+    else package: artifacts.keyed (package.runtimeDeps or []);
+  recordFor = package: let
+    exports =
+      if verifyMetadata
+      then package.deployment.abilityExports or {}
+      else {};
+    requirements =
+      builtins.filter (value: value != null)
+      (map (dependencies.requirement nameFor) (package.moduleDeps or []));
+  in
+    {
+      name = nameFor package;
+      version = package.version or "0";
+      configRoot = "${package.module}";
+      module = "${package.module}/module.nix";
+      artifacts = {
+        package = packageReference package;
+        dependencies = runtimeReferences package;
+      };
+    }
+    // (
+      if exports == {}
+      then {}
+      else {abilityExports = exports;}
+    )
+    // (
+      if requirements == []
+      then {}
+      else {moduleRequirements = requirements;}
+    );
   identity = record:
-    if builtins.attrNames record != ["artifacts" "configRoot" "module" "name" "version"]
+    if
+      builtins.removeAttrs record ["artifacts" "configRoot" "module" "name" "version" "abilityExports" "moduleRequirements"]
+      != {}
+      || !(builtins.all (name: record ? ${name}) ["artifacts" "configRoot" "module" "name" "version"])
     then throw "Package module record has a non-canonical shape."
     else
-      record
+      (builtins.removeAttrs record (
+        (
+          if (record.abilityExports or {}) == {}
+          then ["abilityExports"]
+          else []
+        )
+        ++ (
+          if (record.moduleRequirements or []) == []
+          then ["moduleRequirements"]
+          else []
+        )
+      ))
       // {
         configRoot = builtins.toString record.configRoot;
         module = builtins.toString record.module;
@@ -48,28 +90,30 @@
         rest = builtins.tail pending;
         name = nameFor package;
         record = {
-          artifact = artifacts.canonicalReference package;
-          runtimeDependencies = builtins.attrValues (artifacts.canonicalDependencies package);
+          artifact = packageReference package;
+          runtimeDependencies = builtins.attrValues (runtimeReferences package);
           module =
             if package ? module
             then recordFor package
             else null;
-          dependencies = builtins.map artifacts.moduleReference (package.moduleDeps or []);
+          dependencies = dependencies.references artifacts.moduleReference (package.moduleDeps or []);
         };
       in
-        if selected ? ${name}
-        then
-          if record == selected.${name}.identity
-          then visit selected rest
-          else throw "Module dependency '${name}' has conflicting package identities in: ${builtins.concatStringsSep ", " (builtins.filter (field: record.${field} != selected.${name}.identity.${field}) (builtins.attrNames record))}. Catalogs: ${builtins.toJSON [(artifacts.metadata record.artifact) (artifacts.metadata selected.${name}.identity.artifact)]}"
-        else
-          visit (selected
-            // {
-              ${name} = {
-                inherit package;
-                identity = record;
-              };
-            }) ((package.moduleDeps or []) ++ rest);
+        builtins.seq record.dependencies (
+          if selected ? ${name}
+          then
+            if record == selected.${name}.identity
+            then visit selected rest
+            else throw "Module dependency '${name}' has conflicting package identities in: ${builtins.concatStringsSep ", " (builtins.filter (field: record.${field} != selected.${name}.identity.${field}) (builtins.attrNames record))}. Catalogs: ${builtins.toJSON [(artifacts.metadata record.artifact) (artifacts.metadata selected.${name}.identity.artifact)]}"
+          else
+            visit (selected
+              // {
+                ${name} = {
+                  inherit package;
+                  identity = record;
+                };
+              }) ((builtins.map dependencies.seed (package.moduleDeps or [])) ++ rest)
+        );
   in
     visit {} packages;
   closure = packages: builtins.filter (record: record != null) (builtins.map (entry: entry.identity.module) (resolved packages));
@@ -83,4 +127,4 @@
       })
       (builtins.filter (entry: entry.identity.module != null) (resolved packages)));
   payloads = packages: artifacts.unique (builtins.map artifacts.reference packages);
-in {inherit nameFor recordFor identity canonicalize select closure envelopes payloads;}
+in {inherit nameFor recordFor identity canonicalize select closure envelopes payloads resolved;}

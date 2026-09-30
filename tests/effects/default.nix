@@ -8,6 +8,8 @@
     composition = import ./composition.nix;
     dependencyBarrier = import ./native-dependency-barrier.nix;
     packages = (import ./packages.nix).checks;
+    abilityVersions = import ./ability-versions.nix;
+    semver = import ./semver.nix;
     stages = import ./stages.nix;
     frozenHandler = import ./frozen-handler.nix;
     bootConsumers = import ./boot-consumers.nix;
