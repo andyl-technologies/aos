@@ -921,9 +921,9 @@ pub(crate) fn validate_durable_effect_attempt(
         .transpose()?
         .ok_or(AuthorityPublicationError::CorruptCurrent)?;
     let digest = prepared_effect.publication_digest();
-    let prepared = journal
+    let (prepared, artifacts) = journal
         .get(RecordNamespace::AuthorityPublication, &prepared_key(digest))
-        .map(|bytes| decode_prepared(bytes, digest))
+        .map(|bytes| format::decode_prepared_with_artifacts(bytes, digest))
         .transpose()?
         .ok_or(AuthorityPublicationError::CorruptCurrent)?;
     if prepared.sandbox != sandbox || prepared.source_draft_digest != source_draft_digest {
@@ -931,17 +931,6 @@ pub(crate) fn validate_durable_effect_attempt(
     }
     validate_successor(&activated, &prepared)
         .map_err(|_| AuthorityPublicationError::CorruptCurrent)?;
-    let artifacts = validate_encoded_publication(
-        &prepared.bytes,
-        prepared.sandbox,
-        prepared.incarnation,
-        prepared.epoch,
-        prepared.desired_generation,
-        prepared.assignment_digest,
-        prepared.node,
-        prepared.lease_generation,
-        prepared.lease_digest,
-    )?;
     let template = artifacts
         .templates
         .iter()
