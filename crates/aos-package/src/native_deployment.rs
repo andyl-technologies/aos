@@ -289,6 +289,32 @@ impl aos_ability_runtime::adapter::RuntimeControl for ImportControl<'_> {
     }
 }
 
+/// Resolves a retained descriptor and checks its exact committed source context.
+///
+/// # Errors
+/// Returns an error for invalid transport aliases, inaccessible documents,
+/// missing descriptor retention, or mismatched scope and package selection.
+pub(crate) fn read_retained_evaluation_in(
+    path: &Path,
+    desired: &Deployment,
+    nix_store: &Path,
+    cancellation: &CancellationToken,
+) -> Result<(PathBuf, EvaluationInput)> {
+    let (identity, bytes) = read_descriptor_in(path, nix_store, cancellation)?;
+    let (root, _) = crate::deployment::nix::store_root_and_suffix(&identity)?;
+    let root = root.to_str().context("descriptor root is not UTF-8")?;
+    ensure!(
+        desired.inputs().iter().any(|input| input == root),
+        "committed native deployment does not retain its evaluation descriptor"
+    );
+    let input = EvaluationInput::decode(&bytes)?;
+    ensure!(
+        input.scope == desired.scope() && input.packages == desired.resolved(),
+        "retained evaluation descriptor differs from committed scope or packages"
+    );
+    Ok((identity, input))
+}
+
 /// Preserves the explicit evaluation roles and ordering owned by a profile.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -413,9 +439,13 @@ fn apply_profile(
         command.nix_store.clone(),
         &command.state_directory.join("registry-admissions"),
     )?;
-    source_descriptor = read_descriptor_in(&source_descriptor, &command.nix_store, cancellation)?.0;
-    let mut descriptor =
-        EvaluationInput::read_in(&source_descriptor, &command.nix_store, cancellation)?;
+    let (identity, mut descriptor) = read_retained_evaluation_in(
+        &source_descriptor,
+        &deployment,
+        &command.nix_store,
+        cancellation,
+    )?;
+    source_descriptor = identity;
     ensure!(
         descriptor.scope == deployment.scope() && descriptor.packages == deployment.resolved(),
         "retained evaluation descriptor differs from native desired packages"
@@ -514,6 +544,7 @@ fn apply_profile(
                 .map(PathBuf::from)
                 .collect();
             let evaluator = crate::deployment::evaluation::Evaluation {
+                nix_store: command.nix_store.clone(),
                 library: descriptor.library.clone(),
                 scope: descriptor.scope.clone(),
                 packages: descriptor.packages.clone(),
@@ -853,6 +884,7 @@ pub(crate) fn deployment_observer(
         admission.admit(&module.config_root)?;
     }
     let evaluation = crate::deployment::evaluation::Evaluation {
+        nix_store: executable.clone(),
         library: input.library,
         scope: input.scope,
         packages: input.packages,

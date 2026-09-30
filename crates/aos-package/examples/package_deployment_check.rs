@@ -137,6 +137,7 @@ fn main() -> Result<()> {
     );
     let built = Deployment::decode(&serde_json::to_vec(&fixture.document)?, &resolved)?;
     let evaluation = Evaluation {
+        nix_store: nix_store.clone(),
         library: fixture.library,
         configuration: vec![fixture.configuration],
         retained_inputs: Vec::new(),

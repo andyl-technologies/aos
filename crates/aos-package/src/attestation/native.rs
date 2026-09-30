@@ -350,6 +350,7 @@ pub fn rederive(record: &GenerationEvidence) -> Result<String> {
         )?;
     }
     let evaluation = crate::deployment::evaluation::Evaluation {
+        nix_store: executable.clone(),
         library: descriptor.library,
         scope: descriptor.scope,
         packages: descriptor.packages,

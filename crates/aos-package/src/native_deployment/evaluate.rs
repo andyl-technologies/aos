@@ -59,6 +59,7 @@ pub fn evaluate_input(
         .chain(descriptor.runtime_configuration)
         .collect();
     let evaluation = Evaluation {
+        nix_store: nix_store.to_path_buf(),
         library: descriptor.library,
         scope: descriptor.scope,
         packages: descriptor.packages,

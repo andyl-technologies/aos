@@ -13,7 +13,7 @@ use anyhow::{Context as _, Result, ensure};
 use aos_ability_runtime::adapter::RuntimeControl;
 use aos_contract::Sha256Digest;
 
-use super::nix::{command_from_path, locked_evaluator_input, store_root_and_suffix};
+use super::nix::{locked_evaluator_input, store_root_and_suffix};
 use super::process::run_bounded_with_input_limit;
 
 // Source modules are bounded independently of the installed payload closure.
@@ -33,6 +33,7 @@ pub(super) struct SourceViews {
 impl SourceViews {
     /// Exports and restores each distinct source root within the shared deadline.
     pub(super) fn prepare<'a>(
+        nix_store: &Path,
         paths: impl IntoIterator<Item = &'a Path>,
         staging: &Path,
         control: &dyn RuntimeControl,
@@ -41,8 +42,8 @@ impl SourceViews {
             .prefix("evaluation-sources-")
             .tempdir_in(staging)?;
         let mut roots = BTreeMap::new();
-        let tool = command_from_path("nix-store")?;
-        let executable = Path::new(tool.get_program());
+        let executable =
+            std::fs::canonicalize(nix_store).context("resolving the selected Nix source reader")?;
 
         for identity in paths {
             let (root, _) = store_root_and_suffix(identity)?;
@@ -52,7 +53,7 @@ impl SourceViews {
             let name = root.file_name().context("source root has no name")?;
             let path = directory.path().join(name);
             let mut dump = aos_core::nix::identity::store_nar_command(
-                executable,
+                &executable,
                 root.to_str().context("source root is not UTF-8")?,
             )?;
             let environment = explicit_environment(&dump);
@@ -73,7 +74,7 @@ impl SourceViews {
             );
             let nar_hash = Sha256Digest::of_bytes(&nar.stdout).to_string();
 
-            let mut restore = Command::new(executable);
+            let mut restore = Command::new(&executable);
             restore.arg("--restore").arg(&path);
             let restored = run_bounded_with_input_limit(
                 &mut restore,

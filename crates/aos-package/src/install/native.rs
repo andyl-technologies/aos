@@ -501,14 +501,27 @@ fn prepare_with_inputs(
     let mut retained_modules = BTreeSet::new();
     let mut evaluation_inputs = match profile.current_generation()? {
         Some(generation) if generation.path.join("native-deployment.json").is_file() => {
-            let inputs = EvaluationInputs::read(&generation.path.join("evaluation.json"))?;
+            let committed =
+                crate::profile::deployment::committed_generation(&profile.path, generation.number)?;
+            let (_, descriptor) = crate::native_deployment::read_retained_evaluation_in(
+                &generation.path.join("evaluation.json"),
+                &committed.deployment,
+                &executable,
+                &aos_ability_runtime::adapter::CancellationToken::default(),
+            )?;
             retained_modules.extend(
-                EvaluationInput::read(&generation.path.join("evaluation.json"))?
+                descriptor
                     .packages
                     .modules
                     .into_iter()
                     .map(|module| module.name),
             );
+            let inputs = EvaluationInputs {
+                library: descriptor.library,
+                configuration: descriptor.configuration,
+                runtime_configuration: descriptor.runtime_configuration,
+                supplemental_inputs: descriptor.supplemental_inputs,
+            };
             for path in std::iter::once(&inputs.library)
                 .chain(&inputs.configuration)
                 .chain(&inputs.runtime_configuration)
@@ -651,6 +664,7 @@ fn prepare_with_inputs(
             .context("evaluation descriptor is not UTF-8")?,
     )?;
     let evaluation = Evaluation {
+        nix_store: executable.clone(),
         library: descriptor.library,
         scope,
         packages,
@@ -827,7 +841,14 @@ pub(crate) fn append_runtime_snapshot(
     let current = profile
         .current_generation()?
         .context("native source append requires a committed profile")?;
-    let input = EvaluationInput::read(&current.path.join("evaluation.json"))?;
+    let committed =
+        crate::profile::deployment::committed_generation(&profile.path, current.number)?;
+    let (_, input) = crate::native_deployment::read_retained_evaluation_in(
+        &current.path.join("evaluation.json"),
+        &committed.deployment,
+        &packaged_path("AOS_NIX_STORE")?,
+        &aos_ability_runtime::adapter::CancellationToken::default(),
+    )?;
     let mut combined = snapshot.clone();
     combined.entrypoints = input
         .runtime_configuration
@@ -868,7 +889,12 @@ pub(crate) fn append_runtime_snapshot(
 pub(crate) fn probe_rollback(profile: &Profile, target: &Generation) -> Result<Deployment> {
     let committed = crate::profile::deployment::committed_generation(&profile.path, target.number)?;
     let descriptor = target.path.join("evaluation.json");
-    let input = crate::native_deployment::EvaluationInput::read(&descriptor)?;
+    let (_, input) = crate::native_deployment::read_retained_evaluation_in(
+        &descriptor,
+        &committed.deployment,
+        &packaged_path("AOS_NIX_STORE")?,
+        &aos_ability_runtime::adapter::CancellationToken::default(),
+    )?;
     ensure!(
         input.scope == committed.deployment.scope()
             && input.packages == committed.deployment.resolved(),

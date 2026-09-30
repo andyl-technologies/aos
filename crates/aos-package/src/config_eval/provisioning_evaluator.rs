@@ -136,6 +136,7 @@ pub(crate) fn evaluate(
         parameters.authorized_input,
     ]);
     let evaluator = Evaluation {
+        nix_store: nix_store.clone(),
         library: descriptor.library,
         scope: descriptor.scope,
         packages: descriptor.packages,
