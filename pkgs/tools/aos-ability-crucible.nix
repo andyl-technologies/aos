@@ -1,5 +1,7 @@
 ##! aos-ability-crucible - optional RFC-0022 baseline guest adapter
 {
+  service-management,
+  aos-filesystem-provider,
   lib,
   stdenv,
   mkAosCargoPackage,
@@ -75,7 +77,8 @@ in
       name = "aos-ability-crucible";
       entryPoint = "bin/aos-ability-crucible";
     };
-    abilities = ./_aos-ability-crucible;
+    module = ./_aos-ability-crucible;
+    moduleDeps = [service-management aos-filesystem-provider];
 
     inherit version cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";

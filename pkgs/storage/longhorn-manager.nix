@@ -1,6 +1,7 @@
 ##! Longhorn Manager — Longhorn orchestration controller
 {
   lib,
+  kubernetes-interface,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -11,8 +12,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -81,7 +93,8 @@ in
     # authenticated runtime companions. Keep them in the package closure so
     # publication, installation, rollback, and GC retain one complete add-on.
     runtimeDeps = [longhorn-engine longhorn-instance-manager];
-    abilities = ./_longhorn-config;
+    module = ./_longhorn-config;
+    moduleDeps = [kubernetes-interface];
 
     phases = [
       {

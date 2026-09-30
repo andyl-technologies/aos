@@ -21,7 +21,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_ability_model::{OperationId, TransactionId};
+use aos_ability_runtime::activation::{Action, Boundary as BoundaryName, BoundaryEvent};
 use aos_contract::Sha256Digest;
 use crucible_guest::{
     DoorbellTransport, GuestCommand, InstructionDoorbellTransport,
@@ -30,9 +30,9 @@ use crucible_guest::{
 use serde::{Deserialize, Serialize};
 
 const CONFIG_SCHEMA: &str = "aos.ability-crucible-adapter/v1";
-const EVENT_SCHEMA: &str = "aos.ability-execution-boundary-event/v1";
-const ACK_SCHEMA: &str = "aos.ability-execution-boundary-ack/v1";
-const EVENT_DIGEST_DOMAIN: &str = "aos.ability-execution-boundary-event/v1";
+const EVENT_SCHEMA: &str = "aos.activation.boundary";
+const ACK_SCHEMA: &str = "aos.activation.boundary-ack";
+const EVENT_DIGEST_DOMAIN: &str = "aos.activation.boundary";
 const FRAME_MAX_BYTES: usize = 16 * 1024;
 const CONFIG_MAX_BYTES: u64 = 4 * 1024;
 const MAX_ACTIVE_MONITORS: usize = 1024;
@@ -77,9 +77,7 @@ where
     let words = args.into_iter().collect::<Vec<_>>();
     match words.as_slice() {
         [flag, path] if flag == "--config" => Ok(CommandMode::Serve(PathBuf::from(path))),
-        [flag, path] if flag == "--wait-ready" => {
-            Ok(CommandMode::WaitReady(PathBuf::from(path)))
-        }
+        [flag, path] if flag == "--wait-ready" => Ok(CommandMode::WaitReady(PathBuf::from(path))),
         _ => bail!("usage: aos-ability-crucible (--config PATH | --wait-ready SOCKET)"),
     }
 }
@@ -251,7 +249,14 @@ where
         let transition = event.boundary.transition();
         let key = event.monitor_key()?;
         let prior = self.monitors.get(&key).copied();
-        let ordered = prior == transition.expected;
+        let observed = self.monitors.get(&MonitorKey {observation: true, ..key.clone()}) == Some(&MonitorState::Terminal);
+        // Recovery announces the same durable intent again. A current observed
+        // result may become durable without another handler dispatch.
+        let ordered = event.boundary == BoundaryName::IntentDurable
+            || (event.boundary == BoundaryName::OutcomeDurable && observed && prior == Some(MonitorState::Intent))
+            || prior == transition.expected
+            || prior == Some(transition.next)
+            || (key.observation && transition.expected.is_none());
         let details = event.marker_details()?;
         let order_assertion = GuestCommand::always(
             "aos.execution-boundary.ordered",
@@ -276,15 +281,21 @@ where
             "production executor reached the declared durable boundary",
         ))?;
 
-        if transition.next.is_terminal() {
-            self.monitors.remove(&key);
-        } else {
-            ensure!(
-                self.monitors.contains_key(&key) || self.monitors.len() < MAX_ACTIVE_MONITORS,
-                "active boundary monitor limit exceeded"
-            );
-            self.monitors.insert(key, transition.next);
+        if !self.monitors.contains_key(&key) && self.monitors.len() >= MAX_ACTIVE_MONITORS {
+            let completed = self
+                .monitors
+                .iter()
+                .find(|(_, state)| state.is_terminal())
+                .map(|(key, _)| key.clone());
+            if let Some(completed) = completed {
+                self.monitors.remove(&completed);
+            }
         }
+        ensure!(
+            self.monitors.contains_key(&key) || self.monitors.len() < MAX_ACTIVE_MONITORS,
+            "active boundary monitor limit exceeded"
+        );
+        self.monitors.insert(key, transition.next);
 
         Ok(())
     }
@@ -306,177 +317,122 @@ fn validate_peer(_stream: &UnixStream) -> Result<()> {
     bail!("ability Crucible adapter requires peer credentials")
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct BoundaryEvent {
-    schema: String,
-    transaction: TransactionId,
-    operation: OperationId,
-    attempt: u32,
-    purpose: String,
-    boundary: BoundaryName,
-    cancelled: bool,
-    attempt_remaining_millis: u64,
-    recovery_remaining_millis: u64,
+trait EventDetails {
+    fn validate(&self) -> Result<()>;
+    fn monitor_key(&self) -> Result<MonitorKey>;
+    fn marker_details(&self) -> Result<Vec<WhiteboxMarkerDetail>>;
 }
 
-impl BoundaryEvent {
+impl EventDetails for BoundaryEvent {
     fn validate(&self) -> Result<()> {
         ensure!(
             self.schema == EVENT_SCHEMA,
             "unsupported boundary event schema"
         );
-        ensure!(self.attempt > 0, "boundary event attempt must be nonzero");
         ensure!(
-            matches!(
-                self.purpose.as_str(),
-                "effect" | "reconcile" | "cancel" | "compensate" | "reconcile-compensation"
-            ),
-            "boundary event purpose is unsupported"
-        );
-        ensure!(!self.cancelled, "cancelled boundary event cannot continue");
-        ensure!(
-            self.attempt_remaining_millis > 0 && self.recovery_remaining_millis > 0,
-            "boundary event has no live execution budget"
-        );
-        ensure!(
-            self.boundary.accepts_purpose(&self.purpose),
-            "boundary event purpose does not match its boundary family"
+            !self.transaction.is_empty() && !self.effect.is_empty() && !self.revision.is_empty(),
+            "boundary event identities must be present"
         );
         Ok(())
     }
 
     fn monitor_key(&self) -> Result<MonitorKey> {
         Ok(MonitorKey {
-            transaction: aos_contract::canonical::to_vec(&self.transaction)?,
-            operation: aos_contract::canonical::to_vec(&self.operation)?,
-            attempt: self.attempt,
-            family: self.boundary.family(),
+            transaction: self.transaction.clone(),
+            effect: self.effect.clone(),
+            revision: self.revision.clone(),
+            action: match self.action {
+                Action::Apply => "apply",
+                Action::Remove => "remove",
+            },
+            journal_sequence: self.journal_sequence,
+            observation: matches!(
+                self.boundary,
+                BoundaryName::ObservationStarted | BoundaryName::ObservationReturned
+            ),
         })
     }
 
     fn marker_details(&self) -> Result<Vec<WhiteboxMarkerDetail>> {
-        let event_bytes = aos_contract::canonical::to_vec(self)?;
-        let event_digest = Sha256Digest::separated(EVENT_DIGEST_DOMAIN, &event_bytes);
-        let transaction = String::from_utf8(aos_contract::canonical::to_vec(&self.transaction)?)
-            .context("encoding marker transaction identity")?;
-        let operation = String::from_utf8(aos_contract::canonical::to_vec(&self.operation)?)
-            .context("encoding marker operation identity")?;
+        let bytes = aos_contract::canonical::to_vec(self)?;
         Ok(vec![
-            WhiteboxMarkerDetail::new("transaction", transaction),
-            WhiteboxMarkerDetail::new("operation", operation),
-            WhiteboxMarkerDetail::new("attempt", self.attempt.to_string()),
-            WhiteboxMarkerDetail::new("purpose", &self.purpose),
+            WhiteboxMarkerDetail::new("transaction", &self.transaction),
+            WhiteboxMarkerDetail::new("effect", &self.effect),
+            WhiteboxMarkerDetail::new("revision", &self.revision),
+            WhiteboxMarkerDetail::new(
+                "action",
+                match self.action {
+                    Action::Apply => "apply",
+                    Action::Remove => "remove",
+                },
+            ),
+            WhiteboxMarkerDetail::new("journal_sequence", self.journal_sequence.to_string()),
             WhiteboxMarkerDetail::new("boundary", self.boundary.as_str()),
-            WhiteboxMarkerDetail::new("cancelled", self.cancelled.to_string()),
             WhiteboxMarkerDetail::new(
-                "attempt_remaining_millis",
-                self.attempt_remaining_millis.to_string(),
+                "event_digest",
+                Sha256Digest::separated(EVENT_DIGEST_DOMAIN, &bytes).to_string(),
             ),
-            WhiteboxMarkerDetail::new(
-                "recovery_remaining_millis",
-                self.recovery_remaining_millis.to_string(),
-            ),
-            WhiteboxMarkerDetail::new("event_digest", event_digest.to_string()),
         ])
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum BoundaryName {
-    EffectIntentDurable,
-    EffectReturned,
-    EffectOutcomeDurable,
-    ReconciliationIntentDurable,
-    ReconciliationReturned,
-    ReconciliationOutcomeDurable,
-    CancellationIntentDurable,
-    CancellationReturned,
-    CancellationOutcomeDurable,
+trait BoundaryDetails {
+    fn as_str(self) -> &'static str;
+    fn transition(self) -> MonitorTransition;
 }
 
-impl BoundaryName {
-    const fn as_str(self) -> &'static str {
+impl BoundaryDetails for BoundaryName {
+    fn as_str(self) -> &'static str {
         match self {
-            Self::EffectIntentDurable => "effect-intent-durable",
-            Self::EffectReturned => "effect-returned",
-            Self::EffectOutcomeDurable => "effect-outcome-durable",
-            Self::ReconciliationIntentDurable => "reconciliation-intent-durable",
-            Self::ReconciliationReturned => "reconciliation-returned",
-            Self::ReconciliationOutcomeDurable => "reconciliation-outcome-durable",
-            Self::CancellationIntentDurable => "cancellation-intent-durable",
-            Self::CancellationReturned => "cancellation-returned",
-            Self::CancellationOutcomeDurable => "cancellation-outcome-durable",
+            Self::IntentDurable => "intent-durable",
+            Self::DispatchStarted => "dispatch-started",
+            Self::DispatchReturned => "dispatch-returned",
+            Self::OutcomeDurable => "outcome-durable",
+            Self::ObservationStarted => "observation-started",
+            Self::ObservationReturned => "observation-returned",
         }
     }
 
-    const fn family(self) -> BoundaryFamily {
+    fn transition(self) -> MonitorTransition {
         match self {
-            Self::EffectIntentDurable | Self::EffectReturned | Self::EffectOutcomeDurable => {
-                BoundaryFamily::Effect
-            }
-            Self::ReconciliationIntentDurable
-            | Self::ReconciliationReturned
-            | Self::ReconciliationOutcomeDurable => BoundaryFamily::Reconciliation,
-            Self::CancellationIntentDurable
-            | Self::CancellationReturned
-            | Self::CancellationOutcomeDurable => BoundaryFamily::Cancellation,
-        }
-    }
-
-    fn accepts_purpose(self, purpose: &str) -> bool {
-        match self.family() {
-            BoundaryFamily::Effect => matches!(purpose, "effect" | "compensate"),
-            BoundaryFamily::Reconciliation => {
-                matches!(purpose, "reconcile" | "reconcile-compensation")
-            }
-            BoundaryFamily::Cancellation => purpose == "cancel",
-        }
-    }
-
-    const fn transition(self) -> MonitorTransition {
-        match self {
-            Self::EffectIntentDurable
-            | Self::ReconciliationIntentDurable
-            | Self::CancellationIntentDurable => MonitorTransition {
+            Self::IntentDurable | Self::ObservationStarted => MonitorTransition {
                 expected: None,
                 next: MonitorState::Intent,
             },
-            Self::EffectReturned | Self::ReconciliationReturned | Self::CancellationReturned => {
-                MonitorTransition {
-                    expected: Some(MonitorState::Intent),
-                    next: MonitorState::Returned,
-                }
-            }
-            Self::EffectOutcomeDurable
-            | Self::ReconciliationOutcomeDurable
-            | Self::CancellationOutcomeDurable => MonitorTransition {
+            Self::DispatchStarted => MonitorTransition {
+                expected: Some(MonitorState::Intent),
+                next: MonitorState::Dispatching,
+            },
+            Self::DispatchReturned => MonitorTransition {
+                expected: Some(MonitorState::Dispatching),
+                next: MonitorState::Returned,
+            },
+            Self::OutcomeDurable => MonitorTransition {
                 expected: Some(MonitorState::Returned),
+                next: MonitorState::Terminal,
+            },
+            Self::ObservationReturned => MonitorTransition {
+                expected: Some(MonitorState::Intent),
                 next: MonitorState::Terminal,
             },
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum BoundaryFamily {
-    Effect,
-    Reconciliation,
-    Cancellation,
-}
-
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct MonitorKey {
-    transaction: Vec<u8>,
-    operation: Vec<u8>,
-    attempt: u32,
-    family: BoundaryFamily,
+    transaction: String,
+    effect: String,
+    revision: String,
+    action: &'static str,
+    journal_sequence: u64,
+    observation: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MonitorState {
     Intent,
+    Dispatching,
     Returned,
     Terminal,
 }
@@ -537,7 +493,6 @@ fn write_frame(stream: &mut UnixStream, bytes: &[u8]) -> Result<()> {
 mod tests {
     use std::os::unix::net::UnixStream;
 
-    use aos_ability_model::{LocalKey, PlanId, ScopePath, ScopedOperationKey};
     use aos_contract::Sha256Digest;
     use crucible_guest::{WhiteboxAssertionMarkerFlavor, WhiteboxMarkerPayload};
 
@@ -572,27 +527,15 @@ mod tests {
         }
     }
 
-    fn operation() -> OperationId {
-        OperationId {
-            plan: PlanId(Sha256Digest::of_bytes(b"plan")),
-            operation: ScopedOperationKey {
-                scope: ScopePath::root(),
-                key: LocalKey::new("publish").unwrap(),
-            },
-        }
-    }
-
     fn event(boundary: BoundaryName) -> BoundaryEvent {
         BoundaryEvent {
             schema: EVENT_SCHEMA.to_owned(),
-            transaction: TransactionId(LocalKey::new("transaction").unwrap()),
-            operation: operation(),
-            attempt: 1,
-            purpose: "effect".to_owned(),
+            transaction: "transaction".into(),
+            effect: "publication.publish.example".into(),
+            revision: "sha256:exact-revision".into(),
+            action: Action::Apply,
+            journal_sequence: 1,
             boundary,
-            cancelled: false,
-            attempt_remaining_millis: 1_000,
-            recovery_remaining_millis: 2_000,
         }
     }
 
@@ -604,7 +547,7 @@ mod tests {
                 OsString::from("--config"),
                 OsString::from("/run/aos/config.json")
             ])
-                .unwrap(),
+            .unwrap(),
             CommandMode::Serve(PathBuf::from("/run/aos/config.json"))
         );
         assert_eq!(
@@ -654,12 +597,13 @@ mod tests {
             config(PathBuf::from("/run/aos-instrumentation/controller.sock")),
             emitter,
         );
-        adapter.process_event(&event(BoundaryName::EffectIntentDurable))?;
-        adapter.process_event(&event(BoundaryName::EffectReturned))?;
-        adapter.process_event(&event(BoundaryName::EffectOutcomeDurable))?;
+        adapter.process_event(&event(BoundaryName::IntentDurable))?;
+        adapter.process_event(&event(BoundaryName::DispatchStarted))?;
+        adapter.process_event(&event(BoundaryName::DispatchReturned))?;
+        adapter.process_event(&event(BoundaryName::OutcomeDurable))?;
 
-        assert_eq!(adapter.emitter.commands.len(), 12);
-        assert!(adapter.monitors.is_empty());
+        assert_eq!(adapter.emitter.commands.len(), 16);
+        assert!(adapter.monitors.values().all(|state| state.is_terminal()));
         assert!(adapter.emitter.commands.iter().any(|command| matches!(
             command.payload(),
             WhiteboxMarkerPayload::Assertion(assertion)
@@ -684,6 +628,27 @@ mod tests {
     }
 
     #[test]
+    fn recovered_current_result_completes_without_another_dispatch() -> Result<()> {
+        let mut adapter = Adapter::new(
+            config(PathBuf::from("/run/aos-instrumentation/controller.sock")),
+            CapturingEmitter::default(),
+        );
+        for boundary in [
+            BoundaryName::IntentDurable,
+            BoundaryName::DispatchStarted,
+            BoundaryName::DispatchReturned,
+            BoundaryName::IntentDurable,
+            BoundaryName::ObservationStarted,
+            BoundaryName::ObservationReturned,
+            BoundaryName::OutcomeDurable,
+        ] {
+            adapter.process_event(&event(boundary))?;
+        }
+        assert!(adapter.monitors.values().all(|state| state.is_terminal()));
+        Ok(())
+    }
+
+    #[test]
     fn returned_without_intent_emits_false_assertion_and_withholds_progress() {
         let emitter = CapturingEmitter::default();
         let mut adapter = Adapter::new(
@@ -692,7 +657,7 @@ mod tests {
         );
         assert!(
             adapter
-                .process_event(&event(BoundaryName::EffectReturned))
+                .process_event(&event(BoundaryName::DispatchReturned))
                 .is_err()
         );
         assert_eq!(adapter.emitter.commands.len(), 1);
@@ -712,8 +677,7 @@ mod tests {
             emitter,
         );
         let (mut client, mut server) = UnixStream::pair()?;
-        let event_bytes =
-            aos_contract::canonical::to_vec(&event(BoundaryName::EffectIntentDurable))?;
+        let event_bytes = aos_contract::canonical::to_vec(&event(BoundaryName::IntentDurable))?;
         write_frame(&mut client, &event_bytes)?;
         client.shutdown(std::net::Shutdown::Write)?;
 
@@ -745,7 +709,7 @@ mod tests {
         );
         assert!(
             adapter
-                .process_event(&event(BoundaryName::EffectReturned))
+                .process_event(&event(BoundaryName::DispatchReturned))
                 .is_err()
         );
         let false_assertion = adapter.emitter.commands[0].payload();

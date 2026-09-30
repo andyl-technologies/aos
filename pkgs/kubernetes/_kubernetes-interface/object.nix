@@ -63,6 +63,6 @@ in {
     extensible = true;
     type = types.attrsOf (types.submodule [objectSet {options.enable = lib.mkEnableOption "this Kubernetes object set";}]);
     default = {};
-    description = "Package contributions merged before the selected controller derives its effect.";
+    description = "Package definitions merged before the selected controller derives its effect.";
   };
 }

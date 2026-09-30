@@ -1,76 +1,56 @@
-##! Package-owned Ability Crucible endpoint and service declaration.
+##! Native service and explicit endpoint for Crucible boundary instrumentation.
 {
   config,
   lib,
+  package,
   packageName,
   packageVersion,
   ...
 }: let
-  cfg = config.aos.services.abilityCrucible;
-  abilityTypes = lib.abilities.types;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  resultOf = lib.abilities.resultOf;
-  packageArtifact = lib.abilities.packageOutput {};
+  cfg = config.aos.abilityCrucible;
   settings = import ./settings.nix {socketName = cfg.socketName;};
   inherit (settings) runtimePath socketPath;
-  readinessTimeoutMillis = 30000;
-
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "ability-crucible";
-      inherit key interface parameters;
+  runtimeResource = config.aos.abilities.filesystem.operations.directory.effects.ability-crucible.outputs.resource;
+  managerOwned = cfg.activationOwner == "manager";
+  configurationFile = {
+    path = "/run/aos/ability-crucible.json";
+    mode = "0400";
+    content = builtins.toJSON {
+      schema = "aos.ability-crucible-adapter/v1";
+      socket = socketPath;
+      required_instruction_abi = 1;
+      required_marker_kinds = ["assertion" "coverage" "event" "lifecycle"];
     };
-  runtimeStorage = producer "runtime-storage" serviceManagement.interfaces.storageAllocation {
-    name = "ability-crucible";
-    purpose = "runtime";
+  };
+  runtimeDirectory = {
+    path = runtimePath;
     mode = "0700";
-    requested_path = runtimePath;
+    owner = "root";
+    group = "root";
   };
-  adapterConfiguration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "ability-crucible";
-    declaration = {
-      name = "configuration-file";
-      source = {
-        kind = "interpolated-text";
-        fragments = [
-          {
-            kind = "literal";
-            text = ''{"required_instruction_abi":1,"required_marker_kinds":["assertion","coverage","event","lifecycle"],"schema":"aos.ability-crucible-adapter/v1","socket":"'';
-          }
-          {
-            kind = "execution-path";
-            value = socketPath;
-          }
-          {
-            kind = "literal";
-            text = ''"}'';
-          }
-        ];
-        maximum_size_bytes = abilityTypes.limits.maxDocumentBytes;
-      };
-      mode = "0400";
-    };
-  };
+  configurationPath =
+    if managerOwned
+    then configurationFile.path
+    else config.aos.abilities.configuration.operations.file.effects.ability-crucible.outputs.path;
+  readinessTimeoutMillis = 30000;
   command = arguments: {
     executable = {
-      artifact = packageArtifact;
-      entry_point = "bin/aos-ability-crucible";
+      path = "${package}/bin/aos-ability-crucible";
       inherit arguments;
     };
     ignore_failure = false;
   };
   service = {
-    consumerInstance = "ability-crucible";
-    service = "adapter";
+    service = "aos-ability-crucible";
+    activationOwner = cfg.activationOwner;
+    activationAfter = lib.optionals (!managerOwned) [runtimeResource configurationPath];
     lifecycle = {
       description = "AOS ability boundary adapter (${packageName} ${packageVersion})";
       execution_model = "foreground";
       environment_files = [];
       condition = [];
       pre_start = [];
-      start = [(command ["--config" (resultOf "configuration-file" "planned-path")])];
+      start = [(command ["--config" configurationPath])];
       post_start = [(command ["--wait-ready" socketPath])];
       stop = [];
       post_stop = [];
@@ -82,10 +62,6 @@
       stop_timeout_millis = 90000;
     };
     dependencies = {
-      prerequisites = [
-        (resultOf "runtime-storage" "resource")
-        (resultOf "configuration-file" "resource")
-      ];
       after = [];
       before = [];
       requires = [];
@@ -107,14 +83,14 @@
     configuration.views = [
       {
         name = "adapter";
-        source = resultOf "configuration-file" "planned-path";
+        source = configurationPath;
         optional = false;
       }
     ];
     storage.mounts = [
       {
         name = "runtime";
-        source = resultOf "runtime-storage" "planned-path";
+        source = runtimePath;
         access = "read-write";
       }
     ];
@@ -141,43 +117,50 @@
       permit_core_dumps = false;
     };
   };
-  endpointInterface = lib.abilities.interfaces.executionObservationEndpoint.interfaces.endpoint;
-  endpoint = producer "observer-endpoint" endpointInterface {endpoint = "default";};
-  producers = [runtimeStorage adapterConfiguration endpoint];
 in {
-  imports = [
-    ./endpoint-implementation.nix
-    ./endpoint-provider.nix
-  ];
-
-  options.aos.services = lib.mkOption {
-    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
-      options = lib.optionalAttrs (name == "abilityCrucible") {
-        enable = lib.mkOption {
-          type = abilityTypes.boolean;
-          default = true;
-          description = "Run the protected Ability Crucible execution-boundary adapter.";
-        };
-        socketName = lib.mkOption {
-          type = abilityTypes.localKey;
-          default = "controller.sock";
-          description = "Runtime-directory entry used for the protected observer socket.";
+  options.aos.abilityCrucible = {
+    activationOwner = lib.mkOption {
+      type = lib.types.enum ["ability" "manager"];
+      default = "ability";
+      description = "Assign listener bootstrap to the native image manager or to ability realization.";
+    };
+    bootstrap = lib.mkOption {
+      readOnly = true;
+      default = {
+        serviceKey = "ability-crucible.adapter";
+        directories = [];
+        files = [];
+      };
+      description = "Image bootstrap projection of the same package-authored listener inputs.";
+      type = lib.types.submodule {
+        options = {
+          serviceKey = lib.mkOption {type = lib.types.str;};
+          directories = lib.mkOption {type = lib.types.listOf (lib.types.submodule config.aos.abilities.filesystem.operations.directory.input);};
+          files = lib.mkOption {type = lib.types.listOf (lib.types.submodule config.aos.abilities.configuration.operations.file.input);};
         };
       };
-    }));
-    default = {};
+    };
+
+    enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Run the protected native boundary adapter.";
+    };
+    socketName = lib.mkOption {
+      type = lib.types.strMatching "[A-Za-z0-9._-]+";
+      default = "controller.sock";
+      description = "Protected observer socket name.";
+    };
   };
-
-  config = lib.mkMerge [
-    {
-      aos.services = {
-        abilityCrucible = {};
-        "ability-crucible.adapter" = service // {enable = cfg.enable;};
-      };
-    }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = cfg.enable;
-    })
-  ];
+  config = lib.mkIf cfg.enable {
+    aos.execution.observer = lib.mkDefault {inherit socketPath;};
+    aos.abilities.filesystem.operations.directory.effects = lib.mkIf (!managerOwned) {ability-crucible.input = runtimeDirectory;};
+    aos.abilities.configuration.operations.file.effects.ability-crucible.input = configurationFile;
+    aos.abilityCrucible.bootstrap = {
+      serviceKey = "ability-crucible.adapter";
+      directories = lib.optional managerOwned runtimeDirectory;
+      files = lib.optional managerOwned configurationFile;
+    };
+    aos.services."ability-crucible.adapter" = service // {enable = true;};
+  };
 }
