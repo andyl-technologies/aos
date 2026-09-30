@@ -25,7 +25,12 @@
   # Runtime policy is deliberately absent from the production golden image.
   # This fixture opts into a server role and local recovery console just as a
   # test host.nix would.
-  aos.roles.server.enable = true;
+  aos.activation.stages.host.configuration = [
+    (builtins.path {
+      path = ./_server-test-policy.nix;
+      name = "aos-server-test-policy.nix";
+    })
+  ];
   aos.profiles.debug = {
     enable = true;
     autologin = true;
@@ -57,7 +62,10 @@
   # lib/testing/fleet.nix `mkMachinesWithIndex`. Bundling this exposed package
   # is safe on TPM-less test machines because aos-attest.service skips cleanly
   # without a TPM (modules/base/apm.nix) rather than failing the reconcile.
-  aos.packages.aos-test-agent.bundle = true;
+  aos.packages.aos-test-agent = {
+    package = pkgs.aos-test-agent;
+    bundle = true;
+  };
 
   # CLI tools fleet scripts run in-guest by bare name; image slimming dropped
   # these from the server profile's PATH.
