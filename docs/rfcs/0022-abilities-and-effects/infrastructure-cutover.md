@@ -202,7 +202,11 @@ the resulting effects and owns their lifecycle.
 `aos-ability-plan::module_graph` checks hashes, native option type projections,
 references, composition exports, ordering, and bound handlers. Arbitrary Nix
 predicates without a portable validator cannot cross this boundary. The original
-JSON representation is retained for stable hashing and replay.
+JSON representation is retained for stable hashing and replay. Declared sets
+are normalized again after deferred results are substituted: two references may
+return the same value, and their returned values may sort differently from their
+symbolic identities. Ordered lists, including command sequences, preserve their
+order. Graph admission and recorded invocation validation remain strict.
 
 Terminal handlers receive `apply`, `remove`, or `observe` and a JSON invocation
 on stdin. Apply returns the declared result object. Remove returns an empty

@@ -173,3 +173,47 @@ fn explicit_retirement_rejects_duplicate_empty_and_configured_identities() {
     assert!(check_retirement(&graph, &[String::new()]).is_err());
     assert!(check_retirement(&graph, &[configured_id]).is_err());
 }
+
+#[test]
+fn resolves_canonical_sets_by_returned_values_without_reordering_lists() {
+    let first = effect("alpha");
+    let second = effect("omega");
+    let mut consumer = effect("consumer");
+    let set_type = json!({"kind":"list", "element":{"kind":"string"},
+        "max_items":8, "unique":true, "canonical_order":true});
+    let list_type = json!({"kind":"list", "element":{"kind":"string"}});
+    consumer["input_type"] = json!({"kind":"submodule", "fields":{
+        "dependencies":set_type, "commands":list_type
+    }});
+    consumer["input"] = json!({
+        "dependencies":[reference(&first), reference(&second)],
+        "commands":[reference(&first), reference(&second)]
+    });
+    consumer["dependencies"] = json!([key(&first), key(&second)]);
+    let consumer_key = key(&consumer);
+    let checked = decode(&document(vec![first.clone(), second.clone(), consumer])).unwrap();
+    let selected = &checked.graph().nodes[&consumer_key];
+    let mut results = BTreeMap::from([
+        (key(&first), json!({"value":"zulu.target"})),
+        (key(&second), json!({"value":"alpha.target"})),
+    ]);
+
+    let input = selected.resolve_input(&results).unwrap();
+    assert_eq!(
+        input["dependencies"],
+        json!(["alpha.target", "zulu.target"])
+    );
+    assert_eq!(input["commands"], json!(["zulu.target", "alpha.target"]));
+
+    results.insert(key(&second), json!({"value":"zulu.target"}));
+    let input = selected.resolve_input(&results).unwrap();
+    assert_eq!(input["dependencies"], json!(["zulu.target"]));
+    assert_eq!(input["commands"], json!(["zulu.target", "zulu.target"]));
+    assert!(
+        selected
+            .check_input(&json!({
+                "dependencies":["zulu.target", "alpha.target"], "commands":[]
+            }))
+            .is_err()
+    );
+}

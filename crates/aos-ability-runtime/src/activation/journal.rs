@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use anyhow::{Result, ensure};
-use aos_ability_plan::module_graph::{CheckedModuleGraph, Effect, Handler, Lifetime, resolve};
+use aos_ability_plan::module_graph::{CheckedModuleGraph, Effect, Handler, Lifetime};
 use aos_contract::canonical;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -223,8 +223,7 @@ impl State {
             .map(|(id, state)| (id.clone(), state.outputs.clone()))
             .collect();
         results.extend(self.transaction_results.clone());
-        let input = resolve(&effect.input, &results)?;
-        effect.check_input(&input)?;
+        let input = effect.resolve_input(&results)?;
         let revision = aos_contract::Sha256Digest::of_bytes(canonical::to_vec(&(
             effect.revision.as_str(),
             &input,
