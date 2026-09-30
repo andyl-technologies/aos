@@ -17,12 +17,19 @@ use super::{LedgerFormatErrorV1, native_completion::NativeAcquireCompletionRecor
 
 mod admission;
 mod codec;
+mod continuation;
 mod evidence;
 pub(crate) mod graph;
 mod lifecycle;
 pub(crate) mod transition;
 
 pub use admission::SourceNativeHeldAdmissionBindingV1;
+pub use continuation::{
+    OriginalSourceBeforeDependencyV5, OriginalSourceContinuationAlternativeV5,
+    OriginalSourceContinuationDataV5, OriginalSourceContinuationEdgeV5,
+    OriginalSourceContinuationKindV5, OriginalSourceContinuationPrefixV5,
+    OriginalSourceContinuationValueBoundV5, derive_original_source_continuations_v5,
+};
 pub use graph::validate_native_held_records_v1;
 pub use lifecycle::{
     SourceNativeHeldLifecycleTransactionV1, SourceNativeHeldLifecycleV1,

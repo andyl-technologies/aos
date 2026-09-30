@@ -49,7 +49,7 @@ pub use original_provenance::{
 mod original_source_owner;
 
 pub use original_source_owner::{
-    OriginalSourceOwnerDataV5, OriginalSourceOwnerPrefixV5, OriginalSourceOwnerTransactionV5,
+    OriginalSourceAdmissionComparisonV5, OriginalSourceOwnerDataV5, OriginalSourceOwnerPrefixV5, OriginalSourceOwnerTransactionV5,
     classify_original_source_owner_v5, derive_original_source_pre_requested_retirement_v1,
     propose_original_source_applying_v5, propose_original_source_requested_v5,
 };

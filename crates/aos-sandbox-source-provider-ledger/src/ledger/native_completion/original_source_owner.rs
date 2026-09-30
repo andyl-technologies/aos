@@ -92,6 +92,28 @@ pub struct OriginalSourceOwnerTransactionV5 {
     mutations: Vec<SourceNativeHeldMutationV1>,
 }
 
+/// Retains the historical quartet from an accepted exact Applying proposal.
+///
+/// This comparison seed is DATA. It is never a current owner graph, physical
+/// admission receipt or a restored original owner capability.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OriginalSourceAdmissionComparisonV5 {
+    data: OriginalSourceOwnerDataV5,
+    quartet: [SourceNativeHeldMutationV1; 4],
+}
+
+impl OriginalSourceAdmissionComparisonV5 {
+    /// Borrows the accepted original immutable binding comparison DATA.
+    #[must_use]
+    pub const fn original(&self) -> &OriginalSourceOwnerDataV5 {
+        &self.data
+    }
+
+    pub(crate) fn quartet(&self) -> &[SourceNativeHeldMutationV1; 4] {
+        &self.quartet
+    }
+}
+
 impl OriginalSourceOwnerTransactionV5 {
     /// Borrows derived original comparison DATA, not protected admission.
     #[must_use]
@@ -103,6 +125,31 @@ impl OriginalSourceOwnerTransactionV5 {
     #[must_use]
     pub fn mutations(&self) -> &[SourceNativeHeldMutationV1] {
         &self.mutations
+    }
+
+    /// Copies the bounded historical quartet only from an exact Applying proposal.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a Requested proposal or an impossible Applying mutation shape.
+    pub fn admission_comparison(
+        &self,
+    ) -> Result<OriginalSourceAdmissionComparisonV5, LedgerFormatErrorV1> {
+        if self.data.prefix != OriginalSourceOwnerPrefixV5::Applying {
+            return Err(corrupt(
+                "original Source comparison requires accepted Applying",
+            ));
+        }
+
+        let quartet = self
+            .mutations
+            .clone()
+            .try_into()
+            .map_err(|_| corrupt("original Source comparison quartet"))?;
+        Ok(OriginalSourceAdmissionComparisonV5 {
+            data: self.data.clone(),
+            quartet,
+        })
     }
 }
 

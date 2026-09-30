@@ -45,6 +45,10 @@ pub use original_source::{
     OriginalSourceCapacityRecordV5,
 };
 pub use profile::provider_native_capacity_transition_v2;
+pub(in crate::journal) use profile::{
+    OriginalSourceGeometryDataV5, OriginalSourceMeasuredAlternativeV5,
+    check_original_source_candidate_spend_v5, derive_original_source_geometry_v5,
+};
 pub use profile::{
     NativeHeldCapacityAppendV2, NativeHeldCapacityAppendV3, NativeHeldCapacityChangeV3,
     NativeHeldCapacityGeometryV3, NativeHeldCapacityPathV3, NativeHeldCapacityStepV2,
