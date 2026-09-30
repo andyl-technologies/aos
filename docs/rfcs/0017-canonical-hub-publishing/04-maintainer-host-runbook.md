@@ -130,7 +130,7 @@ manifest. Compare its allowed output set with the plan. Unexpected files,
 missing formats, changed unsigned inputs, wrong signers, or unverifiable
 signatures fail the release.
 
-## Stage
+## Publish to staging
 
 Mint or retrieve a short-lived staging publication grant bound to the final
 bundle digest. Confirm the CLI is logged into `aos.staging.andyl.org`, the Hub
@@ -144,7 +144,7 @@ Upload under the publisher lock. After the Hub reports completion:
 - verify all cache, documentation, source, image, and recovery objects;
 - exercise full and ranged downloads and cache-control behavior;
 - inspect Hub audit events and provider logs; and
-- run the release-class qualification suite against downloaded bytes.
+- run the destination profile's qualification suite against downloaded bytes.
 
 Disposable smoke publication uses a staging-only registry and keys. It is not
 substituted for the exact `andyl/main` candidate test.
@@ -153,9 +153,9 @@ Record the staging receipt and qualification result. A failed staging result
 ends the release version; it does not authorize local repair of the finalized
 bundle.
 
-## Promote
+## Publish to production
 
-Promotion begins in a new operator step so staging credentials and production
+Production publication begins in a new operator step so staging credentials and production
 credentials are never live in the same shell or credential directory.
 
 1. Re-read the final bundle and staging receipt from durable evidence storage.
@@ -223,9 +223,11 @@ Open an incident record and name an incident commander. Classify the affected
 key, package, image, channel partitions, deployed fleet, and active exploit
 risk. Freeze unrelated publication.
 
-The emergency follows the same build, signing, staging, read-back, promotion,
-and monotonic rules. The incident commander may shorten soak and widen the
-initial stable ring only with a written risk decision. Missing security,
+The emergency follows the same build, signing, staging, read-back, production
+publication, and monotonic rules. The incident commander may shorten the
+`production/stable` soak and widen its rings only through a threshold-signed
+profile override referenced by the plan before the build, backed by a written
+risk decision. Missing security,
 license, source, boot, recovery, or integrity evidence is not waivable.
 
 If the release key is implicated, rotate trust before authorizing new content.

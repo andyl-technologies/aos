@@ -27,6 +27,7 @@
   libseccomp,
   bzip2,
   zlib,
+  gcc-libs,
   stdenv,
   buildPackages,
 }: let
@@ -47,6 +48,7 @@
     bzip2
     zlib
     libseccomp
+    gcc-libs
   ];
   buildMeson =
     if stdenv.isCross
@@ -126,7 +128,7 @@ in
       # its native sandbox profile instead.
       ++ (
         if stdenv.hostPlatform.isLinux
-        then [libseccomp]
+        then [libseccomp gcc-libs]
         else []
       );
     propagatedDeps = [];
@@ -180,6 +182,11 @@ in
           # CMake dependency backend does not derive prefix roots from the
           # compiler include path, so expose the AOS package explicitly.
           export CMAKE_PREFIX_PATH=${toml11}''${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}
+          ${lib.optionalString stdenv.hostPlatform.isLinux ''
+            # glibc's pthread cancellation dlopens the unwinder without using
+            # the caller's RUNPATH. Retain it at startup for daemon workers.
+            export LDFLAGS="''${LDFLAGS:-} -Wl,--push-state,--no-as-needed,-l:libgcc_s.so.1,--pop-state"
+          ''}
 
           mkdir -p build && cd build
           meson setup .. \
