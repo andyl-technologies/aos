@@ -225,6 +225,9 @@
       }
     );
   build = {
+    evaluationInput = args:
+      import ./build/evaluation-input.nix (args // {lib = finalLib;});
+
     referenceGraph = args:
       import ./build/reference-graph.nix (
         args
