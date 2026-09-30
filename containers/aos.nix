@@ -23,7 +23,7 @@
     then "arm64"
     else throw "containers.aos: unsupported AOS package-set target '${validatedSystem}'";
 
-  coreRoots = [pkgs.glibc pkgs.glibc.bin pkgs.glibc-locales pkgs.gcc-libs pkgs.ca-certificates];
+  coreRoots = [pkgs.glibc pkgs.glibc-tools pkgs.glibc-locales pkgs.gcc-libs pkgs.ca-certificates];
   shellRoots = [pkgs.bash pkgs.coreutils pkgs.findutils pkgs.grep pkgs.sed pkgs.gawk];
   # The CLI is intentionally split into independently portable outputs.  Keep
   # all three commands in the image closure and expose their canonical names
