@@ -7,6 +7,7 @@
   packages,
   configuration,
   scope,
+  ...
 }: let
   initial = lib.evalPackageModules {
     inherit packages scope;
