@@ -224,6 +224,23 @@ pub enum ChunkPosition {
     Final,
 }
 
+/// Carries a configured validator's opaque chunk dependency declaration.
+///
+/// The validator interprets metadata and returns these declarations. A backend
+/// checks the named bytes against its actual catalog and chunk profile before
+/// admitting metadata, including on dedup hits; it does not parse the schema.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChunkRequirement {
+    /// The required plaintext identity in the chunk domain.
+    pub identity: Identity,
+    /// The exact plaintext length bounding decompression.
+    pub declared_plaintext_len: usize,
+    /// The chunk's final or nonfinal position in the declared object.
+    pub position: ChunkPosition,
+    /// The metadata rule violated when this dependency is absent.
+    pub missing_rule_id: &'static str,
+}
+
 /// Supplies the context required to verify an encoded chunk before admission.
 #[derive(Clone, Copy, Debug)]
 pub struct ChunkUpload<'a> {
@@ -306,6 +323,25 @@ pub trait ContentValidator {
     /// Returns `Invalid(Upload)` when the bytes violate a format rule. Any
     /// failure prevents admission; it cannot be treated as successful validation.
     fn validate_meta(&self, upload: &MetaUpload<'_>) -> Result<(), StoreFailure>;
+
+    /// Returns the chunk declarations required by validated opaque metadata.
+    ///
+    /// Backends invoke this configured validator for every metadata upload and
+    /// verify each returned declaration before deduplication or publication.
+    /// Validators for reference-bearing schemas, such as manifests, override
+    /// this method. The default is appropriate for schemas without chunk refs.
+    /// Requests cannot supply a replacement validator or declaration list.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Invalid(Upload)` if the metadata cannot supply valid declarations,
+    /// preserving the failed format rule. Any failure prevents admission.
+    fn chunk_requirements(
+        &self,
+        _upload: &MetaUpload<'_>,
+    ) -> Result<Vec<ChunkRequirement>, StoreFailure> {
+        Ok(Vec::new())
+    }
 }
 
 /// Stores immutable content without granting any ref authority (STORE-32).
