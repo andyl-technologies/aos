@@ -111,6 +111,16 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         }))
     }
 
+    /// Admits whole-pack and detached-index containers without admitting members.
+    ///
+    /// Every embedded body is verified before publication. Existing exact live
+    /// shards and tombstones are preserved, so an imported manifest becomes
+    /// individually visible only after ordinary admission checks its referenced
+    /// chunks in their declared final or nonfinal context.
+    ///
+    /// # Errors
+    /// Rejects invalid bodies, metadata, dictionary dependencies, or immutable
+    /// artifact collisions, and propagates unavailable durable I/O.
     pub(super) async fn import_pack(
         &self,
         mut catalog: Catalog,

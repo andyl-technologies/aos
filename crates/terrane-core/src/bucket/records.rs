@@ -216,7 +216,7 @@ pub struct PackInventoryEntry {
     pub index_size: u64,
 }
 
-/// Makes a complete immutable index generation visible atomically.
+/// Describes the complete immutable content of one index generation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GenerationManifest {
     /// The generation named by the enclosing key.
@@ -235,7 +235,8 @@ impl GenerationManifest {
     /// Encodes a complete generation manifest as canonical CBOR.
     ///
     /// # Errors
-    /// Returns [`RecordError::Schema`] for repeated or unordered shards.
+    /// Returns [`RecordError::Schema`] for repeated or unordered shards or
+    /// container inventory entries.
     pub fn encode(&self) -> Result<Vec<u8>, RecordError> {
         if self
             .shards
