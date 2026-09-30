@@ -10,7 +10,7 @@ mod validation;
 use std::collections::BTreeMap;
 
 use anyhow::{Result, ensure};
-use aos_ability_model::{AbilityValue, OptionType};
+use aos_ability_model::OptionType;
 use aos_contract::{Sha256Digest, canonical, limits::JsonLimits};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -179,10 +179,7 @@ impl Effect {
             let value = object
                 .get(name)
                 .ok_or_else(|| anyhow::anyhow!("missing handler result {name}"))?;
-            ensure!(
-                schema.admits(&AbilityValue::new(value.clone())?),
-                "handler result {name} has the wrong type"
-            );
+            validation::check_concrete(value, schema)?;
         }
         Ok(())
     }
@@ -192,10 +189,7 @@ impl Effect {
     /// # Errors
     /// Returns an error if the concrete value does not satisfy the input type.
     pub fn check_input(&self, input: &Value) -> Result<()> {
-        ensure!(
-            self.input_type.admits(&AbilityValue::new(input.clone())?),
-            "resolved operation input has the wrong type"
-        );
+        validation::check_concrete(input, &self.input_type)?;
         Ok(())
     }
 }
@@ -222,10 +216,7 @@ pub fn resolve(value: &Value, results: &BTreeMap<String, Value>) -> Result<Value
             .ok_or_else(|| {
                 anyhow::anyhow!("unavailable deferred output {key}.{}", reference.output)
             })?;
-        ensure!(
-            reference.schema.admits(&AbilityValue::new(result.clone())?),
-            "deferred result does not satisfy its declared type"
-        );
+        validation::check_concrete(result, &reference.schema)?;
         return Ok(result.clone());
     }
     match value {

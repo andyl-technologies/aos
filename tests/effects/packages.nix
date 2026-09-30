@@ -41,10 +41,28 @@ let
       }
     ];
   };
+  multiOutput =
+    consumer
+    // {
+      outputs = ["out" "tools"];
+      out = consumer;
+      tools = consumer // {outPath = "/nix/store/11111111111111111111111111111111-echo-consumer-tools";};
+    };
+  published = multiOutput // {deployment = artifacts.envelope multiOutput;};
+  tools = published // {outPath = multiOutput.tools.outPath;};
+  selectedOutputs = lib.evalPackageModules {
+    scope = ["profile" "multiple-outputs"];
+    packages = [published tools];
+  };
   node = builtins.head (builtins.attrValues evaluated.deployment.graph.nodes);
 in {
   inherit evaluated consumer handler;
   checks = {
+    sharedModuleAcrossOutputs = assert builtins.length selectedOutputs.deployment.packages == 2;
+    assert builtins.length selectedOutputs.deployment.artifacts == 3;
+    assert builtins.length selectedOutputs.documentation.packages == 2; true;
+    namedArtifactOutput = assert builtins.toString (artifacts.value published.deployment.package).tools == tools.outPath; true;
+    conflictingModuleIdentity = assert !(builtins.tryEval (builtins.deepSeq (modules.closure [published (tools // {deployment = tools.deployment // {package = tools.deployment.package // {version = "2";};};})]) true)).success; true;
     mergedResultModule = assert builtins.attrNames extended.documentation.abilities.echo.run.result == ["extra" "message"]; true;
     payloadWithoutModule = assert builtins.length evaluated.deployment.artifacts == 4; true;
     closure = assert builtins.length evaluated.deployment.packages == 3; true;

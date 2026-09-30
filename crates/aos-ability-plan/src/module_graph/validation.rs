@@ -202,6 +202,15 @@ fn check_reference(reference: &OutputReference, graph: &ModuleGraph) -> Result<S
     Ok(key)
 }
 
+pub(super) fn check_concrete(value: &Value, expected: &OptionType) -> Result<()> {
+    let graph = ModuleGraph {
+        schema: "aos.activation.graph".into(),
+        nodes: Default::default(),
+        order: Vec::new(),
+    };
+    check_input(value, expected, &graph, &mut BTreeSet::new())
+}
+
 fn check_input(
     value: &Value,
     expected: &OptionType,
@@ -211,7 +220,7 @@ fn check_input(
     if value.get("_type").and_then(Value::as_str) == Some("aos-effect-output") {
         let reference: OutputReference = serde_json::from_value(value.clone())?;
         ensure!(
-            &reference.schema == expected,
+            reference_fits(&reference.schema, expected),
             "deferred input type does not match its consumer"
         );
         dependencies.insert(check_reference(&reference, graph)?);
@@ -219,6 +228,16 @@ fn check_input(
     }
 
     match (expected, value) {
+        (OptionType::Json, Value::Object(values)) => {
+            for value in values.values() {
+                check_input(value, expected, graph, dependencies)?;
+            }
+        }
+        (OptionType::Json, Value::Array(values)) => {
+            for value in values {
+                check_input(value, expected, graph, dependencies)?;
+            }
+        }
         (OptionType::Submodule { fields, open }, Value::Object(values)) => {
             ensure!(
                 *open || values.len() == fields.len(),
@@ -236,7 +255,107 @@ fn check_input(
                 check_input(value, schema, graph, dependencies)?;
             }
         }
-        (OptionType::List { element, .. }, Value::Array(values)) => {
+        (
+            OptionType::Map {
+                key,
+                value: schema,
+                max_entries,
+            },
+            Value::Object(values),
+        ) => {
+            ensure!(
+                values.len() as u64 <= *max_entries && values.keys().all(|name| key.admits(name)),
+                "input map keys or cardinality violate its contract"
+            );
+            for value in values.values() {
+                check_input(value, schema, graph, dependencies)?;
+            }
+        }
+        (OptionType::TaggedUnion { tag, variants }, Value::Object(values)) => {
+            let tag = values
+                .get(tag.as_str())
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("union discriminator must be a literal string"))?;
+            let variant = variants
+                .iter()
+                .find(|(name, _)| name.as_str() == tag)
+                .map(|(_, variant)| variant)
+                .ok_or_else(|| anyhow::anyhow!("unknown union discriminator"))?;
+            check_input(value, variant, graph, dependencies)?;
+        }
+        (
+            OptionType::Record {
+                fields,
+                optional_fields,
+            },
+            Value::Object(values),
+        ) => {
+            ensure!(
+                values
+                    .keys()
+                    .all(|name| fields.keys().any(|key| key.as_str() == name)),
+                "unknown input record field"
+            );
+            for (name, schema) in fields {
+                if let Some(value) = values.get(name.as_str()) {
+                    check_input(value, schema, graph, dependencies)?;
+                } else {
+                    ensure!(
+                        optional_fields.contains(name),
+                        "missing required input record field"
+                    );
+                }
+            }
+        }
+        (
+            OptionType::DocumentRecord {
+                fields,
+                optional_fields,
+                key_max_length,
+            },
+            Value::Object(values),
+        ) => {
+            ensure!(
+                values
+                    .keys()
+                    .all(|name| name.len() as u64 <= *key_max_length && fields.contains_key(name)),
+                "unknown input document field"
+            );
+            for (name, schema) in fields {
+                if let Some(value) = values.get(name) {
+                    check_input(value, schema, graph, dependencies)?;
+                } else {
+                    ensure!(
+                        optional_fields.contains(name),
+                        "missing required input document field"
+                    );
+                }
+            }
+        }
+        (OptionType::OneOf { alternatives }, value) => {
+            check_alternatives(value, alternatives, false, graph, dependencies)?;
+        }
+        (OptionType::DisjointUnion { variants }, value) => {
+            check_alternatives(value, variants, true, graph, dependencies)?;
+        }
+        (OptionType::Set { element }, Value::Array(values)) => {
+            for value in values {
+                check_input(value, element, graph, dependencies)?;
+            }
+        }
+        (OptionType::Refined { value: base, .. }, value) => {
+            check_input(value, base, graph, dependencies)?;
+        }
+        (
+            OptionType::List {
+                element, max_items, ..
+            },
+            Value::Array(values),
+        ) => {
+            ensure!(
+                max_items.is_none_or(|maximum| values.len() as u64 <= maximum),
+                "input list exceeds its bound"
+            );
             for value in values {
                 check_input(value, element, graph, dependencies)?;
             }
@@ -252,5 +371,68 @@ fn check_input(
             "literal input has the wrong type"
         ),
     }
+    // Validate all concrete constraints before any execution. Constraints that
+    // depend on deferred values are checked after substitution by Effect::check_input.
+    if !contains_reference(value) {
+        ensure!(
+            expected.admits(&AbilityValue::new(value.clone())?),
+            "literal input violates its constraints"
+        );
+    }
     Ok(())
 }
+
+fn check_alternatives(
+    value: &Value,
+    variants: &[OptionType],
+    disjoint: bool,
+    graph: &ModuleGraph,
+    dependencies: &mut BTreeSet<String>,
+) -> Result<()> {
+    let mut matching = Vec::new();
+    for variant in variants {
+        let mut candidate = BTreeSet::new();
+        if check_input(value, variant, graph, &mut candidate).is_ok() {
+            matching.push(candidate);
+            if !disjoint {
+                break;
+            }
+        }
+    }
+    ensure!(
+        !matching.is_empty() && (!disjoint || matching.len() == 1),
+        "input does not match its union contract"
+    );
+    for candidate in matching {
+        dependencies.extend(candidate);
+    }
+    Ok(())
+}
+
+fn contains_reference(value: &Value) -> bool {
+    if value.get("_type").and_then(Value::as_str) == Some("aos-effect-output") {
+        return true;
+    }
+    match value {
+        Value::Object(values) => values.values().any(contains_reference),
+        Value::Array(values) => values.iter().any(contains_reference),
+        _ => false,
+    }
+}
+
+fn reference_fits(actual: &OptionType, expected: &OptionType) -> bool {
+    actual == expected
+        || match expected {
+            OptionType::Json => !actual.contains_opaque(),
+            OptionType::Nullable { value } | OptionType::Optional { value } => {
+                reference_fits(actual, value)
+            }
+            OptionType::OneOf { alternatives } => alternatives
+                .iter()
+                .any(|variant| reference_fits(actual, variant)),
+            _ => false,
+        }
+}
+
+#[cfg(test)]
+mod tests;

@@ -47,7 +47,44 @@ let
     keyMaxLength = 3;
     keySyntax = "local-key-v1";
   };
+  boundedPolicy = lib.types.refined {
+    type = lib.types.submodule {
+      options = {
+        allow = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [];
+        };
+        deny = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [];
+        };
+      };
+    };
+    constraints = [
+      {
+        kind = "disjoint-at";
+        left = ["allow"];
+        right = ["deny"];
+      }
+    ];
+  };
 in {
+  constraintsAfterMerging = assert evaluate boundedPolicy [{allow = ["read"];} {deny = ["write"];}]
+  == {
+    allow = ["read"];
+    deny = ["write"];
+  };
+  assert rejects boundedPolicy [{allow = ["read"];} {deny = ["read"];}]; true;
+  portableRecordRefinement = assert (project boundedPolicy).kind == "refined";
+  assert (project boundedPolicy).value.fields.allow.kind == "list"; true;
+  jsonObjectsMerge = assert evaluate lib.types.json [{nested.first = "a";} {nested.second = [true null];}]
+  == {
+    nested = {
+      first = "a";
+      second = [true null];
+    };
+  }; true;
+  jsonRejectsFunctions = assert !(lib.types.json.check (_: null)); true;
   selectedVariantMerges = assert evaluate union [
     {
       kind = "second";

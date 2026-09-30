@@ -83,6 +83,30 @@ let
   };
   composed = (evaluate [producer composition]).config.aos.activation.graph;
 in {
+  failedAssertionBlocksGraph = assert rejected [
+    declaration
+    handler
+    first
+    {
+      assertions = [
+        {
+          assertion = false;
+          message = "Invalid authored policy.";
+        }
+      ];
+    }
+  ]; true;
+  successfulAssertion = assert (evaluate [
+    {
+      assertions = [
+        {
+          assertion = true;
+          message = "Valid policy.";
+        }
+      ];
+    }
+  ]).config.aos.activation.graph.nodes
+  == {}; true;
   mergedInput = assert effect.input.values
   == {
     first = "1";

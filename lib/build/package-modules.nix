@@ -8,8 +8,8 @@
     configRoot = builtins.toString package.module;
     module = "${package.module}/module.nix";
     artifacts = {
-      package = artifacts.reference package;
-      dependencies = artifacts.keyed (package.runtimeDeps or []);
+      package = artifacts.canonicalReference package;
+      dependencies = artifacts.canonicalDependencies package;
     };
   };
   identity = record:
@@ -32,7 +32,7 @@
     records);
   select = packages: records:
     builtins.map (package: let
-      wanted = artifacts.reference package;
+      wanted = artifacts.canonicalReference package;
       matches = builtins.filter (record: record.name == wanted.name && record.artifacts.package == wanted) records;
     in
       if builtins.length matches != 1
@@ -48,8 +48,8 @@
         rest = builtins.tail pending;
         name = nameFor package;
         record = {
-          artifact = artifacts.reference package;
-          runtimeDependencies = builtins.map artifacts.reference (package.runtimeDeps or []);
+          artifact = artifacts.canonicalReference package;
+          runtimeDependencies = builtins.attrValues (artifacts.canonicalDependencies package);
           module =
             if package ? module
             then recordFor package
@@ -59,12 +59,12 @@
       in
         if selected ? ${name}
         then
-          if record == selected.${name}
-          then visit selected rest
+          if record == builtins.removeAttrs selected.${name} ["selectedArtifacts"]
+          then visit (selected // {${name} = selected.${name} // {selectedArtifacts = artifacts.unique (selected.${name}.selectedArtifacts ++ [(artifacts.reference package)]);};}) rest
           else throw "Module dependency '${name}' has conflicting package identities."
-        else visit (selected // {${name} = record;}) ((package.moduleDeps or []) ++ rest);
+        else visit (selected // {${name} = record // {selectedArtifacts = [(artifacts.reference package)];};}) ((package.moduleDeps or []) ++ rest);
   in
     visit {} packages;
   closure = packages: builtins.filter (record: record != null) (builtins.map (record: record.module) (resolved packages));
-  payloads = packages: artifacts.unique (builtins.concatLists (builtins.map (record: [record.artifact] ++ record.runtimeDependencies) (resolved packages)));
+  payloads = packages: artifacts.unique (builtins.concatLists (builtins.map (record: [record.artifact] ++ record.selectedArtifacts ++ record.runtimeDependencies) (resolved packages)));
 in {inherit nameFor recordFor identity canonicalize select closure payloads;}

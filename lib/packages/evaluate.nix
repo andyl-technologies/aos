@@ -19,6 +19,7 @@ in
     runtimeModules ? [],
     packageImportRoots ? {},
     evaluationInputs ? [],
+    evaluationInput ? null,
   }: let
     records = moduleLib.canonicalize packageModules;
     evaluated = lib.evalModules {
@@ -29,7 +30,17 @@ in
           module = (packageImportRoots.${builtins.unsafeDiscardStringContext record.configRoot} or record.configRoot) + "/module.nix";
         })
       records;
-      modules = [../effects/module.nix {aos.activation.scope = scope;}] ++ modules;
+      modules =
+        [
+          ../effects/module.nix
+          {
+            aos.activation.scope = scope;
+            # A caller may retain a descriptor of evaluation inputs before this
+            # fixed point runs. It never contains the resulting graph itself.
+            _module.args.evaluationInput = evaluationInput;
+          }
+        ]
+        ++ modules;
     };
     documentation = import ../effects/documentation.nix {inherit lib;};
     declarations = builtins.map (declaration: {
@@ -41,7 +52,13 @@ in
       documentation = {
         schema = "aos.module.documentation";
         inherit scope system;
-        packages = builtins.map (artifact: {inherit (artifact) name version;}) packageArtifacts;
+        packages = builtins.attrValues (builtins.foldl' (result: artifact: let
+          identity = {inherit (artifact) name version;};
+        in
+          if result ? ${artifact.name} && result.${artifact.name} != identity
+          then throw "Package '${artifact.name}' has conflicting documentation identities."
+          else result // {${artifact.name} = identity;}) {}
+        packageArtifacts);
         options = declarations;
         abilities = documentation.abilities evaluated.config.aos.abilities;
       };

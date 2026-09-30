@@ -160,6 +160,25 @@ in rec {
     _aosDocType = aosDocType;
   };
 
+  ## Adds portable value constraints without changing the underlying module merge.
+  refined = {
+    type,
+    constraints,
+  }: let
+    predicates = import ./types/constraints.nix;
+    checked = builtins.map predicates.validate constraints;
+  in
+    type
+    // {
+      _refinementConstraints = (type._refinementConstraints or []) ++ checked;
+      merge = loc: defs: let
+        value = type.merge loc defs;
+      in
+        if builtins.deepSeq checked (predicates.check checked value)
+        then value
+        else throw "Option '${showLoc loc}' violates its portable refinement constraints.";
+    };
+
   ## Merge function that insists all definitions agree. Used by ported
   ## nixpkgs code (`systemd-unit-options.nix`'s `unitOption` type) as the
   ## fallback merge when definitions are not lists.
@@ -347,6 +366,42 @@ in rec {
     description = "module option type";
     check = v: builtins.isAttrs v && v ? check && v ? merge;
     merge = lastValue;
+  };
+
+  ## Recursively mergeable canonical JSON, including typed deferred leaves.
+  ## Functions, derivations, paths, and floating-point values are not JSON inputs.
+  json = {
+    name = "json";
+    description = "canonical JSON value";
+    mergeProvenanceByKey = true;
+    check = value:
+      value
+      == null
+      || builtins.isBool value
+      || builtins.isString value
+      || (builtins.isInt value && value >= -9007199254740991 && value <= 9007199254740991)
+      || (builtins.isList value && builtins.all json.check value)
+      || (builtins.isAttrs value
+        && !(value ? outPath || value ? drvPath)
+        && (
+          if (value._type or null) == "aos-effect-output"
+          then effectOutput.check value
+          else builtins.all json.check (builtins.attrValues value)
+        ));
+    merge = loc: definitions: let
+      active = peelProperties definitions;
+      ordinaryObject = value: builtins.isAttrs value && !(value ? _type);
+      merged =
+        if builtins.all (definition: ordinaryObject definition.value) active
+        then (attrsOf json).merge loc active
+        else if builtins.all (definition: builtins.isList definition.value) active
+        then (listOf json).merge loc (dischargeProperties active)
+        else mergeEqualOption loc (dischargeProperties active);
+    in
+      if json.check merged
+      then merged
+      else throw "The option '${showLoc loc}' is not canonical JSON.";
+    _aosDocType = {kind = "json";};
   };
 
   anything = {
