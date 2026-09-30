@@ -304,6 +304,7 @@ Capabilities = {
   7 => timestamp,                       ; probed at
   ? 8 => store-profile,                 ; OBJ-8
   ? 9 => generation,                    ; authoritative published index generation
+  ? 10 => [ * tstr ],                   ; complete monotone registered ref names
 }
 store-profile = {
   1 => tstr,                            ; identity profile name, "terrane-v1"

@@ -1079,6 +1079,25 @@ is added rather than editing history.
   - **Affects:** README versioning and the pre-freeze corrections recorded
     in D-35 through D-65. No existing requirement ID or identity is changed.
 
+- **[D-67] Inventory authoritative ref names before publication.**
+  - **Status:** Decided
+  - **Decision:** Optional `CAPABILITIES` key 10 is a complete, sorted,
+    unique, monotone list of registered ref names. New buckets initialize
+    it empty under authoritative fresh creation. A name is durably registered
+    before its first ref write; probes and other capability CAS operations
+    preserve it. Legacy absence is unknown completeness and disables GC and
+    domain deletion until an authoritative exclusive migration establishes
+    a complete inventory.
+  - **Rationale:** GC and domain deletion must discover every authority root,
+    while STORE-11/BKT-8 forbid assuming complete bucket LIST results. A
+    caller-provided subset cannot prove absence. Monotone registration makes
+    a failed first write harmless and avoids deletion races from dropping
+    names. Comparing inventory and whole ref records under backend exclusion
+    prevents authorization of deletion from a stale subset.
+  - **Affects:** BKT-17, GC-1, GC-2, DOM-20 and Capabilities CDDL. Existing
+    absent-field bytes remain readable with explicitly unknown completeness.
+    This correction precedes T1's encoding and store-trait freeze.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

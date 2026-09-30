@@ -141,12 +141,13 @@ realization roots, as registered by [`09-refs-and-commits.md`](09-refs-and-commi
 Job and derived refs are branches with the mutability of `refs/heads/`;
 conflict refs advance by resolution at their original conflict key (REF-3).
 
-### `logs/refs/heads/`
+### `logs/<ref>/`
 
-The ordered commit log for a branch. Each record is written once at its
-sequence number and holds the commit id, the previous sequence, the writer
-epoch, and a timestamp. The log is the reflog, the snapshot list, and the
-garbage-collection root set for the branch.
+Immutable reflog proposals for a branch. A candidate stores the complete
+new and previous ref records, the previous commit, principal, reason and
+timestamp. Whole-record head CAS selects one proposal per sequence. Only
+that selected predecessor chain is committed history and supplies retained
+content roots. Legacy sequence-only records remain readable.
 
 ### `gc/`
 
@@ -263,6 +264,25 @@ locks locally and never treats copied staging files as published content.
   separate byte pools per tenant uses separate prefixes or buckets and
   separate store expressions.
 
+## Authoritative ref inventory
+
+- **[BKT-17]** New buckets MUST initialize optional key 10 to a complete
+  empty ref-name inventory before serving ref writes. The inventory MUST be
+  sorted by unsigned UTF-8 bytes, contain unique registered full ref names,
+  and never lose a name. Before first publishing a ref, its authority MUST
+  durably add its name by whole-record `CAPABILITIES` CAS. Startup probes and
+  index-pointer publication MUST preserve this inventory. Absence of key 10
+  in a legacy bucket means completeness is unknown, never an empty inventory.
+  *Gate:* `gate:bucket-file-cas`.
+
+A new empty inventory requires authoritative fresh bucket initialization;
+opening an existing prefix or accepting a caller-supplied list is not proof
+of completeness. Legacy migration must establish a complete inventory under
+exclusive authority before installing key 10. Readers enumerate this exact
+inventory and read each named ref from its authority; names may remain after
+ref deletion or a losing first-write attempt. They do not infer completeness
+from `LIST` or from the subset of names they happened to read.
+
 ## Interactions
 
 - [`09-refs-and-commits.md`](09-refs-and-commits.md) defines the records
@@ -280,10 +300,10 @@ locks locally and never treats copied staging files as published content.
 
 ## Informative: why refs are single keys rather than a log alone
 
-A numbered create-once log is sufficient on its own to serialize writers:
-the writer that creates `<seq+1>` wins. Terrane keeps a separate CAS ref
-record as well because readers need one key to fetch, mirrors need one key
-to replicate, and a garbage collector needs one key to root from without
-listing. The log remains the authoritative history and the CAS record is a
-pointer into it; a reader that finds them inconsistent trusts the log and
-repairs the pointer ([`09-refs-and-commits.md`](09-refs-and-commits.md)).
+A create-once proposal does not itself advance a branch: a writer may stop
+between append and CAS, and concurrent writers may propose the same sequence.
+Terrane keeps a separate whole-record CAS ref because readers and mirrors need
+one authoritative key, and collectors need a selected history independent of
+bucket listings. The head selects its candidate and complete predecessor
+chain. An inconsistent or missing selected log is corruption; a reader never
+repairs the head from an unselected proposal.

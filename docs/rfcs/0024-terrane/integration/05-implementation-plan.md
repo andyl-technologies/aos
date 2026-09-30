@@ -235,7 +235,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   writes and verified reads; T-HOST-1 completes its cache-admission rule.
   — satisfies OBJ-5 jointly with T-HOST-1, STORE-1 to STORE-9, STORE-11
   to STORE-13, STORE-33, BKT-1 to BKT-4, BKT-6 to
-  BKT-8, BKT-13, BKT-14, BKT-16;
+  BKT-8, BKT-13, BKT-14, BKT-16, BKT-17;
   `checks.terrane.gates.store-idempotent-put`,
   `checks.terrane.gates.store-verify-on-put`,
   `checks.terrane.gates.store-verify-on-get`,

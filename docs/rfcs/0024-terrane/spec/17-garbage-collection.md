@@ -43,6 +43,10 @@ data.
 - **[GC-2]** The root set MUST be read from the authority of every region
   and every child of every redundant store, and the collection MUST use the
   union. A ref that is readable in one region and not another is a root.
+  Bucket authorities MUST enumerate the complete key-10 inventory in
+  `CAPABILITIES` and read its exact names. Unknown inventory completeness
+  MUST fail collection as `unsupported`; a partial name list is not proof
+  that other roots are absent.
 - **[GC-3]** Retention of reflog entries is set by the `retain` property of
   [`08-properties.md`](08-properties.md) on the ref's root: `gc` keeps
   entries for the property's duration, `lease` keeps them while a lease is

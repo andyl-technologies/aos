@@ -166,7 +166,11 @@ never leak a private byte.
   operation that removes every pack and index record for a `private` or
   `tenant` domain, so that a tenant's departure can be honored by
   deletion rather than by waiting for garbage collection. This operation
-  requires `admin` on the domain's roots and MUST be recorded.
+  requires `admin` on the domain's roots and MUST be recorded. The authority
+  MUST discover all roots through the complete `CAPABILITIES` key-10 inventory
+  and compare that inventory and their whole current records under the same
+  exclusion as deletion. Unknown completeness MUST fail as `unsupported`;
+  an explicit subset of roots or `LIST` MUST NOT authorize deletion.
 
 ## Encryption at rest
 
