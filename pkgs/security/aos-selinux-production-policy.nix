@@ -17,9 +17,11 @@
   aos-method46-tpm-helper,
   aos-sandbox-view-preparer-tools,
   viewPreparers ? [],
+  homeContextAliases ? "",
 }: let
   policyVersion = "33";
   policySupport = ./_aos-selinux-production-policy;
+  homeAliases = builtins.toFile "aos-selinux-home-context-aliases" homeContextAliases;
   # toFile cannot carry an output reference, and the policy must not build
   # the executable it labels. The system module co-installs this exact output.
   netdBasename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString aos-netd));
@@ -378,6 +380,10 @@ in
             "$policy_root/policy/policy.${policyVersion}"
           install -m 0644 file_contexts file_contexts.bin \
             "$policy_root/contexts/files/"
+          # Backing-home aliases use this policy's own contexts, never the
+          # legacy refpolicy context image or a different loaded policy.
+          test -f "$policy_root/contexts/files/file_contexts.subs_dist"
+          cat ${homeAliases} >> "$policy_root/contexts/files/file_contexts.subs_dist"
           install -m 0644 \
             kernel-classmap.tsv \
             observed-policy-classmap.tsv \

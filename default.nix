@@ -620,6 +620,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   selinuxBaseCheck = import ./lib/testing/selinux-base.nix {
     inherit pkgs mkSystem testing;
   };
+  homesEnabledCheck = import ./lib/testing/homes.nix {
+    inherit lib pkgs mkSystem testing;
+  };
 
   # Stdenv cross-cutting integration check
   stdenvChecks = {
@@ -1940,6 +1943,7 @@ in {
           inherit testing pkgs lib;
         };
         apm-install-at-boot = apmInstallAtBootCheck;
+        homes-enabled = homesEnabledCheck;
         package-expose-lifecycle = packageExposeLifecycleCheck;
         package-preset = packagePresetCheck;
         package-test-http-server = packageTestHttpServerCheck;
