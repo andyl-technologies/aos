@@ -200,7 +200,10 @@ fn digest_shard(value: &str) -> bool {
 }
 
 fn decimal(value: &str) -> bool {
-    !value.is_empty() && (value == "0" || !value.starts_with('0')) && value.parse::<u64>().is_ok()
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && (value == "0" || !value.starts_with('0'))
+        && value.parse::<u64>().is_ok()
 }
 
 fn sequence(value: &str) -> bool {
@@ -220,6 +223,28 @@ fn hex(value: &str, length: usize) -> bool {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_decimal_segments_reject_plus_aliases_and_preserve_boundaries() {
+        for key in [
+            "objects/index/+1/MANIFEST",
+            "gc/+1/state",
+            "gc/cycle/+1",
+            "gc/1/mark/+1/0",
+        ] {
+            assert!(BucketKey::parse(key).is_err(), "{key}");
+        }
+        for key in [
+            "objects/index/0/MANIFEST",
+            "objects/index/18446744073709551615/MANIFEST",
+            "gc/0/state",
+            "gc/cycle/18446744073709551615",
+            "gc/1/mark/255/0",
+        ] {
+            assert!(BucketKey::parse(key).is_ok(), "{key}");
+        }
+        assert!(BucketKey::parse("objects/index/18446744073709551616/MANIFEST").is_err());
+    }
 
     #[test]
     fn registry_rejects_unknown_paths_and_requires_tenant_and_padding() {
