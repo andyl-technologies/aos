@@ -1362,6 +1362,7 @@ fn sync_tree_files(path: &Path) -> Result<()> {
 /// `/var` before its root slot may be overwritten.
 fn persist_store_closure_to_upper(evaluator_ref: &str, upper_store: &Path) -> Result<()> {
     let output = std::process::Command::new("nix-store")
+        .envs(aos_core::nix::aos_management_nix_env())
         .args(["--query", "--requisites", evaluator_ref])
         .output()
         .context("querying evaluator closure for persistent copy-up")?;

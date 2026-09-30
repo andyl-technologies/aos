@@ -140,6 +140,41 @@ in {
   };
 
   config = {
+    # The multi-user Nix pool must never be recycled, including after package
+    # removal: old store objects and retained generations carry numeric owners.
+    assertions = [
+      {
+        assertion = builtins.all (name: let
+          uid = cfg.users.${name}.uid;
+        in
+          uid < 30001 || uid > 30064 || (name == "nixbld${toString (uid - 30000)}" && cfg.users.${name}.group == "nixbld")) (builtins.attrNames cfg.users);
+        message = "UIDs 30001 through 30064 are permanently reserved for their matching nixbld build accounts";
+      }
+      {
+        assertion = builtins.all (name: cfg.groups.${name}.gid != 30000 || name == "nixbld") (builtins.attrNames cfg.groups);
+        message = "GID 30000 is permanently reserved for nixbld";
+      }
+      {
+        assertion = builtins.all (index: let
+          name = "nixbld${toString index}";
+        in
+          !(cfg.users ? ${name}) || (cfg.users.${name}.uid == 30000 + index && cfg.users.${name}.group == "nixbld")) (lib.range 1 64);
+        message = "Nix build account names must retain their reserved UID and primary group";
+      }
+      {
+        assertion = !(cfg.groups ? nixbld) || cfg.groups.nixbld.gid == 30000;
+        message = "The nixbld group must retain GID 30000";
+      }
+      {
+        assertion = builtins.length (lib.unique (lib.mapAttrsToList (_: user: user.uid) cfg.users)) == builtins.length (builtins.attrNames cfg.users);
+        message = "System user UIDs must be unique";
+      }
+      {
+        assertion = builtins.length (lib.unique (lib.mapAttrsToList (_: group: group.gid) cfg.groups)) == builtins.length (builtins.attrNames cfg.groups);
+        message = "System group GIDs must be unique";
+      }
+    ];
+
     # Baseline system users and groups. Declared in a `config` block
     # (rather than as the option's `default = { … }`) so they merge
     # cleanly with entries other modules add via

@@ -66,6 +66,8 @@ cleanup_partial_gen() {
   # destroy the runtime /etc writes preserved from N's earlier life this boot.
   # A leftover fresh-empty upper from a never-completed new gen is harmless;
   # upper lifetime is owned by generation GC and reboot (tmpfs), not this trap.
+  # Release the overlay and its private self-bind so retries can reuse the workdir.
+  @util-linux@/bin/umount --lazy --recursive "${tmpEtc:-/nonexistent}" 2>/dev/null || true
   @util-linux@/bin/umount --lazy "${sys:-/nonexistent}/metadata" 2>/dev/null || true
   @util-linux@/bin/umount --lazy "${sys:-/nonexistent}/content"  2>/dev/null || true
   @util-linux@/bin/umount --lazy "${ign:-/nonexistent}/etc"      2>/dev/null || true
@@ -311,6 +313,80 @@ if [ "${AOS_CREDENTIAL_BARRIER:-0}" = 1 ]; then
 fi
 
 # --- pre-swap reconcile ---
+# Explicit refusal bypasses the ERR trap. Tear down the composed overlay before
+# its lower mounts so automatic retries cannot reuse an already-mounted workdir.
+refuse_nix_daemon_removal() {
+  echo "activate: $*" >&2
+  cleanup_partial_gen
+  exit "$EX_COMPOSE"
+}
+
+# A package that deliberately preserves workers on listener restart must be
+# disabled and drained before its account pool disappears. Socket admission is
+# already closed by the committed disabled generation, so the check cannot
+# race a new daemon activation. Reducing membership retains all pool identities.
+if [ -r /etc/aos/packages/nix-daemon/runtime.env ] && \
+   [ ! -e "$tmpEtc/aos/packages/nix-daemon/runtime.env" ]; then
+  if [ -e /etc/aos/packages/nix-daemon/enabled ]; then
+    refuse_nix_daemon_removal "disable nix-daemon and wait for workers before removing the package"
+  fi
+  for nix_unit in nix-daemon.socket nix-daemon.service; do
+    nix_state=$(@systemd@/bin/systemctl show "$nix_unit" --property=ActiveState --value)
+    case "$nix_state" in
+      inactive|failed) ;;
+      *) refuse_nix_daemon_removal "$nix_unit must be inactive before removing build identities" ;;
+    esac
+  done
+  # Systemd retires an empty inactive slice, so an absent ControlGroup can be
+  # legitimate. Independently inspect host credentials before retiring accounts.
+  for nix_status in /proc/[0-9]*/status; do
+    if [ ! -r "$nix_status" ]; then
+      if [ -e "$nix_status" ]; then
+        refuse_nix_daemon_removal "cannot verify Nix build process credentials"
+      fi
+      continue
+    fi
+    while read -r nix_key nix_uid nix_rest; do
+      if [ "$nix_key" = Uid: ] && [ "$nix_uid" -ge 30001 ] && [ "$nix_uid" -le 30064 ]; then
+        refuse_nix_daemon_removal "a reserved Nix build identity is still running; retry removal after it completes"
+      fi
+    done < "$nix_status"
+  done
+  nix_cgroup=$(@systemd@/bin/systemctl show aos-pkg-nix-daemon.slice --property=ControlGroup --value)
+  nix_slice_state=$(@systemd@/bin/systemctl show aos-pkg-nix-daemon.slice --property=ActiveState --value)
+  case "$nix_cgroup" in
+    "")
+      case "$nix_slice_state" in
+        inactive|failed) ;;
+        *) refuse_nix_daemon_removal "cannot verify nix-daemon's retained worker cgroup" ;;
+      esac
+      ;;
+    /*/aos-pkg-nix-daemon.slice) ;;
+    *) refuse_nix_daemon_removal "cannot verify nix-daemon's retained worker cgroup" ;;
+  esac
+  nix_events="/sys/fs/cgroup$nix_cgroup/cgroup.events"
+  if [ -n "$nix_cgroup" ] && [ -r "$nix_events" ]; then
+    nix_populated=
+    while read -r nix_key nix_value; do
+      if [ "$nix_key" = populated ] && [ "$nix_value" != 0 ]; then
+        refuse_nix_daemon_removal "nix-daemon workers remain in the package slice; retry removal after they complete"
+      fi
+      if [ "$nix_key" = populated ]; then nix_populated=$nix_value; fi
+    done < "$nix_events"
+    if [ "$nix_populated" != 0 ]; then
+      refuse_nix_daemon_removal "cannot verify nix-daemon worker population"
+    fi
+  elif [ -n "$nix_cgroup" ]; then
+    if [ -e "/sys/fs/cgroup$nix_cgroup" ]; then
+      refuse_nix_daemon_removal "cannot read nix-daemon worker population"
+    fi
+    case "$nix_slice_state" in
+      inactive|failed) ;;
+      *) refuse_nix_daemon_removal "cannot verify the retired nix-daemon slice" ;;
+    esac
+  fi
+fi
+
 # Hand off to the package runtime before the swap: diff live /etc against the
 # candidate, stop old-definition units, and capture the post-swap plan path.
 # The path is the command's only stdout; diagnostics go to stderr via Printer.

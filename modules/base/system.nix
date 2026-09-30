@@ -181,6 +181,20 @@ in {
       '';
     };
 
+    packageServicePolicyAbi = lib.mkOption {
+      type = lib.types.int;
+      default = 1;
+      readOnly = true;
+      apply = value:
+        if value == 1
+        then 1
+        else throw "aos.system.packageServicePolicyAbi is an immutable image capability";
+      description = ''
+        Image capability for authenticated service policy drop-ins, retained
+        build-identity removal checks, reserved Nix IDs, and login fragments.
+      '';
+    };
+
     ## System locale (LANG environment variable).
     ##
     ## # Examples
