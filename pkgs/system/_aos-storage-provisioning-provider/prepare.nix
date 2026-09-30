@@ -16,6 +16,10 @@
   evaluate = abilities.provisioningEvaluation.operations.evaluate;
   commit = abilities.storageProvisioning.operations.commit;
   cfg = config.aos.storageProvisioning;
+  evaluationContext =
+    if cfg.evaluationContext == null
+    then evaluationInput
+    else cfg.evaluationContext;
   field = type: description: lib.mkOption {inherit type description;};
   tools = {
     systemd_repart = "${dependencies.systemd}/bin/systemd-repart";
@@ -35,6 +39,12 @@ in {
       type = lib.types.bool;
       default = (config.aos.boot.stage or "host") == "initrd";
       description = "Enable the authorized one-time native provisioning transaction in the selected initrd.";
+    };
+    evaluationContext = lib.mkOption {
+      type = lib.types.nullOr lib.types.pathInStore;
+      default = null;
+      extensible = true;
+      description = "Exact admitted host package and authored source descriptor; standalone evaluation uses its own input when absent.";
     };
     request = lib.mkOption {
       type = types.request;
@@ -67,6 +77,8 @@ in {
         result.options = {
           resource = field lib.types.str "Durable verified disk transaction identity.";
           committed_transaction = field lib.types.str "Immutable canonical native deployment transaction path.";
+          authorized_input = field lib.types.str "Rooted self-contained authorization receipt for checked host source adoption.";
+          authorized_input_sha256 = field lib.types.str "Exact canonical authorization receipt content digest.";
           source = field (lib.types.enum ["operator" "fallback"]) "Configuration source committed by the durable marker.";
         };
         handler = {
@@ -153,6 +165,8 @@ in {
             resource = children.commit.outputs.resource;
             source = children.commit.outputs.source;
             committed_transaction = children.transaction.outputs.path;
+            authorized_input = children.authorizedInput.outputs.path;
+            authorized_input_sha256 = children.authorizedInput.outputs.content_sha256;
           };
         };
       };
@@ -160,7 +174,7 @@ in {
     (lib.mkIf cfg.enable {
       assertions = [
         {
-          assertion = evaluationInput != null && cfg.authorizationConfiguration != null;
+          assertion = evaluationContext != null && cfg.authorizationConfiguration != null;
           message = "Native storage provisioning requires an admitted evaluation input and metadata trust policy.";
         }
       ];
@@ -169,7 +183,7 @@ in {
         lifetime = "persistent";
         input = {
           request = cfg.request;
-          evaluation_context = evaluationInput;
+          evaluation_context = "${evaluationContext}";
           authorization_configuration = cfg.authorizationConfiguration;
         };
       };

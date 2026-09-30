@@ -2,13 +2,14 @@
 let
   lib = import ../../lib {system = "x86_64-linux";};
   freeze = import ../../lib/build/freeze-pkgs.nix {inherit lib;};
+  payload = import ./_fixture-payload.nix "fixture-package";
   program = {
     type = "derivation";
     pname = "fixture-package";
     name = "fixture-package-1";
     version = "1";
     outputName = "out";
-    outPath = "/nix/store/00000000000000000000000000000000-fixture-package";
+    outPath = payload;
     meta.mainProgram = "actual-handler";
   };
   frozen = freeze.frozenFromJSON (freeze.freezeSelectedToJSON {

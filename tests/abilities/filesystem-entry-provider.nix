@@ -1,126 +1,66 @@
-##! Filesystem-entry planning publication from the selected package provider.
+##! Native filesystem entries retain typed paths and exact parent authority.
 {
   lib,
   pkgs,
 }: let
-  selectedProvider = import ./_selected-package-provider.nix {
+  payload = import ../effects/_fixture-payload.nix "filesystem";
+  package = {
+    _type = "aos-package-artifact";
+    name = "aos-filesystem-provider";
+    path = payload;
+    outputs.out = payload;
+    outPath = payload;
+    meta.mainProgram = "aos-filesystem-provider";
+  };
+  evaluated = lib.evalModules {
     inherit lib;
-    package = pkgs.aos-filesystem-provider;
-    implementation = "filesystem-entry";
-  };
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  filesystemEntry = serviceManagement.interfaces.filesystemEntry;
-  baseBindings = {
-    "test:entry" = {
-      request = "consumer:entry";
-      implementation = "aos-filesystem-provider:filesystem-entry";
-      providerInstance = "aos-filesystem-provider:filesystem";
-      slot = "entry";
-    };
-  };
-  evaluate = {
-    bindings,
-    abilityResolution ? {},
-  }:
-    lib.evalModules {
-      inherit lib;
-      modules = [
-        ../../modules/abilities/default.nix
-        {
-          config.aos.abilities = {
-            environment = {
-              authority = "test";
-              key = "filesystem-entry";
-              stage = "host";
-            };
-            instances."aos-filesystem-provider:filesystem" = {};
-            inherit bindings;
-          };
-        }
-      ];
-      packageModules = [
-        {
-          name = "aos-filesystem-provider";
-          inherit (pkgs.aos-filesystem-provider) version;
-          module = pkgs.aos-filesystem-provider.module + "/module.nix";
-        }
-        {
-          name = "consumer";
-          module.config.aos.abilities = {
-            instances.application = {};
-            requirementTemplates.entry = {
-              interface = filesystemEntry.identity.name;
-              inherit (filesystemEntry.identity) abi descriptor;
-              methods = ["materialize" "observe" "release"];
-              guarantees = [];
-              strength = "required";
-              fallback = null;
-            };
-            requests.entry = {
-              requirement = "entry";
-              consumer = "application";
-              scope = ["filesystem"];
-              parameters = {
-                name = "runtime-root";
-                entry.kind = "directory";
-                destination = "/run/example";
-                mode = "0750";
-                prerequisites = [];
-              };
-            };
-          };
-        }
-      ];
-      selectedProviderModules = [selectedProvider];
-      specialArgs = {
-        inherit pkgs abilityResolution;
-        provenance = {
-          dependencyOwnersOfAttr = _: _: [];
-          ownerOfListAttr = _: _: _: "@test";
+    specialArgs = {inherit package;};
+    modules = [
+      ../../lib/effects/module.nix
+      ../../pkgs/filesystem/_aos-filesystem-provider/module.nix
+      ({config, ...}: {
+        aos.directories.state = {
+          enable = true;
+          path = "/var/lib/example";
+          persistent = true;
+          mode = "0750";
         };
-      };
-    };
-  pending = evaluate {bindings = baseBindings;};
-  effectsChild = builtins.head (builtins.attrValues pending.config.aos.abilities.compositionPendingRequests);
-  resolvedAbilityInputs = import ./_composition-resolution.nix {
-    abilities = pending.config.aos.abilities;
-  };
-  evaluation = evaluate {
-    bindings =
-      baseBindings
-      // {
-        "test:entry-effects" = {
-          request = effectsChild.request;
-          implementation = "aos-filesystem-provider:filesystem-entry-effects";
-          providerInstance = "aos-filesystem-provider:filesystem";
-          slot = effectsChild.slot;
+        aos.abilities.filesystem.operations.entry.effects.child.input = {
+          kind = "directory";
+          path = "/var/lib/example/child";
+          parentResource = config.aos.abilities.filesystem.operations.persistentAllocate.effects.state.outputs.resource;
         };
-      };
-    abilityResolution = resolvedAbilityInputs;
+        aos.abilities.filesystem.operations.privilegedExecutable.effects.ping.input = {
+          name = "ping";
+          source = "${package.path}/bin/ping";
+        };
+        aos.abilities.filesystem.operations.symlinkTree.effects.configuration.input = {
+          path = "/etc/example";
+          sourcePath = "${package.path}/etc/example";
+        };
+      })
+    ];
   };
-  abilities = evaluation.config.aos.abilities;
-  output = abilities.compositionOutputs."consumer:entry".resource;
-  resources = builtins.attrValues abilities.resolvedResources;
-  resource = builtins.head (builtins.filter (candidate:
-    candidate.resource == output.value.resource)
-  resources);
+  nodes = builtins.attrValues evaluated.config.aos.activation.graph.nodes;
+  node = operation: builtins.head (builtins.filter (value: builtins.elem operation value.identity) nodes);
+  parent = node "persistentAllocate";
+  child = node "entry";
+  wrapper = node "privilegedExecutable";
+  tree = node "symlinkTree";
 in
-  assert output.phase == "planning";
-  assert output.visibility == "protected";
-  assert output.lifetime == "instance";
-  assert !(output.value ? _type);
-  assert output.value.interface == filesystemEntry.identity;
-  assert output.value.resource == resource.resource;
-  assert output.value.operations == ["observe"];
-  assert resource.value.destination == "/run/example";
-  assert resource.realization.path == "/run/example";
-  assert abilities.implementations."aos-filesystem-provider:filesystem-entry".handlerDescriptor == null;
-  assert abilities.implementations."aos-filesystem-provider:filesystem-entry-effects".providerModule == null;
-  assert abilities.implementations."aos-filesystem-provider:filesystem-entry-effects".handlerDescriptor.entryPoint
-  == "libexec/aos-filesystem-provider";
-  assert abilities.implementations."aos-filesystem-provider:storage-allocation-effects".handlerDescriptor.entryPoint
-  == "libexec/aos-filesystem-provider";
-  assert abilities.implementations."aos-filesystem-provider:persistent-storage-allocation-effects".handlerDescriptor.entryPoint
-  == "libexec/aos-filesystem-provider";
-  assert abilities.implementations."aos-filesystem-provider:storage-view-effects".handlerDescriptor.entryPoint
-  == "libexec/aos-filesystem-provider"; true
+  assert builtins.length nodes == 4;
+  assert parent.lifetime == "persistent";
+  assert parent.input.path == "/var/lib/example";
+  assert parent.input.mode == "0750";
+  assert child.dependencies == [(builtins.hashString "sha256" (builtins.toJSON parent.identity))];
+  assert child.input.parentResource.identity == parent.identity;
+  assert child.results.path.kind == "string";
+  assert child.results.resource.kind == "string";
+  assert wrapper.input.mode == "4755";
+  assert wrapper.input.owner == "root";
+  assert wrapper.input.group == "root";
+  assert tree.input.sourcePath == "${package.path}/etc/example";
+  assert tree.input.mode == "0777";
+  assert tree.results.path.kind == "string";
+  assert tree.results.resource.kind == "string";
+  assert builtins.all (value: value.handler.executable == "${package.path}/bin/aos-filesystem-provider") nodes; true

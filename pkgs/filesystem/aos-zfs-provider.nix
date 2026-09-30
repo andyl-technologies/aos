@@ -10,6 +10,7 @@
   zfs,
   service-management,
   storage-interface,
+  kernel-interface,
   kmod,
   aos-kernel-tunable-provider,
 }: let
@@ -92,7 +93,7 @@ in
     runtimeDeps = [zfs];
 
     module = ./_aos-zfs-provider;
-    moduleDeps = [service-management storage-interface kmod aos-kernel-tunable-provider];
+    moduleDeps = [service-management storage-interface kernel-interface kmod aos-kernel-tunable-provider];
     preBuild = staticBuildSetup;
 
     postInstall = ''

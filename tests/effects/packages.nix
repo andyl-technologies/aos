@@ -1,6 +1,7 @@
 ##! Native package interfaces, dependency composition, and deferred ownership.
 let
   lib = import ../../lib {system = "x86_64-linux";};
+  fixturePayload = import ./_fixture-payload.nix;
   modules = import ../../lib/build/package-modules.nix {};
   artifacts = import ../../lib/packages/artifacts.nix {};
   package = name: source: {
@@ -8,7 +9,7 @@ let
     pname = name;
     version = "1";
     system = "x86_64-linux";
-    outPath = "/nix/store/00000000000000000000000000000000-${name}";
+    outPath = fixturePayload name;
     module = builtins.path {
       path = source;
       name = "${name}-module";
@@ -46,7 +47,7 @@ let
     // {
       outputs = ["out" "tools"];
       out = consumer;
-      tools = consumer // {outPath = "/nix/store/11111111111111111111111111111111-echo-consumer-tools";};
+      tools = consumer // {outPath = fixturePayload "echo-consumer-tools";};
     };
   published = multiOutput // {deployment = artifacts.envelope multiOutput;};
   tools = published // {outPath = multiOutput.tools.outPath;};
@@ -59,12 +60,12 @@ in {
   inherit evaluated consumer handler;
   checks = {
     sharedModuleAcrossOutputs = assert builtins.length selectedOutputs.deployment.packages == 2;
-    assert builtins.length selectedOutputs.deployment.artifacts == 3;
+    assert builtins.length selectedOutputs.deployment.artifacts == 2;
     assert builtins.length selectedOutputs.documentation.packages == 2; true;
     namedArtifactOutput = assert builtins.toString (artifacts.value published.deployment.package).tools == tools.outPath; true;
     conflictingModuleIdentity = assert !(builtins.tryEval (builtins.deepSeq (modules.closure [published (tools // {deployment = tools.deployment // {package = tools.deployment.package // {version = "2";};};})]) true)).success; true;
     mergedResultModule = assert builtins.attrNames extended.documentation.abilities.echo.run.result == ["extra" "message"]; true;
-    payloadWithoutModule = assert builtins.length evaluated.deployment.artifacts == 4; true;
+    payloadWithoutModule = assert builtins.length evaluated.deployment.artifacts == 3; true;
     closure = assert builtins.length evaluated.deployment.packages == 3; true;
     packageOwnership = assert node.owner == "echo-consumer"; true;
     stableScope = assert node.identity == ["profile" "main" "echo-consumer" "echo" "run" "main"]; true;

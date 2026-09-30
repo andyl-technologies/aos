@@ -1,6 +1,7 @@
 ##! Native OpenZFS configuration with pool and dataset effect ownership.
 {
   config,
+  options,
   lib,
   package,
   dependencies,
@@ -181,7 +182,6 @@ in {
         hardwareMonitoringRecommended = true;
       };
       aos.storage.readinessByProvider.${packageName} = lib.mkIf cfg.enable readinessResources;
-      aos.kernel.externalPackages.${packageName} = lib.mkIf cfg.enable [dependencies.zfs];
       aos.kernel.commandLineParts.${packageName} = lib.mkIf cfg.enable cfg.moduleParameters;
     }
 
@@ -257,5 +257,11 @@ in {
       };
     }
     (lib.mkIf cfg.enable {aos.filesystems.zfs.maintenance.enable = lib.mkDefault true;})
+    (lib.optionalAttrs ((options.aos.kernel or {}) ? externalPackages) {
+      aos.kernel.externalPackages.${packageName} = lib.mkIf cfg.enable [dependencies.zfs];
+    })
+    (lib.optionalAttrs ((options.aos.boot or {}) ? storageServices) {
+      aos.boot.storageServices.zfs.packagePath = toString dependencies.zfs;
+    })
   ];
 }

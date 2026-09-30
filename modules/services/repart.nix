@@ -1,8 +1,7 @@
 ##! modules/services/repart.nix — one-time host-driven storage provisioning
 ##!
-##! Selects the package-owned checked block-storage provider for the initrd
-##! fixed point. The resolved stage executor is the only mutation path; its
-##! retained ResourceReference and result evidence carry provisioning state.
+##! Selects the retained provisioning module and handler payload for initrd
+##! evaluation. The native transaction runtime owns mutation and recovery.
 {
   config,
   lib,
