@@ -1481,6 +1481,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.0.historical_host_terminal_no_apply_archive(source)
     }
 
+    /// Captures bounded complete originals without reserving another request.
+    pub(crate) fn capture_failed_create_originals_v3(
+        &mut self,
+        source: &aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1,
+    ) -> Result<crate::recovery::RetainedFailedCreateOriginalsDataV3, BrokerSessionSecurityError> {
+        self.0.capture_failed_create_originals_v3(source)
+    }
+
     /// Returns the current verified Storage transcript binding for this socket.
     ///
     /// # Errors

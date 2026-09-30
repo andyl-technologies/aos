@@ -12,6 +12,7 @@ mod historical_checkpoint;
 mod host_terminal_archive;
 mod owner;
 mod operator_repair_history;
+mod original_create_failure;
 mod pending_request;
 mod storage_inventory_abandonment;
 mod storage_inventory_archive;
@@ -25,6 +26,7 @@ pub(crate) use storage_inventory_archive::ArchivedStorageInventoryHeadV1;
 pub(crate) use historical_checkpoint::HistoricalSessionCheckpointV1;
 use owner::JournalOwnerV1;
 pub(crate) use pending_request::ProtectedPendingBrokerRequestCutV1;
+pub(crate) use original_create_failure::RetainedFailedCreateOriginalsDataV3;
 
 use std::path::{Path, PathBuf};
 
