@@ -12,6 +12,7 @@
   jq,
   tar,
   common,
+  deploymentChecker,
 }: {
   image,
   references,

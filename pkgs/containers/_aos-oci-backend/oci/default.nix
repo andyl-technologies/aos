@@ -18,21 +18,16 @@
   gzip,
   jq,
   tar,
-  abilityContractValidator,
   mkReferenceGraph,
+  deploymentChecker,
 }: let
   common = import ./common.nix {inherit lib;};
-  checkedPackageOrigin = import ./checked-package-origin.nix {
-    abilities = lib.abilities;
-    inherit common;
-  };
   baseDependencies = {
-    inherit lib mkDerivation coreutils findutils gzip jq tar common;
+    inherit lib mkDerivation coreutils findutils gzip jq tar common deploymentChecker;
   };
-  abilityContractDependencies = baseDependencies // {inherit abilityContractValidator;};
   dependencies = baseDependencies // {inherit mkReferenceGraph;};
 in rec {
-  inherit common checkedPackageOrigin;
+  inherit common;
   inherit mkReferenceGraph;
 
   layerAbi = "aos.container.layer/v2";
@@ -48,15 +43,15 @@ in rec {
 
   mkClosureLayer = import ./closure-layer.nix dependencies;
   mkRootMetadataLayer = import ./metadata-layer.nix baseDependencies;
-  mkImageLayout = import ./image-layout.nix abilityContractDependencies;
-  mkMultiPlatformIndex = import ./multi-platform-index.nix abilityContractDependencies;
+  mkImageLayout = import ./image-layout.nix baseDependencies;
+  mkMultiPlatformIndex = import ./multi-platform-index.nix baseDependencies;
   mkDockerArchive = import ./docker-archive.nix baseDependencies;
   mkEvidenceSourceGraph = import ./evidence-source-graph.nix {
     inherit lib mkDerivation coreutils jq;
   };
   mkEvidenceLayout = import ./evidence-layout.nix baseDependencies;
-  mkStaticAbilityContract = import ./static-ability-contract.nix {
-    inherit lib mkDerivation abilityContractValidator common;
+  mkDeploymentArtifact = import ./deployment-artifact.nix {
+    inherit lib mkDerivation coreutils jq common deploymentChecker;
   };
 
   # Short aliases are useful to call sites while the long names preserve the

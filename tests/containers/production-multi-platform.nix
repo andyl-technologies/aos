@@ -27,6 +27,7 @@ pkgs.mkDerivation {
       pkgs.diffutils
       pkgs.findutils
       pkgs.jq
+      pkgs.aos-deployment-check
       pkgs.tar
       primaryIndex
       repeatIndex
@@ -80,21 +81,25 @@ pkgs.mkDerivation {
           ' ${primaryIndex}/layout/index.json >/dev/null \
           || fail "production root descriptor annotations diverge from the signed index"
 
-        ability_contract_digest=$(sha256sum ${primaryIndex}/static-ability-contract.json | cut -d ' ' -f 1)
+        ${builtins.readFile ../../pkgs/containers/_aos-oci-backend/oci/deployment-validation.sh}
+        validate_deployment_artifact ${primaryIndex}/deployment.json \
+          ${pkgs.aos-deployment-check}/bin/aos-deployment-check ${pkgs.jq}/bin/jq
+        deployment_digest=$(sha256sum ${primaryIndex}/deployment.json | cut -d ' ' -f 1)
         jq -e '
-          .schema == "aos.container.static-abilities/v1"
-          and .runtime_grants == []
+          .schema == "aos.artifact.deployment/v1"
+          and .artifactClass == "container"
+          and .executionStage == null
           and [.platforms[].platform] == [
             {architecture: "amd64", os: "linux"},
             {architecture: "arm64", os: "linux"}
           ]
-        ' ${primaryIndex}/static-ability-contract.json >/dev/null \
-          || fail "production static ability contract is not the canonical two-platform contract"
+        ' ${primaryIndex}/deployment.json >/dev/null \
+          || fail "production deployment is not the canonical two-platform transaction set"
         jq -e \
-          --arg digest "sha256:$ability_contract_digest" '
-            .annotations."dev.andyl.aos.ability-contract.digest" == $digest
+          --arg digest "sha256:$deployment_digest" '
+            .annotations."dev.andyl.aos.deployment.digest" == $digest
           ' ${primaryIndex}/image-index.json >/dev/null \
-          || fail "production index does not bind its static ability contract"
+          || fail "production index does not bind its native deployment"
 
         jq -e \
           --slurpfile descriptor ${primaryIndex}/index-descriptor.json \
@@ -103,8 +108,8 @@ pkgs.mkDerivation {
             and .oci.index == $descriptor[0]
             and .oci.platformManifests == $index[0].manifests
             and (.oci.platformManifests | length) == 2
-            and .evidence.abilities.artifactType
-              == "application/vnd.aos.container.static-abilities.v1+json"
+            and .evidence.deployment.artifactType
+              == "application/vnd.aos.artifact.deployment.v1+json"
             and .qualification.readyForVerifiedPublication == true
           ' ${evidence}/signature-input.json >/dev/null \
           || fail "signature input does not bind the coordinated production index"

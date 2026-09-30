@@ -179,8 +179,8 @@ test -f "$AOS_EVIDENCE_IMAGE/image-index.json"
 test -f "$AOS_EVIDENCE_REFERENCE_GRAPH/inventory.json"
 test -f "$AOS_EVIDENCE_SOURCE_GRAPH/inventory.json"
 test -f "$AOS_EVIDENCE_LAYER_PATHS"
-test -f "$AOS_EVIDENCE_ABILITY_CONTRACT/contract.json"
-test -f "$AOS_EVIDENCE_ABILITY_CONTRACT/descriptor.json"
+test -f "$AOS_EVIDENCE_DEPLOYMENT/deployment.json"
+test -f "$AOS_EVIDENCE_DEPLOYMENT/descriptor.json"
 
 mkdir -p "$out/evidence" "$out/referrers"
 cp -R "$AOS_EVIDENCE_IMAGE/layout" "$out/layout"
@@ -189,34 +189,33 @@ cp --reflink=auto "$AOS_EVIDENCE_IMAGE/image-index.json" "$out/image-index.json"
 cp --reflink=auto "$AOS_EVIDENCE_IMAGE/index-descriptor.json" index-descriptor.json
 cp --reflink=auto index-descriptor.json "$out/index-descriptor.json"
 cp --reflink=auto \
-  "$AOS_EVIDENCE_ABILITY_CONTRACT/contract.json" \
-  "$out/evidence/abilities.payload.json"
-ability_contract_hex=$(sha256sum "$out/evidence/abilities.payload.json" | cut -d ' ' -f 1)
-ability_contract_size=$(stat -c %s "$out/evidence/abilities.payload.json")
-cmp "$AOS_EVIDENCE_ABILITY_CONTRACT/contract.json" \
-  "$AOS_EVIDENCE_IMAGE/static-ability-contract.json"
+  "$AOS_EVIDENCE_DEPLOYMENT/deployment.json" \
+  "$out/evidence/deployment.payload.json"
+deployment_hex=$(sha256sum "$out/evidence/deployment.payload.json" | cut -d ' ' -f 1)
+deployment_size=$(stat -c %s "$out/evidence/deployment.payload.json")
+cmp "$AOS_EVIDENCE_DEPLOYMENT/deployment.json" \
+  "$AOS_EVIDENCE_IMAGE/deployment.json"
 jq -e \
-  --arg digest "sha256:$ability_contract_hex" \
-  --arg mediaType "application/vnd.aos.container.static-abilities.v1+json" \
-  --argjson size "$ability_contract_size" '
+  --arg digest "sha256:$deployment_hex" \
+  --arg mediaType "application/vnd.aos.artifact.deployment.v1+json" \
+  --argjson size "$deployment_size" '
     .mediaType == $mediaType
     and .digest == $digest
     and .size == $size
-  ' "$AOS_EVIDENCE_ABILITY_CONTRACT/descriptor.json" >/dev/null
+  ' "$AOS_EVIDENCE_DEPLOYMENT/descriptor.json" >/dev/null
 jq -e '
-  .schema == "aos.container.static-abilities/v1"
-  and .runtime_grants == []
+  .schema == "aos.artifact.deployment/v1"
   and (.platforms | type == "array" and length > 0)
-' "$out/evidence/abilities.payload.json" >/dev/null
+' "$out/evidence/deployment.payload.json" >/dev/null
 jq -e \
-  --arg digest "sha256:$ability_contract_hex" \
-  --arg mediaType "application/vnd.aos.container.static-abilities.v1+json" '
-    .annotations."dev.andyl.aos.ability-contract.digest" == $digest
-    and .annotations."dev.andyl.aos.ability-contract.media-type" == $mediaType
-    and .annotations."dev.andyl.aos.ability-contract.schema"
-      == "aos.container.static-abilities/v1"
+  --arg digest "sha256:$deployment_hex" \
+  --arg mediaType "application/vnd.aos.artifact.deployment.v1+json" '
+    .annotations."dev.andyl.aos.deployment.digest" == $digest
+    and .annotations."dev.andyl.aos.deployment.media-type" == $mediaType
+    and .annotations."dev.andyl.aos.deployment.schema"
+      == "aos.artifact.deployment/v1"
   ' "$AOS_EVIDENCE_IMAGE/image-index.json" >/dev/null || {
-    echo "static ability contract does not match the evidence subject index" >&2
+    echo "native deployment artifact does not match the evidence subject index" >&2
     exit 1
   }
 
@@ -656,7 +655,7 @@ write_compact_json empty-descriptor.pretty.json empty-descriptor.json
 
 : > referrers.jsonl
 add_artifact closure application/vnd.aos.nix-closure.v1+json "$out/evidence/closure.payload.json"
-add_artifact abilities application/vnd.aos.container.static-abilities.v1+json "$out/evidence/abilities.payload.json"
+add_artifact deployment application/vnd.aos.artifact.deployment.v1+json "$out/evidence/deployment.payload.json"
 add_artifact sbom application/spdx+json "$out/evidence/sbom.payload.json"
 add_artifact \
   source \
@@ -687,7 +686,7 @@ jq -S -n \
   --slurpfile index index-descriptor.json \
   --slurpfile imageIndex "$out/image-index.json" \
   --slurpfile closure "$out/evidence/closure.descriptor.json" \
-  --slurpfile abilities "$out/evidence/abilities.descriptor.json" \
+  --slurpfile deployment "$out/evidence/deployment.descriptor.json" \
   --slurpfile sbom "$out/evidence/sbom.descriptor.json" \
   --slurpfile source "$out/evidence/source.descriptor.json" \
   --slurpfile license "$out/evidence/license.descriptor.json" \
@@ -712,7 +711,7 @@ jq -S -n \
         closure: $closure[0]
       },
       evidence: {
-        abilities: $abilities[0],
+        deployment: $deployment[0],
         sbom: $sbom[0],
         source: $source[0],
         license: $license[0],

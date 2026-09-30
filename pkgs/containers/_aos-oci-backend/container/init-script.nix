@@ -11,6 +11,7 @@
   registrationPath ? "${rootPrefix}/aos-registration",
   storePathsPath ? "${rootPrefix}/usr/lib/aos-container/store-paths",
   bakedRootsPath ? "${rootPrefix}/usr/lib/aos-container/baked-roots",
+  deploymentPath ? null,
   defaultCommand ? ["/usr/bin/aos" "--help"],
 }: let
   rootPath = path: "${rootPrefix}${path}";
@@ -216,6 +217,19 @@ in ''
     mv --no-copy -T "$read_only_fresh" "$read_only_marker" \
       || fail "could not publish the container read-only marker"
   fi
+
+  ${lib.optionalString (deploymentPath != null) ''
+    # Resume the package transaction before publishing the container readiness marker.
+    deployment_input=${lib.escapeShellArg deploymentPath}
+    admission_digest=$(< "$deployment_input/admission-sha256")
+    ${pkgs.aos.apm}/bin/apm apply-deployment \
+      --input "$deployment_input" \
+      --state-directory ${lib.escapeShellArg (rootPath "/var/lib/apm/container-runtime")} \
+      --nix-store ${pkgs.nix}/bin/nix-store \
+      --admission "$deployment_input/admission.json" \
+      --admission-sha256 "$admission_digest" \
+      || fail "could not resume the native container deployment"
+  ''}
 
   pid1_stat=$(< /proc/1/stat) \
     || fail "could not read PID-1 identity"

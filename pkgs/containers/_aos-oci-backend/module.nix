@@ -1,47 +1,11 @@
-##! Concrete OCI artifact construction selected by the backend package.
+##! Package-owned OCI artifact composition selected through ordinary modules.
 {
-  abilitySelection ? null,
   config,
   lib,
-  packageArtifactFor,
+  package,
   ...
 }: let
   schema = import ./container/schema.nix;
-  backendInterface = lib.abilities.interfaces.artifactBackend.interfaces.backend;
-  backendArtifact = lib.abilities.packageOutput {};
-  selectedBindings =
-    if abilitySelection == null
-    then []
-    else abilitySelection.bindingsForImplementation "artifact-backend";
-  selectedBinding =
-    if builtins.length selectedBindings > 1
-    then throw "the OCI artifact backend implementation has several selected bindings"
-    else if selectedBindings == []
-    then null
-    else builtins.head selectedBindings;
-  selected =
-    if selectedBinding == null
-    then false
-    else
-      config.aos.abilities.environment
-      != null
-      && config.aos.abilities.environment.stage == "host";
-  providerReady =
-    selected
-    && selectedBinding.implementation.value.provide != null;
-
-  # Deployable artifacts retain executable abilities, not probe-only inputs.
-  packageProjectionsFor = packages:
-    builtins.map
-    lib.abilities.authenticatedRuntimePackageProjectionFor
-    (lib.abilities.canonicalizeAuthenticatedPackages (builtins.filter
-      (package:
-        builtins.isAttrs package
-        && package ? abilities
-        && package ? contract
-        && package ? module
-        && package.contract.value.package_module != null)
-      packages));
   platformFor = targetPlatform:
     if targetPlatform.os == "linux" && targetPlatform.cpu == "x86_64"
     then {
@@ -56,23 +20,27 @@
     else
       throw
       "aos-oci-backend does not support target ${targetPlatform.cpu}-${targetPlatform.os}";
-  selectedBackendOutput =
-    config.aos.abilities.compositionOutputs.${selectedBinding.binding.request}.artifact-reference.value
-    or null;
   authoredBackend = {
     _type = "aos-package-artifact-backend";
     name = "oci";
-    package = packageArtifactFor backendArtifact;
+    inherit package;
 
-    buildStaticContract = args:
-      args.ociTools.mkStaticAbilityContract {
+    buildDeploymentArtifact = args:
+      args.ociTools.mkDeploymentArtifact {
         inherit
           (args)
           pname
           artifactClass
           executionStage
           ;
-        packageProjections = packageProjectionsFor args.packageRoots;
+        pkgs = args.pkgs;
+        packages = args.packages;
+        evaluated = args.evaluated or null;
+        configuration = args.configuration or [];
+        runtimeConfiguration = args.runtimeConfiguration or [];
+        evaluationInput = args.evaluationInput or null;
+        operatorModules = args.operatorModules or [];
+        scope = args.scope;
         runtimeRoots = args.packageRoots;
         platform = platformFor args.targetPlatform;
         targetPlatform = {
@@ -100,22 +68,16 @@
           systemIdentity
           definitionAttribute
           ;
-        packageProjections = packageProjectionsFor args.container.packageRoots;
+        operatorModules = args.operatorModules or [];
+        configuration = args.configuration or [];
+        runtimeConfiguration = args.runtimeConfiguration or [];
+        evaluationInput = args.evaluationInput or null;
         oci = args.pkgs.ociTools;
       };
   };
-  backendProjectionReady =
-    selectedBackendOutput
-    != null
-    && selectedBackendOutput == backendArtifact;
-  checkedProviderReady =
-    providerReady
-    && (
-      if backendProjectionReady
-      then true
-      else throw "selected artifact backend projection differs from its checked planning output"
-    );
 in {
+  imports = [./backend-option.nix];
+
   options = {
     aos.containers = {
       enable = lib.mkOption {
@@ -162,27 +124,10 @@ in {
         config.aos.containers.definitions.${name}.assertions
     ) (builtins.attrNames config.aos.containers.definitions);
 
-    aos.abilities = {
-      implementations.artifact-backend = {
-        description = "Builds static contracts and OCI artifacts from checked package origins.";
-        interface = backendInterface.identity;
-        artifact = backendArtifact;
-        methods = [];
-        guarantees = [];
-        providerModule = {
-          artifact = lib.abilities.packageOutput {output = "module";};
-          path = "provider.nix";
-        };
-      };
-      instances = lib.mkIf selected {
-        artifact-backend-provider.implementation = "artifact-backend";
-      };
-    };
-
-    aos.artifacts.backend = lib.mkIf checkedProviderReady (authoredBackend // {artifact = selectedBackendOutput;});
-    aos.containers = lib.mkIf selected {
-      enable = true;
-      default = "aos";
+    aos.artifacts.backend = authoredBackend // {artifact = package;};
+    aos.containers = {
+      enable = lib.mkDefault true;
+      default = lib.mkDefault "aos";
     };
   };
 }

@@ -63,15 +63,15 @@
 
   primaryImages = map (build: build.qualification.primaryImage) sortedBuilds;
   repeatImages = map (build: build.qualification.repeatImage) sortedBuilds;
-  staticAbilityContract = oci.mkStaticAbilityContract {
-    pname = "aos-container-${name}-production-static-abilities";
-    contracts = map (build: build.coordination.staticAbilityContract) sortedBuilds;
+  deploymentArtifact = oci.mkDeploymentArtifact {
+    pname = "aos-container-${name}-production-deployment";
+    contracts = map (build: build.coordination.deploymentArtifact) sortedBuilds;
   };
   referenceName = "${first.coordination.repository}:${first.coordination.referenceTag}";
   primaryIndex = oci.mkMultiPlatformIndex {
     pname = "aos-container-${name}-production-index";
     images = primaryImages;
-    abilityContract = staticAbilityContract;
+    deploymentArtifact = deploymentArtifact;
     inherit referenceName;
     annotations = first.coordination.indexAnnotations;
   };
@@ -80,7 +80,7 @@
   repeatIndex = oci.mkMultiPlatformIndex {
     pname = "aos-container-${name}-production-index-repeat";
     images = lib.reverseList repeatImages;
-    abilityContract = staticAbilityContract;
+    deploymentArtifact = deploymentArtifact;
     inherit referenceName;
     annotations = first.coordination.indexAnnotations;
   };
@@ -132,7 +132,7 @@
       # graph independently rebuilds every evidence input around those stable
       # subject bytes instead of claiming a different release identity.
       image = primaryIndex;
-      abilityContract = staticAbilityContract;
+      deploymentArtifact = deploymentArtifact;
       inherit (graphs) referenceGraph sourceGraph;
       definitionAttribute = first.coordination.definitionAttribute;
       releaseIdentity = first.coordination.releaseIdentity;
@@ -187,7 +187,7 @@
 in
   builtins.deepSeq validated {
     ociIndex = primaryIndex;
-    inherit evidence publicationInputs check staticAbilityContract;
+    inherit evidence publicationInputs check deploymentArtifact;
     qualification = {
       inherit
         primaryIndex

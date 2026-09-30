@@ -1,11 +1,20 @@
-##! Package-owned OCI container and static-contract artifact backend.
-{
-  mkDerivation,
-}:
+##! Package-owned OCI container and native deployment artifact backend.
+{mkDerivation}:
 mkDerivation {
   platformSupport = {
-    build = [{abi = ["gnu"]; os = ["linux"];}];
-    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+    build = [
+      {
+        abi = ["gnu"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["linux"];
+      }
+    ];
     target = [];
     role = "build-input";
   };
@@ -13,7 +22,7 @@ mkDerivation {
   version = "1";
   src = null;
   runtimeDeps = [];
-  abilities = ./_aos-oci-backend;
+  module = ./_aos-oci-backend;
 
   phases = [
     {
@@ -26,7 +35,7 @@ mkDerivation {
   ];
 
   meta = {
-    description = "Package-owned OCI container and static-contract artifact backend";
+    description = "Package-owned OCI container and native deployment artifact backend";
     license = "Apache-2.0";
   };
 }

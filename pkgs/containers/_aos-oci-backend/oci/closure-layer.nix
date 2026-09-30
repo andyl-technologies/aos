@@ -15,6 +15,7 @@
   tar,
   common,
   mkReferenceGraph,
+  deploymentChecker,
 }: {
   roots,
   subtractRoots ? [],
