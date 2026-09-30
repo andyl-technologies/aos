@@ -62,7 +62,8 @@ const DRAFT_MAGIC: &[u8; 8] = b"AOSCDRF1";
 const DRAFT_VERSION: u16 = 1;
 const DRAFT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-authority-draft.v1\0";
 const MAXIMUM_PUBLICATION_DRAFT_BYTES: usize = 16 * 1024 * 1024;
-const MAXIMUM_PUBLICATION_BYTES: usize = JOURNAL_RECORD_BYTES
+/// Bounds complete publications by the existing journal record overhead.
+pub(crate) const MAXIMUM_PUBLICATION_BYTES: usize = JOURNAL_RECORD_BYTES
     - JOURNAL_RECORD_HEADER_BYTES
     - CURRENT_KEY_PREFIX.len()
     - 16
@@ -1287,6 +1288,28 @@ fn validate_successor(
             && next.digest != current.digest)
     {
         return Err(AuthorityPublicationError::GenerationEquivocation);
+    }
+    Ok(())
+}
+
+/// Checks archived publication bytes without constructing current authority.
+///
+/// # Errors
+///
+/// Rejects a malformed/mismatched historical publication or an optional exact
+/// lease quartet that differs from its canonical retained publication bytes.
+pub(crate) fn validate_historical_output_publication_v1(
+    bytes: &[u8],
+    expected_digest: ObjectDigest,
+    expected_lease: Option<(&[u8], &[u8])>,
+) -> Result<(), AuthorityPublicationError> {
+    let (_, artifacts) = format::decode_prepared_with_artifacts(bytes, expected_digest)?;
+    if let Some((lease, signature)) = expected_lease {
+        if artifacts.lease.canonical_lease() != lease
+            || artifacts.lease.canonical_signature() != signature
+        {
+            return Err(AuthorityPublicationError::CorruptCurrent);
+        }
     }
     Ok(())
 }

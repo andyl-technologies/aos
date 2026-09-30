@@ -102,6 +102,21 @@ pub(super) fn decode_prepared(
     bytes: &[u8],
     expected_digest: ObjectDigest,
 ) -> Result<PreparedAuthorityPublicationV1, AuthorityPublicationError> {
+    decode_prepared_with_artifacts(bytes, expected_digest).map(|(prepared, _)| prepared)
+}
+
+/// Retains the same prepared decode's already-validated historical artifacts.
+///
+/// # Errors
+///
+/// Preserves prepared decoding's exact structural, digest and cross-link errors.
+pub(super) fn decode_prepared_with_artifacts(
+    bytes: &[u8],
+    expected_digest: ObjectDigest,
+) -> Result<
+    (PreparedAuthorityPublicationV1, RecoveredPublicationArtifactsV1),
+    AuthorityPublicationError,
+> {
     if bytes.len() > MAXIMUM_PUBLICATION_BYTES
         || bytes.len() < 10
         || &bytes[..8] != MAGIC
@@ -149,7 +164,7 @@ pub(super) fn decode_prepared(
     let receipt =
         OwnershipTransactionReceiptV1::from_canonical_bytes(recovered.lease.canonical_receipt())
             .map_err(|_| AuthorityPublicationError::CorruptCurrent)?;
-    Ok(PreparedAuthorityPublicationV1 {
+    let prepared = PreparedAuthorityPublicationV1 {
         manifest,
         sandbox,
         incarnation,
@@ -166,7 +181,8 @@ pub(super) fn decode_prepared(
         source_draft_digest,
         digest: expected_digest,
         bytes: bytes.to_vec(),
-    })
+    };
+    Ok((prepared, recovered))
 }
 
 fn derive_source_draft_digest(
@@ -456,4 +472,101 @@ pub(super) fn validate_encoded_publication(
         lease: recovered_lease,
         templates: recovered_templates,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepared_artifact_decode_preserves_the_old_result_and_exact_lease_preimages() {
+        let (_, original) = crate::publication::tests::activation_fixture(1);
+        let bytes = original.canonical_bytes();
+
+        let old = decode_prepared(bytes, original.digest()).unwrap();
+        let (prepared, artifacts) = decode_prepared_with_artifacts(bytes, original.digest()).unwrap();
+
+        assert_eq!(old, original);
+        assert_eq!(prepared, old);
+        assert_eq!(prepared.canonical_bytes(), bytes);
+        let expected = (
+            artifacts.lease.canonical_lease(),
+            artifacts.lease.canonical_signature(),
+        );
+        assert!(crate::publication::validate_historical_output_publication_v1(
+            bytes, original.digest(), Some(expected),
+        ).is_ok());
+    }
+
+    #[test]
+    fn historical_comparison_rejects_each_changed_expected_lease_preimage() {
+        let (_, original) = crate::publication::tests::activation_fixture(1);
+        let bytes = original.canonical_bytes();
+        let (_, artifacts) = decode_prepared_with_artifacts(bytes, original.digest()).unwrap();
+        let lease = artifacts.lease.canonical_lease();
+        let signature = artifacts.lease.canonical_signature();
+        let mut changed_lease = lease.to_vec();
+        changed_lease[0] ^= 1;
+        let mut changed_signature = signature.to_vec();
+        changed_signature[0] ^= 1;
+
+        let changed_preimages = [
+            (changed_lease.as_slice(), signature),
+            (lease, changed_signature.as_slice()),
+        ];
+        for expected in changed_preimages {
+            assert!(matches!(
+                crate::publication::validate_historical_output_publication_v1(
+                    bytes, original.digest(), Some(expected),
+                ),
+                Err(AuthorityPublicationError::CorruptCurrent),
+            ));
+        }
+    }
+
+    #[test]
+    fn old_and_artifact_decoders_keep_malformed_publication_errors_even_without_a_carrier() {
+        let (_, original) = crate::publication::tests::activation_fixture(1);
+        let bytes = original.canonical_bytes();
+        let mut cursor = 10;
+        let mut payload_offsets = Vec::new();
+        for _ in 0..5 {
+            let field = take_bytes(bytes, &mut cursor).unwrap();
+            payload_offsets.push(cursor - field.len());
+        }
+        let audiences = take_u32(bytes, &mut cursor).unwrap();
+        take(bytes, &mut cursor, audiences).unwrap();
+        assert!(take_u32(bytes, &mut cursor).unwrap() > 0);
+        take(bytes, &mut cursor, 33).unwrap();
+        let first_plan = take_bytes(bytes, &mut cursor).unwrap();
+        payload_offsets.push(cursor - first_plan.len());
+
+        for offset in [0, 8].into_iter().chain(payload_offsets) {
+            let mut changed = bytes.to_vec();
+            changed[offset] ^= 0xff;
+            let digest = publication_digest(&changed);
+
+            assert!(
+                matches!(decode_prepared(&changed, digest),
+                    Err(AuthorityPublicationError::CorruptCurrent)),
+                "old decoder accepted {offset}",
+            );
+            assert!(
+                matches!(decode_prepared_with_artifacts(&changed, digest),
+                    Err(AuthorityPublicationError::CorruptCurrent)),
+                "artifact decoder accepted {offset}",
+            );
+            assert!(
+                matches!(crate::publication::validate_historical_output_publication_v1(
+                    &changed, digest, None,
+                ), Err(AuthorityPublicationError::CorruptCurrent)),
+                "carrier-free validation accepted {offset}",
+            );
+        }
+
+        assert!(matches!(decode_prepared(bytes, ObjectDigest::from_bytes([0; 32])),
+            Err(AuthorityPublicationError::CorruptCurrent)));
+        assert!(matches!(decode_prepared_with_artifacts(bytes, ObjectDigest::from_bytes([0; 32])),
+            Err(AuthorityPublicationError::CorruptCurrent)));
+    }
 }
