@@ -507,3 +507,54 @@ This is client protocol and local restart evidence. It does not qualify actual
 Worker queue consumption, Native commit, real R2/S3 behavior, throughput,
 cross-cloud byte budgets, full fleet execution, or hosted acceptance. Mechanical
 formatting follows in a separate commit.
+
+## Retained runtime checkpoint
+
+Commit `5027166b2b` connects bounded signed Native metadata controls, real target
+admission and atomic accounting to the broker and physical guard. Native receives
+no bulk bytes. Immutable Complete and Abort intents, original baselines and
+independent guard receipts survive replay; unknown effects retain their fences.
+Production execution requires independently accepted current provider and
+profile dependencies and fails closed when they are absent.
+
+The source-built focused gates below passed. Counts describe separate scopes;
+overlapping runs are not added into a combined suite result.
+
+| Scope | Passed gates |
+| --- | --- |
+| Core lifecycle and snapshots | 58 direct tests; 176 snapshot, catalogue, historical archive and retained receipt tests |
+| Native and SQL authority | 6 target tests, including 64 real admissions with one invocation-scoped profile discovery; 3 OCI tests with SQLite and live PostgreSQL accounting/replay; 2 separate live PostgreSQL IAM and membership revocation tests; 1 signed ingress fixture |
+| Routing and public contract | 1 complete 428-method route check; 21 retained classifier tests; 2 minimum-size protobuf tests; 3 CLI coverage tests |
+| Clients | 115 focused tests: cache 8, console 23, net 52, OCI 12 and remote 20; console Wasm compilation |
+| CLI reporting | 3 library tests and binary compilation; original counters are reported after commit and on error |
+| Broker and Worker | 9 signed HTTP orchestration tests; 3 journal, 2 provider pool and 1 SQL migration translation tests; default Worker and broker Wasm compilation |
+| Physical guard | 3 Rust tests and the packaged persistent Worker runner: 7 action requests across 3 process lifetimes and 2 SIGKILL restarts, with an explicit test provider; guard Wasm compilation |
+| Installer and acceptance | 8 independent signature and protected discovery tests; 36 Cloudflare configuration, rendering and secret custody tests; Hub CLI compilation |
+
+The actual 64-object broker fixture uses four HTTP phases. Freeze, Baseline,
+Promote and Commit request sizes are 75,309 / 176,494 / 211,956 / 107,495 bytes;
+reply sizes are 221,682 / 75,250 / 177,994 / 202,195 bytes. All fit the unchanged
+256 KiB bound. Lost Commit replies and a new runtime recover disk-retained
+originals without changing the first Complete or CAS. These are encoding and
+replay results, without a throughput claim. Subsequent metadata concurrency work
+is outside this checkpoint.
+
+The separately committed relative snapshot custody fix passes 28 tests in the
+actual build sandbox. Client fixtures under foreign-root ancestry prove refusal
+before effects; their positive cases under a trusted root still require VM
+execution. Earlier failed gates and unknown originals remain retained.
+
+## Small ordinary provider SDK probe
+
+A fresh 32 KiB ordinary provider probe passed direct signed UploadPart, CORS and
+rejection of bytes with an incorrect MD5. Ordinary Create and Complete, HEAD,
+full SHA-256 verification through GET, and native SDK range copy with a
+known-length stream passed. Positive Abort and rejection of late parts also
+passed. Cleanup of the successful probe was positively acknowledged; older
+unknown originals remain retained.
+
+This small probe does not qualify large objects, queue execution, clock bounds,
+staging privacy, capacity, throughput or the full fleet. Installer and local
+runtime gates do not supply that independent provider qualification. Current
+integrated fleet and hosted Native acceptance remain pending; no hosted
+performance result is claimed.
