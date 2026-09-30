@@ -43,6 +43,16 @@ mod execution_control;
 mod operator_recovery;
 mod policy_plan;
 mod public_mutation;
+#[cfg(target_os = "linux")]
+mod nix_environment;
+
+#[cfg(target_os = "linux")]
+pub use nix_environment::{
+    ControllerNixStartRecipeSelectorV2, CurrentRetainedNixStartV2, NixStartAdmissionErrorV2,
+    NixStartContinuationErrorV2,
+};
+#[cfg(target_os = "linux")]
+pub(crate) use nix_environment::{CheckedStartAuthorityV2, NixStartAdmissionCarrierV2};
 
 pub(crate) use public_mutation::resource_version as admitted_public_resource_version_v1;
 
@@ -95,8 +105,32 @@ pub struct PublicCapabilityAttenuationV1 {
 }
 
 /// Lowers authenticated public requests into durable production operation plans.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ProductionOperationCompilerV1;
+#[derive(Debug, Default)]
+pub struct ProductionOperationCompilerV1 {
+    #[cfg(target_os = "linux")]
+    nix_start: Option<std::sync::Arc<ControllerNixStartRecipeSelectorV2>>,
+}
+
+impl ProductionOperationCompilerV1 {
+    /// Constructs the ordinary compiler with no Nix continuation owner.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            #[cfg(target_os = "linux")]
+            nix_start: None,
+        }
+    }
+
+    /// Retains a genuinely admitted fixed-credential Start selector.
+    ///
+    /// This enables durable admission only; it grants no build, floor or
+    /// activation readiness and does not alter Create or Apply lowering.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn with_nix_start(selector: std::sync::Arc<ControllerNixStartRecipeSelectorV2>) -> Self {
+        Self { nix_start: Some(selector) }
+    }
+}
 
 fn authorize_public_mutation(
     journal: &mut Journal,
@@ -105,10 +139,16 @@ fn authorize_public_mutation(
     canonical_request: &[u8],
 ) -> Result<AuthorizedPublicMutationRequestV1, OperationCompilationError> {
     AuthorizedPublicMutationRequestV1::authorize(journal, peer, capability_id, canonical_request)
-        .map_err(|error| match error {
-            PublicMutationAuthorizationErrorV1::Malformed => OperationCompilationError::Malformed,
-            PublicMutationAuthorizationErrorV1::Rejected => OperationCompilationError::Rejected,
-        })
+        .map_err(public_mutation_authorization_error)
+}
+
+fn public_mutation_authorization_error(
+    error: PublicMutationAuthorizationErrorV1,
+) -> OperationCompilationError {
+    match error {
+        PublicMutationAuthorizationErrorV1::Malformed => OperationCompilationError::Malformed,
+        PublicMutationAuthorizationErrorV1::Rejected => OperationCompilationError::Rejected,
+    }
 }
 
 /// Compiles an authorized attach with an independently authenticated Host route.
@@ -220,6 +260,16 @@ impl ActivatedOperationCompiler for ProductionOperationCompilerV1 {
         canonical_request: &[u8],
         request_digest: [u8; 32],
     ) -> Result<OperationPlan, OperationCompilationError> {
+        #[cfg(target_os = "linux")]
+        let authorized = AuthorizedPublicMutationRequestV1::authorize_with_nix_start(
+            journal,
+            peer,
+            capability_id,
+            canonical_request,
+            self.nix_start.as_deref(),
+        )
+        .map_err(public_mutation_authorization_error)?;
+        #[cfg(not(target_os = "linux"))]
         let authorized =
             authorize_public_mutation(journal, peer, capability_id, canonical_request)?;
         let request = authorized.request();
@@ -244,6 +294,8 @@ impl ActivatedOperationCompiler for ProductionOperationCompilerV1 {
                 &authorized,
                 canonical_request,
                 request_digest,
+                #[cfg(target_os = "linux")]
+                self.nix_start.as_deref(),
             ),
         }
     }
@@ -996,6 +1048,13 @@ mod renewal_replay_tests {
         SingleNodeEffectExecutor,
     };
     use crate::{IdempotencyKey, JournalLimits};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ordinary_compilers_have_no_nix_start_owner() {
+        assert!(ProductionOperationCompilerV1::new().nix_start.is_none());
+        assert!(ProductionOperationCompilerV1::default().nix_start.is_none());
+    }
 
     struct TestDirectory(PathBuf);
 

@@ -125,6 +125,11 @@ pub mod ownership_service;
 pub mod policy_compiler;
 #[cfg(target_os = "linux")]
 pub mod production_operation_compiler;
+
+#[cfg(target_os = "linux")]
+pub use production_operation_compiler::{
+    ControllerNixStartRecipeSelectorV2, NixStartAdmissionErrorV2,
+};
 #[cfg(target_os = "linux")]
 pub mod public_api_session;
 pub mod public_attach_pending;
