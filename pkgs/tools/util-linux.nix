@@ -1,6 +1,7 @@
 ##! util-linux — Miscellaneous system utilities
 {
   lib,
+  service-management,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -29,8 +30,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -163,7 +175,8 @@ in
     ];
     propagatedDeps = [libselinux];
 
-    abilities = ./_util-linux-getty;
+    module = ./_util-linux-getty;
+    moduleDeps = [service-management];
 
     phases = [
       {

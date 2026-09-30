@@ -37,7 +37,7 @@ in
     pname = "aos-systemd-provider";
     qualification.packageProbe = lib.qualification.providerExecutableProbe {
       name = "aos-systemd-provider";
-      entryPoint = "bin/aos-systemd-provider";
+      entryPoint = "bin/aos-systemd-native-resource-provider";
     };
 
     inherit version cargoDeps;
@@ -66,9 +66,9 @@ in
     runtimeDeps = [libssh2 openssl sqlite tpm2-tools zlib];
 
     meta = {
-      description = "Authenticated systemd ability provider";
+      description = "Native systemd resource handlers and retained platform tools";
       homepage = "https://github.com/andyl/andyl-os";
       license = "Apache-2.0";
-      mainProgram = "aos-systemd-provider";
+      mainProgram = "aos-systemd-native-resource-provider";
     };
   }
