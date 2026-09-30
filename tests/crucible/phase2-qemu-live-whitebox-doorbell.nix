@@ -337,12 +337,14 @@
       grep -Fxq 'execution_fingerprint=not-observed' "$aarch64_report"
       grep -Fxq 'boot_barrier_ceiling_enforced=true' "$aarch64_report"
       grep -Fxq 'orderly_child_exit=true' "$aarch64_report"
-      aarch64_first_icount=$(sed -n \
+      aarch64_first_tick=$(sed -n \
         's/^whitebox_marker_icount=\([0-9][0-9]*\)$/\1/p' "$aarch64_report")
-      aarch64_last_icount=$(sed -n \
+      aarch64_last_tick=$(sed -n \
         's/^whitebox_last_marker_icount=\([0-9][0-9]*\)$/\1/p' "$aarch64_report")
-      test -n "$aarch64_first_icount"
-      test "$aarch64_last_icount" -eq "$((aarch64_first_icount + 1))"
+      test -n "$aarch64_first_tick"
+      # The marker ring carries pre-instruction simulation ticks. Adjacent
+      # instructions differ by the fixed 50 ps instruction quantum.
+      test "$aarch64_last_tick" -eq "$((aarch64_first_tick + 50))"
 
       aarch64_repeat_report="$TMPDIR/live-whitebox-aarch64-repeat.result"
       aarch64_repeat_log="$TMPDIR/live-whitebox-aarch64-repeat.qemu.log"
@@ -367,12 +369,12 @@
       grep -Fxq PASS "$aarch64_repeat_report"
       grep -Fxq 'whitebox_marker_count=2' "$aarch64_repeat_report"
       grep -Fxq 'execution_fingerprint=not-observed' "$aarch64_repeat_report"
-      repeat_first_icount=$(sed -n \
+      repeat_first_tick=$(sed -n \
         's/^whitebox_marker_icount=\([0-9][0-9]*\)$/\1/p' "$aarch64_repeat_report")
-      repeat_last_icount=$(sed -n \
+      repeat_last_tick=$(sed -n \
         's/^whitebox_last_marker_icount=\([0-9][0-9]*\)$/\1/p' "$aarch64_repeat_report")
-      test "$repeat_first_icount" = "$aarch64_first_icount"
-      test "$repeat_last_icount" = "$aarch64_last_icount"
+      test "$repeat_first_tick" = "$aarch64_first_tick"
+      test "$repeat_last_tick" = "$aarch64_last_tick"
 
       aarch64_off_report="$TMPDIR/live-whitebox-aarch64-off.result"
       aarch64_off_log="$TMPDIR/live-whitebox-aarch64-off.qemu.log"
@@ -574,8 +576,8 @@
         printf 'aarch64_setup_attestation=aarch64-hint-4c-inert-v1\n'
         printf 'aarch64_doorbell_instruction=hint-0x4c\n'
         printf 'aarch64_repeated_doorbells=2\n'
-        printf 'aarch64_adjacent_marker_icounts=true\n'
-        printf 'aarch64_marker_icounts_reproducible=true\n'
+        printf 'aarch64_adjacent_marker_ticks=true\n'
+        printf 'aarch64_marker_ticks_reproducible=true\n'
         printf 'aarch64_whitebox_off_inert=true\n'
         printf 'aarch64_payload_registers=x0,x1\n'
         printf 'aarch64_live_marker_observed=true\n'
