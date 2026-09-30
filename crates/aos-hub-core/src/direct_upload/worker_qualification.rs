@@ -571,7 +571,11 @@ impl DirectQueueMeasurement {
         let minimum_size = if phase == "content" {
             runtime.maximum_object_bytes.get()
         } else {
-            runtime.maximum_object_bytes.get().min(512 * 1024)
+            // Qualification exercises the production narinfo semantic parser.
+            runtime
+                .maximum_object_bytes
+                .get()
+                .min(crate::fetch::MAX_CACHE_NARINFO_BYTES as u64)
         };
         let class_limit = if phase == "content" {
             runtime.maximum_parallel_objects.get().saturating_sub(1)

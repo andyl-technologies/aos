@@ -97,6 +97,11 @@ must fit those bounds. With invocation limits `Ib`/`Im` and batch sizes
 can coexist across isolates. The isolate ceiling is not a global job limit.
 Independent evidence must cover actual consumer configuration readback,
 all-metadata parallel capacity and metadata progress under bulk load.
+Metadata qualification exercises the production narinfo parser, whose source
+limit is 256 KiB: it must positively verify at least the smaller of that limit
+and the accepted object ceiling. Bulk and runtime measurements must cover the
+full accepted object ceiling. This does not measure registry JSON publication
+throughput; that workload requires its own publication measurements.
 
 Keep the completed Worker version unchanged throughout measurement and
 activation. Updating code, bindings or secrets changes the hosted script version

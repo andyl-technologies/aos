@@ -11,6 +11,33 @@ fn resign(artifact: &mut DirectWorkerQualificationArtifact) {
 }
 
 #[test]
+fn metadata_qualification_uses_the_actual_narinfo_parser_size_bound() {
+    let parser_limit = crate::fetch::MAX_CACHE_NARINFO_BYTES as u64;
+    for runtime_limit in [parser_limit / 2, 1024 * 1024] {
+        let required = runtime_limit.min(parser_limit);
+        for observed in [required - 1, required] {
+            let (mut artifact, key) = fixtures::direct_worker_qualification_fixture();
+            artifact.evidence.runtime.maximum_object_bytes = WireInteger::new(runtime_limit);
+            if let Some(limits) = &mut artifact.evidence.qualification_limits {
+                limits.maximum_object_bytes = WireInteger::new(runtime_limit);
+            }
+            artifact
+                .evidence
+                .metadata_queue
+                .maximum_verified_object_bytes = WireInteger::new(observed);
+            resign(&mut artifact);
+
+            assert_eq!(
+                artifact
+                    .verify("deployment-1", "https://hub.example.test", &key, 100)
+                    .is_ok(),
+                observed == required,
+            );
+        }
+    }
+}
+
+#[test]
 fn actual_public_refusal_classifications_bind_the_exact_managed_policy_readback() {
     for status in [401, 403, 404] {
         let (mut artifact, key) = fixtures::direct_worker_qualification_fixture();
