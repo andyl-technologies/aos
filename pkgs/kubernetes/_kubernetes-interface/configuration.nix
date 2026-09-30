@@ -65,6 +65,6 @@ in {
     extensible = true;
     type = types.attrsOf (types.submodule integration);
     default = {};
-    description = "Package-owned K3s configuration contributions.";
+    description = "Package-owned K3s configuration definitions.";
   };
 }

@@ -7,43 +7,65 @@
 {
   config,
   lib,
+  package,
   ...
 }: let
   cfg = config.aos.release.coordinator;
-  inherit (lib.abilities) resultOf;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  abilityTypes = lib.abilities.types;
+  services = config.aos.abilities.serviceManagement.operations.realize;
+  groups = config.aos.abilities.identity.operations.group;
+  principals = config.aos.abilities.identity.operations.principal;
+  filesystem = config.aos.abilities.filesystem.operations;
+  credentials = config.aos.abilities.credential.operations.deliver;
   consumerInstance = "release-coordinator";
-
-  localKey = abilityTypes.string {
+  localKey = lib.types.strWith {
     maxLength = 128;
-    syntax = "local-key-v1";
+    pattern = "[A-Za-z0-9._-]+";
   };
-  credentialSet = abilityTypes.map {
+  credentialSet = lib.types.attrsWith {
+    elemType = localKey;
+    maxEntries = 256;
     keyMaxLength = 128;
     keySyntax = "local-key-v1";
-    maxEntries = 256;
-    value = localKey;
   };
-  calendarExpression = abilityTypes.refined {
-    name = "release maintenance calendar expression";
-    description = "a non-empty provider-neutral calendar expression";
-    type = abilityTypes.string {
-      maxLength = 4096;
-      syntax = null;
-    };
-    constraints = [
-      {
-        kind = "minimum-size";
-        minimum = 1;
-      }
-    ];
+  calendarExpression = lib.types.strWith {
+    maxLength = 4096;
+    pattern = ".+";
   };
-
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      inherit consumerInstance key interface parameters;
+  executableType = lib.types.submodule {
+    options = {
+      path = lib.mkOption {
+        type = lib.types.str;
+        description = "Exact retained executable path.";
+      };
+      arguments = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Executable arguments.";
+      };
     };
+  };
+  outputs = operation: key: operation.effects."${consumerInstance}.${key}".outputs;
+  groupName = name: (outputs groups name).name;
+  principalName = name: (outputs principals name).name;
+  serviceResource = name: (outputs services name).resource;
+  stateKeys = ["release-state" "timestamp-state" "backup-state" "monitor-state"];
+  storagePath = key:
+    (outputs (
+        if builtins.elem key stateKeys
+        then filesystem.persistentAllocate
+        else filesystem.allocate
+      )
+      key).path;
+  credentialPath = role: name: (outputs credentials "${role}-${name}").path;
+  effect = ability: operation: key: input: {
+    aos.abilities.${ability}.operations.${operation}.effects."${consumerInstance}.${key}" = {
+      inherit input;
+      lifetime =
+        if ability == "identity" || operation == "persistentAllocate"
+        then "persistent"
+        else "instance";
+    };
+  };
   command = executable: {
     inherit executable;
     ignore_failure = false;
@@ -54,8 +76,7 @@
       arguments = executable.arguments ++ arguments;
     };
   declarationProgram = {
-    artifact = lib.abilities.packageOutput {};
-    entry_point = "bin/aos";
+    path = "${package}/bin/aos";
     arguments = [];
   };
   configuredProgram = program:
@@ -86,24 +107,21 @@
     };
   };
 
-  group = name:
-    producer "${name}-group" serviceManagement.interfaces.groupResolution {
-      inherit name;
-      allocation = "managed";
+  group = name: effect "identity" "group" name {inherit name;};
+  principal = name: definition: {
+    aos.abilities.identity.operations.principal.effects."${consumerInstance}.${name}" = {
+      lifetime = "persistent";
+      after = builtins.map (group: (outputs groups group).resource) definition.supplementaryGroups;
+      input = {
+        inherit name;
+        inherit (definition) description;
+        home_directory = definition.home;
+        login_access = "disabled";
+        primary_group = groupName name;
+        supplementary_groups = definition.supplementaryGroups;
+      };
     };
-  principal = name: definition:
-    producer "${name}-principal" serviceManagement.interfaces.principalResolution {
-      inherit name;
-      inherit (definition) description;
-      allocation = "managed";
-      home_directory = definition.home;
-      login_access = "disabled";
-      primary_group = resultOf "${name}-group" "group-name";
-      supplementary_groups =
-        builtins.map
-        (groupName: resultOf "${groupName}-group" "group-name")
-        definition.supplementaryGroups;
-    };
+  };
   identityFragmentsFor = active:
     lib.concatMap
     (name: let
@@ -122,24 +140,24 @@
     path,
     owner,
   }:
-    producer key (
+    effect "filesystem" (
       if purpose == "state"
-      then serviceManagement.interfaces.persistentStorageAllocation
-      else serviceManagement.interfaces.storageAllocation
-    ) {
-      inherit name purpose mode;
-      requested_path = path;
-      owner = resultOf "${owner}-principal" "principal-name";
-      group = resultOf "${owner}-group" "group-name";
+      then "persistentAllocate"
+      else "allocate"
+    )
+    key {
+      inherit mode path;
+      owner = principalName owner;
+      group = groupName owner;
     };
-  networkReadiness = producer "network-readiness" serviceManagement.interfaces.networkReadiness {
-    scope = "configured-connectivity";
-    address_families = ["ipv4" "ipv6"];
+  networkReadiness = effect "network" "ready" "network-readiness" {
+    scope = "address-configured";
+    families = ["ipv4" "ipv6"];
   };
   schedule = name: expression:
-    producer "${name}-schedule" serviceManagement.interfaces.scheduledActivation {
+    effect "scheduledActivation" "ensure" name {
       inherit name;
-      enabled = true;
+      target = serviceResource name;
       schedule = {
         kind = "calendar";
         inherit expression;
@@ -148,43 +166,18 @@
       accuracy_millis = 60000;
       randomized_delay_millis = 300000;
     };
-
-  credentialFragments = role: credentials: let
-    credentialNames = builtins.attrNames credentials;
-  in [
-    (serviceManagement.forProducers {
-      inherit consumerInstance;
-      interface = serviceManagement.interfaces.namedCredential;
-      producers =
-        builtins.map (name: {
-          key = "${role}-credential-${name}-source";
-          parameters = {
-            name = credentials.${name};
-            scope = "system";
-          };
-        })
-        credentialNames;
-    })
-    (serviceManagement.forProducers {
-      inherit consumerInstance;
-      interface = serviceManagement.interfaces.credentialDelivery;
-      producers =
-        builtins.map (name: {
-          key = "${role}-credential-${name}";
-          parameters = {
-            inherit name;
-            source = resultOf "${role}-credential-${name}-source" "resource";
-            encrypted = false;
-          };
-        })
-        credentialNames;
-    })
-  ];
+  credentialFragments = role: values:
+    builtins.map (name:
+      effect "credential" "deliver" "${role}-${name}" {
+        name = values.${name};
+        scope = "system";
+        encrypted = false;
+      }) (builtins.attrNames values);
   credentialViews = role: credentials:
     builtins.map
     (name: {
       inherit name;
-      reference = resultOf "${role}-credential-${name}" "credential-path";
+      reference = credentialPath role name;
       encrypted = false;
       optional = false;
     })
@@ -192,20 +185,20 @@
 
   readWriteMount = name: request: {
     inherit name;
-    source = resultOf request "planned-path";
+    source = storagePath request;
     access = "read-write";
   };
   readOnlyMount = name: request: {
     inherit name;
-    source = resultOf request "planned-path";
+    source = storagePath request;
     access = "read-only";
   };
   identity = role: {
-    principal = resultOf "${role}-principal" "principal-name";
-    primary_group = resultOf "${role}-group" "group-name";
+    principal = principalName role;
+    primary_group = groupName role;
     supplementary_groups =
       builtins.map
-      (groupName: resultOf "${groupName}-group" "group-name")
+      (name: groupName name)
       identities.${role}.supplementaryGroups;
     ephemeral = false;
     file_creation_mask = "0077";
@@ -293,22 +286,15 @@
     stop_timeout_millis = 90000;
   };
   failureHandler = serviceName:
-    resultOf "${serviceName}-lifecycle" "resource";
-  scheduledActivation = name: {
-    bindings = [
-      {
-        name = "schedule";
-        resource = resultOf "${name}-schedule" "resource";
-        relationship = "resource-triggers-service";
-      }
-    ];
-  };
-
+    serviceResource serviceName;
   service = declaration:
     (builtins.removeAttrs declaration ["hardening" "enabled"])
     // {
-      inherit consumerInstance;
       autoStart = declaration.enabled;
+      manager_identity = {
+        name = "aos-release-coordinator-${declaration.service}";
+        aliases = [];
+      };
       policy.hardening = declaration.hardening;
     };
   releaseService = programs: credentials:
@@ -318,12 +304,12 @@
       lifecycle = lifecycle {
         description = "Run one reviewed canonical AOS content release operation";
         executable = programs.release;
-        workingDirectory = resultOf "release-state" "planned-path";
+        workingDirectory = storagePath "release-state";
         timeoutMillis = 604800000;
       };
       dependencies = dependencies {
-        after = [(resultOf "network-readiness" "resource")];
-        wants = [(resultOf "network-readiness" "resource")];
+        after = [(outputs config.aos.abilities.network.operations.ready "network-readiness").resource];
+        wants = [(outputs config.aos.abilities.network.operations.ready "network-readiness").resource];
       };
       failure_policy = {
         handlers = [(failureHandler "alert-release")];
@@ -350,18 +336,17 @@
       lifecycle = lifecycle {
         description = "Refresh the authorized AOS TUF timestamp";
         executable = programs.timestamp;
-        workingDirectory = resultOf "timestamp-state" "planned-path";
+        workingDirectory = storagePath "timestamp-state";
         timeoutMillis = 900000;
       };
       dependencies = dependencies {
-        after = [(resultOf "network-readiness" "resource")];
-        wants = [(resultOf "network-readiness" "resource")];
+        after = [(outputs config.aos.abilities.network.operations.ready "network-readiness").resource];
+        wants = [(outputs config.aos.abilities.network.operations.ready "network-readiness").resource];
       };
       failure_policy = {
         handlers = [(failureHandler "alert-timestamp")];
         dispatch = "replace-active-goal";
       };
-      activation = scheduledActivation "timestamp";
       credentials.views = credentialViews "timestamp" credentials.timestamp;
       storage.mounts = [
         (readWriteMount "state" "timestamp-state")
@@ -379,7 +364,7 @@
       lifecycle = lifecycle {
         description = "Back up canonical AOS release evidence";
         executable = programs.backup;
-        workingDirectory = resultOf "backup-state" "planned-path";
+        workingDirectory = storagePath "backup-state";
         timeoutMillis = 21600000;
       };
       failure_policy = {
@@ -390,7 +375,6 @@
         group = "release-state";
         conflict = "reject";
       };
-      activation = scheduledActivation "backup";
       credentials.views = credentialViews "backup" credentials.backup;
       storage.mounts = [
         (readWriteMount "state" "backup-state")
@@ -410,11 +394,11 @@
       lifecycle = lifecycle {
         description = "Verify an AOS release evidence backup by restoring it";
         executable = programs.restoreCheck;
-        workingDirectory = resultOf "backup-state" "planned-path";
+        workingDirectory = storagePath "backup-state";
         timeoutMillis = 21600000;
       };
       dependencies = dependencies {
-        after = [(resultOf "backup-lifecycle" "resource")];
+        after = [(serviceResource "backup")];
       };
       failure_policy = {
         handlers = [(failureHandler "alert-restore-check")];
@@ -424,7 +408,6 @@
         group = "release-state";
         conflict = "reject";
       };
-      activation = scheduledActivation "restore-check";
       storage.mounts = [
         (readWriteMount "state" "backup-state")
         (readWriteMount "runtime" "restore-runtime")
@@ -441,7 +424,7 @@
       lifecycle = lifecycle {
         description = "Report failure of AOS release operation ${failedService}";
         executable = appendArguments programs.alert [failedService];
-        workingDirectory = resultOf "monitor-state" "planned-path";
+        workingDirectory = storagePath "monitor-state";
         timeoutMillis = 300000;
       };
       credentials.views = credentialViews "alert" credentials.alert;
@@ -455,7 +438,7 @@
       hardening = hardening true;
     };
 
-  producersFor = credentials: active:
+  prerequisiteModulesFor = credentials: active:
     (identityFragmentsFor {
       aos-release = active.release || active.backup;
       aos-release-timestamp = active.timestamp || active.backup;
@@ -595,9 +578,11 @@
         (name: activeServices."alert-${name}")
         ["release" "timestamp" "backup" "restore-check"];
     };
-  allRoles = builtins.mapAttrs (_: _: true) configuredServices // {alert = true;};
-  configuredProducers = producersFor configuredCredentials allRoles;
-  activeProducers = producersFor configuredCredentials activeRoles;
+  activePrerequisites = prerequisiteModulesFor configuredCredentials activeRoles;
+  prerequisiteEffects = ability: operation:
+    lib.mkMerge (builtins.map
+      (module: lib.attrByPath ["aos" "abilities" ability "operations" operation "effects"] {} module)
+      activePrerequisites);
   allCredentialSources =
     lib.optionals activeServices.release (builtins.attrValues cfg.releaseCredentials)
     ++ lib.optionals activeServices.timestamp (builtins.attrValues cfg.timestampCredentials)
@@ -606,32 +591,32 @@
 in {
   options.aos.release.coordinator = {
     enable = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = false;
       description = "Enable the package-owned canonical release maintenance services.";
     };
     releaseProgram = lib.mkOption {
-      type = abilityTypes.optional abilityTypes.executableReference;
+      type = lib.types.nullOr executableType;
       default = null;
       description = "Authenticated executable for manually initiated content release operations.";
     };
     timestampProgram = lib.mkOption {
-      type = abilityTypes.optional abilityTypes.executableReference;
+      type = lib.types.nullOr executableType;
       default = null;
       description = "Authenticated executable for restricted TUF timestamp renewal.";
     };
     backupProgram = lib.mkOption {
-      type = abilityTypes.optional abilityTypes.executableReference;
+      type = lib.types.nullOr executableType;
       default = null;
       description = "Authenticated executable for encrypted release evidence backups.";
     };
     restoreCheckProgram = lib.mkOption {
-      type = abilityTypes.optional abilityTypes.executableReference;
+      type = lib.types.nullOr executableType;
       default = null;
       description = "Authenticated executable for clean-directory backup restore verification.";
     };
     alertProgram = lib.mkOption {
-      type = abilityTypes.optional abilityTypes.executableReference;
+      type = lib.types.nullOr executableType;
       default = null;
       description = "Authenticated executable for release operation failure alerts.";
     };
@@ -672,63 +657,74 @@ in {
     };
   };
 
-  config = lib.mkMerge [
-    {
-      aos.services =
-        builtins.mapAttrs (_: value: value // {enable = cfg.enable;})
-        (lib.mapAttrs' (name: value: lib.nameValuePair "release-coordinator.${name}" value) configuredServices);
-      assertions = [
-        {
-          assertion = !activeServices.release || cfg.releaseProgram != null;
-          message = "releaseCoordinator.releaseProgram must be configured";
-        }
-        {
-          assertion = !activeServices.timestamp || cfg.timestampProgram != null;
-          message = "releaseCoordinator.timestampProgram must be configured";
-        }
-        {
-          assertion = !activeServices.backup || cfg.backupProgram != null;
-          message = "releaseCoordinator.backupProgram must be configured";
-        }
-        {
-          assertion = !activeServices."restore-check" || cfg.restoreCheckProgram != null;
-          message = "releaseCoordinator.restoreCheckProgram must be configured";
-        }
-        {
-          assertion = !activeRoles.alert || cfg.alertProgram != null;
-          message = "releaseCoordinator.alertProgram must be configured";
-        }
-        {
-          assertion =
-            !anyServiceEnabled
-            || builtins.length allCredentialSources == builtins.length (lib.unique allCredentialSources);
-          message = "release maintenance roles must use disjoint named credentials";
-        }
-        {
-          assertion = !activeServices.release || activeServices."alert-release";
-          message = "release maintenance requires its failure alert service";
-        }
-        {
-          assertion = !activeServices.timestamp || activeServices."alert-timestamp";
-          message = "timestamp maintenance requires its failure alert service";
-        }
-        {
-          assertion = !activeServices.backup || activeServices."alert-backup";
-          message = "backup maintenance requires its failure alert service";
-        }
-        {
-          assertion =
-            !activeServices."restore-check"
-            || (activeServices.backup && activeServices."alert-restore-check");
-          message = "restore verification requires backup and its failure alert service";
-        }
-      ];
-    }
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = configuredProducers;
-      inherit activeProducers;
-      enabled = anyServiceEnabled;
-    })
-  ];
+  config = lib.mkMerge ([
+      {
+        aos.services =
+          builtins.mapAttrs (_: value: value // {enable = cfg.enable;})
+          (lib.mapAttrs' (name: value: lib.nameValuePair "release-coordinator.${name}" value) configuredServices);
+        assertions = [
+          {
+            assertion = !activeServices.release || cfg.releaseProgram != null;
+            message = "releaseCoordinator.releaseProgram must be configured";
+          }
+          {
+            assertion = !activeServices.timestamp || cfg.timestampProgram != null;
+            message = "releaseCoordinator.timestampProgram must be configured";
+          }
+          {
+            assertion = !activeServices.backup || cfg.backupProgram != null;
+            message = "releaseCoordinator.backupProgram must be configured";
+          }
+          {
+            assertion = !activeServices."restore-check" || cfg.restoreCheckProgram != null;
+            message = "releaseCoordinator.restoreCheckProgram must be configured";
+          }
+          {
+            assertion = !activeRoles.alert || cfg.alertProgram != null;
+            message = "releaseCoordinator.alertProgram must be configured";
+          }
+          {
+            assertion =
+              !anyServiceEnabled
+              || builtins.length allCredentialSources == builtins.length (lib.unique allCredentialSources);
+            message = "release maintenance roles must use disjoint named credentials";
+          }
+          {
+            assertion = !activeServices.release || activeServices."alert-release";
+            message = "release maintenance requires its failure alert service";
+          }
+          {
+            assertion = !activeServices.timestamp || activeServices."alert-timestamp";
+            message = "timestamp maintenance requires its failure alert service";
+          }
+          {
+            assertion = !activeServices.backup || activeServices."alert-backup";
+            message = "backup maintenance requires its failure alert service";
+          }
+          {
+            assertion =
+              !activeServices."restore-check"
+              || (activeServices.backup && activeServices."alert-restore-check");
+            message = "restore verification requires backup and its failure alert service";
+          }
+        ];
+      }
+    ]
+    ++ [
+      {
+        aos.abilities = {
+          identity.operations = {
+            group.effects = prerequisiteEffects "identity" "group";
+            principal.effects = prerequisiteEffects "identity" "principal";
+          };
+          filesystem.operations = {
+            allocate.effects = prerequisiteEffects "filesystem" "allocate";
+            persistentAllocate.effects = prerequisiteEffects "filesystem" "persistentAllocate";
+          };
+          network.operations.ready.effects = prerequisiteEffects "network" "ready";
+          scheduledActivation.operations.ensure.effects = prerequisiteEffects "scheduledActivation" "ensure";
+          credential.operations.deliver.effects = prerequisiteEffects "credential" "deliver";
+        };
+      }
+    ]);
 }

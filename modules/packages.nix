@@ -1,8 +1,8 @@
 ##! modules/packages.nix - Image-baked package selection.
 ##!
 ##! Selects package payloads whose authenticated native modules and release
-##! artifacts participate in the host fixed point. Package contracts remain
-##! the single source for module, interface, implementation, and artifact
+##! artifacts participate in the host fixed point. Package deployment envelopes remain
+##! the single source for module, operation, handler, and artifact
 ##! metadata; this module does not reconstruct a parallel package catalog.
 {
   config,
@@ -67,22 +67,16 @@ in {
             '';
           }
           {
-            assertion = package.package ? contract && package.package ? module;
+            assertion = !package.enable || package.package ? module;
             message = ''
               aos.packages."${name}" must select a package with one native
-              contract and package-module output.
+              module source when its configuration is enabled.
             '';
           }
           {
-            assertion =
-              !(package.package ? contract)
-              || (
-                package.package.contract.value.package.name
-                == package.package.pname
-                && package.package.contract.value.package.name == name
-              );
+            assertion = (package.package.catalogName or package.package.pname or package.package.name) == name;
             message = ''
-              aos.packages."${name}" selects a contract whose package identity
+              aos.packages."${name}" selects a package whose native identity
               does not match the selection key and payload.
             '';
           }
