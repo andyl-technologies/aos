@@ -22,7 +22,7 @@ use aos_contract::limits::{BoundedWriter, JsonLimits};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::handler_process::run_bounded;
+use super::process::run_bounded;
 
 const MESSAGE_LIMITS: JsonLimits = JsonLimits {
     max_bytes: 256 * 1024,
@@ -59,6 +59,11 @@ impl<A: HandlerArtifacts> ProcessAdapter<A> {
     /// Constructs a transport backed by the host's artifact admission policy.
     pub const fn new(artifacts: A) -> Self {
         Self { artifacts }
+    }
+
+    /// Borrows the owning package store for generation retention.
+    pub fn artifacts_mut(&mut self) -> &mut A {
+        &mut self.artifacts
     }
 
     fn exchange(

@@ -1,85 +1,218 @@
-# Infrastructure cutover
+# Package deployment infrastructure
 
-The former registry authoring API is removed. This branch is deliberately not
-system-buildable while its callers are migrated. There is no compatibility
-wrapper for `requirementTemplates`, request/binding maps, provider-selection
-passes, or the old constructor functions.
+Packages publish a payload and, optionally, a Nix module directory. APM resolves
+explicit module dependencies before evaluating one recursive module fixed point
+for an installation scope. That evaluation produces a deferred effect graph.
+Rust retains the inputs, executes the selected handlers, and commits a package
+generation. A profile and a system deployment use the same infrastructure.
 
-The new core is in `lib/effects/module.nix`. An ability owns operation submodules.
-An operation owns its input module, named result types, selected handler module,
-and configured effects. Independent definitions of input and handler modules
-merge through `types.deferredModule` and the ordinary evaluator. Effect inputs
-are evaluated submodules of the merged contract. Domain modules remain responsible
-for exposing ordinary user-facing configuration and deriving invocations from it.
+This is an intentional API cutover. Existing package recipes, registry consumers,
+image activation entry points, and CLI/hub presentation code still need migration.
+The infrastructure fixtures exercise the new path independently; they do not
+establish that an existing system boots through it.
 
-A handler supplies either a derivation-backed program or child effect modules.
-Composed handlers import another operation's evaluated `module` value, access
-child outputs through the `children` module argument, and export typed results.
-Output references are ordinary read-only configuration attributes. The
-`types.deferred` option type accepts a concrete value or a reference with the
-matching result type.
+## Package build and publication
 
-`aos.activation.graph` is a generated projection, not a configuration surface.
-Its compiler checks missing handlers, missing producers, output compatibility,
-composition exports, duplicate identities, dependency cycles, and bounded handler
-expansion. Logical identities derive from module scopes; revisions derive from
-the operation's input and selected implementation artifact. Documentation is
-projected from input option declarations and result types.
+`mkDerivation` accepts native `module` and `moduleDeps` arguments:
 
-## Verification
+```nix
+{ mkDerivation, echo-interface }:
+mkDerivation {
+  pname = "example";
+  version = "1";
+  # The ordinary source, dependencies, and build phases belong here.
+  module = ./module;
+  moduleDeps = [ echo-interface ];
+}
+```
 
-`nix-instantiate --eval --strict tests/effects/modules.nix` exercises module
-extension, merged configuration, handler overrides and composition, typed output
-connections, disabled effects, missing handlers, cycles, and recursive expansion.
-The fixtures use synthetic derivation records and perform no host modifications.
+The directory must contain `module.nix`. Imported files stay within that retained
+source tree. Module dependencies are package coordinates with exact source store
+paths. They supply configuration interfaces or implementations; they are separate
+from build dependencies and runtime libraries. Packages without a module remain
+ordinary payload packages and still belong to their generation.
 
-## Runtime and stage evaluation
+The builder exposes these derived values:
 
-`aos-ability-plan::module_graph` decodes the native projection, checks identity
-and content hashes, validates portable option types, and checks every edge and
-execution position. It retains the original document so journal replay preserves
-its exact schema encoding. Documentation text is excluded from state revisions.
+| Attribute | Meaning |
+| --- | --- |
+| `module` | Retained module source directory, when supplied |
+| `moduleDeps` | Explicit package module dependency edges |
+| `deployment` | Envelope containing the target platform, payload outputs, runtime dependencies, and module locators |
+| `deploymentArtifact` | Derivation containing `deployment.json` |
+| `documentation` | Options and ability documentation projected from the package's module closure |
+| `documentationArtifact` | Derivation containing `options.json` |
 
-`aos-ability-runtime::activation` uses the existing framed, locked, checksummed
-journal. It records exact invocations before dispatch, checks results before
-committing, and observes interrupted mutations before retrying them. Changed
-inputs or implementations receive previous state rather than automatically
-tearing it down. Transaction resources are removed after their consumers finish;
-instance resources are removed when their configuration disappears; persistent
-resources require explicit retirement. Artifact release is journaled separately
-so interrupted cleanup can be retried without repeating teardown.
+Payload construction does not force deployment evaluation. The JSON companions
+are separate derivations and retain the store references they publish. No host
+configuration, service-specific lowering, or authored documentation schema is
+injected by `mkDerivation`. Legacy `abilities` and `configModule` inputs fail when
+the native deployment envelope is requested.
 
-`aos-package::config_eval::module_activation` supplies the process adapter using
-the existing bounded subprocess transport. The host supplies artifact admission
-and retention through `HandlerArtifacts`. Programs receive `apply`, `remove`, or
-`observe` and a JSON invocation on stdin. This adapter is not yet connected to the
-production activation entry point.
+A deployment module receives ordinary evaluator arguments: `lib`, `config`,
+`options`, its own `package` artifact, and its named runtime `dependencies`.
+Artifacts have explicit `name`, `version`, `path`, `outputs`, and `mainProgram`
+fields. String interpolation, `lib.getOutput`, and `lib.getExe` operate on these
+values without reconstructing derivations or making builders available.
 
-Image and on-host evaluation now compose ordinary authenticated package modules
-for each deployment stage. The provider-selection resolver and frozen parallel
-maps are removed. `modules/base/activation-stages.nix` owns the host/early-boot
-stage definitions, outside the generic effect library. Stage tests exercise
-isolation, identity scopes, package deduplication, and rejection of conflicting
-package records.
+## Abilities through ordinary module merging
 
-Native option types project into the runtime type algebra. Opaque values,
-arbitrary Nix predicates, and string-pattern descriptions without a portable
-validator are rejected at this boundary rather than silently weakened.
+An interface package declares operations with input and result modules:
 
-## Remaining infrastructure
+```nix
+{ lib, ... }: {
+  aos.abilities.echo.operations.run = {
+    input.options.message = lib.mkOption {
+      type = lib.types.str;
+      description = "Message to return.";
+    };
+    result.options.message = lib.mkOption {
+      type = lib.types.str;
+      description = "Message returned by the handler.";
+    };
+  };
+}
+```
 
-The migration is not complete. Remaining work includes:
+Other modules can extend those same option trees. Inputs, results, handlers, and
+configured effects merge through the standard module evaluator. There is no
+separately authored interface registry, provider map, or documentation table.
 
-- Replace package contract construction, which still calls the removed registry
-  projection API, and generate its documentation from native module declarations.
-- Wire authenticated artifact retention and the new graph controller into the
-  production activation, boot, and reconfiguration entry points.
-- Migrate static stage contracts and source-stage materialization to the new
-  graph format, then remove the old Rust planning and dispatch path.
-- Complete bounded journal maintenance, negative
-  graph tests, and production transport/lifecycle integration tests.
-- Migrate graph/documentation decoding in the hub API, UI, and CLI.
+An implementation package selects its own built handler:
 
-The module fixture and runtime tests validate the new boundary independently;
-they do not establish that existing systems can boot through it. Existing domain
-consumers remain intentionally incompatible until their separate migration.
+```nix
+{ package, ... }: {
+  aos.abilities.echo.operations.run.handler.program = package;
+}
+```
+
+A consumer exposes ordinary domain configuration and derives effects from it:
+
+```nix
+{ config, lib, ... }: {
+  options.example.message = lib.mkOption {
+    type = lib.types.nullOr lib.types.str;
+    default = null;
+  };
+
+  config = lib.mkIf (config.example.message != null) {
+    aos.abilities.echo.operations.run.effects.main.input.message =
+      config.example.message;
+  };
+}
+```
+
+A handler can instead compose child effect modules, importing another operation's
+`module` and exporting its typed outputs. Output references are read-only config
+values; `types.deferred` accepts either a concrete value or a compatible output
+reference. Rust executes the generated dependency graph after evaluation. An
+unhandled configured operation fails graph construction; an unused interface or
+a documentation-only evaluation needs no selected handler.
+
+Domain options and implementations belong to their declaring packages or system
+modules. The generic library has no knowledge of services, databases, networking,
+or a particular init implementation.
+
+## Evaluation and documentation
+
+Build-time callers can evaluate already selected packages directly:
+
+```nix
+lib.evalPackageModules {
+  scope = [ "profile" "main" ];
+  packages = [ example echo-handler ];
+  operatorModules = [ { example.message = "hello"; } ];
+}
+```
+
+Deployment callers pass resolved `packageModules`, `packageArtifacts`, and locked
+source roots instead. Both entry points use the same evaluator. The returned
+`deployment` contains the scope, target platform, retained evaluation inputs,
+payload artifacts, exact module contexts, and generated graph. The returned
+`documentation` projects options and operation declarations, including declaration
+owners, handler availability, and configured effects. Its evaluation is lazy with
+respect to graph execution and handler selection.
+
+`lib.packageModuleLibrary` is an immutable source bundle for this evaluator. It
+does not contain an image baseline. The Rust `deployment::evaluation` module
+resolves the module closure through `PackageResolver`, then invokes stock Nix with
+fixed-NAR source inputs, pure/restricted evaluation, and IFD disabled. Its process
+transport bounds input, output, duration, and cancellation. The generated document
+must retain the selected platform, package contexts, and artifact identities.
+
+A package appears once in a scope's resolved module closure. Conflicting versions
+or source identities fail before evaluation. An empty package set is valid and
+allows removal of all configured instance effects. Runtime output paths retain
+their canonical identities even when module sources are read from another
+immutable store view.
+
+## Identity, execution, and lifetime
+
+Top-level effect identity is derived from the installation scope, declaring
+package, ability, operation, and configured instance name. Package version and
+handler artifact are excluded from that logical identity. Composed child identity
+also incorporates its parent. Revisions derive from semantic operation content
+and the selected implementation; documentation changes do not trigger updates.
+When multiple packages extend shared domain configuration, its manager derives
+the resulting effects and owns their lifecycle.
+
+`aos-ability-plan::module_graph` checks hashes, native option type projections,
+references, composition exports, ordering, and bound handlers. Arbitrary Nix
+predicates without a portable validator cannot cross this boundary. The original
+JSON representation is retained for stable hashing and replay.
+
+Terminal handlers receive `apply`, `remove`, or `observe` and a JSON invocation
+on stdin. Apply returns the declared result object. Remove returns an empty
+object. Observe reports `current` with results, `absent`, `retry-safe`, or
+`indeterminate`. Changed implementations or inputs receive previous state.
+Interrupted mutations are observed before retry; the runtime does not assume
+that arbitrary external operations can be undone automatically.
+
+The effect journal distinguishes three lifetimes:
+
+- `transaction`: removed after dependent operations finish.
+- `instance`: retained across generations and removed when configuration disappears.
+- `persistent`: retained until explicitly retired, including after package removal.
+
+Artifact release is separately journaled. Old implementations remain available
+until their update or teardown has durably completed.
+
+## Package generations
+
+`aos-package::deployment::transaction::Transactions` coordinates a generation
+journal with the effect journal. It prepares the exact document before dispatch
+and commits only after all checked results are available. The effect runtime
+retains the most recent caller transaction receipt, closing the crash window
+between effect completion and generation commit without repeating one-shot work.
+Recovery resumes pending work before accepting a new generation.
+
+Committed generations retain their documents and results for inspection and
+rollback. Rollback applies a retained desired document as a new transaction;
+handlers reconcile it with current state. `prune` journals removal of an older
+generation and retries interrupted root cleanup. The current generation cannot be
+pruned. Persistent effects retain independent handler roots.
+
+`deployment::retention::NixStore` implements generation and handler rooting using
+an explicitly supplied Nix store executable. `ArtifactAdmission` binds those
+roots to the owning package manager's authenticated resolution or retained
+receipts. It requires already-realized artifacts. Registry authentication and
+profile-link publication remain responsibilities of the calling consumers; the
+generation journal is the authoritative committed pointer.
+
+Journals use the existing framing, exclusive locking, checksums, and configured
+size limits. They stop at their capacity limits; pruning releases store roots but
+does not compact journal bytes. Automatic journal compaction is not implemented.
+
+## Focused verification
+
+`checks.effects` evaluates recursive contracts, merging, composition, deferred
+outputs, ownership, stage isolation, and artifact freezing, then builds real
+publication artifacts for a small package closure. The Cargo example
+`package_deployment_check` consumes that fixture and exercises publication,
+deployment-time evaluation, process handling, generation recovery, reconfiguration,
+and pruning. Rust tests separately exercise interruption at the generation/effect
+commit boundary and during root cleanup.
+
+Consumer migration should use these infrastructure entry points directly. The
+old registry projections, host provider-discovery loop, image-specific dispatch,
+and duplicated graph/documentation parsers are not compatibility targets.

@@ -2,6 +2,7 @@
 {
   config,
   lib,
+  provenance,
   ...
 }: let
   inherit (lib) mkOption types;
@@ -15,15 +16,11 @@
   }: let
     operation = config;
     operationName = name;
-    inputDeclarations = lib.submoduleOptionDeclarations (types.submodule operation.input) [];
-    inputDocumentation = builtins.listToAttrs (builtins.map (declaration: {
-        name = builtins.concatStringsSep "." declaration.path;
-        value = {
-          inherit (declaration) description type;
-        };
-      }) (builtins.filter (declaration:
-        builtins.head declaration.path != "_module")
-      inputDeclarations));
+    inputType = types.submodule operation.input;
+    resultType = types.submodule operation.result;
+    resultSchema = (projectType resultType).fields;
+    documentation = import ./documentation.nix {inherit lib;};
+    inputDocumentation = documentation.options inputType;
 
     effectModule = {
       config,
@@ -31,7 +28,19 @@
       ...
     }: let
       effect = config;
-      identity = activation.scope ++ [abilityName operationName name];
+      definitions =
+        provenance.definitionsOfNestedAttr ["aos" "abilities"]
+        [abilityName "operations" operationName "effects" name];
+      owners =
+        lib.unique (builtins.map (definition: definition.owner)
+          (builtins.filter (definition: !(lib.hasPrefix "@" definition.owner)) definitions));
+      owner =
+        if owners == []
+        then "@environment"
+        else if builtins.length owners == 1
+        then builtins.head owners
+        else throw "Effect '${abilityName}.${operationName}.${name}' has multiple package owners; derive shared operations in the managing package.";
+      identity = activation.scope ++ [owner abilityName operationName name];
       handlerModules = lib.optional (operation.handler != null) operation.handler;
       executionType = types.submodule (
         [
@@ -99,19 +108,20 @@
 
       config = {
         outputs =
-          builtins.mapAttrs (output: type: {
+          builtins.mapAttrs (output: schema: {
             _type = "aos-effect-output";
             inherit identity output;
-            schema = projectType type;
+            inherit schema;
           })
-          operation.results;
+          resultSchema;
 
         contract = {
           inherit identity;
           handled = operation.handler != null;
           inputs = inputDocumentation;
           input_type = projectType (types.submodule operation.input);
-          results = builtins.mapAttrs (_: type: projectType type) operation.results;
+          results = resultSchema;
+          inherit owner;
         };
         children = builtins.mapAttrs (childName: module:
           (lib.evalModules {
@@ -131,15 +141,20 @@
         default = {};
         description = "Mergeable module declaring the operation's argument options.";
       };
-      results = mkOption {
-        type = types.attrsOf types.optionType;
+      result = mkOption {
+        type = types.deferredModule;
         default = {};
-        description = "Portable option types for the operation's named results.";
+        description = "Mergeable module declaring the operation's returned value options.";
+      };
+      documentation = mkOption {
+        type = types.attrs;
+        readOnly = true;
+        description = "Interface documentation derived from the operation's native option declarations.";
       };
       handler = mkOption {
         type = types.nullOr types.deferredModule;
         default = null;
-        description = "Host-selected module interpreting the operation.";
+        description = "Environment-selected module interpreting the operation.";
       };
       effects = mkOption {
         type = types.attrsOf (types.submodule effectModule);
@@ -154,7 +169,23 @@
       };
     };
 
-    config.module = effectModule;
+    config = {
+      module = effectModule;
+      documentation = {
+        input = inputDocumentation;
+        result = documentation.options resultType;
+        inputType = projectType inputType;
+        resultType = projectType resultType;
+        handlerAvailable = operation.handler != null;
+        configuredEffects = builtins.attrNames operation.effects;
+        sources = builtins.listToAttrs (builtins.map (field: {
+          name = field;
+          value =
+            provenance.definitionsOfNestedAttr ["aos" "abilities"]
+            [abilityName "operations" operationName field];
+        }) ["input" "result" "handler" "effects"]);
+      };
+    };
   };
 
   abilityModule = {name, ...}: {
@@ -162,7 +193,7 @@
     options.operations = mkOption {
       type = types.attrsOf (types.submodule (operationModule name));
       default = {};
-      description = "Operation contracts and their host-selected interpretations.";
+      description = "Operation contracts and their selected interpretations.";
     };
   };
 in {

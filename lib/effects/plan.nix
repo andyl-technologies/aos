@@ -7,21 +7,25 @@
   fail = identity: message:
     throw "Effect '${builtins.concatStringsSep "." identity}': ${message}";
 
-  lower = depth: effect: let
+  lower = depth: inheritedOwner: effect: let
     inherit (effect.contract) identity;
+    owner =
+      if inheritedOwner == null
+      then effect.contract.owner
+      else inheritedOwner;
     execution = effect.execution;
     childNames = builtins.attrNames execution.children;
     terminal = execution.program != null;
     children = builtins.attrValues effect.children;
     childNodes = builtins.concatMap (child:
-      lower (depth + 1) (child
+      lower (depth + 1) owner (child
         // {
           after = child.after ++ effect.after ++ references effect.input;
         }))
     children;
     node = {
       id = keyFor identity;
-      inherit identity;
+      inherit identity owner;
       input = effect.input;
       inputs = effect.contract.inputs;
       input_type = effect.contract.input_type;
@@ -33,7 +37,7 @@
         if terminal
         then {
           kind = "process";
-          artifact = builtins.toString execution.program;
+          artifact = builtins.toString (lib.getBin execution.program);
           executable = lib.getExe execution.program;
         }
         else {
@@ -61,7 +65,7 @@
     builtins.concatMap (operation: builtins.attrValues operation.effects)
     (builtins.attrValues ability.operations))
   (builtins.attrValues abilities);
-  nodes = builtins.concatMap (lower 0) roots;
+  nodes = builtins.concatMap (lower 0 null) roots;
   keys = builtins.map (node: node.id) nodes;
   uniqueKeys = lib.unique keys;
   indexed = builtins.listToAttrs (builtins.map (node: {

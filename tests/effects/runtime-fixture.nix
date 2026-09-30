@@ -16,7 +16,7 @@ let
             input = {
               options.value = lib.mkOption {type = lib.types.deferred lib.types.str;};
             };
-            results.value = lib.types.str;
+            result.options.value = lib.mkOption {type = lib.types.str;};
             handler.program = {
               type = "derivation";
               name = "module-handler-fixture";
@@ -29,7 +29,7 @@ let
             };
           };
           forward = {
-            results.value = lib.types.str;
+            result.options.value = lib.mkOption {type = lib.types.str;};
             handler = {children, ...}: {
               children.echo = {
                 imports = [config.aos.abilities.values.operations.echo.module];

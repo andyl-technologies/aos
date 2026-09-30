@@ -52,18 +52,10 @@
     then throw "base-lib: canonical identity path '${identityPath}' is outside the checked package-store view"
     else "${checked.read_root}/${lib.removePrefix prefix identityPath}";
 
-  mapOutputs = storeView: outputs: {
-    self = readPathFor storeView outputs.self;
-    dependencies = builtins.mapAttrs (_: readPathFor storeView) outputs.dependencies;
-  };
-
+  # Only source read locations change. Artifact identities embedded in the
+  # deferred program remain canonical store paths for the target runtime.
   mapAuthenticatedModule = storeView: record:
-    record
-    // {
-      configRoot = readPathFor storeView record.configRoot;
-      module = readPathFor storeView record.module;
-      outputs = mapOutputs storeView record.outputs;
-    };
+    record // {module = readPathFor storeView record.module;};
   contextualizeModule = roots: record: let
     root = builtins.unsafeDiscardStringContext (builtins.toString record.configRoot);
     module = builtins.toString record.module;

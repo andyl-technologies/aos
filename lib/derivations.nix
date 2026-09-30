@@ -467,10 +467,15 @@
   ## lets call sites express intent without forcing every package to
   ## split outputs.
   ## # Type
-  ## `string -> derivation -> derivation`
+  ## `string -> (derivation | artifact) -> (derivation | artifact)`
   getOutput = name: drv:
-    assert isDerivation drv;
-      drv.${name} or drv;
+    if (drv._type or null) == "aos-package-artifact"
+    then
+      (import ./packages/artifacts.nix {}).value (builtins.removeAttrs (drv
+        // {
+          path = drv.outputs.${name} or drv.path;
+        }) ["_type" "outPath" "__toString" "meta"])
+    else assert isDerivation drv; drv.${name} or drv;
 
   ## Return the "bin" output of a derivation, or the default output if
   ## no `bin` output is declared.
@@ -487,9 +492,9 @@
   ## Return the absolute path of a named binary inside a derivation. Use
   ## when you want a specific tool rather than the "main" one.
   ## # Type
-  ## `derivation -> string -> string`
+  ## `(derivation | artifact) -> string -> string`
   getExe' = drv: binName:
-    assert isDerivation drv;
+    assert isDerivation drv || (drv._type or null) == "aos-package-artifact";
     assert builtins.isString binName; "${getBin drv}/bin/${binName}";
 
   ## Return the absolute path of a derivation's main binary. Reads

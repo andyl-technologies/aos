@@ -18,6 +18,7 @@ fn graph(value: Option<&str>, lifetime: &str) -> CheckedModuleGraph {
         let id = identity_key(&identity).unwrap();
         let mut node = json!({
             "identity": identity,
+            "owner": "@environment",
             "input": {"value": value},
             "inputs": {},
             "input_type": {"kind": "submodule", "open": false, "fields": {"value": {"kind": "string"}}},
@@ -336,4 +337,51 @@ fn graph_boundary_rejects_inconsistent_content_and_execution_order() {
     let mut duplicate_node = original;
     duplicate_node["order"] = json!([id, id]);
     assert!(CheckedModuleGraph::decode(&serde_json::to_vec(&duplicate_node).unwrap()).is_err());
+}
+
+#[test]
+fn caller_transaction_receipt_survives_generation_commit_interruption() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("journal");
+    let desired = graph(Some("once"), "transaction");
+    let cancellation = CancellationToken::default();
+    let mut host = Host::default();
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    let first = activation
+        .activate_once(
+            "generation-1",
+            &desired,
+            &BTreeSet::new(),
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    drop(activation);
+
+    let mut recovered = Activation::open(&path, JournalLimits::default()).unwrap();
+    let repeated = recovered
+        .activate_once(
+            "generation-1",
+            &desired,
+            &BTreeSet::new(),
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    assert_eq!(first, repeated);
+    assert_eq!(host.mutations, [Action::Apply, Action::Remove]);
+
+    recovered
+        .activate_once(
+            "generation-2",
+            &desired,
+            &BTreeSet::new(),
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    assert_eq!(
+        host.mutations,
+        [Action::Apply, Action::Remove, Action::Apply, Action::Remove]
+    );
 }

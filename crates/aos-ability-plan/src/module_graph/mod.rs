@@ -39,6 +39,8 @@ pub struct ModuleGraph {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Effect {
+    /// Names the package owning this operation, or the deployment environment.
+    pub owner: String,
     /// Names the environment, ability, operation, and invocation scope.
     pub identity: Vec<String>,
     /// Contains literal inputs and typed deferred references.

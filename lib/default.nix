@@ -201,6 +201,14 @@
   namespacing = import ./namespacing.nix {};
 
   abilities = import ./abilities;
+  evalPackageModules = import ./packages/evaluate.nix {
+    lib = finalLib;
+    inherit system;
+  };
+  packageModuleLibrary = builtins.path {
+    path = ./.;
+    name = "aos-module-library";
+  };
   qualification = import ./qualification.nix {inherit abilities;};
   packagePlatform = import ./package-platform.nix {
     inherit lists;
@@ -258,7 +266,7 @@
     // {
       inherit types system;
       inherit submoduleOptionDeclarations submoduleOptions;
-      inherit abilities;
+      inherit abilities evalPackageModules packageModuleLibrary;
       inherit qualification;
       inherit packagePlatform;
       inherit mkArtifactConsumptionAudit;

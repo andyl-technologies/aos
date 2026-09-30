@@ -46,6 +46,7 @@ pub mod config;
 pub mod config_eval;
 pub mod config_trust;
 pub(crate) mod credential;
+pub mod deployment;
 pub mod deps;
 pub mod desired;
 pub mod documentation;

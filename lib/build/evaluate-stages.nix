@@ -22,13 +22,18 @@
         selectionEvaluation.config.aos.packages));
   hostPackages = selectedPackages (selectionEvaluation.config.environment.systemPackages ++ declaredPackages);
   initrdPackages = selectedPackages selectionEvaluation.config.aos.boot.initrd.packageRoots;
-  recordFor = package: let
-    matching = builtins.filter (record: record.name == (packageModuleLib.nameFor package)) callerModules;
-  in
-    if matching == []
-    then packageModuleLib.recordFor package
-    else builtins.head (packageModuleLib.select [package] matching);
-  recordsFor = packages: packageModuleLib.canonicalize (builtins.map recordFor packages);
+  recordsFor = packages:
+    packageModuleLib.canonicalize (
+      builtins.map (record: let
+        matching = builtins.filter (candidate: candidate.name == record.name) callerModules;
+      in
+        if matching == []
+        then record
+        else if builtins.head matching == record
+        then record
+        else throw "Caller module differs from selected package '${record.name}'.")
+      (packageModuleLib.closure packages)
+    );
   hostNames = builtins.map packageModuleLib.nameFor hostPackages;
   finalPackageModules = packageModuleLib.canonicalize (
     recordsFor hostPackages ++ builtins.filter (record: !(builtins.elem record.name hostNames)) callerModules

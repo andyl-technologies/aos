@@ -20,6 +20,7 @@ use super::{Action, Invocation, PreviousState};
 #[serde(tag = "event", rename_all = "kebab-case", deny_unknown_fields)]
 pub(super) enum Event {
     Begin {
+        transaction: String,
         document: Value,
         retire: Vec<String>,
     },
@@ -71,6 +72,9 @@ pub(super) struct Retained {
 #[derive(Default)]
 pub(super) struct State {
     pub active: Option<CheckedModuleGraph>,
+    pub transaction: Option<String>,
+    pub sequence: u64,
+    pub completed: Option<(String, String, BTreeMap<String, Value>)>,
     pub retire: Vec<String>,
     pub pending: Option<Invocation>,
     pub retained: BTreeMap<String, Retained>,
@@ -82,10 +86,18 @@ pub(super) struct State {
 impl State {
     pub fn check(&self, event: &Event) -> Result<()> {
         match event {
-            Event::Begin { document, retire } => {
+            Event::Begin {
+                transaction,
+                document,
+                retire,
+            } => {
                 ensure!(
                     self.active.is_none() && self.pending.is_none(),
                     "activation transaction already active"
+                );
+                ensure!(
+                    !transaction.is_empty() && transaction.len() <= 256,
+                    "invalid transaction identity"
                 );
                 let desired = CheckedModuleGraph::decode(&canonical::to_vec(document)?)?;
                 let unique: std::collections::BTreeSet<_> = retire.iter().collect();
@@ -235,7 +247,13 @@ impl State {
     pub fn apply(&mut self, event: &Event) -> Result<()> {
         self.check(event)?;
         match event {
-            Event::Begin { document, retire } => {
+            Event::Begin {
+                transaction,
+                document,
+                retire,
+            } => {
+                self.transaction = Some(transaction.clone());
+                self.sequence += 1;
                 self.active = Some(CheckedModuleGraph::decode(&canonical::to_vec(document)?)?);
                 self.retire = retire.clone();
                 self.transaction_results.clear();
@@ -284,6 +302,19 @@ impl State {
                 self.releases.pop_front();
             }
             Event::Commit => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("commit without active graph"))?;
+                let transaction = self
+                    .transaction
+                    .take()
+                    .ok_or_else(|| anyhow::anyhow!("commit without transaction identity"))?;
+                self.completed = Some((
+                    transaction,
+                    fingerprint(active, &self.retire)?,
+                    self.transaction_results.clone(),
+                ));
                 self.active = None;
                 self.retire.clear();
                 self.transaction_results.clear();
@@ -298,4 +329,12 @@ fn artifact(effect: &Effect) -> Option<&str> {
         Handler::Process { artifact, .. } => Some(artifact),
         Handler::Composition { .. } => None,
     }
+}
+
+pub(super) fn fingerprint(graph: &CheckedModuleGraph, retire: &[String]) -> Result<String> {
+    Ok(aos_contract::Sha256Digest::of_bytes(canonical::to_vec(&(
+        graph.canonical_bytes()?,
+        retire,
+    ))?)
+    .hex())
 }
