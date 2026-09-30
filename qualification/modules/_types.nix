@@ -21,8 +21,8 @@ in {
     checks = strings "Acceptance conditions required in every observation.";
     regressions = (strings "Source regression gates; these do not replace release execution.") // {default = [];};
     invalidated_by = (strings "Identities whose change invalidates evidence.") // {default = ["subject" "policy" "executor" "environment"];};
-    matrix_spec =
-      (option (lib.types.nullOr lib.types.attrs) "Exact evaluated matrix specification consumed by this requirement.")
+    native_operation_spec =
+      (option (lib.types.nullOr lib.types.attrs) "Exact independently scoped native operation cohorts required by this requirement.")
       // {default = null;};
     measurements =
       (option (lib.types.attrsOf (closed {

@@ -58,8 +58,8 @@ in {
             })
           cfg.targets);
           requirements = named "id" (builtins.mapAttrs (_: requirement:
-            if requirement.matrix_spec == null
-            then removeAttrs requirement ["matrix_spec"]
+            if requirement.native_operation_spec == null
+            then removeAttrs requirement ["native_operation_spec"]
             else requirement)
           cfg.requirements);
           package_rules = named "name" (builtins.mapAttrs (

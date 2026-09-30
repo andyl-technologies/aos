@@ -3,6 +3,7 @@
   lib,
   packageNames,
   nativeAdapterMatrix,
+  nativeOperationSpec,
   modules ? [],
 }:
-(import ./_eval.nix {inherit lib nativeAdapterMatrix packageNames modules;}).config.qualification.export
+(import ./_eval.nix {inherit lib nativeAdapterMatrix nativeOperationSpec packageNames modules;}).config.qualification.export

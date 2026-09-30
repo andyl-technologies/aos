@@ -3,6 +3,7 @@
   config,
   lib,
   nativeAdapterMatrix,
+  nativeOperationSpec,
   ...
 }: let
   cfg = config.qualification;
@@ -29,7 +30,7 @@
     ability-native-activation =
       [
         "authenticated-package-policy-and-operator-authority"
-        "exact-interface-binding-effect-plan-and-artifact-identities"
+        "exact-native-operation-effect-handler-and-artifact-identities"
         "consumer-scoped-access-and-independent-service-observation"
         "aggregate-publication-reload-and-unchanged-input-no-op"
         "post-publication-reload-failure-retains-new-configuration-and-old-or-unknown-consumer-state"
@@ -45,7 +46,7 @@
       "bounded-bootstrap-planning-rejections-before-effect-construction"
     ];
     ability-native-recovery = [
-      "exact-boot-initrd-artifact-and-static-stage-handoff-contract"
+      "exact-published-boot-and-native-stage-journals"
       "process-loss-after-external-effect-reconciles-before-retry"
       "power-loss-after-external-effect-reconciles-after-boot"
       "fresh-receiving-authority-and-resource-incarnations"
@@ -137,7 +138,10 @@ in {
       };
       ability-native-adapter-matrix =
         nativeAdapterMatrix.requirement
-        // {checks = requiredChecks.ability-native-adapter-matrix;};
+        // {
+          checks = requiredChecks.ability-native-adapter-matrix;
+          native_operation_spec = nativeOperationSpec;
+        };
     };
     assertions = [
       {
@@ -146,8 +150,10 @@ in {
       }
       {
         assertion =
-          cfg.requirements.ability-native-adapter-matrix.matrix_spec
-          == nativeAdapterMatrix.spec
+          cfg.requirements.ability-native-adapter-matrix.native_operation_spec
+          == nativeOperationSpec
+          && nativeOperationSpec.cohorts != []
+          && nativeOperationSpec.required_operations != []
           && builtins.sort builtins.lessThan (
             nativeAdapterMatrix.spec.applicability.applicable_cell_ids
             ++ map (cell: cell.cell_id) nativeAdapterMatrix.spec.applicability.inapplicable_cells

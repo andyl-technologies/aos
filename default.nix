@@ -208,15 +208,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   # Auto-discovered module list.
   modules = import ./modules;
 
-  # Assemble the in-image, eval-only base library for every
-  # system. See `lib/build/base-lib.nix`.
-  mkBaseLibFor = effectivePkgs:
-    import ./lib/build/base-lib.nix {
-      inherit lib;
-      pkgs = effectivePkgs;
-      system = hostPlatform.system;
-    };
-
   # Build a system from a system definition module (or list of modules).
   #
   # Accepts three calling conventions:
@@ -239,9 +230,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       if builtins.isAttrs args && args ? specialArgs
       then args.specialArgs
       else {};
-    # A caller-provided package set must bind both stage-1 modules and the
-    # frozen on-host evaluator. Otherwise first-boot re-evaluation could
-    # silently restore executor paths from the outer package set.
+    # A caller-provided package set binds the exact retained artifacts used by
+    # both image construction and the native deployment descriptors.
     effectivePkgs = specialArgs.pkgs or pkgs;
     systemName =
       if builtins.isAttrs args && args ? systemName
@@ -275,28 +265,58 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       then builtins.filter builtins.isPath moduleList
       else
         throw
-        "mkSystem: image and base-library outputs require every system module to be a source path; received ${toString (builtins.length inlineSystemModules)} inline module(s)";
-    baseLibProbe = {
-      aos.config.evalAtBoot = {
-        baseLib = "/nix/store/00000000000000000000000000000000-aos-base-lib-probe";
-        baseLibAbiHash = "sha256:${builtins.concatStringsSep "" (builtins.genList (_: "0") 64)}";
-      };
-    };
+        "mkSystem: image assembly requires every system module to be a source path; received ${toString (builtins.length inlineSystemModules)} inline module(s)";
     # Resolve the static package selection before admitting package modules.
     # This pass chooses the module set only; the final evaluation below remains
     # the sole authoritative configuration fixed point.
     selectionEvaluation = lib.evalModules {
-      modules = modules ++ moduleList ++ [baseLibProbe];
+      modules =
+        modules
+        ++ builtins.seq systemModules moduleList
+        ++ [
+          {
+            aos.activation.stages.initrd.configurationBuilders = [
+              (stage: {
+                # Early provisioning projects storage policy from the original
+                # host sources. Host payload admission belongs to host activation.
+                packages =
+                  lib.optional (builtins.any (record: record.name == "aos-storage-provisioning-provider") (lib.packageModules.closure stage.packages))
+                  (import ./pkgs/boot/_aos-host-evaluation-input/build.nix {
+                    pkgs = effectivePkgs;
+                    evaluationInput = hostProjectionInput;
+                  });
+                configuration = [];
+              })
+            ];
+          }
+        ];
       inherit pkgs lib operatorModules runtimeModules packageModules;
       specialArgs = moduleSpecialArgs;
     };
+    hostProjectionInput = lib.build.evaluationInput (
+      abilityEvaluation.hostStageSpecialArgs.evaluationInput.nativeEvaluationInputs
+      // {
+        inherit lib;
+        pkgs = effectivePkgs;
+        system = effectivePkgs.stdenv.hostPlatform.system;
+        retainPayloads = false;
+      }
+    );
+    evaluationInputFor = stage: {
+      evaluationInput = lib.build.evaluationInput {
+        inherit lib;
+        pkgs = effectivePkgs;
+        system = effectivePkgs.stdenv.hostPlatform.system;
+        inherit (stage) packages scope configuration runtimeConfiguration supplementalInputs;
+      };
+    };
     abilityEvaluation = import ./lib/build/evaluate-stages.nix {
+      stageSpecialArgsFor = evaluationInputFor;
       inherit
         lib
         pkgs
         modules
         moduleList
-        baseLibProbe
         selectionEvaluation
         packageModules
         operatorModules
@@ -307,79 +327,41 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     };
     inherit
       (abilityEvaluation)
+      hostPackages
+      hostStageSpecialArgs
+      initrdStageSpecialArgs
+      initrdPackages
       finalPackageModules
       hostAbilityEvaluation
-      hostConfigurationModules
+      hostConfigurationSources
+      initrdConfigurationSources
       hostScope
       initrdPackageModules
-      initrdConfigurationModules
       initrdScope
       initrdAbilityEvaluation
       ;
-    # Determine the resolved image ABI from the complete caller module list.
-    # Evaluation-only inline modules may affect this value without forcing the
-    # source-backed base library.
-    moduleAbi =
-      selectionEvaluation
-      .config
-      .aos
-      .system
-      .moduleAbi;
-    initrdStaticAbilityContract = hostAbilityEvaluation.config.system.build.initrdStaticAbilityContract;
-    initrdStaticContractPath = "${initrdStaticAbilityContract}/contract.json";
-    initrdStaticContract = let
-      storeViewLib = import ./lib/build/store-view.nix {inherit lib;};
-      storeView = {
-        schema = "aos.package-store.read-view-locator/v1";
-        identity_root = builtins.storeDir;
-        read_root = builtins.storeDir;
-        static_contract = initrdStaticContractPath;
-      };
-    in
-      storeViewLib.staticContractFor storeView initrdStaticContractPath;
-    baseLib = builtins.seq systemModules ((mkBaseLibFor effectivePkgs) {
-      baseModules = modules;
-      inherit systemModules systemName moduleAbi;
-      fixtureModules =
-        if allowInlineModules
-        then inlineSystemModules
-        else [];
-      inherit operatorModules runtimeModules;
-      hostPackageModules = finalPackageModules;
-      inherit hostConfigurationModules;
-
-      inherit hostScope;
-      inherit
-        initrdPackageModules
-        initrdConfigurationModules
-        ;
-      inherit initrdScope;
-      inherit initrdStaticAbilityContract;
-      hostOptionDeclarations = hostAbilityEvaluation._optionDecls;
-      initrdOptionDeclarations = initrdAbilityEvaluation._optionDecls;
-    });
   in let
     finalHostEvaluation = lib.evalModules {
       modules =
         modules
         ++ moduleList
-        ++ hostConfigurationModules
         ++ [
           {
-            aos.config.evalAtBoot = {
-              inherit baseLib;
-              baseLibAbiHash = baseLib.passthru.abiHash;
-            };
             aos.activation.scope = hostScope;
           }
         ];
-      inherit pkgs lib operatorModules runtimeModules;
+      inherit pkgs lib runtimeModules;
+      operatorModules = operatorModules ++ hostConfigurationSources;
       packageModules = finalPackageModules;
       specialArgs =
         moduleSpecialArgs
+        // hostStageSpecialArgs
         // {
-          inherit initrdAbilityEvaluation initrdStaticContract;
-          initrdEvaluationLib = baseLib.passthru.initrdEvaluation;
+          initrdEvaluationInput = initrdStageSpecialArgs.evaluationInput;
+          packageModulesAvailable = true;
+          inherit hostConfigurationSources initrdConfigurationSources;
+          inherit hostPackages initrdPackages initrdPackageModules initrdAbilityEvaluation;
+          hostPackageModules = finalPackageModules;
         };
     };
   in {
@@ -387,6 +369,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     system =
       finalHostEvaluation
       // {
+        qualificationProjection = abilityEvaluation.qualificationProjection;
         # Extensions are ephemeral evaluation overlays. Rebuild every
         # resolver stage while allowing the caller's inline module values.
         extendModules = extension: let
@@ -463,7 +446,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           # Re-expose `extendModules` so callers holding a discovered system
           # (e.g. the fleet harness, which bakes per-VM identity via
           # `environment.etc`) can overlay a fragment without rebuilding the
-          # module list. Inherits this variant's baseLib wiring.
+          # module list. Retains this variant's native stage sources.
           inherit (evaluated) extendModules;
           build = {
             toplevel = evaluated.config.system.build.toplevel;
@@ -500,11 +483,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     mkSystem = mkFixtureSystem;
     system = serverSystem;
   };
-  configProvenanceChecks = import ./lib/testing/config-provenance.nix {
-    inherit pkgs;
-    mkSystem = mkFixtureSystem;
-    serverModule = ./systems/server.nix;
-  };
+  configProvenanceChecks = import ./lib/testing/config-provenance.nix {inherit pkgs;};
   # Single-VM checks use a writable ext4 test disk assembled by
   # lib/testing/vm.nix. Evaluate their system with the matching root contract;
   # the production server system remains EROFS + dm-verity and is exercised by
@@ -530,16 +509,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   );
   qualificationPackageNames =
     pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
-  nativeAdapterPackages = builtins.attrValues (builtins.listToAttrs (map
-    (package: {
-      name = builtins.unsafeDiscardStringContext (builtins.toString package);
-      value = package;
-    })
-    serverSystemState.qualificationProjection.packages));
-  nativeAdapterInterfaceRoots = map (package: package.contract.document) nativeAdapterPackages;
   nativeAdapterMatrix = import ./qualification/modules/_native-adapter-matrix.nix {
     inherit lib;
-    packages = nativeAdapterPackages;
+    projection = serverSystemState.qualificationProjection;
     regressions = [
       "checks.fleet.runtime-module-composition"
       "checks.fleet.k3s-control-plane-worker"
@@ -547,13 +519,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       "checks.fleet.system-image-rollback"
     ];
   };
-  nativeAdapterMatrixSpec = pkgs.writeTextFile {
-    name = "aos-native-adapter-matrix-spec";
-    destination = "/matrix-spec.json";
-    text = nativeAdapterMatrix.canonical_json;
-  };
   releaseQualification = import ./qualification {
-    inherit lib nativeAdapterMatrix;
+    inherit lib nativeAdapterMatrix nativeOperationSpec;
     packageNames = qualificationPackageNames;
   };
   qualificationExecutorIdentity = "aos-${hostPlatform.system}-qualification-v1";
@@ -637,123 +604,99 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         checks = qualificationRequirementChecks scenarioId;
         testScript = spec.qualification.testScript or spec.testScript;
         stagingHubUrl = spec.qualification.stagingHubUrl or null;
-        inherit (spec.qualification) candidateRuntimeCompanions extraClosures setupBody;
+        inherit (spec.qualification) candidateRuntimeCompanions extraClosures setupBody selectedEvaluation adoptionEvaluation;
       }
       // lib.optionalAttrs (cohorts != null) {inherit cohorts;});
-  predecessorMatrixCohort = cohort:
-    cohort
-    // {
-      requiredInputs = ["predecessor-image"];
-      execution = {
-        bootInput = "predecessor-image";
-        fixtureRole = null;
-        recordsGuestKernel = true;
-      };
-      report = {kind = "matrix";};
-    };
-  # The matrix's primary cohort follows the production runtime-module flight;
-  # exact per-cell audits run after its recovery and rollback checks.
-  nativeAdapterMatrixCohort = import ./tests/fleet/runtime-module-composition.nix {
+  nativeServiceCohort = import ./tests/fleet/ability-native-cancellation-systemd.nix {
     inherit lib pkgs;
     mkSystem = mkFixtureSystem;
     qualificationImage = true;
-    additionalClosures = nativeAdapterInterfaceRoots ++ [nativeAdapterMatrixSpec pkgs.aos.testSupport];
   };
-  nativeAdapterMatrixAuditScript = ''
-    audit_roots = ${builtins.toJSON (map builtins.toString nativeAdapterInterfaceRoots)}
-    audit_spec = ${builtins.toJSON "${nativeAdapterMatrixSpec}/matrix-spec.json"}
-
-    def run_native_adapter_audit(binary, output):
-        arguments = " ".join(
-            shlex.quote(value) for value in [audit_spec, output, *audit_roots]
-        )
-        runtime.succeed(f"{binary} {arguments}", timeout=1800)
-        return json.loads(runtime.succeed(
-            f"{COREUTILS}/cat {shlex.quote(output)}"
-        ))
-
-    NATIVE_ADAPTER_MATRIX_RUNTIME_AUDIT = run_native_adapter_audit(
-        "${pkgs.aos.testSupport}/bin/aos-ability-authority-audit",
-        "/var/lib/aos/qualification-native-adapter-runtime.json",
-    )
-    NATIVE_ADAPTER_MATRIX_INTERRUPTION_AUDIT = run_native_adapter_audit(
-        "${pkgs.aos.testSupport}/bin/aos-ability-interruption-audit",
-        "/var/lib/aos/qualification-native-adapter-interruption.json",
-    )
-  '';
-  nativeEffectBoundaryCells = import ./tests/fleet/_ability-effect-boundary-cells.nix {
-    inherit lib;
-    matrix = nativeAdapterMatrix.spec;
-  };
-  nativeEffectReferenceCohort = import ./tests/fleet/ability-native-effect-boundaries-reference.nix {
-    inherit lib pkgs nativeAdapterMatrix;
-    mkSystem = mkFixtureSystem;
-    qualificationImage = true;
-  };
-  nativeRolloutObserver = import ./tests/fleet/_ability-execution-observer.nix {
+  nativeFilesystemCohort = import ./tests/fleet/native-filesystem-operation-cohort.nix {
     inherit lib pkgs;
+    mkSystem = mkFixtureSystem;
+    qualificationImage = true;
   };
-  nativeRolloutForeign = import ./tests/fleet/_ability-rollout-foreign.nix {inherit pkgs;};
-  nativeRolloutImage =
-    (import ./tests/fleet/system-image-rollback.nix {
-      inherit lib pkgs;
-      mkSystem = mkFixtureSystem;
-      systems = discoverSystems;
-      extraFixtureModules = [nativeRolloutObserver.module nativeRolloutForeign.module];
-    })
-    .abilityRolloutFixture;
-  nativeEffectRolloutCohorts = map (cellId:
-    import ./tests/fleet/_ability-effect-boundary-rollout-cohort.nix {
-      inherit lib pkgs cellId nativeAdapterMatrix;
-      mkSystem = mkFixtureSystem;
-      systems = discoverSystems;
-      rolloutImage = nativeRolloutImage;
-    })
-  nativeEffectBoundaryCells.groups.rollout;
-
-  nativeProviderStateCells = import ./tests/fleet/_ability-provider-state-cells.nix {
+  nativeKubernetesCohort = import ./tests/fleet/native-kubernetes-operation-cohort.nix {
+    inherit lib pkgs;
+    mkSystem = mkFixtureSystem;
+    qualificationImage = true;
+  };
+  nativeImageCohort = import ./tests/fleet/_native-image-rollout-cohorts.nix {
+    inherit lib pkgs;
+    mkSystem = mkFixtureSystem;
+    systems = discoverSystems;
+    qualificationImage = true;
+  };
+  nativeOperationRegistration = import ./qualification/modules/_native-operation-cohorts.nix {
     inherit lib;
-    matrix = nativeAdapterMatrix.spec;
+    # This is the required semantic coverage, independent of any one image's
+    # enabled graph. Each cohort supplies its own exact retained evaluation.
+    requiredOperations = [
+      {
+        ability = "serviceManagement";
+        name = "realize";
+      }
+      {
+        ability = "identity";
+        name = "group";
+      }
+      {
+        ability = "identity";
+        name = "principal";
+      }
+      {
+        ability = "identity";
+        name = "membership";
+      }
+      {
+        ability = "filesystem";
+        name = "directory";
+      }
+      {
+        ability = "filesystem";
+        name = "allocate";
+      }
+      {
+        ability = "filesystem";
+        name = "persistentAllocate";
+      }
+      {
+        ability = "filesystem";
+        name = "entry";
+      }
+      {
+        ability = "configuration";
+        name = "file";
+      }
+      {
+        ability = "networkPolicy";
+        name = "ruleset";
+      }
+      {
+        ability = "kubernetes";
+        name = "ensure";
+      }
+      {
+        ability = "k3sConfiguration";
+        name = "ensure";
+      }
+      {
+        ability = "imageRollout";
+        name = "ensure";
+      }
+      {
+        ability = "imageSelection";
+        name = "ensure";
+      }
+      {
+        ability = "imageRetirement";
+        name = "ensure";
+      }
+    ];
+    cohorts = [nativeServiceCohort nativeFilesystemCohort nativeKubernetesCohort] ++ nativeImageCohort.cohorts;
   };
-  nativeProviderStateReferenceCohort = import ./tests/fleet/ability-native-provider-state-reference.nix {
-    inherit lib pkgs nativeAdapterMatrix;
-    mkSystem = mkFixtureSystem;
-    qualificationImage = true;
-  };
-  nativeCancellationCells = import ./tests/fleet/_ability-cancellation-cells.nix {
-    inherit lib;
-    matrix = nativeAdapterMatrix.spec;
-  };
-  nativeCancellationSystemdCells = nativeCancellationCells.groups.systemd;
-  nativeCancellationSystemdCohort = import ./tests/fleet/ability-native-cancellation-systemd.nix {
-    inherit lib pkgs nativeAdapterMatrix;
-    mkSystem = mkFixtureSystem;
-    qualificationImage = true;
-  };
-  nativeCancellationRolloutCohorts = map (cellId:
-    import ./tests/fleet/_ability-cancellation-rollout-cohort.nix {
-      inherit lib pkgs cellId nativeAdapterMatrix;
-      mkSystem = mkFixtureSystem;
-      systems = discoverSystems;
-      rolloutImage = nativeRolloutImage;
-    })
-  nativeCancellationCells.groups.rollout;
-  nativeCancellationReferenceCohort = import ./tests/fleet/ability-native-cancellation-reference.nix {
-    inherit lib pkgs nativeAdapterMatrix;
-    mkSystem = mkFixtureSystem;
-    qualificationImage = true;
-  };
-
-  nativeProviderNegativeCells = import ./tests/fleet/_ability-provider-negative-cells.nix {
-    inherit lib;
-    matrix = nativeAdapterMatrix.spec;
-  };
-  nativeProviderNegativeReference = import ./tests/fleet/ability-native-provider-negative-reference.nix {
-    inherit lib pkgs nativeAdapterMatrix;
-    mkSystem = mkFixtureSystem;
-    qualificationImage = true;
-  };
-  nativeAdapterQualifiedCells = nativeAdapterMatrix.spec.applicability.applicable_cell_ids;
+  nativeOperationSpec = nativeOperationRegistration.nativeOperationSpec;
 
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline = mkNativeAbilityScenario {
@@ -765,70 +708,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       identity = qualificationExecutorIdentity;
       scenarioId = "ability-native-adapter-matrix";
       checks = qualificationRequirementChecks "ability-native-adapter-matrix";
-      matrixSpec = nativeAdapterMatrix.spec;
-      matrixSpecJson = nativeAdapterMatrix.canonical_json;
-      matrixQualifiedCells = nativeAdapterQualifiedCells;
-      # Image cancellation cells run the same predecessor-to-candidate path as
-      # the production rollout requirement and fail closed without this origin.
+      inherit nativeOperationSpec;
+      nativeOperationCohorts = nativeOperationRegistration.cohorts;
       stagingHubUrl = "https://aos.staging.andyl.org";
-      matrixAdditionalCohorts =
-        [
-          {
-            id = "provider-effect-boundaries-reference";
-            qualifiedCells = nativeEffectBoundaryCells.groups.reference;
-            inherit (nativeEffectReferenceCohort) testScript;
-            inherit (nativeEffectReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
-        ]
-        ++ lib.imap (index: cohort:
-          predecessorMatrixCohort {
-            id = "provider-effect-boundary-rollout-${builtins.toString index}";
-            qualifiedCells = [(builtins.elemAt nativeEffectBoundaryCells.groups.rollout index)];
-            inherit (cohort) testScript;
-            inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          })
-        nativeEffectRolloutCohorts
-        ++ [
-          {
-            id = "provider-state-reference";
-            qualifiedCells = nativeProviderStateCells.groups.reference;
-            inherit (nativeProviderStateReferenceCohort) testScript;
-            inherit (nativeProviderStateReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
-        ]
-        ++ [
-          {
-            id = "provider-cancellation-systemd";
-            qualifiedCells = nativeCancellationSystemdCells;
-            inherit (nativeCancellationSystemdCohort) testScript;
-            inherit (nativeCancellationSystemdCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
-          {
-            id = "supported-cancellation-reference";
-            qualifiedCells = nativeCancellationCells.groups.reference;
-            inherit (nativeCancellationReferenceCohort) testScript;
-            inherit (nativeCancellationReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
-        ]
-        ++ lib.imap (index: cohort:
-          predecessorMatrixCohort {
-            id = "provider-cancellation-rollout-${builtins.toString index}";
-            qualifiedCells = [(builtins.elemAt nativeCancellationCells.groups.rollout index)];
-            inherit (cohort) testScript;
-            inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          })
-        nativeCancellationRolloutCohorts
-        ++ [
-          {
-            id = "provider-negative-reference";
-            qualifiedCells = nativeProviderNegativeCells.groups.reference;
-            inherit (nativeProviderNegativeReference) testScript;
-            inherit (nativeProviderNegativeReference.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
-        ];
-
-      testScript = nativeAdapterMatrixCohort.testScript + nativeAdapterMatrixAuditScript;
-      inherit (nativeAdapterMatrixCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };
     ability-native-recovery = mkNativeAbilityScenario {
       scenarioId = "ability-native-recovery";
@@ -938,6 +820,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     identity = qualificationExecutorIdentity;
     scenarios = releaseQualificationScenarios;
     caseScenarios = releaseQualificationCaseScenarios;
+    scenarioFixtures = builtins.listToAttrs (lib.mapAttrsToList (scenarioId: scenario: {
+        name = "${scenario}/bin/aos-qualification-${scenarioId}";
+        value = scenario.passthru.qualification.fixtureArchiveRoot;
+      })
+      nativeAbilityScenarios);
     workRoot = "/var/lib/aos-release/qualification/${hostPlatform.system}";
     timeoutSeconds = 21600;
   };
@@ -1847,7 +1734,7 @@ in {
     };
     image-assertions = import ./lib/testing/image-assertions.nix {inherit pkgs lib;};
     qualification = import ./tests/qualification {
-      inherit pkgs lib build fleet container nativeAdapterMatrix;
+      inherit pkgs lib build fleet container nativeAdapterMatrix nativeOperationSpec;
       inherit releaseQualificationScenarios releaseQualificationCaseScenarios;
     };
     rust = {
@@ -1903,10 +1790,6 @@ in {
       abilities-package-services = ability-suites.package-services;
       abilities-provider-realization = ability-suites.provider-realization;
       abilities-native-resources = ability-suites.native-resources;
-      abilities-source-stage-host = import ./tests/abilities/host-source-fixed-point.nix {
-        inherit lib pkgs;
-        system = serverSystem;
-      };
       abilities-system-selection = ability-suites.system-selection;
       abilities-system-packages = ability-suites.system-packages;
     };
@@ -2010,9 +1893,37 @@ in {
         inherit pkgs lib;
         mkSystem = mkFixtureSystem;
       };
-      initrd-source-stage = serverSystem.config.system.build.initrdSourceStageBundle;
-      host-source-stage = serverSystem.config.system.build.hostSourceStageBundle;
-      base-lib-roots = import ./tests/build/base-lib-roots.nix {
+      native-stage-replay = let
+        checks = import ./tests/build/native-stage-replay.nix {
+          inherit lib;
+          config = serverSystem.config;
+        };
+      in
+        assert builtins.all (value: value) (builtins.attrValues checks);
+          pkgs.writeTextFile {
+            name = "aos-native-stage-replay";
+            destination = "/result.json";
+            text = builtins.toJSON checks;
+          };
+      native-profile-replay = let
+        checks = import ./tests/build/native-profile-replay.nix {
+          inherit lib;
+          system = serverSystem;
+        };
+        checkAll = value:
+          if builtins.isAttrs value
+          then builtins.all checkAll (builtins.attrValues value)
+          else value == true;
+      in
+        assert checkAll checks;
+          pkgs.writeTextFile {
+            name = "aos-native-profile-replay";
+            destination = "/result.json";
+            text = builtins.toJSON checks;
+          };
+      initrd-native-inputs = serverSystem.config.system.build.initrdDeploymentBundle;
+      host-native-inputs = serverSystem.config.system.build.hostDeploymentBundle;
+      native-module-roots = import ./tests/build/native-module-roots.nix {
         inherit pkgs;
         system = serverSystem;
       };
@@ -2033,9 +1944,9 @@ in {
     in
       {
         inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-dev-cache-identity accache;
-        inherit artifact-consumption base-lib-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe host-source-stage initrd-source-stage initrd-stage-contract kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
+        inherit artifact-consumption native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe host-native-inputs initrd-native-inputs initrd-stage-contract native-stage-replay native-profile-replay kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
         # These checks inspect realized closures, so keep them out of the pure evaluation layer.
-        inherit config-eval config-materialize darling-harness;
+        inherit config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness;
         config-manifest = config-manifest;
         config-provenance = configProvenanceChecks.suites;
         rendered-evaluation = builtins.removeAttrs renderedEvalSuites ["rendered-system"];
@@ -2053,7 +1964,7 @@ in {
               else []
             )
             ++ lib.optional (artifact-consumption != null) artifact-consumption
-            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-dev-cache-identity accache base-lib-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
+            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-dev-cache-identity accache native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract native-stage-replay native-profile-replay kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
             ++ builtins.attrValues (builtins.removeAttrs renderedEvalSuites ["rendered-system"])
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
@@ -2083,8 +1994,14 @@ in {
       inherit pkgs lib;
       system = serverSystem;
     };
-    # Off-host config-eval preflight and flat-to-module parity gates.
-    # (operability.md). Pure eval-time, next to checks.eval, cheap on every PR.
+    # Real isolated-store evaluation and first-host adoption exercise the
+    # public APIs against source-built fixtures without requiring a VM.
+    native-projection-input = import ./tests/build/native-projection-input.nix {inherit pkgs lib;};
+    image-metadata = import ./tests/effects/image-metadata.nix {inherit pkgs;};
+    boot-configuration = import ./lib/testing/boot-configuration.nix {
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
+    };
     config-eval = import ./lib/testing/config-eval.nix {
       inherit pkgs lib;
       mkSystem = mkFixtureSystem;
@@ -2180,6 +2097,7 @@ in {
         [
           pkgs.aos
           config-eval
+          boot-configuration
           config-manifest
           config-materialize
           eval
@@ -2256,6 +2174,7 @@ in {
       // {
         apm = apmTests;
         hub-native-operations = hubNativeOperationsTest;
+        native-configuration-lower = import ./tests/vm/configuration-lower.nix {inherit pkgs testing;};
         hub-settings = hubSettingsTest;
         apm-install-at-boot = apmInstallAtBootCheck;
         package-preset = packagePresetCheck;
