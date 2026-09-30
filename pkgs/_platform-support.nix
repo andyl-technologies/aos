@@ -579,6 +579,7 @@ let
     "fuse-overlayfs"
     "getent"
     "glibc"
+    "glibc-tools"
     "hdparm"
     # The complete iperf3 build retains SCTP through Linux lksctp-tools.
     "iperf3"

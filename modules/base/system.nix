@@ -208,6 +208,12 @@ in {
       description = "System locale (LANG environment variable).";
     };
 
+    localePackages = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [pkgs.glibc-locales];
+      description = "Source-built locale data packages used by the system C library.";
+    };
+
     ## System timezone (e.g. UTC, America/New_York).
     ##
     ## # Examples
@@ -323,6 +329,15 @@ in {
     environment.etc."hostname" = {
       text = config.aos.networking.hostName + "\n";
     };
+
+    environment.sessionVariables = {
+      LANG = lib.mkDefault cfg.locale;
+      LOCPATH = lib.mkDefault (lib.concatStringsSep ":" (map (package: "${package}/lib/locale") cfg.localePackages));
+    };
+    environment.etc."profile.d/20-locale.sh".text = ''
+      export LANG=${lib.escapeShellArg cfg.locale}
+      export LOCPATH=${lib.escapeShellArg (lib.concatStringsSep ":" (map (package: "${package}/lib/locale") cfg.localePackages))}
+    '';
 
     # Locale configuration via systemd's locale.conf.
     # systemd reads /etc/locale.conf and exports LANG to all services.
