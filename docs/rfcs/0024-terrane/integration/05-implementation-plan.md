@@ -169,7 +169,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `overlay` composites. Native delta parity is completed with T-FUSE-3
   when the overlay-upper importer exists. Narrowed to trunk scope: `filter`, `map`, set
   operations, and the remaining recipe kinds are T-ALG-3 on B-derive. —
-  satisfies ALG-15 to ALG-21, ALG-28 to ALG-35;
+  satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [x] **T-PROP-1** Property resolution, types, boundary properties,
   completeness, commit-time requirement checks, and strict attribute-name

@@ -243,6 +243,44 @@ operations above.
   through a surface that requires a single root hash in its schema. Such
   surfaces MUST request materialization.
 
+### Canonical recipe inputs
+
+- **[ALG-36]** Recipes for `graft`, `overlay`, and `merge` MUST use the
+  operation-specific argument schemas in `reference/terrane-v1.cddl`.
+  Operand order, complete graft-entry bytes, replacement policy, and ordered
+  merge policies are semantic inputs. Unknown arguments MUST be rejected.
+  The `trust` argument MUST be present exactly when a `prefer-trusted` or
+  `prefer-newer` policy occurs. *Gate:* `gate:algebra-merge`.
+- **[ALG-37]** A recipe MUST bind every effective disclosure-domain input
+  needed to reproduce its materialized root. When explicit input properties
+  fully determine ownership, `domains` MAY be absent. Inherited ownership,
+  default ownership, and graft-local overrides that change materialization
+  MUST be recorded as root-sorted, unique `[root-digest, domain-label]` pairs
+  in `domains`, including needed nested inputs. Decoded labels MUST NOT be
+  treated as authority: materialization MUST bind them exactly to independently
+  resolved, trusted view properties. Ambiguous bindings of one root digest to
+  different effective labels MUST be rejected or evaluated in separate
+  operation contexts. *Gate:* `gate:algebra-merge`.
+- **[ALG-38]** Executable trusted/newer merge policy MUST use the registered
+  `terrane-verified-path/v1` evaluator profile. Its configuration contains
+  exactly two provenance contexts in `[ours, theirs]` order and optional fold
+  preprocessing, with the exact encodings in `reference/terrane-v1.cddl`.
+  Materialization MUST freshly verify the signed input histories and bind
+  their complete context bytes and roots to the recipe. Serialized accepted
+  commit sets or timestamps MUST NOT grant production authority. The
+  `terrane-preset-any/v1` profile is an inert placeholder and MUST NOT
+  authorize either policy. Context version one MUST remain in use when no
+  side evidence is selected; version two MUST record the exact selected side
+  evidence for its immutable view and domain. *Gate:* `gate:algebra-merge`.
+- **[ALG-39]** Fold preprocessing MUST record the base, original incoming,
+  filtered incoming, and sorted unique excluded paths. Re-evaluation MUST
+  restore each excluded path from the base, or remove it when absent in the
+  base, then preserve the original incoming root's effective ownership and
+  verify the exact filtered root digest. The optional preserved-domain field
+  MUST be present exactly when this ownership preservation changes raw root
+  properties. Existing four-field preprocessing bytes remain valid when
+  no such property change occurs. *Gate:* `gate:algebra-merge`.
+
 The rule of thumb for choosing between a `tree` entry and inline entries:
 mount where authority changes, inline everywhere else. A huge flat directory
 benefits from prolly chunking and lives inline; a boundary of ownership,

@@ -1166,6 +1166,26 @@ is added rather than editing history.
     DRV-2. Existing live and GC-tombstone bytes retain their meaning; the new
     state is registered before T1's encoding freeze under D-66.
 
+- **[D-72] Bind algebra recipes to effective ownership and verified policy.**
+  - **Status:** Decided
+  - **Decision:** Register exact graft, overlay and merge argument schemas,
+    root-bound effective domain pairs, the verified-path and inert-any trust
+    profiles, versioned provenance-context tuples, and deterministic fold
+    preprocessing. Serialized ownership or trust evidence is never authority;
+    replay binds independently resolved ownership and freshly verified signed
+    histories before materialization.
+  - **Rationale:** ALG-28 identified a composite only by an operation and
+    root hashes, while inherited ownership and path-scoped trust can change
+    the result for identical roots. The generic argument map did not specify
+    these semantic inputs or distinguish recorded evidence from executable
+    authority. Explicit bindings make recipes reproducible without inventing
+    ownership from a new digest or accepting caller-manufactured receipts.
+  - **Affects:** ALG-28, ALG-36 to ALG-39, PROV-11 to PROV-14, DOM-2 and the
+    recipe CDDL. Existing no-domain overlay and ordinary merge bytes retain
+    their interpretation and identities. Context version one and four-field
+    fold preprocessing remain unchanged where no additional evidence is
+    needed. This correction precedes T1's initial encoding freeze.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

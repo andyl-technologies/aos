@@ -1,4 +1,4 @@
-; Terrane Specification 1.0-draft-1 — canonical object schemas (RFC 8610 CDDL)
+; Terrane Specification 1.0-draft-2 — canonical object schemas (RFC 8610 CDDL)
 ;
 ; This file is normative for every CBOR-encoded immutable and record in a
 ; terrane-v1 store (00-conventions.md CONV-3, 04-content-model.md OBJ-4,
@@ -238,14 +238,92 @@ AttrRecord = {
 }
 
 ; Domain terrane-memo-v1 (ALG-28..30, DRV-19).
-recipe = {
-  1 => recipe-op,
-  2 => [ * digest32 ],                  ; inputs in operand order
-  ? 3 => { * tstr => any },             ; operation arguments (matchers, policy)
+recipe = graft-recipe / overlay-recipe / merge-recipe / other-recipe
+graft-recipe = {
+  1 => "graft",
+  2 => [ parent: digest32, target: digest32 ],
+  3 => {
+    "at" => key-bytes,
+    "entry" => bstr .cbor entry,         ; complete canonical tree entry
+    "replace" => bool,
+    ? "domains" => recipe-domains,
+  },
 }
-recipe-op = "graft" / "split" / "flatten" / "overlay" / "merge"
-          / "filter" / "map" / "union" / "difference" / "intersection"
-          / "index" / "realize"
+overlay-recipe = {
+  1 => "overlay",
+  2 => [ * digest32 ],                  ; highest precedence first
+  ? 3 => { "domains" => recipe-domains },
+}
+merge-recipe = {
+  1 => "merge",
+  2 => [ base: digest32, ours: digest32, theirs: digest32 ],
+  3 => {
+    "policy" => [ * merge-policy ],     ; first resolving policy wins
+    ? "trust" => recipe-trust,          ; iff trusted/newer policy occurs
+    ? "domains" => recipe-domains,
+  },
+}
+other-recipe = {
+  1 => other-recipe-op,
+  2 => [ * digest32 ],                  ; inputs in operand order
+  ? 3 => { * tstr => any },             ; other operations' registered arguments
+}
+other-recipe-op = "split" / "flatten" / "filter" / "map" / "union"
+                / "difference" / "intersection" / "index" / "realize"
+
+; Effective ownership supplied by trusted view resolution (ALG-37).
+; Pairs sort uniquely by root digest; labels use the domain property grammar.
+recipe-domains = [ * [ root: digest32, domain: tstr ] ]
+
+; Canonical evidence envelope; decoding never grants authority (ALG-38).
+recipe-trust = {
+  1 => selector,
+  2 => tstr,                            ; nonempty evaluator version
+  3 => any,                            ; profile-specific canonical configuration
+  4 => [ * digest32 ],                  ; sorted unique accepted commit evidence
+  ? 5 => [ + [ digest32, timestamp ] ], ; sorted unique by commit digest
+}
+; Registered executable profile: terrane-verified-path/v1. Keys 1 and 4 are
+; ["preset", "any"] and []; key 5 is absent. Key 3 is this configuration.
+verified-path-configuration = [
+  [ ours: bstr .cbor provenance-trust-context,
+    theirs: bstr .cbor provenance-trust-context ],
+  fold-preprocessing,
+]
+fold-preprocessing = null / [
+  base: digest32, original-incoming: digest32, filtered-incoming: digest32,
+  excluded: [ * key-bytes ],            ; sorted unique canonical paths
+  ? preserved-domain: tstr,             ; iff ownership changes raw properties
+]
+; Registered inert profile: terrane-preset-any/v1. Keys 1, 3 and 4 are
+; ["preset", "any"], null and []; key 5 is absent. No trusted/newer authority.
+
+; Context versions preserve exact signed view and selected attribute evidence.
+; Version 1 applies iff no selected side evidence is present for this view/domain.
+provenance-trust-context = [
+  1, view: digest32, domain: tstr, selector-bytes: bstr .cbor selector,
+  baseline: tstr / null, min-chunk-size: uint,
+] / [
+  2, view: digest32, domain: tstr, selector-bytes: bstr .cbor selector,
+  baseline: tstr / null, min-chunk-size: uint,
+  selected: bstr .cbor selected-side-evidence,
+]
+selected-side-evidence = [ + [
+  view-location: evidence-location, name: name, target-domain: tstr,
+  full-view-path: key-bytes, side: side-evidence-tuple,
+] ]
+evidence-location = [ commit: digest32, root: digest32, path: key-bytes ]
+side-evidence-tuple = [
+  record: digest32, object: digest32, name: name,
+  function-name: tstr, function-version: tstr, value: bstr,
+  producer: digest32, producer-location: evidence-location,
+  [ producer-domain: tstr, full-producer-path: key-bytes ],
+]
+; Selected items sort uniquely by (view-location, name, target-domain), using
+; digest/path bytes for locations and UTF-8 bytes for names and domains. Each
+; selected view-location names this context's view; each target-domain equals
+; its domain. A producer-location names the separately verified producer.
+; Paths are canonical view/root-relative paths. Value contains canonical CBOR.
 memo = {
   1 => digest32,                        ; recipe hash
   2 => digest32,                        ; resulting root
