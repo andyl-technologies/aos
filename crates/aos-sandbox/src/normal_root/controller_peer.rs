@@ -27,6 +27,7 @@ pub(crate) struct OriginalControllerPolicyPeerV1<'startup> {
     pid: NonZeroU32,
     cgroup: RetainedCgroupAnchor,
     fragment: RetainedImmutableFileV1,
+    nix_profile: Option<RetainedImmutableFileV1>,
     observed: service::ServiceObservationV1,
 }
 
@@ -38,7 +39,7 @@ impl ProductionNormalRootStartupV1 {
         self.recheck()?;
         stream.revalidate_original().map_err(|_| Error::Service)?;
         let pid = stream.peer().credentials().pid();
-        let observed = observe(self, pid)?;
+        let (observed, nix_profile) = observe_initial(self, pid)?;
         let fragment = RetainedImmutableFileV1::observe_fragment(observed.fragment.clone())
             .map_err(|_| Error::Service)?;
         let peer = OriginalControllerPolicyPeerV1 {
@@ -46,6 +47,7 @@ impl ProductionNormalRootStartupV1 {
             pid,
             cgroup: retain_fixed_cgroup(Path::new(CGROUP))?,
             fragment,
+            nix_profile,
             observed,
         };
         peer.recheck_stream(stream)?;
@@ -65,7 +67,15 @@ impl OriginalControllerPolicyPeerV1<'_> {
             return Err(Error::Service);
         }
         self.require_process(stream.peer().pidfd())?;
-        service::require_same(&self.observed, &observe(self.startup, self.pid)?)?;
+        if let Some(profile) = &self.nix_profile {
+            profile.revalidate().map_err(|_| Error::Profile)?;
+        }
+        let observed = observe(
+            self.startup,
+            self.pid,
+            self.nix_profile.as_ref().map(|profile| profile.path()),
+        )?;
+        service::require_same(&self.observed, &observed)?;
         self.fragment.revalidate().map_err(|_| Error::Service)
     }
 
@@ -119,14 +129,76 @@ impl OriginalControllerPolicyPeerV1<'_> {
 fn observe(
     startup: &ProductionNormalRootStartupV1,
     pid: NonZeroU32,
+    nix_profile: Option<&Path>,
 ) -> Result<service::ServiceObservationV1, Error> {
     let (properties, unit) =
         service::read_properties(UNIT, pid.get(), service::SERVICE_PROPERTIES)?;
-    service::immutable_observation(decode_delivery(
+    service::immutable_observation(decode_delivery_with_backends(
         &properties,
         &unit,
         startup.profile_file.path(),
+        nix_profile,
     )?)
+}
+
+fn observe_initial(
+    startup: &ProductionNormalRootStartupV1,
+    pid: NonZeroU32,
+) -> Result<(service::ServiceObservationV1, Option<RetainedImmutableFileV1>), Error> {
+    let (properties, unit) = service::read_properties(UNIT, pid.get(), service::SERVICE_PROPERTIES)?;
+    let nix_path = selected_nix_profile(&properties)?;
+    let nix_profile = nix_path.map(|path| {
+        let file = std::fs::File::open(path).map_err(|_| Error::Profile)?;
+        super::nix_startup::retain_controller_profile(file)
+    }).transpose()?;
+    let observed = service::immutable_observation(decode_delivery_with_backends(
+        &properties,
+        &unit,
+        startup.profile_file.path(),
+        nix_profile.as_ref().map(|profile| profile.path()),
+    )?)?;
+    Ok((observed, nix_profile))
+}
+
+fn selected_nix_profile(properties: &[OwnedValue]) -> Result<Option<std::path::PathBuf>, Error> {
+    let Some(Value::Array(files)) = properties.get(1).map(|value| &**value) else {
+        return Err(Error::Service);
+    };
+    let mut profile = None;
+    let mut pid1 = false;
+    for entry in files.inner() {
+        let Value::Structure(entry) = entry else {
+            return Err(Error::Service);
+        };
+        let [Value::Str(path), Value::Str(name), Value::U64(1)] = entry.fields() else {
+            return Err(Error::Service);
+        };
+        match name.as_str() {
+            super::nix_startup::CONTROLLER_PROFILE_NAME => {
+                if profile.is_some() {
+                    return Err(Error::Service);
+                }
+                super::profile::require_store_path(path.as_str())?;
+                if !path.as_str().ends_with("-aos-nix-startup-profile-2/controller.json") {
+                    return Err(Error::Profile);
+                }
+                profile = Some(std::path::PathBuf::from(path.as_str()));
+            }
+            super::nix_startup::CONTROLLER_PID1_NAME => {
+                if pid1 || Path::new(path.as_str()) != Path::new("/proc/1/exe") {
+                    return Err(Error::Service);
+                }
+                pid1 = true;
+            }
+            // The complete closed parser below independently checks the old
+            // Root/method46 roles. They do not establish Nix floor authority.
+            _ => {}
+        }
+    }
+    if profile.is_some() != pid1 {
+        return Err(Error::Service);
+    }
+    Ok(profile)
 }
 
 pub(super) fn decode_delivery(
@@ -134,15 +206,98 @@ pub(super) fn decode_delivery(
     unit: &[OwnedValue],
     profile: &Path,
 ) -> Result<service::ServiceObservationV1, Error> {
+    decode_delivery_with_backends(properties, unit, profile, None)
+}
+
+fn decode_delivery_with_backends(
+    properties: &[OwnedValue],
+    unit: &[OwnedValue],
+    profile: &Path,
+    nix_profile: Option<&Path>,
+) -> Result<service::ServiceObservationV1, Error> {
     let Some(Value::Array(files)) = properties.get(1).map(|value| &**value) else {
         return Err(Error::Service);
     };
     // Optionality comes only from PID1's actual table. The existing strict
     // Controller decoder still checks every exact name/path/flag and duplicate.
-    let tpm_image = match files.len() {
+    let old_roles = files.len().checked_sub(2 * usize::from(nix_profile.is_some()))
+        .ok_or(Error::Service)?;
+    let tpm_image = match old_roles {
         1 => false,
         2 => true,
         _ => return Err(Error::Service),
     };
-    client::decode_delivery(properties, unit, profile, tpm_image)
+    client::decode_delivery_with_backends(properties, unit, profile, tpm_image, nix_profile)
+}
+
+#[cfg(test)]
+mod backend_tests {
+    //! Pure original-Controller paired-delivery vectors, authored and UNRUN.
+    //!
+    //! Only inert PID1-shaped property DATA is decoded; no file, stream,
+    //! startup owner, current floor or live process fixture is constructed.
+
+    use super::*;
+
+    const NIX_PROFILE: &str =
+        "/nix/store/22222222222222222222222222222222-aos-nix-startup-profile-2/controller.json";
+
+    fn value(value: impl Into<Value<'static>>) -> OwnedValue {
+        OwnedValue::try_from(value.into()).unwrap()
+    }
+
+    fn selected_properties(entries: Vec<(String, String, u64)>) -> Vec<OwnedValue> {
+        vec![value(format!("/{CGROUP}")), value(entries)]
+    }
+
+    fn paired_files() -> Vec<(String, String, u64)> {
+        vec![
+            (NIX_PROFILE.to_owned(), super::super::nix_startup::CONTROLLER_PROFILE_NAME.to_owned(), 1),
+            ("/proc/1/exe".to_owned(), super::super::nix_startup::CONTROLLER_PID1_NAME.to_owned(), 1),
+        ]
+    }
+
+    #[test]
+    fn selected_nix_profile_requires_the_exact_pair_before_retention() {
+        let original = paired_files();
+        let properties = selected_properties(original.clone());
+        assert_eq!(selected_nix_profile(&properties).unwrap(), Some(NIX_PROFILE.into()));
+        assert_eq!(selected_nix_profile(&selected_properties(Vec::new())).unwrap(), None);
+
+        for index in 0..original.len() {
+            let mut missing = original.clone();
+            missing.remove(index);
+            let mut duplicate = original.clone();
+            duplicate.push(original[index].clone());
+            let mut wrong_flags = original.clone();
+            wrong_flags[index].2 = 0;
+
+            for changed in [missing, duplicate, wrong_flags] {
+                assert!(selected_nix_profile(&selected_properties(changed)).is_err());
+            }
+        }
+        for (index, path) in [
+            (0, "/tmp/controller.json"),
+            (0, "/nix/store/22222222222222222222222222222222-aos-nix-startup-profile-2/owner.json"),
+            (1, "/proc/self/exe"),
+        ] {
+            let mut changed = original.clone();
+            changed[index].0 = path.to_owned();
+            assert!(selected_nix_profile(&selected_properties(changed)).is_err());
+        }
+    }
+
+    #[test]
+    fn original_peer_legacy_decoder_keeps_its_no_nix_signature() {
+        let _legacy: fn(&[OwnedValue], &[OwnedValue], &Path) -> Result<
+            service::ServiceObservationV1, Error,
+        > = decode_delivery;
+        let properties = selected_properties(paired_files());
+        let unit = Vec::new();
+
+        assert!(decode_delivery(&properties, &unit, Path::new("/old/profile.json")).is_err());
+        assert!(decode_delivery_with_backends(
+            &properties, &unit, Path::new("/old/profile.json"), Some(Path::new(NIX_PROFILE)),
+        ).is_err());
+    }
 }

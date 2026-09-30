@@ -175,14 +175,40 @@ pub(crate) fn capture_controller(
     ),
     crate::BrokerSessionSecurityError,
 > {
-    let (profile, publisher_fd, image) =
-        aos_sandbox::normal_root::ProductionControllerNormalRootCaptureV1::capture(publisher)
-            .map_err(|_| crate::BrokerSessionSecurityError::Currentness)?;
+    let captured = capture_controller_with_backends(publisher, false, false)?;
+    Ok((captured.publisher_descriptor, captured.launch_image, captured.normal_root_capture))
+}
+
+pub(crate) struct CapturedControllerStartupV1 {
+    pub(crate) publisher_descriptor: Option<OwnedFd>,
+    pub(crate) launch_image: Option<Pid1LaunchImageV1>,
+    pub(crate) normal_root_capture: aos_sandbox::normal_root::ProductionControllerNormalRootCaptureV1,
+    pub(crate) nix_capture: Option<aos_sandbox::normal_root::ProductionControllerNixStartupCaptureV1>,
+    pub(crate) git_source_listener: Option<OwnedFd>,
+}
+
+pub(crate) fn capture_controller_with_backends(
+    publisher: bool,
+    nix_enabled: bool,
+    git_source_cut: bool,
+) -> Result<CapturedControllerStartupV1, crate::BrokerSessionSecurityError> {
+    let (mut profile, publisher_fd, image) =
+        aos_sandbox::normal_root::ProductionControllerNormalRootCaptureV1::capture_with_backends(
+            publisher, nix_enabled, git_source_cut,
+        ).map_err(|_| crate::BrokerSessionSecurityError::Currentness)?;
+    let nix_capture = profile.take_nix_startup();
+    let git_source_listener = profile.take_git_source_listener();
     let image = admit_launch_observation(
         ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
         image,
     )?;
-    Ok((publisher_fd, image, profile))
+    Ok(CapturedControllerStartupV1 {
+        publisher_descriptor: publisher_fd,
+        launch_image: image,
+        normal_root_capture: profile,
+        nix_capture,
+        git_source_listener,
+    })
 }
 
 fn admit_launch_observation(
