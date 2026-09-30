@@ -77,33 +77,6 @@ pub struct PlatformCell<T> {
 pub struct PlannedArtifactSet {
     /// Exact planned artifacts the final manifest must resolve.
     pub artifacts: Vec<PlannedArtifact>,
-    /// Resolved package contract inputs, when this package exposes one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub package_contract: Option<PlannedPackageContract>,
-}
-
-/// Resolved publication inputs for one native package contract.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PlannedPackageContract {
-    /// Planned artifact containing the context-free contract document.
-    pub document_artifact: String,
-    /// Exact native package module binding declared by the document, when any.
-    pub package_module: Option<PackageOutputBinding>,
-    /// Exact evaluated package-output bindings used to resolve the document.
-    pub selectors: Vec<PackageOutputBinding>,
-}
-
-/// One symbolic package output and its evaluated immutable store path.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageOutputBinding {
-    /// Package name, or `self` for the package owning the contract.
-    pub package: String,
-    /// Logical package output selected by the contract.
-    pub output: String,
-    /// Exact evaluated store path for that output.
-    pub store_path: String,
 }
 
 /// Frozen Nix identity for one planned output or non-Nix final artifact.
@@ -154,37 +127,6 @@ impl PlannedArtifactSet {
             }
         }
 
-        if let Some(contract) = &self.package_contract {
-            let document = self
-                .artifacts
-                .iter()
-                .find(|artifact| artifact.id == contract.document_artifact)
-                .context("package contract document artifact is absent")?;
-            if document.derivation.is_none() || document.output.is_none() {
-                bail!("package contract document must be an independently built artifact");
-            }
-            if contract.selectors.windows(2).any(|pair| pair[0] >= pair[1]) {
-                bail!("package contract selectors must be unique and sorted");
-            }
-            for selector in &contract.selectors {
-                if selector.package != "self" {
-                    require_identifier(&selector.package, "contract selector package")?;
-                }
-                require_identifier(&selector.output, "contract selector output")?;
-                if selector.output == "contract" {
-                    bail!("package contracts cannot select another package contract");
-                }
-                require_store_path(&selector.store_path, false)?;
-            }
-            if let Some(package_module) = &contract.package_module {
-                if package_module.output != "module" {
-                    bail!("package contract native module must select the module output");
-                }
-                if !contract.selectors.contains(package_module) {
-                    bail!("package contract native module is absent from its selectors");
-                }
-            }
-        }
         require_unique_by(
             &self.artifacts,
             |artifact| &artifact.id,
