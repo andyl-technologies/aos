@@ -1,6 +1,7 @@
 ##! D-Bus — Message bus system
 {
   lib,
+  service-management,
   mkDerivation,
   fetchurl,
   patchelf,
@@ -161,7 +162,8 @@ in
       then []
       else [systemd];
 
-    abilities = ./_dbus;
+    module = ./_dbus;
+    moduleDeps = [service-management];
 
     # dbus-daemon crash-loops on activation under -fstrict-flex-arrays=3
     # (its trailing-array message structs trip _FORTIFY_SOURCE at runtime).
@@ -266,53 +268,6 @@ in
           ''}'';
       }
     ];
-
-    checks = {
-      self,
-      pkgs,
-      mkSystem,
-      ...
-    }: let
-      evaluated = mkSystem {
-        systemName = "dbus-package-check";
-        modules = [
-          {
-            environment.systemPackages = [self];
-            aos.services.dbus.enable = true;
-          }
-        ];
-      };
-      requests = evaluated.config.aos.abilities.requests;
-      lifecycle = requests."dbus:dbus-lifecycle".parameters;
-      managerIdentity = requests."dbus:dbus-manager_identity".parameters;
-      sockets = requests."dbus:dbus-socket_activation".parameters.sockets;
-      socketModes = builtins.listToAttrs (
-        builtins.map (socket: lib.nameValuePair socket.manager_name socket.mode) sockets
-      );
-      principal = requests."dbus:service-principal".parameters;
-      contractHolds =
-        self.abilities ? requirementTemplates
-        && builtins.hasAttr "dbus-service-manager-identity" self.abilities.requirementTemplates
-        && lifecycle.configuration_change_action == "reload"
-        && managerIdentity
-        == {
-          service = "dbus";
-          enabled = true;
-          name = "dbus";
-          aliases = ["messagebus"];
-        }
-        && socketModes == {dbus = "0666";}
-        && !(principal ? requested_id);
-    in {
-      ability-module-contract =
-        if contractHolds
-        then
-          pkgs.runCommand "dbus-ability-module-contract" {} ''
-            mkdir -p "$out"
-            printf '%s\n' PASS > "$out/result"
-          ''
-        else throw "the D-Bus native ability contract check failed";
-    };
 
     meta = {
       description = "D-Bus — freedesktop.org message bus system";

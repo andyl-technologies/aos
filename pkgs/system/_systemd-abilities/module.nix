@@ -1,13 +1,26 @@
-##! Composes systemd's provider and initrd service abilities.
-{
+##! Selects native systemd runtime handlers and package-owned host policies.
+{package, ...}: let
+  program =
+    package
+    // {
+      mainProgram = "aos-service-handler";
+      meta.mainProgram = "aos-service-handler";
+    };
+in {
   imports = [
     ./core.nix
+    ./resource-handlers.nix
+    ./packaged-unit.nix
+    ./network-handlers.nix
     ./initrd-handoff-plan.nix
-    ./listener-claims.nix
-    ./manager.nix
-    ./package-store-read-view.nix
-    ./policy-implementations.nix
-    ./platform/image.nix
     ./verity-root.nix
+    ./journald-policy.nix
+    ./crash-dump-policy.nix
+    ./pam-policy.nix
   ];
+  aos.abilities = {
+    serviceManagement.operations.realize.handler = {inherit program;};
+    configuration.operations.file.handler = {inherit program;};
+    device.operations.present.handler = {inherit program;};
+  };
 }

@@ -1,91 +1,39 @@
-##! Package-owned D-Bus system bus service declaration.
+##! Owns the native system-bus service and merged package registrations.
 {
   config,
   lib,
+  package,
   packageName,
   packageVersion,
   ...
 }: let
   cfg = config.aos.services.dbus;
-  inherit (lib.abilities) pathWithin resultOf;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  abilityTypes = lib.abilities.types;
-  controllerAlias = "system-registration";
-  controllerDeclaration = config.aos.abilities.interfaces."${packageName}:${controllerAlias}";
-  controllerDocument = lib.abilities.interfaceDocumentFromDeclaration controllerDeclaration;
-  controllerIdentity = lib.abilities.interfaceIdentity controllerDocument;
-  controllerMethods = builtins.attrNames controllerDeclaration.methods;
-  packageArtifact = lib.abilities.packageOutput {};
-  registrationConfigurationPath = resultOf "system-registration" "configuration-path";
-  registrationConfigurationResource = resultOf "system-registration" "configuration-resource";
-
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "system-bus";
-      inherit key interface parameters;
-    };
+  registrationConfigurationPath = config.aos.abilities.configuration.operations.file.effects.dbus.outputs.path;
+  registrationConfigurationResource = config.aos.abilities.configuration.operations.file.effects.dbus.outputs.resource;
   command = entryPoint: arguments: {
     executable = {
-      artifact = packageArtifact;
-      entry_point = entryPoint;
+      path = "${package}/${entryPoint}";
       inherit arguments;
     };
     ignore_failure = false;
   };
-
-  serviceGroup = producer "service-group" serviceManagement.interfaces.groupResolution {
-    name = "messagebus";
-    allocation = "managed";
-  };
-  servicePrincipal = producer "service-principal" serviceManagement.interfaces.principalResolution {
-    name = "messagebus";
-    allocation = "managed";
-    description = "D-Bus system message bus";
-    home_directory = "/var/lib/dbus";
-    login_access = "disabled";
-    primary_group = resultOf "service-group" "group-name";
-    supplementary_groups = [];
-  };
-  runtimeStorage = producer "runtime-storage" serviceManagement.interfaces.storageAllocation {
-    name = "dbus-runtime";
-    purpose = "runtime";
-    mode = "0755";
-    requested_path = "/run/dbus";
-  };
-  stateStorage = producer "state-storage" serviceManagement.interfaces.persistentStorageAllocation {
-    name = "dbus-state";
-    purpose = "state";
-    mode = "0755";
-    requested_path = "/var/lib/dbus";
-  };
-  registrationRequirement = {
-    description = "Selects the D-Bus-owned registration aggregate.";
-    inherit (controllerIdentity) abi descriptor;
-    interface = controllerIdentity.name;
-    methods = controllerMethods;
-    guarantees = [];
-    strength = "required";
-    fallback = null;
-  };
-  registrationRequest = {
-    requirement = "system-registration";
-    consumer = "system-bus";
-    scope = ["system-bus"];
-    parameters = {
-      name = "system-bus";
-      stock_configuration = {
-        artifact = packageArtifact;
-        path = "share/dbus-1/system.conf";
-      };
-      operator_policy_directory = "/etc/dbus-1/system.d";
-    };
-  };
-  socketPath = pathWithin {
-    base = resultOf "runtime-storage" "planned-path";
-    relativePath = "system_bus_socket";
-  };
   serviceDefinition = {
-    consumerInstance = "system-bus";
+    enable = true;
+    directories.managed = [
+      {
+        path = "dbus";
+        purpose = "runtime";
+        mode = "0755";
+        retention = "service-lifetime";
+      }
+      {
+        path = "dbus";
+        purpose = "state";
+        mode = "0755";
+        retention = "persistent";
+      }
+    ];
+    activationAfter = [config.aos.abilities.identity.operations.principal.effects.dbus.outputs.name];
     policy.hardening = {
       allow_privilege_escalation = true;
       ambient_privileges = [];
@@ -143,8 +91,8 @@
     };
     dependencies = {
       prerequisites = [
-        (resultOf "runtime-storage" "resource")
-        (resultOf "state-storage" "resource")
+        "/run/dbus"
+        "/var/lib/dbus"
         registrationConfigurationResource
       ];
       after = [];
@@ -189,12 +137,12 @@
     storage.mounts = [
       {
         name = "runtime";
-        source = resultOf "runtime-storage" "planned-path";
+        source = "/run/dbus";
         access = "read-write";
       }
       {
         name = "state";
-        source = resultOf "state-storage" "planned-path";
+        source = "/var/lib/dbus";
         access = "read-write";
       }
     ];
@@ -206,12 +154,12 @@
         endpoints = [
           {
             kind = "unix";
-            path = socketPath;
+            path = "/run/dbus/system_bus_socket";
           }
         ];
         mode = "0666";
         remove_on_stop = false;
-        prerequisites = [(resultOf "runtime-storage" "resource")];
+        prerequisites = ["/run/dbus"];
       }
     ];
     logging = {
@@ -234,68 +182,63 @@
     };
     resources = {
       open_files =
-        if cfg.openFileLimit == null
+        if config.aos.dbus.openFileLimit == null
         then null
         else {
           kind = "maximum";
-          value = cfg.openFileLimit;
+          value = config.aos.dbus.openFileLimit;
         };
       processes =
-        if cfg.openFileLimit == null
+        if config.aos.dbus.openFileLimit == null
         then null
         else {kind = "unbounded";};
       tasks =
-        if cfg.openFileLimit == null
+        if config.aos.dbus.openFileLimit == null
         then null
         else {kind = "unbounded";};
     };
   };
 
-  producers = [
-    serviceGroup
-    servicePrincipal
-    runtimeStorage
-    stateStorage
-  ];
+  xmlPath = path: builtins.replaceStrings ["&" "<" ">" "\""] ["&amp;" "&lt;" "&gt;" "&quot;"] path;
+
+  directoryOption = description:
+    lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [];
+      inherit description;
+      extensible = true;
+    };
 in {
-  imports = [
-    ./availability-interface.nix
-    ./registration-interface.nix
-  ];
-
-  options.aos.services = lib.mkOption {
-    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
-      options = lib.optionalAttrs (name == "dbus") {
-        enable = lib.mkOption {
-          type = abilityTypes.boolean;
-          default = true;
-          description = "Run the D-Bus system message bus.";
-        };
-
-        openFileLimit = lib.mkOption {
-          type = abilityTypes.optional (abilityTypes.integer {
-            minimum = 1;
-            maximum = abilityTypes.limits.maxSafeInteger;
-          });
-          default = null;
-          description = "Maximum number of files the system bus may keep open.";
-        };
-      };
-    }));
-    default = {};
+  options.aos.dbus = {
+    openFileLimit = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.positive;
+      default = null;
+      description = "Maximum number of files the system bus may keep open.";
+    };
+    activationDirectories = directoryOption "Retained package directories containing system-bus activation definitions.";
+    policyDirectories = directoryOption "Retained package directories containing system-bus authorization policy.";
   };
-
-  config = lib.mkMerge [
-    {aos.services.dbus = serviceDefinition;}
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = cfg.enable;
-    })
-    (lib.mkIf cfg.enable {
-      aos.abilities = {
-        requirementTemplates.system-registration = registrationRequirement;
-        requests.system-registration = registrationRequest;
+  config = {
+    aos.services.dbus = lib.mkDefault serviceDefinition;
+    aos.abilities.identity.operations = lib.mkIf cfg.enable {
+      group.effects.dbus.input.name = "messagebus";
+      principal.effects.dbus.input = {
+        name = "messagebus";
+        primary_group = config.aos.abilities.identity.operations.group.effects.dbus.outputs.name;
+        description = "D-Bus system message bus";
+        home_directory = "/var/lib/dbus";
       };
-    })
-  ];
+    };
+    aos.abilities.configuration.operations.file.effects.dbus = lib.mkIf cfg.enable {
+      input = {
+        path = "/etc/dbus-1/aos-system.conf";
+        fragments =
+          ["<busconfig>\n<include>${package}/share/dbus-1/system.conf</include>\n"]
+          ++ builtins.map (path: "<servicedir>${xmlPath path}</servicedir>\n") config.aos.dbus.activationDirectories
+          ++ builtins.map (path: "<includedir>${xmlPath path}</includedir>\n") config.aos.dbus.policyDirectories
+          ++ ["<includedir>/etc/dbus-1/system.d</includedir>\n<include ignore_missing=\"yes\">/etc/dbus-1/system-local.conf</include>\n</busconfig>\n"];
+        mode = "0444";
+      };
+    };
+  };
 }
