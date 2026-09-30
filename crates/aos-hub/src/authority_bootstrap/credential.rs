@@ -96,6 +96,7 @@ pub async fn stage_queued_credential(
     resolver: &dyn SecretVersionResolver,
     retention_seconds: i64,
 ) -> Result<StorageCredentialCustodyStageReply> {
+    db.validate_binding_identity_reservations().await?;
     let original = queued_credential(db, operation_id).await?;
     let now = aos_hub_core::clock::now_unix_secs();
     let request = StorageCredentialCustodyProbe {
@@ -128,6 +129,7 @@ pub async fn stage_queued_credential(
                 .context("material retention overflowed")?,
         )
         .await?;
+    db.validate_binding_identity_reservations().await?;
     let latest = queued_credential(db, operation_id).await?;
     ensure!(
         latest.credential == original.credential

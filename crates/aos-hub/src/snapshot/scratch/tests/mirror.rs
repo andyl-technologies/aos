@@ -1,4 +1,4 @@
-//! Real generation-6 mirror captures and paired hostile foreign-key originals.
+//! Real current mirror captures and paired hostile foreign-key originals.
 
 use aos_hub_core::backend::SqlxBackend;
 use aos_hub_core::db::Database;
@@ -133,13 +133,14 @@ fn mirror_row(original: &MirrorOriginal) -> Row {
             .clone()
             .map(Value::Text)
             .unwrap_or(Value::Null),
+        Value::Null,
     ])
 }
 
 // Rebuild every locator and commitment using the real classifier, then reseal
 // both streams. The hostile orphan remains a valid complete mirror record.
 fn replace_mirror_original(metadata: &mut [Json], private: &mut [Json], original: &MirrorOriginal) {
-    let capture = SnapshotClassifier::for_supported_generation(6)
+    let capture = SnapshotClassifier::for_supported_generation(7)
         .unwrap()
         .capture_private_row("mirror_import_objects", &mirror_row(original))
         .unwrap();
@@ -196,7 +197,7 @@ fn replace_mirror_original(metadata: &mut [Json], private: &mut [Json], original
 }
 
 #[tokio::test]
-async fn generation6_replays_mirror_child_before_registry_with_exact_private_originals() {
+async fn generation7_replays_mirror_child_before_registry_with_exact_private_originals() {
     let (fixture, original) = mirror_fixture().await;
     let mut recovered = Vec::new();
     aos_hub_core::snapshot::archive::records::verify_database_capture(
@@ -217,8 +218,8 @@ async fn generation6_replays_mirror_child_before_registry_with_exact_private_ori
     .unwrap();
     assert_eq!(recovered, vec![mirror_row(&original)]);
     let report = scratch(&fixture).await.unwrap();
-    assert_eq!(report.records().counts().tables, 276);
-    assert_eq!(report.checked_tables(), 266);
+    assert_eq!(report.records().counts().tables, 278);
+    assert_eq!(report.checked_tables(), 268);
     assert_eq!(report.synthetic_lineage_rows(), 2);
     let (metadata, _) = plaintext(&fixture);
     let names = lines(&metadata)

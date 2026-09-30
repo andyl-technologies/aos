@@ -73,7 +73,7 @@ async fn valid_capture_enforces_child_before_parent_and_preserves_private_origin
     let fixture = fixture().await;
     let result = scratch(&fixture).await.unwrap();
     assert_eq!(result.records().counts(), &fixture.output.counts);
-    assert_eq!(result.checked_tables(), 266);
+    assert_eq!(result.checked_tables(), 268);
     assert_eq!(result.synthetic_lineage_rows(), 2);
     assert!(result.records().counts().private_cells >= 2);
     assert!(!format!("{result:?}").contains("private-credential"));
@@ -600,4 +600,197 @@ async fn truncated_generation5_capture_cannot_return_a_constraint_report() {
     let result = verify_capture_in_scratch(inputs, Default::default(), Default::default()).await;
 
     assert!(result.is_err());
+}
+
+fn historical_generation6_inputs() -> ScratchVerificationInputs<Cursor<Vec<u8>>, Cursor<Vec<u8>>> {
+    let signer = ArchiveSigningKey::from_seed("snapshot-operator", [1; 32]).unwrap();
+    ScratchVerificationInputs {
+        root: include_bytes!("fixtures/generation6-root.json").to_vec(),
+        trust: ArchiveSignerTrust::new([(signer.id().to_owned(), signer.public_key())]).unwrap(),
+        wrapping: ArchiveWrappingKeys::new(
+            ArchiveWrappingKey::from_bytes("metadata-wrap", [2; 32]).unwrap(),
+            ArchiveWrappingKey::from_bytes("private-wrap", [3; 32]).unwrap(),
+        )
+        .unwrap(),
+        exclusions: Vec::new(),
+        metadata: Cursor::new(include_bytes!("fixtures/generation6-metadata.enc").to_vec()),
+        private: Cursor::new(include_bytes!("fixtures/generation6-private.enc").to_vec()),
+    }
+}
+
+#[tokio::test]
+async fn genuine_generation6_preserves_indexed_original_without_future_accounting() {
+    let inputs = historical_generation6_inputs();
+    let mut originals = Vec::new();
+    aos_hub_core::snapshot::archive::records::verify_database_capture(
+        &inputs.root,
+        &inputs.trust,
+        &inputs.wrapping,
+        &inputs.exclusions,
+        inputs.metadata,
+        inputs.private,
+        Default::default(),
+        |table, _, row| {
+            if table == "mirror_import_objects" {
+                row.with_private_row(|row| originals.push(row.clone()));
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(originals.len(), 1);
+    assert_eq!(originals[0].len(), 12);
+    let raw: String = originals[0].get(3).unwrap();
+    let original: aos_hub_core::mirror_work::MirrorOriginal = serde_json::from_str(&raw).unwrap();
+    assert_eq!(
+        original.copy_operation_id.as_deref(),
+        Some("44444444444444444444444444444444")
+    );
+    assert_eq!(serde_json::to_string(&original).unwrap(), raw);
+    assert_eq!(originals[0].get::<String>(9).unwrap(), original.path);
+    assert_eq!(
+        originals[0].get::<String>(10).unwrap(),
+        original.source_path_digest()
+    );
+
+    let report = verify_capture_in_scratch(
+        historical_generation6_inputs(),
+        Default::default(),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.records().counts().tables, 276);
+    assert_eq!(report.checked_tables(), 266);
+}
+
+#[tokio::test]
+async fn truncated_generation6_capture_cannot_return_a_constraint_report() {
+    let mut inputs = historical_generation6_inputs();
+    inputs.private.get_mut().pop();
+    assert!(
+        verify_capture_in_scratch(inputs, Default::default(), Default::default())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn generation7_nonempty_charge_totals_are_checked_without_aggregate_aliasing() {
+    let (_directory, path, pool) = source().await;
+    let db = aos_hub_core::db::Database::with_backend(Box::new(
+        aos_hub_core::backend::SqlxBackend::Sqlite(pool.clone()),
+    ))
+    .await
+    .unwrap();
+    let org = db
+        .create_org("snapshot-charge", "Snapshot charge")
+        .await
+        .unwrap();
+    let registry = db
+        .create_managed_registry(org, "", "snapshot-charge", "public", &[], false)
+        .await
+        .unwrap();
+    for (id, bytes) in [(801_i64, 7_i64), (802, 11)] {
+        sqlx::query("INSERT INTO surface_objects(id,registry_id,object_key,object_kind,partition_key,content_hash,size,created_at,updated_at) VALUES (?1,?2,?3,'immutable',?4,?5,?6,1,1)")
+            .bind(id).bind(registry).bind(format!("nar/{id}.nar")).bind(vec![0_u8; 32]).bind("a".repeat(64)).bind(bytes).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO surface_object_usage(surface_object_id,org_id,accounted_bytes,updated_at) VALUES (?1,?2,?3,1)")
+            .bind(id).bind(org).bind(bytes).execute(&pool).await.unwrap();
+    }
+    sqlx::query("UPDATE org_usage SET used_bytes=18,object_count=2 WHERE org_id=?1")
+        .bind(org)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let valid = capture_path(&path, options()).await;
+    assert!(scratch(&valid).await.is_ok());
+
+    sqlx::query("UPDATE org_usage SET used_bytes=17 WHERE org_id=?1")
+        .bind(org)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let deficit = capture_path(&path, options()).await;
+    assert!(verify(&deficit).is_ok());
+    assert!(scratch(&deficit).await.is_err());
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn generation7_private_delete_history_requires_exact_confirmation_and_permanent_identity() {
+    use sha2::{Digest as _, Sha256};
+
+    let (_directory, path, pool) = source().await;
+    let db = aos_hub_core::db::Database::with_backend(Box::new(
+        aos_hub_core::backend::SqlxBackend::Sqlite(pool.clone()),
+    ))
+    .await
+    .unwrap();
+    let binding = db
+        .ensure_instance_default_binding(
+            "deployment_r2",
+            None,
+            Some(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT),
+        )
+        .await
+        .unwrap();
+    let identity = db
+        .binding_identity_reservation(&binding.stable_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let document = json!({ "stable_id": binding.stable_id, "owner_scope_key": binding.owner_scope_key,
+        "org_id": binding.org_id, "binding_db_id": binding.id, "baseline_resource_version": binding.resource_version,
+        "reservation_id": identity.reservation_id });
+    let original = serde_json::to_string(&document).unwrap();
+    let confirmation = hex::encode(Sha256::digest(original.as_bytes()));
+    sqlx::query("INSERT INTO topology_plans(plan_id,plan_kind,actor_kind,actor_label,scope,input_versions_json,effects_json,warnings_json,confirmation_hash,created_at,expires_at,apply_idempotency_key) VALUES ('binding-history','delete_binding','system','fixture','instance',?1,'[]','[]',?2,1,100,'claimed-original')")
+        .bind(&original).bind(&confirmation).execute(&pool).await.unwrap();
+    let valid = capture_path(&path, options()).await;
+    assert!(scratch(&valid).await.is_ok());
+
+    let mut forged = document.clone();
+    forged["reservation_id"] = json!("01234567-89ab-4def-8123-456789abcdef");
+    let forged_raw = serde_json::to_string(&forged).unwrap();
+    sqlx::query("UPDATE topology_plans SET input_versions_json=?1 WHERE plan_id='binding-history'")
+        .bind(&forged_raw)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let altered_original = capture_path(&path, options()).await;
+    assert!(verify(&altered_original).is_ok());
+    assert!(scratch(&altered_original).await.is_err());
+
+    sqlx::query("UPDATE topology_plans SET confirmation_hash=?1 WHERE plan_id='binding-history'")
+        .bind(hex::encode(Sha256::digest(forged_raw.as_bytes())))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let changed_lifetime = capture_path(&path, options()).await;
+    assert!(scratch(&changed_lifetime).await.is_err());
+
+    let mut legacy = document.clone();
+    legacy.as_object_mut().unwrap().remove("reservation_id");
+    let legacy_raw = serde_json::to_string(&legacy).unwrap();
+    sqlx::query("UPDATE topology_plans SET input_versions_json=?1,confirmation_hash=?2 WHERE plan_id='binding-history'")
+        .bind(&legacy_raw).bind(hex::encode(Sha256::digest(legacy_raw.as_bytes()))).execute(&pool).await.unwrap();
+    assert!(
+        scratch(&capture_path(&path, options()).await)
+            .await
+            .is_err()
+    );
+
+    sqlx::query("UPDATE topology_plans SET input_versions_json=?1,confirmation_hash=?2 WHERE plan_id='binding-history'")
+        .bind(&original).bind(&confirmation).execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM binding_identity_reservations WHERE stable_id=?1")
+        .bind(&binding.stable_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        scratch(&capture_path(&path, options()).await)
+            .await
+            .is_err()
+    );
+    pool.close().await;
 }

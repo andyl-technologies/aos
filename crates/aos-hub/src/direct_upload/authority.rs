@@ -190,6 +190,9 @@ impl DirectUploadAuthority for NativeDirectUploadAuthority {
                 original.admission.intent == *intent && original.admission.actor_slot == actor,
                 "direct original operation conflicts"
             );
+            if !matches!(original.state, DirectSessionState::Committed | DirectSessionState::Aborted) {
+                self.ensure_new_effect_accounting(intent).await?;
+            }
             self.authorize_session(claims, context, &original, DirectLogicalAction::Status, now)
                 .await?;
             return Ok(ResolvedDirectAdmission {
@@ -209,6 +212,7 @@ impl DirectUploadAuthority for NativeDirectUploadAuthority {
             });
         }
 
+        self.ensure_new_effect_accounting(intent).await?;
         let mut target = self
             .resolve_target(claims, &actor, intent, false, now)
             .await?;
@@ -432,6 +436,7 @@ impl DirectUploadAuthority for NativeDirectUploadAuthority {
         use futures_util::{stream, StreamExt as _, TryStreamExt as _};
         use std::collections::BTreeSet;
 
+        self.ensure_new_effect_accounting(&record.admission.intent).await?;
         let complete = record
             .complete_intent
             .as_ref()

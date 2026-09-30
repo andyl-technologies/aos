@@ -220,13 +220,17 @@ mod generation_tests {
         let generation5 = CompiledSqliteSnapshotCatalogue::load_generation(5)
             .await
             .unwrap();
-        let current = CompiledSqliteSnapshotCatalogue::load_generation(6)
+        let generation6 = CompiledSqliteSnapshotCatalogue::load_generation(6)
+            .await
+            .unwrap();
+        let current = CompiledSqliteSnapshotCatalogue::load_generation(7)
             .await
             .unwrap();
 
         assert_eq!(historical.schema().tables.len(), 267);
         assert_eq!(generation4.schema().tables.len(), 275);
-        assert_eq!(current.schema().tables.len(), 276);
+        assert_eq!(generation6.schema().tables.len(), 276);
+        assert_eq!(current.schema().tables.len(), 278);
         assert!(
             !generation4
                 .definitions()
@@ -241,7 +245,8 @@ mod generation_tests {
         );
         assert_eq!(generation4.schema_manifest().migration_digests.len(), 4);
         assert_eq!(generation5.schema_manifest().migration_digests.len(), 5);
-        assert_eq!(current.schema_manifest().migration_digests.len(), 6);
+        assert_eq!(generation6.schema_manifest().migration_digests.len(), 6);
+        assert_eq!(current.schema_manifest().migration_digests.len(), 7);
         let mirror_columns = |catalogue: &CompiledSqliteSnapshotCatalogue| {
             catalogue
                 .schema()
@@ -253,7 +258,8 @@ mod generation_tests {
                 .len()
         };
         assert_eq!(mirror_columns(&generation5), 9);
-        assert_eq!(mirror_columns(&current), 12);
+        assert_eq!(mirror_columns(&generation6), 12);
+        assert_eq!(mirror_columns(&current), 13);
         assert!(
             !historical
                 .definitions()
@@ -281,7 +287,7 @@ mod generation_tests {
         assert_eq!(historical.schema_manifest().version, 3);
         assert_eq!(historical.schema_manifest().migration_digests.len(), 3);
         assert!(
-            CompiledSqliteSnapshotCatalogue::load_generation(7)
+            CompiledSqliteSnapshotCatalogue::load_generation(8)
                 .await
                 .is_err()
         );

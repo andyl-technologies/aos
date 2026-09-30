@@ -12,7 +12,7 @@ use crate::mirror_work::{digest, MirrorOriginal, MirrorProgress};
 use super::{Database, SurfaceTarget};
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// Holds one validated system-of-record mirror original and its observations.
 #[derive(Clone, Debug)]
@@ -25,6 +25,8 @@ pub struct MirrorImportRecord {
     pub state: String,
     /// Exact committed original/final evidence digest, if terminal.
     pub commit_digest: Option<String>,
+    /// Generation of an atomic catalogue/accounting commit; absent for legacy journals.
+    pub publication_commit_version: Option<i64>,
     /// Original SQL admission time.
     pub created_at: i64,
     /// Time of the most recent positive observation.
@@ -101,6 +103,7 @@ impl MirrorImportRecord {
             progress,
             state: state.into(),
             commit_digest: commit_digest.map(str::to_owned),
+            publication_commit_version: None,
             created_at,
             updated_at,
         })
@@ -121,6 +124,18 @@ impl MirrorImportRecord {
                 && source_path_digest == Some(self.original.source_path_digest().as_str())
                 && copy_operation_id == self.original.copy_operation_id.as_deref(),
             "mirror indexed identity changed its retained original"
+        );
+        Ok(())
+    }
+
+    /// Checks whether a terminal qualifier belongs to the atomic publication contract.
+    ///
+    /// # Errors
+    /// Returns an error for a future version or a qualifier on nonterminal progress.
+    pub fn validate_publication_commit_version(&self, version: Option<i64>) -> Result<()> {
+        ensure!(
+            version.is_none_or(|version| version == 7 && self.state == "committed"),
+            "mirror logical publication qualifier differs"
         );
         Ok(())
     }
@@ -188,13 +203,14 @@ impl Database {
         self.backend
             .query_opt(
                 "SELECT job_id, registry_id, original_digest, original_json, progress_json,
-                    state, commit_digest, created_at, updated_at, source_path, source_path_digest, copy_operation_id
+                    state, commit_digest, created_at, updated_at, source_path, source_path_digest, copy_operation_id,
+                    publication_commit_version
                FROM mirror_import_objects WHERE job_id = ?1",
                 &vals![job_id],
             )
             .await?
             .map(|row| {
-                let record = MirrorImportRecord::decode(
+                let mut record = MirrorImportRecord::decode(
                     &row.get::<String>(0)?,
                     row.get(1)?,
                     &row.get::<String>(2)?,
@@ -210,6 +226,8 @@ impl Database {
                     row.get::<Option<String>>(10)?.as_deref(),
                     row.get::<Option<String>>(11)?.as_deref(),
                 )?;
+                record.publication_commit_version = row.get(12)?;
+                record.validate_publication_commit_version(record.publication_commit_version)?;
                 Ok(record)
             })
             .transpose()
@@ -502,6 +520,10 @@ impl Database {
             );
             return Ok(retained);
         }
+        ensure!(
+            !commit,
+            "mirror final publication requires independent guard proof and atomic catalogue accounting"
+        );
         self.validate_mirror_import_authority(original).await?;
         self.backend.checked_batch(&[CheckedStatement::exact(
             "UPDATE mirror_import_objects SET progress_json = ?2, state = ?3,

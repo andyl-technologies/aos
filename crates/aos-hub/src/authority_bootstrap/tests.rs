@@ -24,6 +24,9 @@ mod credential_custody;
 #[path = "registration_tests.rs"]
 mod credential_registration;
 
+#[path = "binding_lifetime_tests.rs"]
+mod binding_lifetime;
+
 const AUTHORITY: &str = "00000000-0000-4000-8000-000000000041";
 const EXECUTOR: &str = "qualification-executor";
 const NAMESPACE: &str = "qualification-guard-namespace";
@@ -708,7 +711,8 @@ async fn postgres_operator_role_derives_and_hydrates_with_only_selected_table_re
         binding_storage_authority_revisions, storage_authority_attestations,
         storage_authority_admission_heads, storage_authority_admission_revisions,
         bindings, binding_credential_heads, binding_credential_revisions,
-        binding_write_revisions, topology_operations, binding_write_state TO {role}"
+        binding_write_revisions, topology_operations, binding_write_state,
+        binding_identity_reservations, topology_plans TO {role}"
     ))
     .execute(&owner)
     .await

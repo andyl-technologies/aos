@@ -24,6 +24,25 @@ pub(super) struct Target {
 }
 
 impl NativeDirectUploadAuthority {
+    pub(super) async fn ensure_new_effect_accounting(
+        &self,
+        intent: &DirectUploadIntent,
+    ) -> Result<()> {
+        if let DirectUploadTarget::PublicationObject {
+            surface_object_id, ..
+        } = &intent.target
+        {
+            self.db
+                .verified_registry_object_accounting_eligibility(i64::try_from(
+                    surface_object_id.get(),
+                )?)
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+impl NativeDirectUploadAuthority {
     pub(super) async fn resolve_target(
         &self,
         claims: &Claims,
@@ -512,29 +531,12 @@ impl NativeDirectUploadAuthority {
                     now,
                 )?);
             }
-            (
-                DirectSqlOwner::Publication,
-                DirectUploadTarget::PublicationObject {
-                    publication_id,
-                    surface_object_id,
-                    ..
-                },
-            ) => {
-                for placement in &evidence.placements {
-                    statements.extend(Database::registry_publication_object_presence_statements(
-                        publication_id,
-                        i64::try_from(surface_object_id.get())?,
-                        i64::try_from(placement.placement_id.get())?,
-                        &evidence.sha256,
-                        i64::try_from(evidence.byte_size.get())?,
-                        Some(&placement.final_etag),
-                        now,
-                        Some((
-                            i64::try_from(placement.placement_resource_version.get())?,
-                            i64::try_from(placement.binding_resource_version.get())?,
-                        )),
-                    )?);
-                }
+            (DirectSqlOwner::Publication, DirectUploadTarget::PublicationObject { .. }) => {
+                statements.extend(
+                    self.db.direct_publication_presence_statements(
+                        record, evidence, &self.deployment, now,
+                    ).await?,
+                );
             }
             (DirectSqlOwner::Oci, DirectUploadTarget::OciBlob { upload_id }) => {
                 ensure!(

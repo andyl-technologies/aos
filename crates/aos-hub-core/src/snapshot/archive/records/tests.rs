@@ -21,7 +21,7 @@ struct Fixture {
 
 #[test]
 fn historical_wire_arrays_round_trip_without_rewriting_and_unknown_lengths_fail() {
-    for version in [3, 4, 5, 6] {
+    for version in [3, 4, 5, 6, 7] {
         let classifier = SnapshotClassifier::for_supported_generation(version).unwrap();
         let schema = schema(&classifier).unwrap();
         let original = serde_json::to_vec(&schema).unwrap();
@@ -36,7 +36,7 @@ fn historical_wire_arrays_round_trip_without_rewriting_and_unknown_lengths_fail(
 
     let mut value = serde_json::to_value(schema(&current_classifier().unwrap()).unwrap()).unwrap();
 
-    for count in [0, 1, 2, 7] {
+    for count in [0, 1, 2, 8] {
         value["migration_digests"] = json!(vec!["1".repeat(64); count]);
         assert!(serde_json::from_value::<Schema>(value.clone()).is_err());
     }
@@ -57,7 +57,7 @@ async fn schema_callback_runs_after_both_headers_and_before_any_row() {
         Cursor::new(&f.output.private),
         StreamLimits::default(),
         |manifest| {
-            assert_eq!(manifest.version, 6);
+            assert_eq!(manifest.version, 7);
             assert!(!called.replace(true));
             Ok(())
         },
@@ -68,7 +68,7 @@ async fn schema_callback_runs_after_both_headers_and_before_any_row() {
     )
     .unwrap();
     assert!(called.get());
-    assert_eq!(report.counts().tables, 276);
+    assert_eq!(report.counts().tables, 278);
 
     let mut bad = fixture().await;
     let (metadata, private) = plaintext(&bad);
@@ -233,7 +233,7 @@ async fn actual_sqlite_capture_reconstructs_every_retained_row_and_omits_session
     )
     .unwrap();
     assert_eq!(report.counts(), &f.output.counts);
-    assert_eq!(report.counts().tables, 276);
+    assert_eq!(report.counts().tables, 278);
     assert_eq!(users.len(), 2);
     assert!(report.counts().private_cells >= 2);
     assert!(report.counts().omitted_rows >= 3);
@@ -357,13 +357,13 @@ async fn empty_tables_and_explicit_omission_counts_are_all_present() {
         meta.iter()
             .filter(|line| line["kind"] == "table_start")
             .count(),
-        276
+        278
     );
     assert_eq!(
         meta.iter()
             .filter(|line| line["kind"] == "table_end")
             .count(),
-        276
+        278
     );
     assert!(
         meta.iter()

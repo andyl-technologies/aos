@@ -508,7 +508,8 @@ impl Database {
             );
         }
 
-        let mut statements = vec![current_guard(record, now)?];
+        let mut statements = self.direct_publication_accounting_prefix(record).await?;
+        statements.push(current_guard(record, now)?);
         statements.append(&mut target_statements);
         statements.push(Statement::new(
             "INSERT INTO direct_upload_completion_receipts

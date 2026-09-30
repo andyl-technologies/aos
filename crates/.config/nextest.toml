@@ -6,6 +6,20 @@
 filter = 'package(aos-package) and test(image_publisher_accepts_only_exact_target_platform_metadata)'
 slow-timeout = { period = "60s", terminate-after = 5 }
 
+# These six tests observe actual cancellation and cleanup within fixed runtime
+# deadlines. Reserve the runner so unrelated catalogue replay cannot consume
+# their observation windows; the production deadlines remain unchanged.
+[[profile.default.overrides]]
+filter = '''package(aos-hub) and (
+  test(=snapshot::scratch::tests::future_drop_and_cancellation_interrupt_active_vm_and_close_private_connection) or
+  test(=snapshot::tests::actual_verification_requires_trusted_root_complete_eofs_and_exact_entries) or
+  test(=snapshot::tests::constraints::cancellation_during_actual_scratch_replay_returns_after_cleanup_without_report) or
+  test(=snapshot::tests::constraints::dropping_outer_verification_cancels_live_scratch_read_and_returns_no_report) or
+  test(=snapshot::tests::constraints::scratch_work_limits_refuse_capture_publication_and_existing_verify) or
+  test(=snapshot::tests::observed_cancellation_during_capture_cleans_unpublished_stage)
+)'''
+threads-required = "num-test-threads"
+
 [[profile.default.overrides]]
 filter = 'package(aos) and test(apr_release_channel_upload_supports_verified_consumer_sync)'
 slow-timeout = { period = "60s", terminate-after = 5 }

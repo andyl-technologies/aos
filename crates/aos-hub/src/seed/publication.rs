@@ -6,12 +6,12 @@
 use std::io::Read;
 use std::path::Path;
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 
 use crate::db::{
-    Database, NewRegistryPublication, SetRegistryPublicationObject,
-    SetRegistryPublicationPlacement, SetSurfaceObject, SurfaceTarget,
+    Database, NewRegistryPublication, RegistryPublicationManifestObject,
+    SetRegistryPublicationPlacement, SurfaceTarget,
 };
 use crate::fetch::{LocalFsFetch, SurfaceFetch};
 use aos_registry_surface::keymap;
@@ -78,36 +78,31 @@ pub(super) async fn record(
             "immutable"
         };
         let surface = SurfaceTarget::Registry(registry_id);
-        let object = match db.surface_object_named(surface, &key).await? {
-            Some(object) => {
-                ensure!(
-                    object.object_kind == kind
-                        && object.content_hash.as_deref() == Some(&hash)
-                        && object.size == Some(size),
-                    "seed object inventory disagrees for {key}"
-                );
-                object
-            }
-            None => {
-                db.create_surface_object(&SetSurfaceObject {
-                    surface,
-                    object_key: key,
-                    content_hash: Some(hash.clone()),
-                    size: Some(size),
-                    object_kind: kind.into(),
-                    mutable_publication_id: mutable.then(|| publication_id.clone()),
-                })
-                .await?
-            }
-        };
-        db.set_registry_publication_object(&SetRegistryPublicationObject {
-            publication_id: publication_id.clone(),
-            surface_object_id: object.id,
-            object_kind: kind.into(),
-            expected_hash: hash.clone(),
-            expected_size: size,
-        })
+        if let Some(object) = db.surface_object_named(surface, &key).await? {
+            ensure!(
+                object.object_kind == kind
+                    && object.content_hash.as_deref() == Some(&hash)
+                    && object.size == Some(size),
+                "seed object inventory disagrees for {key}"
+            );
+            db.verified_registry_object_accounting_eligibility(object.id)
+                .await?;
+        }
+        db.admit_registry_publication_manifest_objects(
+            registry_id,
+            &publication_id,
+            &[RegistryPublicationManifestObject {
+                object_key: key.clone(),
+                object_kind: kind.into(),
+                expected_hash: hash.clone(),
+                expected_size: size,
+            }],
+        )
         .await?;
+        let object = db
+            .surface_object_named(surface, &key)
+            .await?
+            .context("seed publication placeholder disappeared")?;
         db.record_registry_publication_object_presence(
             &publication_id,
             object.id,

@@ -23,9 +23,12 @@ use super::{
 
 const PAGE_BYTES: u64 = 4096;
 
+mod lifetimes;
+mod direct_presence;
+
 pub(super) fn verify<M: Read, P: Read>(
     inputs: ScratchVerificationInputs<M, P>,
-    catalogues: [CompiledSqliteSnapshotCatalogue; 4],
+    catalogues: [CompiledSqliteSnapshotCatalogue; 5],
     limits: ScratchVerificationLimits,
     budget: WorkBudget,
 ) -> ScratchResult<VerifiedRetainedSqliteCapture> {
@@ -476,6 +479,7 @@ impl MemoryReplay {
     }
 
     fn final_checks(&self) -> ScratchResult<()> {
+        self.lifetime_checks()?;
         let integrity = self.scalar(
             "SELECT CASE WHEN COUNT(*)=1 AND COALESCE(MAX(integrity_check='ok' COLLATE BINARY),0)=1 THEN 1 ELSE 0 END
              FROM (SELECT integrity_check FROM pragma_integrity_check LIMIT 2)", Failure::Constraints)?;
@@ -588,13 +592,13 @@ mod tests {
     #[tokio::test]
     async fn exact_compiled_corpus_has_no_seeds_triggers_or_retained_to_omitted_fks() {
         let catalogue = CompiledSqliteSnapshotCatalogue::load().await.unwrap();
-        assert_eq!(catalogue.schema().tables.len(), 276);
+        assert_eq!(catalogue.schema().tables.len(), 278);
         let limits = ScratchVerificationLimits::default();
         let budget = WorkBudget::new(limits, Default::default(), Default::default()).unwrap();
         // Construction traverses EVERY retained FK, fails unknown dispositions
         // and rejects unsupported kinds before any archive row is consumed.
         let mut scratch = MemoryReplay::new(catalogue, limits, budget).unwrap();
-        assert_eq!(scratch.tables.len(), 266);
+        assert_eq!(scratch.tables.len(), 268);
         assert_eq!(scratch.retained_rows, 0);
         for table in &scratch.catalogue.schema().tables {
             let count = scratch

@@ -7,25 +7,36 @@ mod direct_oci;
 mod direct_receipts;
 mod mirror;
 mod privacy;
+mod lifetimes;
 
 #[test]
 fn historical_contract_keeps_exact_digests_and_refuses_mixed_generations() {
     let historical = SnapshotClassifier::for_supported_generation(3).unwrap();
     let generation4 = SnapshotClassifier::for_supported_generation(4).unwrap();
     let generation5 = SnapshotClassifier::for_supported_generation(5).unwrap();
-    let current = SnapshotClassifier::for_supported_generation(6).unwrap();
+    let generation6 = SnapshotClassifier::for_supported_generation(6).unwrap();
+    let current = SnapshotClassifier::for_supported_generation(7).unwrap();
 
     assert_eq!(historical.tables.len(), 267);
     assert_eq!(generation4.tables.len(), 275);
     assert_eq!(generation5.tables.len(), 276);
-    assert_eq!(current.tables.len(), 276);
+    assert_eq!(generation6.tables.len(), 276);
+    assert_eq!(current.tables.len(), 278);
+    assert_eq!(generation6.manifest().migration_digests, digests()[..6]);
+    assert_eq!(generation6.manifest().classification_digest,
+        hex::encode(Sha256::digest(GENERATION6_CONTRACT)));
+    assert!(!generation6.tables.contains_key("surface_object_usage"));
+    assert!(!generation6.tables.contains_key("binding_identity_reservations"));
+    assert_eq!(current.tables["surface_object_usage"].columns.len(), 5);
+    assert_eq!(current.tables["binding_identity_reservations"].columns.len(), 3);
     assert_eq!(generation5.manifest().migration_digests, digests()[..5]);
     assert_eq!(
         generation5.manifest().classification_digest,
         hex::encode(Sha256::digest(GENERATION5_CONTRACT))
     );
     assert_eq!(generation5.tables["mirror_import_objects"].columns.len(), 9);
-    assert_eq!(current.tables["mirror_import_objects"].columns.len(), 12);
+    assert_eq!(generation6.tables["mirror_import_objects"].columns.len(), 12);
+    assert_eq!(current.tables["mirror_import_objects"].columns.len(), 13);
     assert!(!historical.tables.contains_key("direct_upload_sessions"));
     assert_eq!(historical.manifest().migration_digests, digests()[..3]);
     assert_eq!(generation4.manifest().migration_digests, digests()[..4]);
@@ -43,7 +54,7 @@ fn historical_contract_keeps_exact_digests_and_refuses_mixed_generations() {
     assert!(SnapshotClassifier::new(SCHEMA_IDENTITY, 3, &digests(), &shapes()).is_err());
     assert!(SnapshotClassifier::new(SCHEMA_IDENTITY, 4, &digests()[..3], &shapes()).is_err());
     assert!(SnapshotClassifier::new(SCHEMA_IDENTITY, 5, &digests()[..4], &shapes()).is_err());
-    for version in [0, 1, 2, 7, usize::MAX] {
+    for version in [0, 1, 2, 8, usize::MAX] {
         assert!(SnapshotClassifier::for_supported_generation(version).is_err());
     }
 }
@@ -96,6 +107,9 @@ fn row(table: &str, overrides: &[(&str, Value)]) -> Row {
                         _ if column.rule == "fingerprint" => Value::Text("4".repeat(64)),
                         _ if column.rule == "idp_locator" => {
                             Value::Text("https://idp.example.invalid".into())
+                        }
+                        _ if table == "binding_identity_reservations" && column.name == "reservation_id" => {
+                            Value::Text("11111111-1111-4111-8111-111111111111".into())
                         }
                         _ => Value::Text(
                             if column.rule == "private_json" {
@@ -179,13 +193,13 @@ async fn contract_covers_the_actual_production_initializer() {
     let tables = sqlx::query("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .fetch_all(&pool).await.unwrap();
     let contracts = contract().unwrap();
-    assert_eq!(contracts.len(), 276);
+    assert_eq!(contracts.len(), 278);
     assert_eq!(
         contracts
             .values()
             .map(|table| table.columns.len())
             .sum::<usize>(),
-        2700
+        2714
     );
     assert_eq!(tables.len(), contracts.len());
 

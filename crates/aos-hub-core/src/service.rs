@@ -40,6 +40,8 @@ mod delivery_workflow;
 mod delivery_workflow_tests;
 mod hybrid_cache_upload;
 mod hybrid_publication_upload;
+#[cfg(test)]
+mod registry_accounting_tests;
 mod direct_target;
 mod instance_settings;
 mod publication_manifest;
@@ -389,14 +391,7 @@ struct BindingMutationPlanInput {
 }
 
 /// Immutable preconditions for storage-binding deletion.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct BindingDeletePlanInput {
-    stable_id: String,
-    owner_scope_key: String,
-    org_id: Option<i64>,
-    binding_db_id: i64,
-    baseline_resource_version: i64,
-}
+type BindingDeletePlanInput = crate::db::BindingDeletePlanInput;
 
 /// Immutable preconditions for setting or rotating one credential purpose.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -13149,6 +13144,17 @@ impl RpcService {
         }
         if self
             .db
+            .binding_identity_reservation(&req.stable_id)
+            .await
+            .map_err(RpcError::internal)?
+            .is_some()
+        {
+            return Err(RpcError::AlreadyExists(
+                "binding stable identity is permanently reserved".to_string(),
+            ));
+        }
+        if self
+            .db
             .list_bindings_by_scope(&req.owner_scope_key)
             .await
             .map_err(RpcError::internal)?
@@ -13383,12 +13389,23 @@ impl RpcService {
                 blockers.join(", ")
             )));
         }
+        let reservation = self
+            .db
+            .binding_identity_reservation(&binding.stable_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "binding lacks its permanent identity reservation".into(),
+                )
+            })?;
         let input = BindingDeletePlanInput {
             stable_id: req.stable_id,
             owner_scope_key: owner_scope_key.clone(),
             org_id,
             binding_db_id: binding.id,
             baseline_resource_version: expected,
+            reservation_id: Some(reservation.reservation_id),
         };
         let confirmation_hash = hex::encode(Sha256::digest(
             serde_json::to_vec(&input).map_err(RpcError::internal)?,
@@ -13428,14 +13445,6 @@ impl RpcService {
         {
             return Ok(response);
         }
-        self.begin_control_plan_apply(
-            auth,
-            &req.plan_id,
-            "delete_binding",
-            &req.idempotency_key,
-            Some(&req.confirmation_hash),
-        )
-        .await?;
         let (plan, input): (_, BindingDeletePlanInput) = self
             .load_control_plan(
                 auth,
@@ -13453,6 +13462,32 @@ impl RpcService {
                 "binding deletion plan target changed".to_string(),
             ));
         }
+        let original_reservation = input.reservation_id.as_deref().ok_or_else(|| {
+            RpcError::FailedPrecondition(
+                "binding deletion plan predates lifetime reservations; create a new plan".into(),
+            )
+        })?;
+        let reservation = self
+            .db
+            .binding_identity_reservation(&input.stable_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("binding identity reservation is absent".into())
+            })?;
+        if reservation.reservation_id != original_reservation {
+            return Err(RpcError::FailedPrecondition(
+                "binding lifetime changed after deletion planning".into(),
+            ));
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            "delete_binding",
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
         let Some(binding) = self
             .db
             .binding_by_stable_id(&input.stable_id)
@@ -13484,7 +13519,11 @@ impl RpcService {
         }
         if !self
             .db
-            .delete_topology_binding(binding.id, input.baseline_resource_version)
+            .delete_topology_binding_checked(
+                &binding,
+                original_reservation,
+                input.baseline_resource_version,
+            )
             .await
             .map_err(RpcError::internal)?
         {
@@ -25217,6 +25256,10 @@ impl RpcService {
         registry: &crate::db::RegistryRecord,
         object: &crate::db::RegistryPublicationUploadObjectRecord,
     ) -> Result<(), RpcError> {
+        self.db
+            .verified_registry_object_accounting_eligibility(object.surface_object_id)
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         if object.object_kind == "immutable" && publication.state != "preparing" {
             return Err(RpcError::FailedPrecondition(
                 "immutable upload phase is closed".into(),
@@ -25750,6 +25793,10 @@ impl RpcService {
         let (upload, object, backends) = self
             .registry_publication_multipart_context(auth, upload_id)
             .await?;
+        self.db
+            .verified_registry_object_accounting_eligibility(object.surface_object_id)
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         if upload.state != "active" {
             return Err(RpcError::FailedPrecondition(
                 "publication multipart upload no longer accepts parts".into(),
@@ -36777,7 +36824,7 @@ mod cache_upload_tests {
 
     #[allow(dead_code)]
     #[derive(Clone)]
-    enum FetchBehavior {
+    pub(super) enum FetchBehavior {
         Missing,
         Failure,
         ProviderFailure,
@@ -36876,7 +36923,7 @@ mod cache_upload_tests {
 
     #[allow(dead_code)]
     #[derive(Clone, Copy)]
-    enum WriteBehavior {
+    pub(super) enum WriteBehavior {
         Success,
         PutFailure,
         CreateFailure,
@@ -37055,7 +37102,7 @@ mod cache_upload_tests {
         }
     }
 
-    async fn injected_service(
+    pub(super) async fn injected_service(
         fetch_behaviors: Vec<FetchBehavior>,
         write_behaviors: Vec<WriteBehavior>,
     ) -> (RpcService, Arc<Database>, Arc<InMemoryLease>, String) {

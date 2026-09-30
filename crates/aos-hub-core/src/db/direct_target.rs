@@ -9,6 +9,10 @@ use crate::{
     value::Value,
 };
 
+mod publication;
+mod provenance;
+pub use provenance::{validate_direct_presence_provenance, DirectPresenceProvenance};
+
 impl Database {
     /// Resolves the current placement-local immutable writer revision.
     ///

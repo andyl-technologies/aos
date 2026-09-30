@@ -180,6 +180,10 @@ impl RpcService {
         let (upload, object, _) = self
             .registry_publication_multipart_context(auth, upload_id)
             .await?;
+        self.db
+            .verified_registry_object_accounting_eligibility(object.surface_object_id)
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         if upload.state != "active" || upload.pending_token.is_some() {
             return Err(RpcError::FailedPrecondition(
                 "publication multipart upload is not ready for another part".into(),
@@ -203,6 +207,10 @@ impl RpcService {
         let (upload, object, backends) = self
             .registry_publication_multipart_context(auth, upload_id)
             .await?;
+        self.db
+            .verified_registry_object_accounting_eligibility(object.surface_object_id)
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         if upload.state != "active" {
             return Err(RpcError::FailedPrecondition(
                 "publication multipart upload no longer accepts parts".into(),

@@ -12,6 +12,27 @@ through `StorageAuthorityService` Plan/Apply. Read, write and presign credential
 must be current, validated and included in that reviewed attestation. The
 selected binding must use private access.
 
+## Permanent binding lifetimes
+
+A binding stable ID is reserved permanently when its creation commits. Deleting
+an unreferenced binding preserves that reservation. Create a distinct stable ID
+for a replacement; equal numeric IDs, owner, resource version or timestamps do
+not establish the former lifetime. Exact successful plan retries retain their
+original receipt and do not create another binding.
+
+Deletion plans capture the reservation UUID internally. Upgrade and activation
+validate retained deletion history in bounded pages without rewriting its
+original confirmation bytes. A live identity with a positive prior deletion is
+unsafe. A legacy claimed deletion without the original UUID is also ambiguous,
+including a lost reply or blocked attempt. These cases require explicit operator
+reconciliation or reset; changing a timestamp or silently discarding history
+cannot authorize work. Legacy unclaimed deletion plans require a new plan.
+
+The read-only helper checks these invariants independently of the schema marker.
+Historical archives may remain verifiable, but import must validate and retain
+permanent reservations before exposing authority. Reservation presence itself
+never grants a provider lease or qualifies restored work.
+
 ## Validate queued credentials without Native provider material
 
 The configured Native Hybrid router registers only an unvalidated immutable
@@ -209,7 +230,8 @@ GRANT SELECT ON schema_version, hub_schema_identity,
   binding_storage_authority_revisions, storage_authority_attestations,
   storage_authority_admission_heads, storage_authority_admission_revisions,
   bindings, binding_credential_heads, binding_credential_revisions,
-  binding_write_revisions, topology_operations, binding_write_state
+  binding_write_revisions, topology_operations, binding_write_state,
+  binding_identity_reservations, topology_plans
   TO operator_reader;
 ```
 

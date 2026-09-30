@@ -65,7 +65,7 @@ impl Backend for InterleavingBackend {
     }
 }
 
-async fn original(db: &Database) -> MirrorOriginal {
+pub(crate) async fn original(db: &Database) -> MirrorOriginal {
     let registry_id = db
         .register_registry("mirror-tests", &[], false)
         .await
@@ -156,7 +156,7 @@ async fn original(db: &Database) -> MirrorOriginal {
     original
 }
 
-fn progress(original: &MirrorOriginal) -> MirrorProgress {
+pub(crate) fn progress(original: &MirrorOriginal) -> MirrorProgress {
     let part = MirrorPart {
         part_number: 1,
         size: 11,
@@ -196,7 +196,58 @@ fn progress(original: &MirrorOriginal) -> MirrorProgress {
     }
 }
 
-async fn delete_after_existing_gc_fences(db: &Database, original: &MirrorOriginal) {
+// This fixture authenticates a full guard-role reply. It establishes the SQL
+// consumer's proof requirements; actual provider/readback behavior is exercised
+// separately through the controlled Worker runtime.
+async fn commit_positive(
+    db: &Database,
+    original: &MirrorOriginal,
+    progress: &MirrorProgress,
+    now: i64,
+) -> Result<MirrorImportRecord> {
+    use crate::mirror_guard::{
+        sign_mirror_guard_reply, verify_mirror_guard_reply, MirrorGuardExecution,
+        MirrorGuardIssuer, MirrorGuardLookup, MirrorGuardReply,
+    };
+    use crate::storage_work::StorageWorkKey;
+
+    db.record_mirror_import_progress(original, progress, false, now)
+        .await?;
+    let issued_at = u64::try_from(now)?;
+    let key = StorageWorkKey::new("mirror-test-independent-guard-role-0001")?;
+    let request = MirrorGuardLookup {
+        version: 1,
+        deployment_id: "mirror-sql-fixture".into(),
+        execution: MirrorGuardExecution::Hosted,
+        issuer: MirrorGuardIssuer {
+            source_digest: "a".repeat(64),
+            script_version: "sql-fixture-script".into(),
+        },
+        clock_uncertainty_seconds: 1,
+        original: original.clone(),
+        expected: progress.clone(),
+        request_nonce: "b".repeat(64),
+        issued_at,
+        expires_at: issued_at + 30,
+    };
+    let latest_now = issued_at + 1;
+    let reply = MirrorGuardReply {
+        version: 1,
+        request_digest: digest(&request)?,
+        request_nonce: request.request_nonce.clone(),
+        original_digest: digest(original)?,
+        issuer: request.issuer.clone(),
+        progress: progress.clone(),
+        observed_at: latest_now,
+    };
+    let signed = sign_mirror_guard_reply(&key, &reply, &request)?;
+    let proof =
+        verify_mirror_guard_reply(&key, &signed.signature, &signed.body, &request, latest_now)?;
+    db.commit_mirror_import(original, progress, &proof, None, now)
+        .await
+}
+
+pub(crate) async fn delete_after_existing_gc_fences(db: &Database, original: &MirrorOriginal) {
     use crate::db::{
         AppendOciProviderInventoryPage, BeginOciProviderInventory, CompleteOciProviderInventory,
     };
@@ -318,10 +369,7 @@ async fn refuses_changed_source_policy_destination_and_regressing_proofs() {
         )
         .await
         .unwrap();
-    assert!(db
-        .record_mirror_import_progress(&original, &progress, true, 3)
-        .await
-        .is_err());
+    assert!(commit_positive(&db, &original, &progress, 3).await.is_err());
     assert_eq!(
         db.mirror_import(&original.job_id)
             .await
@@ -344,10 +392,7 @@ async fn refuses_changed_source_policy_destination_and_regressing_proofs() {
         )
         .await
         .unwrap();
-    assert!(db
-        .record_mirror_import_progress(&original, &progress, true, 3)
-        .await
-        .is_err());
+    assert!(commit_positive(&db, &original, &progress, 3).await.is_err());
     assert_eq!(
         db.mirror_import(&original.job_id)
             .await
@@ -368,9 +413,7 @@ async fn registry_fk_retains_lost_ack_and_exact_positive_retirement_unblocks_del
         .retire_acknowledged_mirror_import(&original, &progress)
         .await
         .is_err());
-    db.record_mirror_import_progress(&original, &progress, true, 2)
-        .await
-        .unwrap();
+    commit_positive(&db, &original, &progress, 2).await.unwrap();
     let refusal = db
         .delete_registry_at_version(
             original.registry_id,
@@ -422,10 +465,7 @@ async fn committed_replay_keeps_exact_proof_when_current_configuration_changes()
     let original = original(&db).await;
     let progress = progress(&original);
     db.admit_mirror_import(&original, 1).await.unwrap();
-    let committed = db
-        .record_mirror_import_progress(&original, &progress, true, 2)
-        .await
-        .unwrap();
+    let committed = commit_positive(&db, &original, &progress, 2).await.unwrap();
     db.backend
         .execute(
             "UPDATE mirror_sources SET resource_version = resource_version + 1 WHERE registry_id = ?1",
@@ -516,10 +556,7 @@ async fn actual_progress_update_reasserts_authority_after_async_preflight() {
     db.admit_mirror_import(&original, 1).await.unwrap();
     interference.store(true, Ordering::SeqCst);
 
-    assert!(db
-        .record_mirror_import_progress(&original, &progress, true, 2)
-        .await
-        .is_err());
+    assert!(commit_positive(&db, &original, &progress, 2).await.is_err());
     let retained = db.mirror_import(&original.job_id).await.unwrap().unwrap();
     assert_eq!(retained.state, "admitted");
     assert!(retained.progress.is_none());
@@ -533,9 +570,7 @@ async fn acknowledged_retirement_allows_source_delete_but_parent_pin_survives_re
     let original = original(&db).await;
     let progress = progress(&original);
     db.admit_mirror_import(&original, 1).await.unwrap();
-    db.record_mirror_import_progress(&original, &progress, true, 2)
-        .await
-        .unwrap();
+    commit_positive(&db, &original, &progress, 2).await.unwrap();
     assert!(db.delete_mirror_source(original.registry_id).await.is_err());
     db.retire_acknowledged_mirror_import(&original, &progress)
         .await
@@ -630,7 +665,7 @@ async fn upgrades_actual_sqlite_generation_four_without_changing_old_rows() {
         .unwrap()
         .get(0)
         .unwrap();
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
     let original = original(&db).await;
     assert_eq!(
         db.admit_mirror_import(&original, 1).await.unwrap().state,
@@ -657,7 +692,7 @@ async fn live_postgres_generation_four_upgrade_and_exact_mirror_lifecycle() {
         .unwrap()
         .get(0)
         .unwrap();
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
     let original = original(&db).await;
     let progress = progress(&original);
     db.admit_mirror_import(&original, 1).await.unwrap();
@@ -672,10 +707,7 @@ async fn live_postgres_generation_four_upgrade_and_exact_mirror_lifecycle() {
         )
         .await
         .unwrap();
-    assert!(db
-        .record_mirror_import_progress(&original, &progress, true, 3)
-        .await
-        .is_err());
+    assert!(commit_positive(&db, &original, &progress, 3).await.is_err());
     assert_eq!(
         db.mirror_import(&original.job_id)
             .await
@@ -691,9 +723,7 @@ async fn live_postgres_generation_four_upgrade_and_exact_mirror_lifecycle() {
         )
         .await
         .unwrap();
-    db.record_mirror_import_progress(&original, &progress, true, 3)
-        .await
-        .unwrap();
+    commit_positive(&db, &original, &progress, 3).await.unwrap();
     assert!(db
         .backend
         .execute(
@@ -728,7 +758,7 @@ async fn unresolved_path_reuses_its_operation_and_positive_retirement_allows_a_n
         first
     );
     let final_progress = progress(&first);
-    db.record_mirror_import_progress(&first, &final_progress, true, 3)
+    commit_positive(&db, &first, &final_progress, 3)
         .await
         .unwrap();
     db.retire_acknowledged_mirror_import(&first, &final_progress)
@@ -815,6 +845,33 @@ async fn actual_generation_five_upgrade_backfills_a_legacy_original_without_reen
     let legacy_db = Database {
         backend: Box::new(backend),
     };
+    // Create the binding using the genuine generation-five row contract.
+    // Current registration reserves stable identities in generation seven;
+    // invoking it here would silently require a future table in this fixture.
+    legacy_db
+        .backend
+        .checked_batch(&[
+            Statement::new(
+                "INSERT INTO bindings
+               (id, org_id, name, kind, is_instance_default, instance_default_key,
+                created_at, stable_id, owner_scope_key, object_bucket,
+                object_prefix, resource_version, updated_at)
+             VALUES (1, NULL, 'default', 'deployment_r2', 1, 'singleton', 1,
+                     'instance-default', 'instance', ?1, '', 1, 1)",
+                vals![crate::binding::DEPLOYMENT_R2_ATTACHMENT],
+            )
+            .expecting(1),
+            Statement::new(
+                "INSERT INTO binding_consumer_scopes
+               (binding_id, consumer_scope_key, grant_generation, grant_kind,
+                state, granted_by, granted_at, resource_version)
+             VALUES (1, 'instance', 1, 'owner', 'active', 'fixture', 1, 1)",
+                vec![],
+            )
+            .expecting(1),
+        ])
+        .await
+        .unwrap();
     let mut legacy = original(&legacy_db).await;
     legacy.copy_operation_id = None;
     legacy.job_id = legacy.identity().unwrap();

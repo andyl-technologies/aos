@@ -150,9 +150,9 @@ async fn actual_capture_publishes_private_files_and_verifies_without_source_muta
         captured.schema_version,
         "aos.hub.offline-database-capture-report/v2"
     );
-    assert_eq!(captured.checked_retained_tables, 266);
+    assert_eq!(captured.checked_retained_tables, 268);
     assert_eq!(captured.synthetic_lineage_rows, 2);
-    assert_eq!(verified.checked_retained_tables, 266);
+    assert_eq!(verified.checked_retained_tables, 268);
     assert_eq!(captured.signed_root_profile, "framing_only");
     assert!(!captured
         .pending_recovery_requirements

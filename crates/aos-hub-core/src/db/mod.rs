@@ -518,7 +518,17 @@ mod snapshot_insert_tests {
 mod cache_write_admission;
 mod credential_probe;
 mod credential_registration;
+mod binding_identity;
+pub use binding_identity::{
+    validate_binding_identity_plan_confirmation, validate_binding_identity_snapshot_history,
+    BindingIdentityReservation,
+};
+pub(crate) use binding_identity::{
+    decode_binding_delete_history, validate_binding_delete_history, BindingDeleteHistory,
+    BindingDeletePlanInput,
+};
 mod direct_target;
+pub use direct_target::{validate_direct_presence_provenance, DirectPresenceProvenance};
 pub use cache_write_admission::*;
 mod delivery_identity;
 pub use delivery_identity::*;
@@ -534,6 +544,8 @@ mod gc_topology;
 pub use gc_topology::*;
 mod mirror_imports;
 pub use mirror_imports::*;
+mod mirror_publication;
+pub use mirror_publication::*;
 mod oci;
 pub use oci::*;
 mod oci_admin;
@@ -545,6 +557,7 @@ mod placement_policy;
 mod publication_admission;
 mod publish_lease;
 mod registry_delete;
+mod registry_accounting;
 mod registry_index_build;
 mod release_browse;
 mod release_publication;
@@ -605,6 +618,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("004-direct-upload-sessions.sql"),
     include_str!("005-mirror-imports.sql"),
     include_str!("006-mirror-import-generations.sql"),
+    include_str!("007-catalogue-lifetimes.sql"),
 ];
 
 // Shared by production initialization and trusted disposable schema compilation.
@@ -3830,6 +3844,7 @@ impl Database {
             self.require_schema_identity().await?;
         }
         self.backfill_mirror_import_index().await?;
+        self.backfill_binding_identity_reservations().await?;
         Ok(())
     }
 
@@ -7325,10 +7340,10 @@ impl Database {
         fence: Option<(i64, i64)>,
     ) -> Result<()> {
         self.backend
-            .checked_batch(&Self::registry_publication_object_presence_statements(
+            .checked_batch(&self.verified_registry_publication_presence_statements(
                 publication_id, surface_object_id, placement_id, observed_hash,
                 observed_size, etag, observed_at, fence,
-            )?)
+            ).await?)
             .await
     }
 
@@ -18078,7 +18093,14 @@ impl Database {
         let now = unix_now();
         let id = self.max_id("bindings").await? + 1;
         let default_key = is_instance_default.then_some("singleton");
+        let reservation_id = uuid::Uuid::new_v4().to_string();
         let statements = [
+            Statement::new(
+                "INSERT INTO binding_identity_reservations(stable_id, reservation_id, reserved_at)
+                 VALUES (?1, ?2, ?3)",
+                vals![stable_id, reservation_id, now],
+            )
+            .expecting(1),
             Statement::new(
                 "INSERT INTO bindings
                  (id, org_id, name, kind, is_instance_default, instance_default_key, created_at,
@@ -19202,6 +19224,28 @@ impl Database {
         id: i64,
         expected_resource_version: i64,
     ) -> Result<bool> {
+        let Some(binding) = self.binding(id).await? else {
+            return Ok(false);
+        };
+        let reservation = self
+            .binding_identity_reservation(&binding.stable_id)
+            .await?
+            .context("binding lacks its permanent identity reservation")?;
+        self.delete_topology_binding_inner(
+            &binding,
+            &reservation.reservation_id,
+            expected_resource_version,
+        )
+        .await
+    }
+
+    async fn delete_topology_binding_inner(
+        &self,
+        binding: &BindingRecord,
+        reservation_id: &str,
+        expected_resource_version: i64,
+    ) -> Result<bool> {
+        let id = binding.id;
         let exists = self
             .backend
             .query_opt(
@@ -19223,9 +19267,17 @@ impl Database {
                 Statement::new(
                     "UPDATE bindings SET resource_version = resource_version
                      WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0
+                       AND stable_id = ?3
+                       AND EXISTS (SELECT 1 FROM binding_identity_reservations identity
+                         WHERE identity.stable_id = ?3 AND identity.reservation_id = ?4)
                        AND NOT EXISTS (SELECT 1 FROM surface_placements WHERE binding_id = ?1)
                        AND NOT EXISTS (SELECT 1 FROM gateway_revisions WHERE binding_id = ?1)",
-                    vals![id, expected_resource_version],
+                    vals![
+                        id,
+                        expected_resource_version,
+                        &binding.stable_id,
+                        reservation_id
+                    ],
                 )
                 .expecting(1),
                 Statement::new(

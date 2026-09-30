@@ -9,9 +9,9 @@ use tower::ServiceExt as _;
 use super::credential_custody::{custody_client, CustodyFault};
 use super::*;
 
-struct ResolverSpy {
-    calls: AtomicUsize,
-    forbid: bool,
+pub(super) struct ResolverSpy {
+    pub(super) calls: AtomicUsize,
+    pub(super) forbid: bool,
 }
 
 #[async_trait::async_trait]
@@ -25,7 +25,7 @@ impl SecretVersionResolver for ResolverSpy {
     }
 }
 
-struct Api {
+pub(super) struct Api {
     app: Router,
     auth: String,
     ingress: Option<Arc<aos_hub_core::hybrid_ingress::HybridIngressKey>>,
@@ -33,7 +33,7 @@ struct Api {
 }
 
 impl Api {
-    async fn new(
+    pub(super) async fn new(
         fixture: &Fixture,
         resolver: Arc<ResolverSpy>,
         work: Option<Arc<RemoteStorageWorkClient>>,
@@ -73,7 +73,7 @@ impl Api {
         }
     }
 
-    async fn request(
+    pub(super) async fn request(
         &self,
         service: &str,
         method: &str,
@@ -127,7 +127,7 @@ impl Api {
         (status, value)
     }
 
-    async fn call(&self, service: &str, method: &str, value: Value) -> Value {
+    pub(super) async fn call(&self, service: &str, method: &str, value: Value) -> Value {
         let (status, reply) = self.request(service, method, value).await;
         assert_eq!(
             status,
@@ -137,7 +137,7 @@ impl Api {
         reply
     }
 
-    async fn reviewed(
+    pub(super) async fn reviewed(
         &self,
         service: &str,
         plan: &str,
@@ -161,7 +161,7 @@ impl Api {
     }
 }
 
-async fn create_target(api: &Api, fixture: &mut Fixture) -> Value {
+pub(super) async fn create_target(api: &Api, fixture: &mut Fixture) -> Value {
     let org = api.reviewed("OrganizationService", "PlanCreateOrganization", "CreateOrganization",
         json!({"slug":"api-registration", "displayName":"API registration", "expectedResourceVersion":""}),
         "api-organization").await;
@@ -183,7 +183,7 @@ async fn create_target(api: &Api, fixture: &mut Fixture) -> Value {
     binding
 }
 
-fn credential_request(binding: &Value, purpose: &str, generation: i64) -> Value {
+pub(super) fn credential_request(binding: &Value, purpose: &str, generation: i64) -> Value {
     json!({
         "bindingId": binding["stableId"], "purpose":purpose,
         "secretVersionRef":format!("secret://api-registration/{purpose}/v{}", generation + 1),
@@ -424,7 +424,7 @@ async fn public_credential_apply_rejects_replaced_binding_identity_after_plannin
             "PlanCreateBinding",
             "CreateBinding",
             json!({
-                "stableId":binding["stableId"], "ownerScopeKey":binding["ownerScopeKey"],
+                "stableId":"replacement-registration-binding", "ownerScopeKey":binding["ownerScopeKey"],
                 "expectedResourceVersion":"", "spec":binding["spec"],
             }),
             "replace-binding-create",

@@ -85,7 +85,9 @@ pub async fn open_existing(url: &str) -> Result<Database> {
             && identities[0].get::<String>(0)? == aos_hub_core::db::SCHEMA_IDENTITY,
         "operator database schema identity differs"
     );
-    Ok(Database::attach(Box::new(backend)))
+    let database = Database::attach(Box::new(backend));
+    database.validate_binding_identity_reservations().await?;
+    Ok(database)
 }
 
 /// Exact nonsecret input to separately installed issuer and qualification controls.
@@ -157,6 +159,7 @@ pub async fn derive(
     public_key: &str,
     admitted_prefix: &str,
 ) -> Result<Bootstrap> {
+    db.validate_binding_identity_reservations().await?;
     configuration.validate()?;
     let installation = &configuration.installation;
     ensure!(
