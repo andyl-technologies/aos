@@ -219,6 +219,7 @@ let
     "libtirpc"
     "libtpms"
     "libusb1"
+    "opus"
     "spice-protocol"
     "usbredir"
     "libuv"
