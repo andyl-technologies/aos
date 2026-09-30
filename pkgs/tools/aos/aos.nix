@@ -6,6 +6,7 @@
   mkCargoDummySource,
   fetchCargoVendor,
   bash,
+  ca-certificates,
   git-minimal,
   nix,
   openssh,
@@ -251,7 +252,7 @@ in
     # the `aos` runtime closure because maintainer commands create, inspect,
     # commit, and publish isolated Git worktrees without host tools.
     buildDeps =
-      [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildNix buildOpenSsh buildZstd remove-references-to]
+      [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildNix buildOpenSsh buildZstd remove-references-to ca-certificates]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
       [openssl sqlite libssh2 zlib]
@@ -273,6 +274,8 @@ in
       # linked dependency DWARF in addition to the workspace's size-optimized
       # test profile. The shipped release artifact is built independently
       # above and is unaffected.
+      # SDK clients load trust roots even when tests use loopback HTTP.
+      export SSL_CERT_FILE="${ca-certificates}/etc/ssl/certs/ca-certificates.crt"
       export CARGO_PROFILE_TEST_STRIP=debuginfo
       export OPENSSL_DIR="${openssl}"
       export OPENSSL_LIB_DIR="${openssl}/lib"
