@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use format::decode_value;
 
 mod dead_replacement;
+mod inventory_owner;
 
 #[doc(hidden)]
 pub mod checkpoint;
@@ -45,6 +46,11 @@ pub use format::{
     native_recovery_settlement_digest_v2, provider_attempt_key, provider_head_key,
     provider_session_key, record_digest, request_id, seal_record, session_id, transaction_id,
     validate_inventory_correlation_set_v2,
+};
+#[doc(hidden)]
+pub use inventory_owner::{
+    InventoryOwnerDerivationErrorV2, derive_inventory_disposition_head_v2,
+    derive_inventory_reservation_head_v2, derive_provider_completed_head_v2,
 };
 pub use migration::{
     LegacyMountSourceStateV1, MountSourceStateMigrationDispositionV2,

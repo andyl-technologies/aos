@@ -12,6 +12,7 @@ use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::{
     MountSourcePhysicalProofV1, SourceRealizationBindingV1,
     mount_source_acquisition_state::{
+        derive_inventory_disposition_head_v2, derive_provider_completed_head_v2,
         protocol_acquire_verification_floor_v2, selection_floor_snapshot_v2,
     },
     mount_source_physical_proof_digest_v1, mount_source_proof_class_from_provider_v1,
@@ -35,12 +36,12 @@ use aos_sandbox_source_provider_security::{
 use super::SourceAcquisitionTableV2;
 use super::checkpoint::hash_exact;
 use super::format::{
-    MutationTagV2, materialized_record, provider_attempt_key, provider_session_key, put_record,
-    state_error, transaction_id,
+    MutationTagV2, inventory_owner_derivation_error, materialized_record, provider_attempt_key,
+    provider_session_key, put_record, state_error, transaction_id,
 };
 use super::lifecycle::SourceAcquisitionPostcommitOutcomeV2;
 use super::model::*;
-use super::projection::{projection_entries, projection_from_entries, reproduce_reconciliation};
+use super::projection::reproduce_reconciliation;
 use super::reservation::{SentProviderQueryV2, sealed_attempt, sealed_head, sealed_row};
 use super::transition::{
     MutationIdentityV2, commit_mutation, next_revision, prepare_mutation, record_ref,
@@ -788,44 +789,15 @@ impl SourceAcquisitionTableV2 {
             );
         }
 
-        let mut next_head = completed_head(&current_head, &self.acquisitions, &self.acquisitions)?;
-        next_head.last_inventory_attempt = Some(terminal_ref);
-        if let Some(barrier) = next_head.recovery_barrier.as_mut() {
-            barrier.recovery_inventory_tail = Some(terminal_ref);
-        }
-        if consumed_status(&next_attempt)? == ProviderStatusV2::Complete {
-            let inventory = consumed_inventory(&next_attempt)?;
-            next_head.inventory_observation_ordinal = current_head
-                .inventory_observation_ordinal
-                .checked_add(1)
-                .ok_or_else(|| {
-                    state_error("provider Inventory observation ordinal is exhausted")
-                })?;
-            next_head.inventory_floor = Some(InventoryFloorV2 {
-                attempt: terminal_ref,
-                provider_authority_generation: inventory.provider().authority_generation(),
-                provider_authority_digest: *inventory.provider().authority_digest().as_bytes(),
-                provider_outcome_signer_digest: self
-                    .provider_sessions
-                    .get(&next_attempt.session_id)
-                    .ok_or_else(|| state_error("Inventory outcome session is absent"))?
-                    .signers[3]
-                    .public_key_fingerprint,
-                inventory_generation: inventory.inventory_generation(),
-                inventory_digest: *digest_inventory(&inventory).as_bytes(),
-                catalog_generation: inventory.catalog_generation(),
-                catalog_digest: *inventory.catalog_digest().as_bytes(),
-                signed_result_digest: consumed_result_digest(&next_attempt),
-            });
-            let mut attempts = self.provider_attempts.clone();
-            attempts.insert(next_attempt.attempt_id, next_attempt.clone());
-            next_head.last_reconciliation = Some(reproduce_reconciliation(
-                &next_head,
-                &attempts,
-                &self.acquisitions,
-            )?);
-        }
-        next_head.record_digest = [0; 32];
+        let next_head = derive_inventory_disposition_head_v2(
+            &current_head,
+            &next_attempt,
+            terminal_ref,
+            &self.provider_sessions,
+            &self.provider_attempts,
+            &self.acquisitions,
+        )
+        .map_err(inventory_owner_derivation_error)?;
         let next_head = sealed_head(next_head)?;
         commit_mutation(
             self,
@@ -1374,32 +1346,8 @@ fn completed_head(
     current_rows: &BTreeMap<[u8; 32], SourceAcquisitionRowV2>,
     next_rows: &BTreeMap<[u8; 32], SourceAcquisitionRowV2>,
 ) -> Result<SourceProviderHeadV2> {
-    let next_response_sequence = current
-        .next_response_sequence
-        .checked_add(1)
-        .ok_or_else(|| state_error("SourceProvider response sequence is exhausted"))?;
-    if current.pending_attempt.is_none() || next_response_sequence != current.next_request_sequence
-    {
-        return Err(state_error("SourceProvider response head is not reachable"));
-    }
-    let current_entries = projection_entries(current.scope, current_rows);
-    let next_entries = projection_entries(current.scope, next_rows);
-    let mut next = current.clone();
-    next.revision = next_revision(current.revision)?;
-    next.next_response_sequence = next_response_sequence;
-    next.pending_attempt = None;
-    if current_entries != next_entries {
-        let epoch = current
-            .current_projection_epoch
-            .checked_add(1)
-            .ok_or_else(|| state_error("SourceProvider projection epoch is exhausted"))?;
-        let projection = projection_from_entries(current.scope, epoch, &next_entries)?;
-        next.current_projection_epoch = epoch;
-        next.current_projection_digest = projection.digest;
-        next.last_reconciliation = None;
-    }
-    next.record_digest = [0; 32];
-    Ok(next)
+    derive_provider_completed_head_v2(current, current_rows, next_rows)
+        .map_err(inventory_owner_derivation_error)
 }
 
 fn acquire_evidence(
