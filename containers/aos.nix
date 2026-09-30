@@ -146,7 +146,7 @@ in {
 
     runtime = {
       entrypoint = ["/usr/bin/aos-container-init"];
-      command = ["/usr/bin/aos" "--help"];
+      command = ["/bin/bash"];
       environment = {
         AOS_RUNTIME = "container";
         HOME = "/root";
