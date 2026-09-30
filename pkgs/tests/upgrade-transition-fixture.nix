@@ -1,13 +1,27 @@
 ##! Test-only service used to exercise system generation reconciliation.
 {
+  service-management,
+  nftables,
+  aos-kernel-tunable-provider,
   mkDerivation,
   bash,
   coreutils,
 }:
 mkDerivation {
   platformSupport = {
-    build = [{abi = ["gnu"]; os = ["linux"];}];
-    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+    build = [
+      {
+        abi = ["gnu"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["linux"];
+      }
+    ];
     target = [];
     role = "build-input";
   };
@@ -42,7 +56,8 @@ mkDerivation {
     }
   ];
 
-  abilities = ./_upgrade-transition-fixture;
+  moduleDeps = [service-management nftables aos-kernel-tunable-provider];
+  module = ./_upgrade-transition-fixture;
 
   meta = {
     description = "Test-only service for AOS generation reconciliation";

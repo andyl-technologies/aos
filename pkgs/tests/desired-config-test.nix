@@ -1,4 +1,6 @@
 {
+  service-management,
+  aos-filesystem-provider,
   lib,
   mkDerivation,
   writeShellScriptBin,
@@ -16,8 +18,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "build-input";
     };
@@ -89,7 +102,8 @@ in
       }
     ];
 
-    abilities = ./_desired-config-test;
+    moduleDeps = [service-management aos-filesystem-provider];
+    module = ./_desired-config-test;
 
     meta = {
       description = "AOS desired package config sequencing test payload";

@@ -1,5 +1,7 @@
 ##! aos-ability-boundary-observer - native fleet execution-boundary fixture
 {
+  service-management,
+  aos-filesystem-provider,
   lib,
   mkDerivation,
   writeTextFile,
@@ -112,7 +114,8 @@ in
       }
     ];
 
-    abilities = ./_aos-ability-boundary-observer;
+    moduleDeps = [service-management aos-filesystem-provider];
+    module = ./_aos-ability-boundary-observer;
 
     meta = {
       description = "Fleet fixture for observing native ability execution boundaries";

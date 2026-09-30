@@ -1,5 +1,8 @@
 ##! Test-only provider artifact used by the package ability smoke fixture.
-{mkDerivation}: let
+{
+  mkDerivation,
+  python3,
+}: let
   selfReferentialDependency = mkDerivation {
     pname = "ability-package-smoke-self-reference";
     version = "1.0.0";
@@ -38,13 +41,17 @@ in
     pname = "ability-package-smoke-provider";
     version = "1.0.0";
     src = null;
-    runtimeDeps = [selfReferentialDependency];
+    runtimeDeps = [selfReferentialDependency python3];
+    meta.mainProgram = "ability-package-smoke-provider";
 
     phases = [
       {
         name = "install";
         script = ''
-          mkdir -p "$out"
+          mkdir -p "$out/bin"
+          printf '#!${python3}/bin/python3\n' > "$out/bin/ability-package-smoke-provider"
+          cat ${./_ability-package-smoke/handler.py} >> "$out/bin/ability-package-smoke-provider"
+          chmod +x "$out/bin/ability-package-smoke-provider"
           cp ${./_ability-package-smoke}/module.nix "$out/default.nix"
           printf '%s\n' '${selfReferentialDependency}' > "$out/transitive-dependency"
         '';

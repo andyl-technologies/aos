@@ -28,9 +28,9 @@ HELD_EVENT: Path
 RESUMED_EVENT: Path
 CONTINUE: Path
 TARGET: Path
-EVENT_SCHEMA = "aos.ability-execution-boundary-event/v1"
-ACK_SCHEMA = "aos.ability-execution-boundary-ack/v1"
-EVENT_DIGEST_DOMAIN = b"aos.ability-execution-boundary-event/v1\0"
+EVENT_SCHEMA = "aos.activation.boundary"
+ACK_SCHEMA = "aos.activation.boundary-ack"
+EVENT_DIGEST_DOMAIN = b"aos.activation.boundary\0"
 MAX_FRAME_BYTES = 16 * 1024
 
 
@@ -150,32 +150,17 @@ def load_target() -> dict[str, Any] | None:
     target = json.loads(payload)
     if canonical_bytes(target) != payload:
         raise ValueError("execution-boundary target is not canonical")
-    operation_key_fields = {"boundary", "operation_key", "purpose", "sequence"}
-    operation_selector_fields = {
-        "boundary",
-        "interface",
-        "method",
-        "provider_key",
-        "purpose",
-        "resource_key",
-        "sequence",
-    }
-    first_effect_fields = {"action", "boundary", "purpose", "sequence"}
-    target_fields = set(target)
-    if target_fields == operation_key_fields or target_fields == operation_selector_fields:
-        target["action"] = "disconnect"
-    elif target_fields == first_effect_fields:
-        if target["action"] != "terminate-peer":
-            raise ValueError("the first-effect target requires peer termination")
-        if target["boundary"] != "effect-returned" or target["purpose"] != "effect":
-            raise ValueError("the first-effect target must select an effect return")
-    elif (
-        target_fields != operation_key_fields | {"action"}
-        and target_fields != operation_selector_fields | {"action"}
-    ):
+    required = {"action", "boundary", "invocation_action", "sequence"}
+    if not required <= set(target) or set(target) - required - {"effect", "revision"}:
         raise ValueError("execution-boundary target has unexpected fields")
     if target["action"] not in {"disconnect", "pause", "terminate-peer"}:
         raise ValueError("execution-boundary target has an unknown action")
+    if target["invocation_action"] not in {"apply", "remove"}:
+        raise ValueError("execution-boundary target has an unknown invocation action")
+    if target["boundary"] not in {"intent-durable", "dispatch-started", "dispatch-returned", "outcome-durable", "observation-started", "observation-returned"}:
+        raise ValueError("execution-boundary target has an unknown native boundary")
+    if "effect" not in target and (target["action"] != "terminate-peer" or target["boundary"] != "dispatch-returned"):
+        raise ValueError("the first-effect target must select an effect return")
     return target
 
 
@@ -191,21 +176,9 @@ def held_sequence() -> str | None:
 
 def matches_operation(event: dict[str, Any], target: dict[str, Any]) -> bool:
     """Match only the selected operation identity."""
-    if set(target) == {"action", "boundary", "purpose", "sequence"}:
-        return True
-
-    operation = event.get("operation", {}).get("operation", {})
-    if "operation_key" in target:
-        return operation.get("key") == target["operation_key"]
-
-    resource = operation.get("target", {}).get("resource", {})
-    provider = resource.get("provider", {})
-    interface = operation.get("interface", {})
     return (
-        interface.get("name") == target["interface"]
-        and operation.get("method") == target["method"]
-        and provider.get("key") == target["provider_key"]
-        and resource.get("key") == target["resource_key"]
+        ("effect" not in target or event.get("effect") == target["effect"])
+        and ("revision" not in target or event.get("revision") == target["revision"])
     )
 
 
@@ -214,7 +187,7 @@ def matches_initial_boundary(event: dict[str, Any], target: dict[str, Any]) -> b
     return (
         matches_operation(event, target)
         and event.get("boundary") == target["boundary"]
-        and event.get("purpose") == target["purpose"]
+        and event.get("action") == target["invocation_action"]
         and held_sequence() != target["sequence"]
     )
 
@@ -226,13 +199,14 @@ def matches_recovery_boundary(event: dict[str, Any], target: dict[str, Any]) -> 
             held = json.loads(HELD_EVENT.read_bytes())
         except FileNotFoundError:
             return False
-        if event.get("operation") != held.get("event", {}).get("operation"):
+        previous = held.get("event", {})
+        if any(event.get(field) != previous.get(field) for field in ("transaction", "effect", "revision", "action", "journal_sequence")):
             return False
 
     return (
         matches_operation(event, target)
-        and event.get("boundary") == "reconciliation-returned"
-        and event.get("purpose") == "reconcile"
+        and event.get("boundary") == "observation-returned"
+        and event.get("action") == target["invocation_action"]
         and held_sequence() == target["sequence"]
         and continued_sequence() != target["sequence"]
     )
@@ -442,6 +416,10 @@ def serve_connection(connection: socket.socket) -> None:
             raise ValueError("execution-boundary event is not canonical")
         if event.get("schema") != EVENT_SCHEMA:
             raise ValueError("execution-bound event uses an unknown schema")
+        if set(event) != {"schema", "transaction", "effect", "revision", "action", "journal_sequence", "boundary"}:
+            raise ValueError("execution-bound event has unexpected fields")
+        if event["action"] not in {"apply", "remove"} or not isinstance(event["journal_sequence"], int) or isinstance(event["journal_sequence"], bool) or event["journal_sequence"] < 0:
+            raise ValueError("execution-bound event has invalid native identity")
         append_event(payload)
         forwarded_acknowledgement = forward_to_adapter(payload)
 

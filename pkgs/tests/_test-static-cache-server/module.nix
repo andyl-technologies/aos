@@ -2,40 +2,15 @@
 {
   config,
   lib,
+  package,
+  dependencies,
   ...
 }: let
   cfg = config.test-static-cache-server;
-  abilityTypes = lib.abilities.types;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  inherit (lib.abilities) resultOf;
 
-  ingress = serviceManagement.forProducer {
-    consumerInstance = "test-static-cache-server";
-    key = "ingress";
-    interface = lib.abilities.interfaces.networkPolicy.interfaces.ingress;
-    methods = ["observe"];
-    parameters = {
-      endpoints = [
-        {
-          transport = "tcp";
-          port = cfg.port;
-        }
-      ];
-      prerequisites = [];
-    };
-  };
+  content = config.aos.abilities.filesystem.operations.persistentAllocate.effects."test-static-cache-server-content";
+  ingress = config.aos.abilities.networkPolicy.operations.ruleset.effects.host;
 
-  content = serviceManagement.forProducer {
-    consumerInstance = "test-static-cache-server";
-    key = "content";
-    interface = serviceManagement.interfaces.persistentStorageAllocation;
-    parameters = {
-      name = "content";
-      purpose = "state";
-      mode = "0755";
-    };
-  };
   serviceDefinition = {
     lifecycle = {
       description = "AOS static cache test HTTP server";
@@ -46,10 +21,9 @@
       start = [
         {
           executable = {
-            artifact = lib.abilities.packageOutput {};
-            entry_point = "bin/test-static-cache-server";
+            path = "${package}/bin/test-static-cache-server";
             arguments = [
-              (resultOf "content" "planned-path")
+              content.outputs.path
               (builtins.toString cfg.port)
             ];
           };
@@ -70,7 +44,7 @@
     storage.mounts = [
       {
         name = "content";
-        source = resultOf "content" "planned-path";
+        source = content.outputs.path;
         access = "read-write";
       }
     ];
@@ -86,27 +60,23 @@
       permit_core_dumps = false;
     };
     dependencies.prerequisites = [
-      (resultOf "ingress" "resource")
+      ingress.outputs.resource
     ];
   };
-  producers = [content ingress];
 in {
   options.test-static-cache-server = {
     enable = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = true;
       description = "Enable the static-cache integration fixture.";
     };
     port = lib.mkOption {
-      type = abilityTypes.integer {
-        minimum = 1;
-        maximum = 65535;
-      };
+      type = lib.types.ints.between 1 65535;
       default = 8000;
       description = "TCP port on which the static cache listens.";
     };
     restartToken = lib.mkOption {
-      type = abilityTypes.optional serviceTypes.restartToken;
+      type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Operator-controlled token whose change requests a restart.";
     };
@@ -116,9 +86,23 @@ in {
     {
       aos.services."test-static-cache-server.main" = serviceDefinition // {enable = cfg.enable;};
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = cfg.enable;
+    (lib.mkIf cfg.enable {
+      aos.abilities.filesystem.operations.persistentAllocate.effects."test-static-cache-server-content".lifetime = "persistent";
+      aos.abilities.filesystem.operations.persistentAllocate.effects."test-static-cache-server-content".input = {
+        path = "/var/lib/test-static-cache-server";
+        mode = "0755";
+        owner = "root";
+        group = "root";
+      };
+      aos.networkPolicy = {
+        enable = true;
+        ingress."test-static-cache-server".endpoints = [
+          {
+            transport = "tcp";
+            port = cfg.port;
+          }
+        ];
+      };
     })
   ];
 }
