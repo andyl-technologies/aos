@@ -192,6 +192,7 @@ in rec {
     qemuNinePShmem = import ./phase1-qemu-9p-shmem.nix {inherit pkgs lib;};
     pluginTimeAdvance = import ./phase1-plugin-time-advance.nix {inherit pkgs lib;};
     pluginRuntimeApis = import ./phase1-plugin-runtime-apis.nix {inherit pkgs lib;};
+    qmpCommand = import ./qmp-command.nix {inherit pkgs;};
     simAccel = import ./phase1-sim-accel.nix {inherit pkgs lib;};
     rrFingerprintHelpers = import ./phase1-rr-fingerprint-helpers.nix {inherit pkgs lib;};
     phaseGateOrdering = import ./phase1-phase-gate-ordering.nix {inherit pkgs lib;};
