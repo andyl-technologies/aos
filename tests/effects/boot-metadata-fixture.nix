@@ -1,0 +1,128 @@
+##! Immutable image bundles and an original authorization for the native bridge.
+{
+  pkgs,
+  lib,
+}: let
+  schema = name: module:
+    pkgs.mkDerivation {
+      pname = name;
+      version = "1";
+      inherit module;
+      moduleDeps = [];
+      src = null;
+      phases = [
+        {
+          name = "install";
+          script = ''mkdir -p "$out"'';
+        }
+      ];
+    };
+  factsSchema = schema "bootstrap-facts-schema" ../../pkgs/tools/_aos-metadata-provider/facts;
+  proofSchema = schema "bootstrap-proof-schema" ../../pkgs/boot/_aos-boot-preparations/source-authorization;
+  payload =
+    (pkgs.writeShellScriptBin "handler" ''
+      export PATH=${lib.makeBinPath [pkgs.coreutils pkgs.jq]}
+      ${builtins.readFile ./boot-metadata-package/handler.sh}
+    '').overrideAttrs (_: {
+      catalogName = "boot-bootstrap-fixture";
+      version = "1";
+      module = ./boot-metadata-package;
+      moduleDeps = [factsSchema proofSchema];
+    });
+  packages = [payload];
+  scope = ["profile" "system"];
+  host = lib.evalPackageModules {inherit scope packages;};
+  bundle = import ../../pkgs/containers/_aos-oci-backend/deployment-bundle.nix;
+  hostBundle = bundle {
+    inherit lib pkgs packages scope;
+    system = pkgs.stdenv.hostPlatform.system;
+    graph = host.deployment.graph;
+    withProfileRecords = true;
+  };
+  hostText = "{ config, ... }: { aos.bootstrapFixture.value = \"authorized-\" + config.host.facts.hostname; }\n";
+  receipt =
+    pkgs.runCommand "boot-original-authorization.json" {
+      buildInputs = [pkgs.python3];
+    } ''
+      rmdir "$out"
+      ${pkgs.python3}/bin/python3 - ${hostBundle}/evaluation.json "$out" <<'PYTHON'
+      import hashlib, json, sys
+      descriptor = json.load(open(sys.argv[1]))
+      host = ${builtins.toJSON hostText}
+      facts = dict(hostname="observed-fixture",ssh_authorized_keys=[],instance_id=None,
+                   region=None,availability_zone=None,mac_to_iface=[],disk_ids=[],network=None)
+      canonical = lambda value: json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()
+      sha = lambda value: 'sha256:' + hashlib.sha256(value).hexdigest()
+      receipt = dict(schema="aos.metadata.authorized-provisioning-input/v1",source="operator",
+          host_module=host,host_module_sha256=sha(host.encode()),
+          authorization=dict(trust_mode="platform",platform_id="nocloud",signer=None),
+          facts=dict(schema="aos.metadata.observed-instance-facts/v1",trust="unauthenticated-observational",
+              value=facts,sha256=sha(b'aos.metadata.observed-instance-facts/v1\0'+canonical(facts))),
+          base_library=dict(store_path=descriptor['library'].rsplit('/',1)[0],nar_hash=descriptor['libraryNarHash']))
+      open(sys.argv[2],'wb').write(canonical(receipt))
+      PYTHON
+    '';
+  plan = pkgs.writeTextFile {
+    name = "boot-committed-provisioning-plan.json";
+    text = builtins.toJSON {
+      schema = "aos.provisioning-plan/v1";
+      storage.partitions.var = {
+        device = null;
+        label = "var";
+        type = "linux-generic";
+        sizeMin = "4G";
+        sizeMax = null;
+        weight = 1000;
+        format = null;
+        uuid = null;
+        grow = true;
+        growFs = true;
+        priority = 9000;
+      };
+    };
+  };
+  initrdPolicy = {
+    aos.abilities.storageProvisioning.operations.prepare.effects.system.input = {
+      authorized_input = toString receipt;
+      committed_plan = toString plan;
+    };
+  };
+  initrdSource = pkgs.writeTextFile {
+    name = "boot-initrd-fixture-policy.nix";
+    # Serialize the original authored fixture policy, before module merging.
+    # Image evaluation and retained replay consume the same definitions.
+    text = "builtins.fromJSON ${builtins.toJSON (builtins.toJSON initrdPolicy)}";
+  };
+  initrdScope = ["bootstrap-fixture" "initrd"];
+  initrd = lib.evalPackageModules {
+    inherit packages;
+    scope = initrdScope;
+    operatorModules = [initrdPolicy];
+  };
+  initrdBundle = bundle {
+    inherit lib pkgs packages;
+    scope = initrdScope;
+    system = pkgs.stdenv.hostPlatform.system;
+    configuration = [initrdSource];
+    inputs = [receipt plan hostBundle];
+    graph = initrd.deployment.graph;
+  };
+  binding = pkgs.writeTextFile {
+    name = "boot-metadata-binding.json";
+    text = builtins.toJSON {
+      schema = "aos.boot.metadata-binding";
+      version = 1;
+      metadataSourceRequired = true;
+      scope = initrdScope;
+      effect = builtins.hashString "sha256" (builtins.toJSON initrd.config.aos.abilities.storageProvisioning.operations.prepare.effects.system.contract.identity);
+    };
+  };
+in
+  pkgs.writeTextFile {
+    name = "boot-bootstrap-fixture";
+    destination = "/fixture.json";
+    text = builtins.toJSON {
+      inherit hostBundle initrdBundle binding;
+      library = lib.packageModuleLibrary;
+    };
+  }

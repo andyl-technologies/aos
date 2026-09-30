@@ -2,100 +2,56 @@
 {
   config,
   lib,
+  package,
+  dependencies,
   ...
 }: let
   cfg = config.aos.boot.substrateServices;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  milestones = serviceManagement.milestones;
-  interfaces = serviceManagement.interfaces;
-  resultOf = lib.abilities.resultOf;
-  consumerInstance = "boot-preparations";
   managerIdentity = name: {
     inherit name;
     aliases = [];
   };
-  stage =
-    if config.aos.abilities.environment == null
-    then null
-    else config.aos.abilities.environment.stage;
+  stage = config.aos.boot.stage;
   initrdStage = stage == "initrd";
   hostStage = stage == "host";
-
-  packageArtifact = lib.abilities.packageOutput {};
-  artifact = package: lib.abilities.packageOutput {inherit package;};
-  runtimeArtifact = lib.abilities.packageOutput {
-    package = "aos";
-    output = "packageRuntime";
-  };
-
   command = operation: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "bin/aos-boot-preparations";
+      path = "${package}/bin/aos-boot-preparations";
       arguments = [operation];
     };
     ignore_failure = false;
   };
   substrateCommand = entryPoint: {
     executable = {
-      artifact = packageArtifact;
-      entry_point = "bin/${entryPoint}";
+      path = "${package}/bin/${entryPoint}";
       arguments = [];
     };
     ignore_failure = false;
   };
-  earlySystem = serviceManagement.forProducer {
-    inherit consumerInstance;
-    key = "early-system";
-    interface = interfaces.activationMilestone;
-    parameters.milestone = "early-system";
-  };
-  earlySystemReadiness = resultOf "early-system" "resource";
-  systemMilestone = key: milestone:
-    serviceManagement.forProducer {
-      inherit consumerInstance key;
-      interface = interfaces.systemMilestoneReadiness;
-      parameters = {inherit milestone;};
-    };
-  switchRoot = systemMilestone "switch-root" milestones.switchRoot;
-  sysroot = systemMilestone "sysroot" milestones.sysroot;
-  var = systemMilestone "var" milestones.var;
-  nixOverlay = systemMilestone "nix-overlay" milestones.nixOverlay;
-  etcOverlay = systemMilestone "etc-overlay" milestones.etcOverlay;
-  runEtc = systemMilestone "run-etc" milestones.runEtc;
-  initrdFilesystems = systemMilestone "initrd-filesystems" milestones.initrdFilesystems;
-  initrdRootFilesystems = systemMilestone "initrd-root-filesystems" milestones.initrdRootFilesystems;
-  deviceSettle = systemMilestone "device-settle" milestones.deviceSettle;
-  initrdStageExecution = systemMilestone "initrd-stage" milestones.initrdStageExecuted;
-  bootIdentity = systemMilestone "boot-identity" milestones.bootIdentityValidated;
-  bootStorageUnlocked = systemMilestone "boot-storage-unlocked" milestones.bootStorageUnlocked;
-  localFilesystems = systemMilestone "local-filesystems" milestones.localFilesystems;
-  hostStageReceived = systemMilestone "host-stage-received" milestones.hostStageReceived;
-  hostStageExecution = systemMilestone "host-stage-executed" milestones.hostStageExecuted;
-  multiUser = systemMilestone "multi-user" milestones.multiUser;
-  switchRootReadiness = resultOf "switch-root" "resource";
-  sysrootReadiness = resultOf "sysroot" "resource";
-  varReadiness = resultOf "var" "resource";
-  nixOverlayReadiness = resultOf "nix-overlay" "resource";
-  etcOverlayReadiness = resultOf "etc-overlay" "resource";
-  runEtcReadiness = resultOf "run-etc" "resource";
-  initrdFilesystemsReadiness = resultOf "initrd-filesystems" "resource";
-  initrdRootFilesystemsReadiness = resultOf "initrd-root-filesystems" "resource";
-  deviceSettleReadiness = resultOf "device-settle" "resource";
-  initrdStageReadiness = resultOf "initrd-stage" "resource";
-  bootIdentityReadiness = resultOf "boot-identity" "resource";
-  bootStorageUnlockedReadiness = resultOf "boot-storage-unlocked" "resource";
-  localFilesystemsReadiness = resultOf "local-filesystems" "resource";
-  hostStageReceivedReadiness = resultOf "host-stage-received" "resource";
-  multiUserReadiness = resultOf "multi-user" "resource";
+  earlySystemReadiness = "initrd-fs.target";
+  switchRootReadiness = "initrd-switch-root.target";
+  sysrootReadiness = "sysroot.mount";
+  varReadiness = "mount-var.service";
+  nixOverlayReadiness = "nix-overlay-setup.service";
+  etcOverlayReadiness = "etc-overlay-setup.service";
+  runEtcReadiness = "run-etc-setup.service";
+  initrdFilesystemsReadiness = "initrd-fs.target";
+  initrdRootFilesystemsReadiness = "initrd-root-fs.target";
+  deviceSettleReadiness = "systemd-udev-settle.service";
+  initrdStageReadiness = "aos-ability-initrd-controller.service";
+  bootIdentityReadiness = "aos-boot-identity-guard.service";
+  bootStorageUnlockedReadiness = "aos-zfs-unlock.service";
+  localFilesystemsReadiness = "local-fs.target";
+  hostStageReceivedReadiness = "aos-ability-host-receiver.service";
+  multiUserReadiness = "multi-user.target";
   service = {
     key,
     description,
     operation,
     dependencies,
   }: {
-    inherit consumerInstance;
     activationOwner = "manager";
+    autoStart = false;
     service = key;
     manager_identity = managerIdentity key;
     lifecycle = {
@@ -150,47 +106,7 @@
       implicit_dependencies = false;
     };
   };
-  baseProducers = [
-    earlySystem
-    switchRoot
-    sysroot
-    var
-    nixOverlay
-    etcOverlay
-    runEtc
-  ];
   baseServices = [configurationSeed];
-  networkConfiguration = serviceManagement.forProducer {
-    inherit consumerInstance;
-    key = "bootstrap-network";
-    interface = lib.abilities.interfaces.networkConfiguration.interface;
-    methods = ["apply" "observe" "remove"];
-    parameters = {
-      authority = "image";
-      links = [
-        {
-          kind = "ethernet";
-          name = "dhcp";
-          selector.kind = "ethernet";
-          addressing = {
-            dhcp = true;
-            addresses = [];
-            dns = [];
-            link_local = "ipv4";
-            ipv4_link_local_route = true;
-          };
-        }
-      ];
-      resolver = {
-        enabled = false;
-        nameservers = [];
-        search = [];
-        dnssec = "no";
-      };
-      prerequisites = [];
-    };
-  };
-
   emptyDependencies = {
     prerequisites = [];
     after = [];
@@ -207,11 +123,10 @@
     required_mounts = [];
     implicit_dependencies = false;
   };
-  serviceResource = key: resultOf "${key}-lifecycle" "resource";
+  serviceResource = key: "${key}.service";
   handoffCommand = arguments: {
     executable = {
-      artifact = runtimeArtifact;
-      entry_point = "bin/.aos-package-runtime-unwrapped";
+      path = "${package}/bin/aos-boot-preparations";
       inherit arguments;
     };
     ignore_failure = false;
@@ -228,8 +143,8 @@
     startTimeoutMillis ? 90000,
   }:
     {
-      inherit consumerInstance;
       inherit activationOwner;
+      autoStart = false;
       service = key;
       manager_identity = managerIdentity key;
       lifecycle = {
@@ -259,75 +174,37 @@
     // lib.optionalAttrs (environment != null) {inherit environment;}
     // lib.optionalAttrs (logging != null) {inherit logging;};
 
-  stageInputPathType = lib.abilities.types.record {
-    fields = {
-      bundle = lib.abilities.types.executionPath;
-      identity = lib.abilities.types.executionPath;
-      contract = lib.abilities.types.executionPath;
+  stageInputPathsType = lib.types.attrsOf (lib.types.submodule {
+    options.bundle = lib.mkOption {
+      type = lib.types.str;
+      description = "Immutable native package deployment bundle directory.";
     };
-  };
-  stageInputPathsType = lib.abilities.types.record {
-    fields = {
-      initrd = stageInputPathType;
-      receivedInitrd = stageInputPathType;
-      host = stageInputPathType;
-    };
-  };
+  });
   stageInputPaths = {
-    initrd = {
-      bundle = "/lib/aos/initrd/source-stage-bundle.json";
-      identity = "/lib/aos/initrd/static-ability-contract-identity";
-      contract = "/lib/aos/initrd/static-ability-contract.json";
-    };
-    receivedInitrd = {
-      bundle = "/usr/lib/aos/initrd/source-stage-bundle.json";
-      identity = "/usr/lib/aos/initrd/static-ability-contract-identity";
-      contract = "/usr/lib/aos/initrd/static-ability-contract.json";
-    };
-    host = {
-      bundle = "/usr/lib/aos/host/source-stage-bundle.json";
-      identity = "/usr/lib/aos/host/static-ability-contract-identity";
-      contract = "/usr/lib/aos/host/static-ability-contract.json";
-    };
+    initrd.bundle = "/lib/aos/initrd/deployment";
+    receivedInitrd.bundle = "/usr/lib/aos/initrd/deployment";
+    host.bundle = "/usr/lib/aos/host/deployment";
   };
-  stageInputs = stage: let
-    paths = config.aos.boot.stageInputPaths.${stage};
-  in [
-    "--source-stage-bundle"
-    paths.bundle
-    "--static-contract-identity-file"
-    paths.identity
-    "--static-contract"
-    paths.contract
+  stageInputs = stageName: stateDirectory: [
+    "--input"
+    config.aos.boot.stageInputPaths.${stageName}.bundle
+    "--state-directory"
+    stateDirectory
+    "--nix-store"
+    "${dependencies.nix.path}/bin/nix-store"
   ];
-
   initrdController = handoffService {
     key = "aos-ability-initrd-controller";
     description = "Execute and release initrd-stage ability ownership";
     activationOwner = "image";
-    readinessMechanism = "process-running";
-    environment = {
-      variables = {
-        AOS_NIX_INSTANTIATE = "/bin/nix-instantiate";
-        AOS_PRLIMIT = "/bin/prlimit";
-        AOS_ABILITY_EVALUATOR_CACHE = "/run/aos/ability-evaluator";
-      };
-      search_path = [];
-    };
-    arguments =
-      [
-        "__ability-stage-run"
-        "--stage"
-        "initrd"
-        "--root"
-        "/sysroot"
-      ]
-      ++ stageInputs "initrd";
+    readinessMechanism = "successful-exit";
+    arguments = ["apply-deployment"] ++ stageInputs "initrd" cfg.initrdStateDirectory;
     dependencies =
       emptyDependencies
       // {
         after = [
           sysrootReadiness
+          "aos-boot-transaction-storage.service"
         ];
         # The manager-owned mount-var unit orders after the handoff barrier.
         before = [
@@ -336,6 +213,7 @@
         ];
         requires = [
           sysrootReadiness
+          "aos-boot-transaction-storage.service"
         ];
         required_by = [initrdFilesystemsReadiness];
         implicit_dependencies = false;
@@ -345,15 +223,7 @@
     key = "aos-ability-initrd-handoff-barrier";
     description = "Authenticate released initrd ability ownership";
     activationOwner = "manager";
-    arguments =
-      [
-        "__ability-stage-validate"
-        "--from-stage"
-        "initrd"
-        "--root"
-        "/sysroot"
-      ]
-      ++ stageInputs "initrd";
+    arguments = ["verify-deployment"] ++ stageInputs "initrd" cfg.initrdStateDirectory;
     dependencies =
       emptyDependencies
       // {
@@ -376,15 +246,7 @@
     key = "aos-ability-host-receiver";
     description = "Revalidate and receive initrd ability ownership";
     activationOwner = "image";
-    arguments =
-      [
-        "__ability-stage-receive"
-        "--from-stage"
-        "initrd"
-        "--image-profile"
-        "/var/lib/profiles/image"
-      ]
-      ++ stageInputs "receivedInitrd";
+    arguments = ["verify-deployment"] ++ stageInputs "receivedInitrd" cfg.initrdStateDirectory;
     dependencies =
       emptyDependencies
       // {
@@ -396,25 +258,9 @@
     key = "aos-ability-host-controller";
     description = "Execute the sealed host-stage ability plan";
     activationOwner = "image";
-    readinessMechanism = "process-running";
+    readinessMechanism = "successful-exit";
     startTimeoutMillis = 600000;
-    arguments =
-      [
-        "__ability-stage-run"
-        "--stage"
-        "host"
-        "--root"
-        "/"
-        "--image-profile"
-        "/var/lib/profiles/image"
-        "--received-source-stage-bundle"
-        config.aos.boot.stageInputPaths.receivedInitrd.bundle
-        "--received-static-contract-identity-file"
-        config.aos.boot.stageInputPaths.receivedInitrd.identity
-        "--received-static-contract"
-        config.aos.boot.stageInputPaths.receivedInitrd.contract
-      ]
-      ++ stageInputs "host";
+    arguments = ["apply-deployment"] ++ stageInputs "host" cfg.hostStateDirectory;
     dependencies =
       emptyDependencies
       // {
@@ -426,7 +272,6 @@
   };
   substrateEnvironment = {
     variables = {
-      AOS_DB_CERT = cfg.dbCertificate;
       AOS_ESP_DEVICE = cfg.espDevice;
       AOS_RECOVERY_ABI = builtins.toString cfg.recoveryAbi;
       AOS_RECOVERY_ENABLED =
@@ -439,20 +284,11 @@
         then "true"
         else "false";
     };
-    search_path = builtins.map lib.abilities.packageOutput (
-      [
-        {package = "coreutils";}
-        {package = "jq";}
-        {package = "sbsigntools";}
-        {package = "tpm2-tools";}
-        {package = "util-linux";}
-        {
-          package = "aos";
-          output = "packageRuntime";
-        }
-      ]
-      ++ lib.optional cfg.zfsEnabled {package = "zfs";}
-    );
+    search_path =
+      builtins.map (name: dependencies.${name}.path)
+      ["coreutils" "jq" "sbsigntools" "tpm2-tools" "util-linux"]
+      ++ [dependencies.aos.outputs.packageRuntime]
+      ++ lib.optional cfg.zfsEnabled cfg.zfsPackagePath;
   };
   substrateLogging = {
     standard_output = "structured-and-console";
@@ -469,8 +305,8 @@
     logging ? null,
   }:
     {
-      inherit consumerInstance;
       activationOwner = "manager";
+      autoStart = false;
       service = key;
       manager_identity = managerIdentity key;
       lifecycle = {
@@ -639,41 +475,51 @@
         required_by = [initrdFilesystemsReadiness];
       };
   };
-  handoffPathMapping = lib.abilities.types.record {
-    fields = {
-      initrd_path = lib.abilities.types.executionPath;
-      host_path = lib.abilities.types.executionPath;
-    };
-  };
-  handoffPathMappings = lib.abilities.types.list {
-    element = handoffPathMapping;
-    maxItems = 16;
-    unique = true;
-    canonicalOrder = true;
-  };
-  handoffParametersType = lib.abilities.types.record {
-    fields = {
-      source_stage = lib.abilities.types.enum ["initrd"];
-      receiver_stage = lib.abilities.types.enum ["host"];
-      completion = lib.abilities.types.deferredResult lib.abilities.types.resourceReference;
-      preparations = lib.abilities.types.list {
-        element = lib.abilities.types.deferredResult lib.abilities.types.resourceReference;
-        maxItems = 64;
-        unique = true;
-        canonicalOrder = true;
+  handoffPathMapping = lib.types.submodule {
+    options = {
+      initrd_path = lib.mkOption {
+        type = lib.types.str;
+        description = "Path before switch-root.";
       };
-      preserved_mounts = handoffPathMappings;
-      durable_state_roots = handoffPathMappings;
+      host_path = lib.mkOption {
+        type = lib.types.str;
+        description = "Preserved path after switch-root.";
+      };
     };
   };
-  # Values outside aos.abilities do not receive its local-name qualification.
-  handoffReference = reference:
-    reference // {request = "aos-boot-preparations:${reference.request}";};
+  handoffParametersType = lib.types.submodule {
+    options = {
+      source_stage = lib.mkOption {
+        type = lib.types.enum ["initrd"];
+        description = "Source boot scope.";
+      };
+      receiver_stage = lib.mkOption {
+        type = lib.types.enum ["host"];
+        description = "Receiving boot scope.";
+      };
+      completion = lib.mkOption {
+        type = lib.types.str;
+        description = "Bootstrap completion unit.";
+      };
+      preparations = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        description = "Bootstrap units completed before switch-root.";
+      };
+      preserved_mounts = lib.mkOption {
+        type = lib.types.listOf handoffPathMapping;
+        description = "Mount mappings preserved across switch-root.";
+      };
+      durable_state_roots = lib.mkOption {
+        type = lib.types.listOf handoffPathMapping;
+        description = "Durable journal and profile mappings.";
+      };
+    };
+  };
   handoffParameters = {
     source_stage = "initrd";
     receiver_stage = "host";
-    completion = handoffReference initrdFilesystemsReadiness;
-    preparations = builtins.map handoffReference handoffPreparationResources;
+    completion = initrdFilesystemsReadiness;
+    preparations = handoffPreparationResources;
     preserved_mounts = [
       {
         initrd_path = "/run";
@@ -703,14 +549,6 @@
       }
     ];
   };
-  substrateProducers = [
-    initrdFilesystems
-    initrdRootFilesystems
-    deviceSettle
-    initrdStageExecution
-    bootIdentity
-    bootStorageUnlocked
-  ];
   substrateServices = [
     mountVar
     nixOverlaySetup
@@ -720,7 +558,6 @@
     etcOverlaySetup
   ];
   handoffInitrdServices = [initrdController initrdHandoffBarrier];
-  handoffHostProducers = [localFilesystems hostStageReceived hostStageExecution multiUser];
   handoffHostServices = [hostReceiver hostController];
   handoffPreparationResources =
     builtins.sort
@@ -736,12 +573,14 @@
       })
       services);
 in {
+  imports = [./policy.nix ./source-authorization/module.nix];
+
   options.aos.boot.stageInputPaths = lib.mkOption {
     type = stageInputPathsType;
     default = stageInputPaths;
     readOnly = true;
     internal = true;
-    description = "Stage-visible locations of the exact source bundle and static contract inputs.";
+    description = "Stage-visible directories retaining the exact native package transaction and resolution.";
   };
 
   options.aos.boot.handoffParameters = lib.mkOption {
@@ -751,63 +590,76 @@ in {
     description = "Typed initrd-to-host journal handoff plan owned by the boot substrate.";
   };
 
+  options.aos.boot.preparationExecutable = lib.mkOption {
+    type = lib.types.str;
+    readOnly = true;
+    internal = true;
+    description = "Admitted immutable executable for verified-image boot transactions.";
+  };
+
   options.aos.boot.substrateServices = {
+    initrdStateDirectory = lib.mkOption {
+      type = lib.types.str;
+      default = "/run/aos-boot-transaction-storage/aos/initrd-stage-journal";
+      internal = true;
+      description = "Preserved durable generation and effect journals for the initrd scope.";
+    };
+    hostStateDirectory = lib.mkOption {
+      type = lib.types.str;
+      default = "/var/lib/profiles/system/deployment";
+      internal = true;
+      description = "Private generation and effect journals for the host scope.";
+    };
+    zfsPackagePath = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      internal = true;
+      description = "Kernel-compatible ZFS runtime output selected by the image.";
+    };
     enable = lib.mkOption {
-      type = lib.abilities.types.boolean;
+      type = lib.types.bool;
       default = false;
       internal = true;
       description = "Whether the package-owned initrd substrate services are active.";
     };
     verityEnabled = lib.mkOption {
-      type = lib.abilities.types.boolean;
+      type = lib.types.bool;
       default = false;
       internal = true;
       description = "Whether mounting persistent state requires validated boot identity.";
     };
     zfsEnabled = lib.mkOption {
-      type = lib.abilities.types.boolean;
+      type = lib.types.bool;
       default = false;
       internal = true;
       description = "Whether persistent state is backed by the unlocked ZFS boot pool.";
     };
     zfsPool = lib.mkOption {
-      type = lib.abilities.types.string {
-        maxLength = 255;
-        syntax = null;
-      };
+      type = lib.types.str;
       default = "rpool";
       internal = true;
       description = "ZFS pool containing persistent state datasets.";
     };
     recoveryEnabled = lib.mkOption {
-      type = lib.abilities.types.boolean;
+      type = lib.types.bool;
       default = false;
       internal = true;
       description = "Whether image profile seeding verifies a paired recovery image.";
     };
     recoveryAbi = lib.mkOption {
-      type = lib.abilities.types.integer {
-        minimum = 0;
-        maximum = 4294967295;
-      };
+      type = lib.types.ints.unsigned;
       default = 0;
       internal = true;
       description = "Recovery image ABI accepted by profile seeding.";
     };
     espDevice = lib.mkOption {
-      type = lib.abilities.types.executionPath;
+      type = lib.types.str;
       default = "/dev/disk/by-partlabel/ESP";
       internal = true;
       description = "EFI System Partition read while verifying recovery state.";
     };
-    dbCertificate = lib.mkOption {
-      type = lib.abilities.types.executionPath;
-      default = "/nonexistent/aos-secure-boot-db.pem";
-      internal = true;
-      description = "Secure Boot database certificate used to verify the recovery image.";
-    };
     handoffEnabled = lib.mkOption {
-      type = lib.abilities.types.boolean;
+      type = lib.types.bool;
       default = false;
       internal = true;
       description = "Whether checked initrd-to-host ability ownership transfer is active.";
@@ -816,31 +668,37 @@ in {
 
   config = lib.mkMerge [
     {
+      aos.boot.preparationExecutable = "${package}/bin/aos-boot-preparations";
       aos.services =
         (serviceConfigsFor initrdStage baseServices)
         // (serviceConfigsFor (initrdStage && cfg.enable) substrateServices)
         // (serviceConfigsFor (initrdStage && cfg.handoffEnabled) handoffInitrdServices)
         // (serviceConfigsFor (hostStage && cfg.handoffEnabled) handoffHostServices);
     }
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = baseProducers;
-      enabled = initrdStage;
-    })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = substrateProducers;
-      enabled = initrdStage && cfg.enable;
-    })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [networkConfiguration];
-      enabled = initrdStage && cfg.enable;
-    })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = handoffHostProducers;
-      enabled = hostStage && cfg.handoffEnabled;
+    (lib.mkIf (initrdStage && cfg.enable) {
+      aos.abilities.network.operations.configure.effects.bootstrap.input = {
+        authority = "image";
+        links = [
+          {
+            kind = "ethernet";
+            name = "dhcp";
+            selector.kind = "ethernet";
+            addressing = {
+              dhcp = true;
+              addresses = [];
+              dns = [];
+              link_local = "ipv4";
+              ipv4_link_local_route = true;
+            };
+          }
+        ];
+        resolver = {
+          enabled = false;
+          nameservers = [];
+          search = [];
+          dnssec = "no";
+        };
+      };
     })
     (lib.mkIf (initrdStage && cfg.handoffEnabled) {
       aos.boot.handoffParameters = handoffParameters;

@@ -260,6 +260,7 @@ mod tests {
             configuration: vec![PathBuf::from(source).join("baseline.nix")],
             runtime_configuration: vec![PathBuf::from(source).join("host.nix")],
             supplemental_inputs: vec![proof.into()],
+            module_envelopes: Default::default(),
             packages: crate::deployment::model::ResolvedPackages {
                 system: "x86_64-linux".into(),
                 modules: vec![],

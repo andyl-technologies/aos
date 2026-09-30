@@ -26,6 +26,10 @@ name = "aos-package-runtime"
 path = "src/package_runtime.rs"
 
 [[bin]]
+name = "aos-boot-configuration"
+path = "src/boot_configuration.rs"
+
+[[bin]]
 name = "aos-provisioning-configuration-evaluator"
 path = "src/provisioning_configuration_evaluator.rs"
 

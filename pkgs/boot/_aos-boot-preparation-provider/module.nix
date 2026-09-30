@@ -1,69 +1,25 @@
-##! Controller and terminal implementations for transaction boot preparation.
-{lib, ...}: let
-  interface = lib.abilities.interfaces.bootPreparation.interfaces.preparation;
-  artifact = lib.abilities.packageOutput {};
-  terminalAlias = "boot-preparation-command";
-  terminalDeclaration =
-    interface.declaration
-    // {
-      name = "aos.boot.preparation-command";
-      description = "Executes one checked transaction-scoped boot preparation command.";
-      outputs = {};
-      aggregation =
-        interface.declaration.aggregation
-        // {
-          controllerGroup = "boot-preparation-command";
-        };
-    };
-  terminalIdentity = lib.abilities.interfaceIdentity (
-    lib.abilities.interfaceDocumentFromDeclaration terminalDeclaration
-  );
-  realizationType = lib.abilities.types.record {
-    fields.schema = lib.abilities.types.enum ["aos.boot.preparation-realization/v1"];
-  };
-in {
-  config.aos.abilities = {
-    interfaces.${terminalAlias} = terminalDeclaration;
-
-    implementations = {
-      boot-preparation = {
-        description = "Controls exact transaction-scoped boot preparations through a checked terminal command binding.";
-        interface = interface.identity;
-        inherit artifact;
-        desiredType = realizationType;
-        inherit (interface) methods;
-        guarantees = [];
-        requirements.command = {
-          alias = "command";
-          description = "Selects the terminal command executor used by the preparation controller.";
-          accepted_interfaces = [terminalIdentity];
-          inherit (interface) methods;
-          guarantees = [];
-          strength = "required";
-          fallback = null;
-        };
-        providerModule = {
-          artifact = lib.abilities.packageOutput {output = "module";};
-          path = "provider.nix";
-        };
-        requiredFeatures = [];
+##! Native transaction boot preparation interface and implementation.
+{
+  lib,
+  package,
+  ...
+}: {
+  aos.abilities.bootPreparation.operations.prepare = {
+    input.options = {
+      path = lib.mkOption {
+        type = lib.types.str;
+        description = "Immutable store executable that performs this boot preparation.";
       };
-
-      ${terminalAlias} = {
-        description = "Executes exact boot preparation commands selected by the package-owned controller.";
-        interface = terminalAlias;
-        inherit artifact;
-        desiredType = null;
-        inherit (interface) methods;
-        guarantees = [];
-        handlerDescriptor = {
-          inherit artifact;
-          entryPoint = "bin/aos-boot-preparation-provider";
-          arguments = interface.requestType;
-          result = interface.observationType;
-        };
-        requiredFeatures = [];
+      arguments = lib.mkOption {
+        type = lib.types.listOf (lib.types.deferred lib.types.str);
+        default = [];
+        description = "Checked command arguments, including resolved effect outputs.";
       };
     };
+    result.options.resource = lib.mkOption {
+      type = lib.types.str;
+      description = "Logical identity whose preparation completed.";
+    };
+    handler.program = package;
   };
 }
