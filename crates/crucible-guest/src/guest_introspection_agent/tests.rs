@@ -277,6 +277,9 @@ fn pty_process_has_a_controlling_terminal_and_owned_resize_handle() {
 }
 
 #[test]
+// Nextest runs each test by name, which otherwise launches this fixture
+// outside the ActiveChannel responsible for terminating its descendants.
+#[ignore = "subprocess fixture exercised by process-group teardown tests"]
 // crucible-lint: allow rust-allow -- this regression fixture deliberately exits while a descendant retains its output descriptors.
 #[allow(
     clippy::zombie_processes,
@@ -297,6 +300,7 @@ fn inherited_output_descendant_probe() {
     let _descendant = Command::new(executable)
         .arg("--exact")
         .arg("guest_introspection_agent::tests::inherited_output_descendant_probe")
+        .arg("--ignored")
         .arg("--nocapture")
         .env("CRUCIBLE_TEST_DESCENDANT", "1")
         .stdin(Stdio::null())
@@ -314,6 +318,7 @@ fn exec_completion_terminates_descendants_holding_output_open() {
         executable.to_string_lossy().into_owned(),
         String::from("--exact"),
         String::from("guest_introspection_agent::tests::inherited_output_descendant_probe"),
+        String::from("--ignored"),
         String::from("--nocapture"),
     ];
     let mut channel = ActiveChannel::spawn(12, &argv, ChannelMode::Exec)
@@ -349,6 +354,7 @@ fn repeated_close_terminates_exec_process_group() {
         executable.to_string_lossy().into_owned(),
         String::from("--exact"),
         String::from("guest_introspection_agent::tests::inherited_output_descendant_probe"),
+        String::from("--ignored"),
         String::from("--nocapture"),
     ];
     let mut channel = ActiveChannel::spawn(13, &argv, ChannelMode::Exec)
