@@ -34,6 +34,7 @@ use super::{
 type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
 
 mod pending_v5;
+mod root_closed_v5;
 
 fn invalid() -> JournalError {
     JournalError::MalformedRecord("invalid original Root native owner edge")

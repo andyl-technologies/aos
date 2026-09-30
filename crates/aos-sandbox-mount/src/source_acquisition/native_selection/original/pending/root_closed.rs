@@ -1,0 +1,185 @@
+//! Retained original8 sign, store, installation and same-carrier send stages.
+//!
+//! All operations reborrow P's actual token and Sent authorization. The first-R
+//! append/readback remain parked independently of the signature-store attempt;
+//! neither successful local send nor failure releases the original-flight gate.
+
+use super::*;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ClosedStage {
+    Sign,
+    PrepareStore,
+    CommitStore,
+    Install,
+    Send,
+    Sent,
+}
+
+/// Retains the exact signature-store attempt and its actual physical readback.
+pub(super) struct OriginalRootClosedFlightV5 {
+    stage: ClosedStage,
+    append: Option<PreparedOriginalRootAppendV5>,
+    readback: Option<OriginalRootProtectedReadbackV5>,
+}
+
+impl OriginalRootClosedFlightV5 {
+    /// Initializes progress beside P's separately retained first-R state.
+    pub(super) fn new() -> Self {
+        Self {
+            stage: ClosedStage::Sign,
+            append: None,
+            readback: None,
+        }
+    }
+}
+
+impl OriginalNativeAcquireFlightV5 {
+    /// Permanently stops original8 without releasing any retained owner or debt.
+    pub(in crate::source_acquisition) fn stop_root_closed(&mut self) {
+        self.stopped = true;
+    }
+
+    /// Advances original8 while retaining P's actual packet and all effect debt.
+    ///
+    /// # Errors
+    ///
+    /// Stops the flight and revokes Session effects on any missing custody,
+    /// stale readback/guard, signing, append, installation or fatal send failure.
+    pub(in crate::source_acquisition) fn advance_root_closed(
+        &mut self,
+        table: &mut SourceAcquisitionTableV2,
+        native_index: &mut BTreeMap<[u8; 32], RootNativeHeldSidecarV2>,
+        writer: &mut MountOriginalNativeJournalAuthorityV5<'_>,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        sent: &SentProviderQueryV2,
+    ) -> Result<bool> {
+        let result = self.advance_root_closed_stage(table, native_index, writer, session, sent);
+        if result.is_err() {
+            self.stop_root_closed();
+            session.invalidate_native_acquire_commit_v3();
+        }
+
+        result
+    }
+
+    fn advance_root_closed_stage(
+        &mut self,
+        table: &mut SourceAcquisitionTableV2,
+        native_index: &mut BTreeMap<[u8; 32], RootNativeHeldSidecarV2>,
+        writer: &mut MountOriginalNativeJournalAuthorityV5<'_>,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        sent: &SentProviderQueryV2,
+    ) -> Result<bool> {
+        if self.stopped
+            || self.stage != Stage::Finished
+            || self.sent.is_some()
+            || self.pending.stage != PendingStage::Complete
+        {
+            return Err(state_error(
+                "original8 requires retained completed Pending custody",
+            ));
+        }
+
+        let (attempt, authorization) = sent.security_parts();
+        let phase10 = self
+            .pending
+            .readback
+            .as_ref()
+            .ok_or_else(|| state_error("original8 first-R readback absent"))?;
+        if phase10.attempt() != attempt {
+            return Err(state_error("original8 Sent owner mismatch"));
+        }
+        let received = self
+            .pending
+            .received
+            .as_mut()
+            .ok_or_else(|| state_error("original8 actual Pending packet absent"))?;
+
+        match self.pending.closed.stage {
+            ClosedStage::Sign => {
+                Self::install(table, native_index, writer, phase10)?;
+                session
+                    .sign_original_root_closed_v5(writer, phase10, authorization, received)
+                    .map_err(|_| {
+                        state_error("original8 signature/currentness failed; custody retained")
+                    })?;
+                self.pending.closed.stage = ClosedStage::PrepareStore;
+            }
+            ClosedStage::PrepareStore => {
+                session
+                    .revalidate_original_root_closed_v5(writer, phase10, authorization, received)
+                    .map_err(|_| state_error("original8 store preparation lost currentness"))?;
+                let signed = received
+                    .signed_closed()
+                    .ok_or_else(|| state_error("original8 retained signature absent"))?;
+                writer.prepare_root_closed_store_v5(phase10, signed, &mut self.pending.closed.append)?;
+                session
+                    .revalidate_original_root_closed_v5(writer, phase10, authorization, received)
+                    .map_err(|_| state_error("original8 prepared store lost currentness"))?;
+                self.pending.closed.stage = ClosedStage::CommitStore;
+            }
+            ClosedStage::CommitStore => {
+                session
+                    .revalidate_original_root_closed_v5(writer, phase10, authorization, received)
+                    .map_err(|_| state_error("original8 commit lost currentness"))?;
+                let append = self
+                    .pending
+                    .closed
+                    .append
+                    .as_ref()
+                    .ok_or_else(|| state_error("original8 store append absent"))?;
+                self.pending.closed.readback = Some(writer.commit_prepared(append)?);
+
+                // Park the real readback and leave Commit before all postchecks.
+                self.pending.closed.stage = ClosedStage::Install;
+                let phase11 = self
+                    .pending
+                    .closed
+                    .readback
+                    .as_ref()
+                    .ok_or_else(|| state_error("original8 stored readback absent"))?;
+                session
+                    .revalidate_original_root_closed_v5(writer, phase11, authorization, received)
+                    .map_err(|_| state_error("original8 actual store lost currentness"))?;
+            }
+            ClosedStage::Install => {
+                let phase11 = self
+                    .pending
+                    .closed
+                    .readback
+                    .as_ref()
+                    .ok_or_else(|| state_error("original8 install readback absent"))?;
+                session
+                    .revalidate_original_root_closed_v5(writer, phase11, authorization, received)
+                    .map_err(|_| state_error("original8 preinstall lost currentness"))?;
+                Self::install(table, native_index, writer, phase11)?;
+                session
+                    .revalidate_original_root_closed_v5(writer, phase11, authorization, received)
+                    .map_err(|_| state_error("original8 installed cut lost currentness"))?;
+                self.pending.closed.stage = ClosedStage::Send;
+            }
+            ClosedStage::Send | ClosedStage::Sent => {
+                let phase11 = self
+                    .pending
+                    .closed
+                    .readback
+                    .as_ref()
+                    .ok_or_else(|| state_error("original8 send readback absent"))?;
+                Self::install(table, native_index, writer, phase11)?;
+                if !session
+                    .send_original_root_closed_v5(writer, phase11, authorization, received)
+                    .map_err(|_| {
+                        state_error("original8 send/currentness failed; possible debt retained")
+                    })?
+                {
+                    return Ok(false);
+                }
+                self.pending.closed.stage = ClosedStage::Sent;
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+}
