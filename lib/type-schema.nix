@@ -45,7 +45,7 @@
     then {
       kind = "submodule";
       open = false;
-      fields = optionTree (lib.submoduleOptions type []);
+      fields = optionTree (lib.submoduleOptions type ["<name>"]);
     }
     else if type._deferred or false
     then project type._nestedType

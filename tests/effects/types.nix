@@ -94,6 +94,13 @@ let
   };
   documentedEntries = builtins.head (builtins.filter (entry: entry.pathStr == "entries") documented._optionDecls);
 in {
+  namedSubmoduleDocumentation = assert (project (lib.types.submodule ({name, ...}: {
+    options.label = lib.mkOption {
+      type = lib.types.str;
+      default = name;
+    };
+  }))).fields.label.kind
+  == "string"; true;
   canonicalEnumDocumentation = assert (project (lib.types.enum ["transaction" "instance" "persistent"])).values
   == [
     {value = "instance";}

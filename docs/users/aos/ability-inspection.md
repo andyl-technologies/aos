@@ -14,7 +14,7 @@ aos ability --help
 
 ## Browse declarations and desired effects
 
-The same reader accepts generated `aos.package.module-documentation` and
+The same reader accepts generated `aos.module.documentation` and
 `aos.package.transaction` documents:
 
 ```sh

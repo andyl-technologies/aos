@@ -202,7 +202,6 @@
   # Declaration-derived option extension helpers.
   namespacing = import ./namespacing.nix {};
 
-  abilities = import ./abilities;
   evalPackageModules = import ./packages/evaluate.nix {
     lib = finalLib;
     inherit system;
@@ -211,7 +210,9 @@
     path = ./.;
     name = "aos-module-library";
   };
-  qualification = import ./qualification.nix {inherit abilities;};
+  packageModules = import ./build/package-modules.nix {};
+  packageArtifacts = import ./packages/artifacts.nix {};
+  qualification = import ./qualification.nix {};
   packagePlatform = import ./package-platform.nix {
     inherit lists;
     platform = platformMod;
@@ -268,7 +269,7 @@
     // {
       inherit types system;
       inherit submoduleOptionDeclarations submoduleOptions;
-      inherit abilities evalPackageModules packageModuleLibrary;
+      inherit evalPackageModules packageModuleLibrary packageModules packageArtifacts;
       inherit qualification;
       inherit packagePlatform;
       inherit mkArtifactConsumptionAudit;
