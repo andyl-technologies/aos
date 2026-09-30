@@ -322,4 +322,4 @@ Hub exposes the same reader through `/-/runtime-abilities` and the read-only
 `/-/api/runtime-documentation` JSON endpoint. These are artifact inspection
 surfaces. Authenticated release ingestion additionally checks signed native
 artifact locators before indexing the same generated data. See the
-[consumer checklist](consumer-migration.md) for remaining integration work.
+[migration status](consumer-migration.md) for implementation checks and qualification limits.

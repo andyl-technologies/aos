@@ -44,6 +44,6 @@ resolve uncertain mutations; the runtime cannot guarantee that every external
 system admits safe retries. Static documentation shows only the selected fixed
 point, while observed runtime state needs separate inspection.
 
-Unexecuted qualification remains unqualified. Current implementation work is
-tracked in [the migration checklist](consumer-migration.md), not inferred from
-this design's expressiveness.
+Unexecuted qualification remains unqualified. Implementation checks and
+qualification limits are tracked in [the migration status](consumer-migration.md); neither follows from
+this design's expressiveness alone.

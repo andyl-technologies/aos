@@ -328,8 +328,12 @@ Package/version/source conflicts fail before execution.
 Production evaluation also retains an `aos.package.evaluation-input` document.
 It identifies the immutable module library and its NAR hash, installation scope,
 resolved packages, ordered baseline modules, operator configuration snapshot, and
-supplemental retained inputs. Supplemental inputs are evidence or artifacts, not
-modules to import; their original admission must survive later reconfiguration.
+supplemental retained inputs. Its `moduleEnvelopes` map retains the authenticated
+companion for every resolved module, including dependencies whose payloads are
+not installed. Offline reconfiguration reads those exact companions; it does
+not reconstruct package declarations from flattened configuration.
+
+Supplemental inputs are evidence or artifacts, not modules to import; their original admission must survive later reconfiguration.
 It contains no output graph. Packages that need to perform another authorized
 evaluation receive its immutable path as the `evaluationInput` module argument:
 
@@ -481,6 +485,21 @@ reported and left unchanged.
 The current process transport uses Linux facilities; another execution platform
 needs a transport implementation as well as its own domain handlers. These
 interfaces do not themselves establish whole-system boot qualification.
+
+## Image artifacts and runtime handlers
+
+Image construction and delivery use two documents with separate responsibilities.
+`image-info.json` describes the provider's actual filesystem, partition layout,
+and EFI artifacts. `image-delivery.json` describes the downloadable encoding,
+filename, digest, size, and compatible targets. Converting a raw image changes
+the delivery document while retaining the provider document byte for byte.
+
+The image staging handler reads component paths and identities from the retained
+provider document. It verifies the selected components before using them; it
+does not guess filenames from a slot name. Self-contained builds and external
+finalization share the canonical serializer. Fields requiring measurements or
+assembly commitments are emitted only when the producer has those facts.
+Publishing these artifacts still does not execute an image transition.
 
 ## Inspect the generated reference and execution path
 

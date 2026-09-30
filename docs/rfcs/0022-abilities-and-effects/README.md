@@ -1,6 +1,6 @@
 # RFC-0022: Runtime abilities and deferred package execution
 
-- **Status:** Native infrastructure implemented; consumer migration in progress.
+- **Status:** Native infrastructure and consumer cutover implemented; image qualification remains separate.
 - **Audience:** package authors, operators, and maintainers of Nix modules, APM,
   APR, system activation, AOS Hub, and documentation tooling.
 - **Normative design:** [Target state](13-target-state.md).
@@ -32,9 +32,8 @@ fixed point and provenance, without an independently authored ability catalog.
 
 The native cutover intentionally replaces the earlier registry-shaped authoring
 API. There is no compatibility target for static `interfaces`, `implementations`,
-`requirementTemplates`, or provider/binding maps. Existing consumers that still
-use those forms must be migrated and then removed, not wrapped as another API
-version within this change.
+`requirementTemplates`, or provider/binding maps. Consumers use the native module
+tree directly; the superseded authoring and execution paths have been removed.
 
 ## Reading order
 
@@ -44,7 +43,7 @@ version within this change.
 3. [Infrastructure cutover](infrastructure-cutover.md): concrete build and Rust APIs.
 4. [Implementation contract](implementation-contract.md) and
    [execution contract](execution-contract.md): source boundaries and runtime protocol.
-5. [Consumer migration](consumer-migration.md): remaining integration and qualification work.
+5. [Consumer migration](consumer-migration.md): implementation checks and image qualification limits.
 
 The numbered chapters describe the same native design at each boundary. The
 [completion criteria](implementation-completeness.md) distinguish implementation
