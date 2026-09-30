@@ -18,6 +18,8 @@ use aos_sandbox_source_provider_protocol::native_held_completion::{
 use super::*;
 use crate::carrier::RetainedSourceProviderRecordV5;
 
+mod root_closed;
+
 /// Owns one actual original packet through its Pending-only continuation.
 ///
 /// This move-only value has no public constructor or descriptor extractor.
@@ -30,6 +32,7 @@ pub struct OriginalNativeReceivedOutcomeV5 {
     pending_cut: Option<RootNativeCutV1>,
     disposition: Option<RootNativeDispositionAssertionV1>,
     unsigned8: Option<PreparedNativeHeldControlV1>,
+    closed: root_closed::RootClosedProgressV5,
     failed: Cell<bool>,
 }
 
@@ -113,6 +116,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 pending_cut: None,
                 disposition: None,
                 unsigned8: None,
+                closed: root_closed::RootClosedProgressV5::new(),
                 failed: Cell::new(false),
             });
         }

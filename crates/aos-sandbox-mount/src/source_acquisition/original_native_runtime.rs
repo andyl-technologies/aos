@@ -122,6 +122,52 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
         )
     }
 
+    /// Advances only original8 through retained signing, storage and local send.
+    ///
+    /// # Errors
+    ///
+    /// Retains the original flight and Sent owner on writer/currentness/effect
+    /// failure. Successful local send keeps the same owner gate and native2 debt.
+    pub(crate) fn advance_original_native_root_closed_v5(
+        &mut self,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+    ) -> Result<bool> {
+        let result = (|| {
+            let flight = self
+                .runtime
+                .pending_original_native
+                .as_mut()
+                .ok_or_else(|| state_error("original8 runtime owner is absent"))?;
+            let sent = self
+                .runtime
+                .pending_provider
+                .as_ref()
+                .ok_or_else(|| state_error("original8 actual Sent custody is absent"))?;
+            let mut writer = self
+                .protected
+                .root_original_native_authority_v5()
+                .map_err(|error| state_error(&error.to_string()))?;
+            flight.advance_root_closed(
+                &mut self.runtime.table,
+                &mut self.runtime.original_native_sidecars,
+                &mut writer,
+                session,
+                sent,
+            )
+        })();
+
+        // Missing Sent custody and writer-opening failures occur before the
+        // flight's stage wrapper. They must revoke the same retained effects.
+        if result.is_err() {
+            if let Some(flight) = self.runtime.pending_original_native.as_mut() {
+                flight.stop_root_closed();
+            }
+            session.invalidate_native_acquire_commit_v3();
+        }
+
+        result
+    }
+
     /// Keeps unrelated legacy operations away from retained original owners.
     pub(super) fn require_no_original_native_flight(&self) -> Result<()> {
         if self.runtime.pending_original_native.is_some() {

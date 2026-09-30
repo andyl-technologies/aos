@@ -426,6 +426,51 @@ mod tests {
     }
 
     #[test]
+    fn maximal_closed_store_encodes_three_records_and_transfers_the_full_native_two_debt() {
+        use crate::journal::{JournalTransaction, encoded_transaction_append_bytes};
+        use aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::
+            native_root_sidecar_key_v2;
+
+        let limits = JournalLimits::default();
+        let p = ORIGINAL_ROOT_PREPARED_BYTES_V5;
+        let c = MAXIMUM_ROOT_NATIVE_CUT_BYTES_V1;
+        let (old_records, old_bytes) = envelope(3, false, p, c, limits).unwrap();
+        let (next_records, next_bytes) = envelope(2, false, p, c, limits).unwrap();
+        // Width DATA measures actual framing; the canonical owner/floor vector
+        // separately exercises derive_continuation and check_transfer.
+        let transaction = JournalTransaction::new(
+            [1; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::MountSourceAcquisition,
+                    native_root_sidecar_key_v2([1; 32]).unwrap(),
+                    vec![0; MAXIMUM_ROOT_NATIVE_HELD_SIDECAR_BYTES_V2],
+                ),
+                JournalRecord::delete(
+                    RecordNamespace::GlobalCapacityReservation,
+                    reservation_key([2; 32]),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::GlobalCapacityReservation,
+                    reservation_key([3; 32]),
+                    vec![0; ORIGINAL_ROOT_CAPACITY_MAXIMUM_VALUE_BYTES_V5],
+                ),
+            ],
+        )
+        .unwrap();
+
+        let appended = encoded_transaction_append_bytes(&transaction).unwrap();
+
+        assert_eq!(transaction.records().len(), 3);
+        assert_eq!(transaction.records()[0].key().len(), 68);
+        assert_eq!(transaction.records()[1].key().len(), 75);
+        assert_eq!((old_records, next_records), (8, 5));
+        assert_eq!(3 + next_records, old_records);
+        assert_eq!(transaction.records().len() + 2, 5);
+        assert!(appended + next_bytes <= old_bytes);
+    }
+
+    #[test]
     fn maximal_pending_transaction_encodes_real_six_record_frames_without_double_reserve() {
         use crate::journal::{JournalTransaction, encoded_transaction_append_bytes};
         use aos_sandbox_protocol::mount_source_acquisition_state::{
