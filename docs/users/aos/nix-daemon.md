@@ -40,7 +40,7 @@ These values are the defaults except `enable`, which defaults to `false`.
 Package admission requires host policy allowing privileged services. The root
 daemon intentionally has an unconfined APM classification: Nix itself creates
 the build sandboxes and switches to locked non-root build accounts. The service
-requires an AOS image providing immutable `packageServicePolicyAbi >= 1`;
+requires an AOS image providing immutable `packageServicePolicyAbi >= 2`;
 older images fail evaluation with an upgrade diagnostic.
 
 ## Configuration and clients
@@ -80,8 +80,10 @@ cannot infer an undeclared disk from the directory name.
 
 ## Resource policy and restarts
 
-The package's slice imposes aggregate CPU, memory, and swap limits on the daemon
-and its build workers. CPU quota is a positive number of cores. Memory limits
+The package-owned `aos-pkg-nix-daemon-builds.slice` imposes aggregate CPU, memory,
+and swap limits on the daemon and its build workers. The policy service runs in
+the enclosing package slice, outside those limits, so configuration can recover
+from an insufficient build memory limit. CPU quota is a positive number of cores. Memory limits
 accept positive byte counts, `K`/`M`/`G`/`T`, percentages from 1% through 100%,
 `0`, or `infinity`. Scheduling supports CPU `other`, `batch`, or `idle`, I/O
 `best-effort` or `idle`, priorities 0 through 7, and OOM scores 0 through 1000.

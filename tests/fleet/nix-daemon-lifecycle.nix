@@ -55,7 +55,7 @@ in {
     NIX = "${pkgs.nix}/bin/nix-store"
     SETPRIV = "${pkgs.util-linux}/bin/setpriv"
     SOCKET = "/nix/var/nix/daemon-socket/socket"
-    SLICE = "aos-pkg-nix-daemon.slice"
+    SLICE = "aos-pkg-nix-daemon-builds.slice"
     sequence = 0
     added = False
     diagnostics_reported = False
@@ -103,7 +103,7 @@ in {
             added = True
 
 
-    def apply(body, succeeds=True):
+    def apply(body, succeeds=True, allow_degraded=False):
         global sequence
         sequence += 1
         stage(body)
@@ -113,7 +113,9 @@ in {
             "NIX_REMOTE=daemon NIX_CONF_DIR=/etc/aos/packages/nix-daemon "
             f"{APM} config apply --eval-root /run/daemon-eval-{sequence}"
         )
-        if succeeds:
+        if allow_degraded:
+            builder.execute(command, timeout=600)
+        elif succeeds:
             builder.succeed(command, timeout=600)
         else:
             since = builder.succeed("date +%s").strip()
@@ -174,6 +176,31 @@ in {
         builder.fail("grep -q '^nixbld1:' /etc/passwd")
         builder.succeed("test -d /nix/store && test -f /nix/var/nix/db/db.sqlite")
 
+        # An accepted limit can be too small even for the listener. Policy runs
+        # outside the build slice and must remain able to restore its limits.
+        tiny = 'resources.memoryHigh = "1"; resources.memoryMax = "1";'
+        before_exhaustion = generation()
+        apply(configuration(True, tiny), allow_degraded=True)
+        assert generation() != before_exhaustion
+        assert property("nix-daemon-policy.service", "Slice") == "aos-pkg-nix-daemon.slice"
+        assert property("nix-daemon.service", "Slice") == SLICE
+        assert property("nix-daemon-policy.service", "Result") == "success"
+        assert property(SLICE, "MemoryMax") == "1"
+        builder.wait_until_succeeds(
+            f"test -r /sys/fs/cgroup$(systemctl show {SLICE} --property=ControlGroup --value)/memory.events "
+            f"&& awk '$1 == \"oom\" && $2 > 0 {{ found = 1 }} END {{ exit !found }}' "
+            f"/sys/fs/cgroup$(systemctl show {SLICE} --property=ControlGroup --value)/memory.events",
+            timeout=60,
+        )
+        builder.succeed(
+            "journalctl -u nix-daemon.service --no-pager "
+            "| grep -q \"Failed to spawn 'exec-condition' task: Cannot allocate memory\""
+        )
+        apply(configuration(False))
+        assert property(SLICE, "MemoryMax") != "1"
+        assert property("nix-daemon-policy.service", "Result") == "success"
+        assert_disabled()
+
         apply(configuration(True, 'resources.cpuQuotaCores = 2; scheduling.cpuPolicy = "idle";'))
         builder.wait_until_succeeds(f"test -S '{SOCKET}'", timeout=60)
         builder.succeed(f"{SETPRIV} --reuid=1000 --regid=1000 --clear-groups "
@@ -182,6 +209,7 @@ in {
         assert property("nix-daemon.service", "KillMode") == "process"
         assert property("nix-daemon.service", "CPUSchedulingPolicy") == "5"
         assert_quota(2)
+        assert property("nix-daemon.service", "Slice") == SLICE
         builder.succeed("test -d /var/cache/nix-build")
         builder.succeed("test \"$(stat -c '%u:%a' /var/cache/nix-build)\" = 0:755")
 
@@ -228,6 +256,7 @@ in {
             # while workers retain the package slice and its newly reconciled limits.
             apply(configuration(True, "settings.http-connections = 26; resources.cpuQuotaCores = 1;"))
             builder.succeed(f"test -r '{worker}'")
+            builder.succeed(f"grep -q '/aos-pkg-nix-daemon-builds.slice/' /proc/{worker_pid}/cgroup")
             assert property("nix-daemon.service", "MainPID") != listener
             assert_quota(1)
             builder.succeed("grep -qx 'http-connections = 26' /etc/aos/packages/nix-daemon/nix.conf")
@@ -271,6 +300,7 @@ in {
             builder.wait_until_succeeds(f"test ! -e '{worker}'", timeout=60)
 
             apply(removal)
+            builder.fail("test -e /etc/systemd/system/aos-pkg-nix-daemon-builds.slice")
             builder.fail("grep -q '^nixbld1:' /etc/passwd")
             builder.succeed(f"test -d '{output}' && test -d /nix/store")
             assert_disabled()

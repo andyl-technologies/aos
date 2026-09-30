@@ -37,8 +37,8 @@
   # Old images did not force config.assertions when emitting a manifest. Bind
   # admission to a mandatory artifact value so those evaluators also fail closed.
   rendered =
-    if (config.aos.system.packageServicePolicyAbi or 0) < 1
-    then throw "nix-daemon requires an upgraded AOS image with packageServicePolicyAbi >= 1"
+    if (config.aos.system.packageServicePolicyAbi or 0) < 2
+    then throw "nix-daemon requires an upgraded AOS image with packageServicePolicyAbi >= 2"
     else ''
       # Owned by the nix-daemon package configuration module.
       build-users-group = nixbld
@@ -120,8 +120,8 @@ in {
   config = {
     assertions = [
       {
-        assertion = (config.aos.system.packageServicePolicyAbi or 0) >= 1;
-        message = "nix-daemon requires an AOS image with packageServicePolicyAbi >= 1; upgrade the base image first";
+        assertion = (config.aos.system.packageServicePolicyAbi or 0) >= 2;
+        message = "nix-daemon requires an AOS image with packageServicePolicyAbi >= 2; upgrade the base image first";
       }
       {
         assertion = cfg.settings.max-jobs <= cfg.buildUsers.count;
@@ -176,7 +176,7 @@ in {
         text = schedulePolicy;
         mode = "0444";
       };
-      "systemd/system/aos-pkg-nix-daemon.slice.d/30-aos-resources.conf" = {
+      "systemd/system/aos-pkg-nix-daemon-builds.slice.d/30-aos-resources.conf" = {
         text = slicePolicy;
         mode = "0444";
       };
