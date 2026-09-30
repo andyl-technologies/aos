@@ -43,6 +43,7 @@ pub use root_original_native::{
     PreparedOriginalRootAppendV5,
 };
 mod source_provider_readonly;
+mod source_original_native;
 pub use mount_manager_startup::MountManagerStartupPolicyReceiptV1;
 pub(crate) use mount_manager_startup::{
     MountManagerStartupCapturePreflightV1, MountManagerStartupCaptureReceiptV1,

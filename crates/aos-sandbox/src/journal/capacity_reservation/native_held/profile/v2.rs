@@ -233,6 +233,16 @@ impl<'graph> NativeHeldCapacitySuffixV2<'graph> {
         &self,
         limits: JournalLimits,
     ) -> Result<NativeHeldCapacityGeometryV3, JournalError> {
+        self.measure_with_floor_value_bytes(limits, super::NATIVE_HELD_CAPACITY_VALUE_BYTES_V3)
+    }
+
+    // The original Source adapter derives this width from its canonical codec.
+    // It remains framing DATA, not branch coverage or full coupled growth.
+    pub(in crate::journal) fn measure_with_floor_value_bytes(
+        &self,
+        limits: JournalLimits,
+        floor_value_bytes: usize,
+    ) -> Result<NativeHeldCapacityGeometryV3, JournalError> {
         measure_appends(
             self.purpose,
             self.appends.iter().map(|append| MeasurementAppend {
@@ -241,6 +251,7 @@ impl<'graph> NativeHeldCapacitySuffixV2<'graph> {
                 final_append: append.is_final(),
             }),
             limits,
+            floor_value_bytes,
         )
     }
 
