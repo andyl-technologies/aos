@@ -20,6 +20,8 @@ let
   # Wave 1: target-independent inputs and small leaf packages.  These establish
   # the data and low-level library closure used by later Darwin packages.
   independentWave1 = [
+    "spirv-headers"
+    "libclc"
     "xorg-util-macros"
     "libglvnd-headers"
     "virglrenderer-headers"
@@ -301,6 +303,8 @@ let
   # Wave 3: compilers, interpreters and build systems.  These require a native
   # Linux compiler/interpreter package set distinct from Darwin target outputs.
   targetWave3 = [
+    "spirv-tools"
+    "spirv-llvm-translator"
     "accache"
     "cargo-c"
     "mdbook"
