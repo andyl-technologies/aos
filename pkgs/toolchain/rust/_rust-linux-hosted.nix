@@ -35,6 +35,13 @@
   qualification ? null,
   buildTool ? null,
 }: let
+  mkRustDerivation = attrs:
+    mkDerivation (attrs
+      // (
+        if qualification == null
+        then {}
+        else {inherit qualification;}
+      ));
   buildTriple = stdenv.buildPlatform.config;
   buildTripleEnv = builtins.replaceStrings ["-"] ["_"] buildTriple;
   cargoBuildTripleEnv =
@@ -97,8 +104,8 @@ in
   else if nativeLlvmVersion != targetLlvmVersion
   then throw "${pname}: native LLVM ${nativeLlvmVersion} does not match target LLVM ${targetLlvmVersion}"
   else
-    mkDerivation {
-      inherit pname version src outputs qualification platformSupport;
+    mkRustDerivation {
+      inherit pname version src outputs platformSupport;
 
       buildDeps =
         [

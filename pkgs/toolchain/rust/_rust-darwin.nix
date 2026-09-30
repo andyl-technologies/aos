@@ -44,6 +44,13 @@
   buildTool ? null,
   qualification ? null,
 }: let
+  mkRustDerivation = attrs:
+    mkDerivation (attrs
+      // (
+        if qualification == null
+        then {}
+        else {inherit qualification;}
+      ));
   buildTriple = stdenv.buildPlatform.config;
   buildTripleEnv = builtins.replaceStrings ["-"] ["_"] buildTriple;
   hostTriple = stdenv.hostPlatform.config;
@@ -51,8 +58,8 @@
   toolList = builtins.toJSON tools;
   isFinal = builtins.elem "dev" outputs;
 in
-  mkDerivation {
-    inherit pname version src outputs qualification platformSupport;
+  mkRustDerivation {
+    inherit pname version src outputs platformSupport;
 
     buildDeps =
       [
