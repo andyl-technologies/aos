@@ -3,10 +3,15 @@
   mkDerivation,
   fetchurl,
   buildPackages,
+  lib,
+  stdenv,
   perl,
   gettext,
 }: let
   version = "1.07";
+  xsCross = import ../build-support/_perl-xs-cross-config.nix {
+    inherit buildPackages lib perl stdenv;
+  };
 in
   mkDerivation {
     pname = "perl-locale-gettext";
@@ -16,45 +21,64 @@ in
       hash = "05cwqjxxary11di03gg3fm6j9lbvg1dr2wpr311c1rwp8salg7ch";
     };
 
-    buildDeps = [buildPackages.gnumake buildPackages.perl];
+    buildDeps = [buildPackages.gnumake xsCross.buildPerl];
     runtimeDeps = [perl gettext];
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf "$src"
-          cd Locale-gettext-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          perl Makefile.PL INSTALL_BASE="$out" CC="$CC" LD="$CC"
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j"$NIX_BUILD_CORES" SHELL="$CONFIG_SHELL"
-        '';
-      }
-      {
-        name = "check";
-        script = ''
-          make test SHELL="$CONFIG_SHELL"
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install SHELL="$CONFIG_SHELL"
-          cp -a "$out"/lib/perl5/*-thread-multi/. "$out/lib/perl5/"
-          mkdir -p "$out/share/licenses/perl-locale-gettext"
-          cp README "$out/share/licenses/perl-locale-gettext/"
-        '';
-      }
-    ];
+    # The XS tests load the compiled module, so they run only on native builds.
+    phases =
+      [
+        {
+          name = "unpack";
+          script = ''
+            tar xf "$src"
+            cd Locale-gettext-${version}
+          '';
+        }
+        {
+          name = "configure";
+          script = ''
+            ${xsCross.setup}
+            ${xsCross.buildPerl}/bin/perl Makefile.PL INSTALL_BASE="$out" \
+              CC="$CC" LD="$CC" CCFLAGS="" LDFLAGS=""
+          '';
+        }
+        {
+          name = "build";
+          script = ''
+            make -j"$NIX_BUILD_CORES" SHELL="$CONFIG_SHELL"
+          '';
+        }
+      ]
+      ++ lib.optionals (!stdenv.isCross) [
+        {
+          name = "check";
+          script = ''
+            make test SHELL="$CONFIG_SHELL"
+          '';
+        }
+      ]
+      ++ [
+        {
+          name = "install";
+          script = ''
+            make install SHELL="$CONFIG_SHELL"
+            cp -a "$out"/lib/perl5/*-thread-multi*/. "$out/lib/perl5/"
+            # MakeMaker stamps this install log with wall-clock time.
+            rm -f "$out"/lib/perl5/perllocal.pod "$out"/lib/perl5/*-thread-multi*/perllocal.pod
+
+            # Keep the target interpreter in the XS module's runtime closure.
+            mkdir -p "$out/nix-support"
+            printf '%s\n' '${perl} ${gettext}' > "$out/nix-support/runtime-closure"
+
+            ${lib.optionalString (!stdenv.isCross) ''
+              PERL5LIB="$out/lib/perl5" ${xsCross.buildPerl}/bin/perl -MLocale::gettext -e 1
+            ''}
+
+            mkdir -p "$out/share/licenses/perl-locale-gettext"
+            cp README "$out/share/licenses/perl-locale-gettext/"
+          '';
+        }
+      ];
 
     meta = {
       description = "Perl interface to gettext message translation";

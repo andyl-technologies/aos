@@ -39,6 +39,10 @@ in {
         assertion = cfg.gspFirmwarePackage != null;
         message = "NVIDIA open kernel modules require a version-matched GSP firmware package";
       }
+      {
+        assertion = config.aos.kernel.includeFirmware;
+        message = "NVIDIA open kernel modules require device firmware to be included";
+      }
     ];
     aos.kernel.modulePackages = [driver];
     aos.kernel.firmwarePackages = [cfg.gspFirmwarePackage];

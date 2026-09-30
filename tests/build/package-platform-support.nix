@@ -90,19 +90,31 @@
     names = packageNames;
     configurationBaseLib = configurationBaseProbe;
   };
-  # A platform blocker must be retained without forcing an unbuildable package
-  # or a Linux image's configuration base for a Darwin target.
-  blockedDarwinDerivations = support.releaseDerivations {
+  # A scoped-out package must remain absent without evaluating its derivation
+  # or the Linux configuration base for a Darwin target.
+  excludedDarwinDerivations = support.releaseDerivations {
     system = "aarch64-darwin";
-    names = ["aos"];
-    packages.aos = throw "blocked package must not be evaluated";
-    configurationBaseLib = throw "blocked configuration base must not be evaluated";
+    names = ["glib"];
+    packages.glib = throw "excluded package must not be evaluated";
+    configurationBaseLib = throw "excluded configuration base must not be evaluated";
   };
-  blockedDarwinRoots = support.releaseDerivationRoots {
+  excludedDarwinRoots = support.releaseDerivationRoots {
     system = "aarch64-darwin";
-    names = ["aos"];
-    packages.aos = throw "blocked package must not be evaluated";
-    configurationBaseLib = throw "blocked configuration base must not be evaluated";
+    names = ["glib"];
+    packages.glib = throw "excluded package must not be evaluated";
+    configurationBaseLib = throw "excluded configuration base must not be evaluated";
+  };
+  # Internal GPL components must stay selectable for Linux builds, while
+  # release planning must never evaluate them as standalone publication roots.
+  internalComponentNames = ["qemu-crucible" "crucible-qemu-plugin"];
+  internalComponentDerivations = support.releaseDerivations {
+    system = "x86_64-linux";
+    names = internalComponentNames;
+    packages = builtins.listToAttrs (map (name: {
+        inherit name;
+        value = throw "internal component must not be planned as a standalone release";
+      })
+      internalComponentNames);
   };
   x86Packages = publicationMatrix.x86_64-darwin;
   armPackages = publicationMatrix.aarch64-darwin;
@@ -114,6 +126,7 @@
     "bash"
     "bazel"
     "cc"
+    "esbuild"
     "gcc"
     "go"
     "llvm"
@@ -127,6 +140,34 @@
     "linux"
     "runc"
     "systemd"
+  ];
+  excludedDarwinScopedPackages = [
+    "aos-hub-cloudflare"
+    "aos-vm"
+    "cairo"
+    "gdk-pixbuf"
+    "gi-docgen"
+    "glib"
+    "gobject-introspection"
+    "gpgme"
+    "graphviz"
+    "gsettings-desktop-schemas"
+    "gtk-doc"
+    "harfbuzz"
+    "json-glib"
+    "libproxy"
+    "librsvg"
+    "libslirp"
+    "miniflare"
+    "pango"
+    "python3-dbus"
+    "python3-dbusmock"
+    "qemu"
+    "qemu-img"
+    "shared-mime-info"
+    "swtpm"
+    "vala"
+    "wget"
   ];
   requiredPresent =
     builtins.all (
@@ -227,6 +268,14 @@ in
   assert support.validateResources excludedResources;
   assert requiredPresent;
   assert rejectedAbsent;
+  assert builtins.all (
+    name:
+      builtins.elem name x86LinuxPackages
+      && builtins.elem name armLinuxPackages
+      && !(builtins.elem name x86Packages)
+      && !(builtins.elem name armPackages)
+  )
+  excludedDarwinScopedPackages;
   assert builtins.elem "darwin-runtimes" x86Packages;
   assert builtins.elem "darwin-runtimes" armPackages;
   assert !(builtins.elem "darwin-runtimes" linuxPackages);
@@ -253,8 +302,19 @@ in
   assert builtins.length (releasePackageByName "docker-compose").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "envoy").source_store_paths >= 2;
   assert releaseInventory.schema_version == "aos.release.package-inventory/v1";
-  assert blockedDarwinDerivations.packages == [];
-  assert blockedDarwinRoots == [];
+  assert internalComponentDerivations.packages == [];
+  assert builtins.all (system:
+    builtins.all (name:
+      support.supportsTarget system name
+      && (support.publicationDecision system name).state == "not-applicable"
+      && (support.publicationDecision system name).rule == "package-aggregate-component/v1")
+    internalComponentNames)
+  ["x86_64-linux" "aarch64-linux"];
+  assert (decisionFor "crucible" "x86_64-linux").state == "eligible";
+  assert (decisionFor "qemu-crucible-source" "x86_64-linux").state == "eligible";
+  assert (decisionFor "qemu-crucible-reference" "x86_64-linux").state == "eligible";
+  assert excludedDarwinDerivations.packages == [];
+  assert excludedDarwinRoots == [];
   assert rootDerivationPaths == plannedDerivationPaths;
   assert releaseInventory.platforms == support.canonicalSystems;
   assert builtins.attrNames publicationMatrix == builtins.sort builtins.lessThan support.canonicalSystems;
@@ -289,9 +349,22 @@ in
   assert (decisionFor "systemd" "x86_64-linux").state == "eligible";
   assert (decisionFor "systemd" "x86_64-linux").blockers == [];
   assert (decisionFor "systemd" "aarch64-darwin").state == "not-applicable";
+  assert (decisionFor "iperf3" "x86_64-linux").state == "eligible";
+  assert (decisionFor "iperf3" "x86_64-darwin").rule == "package-linux-interface/v1";
+  assert (decisionFor "pango" "aarch64-darwin").rule == "package-darwin-release-scope/v1";
+  assert (decisionFor "pango" "x86_64-linux").state == "eligible";
+  assert (decisionFor "crucible-controller" "x86_64-linux").state == "eligible";
+  assert (decisionFor "crucible-controller" "x86_64-darwin").rule == "package-darwin-release-scope/v1";
+  assert (decisionFor "crucible-fleet-store" "aarch64-linux").state == "eligible";
+  assert (decisionFor "crucible-fleet-store" "aarch64-darwin").rule == "package-darwin-release-scope/v1";
   assert (decisionFor "darwin-runtimes" "aarch64-darwin").state == "eligible";
   assert (decisionFor "rust" "x86_64-linux").blockers == [];
-  assert (decisionFor "rust" "x86_64-darwin").blockers != [];
+  assert (decisionFor "rust" "x86_64-darwin").blockers == [];
+  assert builtins.all (package:
+    builtins.all (cell:
+      cell.decision.state != "eligible" || cell.decision.blockers == [])
+    package.platforms)
+  releaseInventory.packages;
   assert (decisionFor "darwin-runtimes" "x86_64-linux").state == "not-applicable";
   assert (decisionFor "aos-hub-e2e" "x86_64-linux").state == "not-applicable";
   assert (decisionFor "darling" "aarch64-linux").state == "not-applicable";

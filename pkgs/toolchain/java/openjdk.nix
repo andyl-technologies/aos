@@ -26,6 +26,7 @@
   bootstrapTools,
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   isLinuxArmCross = stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64;
   buildTarget =
     if isDarwinCross || isLinuxArmCross
@@ -66,14 +67,14 @@
   # jpackage embeds native launchers in the module image, beyond ELF scrubbing.
   # Replace the full compiler prefix, including its hash, but retain assertions.
   linuxJpackageCxxFlag =
-    if isLinuxArmCross
+    if isLinuxCross
     then " -ffile-prefix-map=${stdenv.gcc}=/aos-toolchain"
     else "";
 
   nativeMig =
     if isDarwinCross
     then
-      import ./_darwin-mig.nix {
+      import ../../darwin/_darwin-mig.nix {
         inherit fetchurl buildPackages;
       }
     else null;

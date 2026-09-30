@@ -320,7 +320,7 @@ pub async fn seal_image_artifacts(
     let recovery_bundle = output.join("aos-recovery.tar.zst");
     let maximum = assembly
         .budgets
-        .download_mib
+        .recovery_bundle_limit_mib()
         .checked_mul(1024 * 1024)
         .context("recovery bundle byte budget overflow")?;
     let _ = zstd

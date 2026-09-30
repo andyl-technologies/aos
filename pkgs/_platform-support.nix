@@ -44,6 +44,7 @@ let
 
   targetWave1 = [
     "abseil-cpp"
+    "apr"
     "autoconf"
     "autoconf-archive"
     "automake"
@@ -57,8 +58,6 @@ let
     "check"
     "libimagequant"
     "highway"
-    "harfbuzz"
-    "pango"
     "lcms2"
     "doxygen"
     "libaom"
@@ -71,8 +70,6 @@ let
     "openexr"
     "libjxl"
     "asciidoc"
-    "shared-mime-info"
-    "gdk-pixbuf"
     "jbigkit"
     "lerc"
     "giflib"
@@ -154,13 +151,9 @@ let
   # to execute during their build.
   targetWave2 = [
     "dav1d"
-    "gi-docgen"
-    "graphviz"
     "help2man"
     "latex2man"
     "libfontenc"
-    "librsvg"
-    "libunwind"
     "libxau"
     "libxcb"
     "libxdmcp"
@@ -169,13 +162,10 @@ let
     "python3-jinja2"
     "python3-smartypants"
     "python3-typogrify"
-    "vala"
-    "xmlto"
     "xxhash"
     "acpica"
     "bind"
     "boringssl"
-    "cairo"
     "cloc"
     "cups"
     "curl"
@@ -192,20 +182,14 @@ let
     "fontconfig"
     "freetype"
     "fstrm"
-    "fuse3"
-    "glib"
     "gnupg"
-    "gpgme"
-    "gsettings-desktop-schemas"
     "gnutls"
     "gptfdisk"
     "icu"
     "inetutils"
     "ipmitool"
-    "iperf3"
     "jemalloc"
     "jq"
-    "json-glib"
     "krb5"
     "less"
     "libarchive"
@@ -220,15 +204,12 @@ let
     "liblinear"
     "libmaxminddb"
     "libmetalink"
-    "libpciaccess"
     "libisoburn"
     "libisofs"
     "libksba"
     "libpcap"
     "libpsl"
-    "libproxy"
     "libqcow"
-    "libslirp"
     "libsodium"
     "libssh2"
     "libtasn1"
@@ -296,14 +277,11 @@ let
     "socat"
     "soelim"
     "sqlite"
-    "swtpm"
     "swig"
     "tcpdump"
-    "tini"
     "tpm2-tools"
     "tpm2-tss"
     "vim"
-    "wget"
     "zsh"
     "xorg-stubs"
   ];
@@ -311,6 +289,7 @@ let
   # Wave 3: compilers, interpreters and build systems.  These require a native
   # Linux compiler/interpreter package set distinct from Darwin target outputs.
   targetWave3 = [
+    "accache"
     "cargo-c"
     "mdbook"
     "alejandra"
@@ -360,12 +339,11 @@ let
     "ninja"
     "nix"
     "nodejs"
+    "esbuild"
     "packaging"
     "pip"
     "python3"
     "python3-3_12"
-    "python3-dbus"
-    "python3-dbusmock"
     "python3-pefile"
     "python3-pyelftools"
     "python3-lxml"
@@ -411,35 +389,25 @@ let
     "aos"
     "aos-agent-rpc"
     "aos-hub"
-    "aos-hub-cloudflare"
     "aos-release-signer"
     "aos-test-driver"
-    "aos-vm"
     "chrony"
     "bottom"
     "crictl"
-    "crucible-controller"
-    "crucible-fleet-store"
     "etcd"
     "direnv"
     "docutils"
-    "gobject-introspection"
     "garage"
     "git-lfs"
     "gopls"
-    "gtk-doc"
     "hubble"
     "kubectl"
     "mariadb"
-    "miniflare"
     "nerdctl"
     "opkssh"
     "pnpm"
     "postgresql"
     "pyrefly"
-    "qemu"
-    "qemu-img"
-    "sccache"
     "test-http-server"
     "test-static-cache-server"
     "uv"
@@ -455,6 +423,7 @@ let
     "bazel-8"
     "bazel-9"
     "envoy"
+    "icu4j"
     "openjdk"
     "openjdk-10"
     "openjdk-11"
@@ -498,6 +467,59 @@ let
     "nuke-references"
   ];
 
+  # Patched QEMU and its plugin are built as dependencies of the Crucible
+  # suite. Only that aggregate retains the exact corresponding-source pair
+  # required by the closure publication policy.
+  internalComponents = [
+    "crucible-qemu-plugin"
+    "qemu-crucible"
+  ];
+
+  # These Linux packages remain complete, but their GUI, VM, documentation,
+  # fixture, and downloader closures are outside the first Darwin release.
+  # The Darwin AOS clients retain their non-VM commands without target GLib.
+  linuxScoped = [
+    "aos-hub-cloudflare"
+    # WebAssembly and Cargo developer tools for downstream project dev shells.
+    # They are portable, but their Darwin cross builds are not yet qualified.
+    "cargo-deny"
+    "cargo-fuzz"
+    "cargo-llvm-cov"
+    "wac-cli"
+    "wasm-tools"
+    "wasmtime"
+    "aos-vm"
+    "cairo"
+    # The controller compiles the Linux QEMU launcher; the fleet store shares
+    # its Cargo artifacts. Both remain in the complete Linux inventory.
+    "crucible-controller"
+    "crucible-fleet-store"
+    "gdk-pixbuf"
+    "gi-docgen"
+    "glib"
+    "gobject-introspection"
+    "gpgme"
+    "graphviz"
+    "gsettings-desktop-schemas"
+    "gtk-doc"
+    "harfbuzz"
+    "json-glib"
+    "libproxy"
+    "librsvg"
+    "libslirp"
+    "miniflare"
+    "pango"
+    "python3-dbus"
+    "python3-dbusmock"
+    "qemu"
+    "qemu-img"
+    "shared-mime-info"
+    "swtpm"
+    "vala"
+    "wget"
+    "xmlto"
+  ];
+
   # These outputs implement Linux kernel, userspace, guest or service
   # interfaces and have no Darwin execution contract.  A portable sub-tool
   # must be split into its own package before it can leave this list.
@@ -533,7 +555,6 @@ let
     "containerd"
     "crucible"
     "crucible-guest"
-    "crucible-qemu-plugin"
     "crucible-qemu-trace-plugin"
     "cryptsetup"
     "darling"
@@ -553,10 +574,13 @@ let
     "erofs-utils"
     "ethtool"
     "firecracker"
+    "fuse3"
     "fuse-overlayfs"
     "getent"
     "glibc"
     "hdparm"
+    # The complete iperf3 build retains SCTP through Linux lksctp-tools.
+    "iperf3"
     "iproute2"
     "ipset"
     "iptables"
@@ -584,12 +608,16 @@ let
     "libnfnetlink"
     "libnftnl"
     "libnl"
+    # PCI enumeration is used by Linux libvirt, which is the only consumer.
+    "libpciaccess"
     "libseccomp"
     "libselinux"
     "libsemanage"
     "libsepol"
     "liburcu"
     "liburing"
+    # Darwin obtains libunwind from the AOS-built LLVM runtime instead.
+    "libunwind"
     "libutempter"
     "libvirt"
     "lksctp-tools"
@@ -602,6 +630,7 @@ let
     "longhorn-instance-manager"
     "longhorn-manager"
     "lvm2"
+    "mdadm"
     "nftables"
     "numactl"
     "numad"
@@ -616,7 +645,6 @@ let
     "polkit"
     "policycoreutils"
     "procps-ng"
-    "qemu-crucible"
     "qemu-crucible-reference"
     "qemu-crucible-source"
     "refpolicy"
@@ -632,6 +660,8 @@ let
     "systemd-measure"
     "tailscale"
     "tmux"
+    # Tini requires Linux prctl and /proc process/subreaper interfaces.
+    "tini"
     "util-linux"
     "valgrind"
     "xfsprogs"
@@ -648,6 +678,8 @@ let
     targetWave4
     targetWave5
     buildOnly
+    internalComponents
+    linuxScoped
     linuxOnly
   ];
   assignmentCounts = builtins.foldl' (
@@ -676,65 +708,69 @@ let
       names
     );
 
+  # These waves describe Linux-hosted source builds. Native runtime
+  # qualification is governed separately by the release contract.
   inventory =
-    mkEntries "independent" 1 ["native-build-tools"] independentWave1
-    // mkEntries "target" 1 ["darwin-sdk" "mach-o-fixup"] targetWave1
-    // mkEntries "darwin-only" 1 ["darwin-runtime"] darwinOnly
-    // mkEntries "target" 2 ["cross-configure" "mach-o-fixup"] targetWave2
-    // mkEntries "target" 3 ["build-host-target-splicing" "target-runtime-tests"] targetWave3
-    // mkEntries "target" 4 ["language-cross-build" "target-runtime-tests"] targetWave4
-    // mkEntries "target" 5 ["canadian-cross" "target-runtime-tests"] targetWave5
+    mkEntries "independent" 1 [] independentWave1
+    // mkEntries "target" 1 [] targetWave1
+    // mkEntries "darwin-only" 1 [] darwinOnly
+    // mkEntries "target" 2 [] targetWave2
+    // mkEntries "target" 3 [] targetWave3
+    // mkEntries "target" 4 [] targetWave4
+    // mkEntries "target" 5 [] targetWave5
     // mkEntries "build-only" null ["linux-native-build-input"] buildOnly
+    // mkEntries "internal-component" null ["aggregate-release-required"] internalComponents
+    // mkEntries "linux-scoped" null ["darwin-release-scope"] linuxScoped
     // mkEntries "linux-only" null ["linux-interface"] linuxOnly;
 
   criticalOverrides = {
     aos = {
-      blockers = ["darwin-runtime-tool-closure" "cargo-target" "target-runtime-tests"];
-      note = "Split construct/registry tooling from Linux activation, SELinux, systemd and image runtime tools.";
+      blockers = [];
+      note = "The Darwin AOS clients omit Linux activation and image runtime dependencies.";
     };
     bazel = {
-      blockers = ["darwin-jni" "embedded-jdk" "target-runtime-tests"];
+      blockers = [];
       note = "Build Bazel with Linux-native Java tools while targeting Darwin JNI launchers.";
     };
     binutils = {
-      blockers = ["cctools-replacement" "mach-o-target"];
+      blockers = [];
       note = "GNU binutils is not the Darwin system linker; expose cctools/ld64 through the Darwin toolchain.";
     };
     gcc = {
-      blockers = ["cctools" "darwin-gcc-runtime" "canadian-cross"];
+      blockers = [];
       note = "Build a Darwin-hosted GCC using Linux build tools, the source SDK and cctools linker.";
     };
     go = {
-      blockers = ["goos-darwin" "cgo-cross-compiler" "target-runtime-tests"];
+      blockers = [];
       note = "Use Linux-native Go for bootstrap and emit a Darwin-hosted toolchain plus standard library.";
     };
     llvm = {
-      blockers = ["llvm-tblgen-native" "darwin-runtimes" "target-runtime-tests"];
+      blockers = [];
       note = "Use native table generators and emit Clang, compiler-rt, libc++ and lld/ld64 integration for Darwin.";
     };
     nodejs = {
-      blockers = ["native-code-generators" "darwin-v8" "target-runtime-tests"];
+      blockers = [];
       note = "Cross-build V8/Node with native generators and Darwin target libraries.";
     };
     openjdk = {
-      blockers = ["build-jdk" "darwin-hotspot" "target-runtime-tests"];
+      blockers = [];
       note = "Use a Linux build JDK and cross-build a Darwin HotSpot/JDK image.";
     };
     python3 = {
-      blockers = ["build-python" "configure-cache" "target-runtime-tests"];
+      blockers = [];
       note = "Use a Linux build Python for generators and cross-build the Darwin interpreter and extension modules.";
     };
     qemu = {
-      blockers = ["disable-kvm" "enable-hvf" "darwin-dependency-selection" "target-runtime-tests"];
-      note = "Select HVF/TCG and Darwin host APIs instead of the Linux KVM configuration.";
+      blockers = ["enable-hvf" "darwin-dependency-selection"];
+      note = "QEMU is outside the first Darwin release scope; a future port needs Darwin host APIs.";
     };
     rust = {
-      blockers = ["build-rustc" "darwin-std" "darwin-linker" "target-runtime-tests"];
+      blockers = [];
       note = "Use Linux-native rustc/cargo for bootstrap and emit Darwin-hosted rustc/cargo plus both Darwin stdlibs.";
     };
     workerd = {
-      blockers = ["remove-linux-binary-seed" "darwin-bazel" "target-runtime-tests"];
-      note = "Replace the x86_64 Linux npm binary seed with the from-source workerd build.";
+      blockers = [];
+      note = "Use native source generators and Bazel tools with the Darwin runtime toolchain.";
     };
   };
 
@@ -765,6 +801,9 @@ let
     inventory;
 
   helperInventory = {
+    "networking/envoy-patches/_antlr4-tool.nix" = "native-build-helper";
+    "build-support/_accache.nix" = "cross-build-helper";
+    "build-support/_perl-xs-cross-config.nix" = "cross-build-helper";
     "tools/workerd/_bazel-copy-directory.nix" = "native-build-helper";
     "tools/workerd/_yq.nix" = "native-build-helper";
     "tools/workerd/_utility-repositories.nix" = "native-build-helper";
@@ -782,17 +821,19 @@ let
     "libs/_sharp-vips.nix" = "cross-build-helper";
     "tools/_cargo-c-sources.nix" = "target-independent-source";
     "tools/_device-test-coreutils.nix" = "linux-only-build-helper";
+    "tools/miniflare/_blake3-wasm.nix" = "native-build-helper";
     "tools/miniflare/_sharp-addon.nix" = "cross-build-helper";
     "tools/workerd/_binaryen.nix" = "native-build-helper";
     "tools/workerd/_cargo-bazel.nix" = "native-build-helper";
     "tools/workerd/_cross-clang.nix" = "cross-build-helper";
     "tools/workerd/_cross-toolchain.nix" = "cross-build-helper";
+    "tools/workerd/_darwin-toolchain.nix" = "cross-build-helper";
     "tools/workerd/_emscripten-acorn.nix" = "native-build-helper";
     "tools/workerd/_emscripten-llvm.nix" = "native-build-helper";
     "tools/workerd/_emscripten.nix" = "native-build-helper";
     "tools/workerd/_esbuild-repository.nix" = "native-build-helper";
     "tools/workerd/_esbuild.nix" = "native-build-helper";
-    "tools/workerd/_modern.nix" = "linux-only-build-helper";
+    "tools/workerd/_modern.nix" = "cross-build-helper";
     "tools/workerd/_native-clang.nix" = "linux-only-build-helper";
     "tools/workerd/_node-repository.nix" = "native-build-helper";
     "tools/workerd/_pyodide-esbuild.nix" = "native-build-helper";
@@ -800,9 +841,10 @@ let
     "tools/workerd/_pyodide.nix" = "native-build-helper";
     "tools/workerd/_python-repositories.nix" = "native-build-helper";
     "tools/workerd/_runtime-check.nix" = "native-build-helper";
-    "tools/workerd/_rust-repository.nix" = "native-build-helper";
+    "tools/workerd/_rust-repository.nix" = "cross-build-helper";
     "_platform-support.nix" = "platform-policy";
     "build-support/_cargo-artifacts.nix" = "native-build-helper";
+    "build-support/_cargo-source-vendor.nix" = "native-build-helper";
     "build-support/_config-module-renderer.nix" = "native-build-helper";
     "build-support/_expose-module.nix" = "target-independent-source";
     "build-support/_expose-renderer.nix" = "native-build-helper";
@@ -816,6 +858,7 @@ let
     "darwin/_darwin-cc.nix" = "cross-build-helper";
     "darwin/_darwin-cctools-linker.nix" = "linux-only-build-helper";
     "darwin/_darwin-dtrace-compiler.nix" = "linux-only-build-helper";
+    "darwin/_darwin-mig.nix" = "linux-only-build-helper";
     "darwin/_darwin-gcc.nix" = "cross-build-helper";
     "emulation/_darwin-signer.nix" = "linux-only-build-helper";
     "emulation/_darling-sources.nix" = "linux-only-source";
@@ -834,6 +877,136 @@ let
     "kubernetes/_k3s-traefik.nix" = "linux-only-build-helper";
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
+    "toolchain/_bazel-asm.nix" = "native-build-helper";
+    "toolchain/_bazel-async-profiler-api.nix" = "native-build-helper";
+    "toolchain/_bazel-async-profiler-jar.nix" = "linux-only-build-helper";
+    "toolchain/_bazel-async-profiler-native.nix" = "linux-only-build-helper";
+    "toolchain/_bazel-async-profiler-repositories.nix" = "native-build-helper";
+    "toolchain/_bazel-avalon-framework-api.nix" = "native-build-helper";
+    "toolchain/_bazel-blockhound.nix" = "native-build-helper";
+    "toolchain/_bazel-bnd-annotation.nix" = "native-build-helper";
+    "toolchain/_bazel-bouncycastle.nix" = "native-build-helper";
+    "toolchain/_bazel-byte-buddy-1_14.nix" = "native-build-helper";
+    "toolchain/_bazel-byte-buddy-bootstrap.nix" = "native-build-helper";
+    "toolchain/_bazel-chicory-maven.nix" = "native-build-helper";
+    "toolchain/_bazel-chicory.nix" = "native-build-helper";
+    "toolchain/_bazel-common-protos-241.nix" = "native-build-helper";
+    "toolchain/_bazel-commons-csv.nix" = "native-build-helper";
+    "toolchain/_bazel-conscrypt-java.nix" = "native-build-helper";
+    "toolchain/_bazel-error-prone-check-api.nix" = "native-build-helper";
+    "toolchain/_bazel-error-prone-core.nix" = "native-build-helper";
+    "toolchain/_bazel-error-prone-dataflow.nix" = "native-build-helper";
+    "toolchain/_bazel-google-auth-123.nix" = "native-build-helper";
+    "toolchain/_bazel-google-http-1433.nix" = "native-build-helper";
+    "toolchain/_bazel-google-http.nix" = "native-build-helper";
+    "toolchain/_bazel-google-java-format.nix" = "native-build-helper";
+    "toolchain/_bazel-caffeine.nix" = "native-build-helper";
+    "toolchain/_bazel-grpc-java-plugin.nix" = "native-build-helper";
+    "toolchain/_bazel-grpc-netty.nix" = "native-build-helper";
+    "toolchain/_bazel-grpc-xds-source.nix" = "target-independent-source";
+    "toolchain/_bazel-guava-3345.nix" = "native-build-helper";
+    "toolchain/_bazel-jackson-base.nix" = "native-build-helper";
+    "toolchain/_bazel-jackson-xml.nix" = "native-build-helper";
+    "toolchain/_bazel-jackson-yaml.nix" = "native-build-helper";
+    "toolchain/_bazel-jacoco-source.nix" = "target-independent-source";
+    "toolchain/_bazel-jacoco.nix" = "native-build-helper";
+    "toolchain/_bazel-jansi.nix" = "native-build-helper";
+    "toolchain/_bazel-jboss-modules.nix" = "native-build-helper";
+    "toolchain/_bazel-jeromq.nix" = "native-build-helper";
+    "toolchain/_bazel-jimfs.nix" = "native-build-helper";
+    "toolchain/_bazel-jna.nix" = "native-build-helper";
+    "toolchain/_bazel-kafka-clients.nix" = "native-build-helper";
+    "toolchain/_bazel-legacy-java-http.nix" = "native-build-helper";
+    "toolchain/_bazel-listenablefuture-empty.nix" = "native-build-helper";
+    "toolchain/_bazel-log4j-core.nix" = "native-build-helper";
+    "toolchain/_bazel-log4j.nix" = "native-build-helper";
+    "toolchain/_bazel-logkit.nix" = "native-build-helper";
+    "toolchain/_bazel-lz4-java.nix" = "native-build-helper";
+    "toolchain/_bazel-mail-api.nix" = "native-build-helper";
+    "toolchain/_bazel-maven-bootstrap.nix" = "native-build-helper";
+    "toolchain/_bazel-maven-modern-annotations.nix" = "native-build-helper";
+    "toolchain/_bazel-maven-source-repositories.nix" = "native-build-helper";
+    "toolchain/_bazel-mockito.nix" = "native-build-helper";
+    "toolchain/_bazel-module-source.nix" = "target-independent-source";
+    "toolchain/_bazel-module-prepared.nix" = "target-independent-source";
+    "toolchain/_bazel-msv-chain.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-119-native-repositories.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-119.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-base.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-boringssl-2061.nix" = "target-independent-source";
+    "toolchain/_bazel-netty-boringssl.nix" = "target-independent-source";
+    "toolchain/_bazel-netty-codec-http.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-codec-java-deps.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-codec.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-common.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-dns-proxy-119.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-dns.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-handler-apis.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-handler.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-http2-119.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-http2-proxy.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-native-epoll.nix" = "linux-only-build-helper";
+    "toolchain/_bazel-netty-native-kqueue.nix" = "cross-build-helper";
+    "toolchain/_bazel-netty-native-unix.nix" = "cross-build-helper";
+    "toolchain/_bazel-netty-tcnative-2061-repositories.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-tcnative-classes-2061.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-tcnative-classes.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-tcnative-native-2061.nix" = "cross-build-helper";
+    "toolchain/_bazel-netty-tcnative-native.nix" = "cross-build-helper";
+    "toolchain/_bazel-netty-transport-extras.nix" = "native-build-helper";
+    "toolchain/_bazel-offline-modules.nix" = "target-independent-source";
+    "toolchain/_bazel-offline-modules-9.nix" = "target-independent-source";
+    "toolchain/_bazel-netty-93-native-repositories.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-93-repositories.nix" = "native-build-helper";
+    "toolchain/_bazel-proguard.nix" = "native-build-helper";
+    "toolchain/_bazel-remote-java-tools.nix" = "native-build-helper";
+    "toolchain/_bazel-rules-java-tools.nix" = "native-build-helper";
+    "toolchain/_bazel-rules-python-tools.nix" = "native-build-helper";
+    "toolchain/_bazel-fastutil-source-tools.nix" = "native-build-helper";
+    "toolchain/_bazel-offline-modules-7.nix" = "native-build-helper";
+    "toolchain/_bazel-source-9-prepared.nix" = "native-build-helper";
+    "toolchain/_bazel-pcollections-sources.nix" = "target-independent-source";
+    "toolchain/_bazel-pcollections.nix" = "native-build-helper";
+    "toolchain/_bazel-platforms-source.nix" = "target-independent-source";
+    "toolchain/_bazel-protobuf-java-util.nix" = "native-build-helper";
+    "toolchain/_bazel-protobuf-java.nix" = "native-build-helper";
+    "toolchain/_bazel-protoc-gen-validate-source.nix" = "target-independent-source";
+    "toolchain/_bazel-python-runtime.nix" = "native-build-helper";
+    "toolchain/_bazel-snappy-java.nix" = "native-build-helper";
+    "toolchain/_bazel-source-8-prepared.nix" = "target-independent-source";
+    "toolchain/_bazel-source-8.nix" = "target-independent-source";
+    "toolchain/_bazel-source-9.nix" = "target-independent-source";
+    "toolchain/_bazel-source-checkout.nix" = "target-independent-source";
+    "toolchain/_bazel-source.nix" = "target-independent-source";
+    "toolchain/_bazel-stax2-api.nix" = "native-build-helper";
+    "toolchain/_bazel-tomcat-annotations-6053.nix" = "native-build-helper";
+    "toolchain/_bazel-unix-jni.nix" = "linux-only-build-helper";
+    "toolchain/_bazel-velocity.nix" = "native-build-helper";
+    "toolchain/_bazel-woodstox-core.nix" = "native-build-helper";
+    "toolchain/_bazel-xml-resolver.nix" = "native-build-helper";
+    "toolchain/_bazel-xom-sources.nix" = "target-independent-source";
+    "toolchain/_bazel-zstd-jni.nix" = "native-build-helper";
+    "toolchain/_kotlin-bootstrap-2011.nix" = "native-build-helper";
+    "toolchain/_kotlin-bootstrap-2012.nix" = "native-build-helper";
+    "toolchain/_kotlin-bootstrap-april-2013.nix" = "native-build-helper";
+    "toolchain/_kotlin-bootstrap-august-2013.nix" = "native-build-helper";
+    "toolchain/_kotlin-bootstrap-december-2013.nix" = "native-build-helper";
+    "toolchain/_kotlin-bootstrap-february-2014.nix" = "native-build-helper";
+    "toolchain/_kotlin-bootstrap-january-2013.nix" = "native-build-helper";
+    "toolchain/_kotlin-bootstrap-june-2012.nix" = "native-build-helper";
+    "toolchain/_kotlin-bootstrap-november-2013.nix" = "native-build-helper";
+    "toolchain/_kotlin-bootstrap-october-2012.nix" = "native-build-helper";
+    "toolchain/_kotlin-bootstrap-serialized-2013.nix" = "native-build-helper";
+    "toolchain/_kotlin-builtins-generator-2013.nix" = "native-build-helper";
+    "toolchain/_kotlin-dart-ast-2012.nix" = "native-build-helper";
+    "toolchain/_kotlin-idea-api-2012.nix" = "native-build-helper";
+    "toolchain/_kotlin-idea-core-2012.nix" = "native-build-helper";
+    "toolchain/_kotlin-stdlib-2013.nix" = "native-build-helper";
+    "toolchain/_kotlin-stdlib-december-2013.nix" = "native-build-helper";
+    "toolchain/_kotlin-stdlib-february-2014.nix" = "native-build-helper";
+    "toolchain/_kotlin-stdlib-january-2014.nix" = "native-build-helper";
+    "toolchain/_kotlin-stdlib-november-2013.nix" = "native-build-helper";
+    "toolchain/_protobuf-java-lite-2_5.nix" = "native-build-helper";
     "toolchain/_bazel.nix" = "native-build-helper";
     "toolchain/_linux-hosted-binutils.nix" = "cross-build-helper";
     "toolchain/_linux-hosted-cc.nix" = "cross-build-helper";
@@ -841,7 +1014,6 @@ let
     "toolchain/_linux-hosted-glibc.nix" = "cross-build-helper";
     "toolchain/go/_go-darwin.nix" = "cross-build-helper";
     "toolchain/go/_go-linux-cross.nix" = "cross-build-helper";
-    "toolchain/java/_darwin-mig.nix" = "linux-only-build-helper";
     "toolchain/java/_openjdk-bootstrap.nix" = "native-build-helper";
     "toolchain/llvm/_llvm.nix" = "cross-build-helper";
     "toolchain/rust/_current.nix" = "mixed-source";
@@ -868,6 +1040,10 @@ let
   # Source fragments kept below underscore-prefixed directories are also
   # excluded from discovery, but are consumed by package factories.
   resourceInventory = {
+    "editors/_vim-darwin/api.h" = "target-independent-source";
+    "editors/_vim-darwin/appkit.tbd" = "target-independent-source";
+    "editors/_vim-darwin/text.h" = "target-independent-source";
+    "editors/_vim-darwin/coreservices.tbd" = "target-independent-source";
     "containers/_containerd-config/module.nix" = "linux-only-config-source";
     "containers/_containerd-tests/contract.nix" = "linux-only-test-source";
     "containers/_containerd-tests/lifecycle.nix" = "linux-only-test-source";
@@ -911,6 +1087,8 @@ let
     "tests/_config-module-smoke/private.nix" = "linux-only-test-source";
     "tools/_conntrackd-config/module.nix" = "linux-only-config-source";
     "tools/_rsyncd-config/module.nix" = "linux-only-config-source";
+    "tools/_uv-darwin/security.tbd" = "target-independent-source";
+    "tools/_uv-darwin/systemconfiguration.tbd" = "target-independent-source";
   };
 
   isLinux = system: builtins.match "[a-zA-Z0-9_]+-linux" system != null;
@@ -948,21 +1126,29 @@ in rec {
     architectureSupported = builtins.elem architecture entry.architectures;
     eligible =
       if isLinux system
-      then builtins.elem entry.disposition ["target" "independent" "linux-only"] && architectureSupported
+      then builtins.elem entry.disposition ["target" "independent" "linux-scoped" "linux-only"] && architectureSupported
       else if isDarwin system
       then builtins.elem entry.disposition ["target" "independent" "darwin-only"] && architectureSupported
       else throw "package platform support: unsupported publication system '${system}'";
     rule =
-      if entry.disposition == "build-only"
+      if entry.disposition == "internal-component"
+      then "package-aggregate-component/v1"
+      else if entry.disposition == "build-only"
       then "package-build-input-only/v1"
+      else if entry.disposition == "linux-scoped" && isDarwin system
+      then "package-darwin-release-scope/v1"
       else if entry.disposition == "linux-only" && isDarwin system
       then "package-linux-interface/v1"
       else if entry.disposition == "darwin-only" && isLinux system
       then "package-darwin-runtime/v1"
       else "package-architecture-support/v1";
     reason =
-      if entry.disposition == "build-only"
+      if entry.disposition == "internal-component"
+      then "Publish this component through the Crucible suite with its matching corresponding source."
+      else if entry.disposition == "build-only"
       then "This derivation is a build or test input, not a public package root."
+      else if entry.disposition == "linux-scoped" && isDarwin system
+      then "This package is outside the first Darwin release scope."
       else if entry.disposition == "linux-only" && isDarwin system
       then "This package implements a Linux-specific interface."
       else if entry.disposition == "darwin-only" && isLinux system
@@ -1232,6 +1418,8 @@ in rec {
       "independent"
       "darwin-only"
       "build-only"
+      "internal-component"
+      "linux-scoped"
       "linux-only"
     ];
     validArchitectures = [

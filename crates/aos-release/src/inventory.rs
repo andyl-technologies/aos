@@ -331,6 +331,17 @@ impl PackageInventoryV1 {
         let mut plans = Vec::with_capacity(self.packages.len());
         for package in &self.packages {
             let publication = package_publication_metadata(package, &derivations)?;
+            let platform_versions = package
+                .platforms
+                .iter()
+                .filter(|cell| cell.decision.requires_derivation())
+                .filter_map(|cell| {
+                    let evaluated = derivations.get(&(cell.platform, package.name.as_str()))?;
+                    let metadata = evaluated.publication.as_ref()?;
+                    (metadata.version != publication?.version)
+                        .then(|| (cell.platform, metadata.version.clone()))
+                })
+                .collect();
             let mut platforms = Vec::with_capacity(package.platforms.len());
             for cell in &package.platforms {
                 let decision = match &cell.decision {
@@ -382,6 +393,7 @@ impl PackageInventoryV1 {
             plans.push(PackagePlan {
                 name: package.name.clone(),
                 publication: publication.cloned(),
+                platform_versions,
                 platforms,
             });
         }
@@ -393,7 +405,7 @@ fn package_publication_metadata<'a>(
     package: &InventoryPackage,
     derivations: &BTreeMap<(Platform, &'a str), &'a DerivationPackage>,
 ) -> Result<Option<&'a PackagePublicationMetadata>> {
-    let mut selected = None;
+    let mut selected: Option<&PackagePublicationMetadata> = None;
     let mut incomplete = false;
     for cell in &package.platforms {
         if !cell.decision.requires_derivation() {
@@ -405,10 +417,18 @@ fn package_publication_metadata<'a>(
         match (selected, metadata) {
             (_, None) => incomplete = true,
             (None, Some(metadata)) => selected = Some(metadata),
-            (Some(expected), Some(metadata)) if expected != metadata => {
-                bail!("package publication metadata differs across target platforms")
+            (Some(expected), Some(metadata)) => {
+                // Native ports may use different upstream source versions.
+                // Shared catalog text and licensing must still agree.
+                let mut comparable = metadata.clone();
+                comparable.version.clone_from(&expected.version);
+                if expected != &comparable {
+                    bail!(
+                        "package '{}' publication metadata differs across target platforms",
+                        package.name
+                    );
+                }
             }
-            _ => {}
         }
     }
     Ok((!incomplete).then_some(selected).flatten())
@@ -470,20 +490,22 @@ fn validate_decision(platform: Platform, decision: &InventoryDecision) -> Result
         } => {
             if !matches!(
                 disposition.as_str(),
-                "target" | "independent" | "linux-only" | "darwin-only"
+                "target" | "independent" | "linux-scoped" | "linux-only" | "darwin-only"
             ) {
                 bail!("eligible package has an invalid disposition");
             }
-            if (disposition == "linux-only" && !platform.supports_images())
+            let linux_scoped = matches!(disposition.as_str(), "linux-scoped" | "linux-only");
+
+            if (linux_scoped && !platform.supports_images())
                 || (disposition == "darwin-only" && platform.supports_images())
             {
                 bail!("eligible package disposition conflicts with its platform");
             }
-            // Waves describe Darwin implementation order. Linux-only entries
-            // deliberately have no wave in the shared Nix inventory.
-            if disposition == "linux-only" {
+            // Waves describe Darwin implementation order. Packages scoped to
+            // Linux publication have no Darwin wave in the shared inventory.
+            if linux_scoped {
                 if wave.is_some() {
-                    bail!("Linux-only package cannot have a publication wave");
+                    bail!("Linux-scoped package cannot have a publication wave");
                 }
             } else if wave.is_none_or(|wave| !(1..=5).contains(&wave)) {
                 bail!("eligible package requires a valid publication wave");
@@ -610,7 +632,13 @@ mod tests {
     #[test]
     fn publication_waves_follow_the_nix_disposition_policy() {
         for platform in Platform::ALL {
-            for disposition in ["target", "independent", "linux-only", "darwin-only"] {
+            for disposition in [
+                "target",
+                "independent",
+                "linux-scoped",
+                "linux-only",
+                "darwin-only",
+            ] {
                 for wave in [None, Some(0), Some(1), Some(5), Some(6)] {
                     let decision = InventoryDecision::Eligible {
                         disposition: disposition.to_owned(),
@@ -618,11 +646,12 @@ mod tests {
                         blockers: Vec::new(),
                     };
                     let compatible_platform = match disposition {
-                        "linux-only" => platform.supports_images(),
+                        "linux-scoped" | "linux-only" => platform.supports_images(),
                         "darwin-only" => !platform.supports_images(),
                         _ => true,
                     };
-                    let valid_wave = if disposition == "linux-only" {
+                    let linux_scoped = matches!(disposition, "linux-scoped" | "linux-only");
+                    let valid_wave = if linux_scoped {
                         wave.is_none()
                     } else {
                         matches!(wave, Some(1..=5))
@@ -648,7 +677,7 @@ mod tests {
                 platforms: Platform::ALL.into_iter().map(decision).collect(),
             }],
         };
-        let derivations = Platform::ALL
+        let mut derivations = Platform::ALL
             .into_iter()
             .map(|platform| DerivationInventoryV1 {
                 schema_version: DERIVATION_INVENTORY_V1.to_owned(),
@@ -686,6 +715,30 @@ mod tests {
                 .map(|value| value.version.as_str()),
             Some("1.0.0")
         );
+        assert!(plan[0].platform_versions.is_empty());
+
+        for target in &mut derivations {
+            if !target.platform.supports_images() {
+                target.packages[0].publication.as_mut().unwrap().version = "0.9.0".into();
+            }
+        }
+        let plan = inventory.package_plan(&derivations)?;
+        assert_eq!(plan[0].version_for(Platform::X86_64Linux), Some("1.0.0"));
+        assert_eq!(plan[0].version_for(Platform::Aarch64Linux), Some("1.0.0"));
+        assert_eq!(plan[0].version_for(Platform::X86_64Darwin), Some("0.9.0"));
+        assert_eq!(plan[0].version_for(Platform::Aarch64Darwin), Some("0.9.0"));
+        assert_eq!(plan[0].platform_versions.len(), 2);
+
+        let bytes = crate::canonical::to_vec(&plan[0])?;
+        let decoded: PackagePlan = crate::canonical::from_slice(&bytes, "package plan")?;
+        assert_eq!(decoded, plan[0]);
+
+        derivations[3].packages[0]
+            .publication
+            .as_mut()
+            .unwrap()
+            .license_expression = "GPL-3.0-only".into();
+        assert!(inventory.package_plan(&derivations).is_err());
         Ok(())
     }
 

@@ -1,0 +1,818 @@
+diff --git a/compiler/cli/cli-common/src/com/sampullara/cli/ArgumentUtils.java b/compiler/cli/cli-common/src/com/sampullara/cli/ArgumentUtils.java
+index 51e2ff854..548083cd6 100644
+--- a/compiler/cli/cli-common/src/com/sampullara/cli/ArgumentUtils.java
++++ b/compiler/cli/cli-common/src/com/sampullara/cli/ArgumentUtils.java
+@@ -73,7 +73,9 @@ public class ArgumentUtils {
+             if (fieldType.isArray()) {
+                 Object[] values = (Object[]) value;
+                 if (values.length == 0) continue;
+-                value = StringUtil.join(values, Function.TO_STRING, argument.delimiter());
++                value = StringUtil.join(values, new Function<Object, String>() {
++                    public String fun(Object item) { return String.valueOf(item); }
++                }, argument.delimiter());
+             }
+ 
+             result.add(argument.prefix() + name);
+diff --git a/compiler/cli/cli-common/src/org/jetbrains/jet/cli/common/messages/OutputMessageUtil.java b/compiler/cli/cli-common/src/org/jetbrains/jet/cli/common/messages/OutputMessageUtil.java
+index 580f2e009..a54e0d468 100644
+--- a/compiler/cli/cli-common/src/org/jetbrains/jet/cli/common/messages/OutputMessageUtil.java
++++ b/compiler/cli/cli-common/src/org/jetbrains/jet/cli/common/messages/OutputMessageUtil.java
+@@ -31,7 +31,9 @@ public class OutputMessageUtil {
+     @NotNull
+     public static String formatOutputMessage(Collection<File> sourceFiles, File outputFile) {
+         return OUTPUT_FILES_PREFIX + "\n" + outputFile.getPath() + "\n" +
+-               SOURCE_FILES_PREFIX + "\n" + StringUtil.join(sourceFiles, "\n");
++               SOURCE_FILES_PREFIX + "\n" + StringUtil.join(sourceFiles, new com.intellij.util.Function<File, String>() {
++                   public String fun(File value) { return value.toString(); }
++               }, "\n");
+     }
+ 
+     @Nullable
+@@ -59,7 +61,7 @@ public class OutputMessageUtil {
+     }
+ 
+     private static Collection<File> parseSourceFiles(String[] strings, int start) {
+-        Collection<File> sourceFiles = ContainerUtil.newArrayList();
++        Collection<File> sourceFiles = new java.util.ArrayList<File>();
+         for (int i = start; i < strings.length; i++) {
+             sourceFiles.add(new File(strings[i]));
+         }
+diff --git a/compiler/cli/cli-common/src/org/jetbrains/jet/cli/common/modules/ModuleXmlParser.java b/compiler/cli/cli-common/src/org/jetbrains/jet/cli/common/modules/ModuleXmlParser.java
+index adfa1a0fb..5e81f0edf 100644
+--- a/compiler/cli/cli-common/src/org/jetbrains/jet/cli/common/modules/ModuleXmlParser.java
++++ b/compiler/cli/cli-common/src/org/jetbrains/jet/cli/common/modules/ModuleXmlParser.java
+@@ -58,7 +58,13 @@ public class ModuleXmlParser {
+             return Collections.emptyList();
+         }
+         finally {
+-            StreamUtil.closeStream(stream);
++            if (stream != null) {
++                try {
++                    stream.close();
++                } catch (IOException ignored) {
++                    // Closing a parsed module file must not hide its result.
++                }
++            }
+         }
+     }
+ 
+diff --git a/compiler/cli/src/org/jetbrains/jet/cli/common/output/outputUtils.kt b/compiler/cli/src/org/jetbrains/jet/cli/common/output/outputUtils.kt
+index 3f7547a4c..7b8f368e2 100644
+--- a/compiler/cli/src/org/jetbrains/jet/cli/common/output/outputUtils.kt
++++ b/compiler/cli/src/org/jetbrains/jet/cli/common/output/outputUtils.kt
+@@ -43,6 +43,6 @@ public fun OutputFileCollection.writeAllTo(outputDir: File) {
+ 
+ public fun OutputFileCollection.writeAll(outputDirector: OutputDirector, messageCollector: MessageCollector) {
+     writeAll(outputDirector) { sources, output ->
+-        messageCollector.report(CompilerMessageSeverity.OUTPUT, OutputMessageUtil.formatOutputMessage(sources, output), CompilerMessageLocation.NO_LOCATION)
++        messageCollector.report(CompilerMessageSeverity.OUTPUT, OutputMessageUtil.formatOutputMessage(sources, output)!!, CompilerMessageLocation.NO_LOCATION)
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/compiler/cli/src/org/jetbrains/jet/cli/jvm/compiler/CompileEnvironmentUtil.java b/compiler/cli/src/org/jetbrains/jet/cli/jvm/compiler/CompileEnvironmentUtil.java
+index 432a1c2cf..d7b075a61 100644
+--- a/compiler/cli/src/org/jetbrains/jet/cli/jvm/compiler/CompileEnvironmentUtil.java
++++ b/compiler/cli/src/org/jetbrains/jet/cli/jvm/compiler/CompileEnvironmentUtil.java
+@@ -19,7 +19,6 @@ package org.jetbrains.jet.cli.jvm.compiler;
+ import com.intellij.openapi.Disposable;
+ import com.intellij.openapi.util.Disposer;
+ import com.intellij.openapi.util.io.FileUtil;
+-import com.intellij.openapi.util.io.FileUtilRt;
+ import com.intellij.util.Function;
+ import com.intellij.util.containers.ContainerUtil;
+ import kotlin.modules.AllModules;
+@@ -73,7 +72,7 @@ public class CompileEnvironmentUtil {
+             messageCollector.report(ERROR, "Module definition file does not exist: " + moduleDefinitionFile, NO_LOCATION);
+             return ModuleChunk.EMPTY;
+         }
+-        String extension = FileUtilRt.getExtension(moduleDefinitionFile);
++        String extension = FileUtil.getExtension(moduleDefinitionFile);
+         if ("kts".equalsIgnoreCase(extension)) {
+             return new ModuleChunk(loadModuleScript(paths, moduleDefinitionFile, messageCollector));
+         }
+@@ -220,7 +219,7 @@ public class CompileEnvironmentUtil {
+                     if (e == null) {
+                         break;
+                     }
+-                    if (FileUtilRt.extensionEquals(e.getName(), "class")) {
++                    if (FileUtil.getExtension(e.getName()).equals("class")) {
+                         stream.putNextEntry(e);
+                         FileUtil.copy(jis, stream);
+                     }
+diff --git a/compiler/cli/src/org/jetbrains/jet/cli/jvm/compiler/JetCoreEnvironment.java b/compiler/cli/src/org/jetbrains/jet/cli/jvm/compiler/JetCoreEnvironment.java
+index a0b447897..33783abc3 100644
+--- a/compiler/cli/src/org/jetbrains/jet/cli/jvm/compiler/JetCoreEnvironment.java
++++ b/compiler/cli/src/org/jetbrains/jet/cli/jvm/compiler/JetCoreEnvironment.java
+@@ -167,9 +167,11 @@ public class JetCoreEnvironment {
+         projectEnvironment = new JavaCoreProjectEnvironment(parentDisposable, applicationEnvironment);
+ 
+         MockProject project = projectEnvironment.getProject();
++        // The 2012 IDEA environment registers only its concrete file manager.
++        project.registerService(JavaFileManager.class,
++                ServiceManager.getService(project, CoreJavaFileManager.class));
+         project.registerService(JetScriptDefinitionProvider.class, new JetScriptDefinitionProvider());
+         project.registerService(JetFilesProvider.class, new CliJetFilesProvider(this));
+-        project.registerService(CoreJavaFileManager.class, (CoreJavaFileManager) ServiceManager.getService(project, JavaFileManager.class));
+ 
+         CliLightClassGenerationSupport cliLightClassGenerationSupport = new CliLightClassGenerationSupport();
+         project.registerService(LightClassGenerationSupport.class, cliLightClassGenerationSupport);
+@@ -278,7 +280,7 @@ public class JetCoreEnvironment {
+                 report(WARNING, "Classpath entry points to a file that is not a JAR archive: " + path);
+                 return;
+             }
+-            projectEnvironment.addJarToClassPath(path);
++            projectEnvironment.addToClasspath(path);
+             classPath.add(jarFile);
+         }
+         else {
+@@ -287,7 +289,7 @@ public class JetCoreEnvironment {
+                 report(WARNING, "Classpath entry points to a non-existent location: " + path);
+                 return;
+             }
+-            projectEnvironment.addSourcesToClasspath(root);
++            projectEnvironment.addToClasspath(path);
+             classPath.add(root);
+         }
+     }
+diff --git a/compiler/cli/src/org/jetbrains/jet/cli/jvm/compiler/MockPsiDocumentManager.java b/compiler/cli/src/org/jetbrains/jet/cli/jvm/compiler/MockPsiDocumentManager.java
+index 112e847f1..b0b145e5a 100644
+--- a/compiler/cli/src/org/jetbrains/jet/cli/jvm/compiler/MockPsiDocumentManager.java
++++ b/compiler/cli/src/org/jetbrains/jet/cli/jvm/compiler/MockPsiDocumentManager.java
+@@ -68,9 +68,8 @@ public class MockPsiDocumentManager extends PsiDocumentManager {
+     }
+ 
+     @NotNull
+-    @Override
+     public CharSequence getLastCommittedText(@NotNull Document document) {
+-        return document.getImmutableCharSequence();
++        return document.getText();
+     }
+ 
+     @Override
+@@ -130,7 +129,6 @@ public class MockPsiDocumentManager extends PsiDocumentManager {
+         throw new UnsupportedOperationException();
+     }
+ 
+-    @Override
+     public void reparseFiles(@NotNull Collection<VirtualFile> files, boolean includeOpenFiles) {
+         throw new UnsupportedOperationException();
+     }
+diff --git a/compiler/frontend.java/src/org/jetbrains/jet/lang/resolve/java/resolver/LazyResolveBasedCache.kt b/compiler/frontend.java/src/org/jetbrains/jet/lang/resolve/java/resolver/LazyResolveBasedCache.kt
+index 7a78f8c05..46086e15b 100644
+--- a/compiler/frontend.java/src/org/jetbrains/jet/lang/resolve/java/resolver/LazyResolveBasedCache.kt
++++ b/compiler/frontend.java/src/org/jetbrains/jet/lang/resolve/java/resolver/LazyResolveBasedCache.kt
+@@ -39,7 +39,7 @@ import org.jetbrains.jet.lang.resolve.name.each
+ 
+ public class LazyResolveBasedCache() : JavaResolverCache {
+     class object {
+-        private val LOG = Logger.getInstance(javaClass<TraceBasedJavaResolverCache>())
++        private val LOG = Logger.getInstance("#org.jetbrains.jet.lang.resolve.java.resolver.TraceBasedJavaResolverCache")
+     }
+ 
+     private var resolveSession by Delegates.notNull<ResolveSession>()
+diff --git a/compiler/frontend/src/org/jetbrains/jet/checkers/CheckerTestUtil.java b/compiler/frontend/src/org/jetbrains/jet/checkers/CheckerTestUtil.java
+index c364fa0b3..b2d1e7990 100644
+--- a/compiler/frontend/src/org/jetbrains/jet/checkers/CheckerTestUtil.java
++++ b/compiler/frontend/src/org/jetbrains/jet/checkers/CheckerTestUtil.java
+@@ -169,10 +169,10 @@ public class CheckerTestUtil {
+                         Multiset<String> expectedDiagnosticTypes = currentExpected.getDiagnostics();
+                         if (!actualDiagnosticTypes.equals(expectedDiagnosticTypes)) {
+                             Multiset<String> notInActualTypes = HashMultiset.create(expectedDiagnosticTypes);
+-                            Multisets.removeOccurrences(notInActualTypes, actualDiagnosticTypes);
++                            for (String type : actualDiagnosticTypes) notInActualTypes.remove(type);
+ 
+                             Multiset<String> notInExpectedTypes = HashMultiset.create(actualDiagnosticTypes);
+-                            Multisets.removeOccurrences(notInExpectedTypes, expectedDiagnosticTypes);
++                            for (String type : expectedDiagnosticTypes) notInExpectedTypes.remove(type);
+ 
+                             for (String type : notInActualTypes) {
+                                 callbacks.missingDiagnostic(type, expectedStart, expectedEnd);
+diff --git a/compiler/frontend/src/org/jetbrains/jet/checkers/DebugInfoUtil.java b/compiler/frontend/src/org/jetbrains/jet/checkers/DebugInfoUtil.java
+index a6d55e6d1..e5a84bee7 100644
+--- a/compiler/frontend/src/org/jetbrains/jet/checkers/DebugInfoUtil.java
++++ b/compiler/frontend/src/org/jetbrains/jet/checkers/DebugInfoUtil.java
+@@ -73,7 +73,7 @@ public class DebugInfoUtil {
+                 markedWithErrorElements.put((JetSimpleNameExpression) diagnostic.getPsiElement(), factory);
+             }
+             else if (factory == Errors.UNSUPPORTED) {
+-                for (JetReferenceExpression reference : PsiTreeUtil.findChildrenOfType(diagnostic.getPsiElement(),
++                for (JetReferenceExpression reference : PsiTreeUtil.collectElementsOfType(diagnostic.getPsiElement(),
+                                                                                        JetReferenceExpression.class)) {
+                     markedWithErrorElements.put(reference, factory);
+                 }
+diff --git a/compiler/frontend/src/org/jetbrains/jet/lang/cfg/PseudocodeTraverser.java b/compiler/frontend/src/org/jetbrains/jet/lang/cfg/PseudocodeTraverser.java
+index 3997bced6..b05a1405f 100644
+--- a/compiler/frontend/src/org/jetbrains/jet/lang/cfg/PseudocodeTraverser.java
++++ b/compiler/frontend/src/org/jetbrains/jet/lang/cfg/PseudocodeTraverser.java
+@@ -18,7 +18,6 @@ package org.jetbrains.jet.lang.cfg;
+ 
+ import com.google.common.collect.Lists;
+ import com.google.common.collect.Maps;
+-import com.google.common.collect.Queues;
+ import com.google.common.collect.Sets;
+ import org.jetbrains.annotations.NotNull;
+ import org.jetbrains.annotations.Nullable;
+@@ -247,7 +246,7 @@ public class PseudocodeTraverser {
+             @NotNull TraversalOrder order,
+             @Nullable InstructionHandler handler
+     ) {
+-        Deque<Instruction> stack = Queues.newArrayDeque();
++        Deque<Instruction> stack = new java.util.ArrayDeque<Instruction>();
+         stack.push(rootInstruction);
+ 
+         while (!stack.isEmpty()) {
+diff --git a/compiler/frontend/src/org/jetbrains/jet/lang/evaluate/OperationsMapGenerated.kt b/compiler/frontend/src/org/jetbrains/jet/lang/evaluate/OperationsMapGenerated.kt
+index e012d1262..30c1d4d08 100644
+--- a/compiler/frontend/src/org/jetbrains/jet/lang/evaluate/OperationsMapGenerated.kt
++++ b/compiler/frontend/src/org/jetbrains/jet/lang/evaluate/OperationsMapGenerated.kt
+@@ -101,7 +101,7 @@ private val binaryOperations: HashMap<BinaryOperationKey<*, *>, Pair<Function2<A
+     binaryOperation(BOOLEAN, BOOLEAN, "or", { a, b -> a.or(b) }, emptyBinaryFun),     
+     binaryOperation(BOOLEAN, ANY, "equals", { a, b -> a.equals(b) }, emptyBinaryFun),     
+     binaryOperation(BOOLEAN, BOOLEAN, "and", { a, b -> a.and(b) }, emptyBinaryFun),     
+-    binaryOperation(BOOLEAN, BOOLEAN, "compareTo", { a, b -> a.compareTo(b) }, emptyBinaryFun),     
++    binaryOperation(BOOLEAN, BOOLEAN, "compareTo", { a, b -> if (a == b) 0 else if (a) 1 else -1 }, emptyBinaryFun),
+     binaryOperation(BYTE, BYTE, "minus", { a, b -> a.minus(b) }, { a, b -> a.subtract(b) }),     
+     binaryOperation(BYTE, CHAR, "minus", { a, b -> a.minus(b) }, emptyBinaryFun),     
+     binaryOperation(BYTE, DOUBLE, "minus", { a, b -> a.minus(b) }, emptyBinaryFun),     
+diff --git a/compiler/frontend/src/org/jetbrains/jet/lang/parsing/JetExpressionParsing.java b/compiler/frontend/src/org/jetbrains/jet/lang/parsing/JetExpressionParsing.java
+index 654d93e4a..09706fb41 100644
+--- a/compiler/frontend/src/org/jetbrains/jet/lang/parsing/JetExpressionParsing.java
++++ b/compiler/frontend/src/org/jetbrains/jet/lang/parsing/JetExpressionParsing.java
+@@ -126,7 +126,7 @@ public class JetExpressionParsing extends AbstractJetParsing {
+ 
+     private static final TokenSet STATEMENT_NEW_LINE_QUICK_RECOVERY_SET =
+             TokenSet.orSet(
+-                    TokenSet.andSet(STATEMENT_FIRST, TokenSet.andNot(KEYWORDS, TokenSet.create(IN_KEYWORD))),
++                    TokenSet.andSet(STATEMENT_FIRST, KEYWORDS.minus(TokenSet.create(IN_KEYWORD))),
+                     TokenSet.create(EOL_OR_SEMICOLON));
+ 
+     /*package*/ static final TokenSet EXPRESSION_FOLLOW = TokenSet.create(
+diff --git a/compiler/frontend/src/org/jetbrains/jet/lang/psi/JetPsiUtil.java b/compiler/frontend/src/org/jetbrains/jet/lang/psi/JetPsiUtil.java
+index 77cab37c4..28b51654d 100644
+--- a/compiler/frontend/src/org/jetbrains/jet/lang/psi/JetPsiUtil.java
++++ b/compiler/frontend/src/org/jetbrains/jet/lang/psi/JetPsiUtil.java
+@@ -257,7 +257,7 @@ public class JetPsiUtil {
+             current = current.getQualifier();
+         }
+ 
+-        return FqName.fromSegments(ContainerUtil.reverse(reversedNames));
++        return FqName.fromSegments(com.google.common.collect.Lists.reverse(reversedNames));
+     }
+ 
+     @Nullable
+diff --git a/compiler/frontend/src/org/jetbrains/jet/lang/psi/psiUtil/jetPsiUtil.kt b/compiler/frontend/src/org/jetbrains/jet/lang/psi/psiUtil/jetPsiUtil.kt
+index 3e5fd21f5..b9531f026 100644
+--- a/compiler/frontend/src/org/jetbrains/jet/lang/psi/psiUtil/jetPsiUtil.kt
++++ b/compiler/frontend/src/org/jetbrains/jet/lang/psi/psiUtil/jetPsiUtil.kt
+@@ -61,7 +61,6 @@ fun PsiElement.getParentByTypesAndPredicate<T: PsiElement>(
+ ) : T? {
+     var element = if (strict) getParent() else this
+     while (element != null) {
+-        [suppress("UNCHECKED_CAST")]
+         when {
+             (parentClasses.isEmpty() || parentClasses.any {parentClass -> parentClass.isInstance(element)}) && predicate(element!! as T) ->
+                 return element as T
+@@ -109,7 +108,9 @@ fun JetElement.blockExpressionsOrSingle(): Iterator<JetElement> =
+         if (this is JetBlockExpression) getStatements().iterator() else SingleIterator(this)
+ 
+ fun JetElement.outermostLastBlockElement(predicate: (JetElement) -> Boolean = { true }): JetElement? {
+-    return JetPsiUtil.getOutermostLastBlockElement(this) { e -> e != null && predicate(e) }
++    return JetPsiUtil.getOutermostLastBlockElement(this, object : com.google.common.base.Predicate<JetElement> {
++        override fun apply(e: JetElement?): Boolean = e != null && predicate(e)
++    })
+ }
+ 
+ fun JetBlockExpression.appendElement(element: JetElement): JetElement =
+@@ -276,4 +277,4 @@ fun PsiElement.getFqName(): FqName? {
+         is JetNamedDeclaration -> JetPsiUtil.getFQName(this)
+         else -> null
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/compiler/frontend/src/org/jetbrains/jet/lang/resolve/BindingContextUtils.java b/compiler/frontend/src/org/jetbrains/jet/lang/resolve/BindingContextUtils.java
+index ef98c328f..de9916b42 100644
+--- a/compiler/frontend/src/org/jetbrains/jet/lang/resolve/BindingContextUtils.java
++++ b/compiler/frontend/src/org/jetbrains/jet/lang/resolve/BindingContextUtils.java
+@@ -154,7 +154,7 @@ public class BindingContextUtils {
+         if (overriddenDescriptors.size() != 1) {
+             throw new IllegalStateException(
+                     "Cannot find declaration: fake descriptor " + callable + " has more than one overridden descriptor:\n" +
+-                    StringUtil.join(overriddenDescriptors, ",\n"));
++                    com.google.common.base.Joiner.on(",\n").join(overriddenDescriptors));
+         }
+ 
+         return callableDescriptorToDeclaration(context, overriddenDescriptors.iterator().next());
+diff --git a/compiler/frontend/src/org/jetbrains/jet/lang/resolve/DiagnosticsWithSuppression.java b/compiler/frontend/src/org/jetbrains/jet/lang/resolve/DiagnosticsWithSuppression.java
+index 1bea07ce0..8a9abf1b3 100644
+--- a/compiler/frontend/src/org/jetbrains/jet/lang/resolve/DiagnosticsWithSuppression.java
++++ b/compiler/frontend/src/org/jetbrains/jet/lang/resolve/DiagnosticsWithSuppression.java
+@@ -51,8 +51,20 @@ public class DiagnosticsWithSuppression implements Diagnostics {
+     private final Map<JetAnnotated, Suppressor> suppressors = new ConcurrentWeakValueHashMap<JetAnnotated, Suppressor>();
+ 
+     // Caching frequently used values:
+-    private final ClassDescriptor suppressClass;
+-    private final ValueParameterDescriptor suppressParameter;
++    // Defer builtins lookup until suppression is inspected. The builtins serializer
++    // creates a binding trace before the serialized builtins exist.
++    private static final class SuppressAnnotation {
++        private static final ClassDescriptor DESCRIPTOR = KotlinBuiltIns.getInstance().getSuppressAnnotationClass();
++        private static final ValueParameterDescriptor PARAMETER;
++
++        static {
++            ConstructorDescriptor constructor = DESCRIPTOR.getUnsubstitutedPrimaryConstructor();
++            if (constructor == null) {
++                throw new IllegalStateException("No primary constructor in " + DESCRIPTOR);
++            }
++            PARAMETER = constructor.getValueParameters().get(0);
++        }
++    }
+     private final Condition<Diagnostic> filter = new Condition<Diagnostic>() {
+         @Override
+         public boolean value(Diagnostic diagnostic) {
+@@ -65,10 +77,6 @@ public class DiagnosticsWithSuppression implements Diagnostics {
+         this.context = context;
+         this.diagnostics = diagnostics;
+ 
+-        this.suppressClass = KotlinBuiltIns.getInstance().getSuppressAnnotationClass();
+-        ConstructorDescriptor primaryConstructor = suppressClass.getUnsubstitutedPrimaryConstructor();
+-        assert primaryConstructor != null : "No primary constructor in " + suppressClass;
+-        this.suppressParameter = primaryConstructor.getValueParameters().get(0);
+     }
+ 
+     @NotNull
+@@ -140,9 +148,9 @@ public class DiagnosticsWithSuppression implements Diagnostics {
+      */
+     private boolean isSuppressedByAnnotated(@NotNull Diagnostic diagnostic, @NotNull JetAnnotated annotated, int debugDepth) {
+         if (LOG.isDebugEnabled()) {
+-            LOG.debug("Annotated: ", annotated.getName());
+-            LOG.debug("Depth: ", debugDepth);
+-            LOG.debug("Cache size: ", suppressors.size(), "\n");
++            LOG.debug("Annotated: " + annotated.getName());
++            LOG.debug("Depth: " + debugDepth);
++            LOG.debug("Cache size: " + suppressors.size() + "\n");
+         }
+ 
+         Suppressor suppressor = getOrCreateSuppressor(annotated);
+@@ -187,10 +195,10 @@ public class DiagnosticsWithSuppression implements Diagnostics {
+                 continue;
+             }
+ 
+-            if (!suppressClass.equals(annotationDescriptor.getType().getConstructor().getDeclarationDescriptor())) continue;
++            if (!SuppressAnnotation.DESCRIPTOR.equals(annotationDescriptor.getType().getConstructor().getDeclarationDescriptor())) continue;
+ 
+             Map<ValueParameterDescriptor, CompileTimeConstant<?>> arguments = annotationDescriptor.getAllValueArguments();
+-            CompileTimeConstant<?> value = arguments.get(suppressParameter);
++            CompileTimeConstant<?> value = arguments.get(SuppressAnnotation.PARAMETER);
+             if (value instanceof ArrayValue) {
+                 ArrayValue arrayValue = (ArrayValue) value;
+                 List<CompileTimeConstant<?>> values = arrayValue.getValue();
+diff --git a/compiler/frontend/src/org/jetbrains/jet/lang/resolve/OverrideResolver.java b/compiler/frontend/src/org/jetbrains/jet/lang/resolve/OverrideResolver.java
+index 8deee04b2..8ebebf444 100644
+--- a/compiler/frontend/src/org/jetbrains/jet/lang/resolve/OverrideResolver.java
++++ b/compiler/frontend/src/org/jetbrains/jet/lang/resolve/OverrideResolver.java
+@@ -73,7 +73,7 @@ public class OverrideResolver {
+         Set<ClassDescriptorWithResolutionScopes> ourClasses = new HashSet<ClassDescriptorWithResolutionScopes>(c.getClasses().values());
+         Set<ClassifierDescriptor> processed = new HashSet<ClassifierDescriptor>();
+ 
+-        for (MutableClassDescriptorLite klass : ContainerUtil.reverse(c.getClassesTopologicalOrder())) {
++        for (MutableClassDescriptorLite klass : com.google.common.collect.Lists.reverse(c.getClassesTopologicalOrder())) {
+             if (klass instanceof MutableClassDescriptor && ourClasses.contains(klass)) {
+                 generateOverridesAndDelegationInAClass((MutableClassDescriptor) klass, processed, ourClasses);
+ 
+diff --git a/compiler/frontend/src/org/jetbrains/jet/lang/resolve/lazy/ResolveSession.java b/compiler/frontend/src/org/jetbrains/jet/lang/resolve/lazy/ResolveSession.java
+index d923457cc..d50029b77 100644
+--- a/compiler/frontend/src/org/jetbrains/jet/lang/resolve/lazy/ResolveSession.java
++++ b/compiler/frontend/src/org/jetbrains/jet/lang/resolve/lazy/ResolveSession.java
+@@ -23,6 +23,7 @@ import com.intellij.psi.util.PsiTreeUtil;
+ import com.intellij.util.Function;
+ import com.intellij.util.containers.ContainerUtil;
+ import jet.Function0;
++import jet.Function1;
+ import org.jetbrains.annotations.NotNull;
+ import org.jetbrains.annotations.Nullable;
+ import org.jetbrains.jet.context.GlobalContextImpl;
+@@ -127,7 +128,7 @@ public class ResolveSession implements KotlinCodeAnalyzer {
+ 
+         this.classifierAliases = NO_ALIASES;
+ 
+-        this.packages = storageManager.createMemoizedFunctionWithNullableValues(new MemoizedFunctionToNullable<FqName, LazyPackageDescriptor>() {
++        this.packages = storageManager.createMemoizedFunctionWithNullableValues(new Function1<FqName, LazyPackageDescriptor>() {
+             @Nullable
+             @Override
+             public LazyPackageDescriptor invoke(FqName fqName) {
+diff --git a/compiler/frontend/src/org/jetbrains/jet/lang/types/expressions/ClosureExpressionsTypingVisitor.java b/compiler/frontend/src/org/jetbrains/jet/lang/types/expressions/ClosureExpressionsTypingVisitor.java
+index 3d4268893..1b7d6fe76 100644
+--- a/compiler/frontend/src/org/jetbrains/jet/lang/types/expressions/ClosureExpressionsTypingVisitor.java
++++ b/compiler/frontend/src/org/jetbrains/jet/lang/types/expressions/ClosureExpressionsTypingVisitor.java
+@@ -319,7 +319,7 @@ public class ClosureExpressionsTypingVisitor extends ExpressionTypingVisitor {
+         JetBlockExpression bodyExpression = functionLiteral.getBodyExpression();
+         assert bodyExpression != null;
+ 
+-        JetScope functionInnerScope = FunctionDescriptorUtil.getFunctionInnerScope(context.scope, functionDescriptor, context.trace);
++        JetScope functionInnerScope = org.jetbrains.jet.lang.resolve.FunctionDescriptorUtil.getFunctionInnerScope(context.scope, functionDescriptor, context.trace);
+         JetTypeReference returnTypeRef = functionLiteral.getReturnTypeRef();
+         JetType declaredReturnType = null;
+         if (returnTypeRef != null) {
+diff --git a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/JetCodeBlockModificationListener.java b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/JetCodeBlockModificationListener.java
+index 21572c862..ad9391b52 100644
+--- a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/JetCodeBlockModificationListener.java
++++ b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/JetCodeBlockModificationListener.java
+@@ -56,7 +56,7 @@ public class JetCodeBlockModificationListener implements PsiTreeChangePreprocess
+ 
+             case CHILDREN_CHANGED:
+                 // general childrenChanged() event after each change
+-                if (!event.isGenericChange()) {
++                if (!event.isGenericChildrenChange()) {
+                     processChange(event.getParent(), event.getParent(), null);
+                 }
+                 break;
+diff --git a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinJavaFileStubProvider.java b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinJavaFileStubProvider.java
+index 6c9d81c80..0605544b7 100644
+--- a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinJavaFileStubProvider.java
++++ b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinJavaFileStubProvider.java
+@@ -37,7 +37,6 @@ import com.intellij.psi.util.CachedValueProvider;
+ import com.intellij.psi.util.PsiModificationTracker;
+ import com.intellij.psi.util.PsiTreeUtil;
+ import com.intellij.testFramework.LightVirtualFile;
+-import com.intellij.util.containers.ContainerUtil;
+ import com.intellij.util.containers.Stack;
+ import org.jetbrains.annotations.NotNull;
+ import org.jetbrains.annotations.Nullable;
+@@ -57,6 +56,7 @@ import org.jetbrains.jet.lang.types.lang.InlineUtil;
+ 
+ import java.util.Collection;
+ import java.util.Collections;
++import java.util.HashMap;
+ import java.util.Map;
+ 
+ public class KotlinJavaFileStubProvider<T extends WithFileStub> implements CachedValueProvider<T> {
+@@ -147,7 +147,8 @@ public class KotlinJavaFileStubProvider<T extends WithFileStub> implements Cache
+                         String jvmInternalName = CodegenBinding.getJvmInternalName(bindingContext, classDescriptor);
+                         Collection<ClassDescriptor> allInnerClasses = CodegenBinding.getAllInnerClasses(bindingContext, classDescriptor);
+ 
+-                        Map<JetClassOrObject, InnerKotlinClassLightClassData> innerClassesMap = ContainerUtil.newHashMap();
++                        Map<JetClassOrObject, InnerKotlinClassLightClassData> innerClassesMap =
++                                new HashMap<JetClassOrObject, InnerKotlinClassLightClassData>();
+                         for (ClassDescriptor innerClassDescriptor : allInnerClasses) {
+                             JetClassOrObject innerClass = (JetClassOrObject) BindingContextUtils.descriptorToDeclaration(
+                                     bindingContext, innerClassDescriptor
+@@ -372,4 +373,4 @@ public class KotlinJavaFileStubProvider<T extends WithFileStub> implements Cache
+         GenerationState.GenerateClassFilter getGenerateClassFilter();
+         void generate(@NotNull GenerationState state, @NotNull Collection<JetFile> files);
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinLightClassForExplicitDeclaration.java b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinLightClassForExplicitDeclaration.java
+index 33d68b13f..428957d37 100644
+--- a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinLightClassForExplicitDeclaration.java
++++ b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinLightClassForExplicitDeclaration.java
+@@ -158,7 +158,7 @@ public class KotlinLightClassForExplicitDeclaration extends KotlinWrappingLightC
+             }
+ 
+             if (createWrapper) {
+-                return new LightMethod(myManager, method, containingClass, JetLanguage.INSTANCE) {
++                return new LightMethod(myManager, method, containingClass) {
+                     @Override
+                     public PsiElement getParent() {
+                         return getContainingClass();
+diff --git a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinLightClassForPackage.java b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinLightClassForPackage.java
+index a32b81d39..36542cfe9 100644
+--- a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinLightClassForPackage.java
++++ b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinLightClassForPackage.java
+@@ -217,7 +217,6 @@ public class KotlinLightClassForPackage extends KotlinWrappingLightClass impleme
+     }
+ 
+     @NotNull
+-    @Override
+     public List<PsiClass> getOwnInnerClasses() {
+         return Collections.emptyList();
+     }
+diff --git a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinLightMethodForDeclaration.kt b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinLightMethodForDeclaration.kt
+index 762796882..6c4752b3b 100644
+--- a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinLightMethodForDeclaration.kt
++++ b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinLightMethodForDeclaration.kt
+@@ -34,9 +34,6 @@ import com.intellij.psi.util.PsiModificationTracker
+ import com.intellij.psi.util.CachedValueProvider
+ import com.intellij.psi.util.CachedValue
+ import com.intellij.psi.PsiTypeParameterList
+-import org.jetbrains.jet.lang.psi.JetPropertyAccessor
+-import org.jetbrains.jet.lang.psi.psiUtil.getParentByType
+-import org.jetbrains.jet.lang.psi.JetProperty
+ import com.intellij.psi.PsiTypeParameter
+ import org.jetbrains.jet.lang.psi.JetClassOrObject
+ import com.intellij.psi.impl.light.LightTypeParameterListBuilder
+@@ -46,31 +43,34 @@ public class KotlinLightMethodForDeclaration(
+ ): LightMethod(manager, delegate, containingClass), KotlinLightMethod {
+ 
+     private val paramsList: CachedValue<PsiParameterList> by Delegates.blockingLazy {
+-        val cacheManager = CachedValuesManager.getManager(delegate.getProject())
+-        cacheManager.createCachedValue<PsiParameterList>({
+-            val parameterBuilder = LightParameterListBuilder(getManager(), JetLanguage.INSTANCE)
++        val cacheManager = CachedValuesManager.getManager(delegate.getProject())!!
++        cacheManager.createCachedValue<PsiParameterList>(object : CachedValueProvider<PsiParameterList> {
++            override fun compute(): CachedValueProvider.Result<PsiParameterList> {
++                val parameterBuilder = LightParameterListBuilder(getManager()!!, JetLanguage.INSTANCE)
+ 
+-            for ((index, parameter) in delegate.getParameterList().getParameters().withIndices()) {
+-                parameterBuilder.addParameter(KotlinLightParameter(parameter, index, this))
+-            }
++                for ((index, parameter) in delegate.getParameterList().getParameters().withIndices()) {
++                    parameterBuilder.addParameter(KotlinLightParameter(parameter, index, this@KotlinLightMethodForDeclaration))
++                }
+ 
+-            CachedValueProvider.Result.create(parameterBuilder, PsiModificationTracker.OUT_OF_CODE_BLOCK_MODIFICATION_COUNT)
+-        }, false)
++                val parameterList: PsiParameterList = parameterBuilder
++                return CachedValueProvider.Result.create(parameterList, PsiModificationTracker.OUT_OF_CODE_BLOCK_MODIFICATION_COUNT)!!
++            }
++        }, false)!!
+     }
+ 
+     private val typeParamsList: CachedValue<PsiTypeParameterList> by Delegates.blockingLazy {
+-        val cacheManager = CachedValuesManager.getManager(delegate.getProject())
+-        cacheManager.createCachedValue<PsiTypeParameterList>({
+-            val declaration = if (origin is JetPropertyAccessor) origin.getParentByType(javaClass<JetProperty>()) else origin
+-
+-            val list = if (origin is JetClassOrObject) {
+-                LightTypeParameterListBuilder(getManager(), getLanguage())
++        val cacheManager = CachedValuesManager.getManager(delegate.getProject())!!
++        cacheManager.createCachedValue<PsiTypeParameterList>(object : CachedValueProvider<PsiTypeParameterList> {
++            override fun compute(): CachedValueProvider.Result<PsiTypeParameterList> {
++                val list: PsiTypeParameterList = if (origin is JetClassOrObject) {
++                    LightTypeParameterListBuilder(getManager()!!, getLanguage())
++                }
++                else {
++                    LightClassUtil.buildLightTypeParameterList(this@KotlinLightMethodForDeclaration, origin)!!
++                }
++                return CachedValueProvider.Result.create(list, PsiModificationTracker.OUT_OF_CODE_BLOCK_MODIFICATION_COUNT)!!
+             }
+-            else {
+-                LightClassUtil.buildLightTypeParameterList(this@KotlinLightMethodForDeclaration, origin)
+-            }
+-            CachedValueProvider.Result.create(list, PsiModificationTracker.OUT_OF_CODE_BLOCK_MODIFICATION_COUNT)
+-        }, false)
++        }, false)!!
+     }
+ 
+     override fun getNavigationElement() : PsiElement = origin
+@@ -100,8 +100,10 @@ public class KotlinLightMethodForDeclaration(
+     override fun getParameterList(): PsiParameterList = paramsList.getValue()!!
+ 
+     override fun getTypeParameterList(): PsiTypeParameterList? = typeParamsList.getValue()
+-    override fun getTypeParameters(): Array<PsiTypeParameter> =
+-            getTypeParameterList()?.let { it.getTypeParameters() } ?: PsiTypeParameter.EMPTY_ARRAY
++    override fun getTypeParameters(): Array<PsiTypeParameter> {
++        val parameterList = getTypeParameterList()
++        return if (parameterList != null) parameterList.getTypeParameters()!! else PsiTypeParameter.EMPTY_ARRAY
++    }
+ 
+     override fun copy(): PsiElement {
+         return KotlinLightMethodForDeclaration(getManager()!!, delegate, origin.copy() as JetDeclaration, getContainingClass()!!)
+diff --git a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/LightClassUtil.java b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/LightClassUtil.java
+index 19ddcbce7..1f49d04ca 100644
+--- a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/LightClassUtil.java
++++ b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/LightClassUtil.java
+@@ -22,7 +22,6 @@ import com.intellij.openapi.progress.ProcessCanceledException;
+ import com.intellij.openapi.project.Project;
+ import com.intellij.openapi.util.Comparing;
+ import com.intellij.openapi.util.io.FileUtil;
+-import com.intellij.openapi.vfs.StandardFileSystems;
+ import com.intellij.openapi.vfs.VirtualFile;
+ import com.intellij.psi.*;
+ import com.intellij.psi.impl.java.stubs.PsiClassStub;
+@@ -93,7 +92,7 @@ public class LightClassUtil {
+             if (ApplicationManager.getApplication().isUnitTestMode()) {
+                 // HACK: Temp code. Get built-in files from the sources when running from test.
+                 try {
+-                    return new URL(StandardFileSystems.FILE_PROTOCOL, "",
++                    return new URL("file", "",
+                                    FileUtil.toSystemIndependentName(BUILT_INS_SRC_DIR.getAbsolutePath()));
+                 }
+                 catch (MalformedURLException e) {
+diff --git a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/StubClassBuilder.java b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/StubClassBuilder.java
+index 647f1de85..a5ba9224e 100644
+--- a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/StubClassBuilder.java
++++ b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/StubClassBuilder.java
+@@ -76,7 +76,7 @@ public class StubClassBuilder extends ClassBuilder {
+             @NotNull String[] interfaces
+     ) {
+         assert v == null : "defineClass() called twice?";
+-        v = new StubBuildingVisitor<Object>(null, EMPTY_STRATEGY, parent, access, null);
++        v = new StubBuildingVisitor<Object>(null, EMPTY_STRATEGY, parent, access);
+ 
+         super.defineClass(origin, version, access, name, signature, superName, interfaces);
+ 
+diff --git a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/light/LightField.java b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/light/LightField.java
+index 0205398a8..944853667 100644
+--- a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/light/LightField.java
++++ b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/light/LightField.java
+@@ -82,6 +82,11 @@ public class LightField extends LightElement implements PsiField {
+         return myField.getType();
+     }
+ 
++    @Override
++    public PsiType getTypeNoResolve() {
++        return myField.getTypeNoResolve();
++    }
++
+     @Override
+     public PsiTypeElement getTypeElement() {
+         return myField.getTypeElement();
+diff --git a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/light/LightParameter.java b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/light/LightParameter.java
+index 73d29e3ee..4d4725e91 100644
+--- a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/light/LightParameter.java
++++ b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/light/LightParameter.java
+@@ -45,6 +45,11 @@ public class LightParameter extends LightVariableBuilder<LightVariableBuilder> i
+         return myDeclarationScope;
+     }
+ 
++    @Override
++    public PsiAnnotation[] getAnnotations() {
++        return getModifierList().getAnnotations();
++    }
++
+     @Override
+     public void accept(@NotNull PsiElementVisitor visitor) {
+         if (visitor instanceof JavaElementVisitor) {
+diff --git a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/light/LightVariableBuilder.java b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/light/LightVariableBuilder.java
+index 6e756828e..3c3746412 100644
+--- a/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/light/LightVariableBuilder.java
++++ b/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/light/LightVariableBuilder.java
+@@ -89,6 +89,11 @@ public class LightVariableBuilder<T extends LightVariableBuilder> extends LightE
+         return myName;
+     }
+ 
++    @Override
++    public PsiType getTypeNoResolve() {
++        return myType;
++    }
++
+     @Override
+     public PsiTypeElement getTypeElement() {
+         return null;
+diff --git a/core/descriptor.loader.java/src/org/jetbrains/jet/lang/resolve/java/lazy/descriptors/LazyJavaClassMemberScope.kt b/core/descriptor.loader.java/src/org/jetbrains/jet/lang/resolve/java/lazy/descriptors/LazyJavaClassMemberScope.kt
+index 03874431a..1ce60dd47 100644
+--- a/core/descriptor.loader.java/src/org/jetbrains/jet/lang/resolve/java/lazy/descriptors/LazyJavaClassMemberScope.kt
++++ b/core/descriptor.loader.java/src/org/jetbrains/jet/lang/resolve/java/lazy/descriptors/LazyJavaClassMemberScope.kt
+@@ -73,7 +73,7 @@ public class LazyJavaClassMemberScope(
+     }
+ 
+     private fun resolveConstructor(constructor: JavaMethod, classDescriptor: ClassDescriptor, isStaticClass: Boolean): ConstructorDescriptor {
+-        val constructorDescriptor = ConstructorDescriptorImpl(classDescriptor, Annotations.EMPTY, isPrimary = false)
++        val constructorDescriptor = ConstructorDescriptorImpl(classDescriptor, Annotations.EMPTY, false)
+ 
+         val valueParameters = resolveValueParameters(c, constructorDescriptor, constructor.getValueParameters())
+         val effectiveSignature = c.externalSignatureResolver.resolveAlternativeMethodSignature(
+@@ -104,7 +104,7 @@ public class LazyJavaClassMemberScope(
+             return null
+ 
+         val classDescriptor = getContainingDeclaration()
+-        val constructorDescriptor = ConstructorDescriptorImpl(classDescriptor, Annotations.EMPTY, isPrimary = true)
++        val constructorDescriptor = ConstructorDescriptorImpl(classDescriptor, Annotations.EMPTY, true)
+         val typeParameters = classDescriptor.getTypeConstructor().getParameters()
+         val valueParameters = if (isAnnotation) createAnnotationConstructorParameters(constructorDescriptor)
+                               else Collections.emptyList<ValueParameterDescriptor>()
+diff --git a/core/descriptor.loader.java/src/org/jetbrains/jet/lang/resolve/java/lazy/descriptors/LazyJavaTypeParameterDescriptor.kt b/core/descriptor.loader.java/src/org/jetbrains/jet/lang/resolve/java/lazy/descriptors/LazyJavaTypeParameterDescriptor.kt
+index f173d9e6f..1efe40941 100644
+--- a/core/descriptor.loader.java/src/org/jetbrains/jet/lang/resolve/java/lazy/descriptors/LazyJavaTypeParameterDescriptor.kt
++++ b/core/descriptor.loader.java/src/org/jetbrains/jet/lang/resolve/java/lazy/descriptors/LazyJavaTypeParameterDescriptor.kt
+@@ -33,10 +33,10 @@ class LazyJavaTypeParameterDescriptor(
+ ) : AbstractLazyTypeParameterDescriptor(
+         c.storageManager,
+         containingDeclaration,
+-        name = javaTypeParameter.getName(),
+-        variance = Variance.INVARIANT,
+-        isReified = false,
+-        index = javaTypeParameter.getIndex()
++        javaTypeParameter.getName(),
++        Variance.INVARIANT,
++        false,
++        javaTypeParameter.getIndex()
+ ) {
+ 
+     override fun resolveUpperBounds(): Set<JetType> {
+diff --git a/core/descriptor.loader.java/src/org/jetbrains/jet/lang/resolve/java/lazy/types/LazyJavaTypeResolver.kt b/core/descriptor.loader.java/src/org/jetbrains/jet/lang/resolve/java/lazy/types/LazyJavaTypeResolver.kt
+index 0fa9b0381..73305dafb 100644
+--- a/core/descriptor.loader.java/src/org/jetbrains/jet/lang/resolve/java/lazy/types/LazyJavaTypeResolver.kt
++++ b/core/descriptor.loader.java/src/org/jetbrains/jet/lang/resolve/java/lazy/types/LazyJavaTypeResolver.kt
+@@ -42,7 +42,7 @@ import org.jetbrains.jet.lang.resolve.java.structure.JavaMethod
+ import java.util.HashSet
+ import org.jetbrains.jet.lang.types.checker.JetTypeChecker
+ 
+-private val LOG = Logger.getInstance(javaClass<LazyJavaTypeResolver>())
++private val LOG = Logger.getInstance("#org.jetbrains.jet.lang.resolve.java.lazy.types.LazyJavaTypeResolver")
+ 
+ class LazyJavaTypeResolver(
+         private val c: LazyJavaResolverContext,
+@@ -248,7 +248,7 @@ class LazyJavaTypeResolver(
+                 is JavaClass,
+                 null -> attr.howThisTypeIsUsed !in setOf(TYPE_ARGUMENT, SUPERTYPE_ARGUMENT, SUPERTYPE)
+                 else -> {
+-                    LOG.error("Unknown classifier: ${classifier()}")
++                    LOG!!.error("Unknown classifier: ${classifier()}")
+                     true
+                 }
+             }
+@@ -282,4 +282,4 @@ fun TypeUsage.toAttributes() = object : JavaTypeAttributes {
+     override val howThisTypeIsUsedAccordingToAnnotations: TypeUsage
+             get() = howThisTypeIsUsed
+     override val isMarkedNotNull: Boolean = false
+-}
+\ No newline at end of file
++}
+diff --git a/core/descriptors/src/org/jetbrains/jet/lang/descriptors/impl/AbstractClassDescriptor.java b/core/descriptors/src/org/jetbrains/jet/lang/descriptors/impl/AbstractClassDescriptor.java
+index 16792c9af..41b4e7469 100644
+--- a/core/descriptors/src/org/jetbrains/jet/lang/descriptors/impl/AbstractClassDescriptor.java
++++ b/core/descriptors/src/org/jetbrains/jet/lang/descriptors/impl/AbstractClassDescriptor.java
+@@ -96,13 +96,13 @@ public abstract class AbstractClassDescriptor implements ClassDescriptor {
+     @NotNull
+     @Override
+     public JetScope getUnsubstitutedInnerClassesScope() {
+-        return unsubstitutedInnerClassesScope.invoke();
++        return (JetScope) ((Function0) unsubstitutedInnerClassesScope).invoke();
+     }
+ 
+     @NotNull
+     @Override
+     public ReceiverParameterDescriptor getThisAsReceiverParameter() {
+-        return thisAsReceiverParameter.invoke();
++        return (ReceiverParameterDescriptor) ((Function0) thisAsReceiverParameter).invoke();
+     }
+ 
+     @NotNull
+@@ -135,7 +135,7 @@ public abstract class AbstractClassDescriptor implements ClassDescriptor {
+     @NotNull
+     @Override
+     public JetType getDefaultType() {
+-        return defaultType.invoke();
++        return (JetType) ((Function0) defaultType).invoke();
+     }
+ 
+     @Override
+diff --git a/core/descriptors/src/org/jetbrains/jet/lang/resolve/name/FqNameUnsafe.java b/core/descriptors/src/org/jetbrains/jet/lang/resolve/name/FqNameUnsafe.java
+index dca26fd07..00f960fee 100644
+--- a/core/descriptors/src/org/jetbrains/jet/lang/resolve/name/FqNameUnsafe.java
++++ b/core/descriptors/src/org/jetbrains/jet/lang/resolve/name/FqNameUnsafe.java
+@@ -256,7 +256,7 @@ public final class FqNameUnsafe extends FqNameBase {
+ 
+     @NotNull
+     public static FqNameUnsafe fromSegments(@NotNull List<Name> names) {
+-        String fqName = StringUtil.join(names, ".");
++        String fqName = com.google.common.base.Joiner.on(".").join(names);
+         return new FqNameUnsafe(fqName);
+     }
+ 
+diff --git a/core/util.runtime/src/org/jetbrains/jet/storage/LockBasedStorageManager.java b/core/util.runtime/src/org/jetbrains/jet/storage/LockBasedStorageManager.java
+index adc287177..e7725dd34 100644
+--- a/core/util.runtime/src/org/jetbrains/jet/storage/LockBasedStorageManager.java
++++ b/core/util.runtime/src/org/jetbrains/jet/storage/LockBasedStorageManager.java
+@@ -258,7 +258,7 @@ public class LockBasedStorageManager implements StorageManager {
+         RECURSION_WAS_DETECTED
+     }
+ 
+-    private class LockBasedLazyValue<T> implements NullableLazyValue<T> {
++    private class LockBasedLazyValue<T> implements NullableLazyValue<T>, Function0<T> {
+ 
+         private final Function0<? extends T> computable;
+ 
+@@ -348,7 +348,7 @@ public class LockBasedStorageManager implements StorageManager {
+         }
+     }
+ 
+-    private class MapBasedMemoizedFunction<K, V> implements MemoizedFunctionToNullable<K, V> {
++    private class MapBasedMemoizedFunction<K, V> implements MemoizedFunctionToNullable<K, V>, Function1<K, V> {
+         private final ConcurrentMap<K, Object> cache;
+         private final Function1<? super K, ? extends V> compute;
+ 
+diff --git a/core/util.runtime/src/org/jetbrains/jet/storage/storage.kt b/core/util.runtime/src/org/jetbrains/jet/storage/storage.kt
+index e6e0e2ff8..1882b2f9c 100644
+--- a/core/util.runtime/src/org/jetbrains/jet/storage/storage.kt
++++ b/core/util.runtime/src/org/jetbrains/jet/storage/storage.kt
+@@ -16,14 +16,20 @@
+ 
+ package org.jetbrains.jet.storage
+ 
+-public trait MemoizedFunctionToNotNull<P, R: Any> : Function1<P, R>
+-public trait MemoizedFunctionToNullable<P, R: Any> : Function1<P, R?>
++public trait MemoizedFunctionToNotNull<P, R: Any> {
++    fun invoke(p1: P): R
++}
++public trait MemoizedFunctionToNullable<P, R: Any> {
++    fun invoke(p1: P): R?
++}
+ 
+-public trait NotNullLazyValue<T: Any> : Function0<T> {
++public trait NotNullLazyValue<T: Any> {
++    fun invoke(): T
+     fun isComputed(): Boolean
+ }
+ 
+-public trait NullableLazyValue<T: Any> : Function0<T?> {
++public trait NullableLazyValue<T: Any> {
++    fun invoke(): T?
+     fun isComputed(): Boolean
+ }
+ 

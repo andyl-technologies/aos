@@ -1,9 +1,10 @@
 //! Maintainer configuration for the release coordinator.
 //!
 //! One TOML document (`aos.release.maintainer-config/v1`) describes a single
-//! registry's maintainer machine: its work and fitness roots, both publication
-//! surfaces, the external signer and its role keys, TUF trust, native
-//! executors, the reviewer key, and the alert path. Leaf commands read only the
+//! registry's maintainer machine: its work and fitness roots, the public Git
+//! identity of registry release commits, both publication surfaces, the
+//! external signer and its role keys, TUF trust, native executors, the
+//! reviewer key, and the alert path. Leaf commands read only the
 //! sections they need (for example `step publish` reads a static surface's
 //! credentials and the `surface-receipt` signer); the porcelain reads all of it.
 //!
@@ -21,6 +22,10 @@
 //! restricted_operator_policy = "/etc/aos-release/restricted-operator-policy.md"
 //! tooling_closure = "/nix/store/...-aos"
 //! trusted_keys = ["release-evidence-v1=/etc/aos-release/keys/release-evidence-v1.pub"]
+//!
+//! [git]                                    # author and committer of registry release commits and tags
+//! name = "AOS Release"
+//! email = "release@aos.example"
 //!
 //! [surfaces.staging]
 //! kind = "hub"
@@ -114,6 +119,8 @@ pub(super) struct MaintainerConfig {
     /// Release-evidence verification keys as `KEY_ID=PATH`.
     #[serde(default)]
     pub(super) trusted_keys: Vec<String>,
+    /// Public Git identity of registry release commits and tags.
+    pub(super) git: GitIdentity,
     /// Staging and production publication surfaces.
     pub(super) surfaces: ConfiguredSurfaces,
     /// External signer and its per-role keys.
@@ -130,6 +137,45 @@ pub(super) struct MaintainerConfig {
     /// Alert delivery path exercised by `alert-delivery` fitness.
     #[serde(default)]
     pub(super) alert: Option<AlertConfig>,
+}
+
+/// Public author and committer of registry release commits and tags.
+///
+/// The identity is published in every registry commit, so it names the
+/// maintaining organization rather than a person or machine.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct GitIdentity {
+    /// Author and committer name.
+    pub(super) name: String,
+    /// Author and committer email address.
+    pub(super) email: String,
+}
+
+impl GitIdentity {
+    /// Rejects identities that Git would reject or could misparse.
+    fn validate(&self) -> Result<()> {
+        let unsafe_text = |value: &str| {
+            value.trim() != value
+                || value.is_empty()
+                || value
+                    .chars()
+                    .any(|character| character.is_control() || matches!(character, '<' | '>'))
+        };
+        if unsafe_text(&self.name) {
+            bail!("[git] name must be non-empty text without control characters or angle brackets");
+        }
+        if unsafe_text(&self.email)
+            || self.email.chars().any(char::is_whitespace)
+            || !self
+                .email
+                .split_once('@')
+                .is_some_and(|(local, domain)| !local.is_empty() && !domain.is_empty())
+        {
+            bail!("[git] email must be a single address such as release@example.org");
+        }
+        Ok(())
+    }
 }
 
 /// Both publication surfaces of the registry.
@@ -425,6 +471,7 @@ impl MaintainerConfig {
             );
         }
         aos_release::registry::registry_policy(&self.registry)?;
+        self.git.validate()?;
         for role in [SurfaceRole::Staging, SurfaceRole::Production] {
             self.surface(role).planned(role).validate()?;
         }
@@ -558,6 +605,10 @@ contributor_authorization = "/etc/aos-release/authorization.json"
 retention_policy = "/etc/aos-release/retention.md"
 restricted_operator_policy = "/etc/aos-release/operator.md"
 
+[git]
+name = "AOS Release"
+email = "release@aos.example"
+
 [surfaces.staging]
 kind = "hub"
 origin = "https://aos.staging.example"
@@ -621,6 +672,37 @@ keys = [
 
         let excessive = MINIMAL.replace("threshold = 2", "threshold = 3");
         assert!(MaintainerConfig::parse(excessive.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn requires_a_well_formed_git_identity() -> Result<()> {
+        let config = MaintainerConfig::parse(MINIMAL.as_bytes())?;
+        assert_eq!(config.git.name, "AOS Release");
+        assert_eq!(config.git.email, "release@aos.example");
+
+        let absent = MINIMAL.replace(
+            "[git]\nname = \"AOS Release\"\nemail = \"release@aos.example\"\n",
+            "",
+        );
+        assert!(MaintainerConfig::parse(absent.as_bytes()).is_err());
+
+        for (name, email) in [
+            ("", "release@aos.example"),
+            ("AOS <Release>", "release@aos.example"),
+            ("AOS Release", "release"),
+            ("AOS Release", "release @aos.example"),
+            ("AOS Release", "@aos.example"),
+        ] {
+            let invalid = MINIMAL.replace(
+                "name = \"AOS Release\"\nemail = \"release@aos.example\"",
+                &format!("name = \"{name}\"\nemail = \"{email}\""),
+            );
+            assert!(
+                MaintainerConfig::parse(invalid.as_bytes()).is_err(),
+                "{name} <{email}> must be rejected"
+            );
+        }
+        Ok(())
     }
 
     #[test]

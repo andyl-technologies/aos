@@ -100,6 +100,22 @@
         }
       ];
     };
+  # Blank GPT fixtures for the sealed data mirror's two members. The
+  # provisioning transaction seeds repart from each target's GPT UUID, so the
+  # disks carry a primary table with distinct GUIDs before first boot.
+  mkEmptyDiskGpt = name: diskGuid:
+    pkgs.runCommand "aos-measured-boot-empty-${name}-gpt" {
+      buildDeps = [pkgs.gptfdisk];
+    } ''
+        work_disk="$TMPDIR/empty-disk.img"
+        truncate -s 1024M "$work_disk"
+        ${pkgs.gptfdisk}/sbin/sgdisk --clear \
+          --disk-guid=${diskGuid} \
+          "$work_disk"
+      dd if="$work_disk" of="$out/disk.gpt" bs=512 count=34 status=none
+    '';
+  sealedMemberAGpt = mkEmptyDiskGpt "sealed-a" "22222222-3333-4444-8555-666666666661";
+  sealedMemberBGpt = mkEmptyDiskGpt "sealed-b" "22222222-3333-4444-8555-666666666662";
   recoveryMedia = effectiveSystem: let
     recoveryBundle = effectiveSystem.config.system.build.recoveryBundle;
   in
@@ -170,6 +186,20 @@ in {
           # boot corrupt its manifest and prove signature rejection.
           readOnly = false;
         }
+        # Two members of a TPM-sealed data mirror declared from host.nix. The
+        # array is created in the first-boot transaction, stays raw through
+        # Setup Mode, and is LUKS2-sealed by the same enforcing boot that
+        # seals /var.
+        {
+          serial = "aos-sealed-a";
+          sizeMiB = 1024;
+          source = "${sealedMemberAGpt}/disk.gpt";
+        }
+        {
+          serial = "aos-sealed-b";
+          sizeMiB = 1024;
+          source = "${sealedMemberBGpt}/disk.gpt";
+        }
       ];
       # Keep the control-plane unit in every evaluated /etc generation. The
       # package payload is image-bundled test infrastructure, not a runtime
@@ -178,6 +208,43 @@ in {
       metadata."host.nix" = ''
         { config, pkgs, ... }: {
           aos.apm.desiredPackages = [ "test-http-server" ];
+          aos.provisioning.storage = {
+            partitions = {
+              sealed-a = {
+                device = "/dev/disk/by-id/virtio-aos-sealed-a";
+                sizeMin = "512M";
+                sizeMax = "512M";
+              };
+              sealed-b = {
+                device = "/dev/disk/by-id/virtio-aos-sealed-b";
+                sizeMin = "512M";
+                sizeMax = "512M";
+              };
+            };
+            arrays.sealed = {
+              level = "raid1";
+              members = [ "sealed-a" "sealed-b" ];
+              encryption = "tpm2";
+            };
+          };
+          aos.filesystems.volumes.sealed.mountPoint = "/srv/sealed";
+
+          # Persistent homes on their own TPM-sealed root-disk partition: the
+          # volume mounts at aos.homes.directory and the /home bind follows it.
+          aos.provisioning.storage.partitions.home = {
+            sizeMin = "512M";
+            sizeMax = "512M";
+            encryption = "tpm2";
+          };
+          aos.filesystems.volumes.home.mountPoint = "/var/home";
+          aos.homes.enable = true;
+          aos.users.groups.alice = { gid = 1000; members = []; };
+          aos.users.users.alice = {
+            uid = 1000;
+            group = "alice";
+            shell = "''${pkgs.bash}/bin/bash";
+            description = "Sealed-home user";
+          };
           systemd.services.aos-test-agent = {
             description = "AOS VM Test Guest Agent";
             wantedBy = [ "multi-user.target" ];
@@ -955,6 +1022,13 @@ in {
       target.succeed(
           "test -e /dev/disk/by-partlabel/aos-provenance-operator-v1"
       )
+      # The sealed data mirror exists from the first-boot transaction but
+      # carries nothing yet: sealing waits for enforcing Secure Boot, and the
+      # wanted-only mount unit leaves the boot healthy without it.
+      target.succeed("test -e /dev/md/sealed")
+      target.fail(f"{CS} isLuks /dev/md/sealed")
+      assert mount_source("/srv/sealed") == "", "sealed volume mounted before it was sealed"
+      target.succeed("test ! -e /dev/mapper/sealed")
       target.succeed("test -s /var/lib/aos-provisioning/audit.json")
       measurement_unit = "aos-image-measurement-index.service"
       try:
@@ -1176,11 +1250,48 @@ in {
       sealed_luks_digest = hashlib.sha256(dump.encode()).hexdigest()
       src = var_source()
       assert src == "/dev/mapper/var", f"/var not on the LUKS mapper: {src!r}"
+
+      # The same enforcing boot sealed the data mirror: LUKS2 on the array,
+      # tagged so a plan-less boot can still recognise it, its own recovery
+      # key off the volume, and the filesystem mounted by label.
+      target.succeed(f"{CS} isLuks /dev/md/sealed")
+      sealed_export = target.succeed(
+          f"${pkgs.util-linux}/sbin/blkid -c /dev/null -p -o export /dev/md/sealed"
+      )
+      assert "LABEL=sealed" in sealed_export, sealed_export
+      assert "SUBSYSTEM=aos-volume" in sealed_export, sealed_export
+      sealed_metadata = json.loads(target.succeed(
+          f"{CS} luksDump --dump-json-metadata /dev/md/sealed"
+      ))
+      assert [
+          token["type"] for token in sealed_metadata["tokens"].values()
+      ].count("systemd-tpm2") == 1, sealed_metadata["tokens"]
+      target.succeed("test -s /run/aos-volume-recovery/sealed.key")
+      assert mount_source("/srv/sealed") == "/dev/mapper/sealed", (
+          "sealed data volume not mounted from its mapper"
+      )
+      target.succeed("echo sealed-probe > /srv/sealed/probe && sync")
+
+      # The home volume sealed in the same pass; /home is bound over it and
+      # the declared account's home was created on the sealed filesystem.
+      target.succeed(f"{CS} isLuks /dev/disk/by-partlabel/home")
+      target.succeed("test -s /run/aos-volume-recovery/home.key")
+      assert mount_source("/var/home") == "/dev/mapper/home", (
+          "sealed home volume not mounted from its mapper"
+      )
+      assert " /home " in target.succeed("cat /proc/mounts"), "/home is not bound"
+      home_owner = target.succeed("stat -c '%U:%G %a' /home/alice").strip()
+      assert home_owner == "alice:alice 700", home_owner
+      target.succeed(
+          "systemd-run --wait --quiet --uid=alice --gid=alice "
+          "bash -c 'echo home-probe > \"$HOME/probe\"' && sync"
+      )
+      target.succeed("test \"$(cat /var/home/alice/probe)\" = home-probe")
       seal_log = target.succeed(
           "journalctl -b -k --no-pager 2>&1"
       )
       assert "isLuks=N" in seal_log, seal_log
-      assert "unlocking /var via TPM2" not in seal_log, seal_log
+      assert "unlocking var from" not in seal_log, seal_log
       assert_recurrent_substrate("boot2")
 
       root_hash, root_data, root_hash_device, expected_pcr11 = assert_verified_root()
@@ -1230,7 +1341,7 @@ in {
           "journalctl -b -k --no-pager 2>&1"
       )
       assert "isLuks=Y" in unlock_log, unlock_log
-      assert "unlocking /var via TPM2" in unlock_log, unlock_log
+      assert "unlocking var from /dev/disk/by-partlabel/var via TPM2" in unlock_log, unlock_log
       assert "isLuks=N" not in unlock_log, unlock_log
       assert_recurrent_substrate("boot3")
       # The unlock above proves the signed policy extracted and compared in
@@ -1238,6 +1349,21 @@ in {
       assert_verified_root()
       assert_tamper_rejected(root_hash, root_data, root_hash_device)
       print("=== /var unsealed UNATTENDED via TPM2 across reboot ===")
+
+      # The data mirror unlocked unattended in the same pass and kept its
+      # contents.
+      assert mount_source("/srv/sealed") == "/dev/mapper/sealed", (
+          "sealed data volume did not unlock via TPM2 on reboot"
+      )
+      target.succeed("test \"$(cat /srv/sealed/probe)\" = sealed-probe")
+      assert "unlocking sealed from /dev/md/sealed via TPM2" in unlock_log, unlock_log
+
+      # So did the home volume, and the account's home came back with it.
+      assert mount_source("/var/home") == "/dev/mapper/home", (
+          "sealed home volume did not unlock via TPM2 on reboot"
+      )
+      assert "unlocking home from /dev/disk/by-partlabel/home via TPM2" in unlock_log, unlock_log
+      target.succeed("test \"$(cat /home/alice/probe)\" = home-probe")
 
       # ════ 5. A/B and counted-candidate PCR-12 qualification ════════
       # Populate the initially empty B data/hash partitions from the verified
@@ -1377,7 +1503,7 @@ in {
           [], expect_agent=False, settle=45
       )
       assert_external_cmdline_absent(transcript, "rdinit=/bin/sh")
-      assert "aos-var-crypt: TPM2 unlock failed" in transcript, transcript[-12000:]
+      assert "aos-var-crypt: TPM2 unlock of var failed" in transcript, transcript[-12000:]
       assert "AOS recovery>" not in transcript, transcript[-12000:]
 
       target.relaunch_with_smbios_oem_strings([], timeout=600)
@@ -1412,7 +1538,7 @@ in {
       )
       assert "Ignoring externally supplied command line because the UKI embeds one." in transcript, transcript[-12000:]
       assert_external_cmdline_absent(transcript, "rdinit=/bin/sh")
-      assert "aos-var-crypt: TPM2 unlock failed" in transcript, transcript[-12000:]
+      assert "aos-var-crypt: TPM2 unlock of var failed" in transcript, transcript[-12000:]
       assert "AOS recovery>" not in transcript, transcript[-12000:]
 
       target.relaunch_with_smbios_oem_strings([], timeout=600)
@@ -1473,7 +1599,7 @@ in {
       assert "Refusing recovery boot with an external command line." in transcript, transcript[-12000:]
       assert "Linux version" not in transcript, transcript[-12000:]
       assert "AOS recovery>" not in transcript, transcript[-12000:]
-      assert "aos-var-crypt: unlocking /var via TPM2" not in transcript, transcript[-12000:]
+      assert "aos-var-crypt: unlocking var from" not in transcript, transcript[-12000:]
 
       target.relaunch_with_smbios_oem_strings([], timeout=600)
       wait_multi_user("normal boot after refused recovery SMBIOS launch")
@@ -1508,7 +1634,7 @@ in {
               assert effective_cmdline.count(appended) == 1, effective_cmdline
           else:
               assert_external_cmdline_absent(transcript, appended)
-          assert "aos-var-crypt: TPM2 unlock failed" in transcript, transcript
+          assert "aos-var-crypt: TPM2 unlock of var failed" in transcript, transcript
           assert "AOS recovery>" not in transcript, transcript
 
           target.relaunch_with_smbios_oem_strings([], timeout=600)
@@ -1625,7 +1751,7 @@ in {
           transcript = reboot_recovery_console()
           assert "AOS signed recovery environment" in transcript, transcript[-12000:]
           assert "Persistent state is locked. Networking is disabled." in transcript, transcript[-12000:]
-          assert "unlocking /var via TPM2" not in transcript, transcript[-12000:]
+          assert "unlocking var from" not in transcript, transcript[-12000:]
           assert "Switching root" not in transcript, transcript[-12000:]
           assert "Reached target Network" not in transcript, transcript[-12000:]
           assert "Give root password for maintenance" not in transcript, transcript[-12000:]
@@ -1728,7 +1854,7 @@ in {
           in transcript
       ), transcript[-12000:]
       assert "Switching root" not in transcript, transcript[-12000:]
-      assert "unlocking /var via TPM2" not in transcript, transcript[-12000:]
+      assert "unlocking var from" not in transcript, transcript[-12000:]
       assert "Give root password for maintenance" not in transcript, transcript[-12000:]
 
       target.relaunch_with_smbios_oem_strings([], timeout=600)

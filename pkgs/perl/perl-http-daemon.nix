@@ -1,6 +1,7 @@
 ##! perl-http-daemon — Simple HTTP server class for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
   perl-clone,
@@ -13,7 +14,7 @@
 }: let
   version = "6.17";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-http-daemon";
     inherit version;
     src = fetchurl {

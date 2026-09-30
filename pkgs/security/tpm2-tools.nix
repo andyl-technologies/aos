@@ -63,6 +63,16 @@ in
             #elif defined __FreeBSD__ || defined __DragonFly__
                           ' lib/tpm2_systemdeps.h
 
+                          # These sources bypass the project compatibility
+                          # header and include Linux's endian.h directly.
+                          for source_file in \
+                            lib/tpm2_eventlog.c \
+                            lib/tpm2_eventlog_yaml.c \
+                            tools/misc/tpm2_checkquote.c; do
+                            grep -Fqx '#include <endian.h>' "$source_file"
+                            sed -i 's|#include <endian.h>|#include "tpm2_systemdeps.h"|' "$source_file"
+                          done
+
                           # These GNU ld hardening switches describe ELF
                           # relocation behavior and have no Mach-O equivalent.
                           # Keep every other upstream hardening check enabled.

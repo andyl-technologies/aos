@@ -34,6 +34,20 @@ in
               -e 's|xmlto xhtml-nochunks $<|xsltproc --nonet -o $@ ${buildPackages.docbook-xsl}/share/xml/docbook/stylesheet/docbook-xsl/xhtml/docbook.xsl $<|' \
               -e 's|xmlto man $<|xsltproc --nonet ${buildPackages.docbook-xsl}/share/xml/docbook/stylesheet/docbook-xsl/manpages/docbook.xsl $<|' \
               doc/Makefile
+            ${
+              if stdenv.hostPlatform.isDarwin
+              then ''
+                # libutil calls GifErrorString from libgif, which Darwin's
+                # linker requires as an explicit shared-library dependency.
+                sed -i \
+                  -e 's|$(LIBUTILSO): $(UOBJECTS) $(UHEADERS)|$(LIBUTILSO): $(UOBJECTS) $(UHEADERS) $(LIBGIFSO)|' \
+                  -e 's|$(UOBJECTS) -o $(LIBUTILSO)|$(UOBJECTS) $(LIBGIFSO) -o $(LIBUTILSO)|' \
+                  Makefile
+                grep -Fq '$(LIBUTILSO): $(UOBJECTS) $(UHEADERS) $(LIBGIFSO)' Makefile
+                grep -Fq '$(UOBJECTS) $(LIBGIFSO) -o $(LIBUTILSO)' Makefile
+              ''
+              else ""
+            }
             export XML_CATALOG_FILES="${buildPackages.docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml ${buildPackages.docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml"
           '';
         }

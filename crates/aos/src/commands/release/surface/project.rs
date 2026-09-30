@@ -60,6 +60,18 @@ pub(in crate::commands::release) struct Projection {
     pub(in crate::commands::release) manifest_path: String,
 }
 
+/// A composed surface whose additions were verified independently.
+///
+/// `step publish --surface` admits only the exact verified additions (TUF
+/// metadata, public manifest, release record); every other overlay file must
+/// carry the bytes the projection already places at that path.
+pub(in crate::commands::release) struct Overlay<'a> {
+    /// Root of the composed surface tree.
+    pub(in crate::commands::release) root: &'a Path,
+    /// Exact identities of the verified additions.
+    pub(in crate::commands::release) additions: &'a [CapturedFile],
+}
+
 /// A materialized surface tree that lives as long as this value.
 pub(in crate::commands::release) struct ProjectedSurface {
     _temporary: tempfile::TempDir,
@@ -257,18 +269,21 @@ fn narinfo_urls<'a>(
 /// The bundle is copied into a private snapshot and compared with the
 /// verified capture before any member moves, so source mutation between
 /// verification and publication cannot change the published bytes. `overlay`
-/// adds a composed surface (TUF metadata, release record); an overlay path
-/// that the projection also produces must carry identical bytes.
+/// adds a composed surface (TUF metadata, release record): each overlay file
+/// is either one exact verified addition or identical to the projected object
+/// at its path. The overlay is snapshotted too, so an addition that changed
+/// after verification is rejected.
 ///
 /// # Errors
 /// Returns an error when the bundle changed, a member is missing, the
-/// manifest path collides, or the overlay disagrees with the projection.
+/// manifest path collides, or the overlay carries an unverified object,
+/// lacks a verified addition, or disagrees with the projection.
 pub(in crate::commands::release) fn materialize(
     bundle: &Path,
     verified_files: &[CapturedFile],
     projection: &Projection,
     manifest_bytes: &[u8],
-    overlay: Option<&Path>,
+    overlay: Option<&Overlay<'_>>,
 ) -> Result<ProjectedSurface> {
     let temporary = tempfile::Builder::new()
         .prefix("aos-release-surface-")
@@ -297,15 +312,44 @@ pub(in crate::commands::release) fn materialize(
 
     if let Some(overlay) = overlay {
         let copy = temporary.path().join("overlay");
-        let files = capture::copy_ephemeral_surface_tree(overlay, &copy)?;
-        for file in files {
-            merge_overlay_file(&copy, &root, file.path.as_str())?;
-        }
+        let files = capture::copy_ephemeral_surface_tree(overlay.root, &copy)?;
+        admit_overlay(&copy, &root, &files, overlay.additions)?;
     }
     Ok(ProjectedSurface {
         _temporary: temporary,
         root,
     })
+}
+
+/// Installs the exact verified additions and checks every other overlay file.
+fn admit_overlay(
+    overlay: &Path,
+    root: &Path,
+    files: &[CapturedFile],
+    additions: &[CapturedFile],
+) -> Result<()> {
+    for addition in additions {
+        match files.iter().find(|file| file.path == addition.path) {
+            Some(file) if file == addition => {}
+            Some(_) => bail!(
+                "composed surface object {} changed after verification",
+                addition.path.as_str()
+            ),
+            None => bail!(
+                "composed surface lost its verified object {}",
+                addition.path.as_str()
+            ),
+        }
+    }
+    for file in files {
+        let relative = file.path.as_str();
+        let verified = additions.iter().any(|addition| addition.path == file.path);
+        if !verified && !root.join(relative).exists() {
+            bail!("composed surface contains an unverified object {relative}");
+        }
+        merge_overlay_file(overlay, root, relative)?;
+    }
+    Ok(())
 }
 
 fn merge_overlay_file(overlay: &Path, root: &Path, relative: &str) -> Result<()> {
@@ -476,6 +520,47 @@ mod tests {
         fs::write(overlay.join("other"), b"one")?;
         fs::write(root.join("other"), b"two")?;
         assert!(merge_overlay_file(&overlay, &root, "other").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn overlay_admits_only_exact_verified_additions() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let overlay = temp.path().join("overlay");
+        let root = temp.path().join("root");
+        fs::create_dir_all(overlay.join("tuf"))?;
+        fs::create_dir_all(&root)?;
+        fs::write(overlay.join("tuf/7.snapshot.json"), b"snapshot")?;
+        fs::write(overlay.join("HEAD"), b"head")?;
+        fs::write(root.join("HEAD"), b"head")?;
+        let verified = |bytes: &[u8]| -> Result<CapturedFile> {
+            Ok(CapturedFile {
+                path: BundlePath::parse("tuf/7.snapshot.json")?,
+                size_bytes: bytes.len() as u64,
+                sha256: Sha256Digest::of_bytes(bytes),
+            })
+        };
+        let files = |dir: &Path| capture::copy_ephemeral_surface_tree(dir, &temp.path().join("c"));
+
+        // An identical projected object and an exact addition are admitted.
+        let captured = files(&overlay)?;
+        fs::remove_dir_all(temp.path().join("c"))?;
+        admit_overlay(&overlay, &root, &captured, &[verified(b"snapshot")?])?;
+        assert_eq!(fs::read(root.join("tuf/7.snapshot.json"))?, b"snapshot");
+
+        // An addition whose bytes changed after verification is rejected.
+        let fresh = temp.path().join("fresh");
+        fs::create_dir_all(&fresh)?;
+        assert!(admit_overlay(&overlay, &fresh, &captured, &[verified(b"other")?]).is_err());
+
+        // An object that is neither verified nor projected is rejected.
+        fs::write(overlay.join("tuf/7.snapshot.json"), b"snapshot")?;
+        fs::write(overlay.join("tuf/unreviewed.json"), b"extra")?;
+        let captured = files(&overlay)?;
+        let fresh = temp.path().join("fresh-2");
+        fs::create_dir_all(&fresh)?;
+        fs::write(fresh.join("HEAD"), b"head")?;
+        assert!(admit_overlay(&overlay, &fresh, &captured, &[verified(b"snapshot")?]).is_err());
         Ok(())
     }
 }

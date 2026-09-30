@@ -5,6 +5,10 @@ Use the same checklist for every registry; each destination's
 [profile](qualification.md#profiles) determines its additional checks,
 observation time, and approvals.
 
+To publish only to the staging surface, without qualification, follow
+[publishing to staging only](#publishing-to-staging-only) below: it is the
+same procedure, stopped before production.
+
 Keep a copy with this release's operator records, outside the source checkout.
 Check an item only after its **Check when** condition is true. Beside the box,
 record your name, UTC time, and the log, output directory, or approval showing
@@ -49,6 +53,19 @@ release-evidence completion approvals. Every other destination records
 `complete` automatically when its final ring's channel advance and public
 read-back succeed.
 
+### Publishing to staging only
+
+There is no separate staging-only plan. To place a release on the staging
+surface for operator testing without qualifying it, complete sections 1 to 3
+and stop before [section 4](#4-publish-to-production). The staging
+destinations' `build` profile needs no qualification, review, or fitness
+attestation; the build's repeat check, an advisory disposition with no
+unresolved advisories, the signed cache, manifest, and TUF metadata, and a full
+public read-back are still required. The frozen plan already names the
+production destinations, so the same release can continue to production later
+with its actual qualification evidence. For an empty staging registry, perform
+only the signed staging bootstrap.
+
 ## 1. Prepare the release
 
 Complete this section before starting builds or requesting signatures.
@@ -73,7 +90,8 @@ Complete this section before starting builds or requesting signatures.
   `fitness_root` are private directories outside the source checkout, every
   signer role in the approved roster has a `[signer.roles.<role>]` table whose
   key IDs, verification identities, threshold, and provider revision match that
-  roster, and `tooling_closure` names the installed `aos`.
+  roster, `[git]` names the organization's public release identity for
+  registry commits, and `tooling_closure` names the installed `aos`.
   One configuration serves one registry; load only its credentials.
 
 - [ ] **Verify source and contributor authorization.** Use the protected source

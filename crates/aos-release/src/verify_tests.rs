@@ -208,6 +208,7 @@ pub(crate) fn release_fixture() -> anyhow::Result<ReleaseFixture> {
             contributor_authorization_digest: digest("authorization"),
         },
         packages: vec![PackagePlan {
+            platform_versions: BTreeMap::new(),
             name: "example".to_owned(),
             publication: Some(crate::inventory::PackagePublicationMetadata {
                 version: "1.0.0".to_owned(),
@@ -646,6 +647,54 @@ pub(crate) fn observations(
             })
         })
         .collect()
+}
+
+#[test]
+fn target_package_versions_bind_outputs_and_reject_unpublished_targets() -> anyhow::Result<()> {
+    let (mut plan, _) = qualification_fixture()?;
+    plan.packages[0]
+        .platform_versions
+        .insert(Platform::Aarch64Linux, "0.9.0".into());
+
+    let cell = plan.packages[0]
+        .platforms
+        .iter_mut()
+        .find(|cell| cell.platform == Platform::Aarch64Linux)
+        .unwrap();
+    let MatrixCell::Artifact { artifact } = &mut cell.decision else {
+        panic!("fixture requires a published Arm Linux package");
+    };
+    artifact.artifacts[0].derivation =
+        Some("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv".into());
+    artifact.artifacts[0].output = Some("out".into());
+    artifact.artifacts[0].store_path =
+        Some("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example".into());
+
+    let outputs = crate::build::planned_nix_outputs(&plan)?;
+    assert_eq!(outputs.values().next().unwrap().version, "0.9.0");
+    plan.validate()?;
+
+    // A target version equal to the default is not an override.
+    plan.packages[0]
+        .platform_versions
+        .insert(Platform::Aarch64Linux, "1.0.0".into());
+    assert!(plan.validate().is_err());
+
+    // A target version must name a publishable cell.
+    plan.packages[0]
+        .platform_versions
+        .insert(Platform::Aarch64Linux, "0.9.0".into());
+    plan.packages[0]
+        .platforms
+        .iter_mut()
+        .find(|cell| cell.platform == Platform::Aarch64Linux)
+        .unwrap()
+        .decision = MatrixCell::NotApplicable {
+        rule: "excluded-target".into(),
+        reason: "Target is not published".into(),
+    };
+    assert!(plan.validate().is_err());
+    Ok(())
 }
 
 #[test]

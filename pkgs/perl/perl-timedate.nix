@@ -1,12 +1,13 @@
 ##! perl-timedate — Date and time parsing modules for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
 }: let
   version = "2.33";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-timedate";
     inherit version;
     src = fetchurl {

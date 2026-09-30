@@ -510,6 +510,22 @@ fn publish_requires_a_destination_and_receipt_trust() {
         )
         .is_err()
     );
+
+    // A composed surface is admitted only against independent TUF root trust.
+    let composed = |extra: &[&'static str]| {
+        Cli::try_parse_from(base.iter().copied().chain(extra.iter().copied()))
+    };
+    assert!(composed(&["--surface", "composed"]).is_err());
+    assert!(composed(&["--trusted-root-key", "root=root.pub"]).is_err());
+    assert!(
+        composed(&[
+            "--surface",
+            "composed",
+            "--trusted-root-key",
+            "root=root.pub"
+        ])
+        .is_ok()
+    );
 }
 
 #[test]

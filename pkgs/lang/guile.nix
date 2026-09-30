@@ -20,6 +20,7 @@
   buildPackages,
 }: let
   version = "3.0.11";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
     pname = "guile";
@@ -32,8 +33,8 @@ in
 
     # Cross builds use the matching native Guile to compile Scheme sources.
     buildDeps =
-      [gnumake pkg-config gawk patch]
-      ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [buildPackages.guile];
+      [gnumake pkg-config gawk patch buildPackages.glibc-locales]
+      ++ lib.optional stdenv.isCross buildPackages.guile;
     # Linux cross GC exposes libatomic_ops in its link interface. Guile
     # links it directly, so retain its runtime path through reference scrubbing.
     runtimeDeps =
@@ -65,6 +66,15 @@ in
           # separate process. Give each process its own files during make -j.
           patch -p1 < ${./guile-patches/parallel-port-fixtures.patch}
 
+          # The R4RS suite loads a new definition into its own module. Mark
+          # that module nondeclarative so the compiled test sees the new value.
+          sed -i '/^(define-module (test-suite test-r4rs)$/a\  #:declarative? #f' \
+            test-suite/tests/r4rs.test
+
+          # The concurrent SRFI-42 suite also writes tmp1 in this directory.
+          # Keep the R4RS load fixture distinct from that suite's data.
+          sed -i 's/"tmp1"/"r4rs-tmp1"/g' test-suite/tests/r4rs.test
+
           # The Nix build filesystem may allocate the nominally sparse extent,
           # in which case SEEK_DATA correctly returns the current offset.
           sed -i '/"SEEK_DATA while in hole"/{n;s/4096/10/;}' \
@@ -76,6 +86,8 @@ in
       {
         name = "configure";
         script = ''
+          export LOCPATH=${buildPackages.glibc-locales}/lib/locale
+          export LC_ALL=C.UTF-8
           ./configure $configureFlags \
             --prefix="$out" \
             --with-libreadline-prefix=${readline}
@@ -88,47 +100,53 @@ in
       {
         name = "check";
         script =
-          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
-            # Build helpers select native Guile while cross-compiling. Runtime
-            # checks must instead load the new target interpreter and bytecode.
-            for helper in meta/guile meta/uninstalled-env meta/build-env; do
-              cp "$helper" "$helper.for-build"
-              sed -i 's/if test "yes" = "no"/if test "no" = "no"/g' "$helper"
-            done
-          ''
-          + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.system == "aarch64-linux") ''
-            # QEMU user mode deliberately ignores memory resource limits.
-            # The resource-limits package check runs these unchanged under a
-            # target kernel; running them here allocates without bound. Its
-            # forked signal-delivery check also requires target-kernel signal
-            # semantics that user-mode emulation does not preserve.
-            printf '\nTESTS := $(filter-out test-out-of-memory test-stack-overflow test-sigaction-fork,$(TESTS))\n' \
-              >> test-suite/standalone/Makefile
+          # Darwin target binaries cannot run on the Linux cross builder.
+          lib.optionalString (!isDarwinCross) (
+            lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+              # Build helpers select native Guile while cross-compiling. Runtime
+              # checks must instead load the new target interpreter and bytecode.
+              for helper in meta/guile meta/uninstalled-env meta/build-env; do
+                cp "$helper" "$helper.for-build"
+                sed -i 's/if test "yes" = "no"/if test "no" = "no"/g' "$helper"
+              done
+            ''
+            + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.system == "aarch64-linux") ''
+              # QEMU user mode deliberately ignores memory resource limits.
+              # The resource-limits package check runs these unchanged under a
+              # target kernel; running them here allocates without bound. Its
+              # forked signal-delivery check also requires target-kernel signal
+              # semantics that user-mode emulation does not preserve.
+              printf '\nTESTS := $(filter-out test-out-of-memory test-stack-overflow test-sigaction-fork,$(TESTS))\n' \
+                >> test-suite/standalone/Makefile
 
-            # User-mode vfork becomes fork, losing glibc's shared spawn errno;
-            # spawned native tools also report the build machine architecture.
-            # QEMU's plugin state also cannot survive the REPL server's fork.
-            # Run both suites in the same target-kernel check.
-            printf '\nTESTS := $(filter-out tests/posix.test tests/00-repl-server.test,$(TESTS))\n' \
-              >> test-suite/Makefile
-          ''
-          + ''
-            # Thread wakeup pipes need two descriptors each. Let the suite use
-            # the available descriptor budget without restricting its CPU set.
-            ulimit -S -n "$(ulimit -H -n)"
+              # User-mode vfork becomes fork, losing glibc's shared spawn errno;
+              # spawned native tools also report the build machine architecture.
+              # QEMU's plugin state also cannot survive the REPL server's fork.
+              # Run both suites in the same target-kernel check.
+              printf '\nTESTS := $(filter-out tests/posix.test tests/00-repl-server.test,$(TESTS))\n' \
+                >> test-suite/Makefile
+            ''
+            + ''
+              export LOCPATH=${buildPackages.glibc-locales}/lib/locale
+              export LC_ALL=C.UTF-8
 
-            $CONFIG_SHELL ./libtool --mode=link "$CC" -I. \
-              ${./guile-tests/high-wakeup-fd.c} libguile/libguile-3.0.la \
-              -o high-wakeup-fd
-            $CONFIG_SHELL ./meta/uninstalled-env ./high-wakeup-fd
+              # Thread wakeup pipes need two descriptors each. Let the suite use
+              # the available descriptor budget without restricting its CPU set.
+              ulimit -S -n "$(ulimit -H -n)"
 
-            make -j"$NIX_BUILD_CORES" check
-          ''
-          + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
-            for helper in meta/guile meta/uninstalled-env meta/build-env; do
-              mv "$helper.for-build" "$helper"
-            done
-          '';
+              $CONFIG_SHELL ./libtool --mode=link "$CC" -I. \
+                ${./guile-tests/high-wakeup-fd.c} libguile/libguile-3.0.la \
+                -o high-wakeup-fd
+              $CONFIG_SHELL ./meta/uninstalled-env ./high-wakeup-fd
+
+              make -j"$NIX_BUILD_CORES" check
+            ''
+            + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+              for helper in meta/guile meta/uninstalled-env meta/build-env; do
+                mv "$helper.for-build" "$helper"
+              done
+            ''
+          );
       }
       {
         name = "install";

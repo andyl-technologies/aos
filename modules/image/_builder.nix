@@ -201,7 +201,9 @@
       erofsCompressionLevel = system.config.aos.image.erofsCompressionLevel;
       extraClosures = system.config.aos.image.hostConfigClosures;
       kernelModulePackages = system.config.aos.kernel.modulePackages;
-      firmwarePackages = system.config.aos.kernel.firmwarePackages;
+      firmwarePackages =
+        lib.optionals system.config.aos.kernel.includeFirmware
+        system.config.aos.kernel.firmwarePackages;
       # Preserve the image-owned Secure Boot authority outside /nix/store.
       # The baked toplevel ceases to be a GC root after host configuration is
       # activated, while this copy remains protected by the immutable root.
@@ -477,6 +479,7 @@
   # role-bound external providers, and constructs the final disk bytes there.
   # Private material is intentionally neither an argument nor an environment
   # value of this derivation.
+  # The recipe pins native executables for the external Linux finalizer.
   unsignedAssembly = buildPackages.mkDerivation {
     pname = "aos-image-${name}-unsigned-assembly";
     inherit version;
@@ -543,14 +546,20 @@
             exit 1
           }
 
+          # External finalization builds the UKIs from this recipe, so carry
+          # the same root hash token that aos-uki adds for locally built UKIs.
+          root_hash=$(cat "$out/inputs/root.roothash")
+          kernel_params_a=$(printf '%s roothash=%s' ${lib.escapeShellArg kernelParams} "$root_hash")
+          kernel_params_b=$(printf '%s roothash=%s' ${lib.escapeShellArg kernelParamsB} "$root_hash")
+
           ${buildPackages.jq}/bin/jq -cS -n \
             --arg schema aos.image.assembly-recipe/v2 \
             --arg release ${lib.escapeShellArg version} \
             --arg platform ${lib.escapeShellArg targetPlatform.system} \
             --arg variant ${lib.escapeShellArg systemVariant} \
             --arg kernelRelease ${lib.escapeShellArg system.config.system.build.kernel.version} \
-            --arg kernelParams ${lib.escapeShellArg kernelParams} \
-            --arg kernelParamsB ${lib.escapeShellArg kernelParamsB} \
+            --arg kernelParams "$kernel_params_a" \
+            --arg kernelParamsB "$kernel_params_b" \
             --arg recoveryCmdline ${lib.escapeShellArg recoveryCmdline} \
             --argjson moduleAbi ${toString system.config.aos.system.moduleAbi} \
             --argjson recoveryAbi ${toString recovery.abi} \
@@ -562,22 +571,22 @@
             --arg secureBootRole ${lib.escapeShellArg sb.externalFinalization.secureBootRole} \
             --arg moduleRole ${lib.escapeShellArg sb.externalFinalization.moduleRole} \
             --arg pcrRole ${lib.escapeShellArg sb.externalFinalization.pcrRole} \
-            --arg ukify ${lib.escapeShellArg "${pkgs.systemd.tools}/bin/ukify"} \
-            --arg measure ${lib.escapeShellArg "${pkgs.systemd}/lib/systemd/systemd-measure"} \
-            --arg objcopy ${lib.escapeShellArg "${pkgs.binutils}/bin/objcopy"} \
-            --arg mkfsErofs ${lib.escapeShellArg "${pkgs.erofs-utils}/bin/mkfs.erofs"} \
-            --arg gccLib ${lib.escapeShellArg "${pkgs.gcc-libs}/lib"} \
-            --arg fsckErofs ${lib.escapeShellArg "${pkgs.erofs-utils}/bin/fsck.erofs"} \
-            --arg veritysetup ${lib.escapeShellArg "${pkgs.cryptsetup}/sbin/veritysetup"} \
-            --arg qemuImg ${lib.escapeShellArg "${pkgs.qemu}/bin/qemu-img"} \
-            --arg sfdisk ${lib.escapeShellArg "${pkgs.util-linux}/sbin/sfdisk"} \
-            --arg mkfsVfat ${lib.escapeShellArg "${pkgs.dosfstools}/sbin/mkfs.vfat"} \
-            --arg mcopy ${lib.escapeShellArg "${pkgs.mtools}/bin/mcopy"} \
-            --arg zstd ${lib.escapeShellArg "${pkgs.zstd}/bin/zstd"} \
-            --arg cpio ${lib.escapeShellArg "${pkgs.cpio}/bin/cpio"} \
-            --arg tar ${lib.escapeShellArg "${pkgs.tar}/bin/tar"} \
-            --arg openssl ${lib.escapeShellArg "${pkgs.openssl}/bin/openssl"} \
-            --arg sbverify ${lib.escapeShellArg "${pkgs.sbsigntools}/bin/sbverify"} \
+            --arg ukify ${lib.escapeShellArg "${buildPackages.systemd.tools}/bin/ukify"} \
+            --arg measure ${lib.escapeShellArg "${buildPackages.systemd}/lib/systemd/systemd-measure"} \
+            --arg objcopy ${lib.escapeShellArg "${buildPackages.binutils}/bin/objcopy"} \
+            --arg mkfsErofs ${lib.escapeShellArg "${buildPackages.erofs-utils}/bin/mkfs.erofs"} \
+            --arg gccLib ${lib.escapeShellArg "${buildPackages.gcc-libs}/lib"} \
+            --arg fsckErofs ${lib.escapeShellArg "${buildPackages.erofs-utils}/bin/fsck.erofs"} \
+            --arg veritysetup ${lib.escapeShellArg "${buildPackages.cryptsetup}/sbin/veritysetup"} \
+            --arg qemuImg ${lib.escapeShellArg "${buildPackages.qemu}/bin/qemu-img"} \
+            --arg sfdisk ${lib.escapeShellArg "${buildPackages.util-linux}/sbin/sfdisk"} \
+            --arg mkfsVfat ${lib.escapeShellArg "${buildPackages.dosfstools}/sbin/mkfs.vfat"} \
+            --arg mcopy ${lib.escapeShellArg "${buildPackages.mtools}/bin/mcopy"} \
+            --arg zstd ${lib.escapeShellArg "${buildPackages.zstd}/bin/zstd"} \
+            --arg cpio ${lib.escapeShellArg "${buildPackages.cpio}/bin/cpio"} \
+            --arg tar ${lib.escapeShellArg "${buildPackages.tar}/bin/tar"} \
+            --arg openssl ${lib.escapeShellArg "${buildPackages.openssl}/bin/openssl"} \
+            --arg sbverify ${lib.escapeShellArg "${buildPackages.sbsigntools}/bin/sbverify"} \
             --arg diskGuid ${lib.escapeShellArg diskGuid} \
             --arg espGuid ${lib.escapeShellArg espGuid} \
             --arg rootGuid ${lib.escapeShellArg rootGuid} \
@@ -608,6 +617,8 @@
             --argjson maxInitrdMiB ${toString budgets.maxInitrdMiB} \
             --argjson maxUkiMiB ${toString budgets.maxUkiMiB} \
             --argjson maxDownloadMiB ${toString budgets.maxDownloadMiB} \
+            --argjson maxConvertedDownloadMiB ${toString budgets.maxConvertedDownloadMiB} \
+            --argjson maxRecoveryBundleMiB ${toString budgets.maxRecoveryBundleMiB} \
             '{schema_version:$schema, release:$release, platform:$platform,
               system_variant:$variant, kernel_release:$kernelRelease, module_abi:$moduleAbi,
               recovery_abi:$recoveryAbi, sbat_generation:$sbatGeneration,
@@ -629,7 +640,9 @@
                 efi_filenames:{fallback:$fallbackFilename,systemd_boot:$systemdFilename,
                   normal_uki:$ukiFilename}},
               budgets:{root_mib:$maxRootMiB,initrd_mib:$maxInitrdMiB,
-                uki_mib:$maxUkiMiB,download_mib:$maxDownloadMiB},
+                uki_mib:$maxUkiMiB,download_mib:$maxDownloadMiB,
+                converted_download_mib:$maxConvertedDownloadMiB,
+                recovery_bundle_mib:$maxRecoveryBundleMiB},
               tools:{
                 ukify:{executable:$ukify,environment:{}},
                 systemd_measure:{executable:$measure,environment:{}},

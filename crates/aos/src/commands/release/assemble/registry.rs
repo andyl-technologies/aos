@@ -13,6 +13,9 @@ use aos_release::plan::ReleasePlan;
 
 use super::{ArtifactAttributes, PayloadBuilder};
 
+/// Bundle path of the finalized registry author's own `HEAD`, kept as evidence.
+const FINALIZED_HEAD_EVIDENCE: &str = "evidence/registry-head";
+
 pub(super) fn assemble(
     registry: &Path,
     result_path: &Path,
@@ -58,6 +61,32 @@ pub(super) fn assemble(
             expected: Some((identity.byte_size, Sha256Digest::parse(&identity.sha256)?)),
             ..ArtifactAttributes::plain(file.content_type)
         };
+        if file.relative_path == "HEAD" {
+            // Retain the finalized author's HEAD as evidence. The published
+            // HEAD (`registry/HEAD`, projected to the surface's `HEAD`) keeps
+            // discovery on the approved base until a channel operation, so
+            // every publication preserves the compare-and-swap base commit.
+            payload.copy(
+                &file.source,
+                id,
+                ArtifactKind::RegistryObject,
+                FINALIZED_HEAD_EVIDENCE.to_owned(),
+                attributes,
+            )?;
+            let head = format!("{}\n", plan.registry_base_commit);
+            let source = payload.root.join(".publication-head");
+            super::write_new(&source, head.as_bytes())?;
+            let copied = payload.copy(
+                &source,
+                "registry/publication-head".to_owned(),
+                ArtifactKind::RegistryObject,
+                relative,
+                ArtifactAttributes::exact("text/plain", head.as_bytes())?,
+            );
+            std::fs::remove_file(&source)?;
+            copied?;
+            continue;
+        }
         payload.copy(
             &file.source,
             id,

@@ -303,6 +303,8 @@ Confirm that the shell contains the staging runtime values, then deploy:
   --oci-pull-enabled \
   --oci-push-enabled \
   --oci-verified-publication-enabled \
+  --oci-administration-enabled=false \
+  --oci-gc-enabled=false \
   --rate-limit-namespace-base 2000 \
   --email-from noreply+aos@send.andyl.org \
   --route-reservation-keys-file "$keyring" \
@@ -325,6 +327,25 @@ and exercise the public Containers browse pages. Administration and garbage
 collection remain disabled. Preserve all three release-path flags on subsequent
 deployments; omitting one disables that part of container publication or
 consumption.
+
+### Build artifacts for the staging destination
+
+Build the `aos-testing-staging` system variant for staging publication. It bakes
+`https://cdn.aos.staging.andyl.org/andyl/testing/` into APM configuration and
+`https://aos.staging.andyl.org` into the default Hub environment for both disk
+images and containers. The `aos-testing` variant targets the production delivery
+origin. Published artifacts cannot change their baked destination after signing.
+For another Hub deployment, set `aos.release.registryOrigin` and
+`aos.release.hubUrl` before building, and publish to that same deployment.
+When a release plan's staging surface is a Hub, planning and image finalization
+require every planned image's `hubUrl` to equal that surface's origin, so a
+release bound for this deployment must plan the `aos-testing-staging` variant
+(or an equivalent profile).
+
+```sh
+bash ./aos-dev --release build container aos-testing-staging:oci --no-out-link
+bash ./aos-dev --release build build aos-testing-staging:unsignedImageAssembly --no-out-link
+```
 
 ### Configure the direct staging CDN
 

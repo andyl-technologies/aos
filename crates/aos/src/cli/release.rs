@@ -895,8 +895,20 @@ pub struct ReleasePublishArgs {
     pub journal: PathBuf,
 
     /// Composed surface (TUF metadata, release record) to publish with the bundle
-    #[arg(long)]
+    #[arg(long, requires = "trusted_root_keys")]
     pub surface: Option<PathBuf>,
+
+    /// Independently trusted TUF root key as KEY_ID=PATH, verifying --surface
+    #[arg(
+        long = "trusted-root-key",
+        value_name = "KEY_ID=PATH",
+        requires = "surface"
+    )]
+    pub trusted_root_keys: Vec<String>,
+
+    /// Required independently trusted TUF root signature count
+    #[arg(long, default_value_t = 2)]
+    pub trusted_root_threshold: u16,
 
     /// Trusted manifest key as KEY_ID=PATH; repeat to satisfy thresholds
     #[arg(long = "trusted-key", value_name = "KEY_ID=PATH", required = true)]

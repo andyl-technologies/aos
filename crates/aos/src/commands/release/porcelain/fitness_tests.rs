@@ -171,3 +171,39 @@ fn a_changed_live_identity_invalidates_the_binding() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn context_needs_no_plan_when_a_contract_export_exists() -> anyhow::Result<()> {
+    use super::super::testing::config_fixture;
+    use super::super::workdir::{ReleaseIndex, WORK_INDEX};
+
+    let fixture = config_fixture()?;
+    let work = WorkDir::new(&fixture.config.work_root.join("release-1"))?;
+    std::fs::create_dir_all(work.root())?;
+    work.create_index(&ReleaseIndex {
+        schema_version: WORK_INDEX.to_owned(),
+        registry: fixture.config.registry.clone(),
+        version: "2026.9.0-dev.20260929.1".to_owned(),
+        release_id: "release-2026.9.0-dev.20260929.1".to_owned(),
+        config_digest: Sha256Digest::of_bytes("config").to_string(),
+        created_at: "2026-09-29T00:00:00Z".to_owned(),
+        latest_journal: None,
+    })?;
+    let exported = contract()?;
+    std::fs::write(work.contract(), canonical::to_vec(&exported)?)?;
+
+    // Without a frozen plan, the exported contract and configured roster apply.
+    let context = FitnessContext::load(&fixture.config)?;
+    assert_eq!(context.contract, exported);
+    assert!(context.destinations.is_empty());
+    assert_eq!(context.evidence_keys, ["evidence-1", "evidence-2"]);
+
+    // Without a configured roster, only a plan could supply one.
+    let mut unrostered = fixture.config.clone();
+    unrostered.signer.roles.remove("release-evidence");
+    let Err(error) = FitnessContext::load(&unrostered) else {
+        panic!("a plan-less context without a configured roster must fail");
+    };
+    assert!(error.to_string().contains("release-evidence roster"));
+    Ok(())
+}

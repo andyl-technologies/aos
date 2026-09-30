@@ -8,10 +8,18 @@ keys. Testing releases never become main releases by changing a channel or
 copying signed artifacts.
 
 Disk images and OCI containers must configure APM for their exact publishing
-registry. The shared `aos.release` profile supplies the CDN URL (`https://cdn.aos.andyl.org/<registry>/`), trust alias, root
-epoch, channel, and testing notice. Planning, building, and image finalization
-check this profile from the clean source commit frozen in the plan, on every
-selected platform. A testing profile fails a main plan and vice versa. Package
+registry. The shared `aos.release` profile supplies the registry URL
+(`<registryOrigin>/<registry>/`, by default
+`https://cdn.aos.andyl.org/<registry>/`), the default Hub (`hubUrl`), trust
+alias, root epoch, channel, and testing notice. Planning, building, and image
+finalization check this profile from the clean source commit frozen in the
+plan, on every selected platform. A testing profile fails a main plan and vice
+versa. When the plan's staging surface is a Hub deployment, every image's
+baked `hubUrl` must also equal that surface's origin, because the staging
+deployment is the first to receive and serve the signed artifacts; build the
+`aos-testing-staging` variant for the canonical staging Hub, as described in
+[the Hub deployment guide](aos-hub-deployment.md#build-artifacts-for-the-staging-destination).
+A static staging surface has no Hub origin to bind. Package
 transactions, manifests, evidence, and channel receipts bind the same registry;
 packages inherit their client's configured registry when installed. Inspect the
 destinations and their obligations with
@@ -146,6 +154,10 @@ predecessor_bundle = "/var/lib/aos-release-coordinator/predecessor"
 tooling_closure = "/nix/store/...-aos"
 trusted_keys = ["release-evidence-v1=/etc/aos-release/keys/release-evidence-v1.pub"]
 
+[git]
+name = "AOS Release"
+email = "release@aos.andyl.org"
+
 [surfaces.staging]
 kind = "hub"
 origin = "https://aos.staging.andyl.org"
@@ -214,12 +226,13 @@ destination = "oncall@example.org"
 | `predecessor_bundle` | Verified signed bundle of the preceding release, used for the qualification predecessor, image update cases, and change scoping |
 | `tooling_closure` | Store path of the installed `aos` tooling; its digest is the `tooling` fitness binding |
 | `trusted_keys` | Independently obtained `KEY_ID=PATH` manifest verification keys |
+| `git.name`, `git.email` | Required public author and committer of the registry release commit and tag. Both are published in the registry; use the maintaining organization's release identity, not a person's. The name may not contain control characters or angle brackets, and the email must be one address |
 | `surfaces.<role>.kind` | `hub` or `static` |
 | `surfaces.<role>.origin` | Hub origin, or static origin `file://`, `s3://`, or `sftp://` URL |
 | `surfaces.<role>.readback_origin` | Anonymous `https://` or `file://` origin used for read-back when `origin` is not anonymously fetchable; required for `s3://` and `sftp://` |
 | `surfaces.<role>.identity` | Hub deployment ID, or the static identity served at `.aos-surface` |
 | `surfaces.<role>.receipt_keys` | `KEY_ID=PATH` keys that verify the surface's publication and channel receipts: Hub receipt keys, or the `surface-receipt` role key for a static surface |
-| `surfaces.<role>.token_credential` | Hub access token: a name under `$CREDENTIALS_DIRECTORY`, or an absolute path |
+| `surfaces.<role>.token_credential` | Hub access token: a name under `$CREDENTIALS_DIRECTORY`, or an absolute path. Without it (and without `--token` or `AOS_TOKEN`), Hub operations use the renewable `aos hub` login profile for the surface origin |
 | `surfaces.<role>.s3_region`, `s3_profile`, `s3_endpoint` | S3 client settings for an `s3://` origin; credentials come from the AWS default chain |
 | `surfaces.<role>.ssh_key_credential`, `ssh_password_credential` | SFTP private key or password for an `sftp://` origin |
 | `surfaces.<role>.hub_schema` | Hub schema version the surface reports; the production value is the `hub-schema` fitness binding. Hub surfaces only |
@@ -464,9 +477,17 @@ configured signer, and writes it to `<fitness_root>/<kind>/<performed_at>.json`
 without replacing an existing file. The signing key is the `[reviewer]` key
 when that section is present, else the single configured `release-evidence`
 key. The report stays in restricted storage; the attestation carries its
-digest. The contract's fitness kinds come from the newest release plan under
-`work_root`, so run `aos release new` once before recording the first
-attestation.
+digest.
+
+Neither `fitness run` nor `fitness status` needs a frozen plan. The fitness
+kinds and profiles come from the newest release plan under `work_root` when
+one exists, else from that work directory's `contract.json`, else from the
+repository's Nix contract export (the `step contract` leaf, so run the command
+from the AOS checkout before the first `aos release new`). Attestations are
+verified against the configured `[signer.roles.release-evidence]` keys; only
+when that table is absent does the newest plan's frozen roster apply, and with
+neither the command refuses to run. Without a plan, `fitness status` lists no
+destinations.
 
 Binding values come from the configuration: `surface` and `hub-schema` from
 `[surfaces.production]` and its live deployment, `signer-roster` from the
@@ -949,7 +970,10 @@ signed, and existing output paths are never replaced.
 
 Before closing the bundle, prepare a reviewed canonical advisory disposition.
 It binds the exact plan and SBOM, identifies each public advisory snapshot used
-for review, and must contain no unresolved release blockers:
+for review, and must contain no unresolved release blockers. The disposition
+feeds the `build-integrity` observation that every profile requires, `build`
+included, so a bundle with unresolved advisories cannot reach any destination,
+staging or production:
 
 ```json
 {"authority_id":"release-security-review","plan_digest":"sha256:...","reviewed_at":"2026-09-03T13:30:00Z","sbom_digest":"sha256:...","schema_version":"aos.release.advisory-disposition/v1","sources":[{"name":"osv","snapshot":"sha256:..."}],"unresolved_advisories":[]}
@@ -993,6 +1017,16 @@ Linux image and OCI artifacts. It does not contain `release-plan.json` or
 `release-manifest.json`; the finalizer installs the exact plan itself. Links,
 aliases, special files, incomplete closures, unresolved advisories, and bytes
 that differ from a finalized input stop assembly.
+
+The registry's finalized `HEAD` names the new release commit, but every
+publication must keep discovery on the planned base commit until a channel
+operation moves it; the compare-and-swap checks require the published default
+commit to equal `registry_base_commit`. The assembler therefore retains the
+finalized author's `HEAD` as evidence at `evidence/registry-head` and places a
+`registry/HEAD` object (`registry/publication-head`) naming the base commit,
+which the publication projects to the surface's `HEAD`. Source-inclusive caches
+may carry derivation (`.drv`) store paths, and store-path names follow Nix's own
+character rules, including the `?` and `=` that fetched source names retain.
 
 Every `package-nar` record must point to its exact signed `narinfo` record with
 an `authenticated-by` relationship. Its outbound relationship graph also names
@@ -1296,6 +1330,8 @@ aos release step publish \
   --bundle release-bundle \
   --journal release-bundle/release-journal.jsonl \
   --surface staging-candidate-surface \
+  --trusted-root-key root-2026=/media/keys/root-2026.pub \
+  --trusted-root-threshold 1 \
   --trusted-key release-2026=/media/keys/release-2026.pub \
   --receipt-key staging-hub-2026=/media/keys/staging-hub-2026.pub \
   --output release-staging-candidate
@@ -1310,6 +1346,8 @@ aos release step publish \
   --bundle release-bundle \
   --journal release-staging-candidate/release-journal.jsonl \
   --surface production-candidate-surface \
+  --trusted-root-key root-2026=/media/keys/root-2026.pub \
+  --trusted-root-threshold 1 \
   --trusted-key release-2026=/media/keys/release-2026.pub \
   --receipt-key production-hub-2026=/media/keys/production-hub-2026.pub \
   --predecessor-receipt release-staging-candidate/receipt.json \
@@ -1320,15 +1358,38 @@ aos release step publish \
   --output release-production-candidate
 ```
 
+A staging destination's `build` profile requires no qualification evidence,
+predecessor receipt, review, or fitness attestation: `step publish --to
+staging/<channel>` rejects `--evidence` and `--predecessor-receipt`. Everything
+else still applies. The build's repeat-build and deriver checks, the
+advisory disposition, and the `build-integrity` observations are required for
+every destination, and every publication, staging included, is read back
+anonymously in full.
+
 `--surface` is the destination's composed surface from [`step
 compose-surface`](#refresh-tuf-timestamp-metadata), which carries the TUF
-metadata and, for a production destination, the release record. Fitness is
+metadata and, for a production destination, the release record. It requires
+the independently trusted `--trusted-root-key KEY_ID=PATH` values and their
+`--trusted-root-threshold` (default 2). Before anything is uploaded, the
+surface's snapshot (or its timestamp, when present), root, targets, and
+release-class delegation must keep the plan's frozen signer policy and verify
+against those root keys, and the delegated target must bind this bundle's
+manifest envelope. The published surface is then exactly the projected bundle
+plus those verified additions: the TUF metadata files, the public manifest
+(identical to the bundle's envelope), and the release record only when the
+delegated target authorizes its exact digest and length. Any other composed
+file must be byte-identical to the projected object at its path; an extra,
+changed, or missing verified file fails the command. Fitness is
 checked against the attestations under `--fitness DIR` and the live binding
 values given by `--tooling-digest`, `--alert-config-digest`, and
 `--hub-schema`. Explicit flags win; otherwise the maintainer configuration
 named by `--config` supplies `fitness_root` and the live values, which is how
 the porcelain calls the command. A Hub surface takes a short-lived token for
-that surface only, through `--token` or `AOS_TOKEN`. A static surface resolves
+that surface only, through `--token` or `AOS_TOKEN`, or the configuration's
+`token_credential`; without either, it uses the approved `aos hub` login
+profile for that origin, whose credentials are refreshed before each object or
+multipart operation of a long upload. An explicit token's lifetime remains the
+caller's responsibility. A static surface resolves
 its upload credentials and the `surface-receipt` signer from the maintainer
 configuration named by `--config`, with the same default search as the
 porcelain. Keep staging and production credentials in different operator steps.

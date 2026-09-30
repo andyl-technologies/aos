@@ -254,7 +254,8 @@ fn read_cache(cache: &Path, key: &TrustedEd25519Key) -> Result<BTreeMap<String, 
         let bytes = super::super::capture::control_file(&path, "signed narinfo")?;
         let text = std::str::from_utf8(&bytes).context("narinfo is not UTF-8")?;
         let parsed = info::parse(text)?;
-        require_store_path(&parsed.store_path, false)?;
+        // Source-inclusive caches retain build recipes alongside outputs.
+        require_store_path(&parsed.store_path, parsed.store_path.ends_with(".drv"))?;
         verify_signature(&parsed, key)
             .with_context(|| format!("verifying signed narinfo {}", path.display()))?;
         let expected_name = format!("{}.narinfo", info::store_hash(&parsed.store_path));
@@ -409,7 +410,7 @@ fn reference_paths(info: &NarInfo) -> Result<Vec<String>> {
         .map(|reference| format!("{store}/{}", info::basename(reference)))
         .collect::<Vec<_>>();
     for path in &paths {
-        require_store_path(path, false)?;
+        require_store_path(path, path.ends_with(".drv"))?;
     }
     Ok(paths)
 }
@@ -519,7 +520,6 @@ mod tests {
         use_incorrect_file_hash: bool,
     ) -> Result<(tempfile::TempDir, TrustedEd25519Key)> {
         let root = tempfile::tempdir()?;
-        fs::create_dir(root.path().join("nar"))?;
         fs::write(
             root.path().join("nix-cache-info"),
             b"StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 40\n",
@@ -529,8 +529,6 @@ mod tests {
         let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 3)?;
         encoder.write_all(nar_bytes)?;
         let compressed = encoder.finish()?;
-        let nar_path = root.path().join("nar/fixture.nar.zst");
-        fs::write(&nar_path, &compressed)?;
 
         let seed = [23_u8; 32];
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
@@ -544,9 +542,17 @@ mod tests {
         } else {
             Sha256Digest::of_bytes(&compressed).to_string()
         };
+        let url = aos_core::nar::cache::nar_url(
+            store_path,
+            &file_hash,
+            aos_core::nar::cache::NarCompression::Zstd,
+        )?;
+        let nar_path = root.path().join(&url);
+        fs::create_dir_all(nar_path.parent().context("fixture NAR lacks a parent")?)?;
+        fs::write(&nar_path, &compressed)?;
         let mut narinfo = NarInfo {
             store_path: store_path.to_owned(),
-            url: "nar/fixture.nar.zst".to_owned(),
+            url,
             compression: "zstd".to_owned(),
             file_hash: Some(file_hash),
             file_size: Some(u64::try_from(compressed.len())?),
