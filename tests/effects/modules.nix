@@ -1,10 +1,11 @@
 ##! Pure module contracts, merging, and handler expansion without a host image.
 let
   lib = import ../../lib {system = "x86_64-linux";};
+  fixturePayload = import ./_fixture-payload.nix;
   program = {
     type = "derivation";
     name = "effect-fixture";
-    outPath = "/nix/store/00000000000000000000000000000000-effect-fixture";
+    outPath = fixturePayload "effect-fixture";
     meta.mainProgram = "effect-fixture";
   };
   evaluate = modules:
@@ -69,6 +70,23 @@ let
     };
   };
   connected = (evaluate [producer consumer]).config.aos.activation.graph;
+  defaultReference = lib.evalModules {
+    inherit lib;
+    modules = [../../lib/effects/module.nix producer];
+    operatorModules = [
+      ({config, ...}: {
+        options.selectedOutput = lib.mkOption {
+          type = lib.types.deferred lib.types.str;
+          default = config.aos.abilities.files.operations.create.effects.state.outputs.path;
+        };
+        config.aos.abilities.files.operations.use = {
+          input.options.path = lib.mkOption {type = lib.types.deferred lib.types.str;};
+          handler.program = program;
+          effects.reader.input.path = config.selectedOutput;
+        };
+      })
+    ];
+  };
   composition = {config, ...}: let
     create = config.aos.abilities.files.operations.create;
   in {
@@ -132,6 +150,9 @@ in {
   == {}; true;
   dependencies = assert builtins.length connected.order == 2;
   assert (builtins.elemAt connected.order 0) == builtins.head connected.nodes.${builtins.elemAt connected.order 1}.dependencies; true;
+  defaultOutputReference = assert builtins.hasContext defaultReference.config.selectedOutput.output;
+  assert builtins.deepSeq defaultReference.config.aos.activation.graph true;
+  assert builtins.length defaultReference.config.aos.activation.graph.order == 2; true;
   composed = assert builtins.length composed.order == 3; true;
   disabledProducer = assert rejected [
     producer
@@ -163,11 +184,11 @@ in {
     handler
     {
       aos.abilities.kernel.operations.apply.handler = lib.mkForce {
-        program = program // {outPath = "/nix/store/11111111111111111111111111111111-alternative";};
+        program = program // {outPath = fixturePayload "alternative";};
       };
     }
   ]).config.aos.abilities.kernel.operations.apply.effects.host.execution.program.outPath
-  == "/nix/store/11111111111111111111111111111111-alternative"; true;
+  == fixturePayload "alternative"; true;
   undeclaredInput = assert rejected [
     declaration
     handler
