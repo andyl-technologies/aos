@@ -20,6 +20,8 @@ let
   # Wave 1: target-independent inputs and small leaf packages.  These establish
   # the data and low-level library closure used by later Darwin packages.
   independentWave1 = [
+    "xtrans"
+    "vulkan-headers"
     "docbook-xml-4-2"
     "docbook-xml-4-3"
     "encodings"
@@ -491,6 +493,7 @@ let
   # fixture, and downloader closures are outside the first Darwin release.
   # The Darwin AOS clients retain their non-VM commands without target GLib.
   linuxScoped = [
+    "libdrm"
     "aos-hub-cloudflare"
     "aos-vm"
     "cairo"
