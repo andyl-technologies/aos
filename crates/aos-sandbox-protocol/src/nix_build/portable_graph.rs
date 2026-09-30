@@ -7,7 +7,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_sandbox_core::{ContentLayout, DecodeLimits, Node, ObjectDescriptor, PortableMediaType};
+use aos_sandbox_core::{DecodeLimits, ObjectDescriptor, PortableMediaType};
+use aos_sandbox_core::model::{ContentLayout, Node};
 
 use super::{
     NIX_MAXIMUM_OBJECT_BYTES_V2, NIX_MAXIMUM_OBJECTS_V2, NixBuildSchemaErrorV2,
