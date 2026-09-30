@@ -310,3 +310,17 @@ aos hub placement eviction run --plan-id <id> --confirm-hash <hash> \
 Package and registry producer commands use the same cache upload admission and
 multipart API as the Web console; direct storage capabilities never receive a
 Hub bearer.
+
+## Inspect native ability artifacts locally
+
+Use the same native reader as the Hub viewer without contacting a server:
+
+```sh
+aos docs runtime options.json
+aos docs runtime transaction.json --format html --output execution.html
+```
+
+This inspects exported artifacts. Hub release search and installed-package docs
+remain separate consumers pending migration. See [runtime abilities](../aos/runtime-abilities.md)
+for code examples and [the viewer](web.md#inspect-native-runtime-ability-documents)
+for package/operation browsing in the web UI.

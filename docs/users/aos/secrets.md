@@ -1,5 +1,10 @@
 # Manage secrets on AOS
 
+> The domain consumers on this page are being migrated to the native module
+> runtime. The [current ability API and execution path](runtime-abilities.md)
+> supersede the earlier provider/request authoring forms. Do not copy those
+> earlier forms into new package modules.
+
 Nix expressions and build inputs are not secret-delivery mechanisms. Values
 embedded in a derivation, generated file, systemd unit, image, or command line
 can appear in the Nix store, build logs, process listings, image layers, or Git

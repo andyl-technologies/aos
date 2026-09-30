@@ -46,3 +46,10 @@ resources.
   identity, recovery, storage retention, monitoring, upgrades, and incidents.
 - [Deploy to Cloudflare](cloudflare.md) covers the packaged installer,
   resources, secrets, updates, domains, email, and observability.
+
+## Native runtime ability documents
+
+The [runtime ability viewer](web.md#inspect-native-runtime-ability-documents)
+browses generated module references and deferred transactions, including package
+relationships and ordered handler execution. It is a read-only artifact viewer;
+existing release indexing still needs the native consumer migration.

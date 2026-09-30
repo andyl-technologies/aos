@@ -7,7 +7,9 @@ Rust retains the inputs, executes the selected handlers, and commits a package
 generation. A profile and a system deployment use the same infrastructure.
 
 This is an intentional API cutover. Existing package recipes, registry consumers,
-image activation entry points, and CLI/hub presentation code still need migration.
+image activation entry points, and release/installed-package presentation paths
+still need migration. Native artifact inspection is available in `aos docs runtime`
+and the Hub import viewer.
 The infrastructure fixtures exercise the new path independently; they do not
 establish that an existing system boots through it.
 
@@ -40,7 +42,7 @@ The builder exposes these derived values:
 | `moduleDeps` | Explicit package module dependency edges |
 | `deployment` | Envelope containing the target platform, payload outputs, runtime dependencies, and module locators |
 | `deploymentArtifact` | Derivation containing `deployment.json` |
-| `documentation` | Options and ability documentation projected from the package's module closure |
+| `documentation` | `aos.module.documentation`: options and ability documentation projected from the package's module closure |
 | `documentationArtifact` | Derivation containing `options.json` |
 
 Payload construction does not force deployment evaluation. The JSON companions
@@ -216,3 +218,14 @@ commit boundary and during root cleanup.
 Consumer migration should use these infrastructure entry points directly. The
 old registry projections, host provider-discovery loop, image-specific dispatch,
 and duplicated graph/documentation parsers are not compatibility targets.
+
+## Author and operator documentation
+
+The [runtime abilities guide](../../users/aos/runtime-abilities.md) contains the
+shared Nix examples and phase diagrams. `aos docs runtime options.json` inspects
+the native reference without Nix or a checkout. Passing a transaction instead
+shows its ordered execution path. Both support text, JSON, and HTML output.
+Hub exposes the same reader through `/-/runtime-abilities` and the read-only
+`/-/api/runtime-documentation` JSON endpoint. These are artifact inspection
+surfaces; existing authenticated release indexes are not yet native consumers.
+See the [handoff](consumer-migration.md) before continuing those migrations.

@@ -368,3 +368,23 @@ before automating system upgrades.
 Continue with [Manage packages](packages.md) for `apm`, or
 [Operate an AOS package registry](../registry/) for producer-side `apr`
 workflows.
+
+## Inspect native runtime documentation
+
+`aos docs` is an alias for `aos doc`. Native artifact inspection works without
+Nix, a checkout, or a network connection:
+
+```sh
+aos docs runtime options.json
+aos docs runtime transaction.json --format json
+aos docs runtime transaction.json --format html --output execution.html
+```
+
+The input must be an `aos.module.documentation` reference or an
+`aos.package.transaction`. Output defaults to text; global `--json` selects JSON
+unless `--format` is explicit. `--output` writes a file. Runtime mode does not
+accept installed-package, registry, search, or Hub selectors.
+
+See [runtime abilities](runtime-abilities.md) for artifact generation and example
+execution paths. Existing `doc package`, `doc hub`, and `ability` consumers have
+not yet migrated to these native formats.

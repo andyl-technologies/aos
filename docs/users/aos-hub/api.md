@@ -175,3 +175,31 @@ aos --json hub registry get acme/cdn --hub https://hub.example.com
 
 Pass `--token '<access-token>'` to commands that require authentication. Use
 the schema when building a client or integration.
+
+## Inspect a native runtime document
+
+This stateless endpoint is available when the browse UI is mounted:
+
+```text
+POST /-/api/runtime-documentation
+POST /-/api/runtime-documentation?format=html
+```
+
+Send raw JSON with schema `aos.module.documentation` or
+`aos.package.transaction`. The shared native reader validates the document;
+transaction input includes checked graph identities, dependencies, and ordering.
+The default response is parsed JSON; `format=html` returns an HTML fragment with
+package/operation links or the ordered execution path. Invalid documents or
+formats return HTTP 400. Requests share the Hub's 8 MiB body ceiling.
+
+```sh
+curl --data-binary @options.json -H 'Content-Type: application/json' \
+  'https://hub.example/-/api/runtime-documentation?format=html'
+```
+
+The endpoint does not retain uploads, evaluate Nix, execute handlers, authenticate
+release provenance, or add documents to a release index. Successful inspection
+responses use `Cache-Control: no-store`. This read-only browser support endpoint
+is separate from the release documentation Connect service. See the
+[runtime abilities guide](../aos/runtime-abilities.md) for production consumer
+migration boundaries.

@@ -1,5 +1,10 @@
 # Understand native package runtime policy
 
+> The domain consumers on this page are being migrated to the native module
+> runtime. The [current ability API and execution path](runtime-abilities.md)
+> supersede the earlier provider/request authoring forms. Do not copy those
+> earlier forms into new package modules.
+
 AOS activates package services through typed abilities selected in the final
 system module fixed point. A package publishes a checked module and a derived
 package contract. The system selects providers, validates their requests, and

@@ -1,5 +1,11 @@
 # Runtime module sets
 
+> Package module/deferred runtime APIs have since moved to
+> [RFC-0022's native target](../0022-abilities-and-effects/13-target-state.md).
+> Its [infrastructure status](../0022-abilities-and-effects/infrastructure-cutover.md)
+> and [consumer migration](../0022-abilities-and-effects/consumer-migration.md)
+> distinguish implemented mechanisms from remaining integration work.
+
 This extension lets an operator supplement the cloud-delivered `host.nix`
 without replacing it. It keeps the two inputs distinct:
 
