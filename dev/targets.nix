@@ -31,7 +31,7 @@
         "docker"
         "metadata"
       ]
-  ) (names aos.containerImages ++ ["aos-testing"]);
+  ) (names aos.containerImages ++ ["aos-testing" "aos-testing-staging"]);
   buildNames = builtins.concatMap (
     variant:
       map (name: "${variant}:${name}") (
