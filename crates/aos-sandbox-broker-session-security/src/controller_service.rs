@@ -146,6 +146,7 @@ pub(crate) mod execution_output_reserve;
 mod execution_output_storage_reserve;
 mod guest_root;
 mod original_attach;
+mod operator_repair;
 mod public_api;
 mod public_attach;
 mod public_hierarchy;
@@ -1026,11 +1027,22 @@ fn handle_controller_command(
                 return Ok(());
             }
             require_holder_handle!(peer, capability_id, capability_handle, reply);
-            let operation_id = match controller.admit_public_operator_recovery(
-                &peer,
-                capability_id,
-                &canonical_request,
-            ) {
+            let repair = operator_repair::is_repair(&canonical_request);
+            if matches!(repair, Ok(true)) && !operator_repair::QUALIFIED {
+                let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                return Ok(());
+            }
+            let admitted = match repair {
+                Ok(true) => operator_repair::admit(
+                    controller, &peer, capability_id, &canonical_request,
+                    attach_plan_signer, node, sessions,
+                ),
+                Ok(false) => controller.admit_public_operator_recovery(
+                    &peer, capability_id, &canonical_request,
+                ),
+                Err(error) => Err(error),
+            };
+            let operation_id = match admitted {
                 Ok(AcceptOutcome::Accepted(operation) | AcceptOutcome::Replay(operation)) => {
                     operation
                 }
@@ -4082,6 +4094,17 @@ fn reject_unqualified_delete_effect(plan: &EffectPlan) -> Result<(), EffectFailu
 }
 
 impl SingleNodeEffectExecutor for ProductionEffectExecutor {
+    fn reconcile_operator_storage_repair(
+        &mut self,
+        operation_id: OperationId,
+        step: u32,
+        plan: &EffectPlan,
+        journal: &mut Journal,
+        completion_wall_seconds: i64,
+    ) -> Result<aos_sandbox::OperatorStorageRepairReconcileV1, EffectFailure> {
+        operator_repair::reconcile(self, operation_id, step, plan, journal, completion_wall_seconds)
+    }
+
     fn coordinate_provisioned_source_genesis_v1(
         &mut self,
         journal: &mut Journal,

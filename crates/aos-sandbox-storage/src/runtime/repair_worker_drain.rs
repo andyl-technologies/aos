@@ -11,6 +11,7 @@ use super::StorageRuntimeError;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DrainPhase {
     Open,
+    TerminalHeld,
     Draining,
     Quiesced,
 }
@@ -56,6 +57,28 @@ impl RepairWorkerDispatchGate {
         Ok(WorkerDispatchLease {
             state: Arc::clone(&self.state),
         })
+    }
+
+    /// Excludes ordinary dispatch until the actual terminal owner settles.
+    pub(super) fn begin_terminal_hold(&self) -> Result<(), ()> {
+        let mut state = self.state.lock().map_err(|_| ())?;
+        if !matches!(state.phase, DrainPhase::Open | DrainPhase::TerminalHeld)
+            || state.in_flight != 0
+        {
+            return Err(());
+        }
+        state.phase = DrainPhase::TerminalHeld;
+        Ok(())
+    }
+
+    /// Reopens only after the caller has durably settled the exact owner hold.
+    pub(super) fn settle_terminal_hold(&self) -> Result<(), ()> {
+        let mut state = self.state.lock().map_err(|_| ())?;
+        if state.phase != DrainPhase::TerminalHeld || state.in_flight != 0 {
+            return Err(());
+        }
+        state.phase = DrainPhase::Open;
+        Ok(())
     }
 
     /// Closes admission before checking whether existing calls have returned.
@@ -113,6 +136,62 @@ mod tests {
 
     use super::{RepairWorkerDispatchGate, close_and_drain_worker_scopes};
     use crate::StorageRuntimeError;
+
+    #[test]
+    fn terminal_hold_excludes_all_new_dispatch_and_is_not_a_repair_drain() {
+        let gate = RepairWorkerDispatchGate::new();
+
+        gate.begin_terminal_hold().unwrap();
+
+        assert!(!gate.is_open());
+        assert!(gate.enter().is_err());
+        assert!(gate.begin_drain().is_err());
+        assert!(gate.finish_drain().is_err());
+        gate.begin_terminal_hold().unwrap();
+        assert!(!gate.is_open());
+    }
+
+    #[test]
+    fn an_existing_dispatch_prevents_terminal_hold_until_its_lease_returns() {
+        let gate = RepairWorkerDispatchGate::new();
+        let lease = gate.enter().unwrap();
+
+        assert!(gate.begin_terminal_hold().is_err());
+        drop(lease);
+        gate.begin_terminal_hold().unwrap();
+
+        assert!(gate.enter().is_err());
+        assert!(!gate.is_open());
+    }
+
+    #[test]
+    fn dropping_one_gate_handle_does_not_release_an_unacknowledged_hold() {
+        let gate = RepairWorkerDispatchGate::new();
+        let retained = gate.clone();
+        gate.begin_terminal_hold().unwrap();
+
+        drop(gate);
+
+        assert!(!retained.is_open());
+        assert!(retained.enter().is_err());
+        retained.settle_terminal_hold().unwrap();
+        assert!(retained.is_open());
+        assert!(retained.enter().is_ok());
+    }
+
+    #[test]
+    fn terminal_settlement_never_opens_a_generic_drained_or_quiesced_gate() {
+        let gate = RepairWorkerDispatchGate::new();
+        assert!(gate.settle_terminal_hold().is_err());
+
+        gate.begin_drain().unwrap();
+        assert!(gate.settle_terminal_hold().is_err());
+        gate.finish_drain().unwrap();
+
+        assert!(gate.settle_terminal_hold().is_err());
+        assert!(gate.begin_terminal_hold().is_err());
+        assert!(!gate.is_open());
+    }
 
     #[test]
     fn drain_closes_dispatch_before_an_existing_worker_returns() {

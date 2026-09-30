@@ -76,6 +76,13 @@ pub(super) struct BoundRepairLedgerReceiptV1 {
 }
 
 impl BoundRepairLedgerReceiptV1 {
+    pub(super) fn verify_exact_predecessor_archive_bytes(
+        self,
+        bytes: &[u8],
+        expected_predecessor_head_digest: [u8; 32],
+    ) -> Result<Vec<u8>, OperatorRecoveryIssuanceErrorV1> {
+        Ok(RepairPredecessorArchiveV1::decode(bytes, self, expected_predecessor_head_digest)?.predecessor_projection)
+    }
     /// Joins one challenged fresh Inventory to the still-current sealed owner proof.
     ///
     /// The exact predecessor projection is read from protected custody. This
@@ -551,7 +558,7 @@ fn archive_key(operation_id: [u8; 16]) -> Vec<u8> {
     [ARCHIVE_PREFIX, operation_id.as_slice()].concat()
 }
 
-fn verify_fresh_physical_target(
+pub(super) fn verify_fresh_physical_target(
     owner: &VerifiedRetainedRepairReceiptV3,
     intent: &OperatorRecoveryEffectIntentV1,
     storage_request_body: &[u8],
@@ -563,7 +570,7 @@ fn verify_fresh_physical_target(
     verify_fresh_physical_target_body(owner, intent, storage_request_body, exact_body)
 }
 
-fn verify_fresh_physical_target_body(
+pub(super) fn verify_fresh_physical_target_body(
     owner: &VerifiedRetainedRepairReceiptV3,
     intent: &OperatorRecoveryEffectIntentV1,
     storage_request_body: &[u8],

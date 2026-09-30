@@ -930,6 +930,7 @@ impl StorageService<StorageBrokerRuntime> {
             &mut self.runtime,
             &self.verifier,
             owner,
+            self.guest_root_template.as_ref(),
         )
     }
 

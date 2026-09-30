@@ -31,19 +31,17 @@ use super::{
     CURRENT_HEAD_DOMAIN_V2, OperatorRecoveryIssuanceErrorV1, ProtectedOperatorRecoverySignerV1,
     REQUEST_DOMAIN, StorageRepairIssuanceV2, hash, issuance_key_v2,
 };
-use crate::controller::{
-    ActivatedOperationCompiler, NodeController, SingleNodeEffectExecutor, recovery_current_key,
-};
+use crate::controller::recovery_current_key;
 use crate::resource_inventory::ResourceInventoryServiceIdentity;
 use crate::{Journal, RecordNamespace};
 
 const EXCHANGE_NANOSECONDS: u64 = 60_000_000_000;
 
-impl<C, E> NodeController<C, E>
-where
-    C: ActivatedOperationCompiler,
-    E: SingleNodeEffectExecutor,
-{
+mod terminal_hold;
+
+pub(super) use terminal_hold::{HeldStorageTerminalV4, StorageTerminalAcquisitionV4, verify_retained_terminal_readback_v4};
+
+pub(super) trait RepairTransportV1: super::RepairJournalOwnerV1 {
     /// Exchanges one phase of a durably issued intent with the live Storage sidecar.
     ///
     /// The caller must supply the exact authorized Storage envelope for an
@@ -57,7 +55,7 @@ where
     /// service identity, failed transport, or a non-owner-signed response.
     #[allow(dead_code, reason = "public operator Repair route remains closed")]
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn exchange_storage_repair_v3(
+    fn exchange_storage_repair_v3(
         &mut self,
         signer: &ProtectedOperatorRecoverySignerV1,
         owner: &ProtectedStorageRepairReceiptVerifierV2,
@@ -67,6 +65,7 @@ where
         authorized_envelope: &[u8],
         accepted_probe: Option<&[u8]>,
         expected_storage: &ResourceInventoryServiceIdentity,
+        selected_request: Option<&OperatorStorageRepairRequestV3>,
     ) -> Result<OperatorStorageRepairResultV3, OperatorRecoveryIssuanceErrorV1> {
         signer
             .credential
@@ -74,7 +73,7 @@ where
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
         owner.recheck()?;
         let (signed_intent, before_generation) = read_current_issuance(
-            self.reconciler.journal_mut(),
+            self.repair_journal(),
             signer,
             operation_id,
             storage_request_body,
@@ -99,28 +98,38 @@ where
             }
             (_, None) => [0; 32],
         };
-        let mut request_id = [0_u8; 16];
-        OsRng
-            .try_fill_bytes(&mut request_id)
-            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let deadline = boottime()?
-            .checked_add(EXCHANGE_NANOSECONDS)
-            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let request = OperatorStorageRepairRequestV3::new(
-            request_id,
-            deadline,
-            mode,
-            signed_intent,
-            expected_attestation_digest,
-            authorized_envelope.to_vec(),
-        )
-        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let generated;
+        let request = match selected_request {
+            Some(request) => {
+                if request.mode() != mode
+                    || request.signed_intent() != &signed_intent
+                    || request.expected_attestation_digest() != expected_attestation_digest
+                    || request.envelope() != authorized_envelope
+                {
+                    return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+                }
+                request
+            }
+            None => {
+                // Only recovery may select new outer correlation coordinates.
+                // Physical requests retain their full packet before crossing.
+                if !matches!(mode, OperatorStorageRepairModeV3::RecoverProbe | OperatorStorageRepairModeV3::RecoverReceipt) {
+                    return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+                }
+                let (request_id, deadline) = coordinates()?;
+                generated = OperatorStorageRepairRequestV3::new(
+                    request_id, deadline, mode, signed_intent, expected_attestation_digest,
+                    authorized_envelope.to_vec(),
+                ).map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+                &generated
+            }
+        };
         let response = exchange(
             Path::new(OPERATOR_STORAGE_REPAIR_SOCKET_PATH_V3),
             expected_storage,
-            &request,
+            request,
         )?;
-        if response.request_id() != request_id || response.effect_id() != intent.effect_id {
+        if response.request_id() != request.request_id() || response.effect_id() != intent.effect_id {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
         }
         match (mode, response.result()) {
@@ -149,7 +158,7 @@ where
         }
 
         let current = read_current_issuance(
-            self.reconciler.journal_mut(),
+            self.repair_journal(),
             signer,
             operation_id,
             storage_request_body,
@@ -166,6 +175,8 @@ where
         Ok(response.result().clone())
     }
 }
+
+impl<T: super::RepairJournalOwnerV1> RepairTransportV1 for T {}
 
 fn read_current_issuance(
     journal: &mut Journal,
@@ -212,7 +223,7 @@ fn read_current_issuance(
     Ok((issued.signed_intent, before_generation))
 }
 
-fn validate_effect_envelope(
+pub(super) fn validate_effect_envelope(
     mode: OperatorStorageRepairModeV3,
     bytes: &[u8],
     body: &[u8],
@@ -289,6 +300,14 @@ fn same_process(left: PidFdInfo, right: PidFdInfo) -> bool {
     left.pid() == right.pid()
         && left.thread_group_id() == right.thread_group_id()
         && left.cgroup_id() == right.cgroup_id()
+}
+
+pub(super) fn coordinates() -> Result<([u8; 16], u64), OperatorRecoveryIssuanceErrorV1> {
+    let mut request_id = [0; 16];
+    OsRng.try_fill_bytes(&mut request_id).map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let deadline = boottime()?.checked_add(EXCHANGE_NANOSECONDS)
+        .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+    Ok((request_id, deadline))
 }
 
 fn boottime() -> Result<u64, OperatorRecoveryIssuanceErrorV1> {

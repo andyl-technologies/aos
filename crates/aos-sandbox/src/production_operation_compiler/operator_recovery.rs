@@ -30,6 +30,109 @@ mod successor;
 
 pub(crate) use successor::repair_sandbox_successor_projection_v1;
 
+/// Lowers only issuer-validated Repair records into the joint admission.
+pub(crate) fn compile_prepared_storage_repair_v1(
+    peer: &crate::public_api_session::PublicApiPeer,
+    canonical_request: &[u8],
+    request_digest: [u8; 32],
+    operation_id: OperationId,
+    accepted_wall_seconds: i64,
+    records: Vec<crate::JournalRecord>,
+) -> Result<OperationPlan, OperationCompilationError> {
+    let (request, _) = decode_storage_repair_request(canonical_request)?;
+    let scope = PublicOperationAuthorizationV1::new(
+        peer.project(), ResourceKind::Sandbox,
+        Selector::Resource { resource: ResourceId::from_bytes(request.resource_id()) },
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
+    let public = PublicOperationAdmissionV1::new(
+        PublicOperationMethodV1::OperatorRecover, 1, operation_id.into_bytes(),
+        accepted_wall_seconds, scope,
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
+    let desired = super::public_mutation::mutation_intent(
+        operation_id, PublicOperationMethodV1::OperatorRecover, canonical_request,
+    );
+    let context = PublicMutationEffectV1::new(
+        peer.principal(), peer.project(), accepted_wall_seconds, canonical_request.to_vec(),
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
+    let effect = EffectPlan::authorized_public_mutation(PublicOperationMethodV1::OperatorRecover, context)
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    let idempotency = IdempotencyKey::new(request.idempotency_key().to_vec())
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    // Exact public bytes, not another serialization, remain in the effect.
+    OperationPlan::new(operation_id, idempotency, request_digest, desired.0, desired.1, vec![effect])
+        .and_then(|plan| plan.with_operator_recovery_records(records))
+        .and_then(|plan| plan.with_public_operation(public))
+        .map_err(|_| OperationCompilationError::Rejected)
+}
+
+/// Reauthorizes one original Repair identity without renewing its effect.
+pub(crate) fn compile_replayed_storage_repair_v1(
+    journal: &mut Journal,
+    peer: &crate::public_api_session::PublicApiPeer,
+    capability_id: CapabilityId,
+    canonical_request: &[u8],
+    request_digest: [u8; 32],
+    operation_id: OperationId,
+) -> Result<OperationPlan, OperationCompilationError> {
+    let (request, envelope) = decode_storage_repair_request(canonical_request)?;
+    let public = crate::reconciler::recovered_public_operation_admission_v1(journal, operation_id)
+        .map_err(|_| OperationCompilationError::Rejected)?
+        .ok_or(OperationCompilationError::Rejected)?;
+    let selector = Selector::Resource { resource: ResourceId::from_bytes(request.resource_id()) };
+    if public.method() != PublicOperationMethodV1::OperatorRecover
+        || public.project() != peer.project()
+        || public.authorization().resource_kind() != ResourceKind::Sandbox
+        || public.authorization().selector() != &selector
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
+    crate::controller::authorize_public_operator_recovery_v1(
+        journal, peer, capability_id, ResourceKind::Sandbox, selector, envelope.protobuf_body(),
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
+    let desired = super::public_mutation::mutation_intent(
+        operation_id, PublicOperationMethodV1::OperatorRecover, canonical_request,
+    );
+    let context = PublicMutationEffectV1::new(
+        peer.principal(), public.project(), public.accepted_wall_seconds(), canonical_request.to_vec(),
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
+    let effect = EffectPlan::authorized_public_mutation(PublicOperationMethodV1::OperatorRecover, context)
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    let idempotency = IdempotencyKey::new(request.idempotency_key().to_vec())
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    if journal.check_idempotency(&idempotency, request_digest) != IdempotencyOutcome::Replay(operation_id) {
+        return Err(OperationCompilationError::Rejected);
+    }
+    OperationPlan::new(operation_id, idempotency, request_digest, desired.0, desired.1, vec![effect])
+        .and_then(|plan| plan.with_public_operation(public))
+        .map_err(|_| OperationCompilationError::Rejected)
+}
+
+fn decode_storage_repair_request(
+    canonical: &[u8],
+) -> Result<(OperatorRecoveryRequestV1, PublicMutationRequestV1), OperationCompilationError> {
+    let envelope = PublicMutationRequestV1::decode(canonical)
+        .map_err(|_| OperationCompilationError::Malformed)?;
+    if envelope.method() != PublicApiAuditMethodV1::OperatorRecover {
+        return Err(OperationCompilationError::Malformed);
+    }
+    let DormantSandboxRequestKindV1::OperatorRecover(request) = envelope.decode_validated_kind()
+        .map_err(|_| OperationCompilationError::Malformed)?
+    else {
+        return Err(OperationCompilationError::Malformed);
+    };
+    let request = OperatorRecoveryRequestV1::try_from(request)
+        .map_err(|_| OperationCompilationError::Malformed)?;
+    if request.action() != OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_REPAIR as i32 {
+        return Err(OperationCompilationError::Rejected);
+    }
+    Ok((request, envelope))
+}
+
 pub(super) fn compile_public_operator_recovery(
     journal: &mut Journal,
     peer: &crate::public_api_session::PublicApiPeer,

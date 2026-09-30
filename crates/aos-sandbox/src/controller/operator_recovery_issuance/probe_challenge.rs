@@ -27,9 +27,7 @@ use super::{
     CURRENT_HEAD_DOMAIN_V2, OperatorRecoveryIssuanceErrorV1, ProtectedOperatorRecoverySignerV1,
     StorageRepairIssuanceV2, hash, issuance_key_v2,
 };
-use crate::controller::{
-    ActivatedOperationCompiler, NodeController, SingleNodeEffectExecutor, recovery_current_key,
-};
+use crate::controller::recovery_current_key;
 use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 
 const MAGIC: &[u8; 8] = b"AOSORQ01";
@@ -126,11 +124,7 @@ impl StoredProbeChallengeV1 {
     }
 }
 
-impl<C, E> NodeController<C, E>
-where
-    C: ActivatedOperationCompiler,
-    E: SingleNodeEffectExecutor,
-{
+pub(super) trait RepairProbeChallengeV1: super::RepairJournalOwnerV1 {
     /// Reserves the authenticated session's selected ID before its pre-effect query.
     ///
     /// # Errors
@@ -138,13 +132,13 @@ where
     /// Rejects stale issuance, a previously retained before packet, or an
     /// uncertain protected challenge commit.
     #[allow(dead_code, reason = "public operator Repair route remains closed")]
-    pub(crate) fn reserve_storage_repair_before_query_v1(
+    fn reserve_storage_repair_before_query_v1(
         &mut self,
         signer: &ProtectedOperatorRecoverySignerV1,
         operation_id: OperationId,
         request_id: [u8; 16],
     ) -> Result<[u8; 16], OperatorRecoveryIssuanceErrorV1> {
-        let journal = self.reconciler.journal_mut();
+        let journal = self.repair_journal();
         let (issued, effect_id) = current_issuance(journal, signer, operation_id)?;
         let before_key = [
             b"storage-repair-before-v1/".as_slice(),
@@ -177,7 +171,7 @@ where
     /// Rejects stale issuance, absent pre-effect custody, an invalid signed
     /// pair, an existing terminal proof, or uncertain protected persistence.
     #[allow(dead_code, reason = "public operator Repair route remains closed")]
-    pub(crate) fn reserve_storage_repair_after_query_v1(
+    fn reserve_storage_repair_after_query_v1(
         &mut self,
         signer: &ProtectedOperatorRecoverySignerV1,
         owner: &ProtectedStorageRepairReceiptVerifierV2,
@@ -186,7 +180,7 @@ where
         signed_receipt: &[u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2],
         request_id: [u8; 16],
     ) -> Result<[u8; 16], OperatorRecoveryIssuanceErrorV1> {
-        let journal = self.reconciler.journal_mut();
+        let journal = self.repair_journal();
         let (issued, effect_id) = current_issuance(journal, signer, operation_id)?;
         let intent =
             verify_operator_recovery_effect_intent_v1(&issued.signed_intent, signer.verifier())
@@ -214,15 +208,17 @@ where
 
     /// Reserves a new live Inventory request only after the exact owner proof is sealed.
     ///
-    /// A cold retry replaces the prior terminal challenge while the protected
-    /// predecessor is still current. No public success is implied by the query.
+    /// Only this post-completion stage may retain the original signed issuance
+    /// after a public predecessor replacement. The complete owner pair, sealed
+    /// proof and original pending admission are still required; no public
+    /// success or new physical execution is implied by the query.
     ///
     /// # Errors
     ///
-    /// Rejects absent or changed proof, owner-key rotation, stale head, zero
+    /// Rejects absent or changed proof, owner-key rotation, invalid admission, zero
     /// request ID, or uncertain protected challenge persistence.
     #[allow(dead_code, reason = "public operator Repair route remains closed")]
-    pub(crate) fn reserve_storage_repair_terminal_query_v1(
+    fn reserve_storage_repair_terminal_query_v1(
         &mut self,
         signer: &ProtectedOperatorRecoverySignerV1,
         owner: &ProtectedStorageRepairReceiptVerifierV2,
@@ -230,11 +226,14 @@ where
         request_id: [u8; 16],
     ) -> Result<[u8; 16], OperatorRecoveryIssuanceErrorV1> {
         owner.recheck()?;
-        let journal = self.reconciler.journal_mut();
-        let (issued, effect_id) = current_issuance(journal, signer, operation_id)?;
-        let intent =
-            verify_operator_recovery_effect_intent_v1(&issued.signed_intent, signer.verifier())
-                .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let journal = self.repair_journal();
+        signer.credential.recheck().map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
+        journal.ensure_protected_authority().map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let (issued, intent) = terminal::issued_intent(journal, signer, operation_id)?;
+        let effect_id = intent.effect_id;
+        crate::reconciler::pending_operator_repair_ledger_v1(
+            journal, operation_id, intent.target_id, issued.public_request_digest,
+        ).map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
         let owner_facts = verified_retained_repair_receipt_v3(journal, &intent, owner)?;
         terminal::read_sealed_proof_v2(
             journal,
@@ -271,6 +270,8 @@ where
         Ok(reserved)
     }
 }
+
+impl<T: super::RepairJournalOwnerV1> RepairProbeChallengeV1 for T {}
 
 fn current_issuance(
     journal: &mut Journal,
@@ -310,7 +311,7 @@ fn current_issuance(
 }
 
 pub(super) fn read(
-    journal: &mut Journal,
+    journal: &Journal,
     issued: &StorageRepairIssuanceV2,
     effect_id: [u8; 32],
     stage: ProbeStageV1,
@@ -390,7 +391,7 @@ fn reserve(
     Ok(request_id)
 }
 
-fn key(stage: ProbeStageV1, operation_id: [u8; 16]) -> Vec<u8> {
+pub(super) fn key(stage: ProbeStageV1, operation_id: [u8; 16]) -> Vec<u8> {
     [PREFIX, &[stage as u8], operation_id.as_slice()].concat()
 }
 

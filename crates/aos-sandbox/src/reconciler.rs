@@ -47,6 +47,7 @@ mod effect;
 #[cfg(target_os = "linux")]
 mod fuse_admission;
 mod observe_reservation;
+mod operator_repair_failure;
 pub(crate) mod project_admission;
 mod public_operation;
 mod runtime_authority;
@@ -61,6 +62,11 @@ pub(crate) use runtime_authority::{
 };
 
 use create_failure::CreateFailureReceiptV1;
+pub(crate) use operator_repair_failure::{
+    RepairPreconditionFailureReceiptV1,
+    RECEIPT_BYTES as REPAIR_FAILURE_RECEIPT_BYTES,
+    RECEIPT_DOMAIN as REPAIR_FAILURE_RECEIPT_DOMAIN,
+};
 pub use effect::{
     AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1, AuthorityEffectObservationV1,
     EffectDomain, EffectPlan, PreparedAuthorityBrokerRequestV1, PreparedAuthorityEffectV1,
@@ -716,6 +722,15 @@ pub enum EffectFailure {
     Permanent(String),
 }
 
+/// Reports method-specific Repair orchestration without a generic Apply receipt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperatorStorageRepairReconcileV1 {
+    /// Original physical or terminal custody remains pending or ambiguous.
+    Pending,
+    /// The actual six-row terminal CAS and exact owner settlement completed.
+    Terminal,
+}
+
 impl EffectFailure {
     fn diagnostic(&self) -> &str {
         match self {
@@ -813,6 +828,28 @@ pub trait SingleNodeEffectExecutor {
         step: u32,
         plan: &EffectPlan,
     ) -> Result<EffectReceipt, EffectFailure>;
+
+    /// Reconciles the exact public Storage Repair through its atomic terminal owner.
+    ///
+    /// This method-specific hook may commit the accepted Effect and Operation
+    /// only together with the checked Sandbox successor, recovery head, exact
+    /// predecessor archive and held receipt. It must not return a receipt for
+    /// generic Apply to commit separately. Other public methods never use it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a retryable failure for unavailable qualified orchestration or
+    /// unsettled original custody, and a permanent failure for contradictions.
+    fn reconcile_operator_storage_repair(
+        &mut self,
+        _operation_id: OperationId,
+        _step: u32,
+        _plan: &EffectPlan,
+        _journal: &mut Journal,
+        _completion_wall_seconds: i64,
+    ) -> Result<OperatorStorageRepairReconcileV1, EffectFailure> {
+        Err(EffectFailure::Retryable("operator Storage Repair coordinator is unavailable".to_owned()))
+    }
 
     /// Observes one controller-orchestration effect with journal custody.
     ///
@@ -1689,15 +1726,24 @@ where
         let gate = self.load_and_validate_ownership_gate(operation_id, operation)?;
         match operation.state {
             OperationState::OwnershipPending => return Ok(ReconcileOutcome::OwnershipPending),
-            OperationState::Succeeded => return Ok(ReconcileOutcome::Succeeded),
+            OperationState::Succeeded | OperationState::PermanentlyBlocked => {
+                if has_operator_repair_settlement_debt_v1(&self.journal, operation_id)? {
+                    let effect = decode_effect(self.journal.get(RecordNamespace::Effect,
+                        &effect_key(operation_id, 0)).ok_or(ReconcilerError::CorruptLedger("Repair settlement debt lost its effect"))?)?;
+                    return self.reconcile_applying(operation_id, 0, operation.effect_count, 1,
+                        effect.plan, None, None, wall_seconds);
+                }
+                return Ok(if operation.state == OperationState::Succeeded {
+                    ReconcileOutcome::Succeeded
+                } else {
+                    ReconcileOutcome::PermanentlyBlocked
+                });
+            }
             OperationState::CanceledBeforeCommit => {
                 return Ok(ReconcileOutcome::CanceledBeforeCommit);
             }
             OperationState::FailedBeforeCommit => {
                 return Ok(ReconcileOutcome::FailedBeforeCommit);
-            }
-            OperationState::PermanentlyBlocked => {
-                return Ok(ReconcileOutcome::PermanentlyBlocked);
             }
             OperationState::Accepted | OperationState::Applying => {}
         }
@@ -1876,7 +1922,9 @@ where
         for (key, value) in self.journal.records(RecordNamespace::Operation) {
             let operation_id = decode_operation_key(key)?;
             let operation = decode_operation(value)?;
-            if operation.state.is_terminal() || operation.state == OperationState::OwnershipPending
+            if (operation.state.is_terminal()
+                && !has_operator_repair_settlement_debt_v1(&self.journal, operation_id)?)
+                || operation.state == OperationState::OwnershipPending
             {
                 continue;
             }
@@ -2324,6 +2372,7 @@ where
     ) -> Result<Option<OwnershipGateStatusV1>, ReconcilerError> {
         self.validate_canceled_operation(operation_id, operation)?;
         create_failure::validate_failed_create_operation(&self.journal, operation_id, operation)?;
+        operator_repair_failure::validate_operation(&self.journal, operation_id, operation)?;
         let gate = self
             .journal
             .get(RecordNamespace::OwnershipGate, operation_id.as_bytes())
@@ -2630,6 +2679,39 @@ where
         authority_gate: Option<(SandboxId, ObjectDigest)>,
         wall_seconds: Option<i64>,
     ) -> Result<ReconcileOutcome, ReconcilerError> {
+        if is_operator_storage_repair_effect_v1(&plan)? {
+            if step != 0 || effect_count != 1 || dispatch.is_some() || authority_gate.is_some() {
+                return Err(ReconcilerError::InvalidPlan("operator Storage Repair has a nonexact effect graph"));
+            }
+            let Some(clock) = wall_seconds else { return Ok(ReconcileOutcome::RetryPending); };
+            let result = self.executor.reconcile_operator_storage_repair(
+                operation_id, step, &plan, &mut self.journal, clock,
+            );
+            self.ledger_validated = false;
+            self.ensure_ledger_validated()?;
+            match result {
+                Ok(OperatorStorageRepairReconcileV1::Terminal) => {
+                    #[cfg(target_os = "linux")]
+                    let decision = crate::controller::verify_atomic_operator_storage_repair_terminal_v2(&mut self.journal, operation_id)
+                        .map_err(|_| ReconcilerError::InvalidExecutorOutput("Repair terminal rows failed independent readback"))?;
+                    #[cfg(not(target_os = "linux"))]
+                    return Err(ReconcilerError::InvalidExecutorOutput("Repair terminal owner is unsupported"));
+                    #[cfg(target_os = "linux")]
+                    return Ok(match decision {
+                        crate::controller::RepairPublicTerminalV1::Succeeded => ReconcileOutcome::Succeeded,
+                        crate::controller::RepairPublicTerminalV1::OriginalPreconditionReplaced => ReconcileOutcome::PermanentlyBlocked,
+                    });
+                }
+                Ok(OperatorStorageRepairReconcileV1::Pending) | Err(EffectFailure::Retryable(_)) => {
+                    return Ok(ReconcileOutcome::RetryPending);
+                }
+                Err(EffectFailure::Permanent(_)) => {
+                    // A contradicted possibly sent Repair stays under original
+                    // custody. Generic failure cannot rewrite its terminal rows.
+                    return Err(ReconcilerError::InvalidExecutorOutput("Repair coordinator contradicted original custody"));
+                }
+            }
+        }
         let receipt = if let Some(prepared) = dispatch.as_ref() {
             let observed = match self
                 .executor
@@ -3067,6 +3149,7 @@ pub(crate) fn recovered_public_operation_resource_v1(
     let mut blocked_effects = 0_u32;
     let mut canceled_effects = 0_u32;
     let mut failed_create_effects = 0_u32;
+    let mut failed_repair_effects = 0_u32;
     let mut controller_method = None;
     let mut effect_records = Vec::with_capacity(operation.effect_count as usize);
     for step in 0..operation.effect_count {
@@ -3080,6 +3163,14 @@ pub(crate) fn recovered_public_operation_resource_v1(
         match effect.state {
             EffectState::Applied { ref receipt, .. } => {
                 increment_effect_count(&mut applied_effects)?;
+                if operator_repair_failure::classify(receipt)? {
+                    if step != 0 || operation.effect_count != 1
+                        || !is_operator_storage_repair_effect_v1(&effect.plan)?
+                    {
+                        return Err(ReconcilerError::CorruptLedger("Repair failure has another method or step"));
+                    }
+                    increment_effect_count(&mut failed_repair_effects)?;
+                }
                 if receipt
                     .canceled_before_commit_evidence()
                     .map_err(|()| {
@@ -3151,12 +3242,26 @@ pub(crate) fn recovered_public_operation_resource_v1(
         OperationState::FailedBeforeCommit => {
             applied_effects == 1 && failed_create_effects == 1 && canceled_effects == 0
         }
-        OperationState::PermanentlyBlocked => blocked_effects != 0 && failed_create_effects == 0,
+        OperationState::PermanentlyBlocked => {
+            failed_create_effects == 0 && canceled_effects == 0
+                && ((failed_repair_effects == 0 && blocked_effects != 0)
+                    || (failed_repair_effects == 1 && applied_effects == 1
+                        && applying_effects == 0 && blocked_effects == 0))
+        }
     };
-    if !state_matches_effects {
+    if !state_matches_effects
+        || (failed_repair_effects != 0 && operation.state != OperationState::PermanentlyBlocked)
+    {
         return Err(ReconcilerError::CorruptLedger(
             "public operation state contradicts its effects",
         ));
+    }
+
+    if failed_repair_effects == 1 {
+        operator_repair_failure::validate(journal, operation_id)?;
+        return Ok(Some(public.project_original_precondition_replaced(
+            operation_id, operation_bytes, &effect_records,
+        )));
     }
 
     // A failed-Create receipt occupies an Applied ledger slot for atomic
@@ -3426,6 +3531,28 @@ impl PendingOperatorRepairLedgerV1 {
         receipt: EffectReceipt,
         completion_wall_seconds: i64,
     ) -> Result<[JournalRecord; 2], ReconcilerError> {
+        self.complete_decision(receipt, completion_wall_seconds, OperationState::Succeeded)
+    }
+
+    /// Retains physical completion without publishing a replaced public successor.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid receipt, clock, attempt, or durable ledger encoding.
+    pub(crate) fn complete_original_precondition_replaced(
+        self,
+        receipt: EffectReceipt,
+        completion_wall_seconds: i64,
+    ) -> Result<[JournalRecord; 2], ReconcilerError> {
+        self.complete_decision(receipt, completion_wall_seconds, OperationState::PermanentlyBlocked)
+    }
+
+    fn complete_decision(
+        self,
+        receipt: EffectReceipt,
+        completion_wall_seconds: i64,
+        decision: OperationState,
+    ) -> Result<[JournalRecord; 2], ReconcilerError> {
         let attempt = match &self.effect.state {
             EffectState::Planned => 1,
             EffectState::Applying { attempt, .. } => *attempt,
@@ -3446,9 +3573,9 @@ impl PendingOperatorRepairLedgerV1 {
             .ok_or(ReconcilerError::InvalidPlan(
                 "Repair operation is not public",
             ))?
-            .advance(OperationState::Succeeded, completion_wall_seconds)?;
+            .advance(decision, completion_wall_seconds)?;
         let operation = encode_operation_record(OperationRecord {
-            state: OperationState::Succeeded,
+            state: decision,
             public_operation: Some(public),
             ..self.operation
         });
@@ -3481,9 +3608,6 @@ pub(crate) fn pending_operator_repair_ledger_v1(
     sandbox_id: [u8; 16],
     request_digest: [u8; 32],
 ) -> Result<PendingOperatorRepairLedgerV1, ReconcilerError> {
-    use aos_proto::aos::sandbox::v1::OperatorRecoveryAction;
-    use aos_sandbox_core::{ResourceKind, Selector};
-
     journal.ensure_protected_authority()?;
     let operation_bytes = journal
         .get(RecordNamespace::Operation, operation_id.as_bytes())
@@ -3493,6 +3617,23 @@ pub(crate) fn pending_operator_repair_ledger_v1(
         .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
         .ok_or(ReconcilerError::CorruptLedger("Repair effect is absent"))?;
     let effect = decode_effect(effect_bytes)?;
+    recovered_public_operation_resource_v1(journal, operation_id)?.ok_or(
+        ReconcilerError::CorruptLedger("Repair public operation is absent"),
+    )?;
+    pending_operator_repair_from_exact_rows_v1(journal, operation_id, sandbox_id, request_digest, operation, effect)
+}
+
+fn pending_operator_repair_from_exact_rows_v1(
+    journal: &Journal,
+    operation_id: OperationId,
+    sandbox_id: [u8; 16],
+    request_digest: [u8; 32],
+    operation: OperationRecord,
+    effect: EffectLedgerRecord,
+) -> Result<PendingOperatorRepairLedgerV1, ReconcilerError> {
+    use aos_proto::aos::sandbox::v1::OperatorRecoveryAction;
+    use aos_sandbox_core::{ResourceKind, Selector};
+
     let context = effect
         .plan
         .public_mutation_context()?
@@ -3546,10 +3687,6 @@ pub(crate) fn pending_operator_repair_ledger_v1(
             "pending public Repair ledger disagrees",
         ));
     }
-    recovered_public_operation_resource_v1(journal, operation_id)?.ok_or(
-        ReconcilerError::CorruptLedger("Repair public operation is absent"),
-    )?;
-
     Ok(PendingOperatorRepairLedgerV1 {
         operation_id,
         operation,
@@ -3557,6 +3694,79 @@ pub(crate) fn pending_operator_repair_ledger_v1(
         request,
         context,
     })
+}
+
+/// Verifies exact terminal public rows against the checked archived predecessor.
+pub(crate) fn verify_operator_repair_terminal_public_rows_v2(
+    journal: &Journal,
+    operation_id: OperationId,
+    sandbox_id: [u8; 16],
+    request_digest: [u8; 32],
+    predecessor_operation: &[u8],
+    predecessor_effect: &[u8],
+    receipt: &[u8],
+    completion_wall_seconds: i64,
+) -> Result<(), ReconcilerError> {
+    journal.ensure_protected_authority()?;
+    let pending = pending_operator_repair_from_exact_rows_v1(journal, operation_id, sandbox_id,
+        request_digest, decode_operation(predecessor_operation)?, decode_effect(predecessor_effect)?)?;
+    let terminal = pending.complete(EffectReceipt::new(receipt.to_vec())?, completion_wall_seconds)?;
+    if !terminal.iter().all(|record| journal.get(record.namespace(), record.key()) == record.value()) {
+        return Err(ReconcilerError::CorruptLedger("Repair terminal public rows disagree with exact predecessor"));
+    }
+    Ok(())
+}
+
+/// Regenerates only the original Repair's truthful failure decision rows.
+///
+/// Archived predecessor bytes retain their original admission and attempt;
+/// this method neither rebases a resource nor accepts generic failure evidence.
+///
+/// # Errors
+///
+/// Rejects inconsistent original authorization, idempotency, receipt, or clock.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn operator_repair_failure_terminal_rows_v1(
+    journal: &Journal,
+    operation_id: OperationId,
+    sandbox_id: [u8; 16],
+    request_digest: [u8; 32],
+    predecessor_operation: &[u8],
+    predecessor_effect: &[u8],
+    receipt: &[u8],
+    completion_wall_seconds: i64,
+) -> Result<[JournalRecord; 2], ReconcilerError> {
+    journal.ensure_protected_authority()?;
+    let failure = RepairPreconditionFailureReceiptV1::decode(receipt)
+        .map_err(|()| ReconcilerError::CorruptLedger("invalid Repair failure decision"))?;
+    if failure.operation() != operation_id {
+        return Err(ReconcilerError::CorruptLedger("Repair failure names another operation"));
+    }
+    pending_operator_repair_from_exact_rows_v1(
+        journal, operation_id, sandbox_id, request_digest,
+        decode_operation(predecessor_operation)?, decode_effect(predecessor_effect)?,
+    )?.complete_original_precondition_replaced(
+        EffectReceipt::new(receipt.to_vec())?, completion_wall_seconds,
+    )
+}
+
+/// Joins archived original rows to the real authorization and idempotency owner.
+///
+/// # Errors
+///
+/// Rejects terminal predecessors or substituted original request custody.
+pub(crate) fn operator_repair_original_ledger_v1(
+    journal: &Journal,
+    operation_id: OperationId,
+    sandbox_id: [u8; 16],
+    request_digest: [u8; 32],
+    predecessor_operation: &[u8],
+    predecessor_effect: &[u8],
+) -> Result<PendingOperatorRepairLedgerV1, ReconcilerError> {
+    pending_operator_repair_from_exact_rows_v1(
+        journal, operation_id, sandbox_id, request_digest,
+        decode_operation(predecessor_operation)?, decode_effect(predecessor_effect)?,
+    )
 }
 
 /// Reads the exact accepted CreateExecution effect from protected operation custody.
@@ -3749,6 +3959,41 @@ fn increment_effect_count(count: &mut u32) -> Result<(), ReconcilerError> {
         .checked_add(1)
         .ok_or(ReconcilerError::CorruptLedger("effect count overflow"))?;
     Ok(())
+}
+
+fn is_operator_storage_repair_effect_v1(plan: &EffectPlan) -> Result<bool, ReconcilerError> {
+    if plan.public_mutation_method() != Some(crate::controller_query::PublicOperationMethodV1::OperatorRecover) {
+        return Ok(false);
+    }
+    let Some(context) = plan.public_mutation_context()? else { return Ok(false); };
+    let crate::cli_model::DormantSandboxRequestKindV1::OperatorRecover(request) = context.validated_request()? else {
+        return Err(ReconcilerError::InvalidPlan("Recover effect has another public request"));
+    };
+    let request = crate::cli_model::OperatorRecoveryRequestV1::try_from(request)
+        .map_err(|_| ReconcilerError::InvalidPlan("Recover effect request is invalid"))?;
+    Ok(request.action() == aos_proto::aos::sandbox::v1::OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_REPAIR as i32)
+}
+
+fn has_operator_repair_settlement_debt_v1(journal: &Journal, operation: OperationId) -> Result<bool, ReconcilerError> {
+    let Some(effect) = journal.get(RecordNamespace::Effect, &effect_key(operation, 0)) else { return Ok(false); };
+    if !is_operator_storage_repair_effect_v1(&decode_effect(effect)?.plan)? {
+        return Ok(false);
+    }
+    let mut has_hold = false;
+    for epoch in 0..4_u8 {
+        let hold = [b"storage-repair-progress-v1/".as_slice(), operation.as_bytes(), &[8 + 3 * epoch]].concat();
+        has_hold |= journal.get(RecordNamespace::OperatorRecovery, &hold).is_some();
+    }
+    if !has_hold {
+        return Ok(false);
+    }
+
+    #[cfg(target_os = "linux")]
+    return crate::controller::has_operator_storage_repair_settlement_debt_v1(journal, operation)
+        .map_err(|_| ReconcilerError::CorruptLedger("invalid Repair owner settlement custody"));
+
+    #[cfg(not(target_os = "linux"))]
+    Err(ReconcilerError::CorruptLedger("Repair owner settlement requires Linux custody"))
 }
 
 fn effect_key(operation_id: OperationId, step: u32) -> [u8; EFFECT_KEY_BYTES] {

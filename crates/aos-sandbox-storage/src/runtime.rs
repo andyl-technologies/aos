@@ -13,10 +13,15 @@
 //! not accept a caller-provided boolean as proof of completeness.
 //! Repair worker admission closes before the final pin/ZFS and guest-root
 //! cgroup scans; it does not itself authorize a Repair commit.
+//! The explicit operator-listener constructor acquires four existing writers
+//! before startup mutation, retaining a genuine sidecar debt token until exact
+//! settlement. Its terminal-only observation never materializes catalog rows.
 
 mod native_acquire;
+mod operator_terminal_hold;
 mod native_readback;
 mod repair_worker_drain;
+mod operator_startup;
 pub(crate) use native_acquire::{StorageNativeDeliveryOutcomeV2, validate_native_request_clock};
 
 use std::io::Read as _;
@@ -445,6 +450,7 @@ pub struct StorageBrokerRuntime {
     resolver_policies: Option<ProtectedStorageResolverPolicyDirectoryV1>,
     prepare_readiness: StoragePrepareReadiness,
     worker_dispatch: RepairWorkerDispatchGate,
+    operator_startup: Option<operator_startup::DeferredOperatorStartupV4>,
     #[cfg(test)]
     fail_repair_completion_commit_for_test: bool,
 }
@@ -1036,7 +1042,9 @@ impl StorageBrokerRuntime {
             zfs_executable,
             executor,
             StorageApplyConstructionV1::Closed,
+            None,
         )
+        .map(|(runtime, _)| runtime)
     }
 
     /// Opens the runtime with an optional external resolver-policy publication.
@@ -1074,7 +1082,9 @@ impl StorageBrokerRuntime {
             zfs_executable,
             executor,
             StorageApplyConstructionV1::Closed,
+            None,
         )
+        .map(|(runtime, _)| runtime)
     }
 
     /// Opens the source-only protected Apply and Snapshot worker composition.
@@ -1109,7 +1119,9 @@ impl StorageBrokerRuntime {
             zfs_executable,
             executor,
             StorageApplyConstructionV1::DormantProtectedWorker,
+            None,
         )
+        .map(|(runtime, _)| runtime)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1122,7 +1134,13 @@ impl StorageBrokerRuntime {
         zfs_executable: PathBuf,
         executor: SystemdZfsExecutor,
         apply_construction: StorageApplyConstructionV1,
-    ) -> Result<Self, StorageRuntimeError> {
+        operator_credentials: Option<
+            &crate::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1,
+        >,
+    ) -> Result<
+        (Self, Option<crate::operator_recovery::StorageOperatorRecoveryOwnerV1>),
+        StorageRuntimeError,
+    > {
         // Retain the host mount namespace before constructing any subsystem
         // that may later acquire a namespace-scoped helper.
         let pin_custody = WorkspacePinHostCustody::retain_initial_root_owned()
@@ -1134,14 +1152,24 @@ impl StorageBrokerRuntime {
         let authority_binding = protected_configuration.public_binding();
         let (authority, state_key, _) = protected_configuration.into_parts();
         let bootstrap = ProtectedStorageBootstrap::open_root_owned(bootstrap_directory)?;
-        let transactions = StorageTransactionStore::open_root_owned_runtime(
-            state_directory,
-            state_key,
-            bootstrap.minimum_generation,
-            configuration_binding,
-            bootstrap.genesis_generation,
-            &bootstrap.catalogs,
-        )?;
+        let transactions = match operator_credentials {
+            Some(_) => StorageTransactionStore::open_existing_root_owned_runtime(
+                state_directory,
+                state_key,
+                bootstrap.minimum_generation,
+                configuration_binding,
+                bootstrap.genesis_generation,
+                &bootstrap.catalogs,
+            )?,
+            None => StorageTransactionStore::open_root_owned_runtime(
+                state_directory,
+                state_key,
+                bootstrap.minimum_generation,
+                configuration_binding,
+                bootstrap.genesis_generation,
+                &bootstrap.catalogs,
+            )?,
+        };
         let contract = ZfsHelperContract::new(zfs_executable)?;
         let pin_executor = SystemdWorkspacePinExecutor::new(
             PathBuf::from(WORKSPACE_PIN_WORKER_SOCKET),
@@ -1176,11 +1204,16 @@ impl StorageBrokerRuntime {
         coordinator
             .authenticate_catalog_preparations()
             .map_err(StorageRuntimeError::Admission)?;
-        let (resolver_policies, prepare_readiness) = configure_resolver_policy(
-            &mut coordinator,
-            resolver_policy_directory,
-            authority_binding,
-        )?;
+        let (resolver_policies, prepare_readiness) = if operator_credentials.is_some() {
+            // The actual sidecar is not held yet; policy admission can write.
+            (None, StoragePrepareReadiness::Unconfigured)
+        } else {
+            configure_resolver_policy(
+                &mut coordinator,
+                resolver_policy_directory,
+                authority_binding,
+            )?
+        };
         // Historical repair authority must authenticate before either ordinary
         // effect histories or the workspace inventory becomes an input.
         // Keep both exclusive journals for the runtime lifetime. Acquiring the
@@ -1189,22 +1222,52 @@ impl StorageBrokerRuntime {
             trusted_paired_clock_sample()
                 .map_err(|_| crate::StorageAdmissionError::VerificationFailed)
         };
-        let workspaces = open_validated_workspace_catalog_after_startup(
-            &mut coordinator,
-            &mut startup_clock,
-            || {
-                PendingStorageWorkspaceCatalogV1::open_root_owned(state_directory, identity_pool)
-                    .map_err(Into::into)
-            },
-        )?;
+        let workspaces = if operator_credentials.is_some() {
+            authenticate_startup_authority(&coordinator)?;
+            let pending = PendingStorageWorkspaceCatalogV1::open_existing_root_owned(
+                state_directory,
+                identity_pool,
+            )?;
+            let (plan, _) = coordinator.workspace_catalog_activation_plan()?;
+            pending.validate_plan(plan)?
+        } else {
+            open_validated_workspace_catalog_after_startup(
+                &mut coordinator,
+                &mut startup_clock,
+                || {
+                    PendingStorageWorkspaceCatalogV1::open_root_owned(state_directory, identity_pool)
+                        .map_err(Into::into)
+                },
+            )?
+        };
         // Preserve one lifetime writer order: primary transaction, workspace,
         // then separate native issuance. Neither acceptance nor ReleaseHold
         // may observe a separately reopened/unheld consumer-interest snapshot.
-        let mut native_issuance = StorageNativeIssuanceLedgerV1::open_root_owned(state_directory)
-            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let mut native_issuance = match operator_credentials {
+            Some(_) => StorageNativeIssuanceLedgerV1::open_existing_root_owned(state_directory),
+            None => StorageNativeIssuanceLedgerV1::open_root_owned(state_directory),
+        }
+        .map_err(|_| StorageRuntimeError::Recovery)?;
         native_issuance
             .validate_active_holds(&coordinator)
             .map_err(|_| StorageRuntimeError::Recovery)?;
+
+        // The fourth writer is acquired only after all three lower cuts authenticate.
+        let mut operator_owner = match operator_credentials {
+            Some(credentials) => Some(
+                credentials.open_existing_owner(state_directory)
+                    .map_err(|_| StorageRuntimeError::Recovery)?,
+            ),
+            None => None,
+        };
+        let operator_startup = match operator_owner.as_mut() {
+            Some(owner) => Some(operator_startup::DeferredOperatorStartupV4::capture(
+                owner,
+                resolver_policy_directory,
+                authority_binding,
+            )?),
+            None => None,
+        };
         let broker_instance_id = random_challenge()?;
 
         let (backend, apply_readiness) = match apply_construction {
@@ -1241,11 +1304,17 @@ impl StorageBrokerRuntime {
             resolver_policies,
             prepare_readiness,
             worker_dispatch: RepairWorkerDispatchGate::new(),
+            operator_startup,
             #[cfg(test)]
             fail_repair_completion_commit_for_test: false,
         };
-        runtime.readiness = runtime.reconcile_startup()?;
-        Ok(runtime)
+        if let Some(owner) = operator_owner.as_mut() {
+            runtime.finish_operator_construction_v4(owner)?;
+        } else {
+            runtime.readiness = runtime.reconcile_startup()?;
+        }
+
+        Ok((runtime, operator_owner))
     }
 
     #[cfg(test)]
@@ -1297,6 +1366,7 @@ impl StorageBrokerRuntime {
             resolver_policies: None,
             prepare_readiness: StoragePrepareReadiness::Unconfigured,
             worker_dispatch: RepairWorkerDispatchGate::new(),
+            operator_startup: None,
             fail_repair_completion_commit_for_test: false,
         };
         runtime.readiness = runtime.reconcile_startup()?;
@@ -1346,6 +1416,7 @@ impl StorageBrokerRuntime {
             resolver_policies: None,
             prepare_readiness: StoragePrepareReadiness::Unconfigured,
             worker_dispatch: RepairWorkerDispatchGate::new(),
+            operator_startup: None,
             fail_repair_completion_commit_for_test: false,
         };
         runtime.readiness = runtime.reconcile_startup()?;
@@ -1525,6 +1596,17 @@ impl StorageBrokerRuntime {
             return Err(StorageRuntimeError::Recovery);
         }
 
+        self.reobserve_workspace_inventory(
+            activation_deadline_boottime_nanoseconds,
+            worker_cutoff_boottime_nanoseconds,
+        )
+    }
+
+    fn reobserve_workspace_inventory(
+        &mut self,
+        activation_deadline_boottime_nanoseconds: u64,
+        worker_cutoff_boottime_nanoseconds: u64,
+    ) -> Result<Vec<u8>, StorageRuntimeError> {
         let validated = self
             .workspaces
             .take()
@@ -1835,6 +1917,13 @@ impl StorageBrokerRuntime {
             activation_deadline_boottime_nanoseconds,
             worker_cutoff_boottime_nanoseconds,
         )?;
+        self.complete_inventory_from_workspace_bytes(inventory)
+    }
+
+    fn complete_inventory_from_workspace_bytes(
+        &self,
+        inventory: Vec<u8>,
+    ) -> Result<Vec<u8>, StorageRuntimeError> {
         let inventory = crate::lifecycle_inventory::attach_complete_lifecycle_inventory(
             &self.coordinator,
             &inventory,
@@ -1954,13 +2043,24 @@ impl StorageBrokerRuntime {
             Ok(now) => now,
             Err(error) => return Err((Some(candidate.into_validated()), error.into())),
         };
-        let activated = match candidate.activate(
-            recomposed_plan,
-            recomposed_physical_plan,
-            recomposed_request,
-            fresh,
-            now,
-        ) {
+        let promotion = if self.has_deferred_operator_debt_v4() {
+            candidate.activate_operator_terminal_readonly_v4(
+                recomposed_plan,
+                recomposed_physical_plan,
+                recomposed_request,
+                fresh,
+                now,
+            )
+        } else {
+            candidate.activate(
+                recomposed_plan,
+                recomposed_physical_plan,
+                recomposed_request,
+                fresh,
+                now,
+            )
+        };
+        let activated = match promotion {
             Ok(activated) => activated,
             Err(failure) => {
                 let (validated, error) = failure.into_parts();

@@ -42,9 +42,7 @@ use super::{
     CURRENT_HEAD_DOMAIN_V2, OperatorRecoveryIssuanceErrorV1, ProtectedOperatorRecoverySignerV1,
     StorageRepairIssuanceV2, hash, issuance_key_v2,
 };
-use crate::controller::{
-    ActivatedOperationCompiler, NodeController, SingleNodeEffectExecutor, recovery_current_key,
-};
+use crate::controller::recovery_current_key;
 use crate::lifecycle::LifecycleAuthenticatedStorageInventoryV1;
 use crate::public_api_session::PinnedOperatorRecoveryKeyV1;
 use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
@@ -108,6 +106,17 @@ impl ProtectedStorageRepairReceiptVerifierV2 {
 
     pub(super) const fn verifier(&self) -> &VerifyingKey {
         &self.pin.verifier
+    }
+
+    pub(super) fn verify_terminal_witness_v4(
+        &self,
+        bytes: &[u8],
+        request: &aos_sandbox_protocol::operator_storage_repair_terminal_v4::RepairTerminalRequestV4,
+    ) -> Result<aos_sandbox_protocol::operator_storage_repair_terminal_v4::RepairTerminalWitnessV4, OperatorRecoveryIssuanceErrorV1> {
+        self.recheck()?;
+        aos_sandbox_protocol::operator_storage_repair_terminal_v4::RepairTerminalWitnessV4::verify(
+            bytes, request, self.pin.owner_id, self.pin.key_generation, &self.pin.verifier,
+        ).map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)
     }
 
     pub(super) fn recheck(&self) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
@@ -247,11 +256,7 @@ fn decode_owner_key(
     Ok((owner_id, key_generation, verifier))
 }
 
-impl<C, E> NodeController<C, E>
-where
-    C: ActivatedOperationCompiler,
-    E: SingleNodeEffectExecutor,
-{
+pub(super) trait RepairReceiptV1: super::RepairJournalOwnerV1 {
     /// Retains an authenticated owner's exact completed repair receipt.
     ///
     /// This does not complete the public operation or advance its current head.
@@ -266,7 +271,7 @@ where
     /// mismatched signed receipt, nonphysical inventory, or uncertain commit.
     #[allow(dead_code, reason = "operator receipt transport is not installed")]
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn retain_storage_repair_receipt_v3(
+    fn retain_storage_repair_receipt_v3(
         &mut self,
         signer: &ProtectedOperatorRecoverySignerV1,
         owner: &ProtectedStorageRepairReceiptVerifierV2,
@@ -283,7 +288,7 @@ where
             .recheck()
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
         owner.recheck()?;
-        let journal = self.reconciler.journal_mut();
+        let journal = self.repair_journal();
         journal
             .ensure_protected_authority()
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
@@ -359,6 +364,8 @@ where
         owner.recheck()
     }
 }
+
+impl<T: super::RepairJournalOwnerV1> RepairReceiptV1 for T {}
 
 fn authenticated_after_body(
     after: &AuthenticatedBrokerMethodOutcomeV1,
