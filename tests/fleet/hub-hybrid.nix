@@ -22,7 +22,7 @@
   };
   containerPublicationInputs = containerFixture.config.system.build.containers.aos.publicationInputs;
   caCertificate = builtins.readFile ../fixtures/hub-hybrid-fleet-ca.crt;
-  s3CertificatePem = builtins.readFile ../fixtures/hub-hybrid-fleet-s3.crt;
+  s3CaCertificate = builtins.readFile ../fixtures/hub-hybrid-fleet-s3-ca.crt;
   writeFixture = name: text:
     pkgs.writeTextFile {
       inherit name text;
@@ -35,7 +35,9 @@
   serverPrivateKey = writeFixture "hub-hybrid-fleet-private-key" (
     builtins.readFile ../fixtures/hub-hybrid-fleet-server.key
   );
-  s3Certificate = writeFixture "hub-hybrid-fleet-s3-certificate" s3CertificatePem;
+  s3Certificate = writeFixture "hub-hybrid-fleet-s3-certificate" (
+    builtins.readFile ../fixtures/hub-hybrid-fleet-s3.crt
+  );
   s3PrivateKey = writeFixture "hub-hybrid-fleet-s3-private-key" (
     builtins.readFile ../fixtures/hub-hybrid-fleet-s3.key
   );
@@ -150,7 +152,7 @@
             tlsPrivateKey = "hybrid-fleet-private-key";
           };
         };
-        aos.security.pki.certificates = [caCertificate s3CertificatePem];
+        aos.security.pki.certificates = [caCertificate s3CaCertificate];
         aos.firewall.allowedTCP = [443];
         aos.kernel.modules = ["9pnet_virtio" "9p"];
         environment.systemPackages = [pkgs.util-linux];
@@ -180,7 +182,7 @@
   edgeSystem = mkSystem [
     ../../systems/server-test.nix
     {
-      aos.security.pki.certificates = [caCertificate s3CertificatePem];
+      aos.security.pki.certificates = [caCertificate s3CaCertificate];
       aos.firewall.allowedTCP = [443];
       aos.kernel.modules = ["9pnet_virtio" "9p"];
       environment.systemPackages = [pkgs.util-linux];
@@ -189,7 +191,7 @@
   clientSystem = mkSystem [
     ../../systems/server-test.nix
     {
-      aos.security.pki.certificates = [caCertificate s3CertificatePem];
+      aos.security.pki.certificates = [caCertificate s3CaCertificate];
       aos.kernel.modules = ["9pnet_virtio" "9p"];
       environment.systemPackages = [pkgs.util-linux];
     }
