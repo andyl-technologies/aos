@@ -47,7 +47,7 @@ in
           # Release sources include the neural model data. Build the production
           # recovery and speech enhancements without fetching weights at build
           # time; applications retain their runtime complexity controls.
-          ./configure \
+          "$CONFIG_SHELL" ./configure \
             $configureFlags \
             --prefix="$out" \
             --enable-shared \

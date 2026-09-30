@@ -5,7 +5,6 @@
   python3,
   buildPackages,
   python3-jinja2,
-  python3-markupsafe,
   python3-railroad-diagrams,
 }:
 mkDerivation {
@@ -19,7 +18,12 @@ mkDerivation {
     hash = "928ae7e20211f3b6f3915a72f06a0cfd29ab9d24279dd6346b6b1a7146397d36";
   };
 
-  buildDeps = [buildPackages.python3];
+  buildDeps = [
+    buildPackages.python3
+    buildPackages.python3-jinja2
+    buildPackages.python3-markupsafe
+    buildPackages.python3-railroad-diagrams
+  ];
   runtimeDeps = [python3 python3-jinja2 python3-railroad-diagrams];
   propagatedDeps = [python3 python3-jinja2 python3-railroad-diagrams];
 
@@ -50,7 +54,7 @@ mkDerivation {
 
         # Preserve the optional diagram API and its actual dependencies rather
         # than packaging only the parser subset used by a particular generator.
-        PYTHONPATH="$site:${python3-jinja2}/lib/python3.14/site-packages:${python3-markupsafe}/lib/python3.14/site-packages:${python3-railroad-diagrams}/lib/python3.14/site-packages" \
+        PYTHONPATH="$site:${buildPackages.python3-jinja2}/lib/python3.14/site-packages:${buildPackages.python3-markupsafe}/lib/python3.14/site-packages:${buildPackages.python3-railroad-diagrams}/lib/python3.14/site-packages" \
           ${buildPackages.python3}/bin/python3 -P - <<'PYTHON'
         import importlib.metadata
         import pyparsing
