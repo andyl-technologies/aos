@@ -23,10 +23,14 @@
         dependencies = builtins.mapAttrs (_: artifacts.metadata) record.artifacts.dependencies;
       };
     }) (modules.closure packages);
+  moduleEnvelopes = builtins.mapAttrs (_: builtins.toString) (modules.envelopes packages);
   descriptor = {
     schema = "aos.package.evaluation-input";
     library = "${library}/default.nix";
     inherit scope;
+    # Envelope payload catalogs discard contexts; these companions retain only
+    # module sources, including schema dependencies absent from selected payloads.
+    inherit moduleEnvelopes;
     packages = {
       inherit system;
       artifacts = map selectedArtifact (modules.payloads packages);
@@ -62,6 +66,7 @@ in
   artifact
   // {
     nativeEvaluationDescriptor = true;
+    nativeModuleEnvelopes = moduleEnvelopes;
     # Exposes the original inputs for build-time replay checks without reading
     # the generated descriptor or treating this metadata as runtime authority.
     nativeEvaluationInputs = {
