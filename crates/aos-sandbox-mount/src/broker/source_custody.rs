@@ -1,4 +1,4 @@
-//! Restores the actual source runtime before revoking a failed Query boundary.
+//! Restores the source runtime before revoking a failed original or Query boundary.
 //!
 //! The loan parks both attachment states. Its destructor performs only direct
 //! ownership restoration and failure latching, never recovery or validation.
@@ -75,7 +75,7 @@ impl Drop for SourceRuntimeLoanV6<'_, '_> {
     }
 }
 
-/// Revokes actual Session after the inner source loan has restored its owner.
+/// Shares failure revocation after the sole source loan restores its actual owner.
 pub(super) struct QueryEntryBoundaryV6<'broker, 'session, W> {
     pub(super) broker: &'broker mut MountBroker<W>,
     pub(super) session: &'session mut CurrentRootMountSourceProviderSessionV1,

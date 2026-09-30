@@ -20,7 +20,6 @@ enum ClosedStage {
 pub(super) struct OriginalRootClosedFlightV5 {
     stage: ClosedStage,
     append: Option<PreparedOriginalRootAppendV5>,
-    readback: Option<OriginalRootProtectedReadbackV5>,
 }
 
 impl OriginalRootClosedFlightV5 {
@@ -29,7 +28,6 @@ impl OriginalRootClosedFlightV5 {
         Self {
             stage: ClosedStage::Sign,
             append: None,
-            readback: None,
         }
     }
 }
@@ -57,8 +55,8 @@ impl OriginalNativeAcquireFlightV5 {
         }
         let received = self.pending.received.as_ref()
             .ok_or_else(|| state_error("original packet absent"))?;
-        let origin = self.pending.closed.readback.as_ref()
-            .ok_or_else(|| state_error("original Closed origin absent"))?;
+        let origin = self.pending.closed.append.as_ref()
+            .ok_or_else(|| state_error("original Closed append absent"))?.readback()?;
         let original = self.attempt.as_ref()
             .ok_or_else(|| state_error("original Attempt absent"))?;
         let (attempt, authorization) = sent.security_parts();
@@ -101,13 +99,15 @@ impl OriginalNativeAcquireFlightV5 {
         session: &mut CurrentRootMountSourceProviderSessionV1,
         sent: &SentProviderQueryV2,
     ) -> Result<bool> {
-        let result = self.advance_root_closed_stage(table, native_index, writer, session, sent);
-        if result.is_err() {
-            self.stop_root_closed();
-            session.invalidate_native_acquire_commit_v3();
-        }
+        OriginalFlightBoundaryV5::new(self, session).run(|flight, session| {
+            let result = flight.advance_root_closed_stage(table, native_index, writer, session, sent);
+            if result.is_err() {
+                flight.stop_root_closed();
+                session.invalidate_native_acquire_commit_v3();
+            }
 
-        result
+            result
+        })
     }
 
     fn advance_root_closed_stage(
@@ -131,9 +131,10 @@ impl OriginalNativeAcquireFlightV5 {
         let (attempt, authorization) = sent.security_parts();
         let phase10 = self
             .pending
-            .readback
+            .append
             .as_ref()
-            .ok_or_else(|| state_error("original8 first-R readback absent"))?;
+            .ok_or_else(|| state_error("original8 first-R append absent"))?
+            .readback()?;
         if phase10.attempt() != attempt {
             return Err(state_error("original8 Sent owner mismatch"));
         }
@@ -174,18 +175,19 @@ impl OriginalNativeAcquireFlightV5 {
                     .pending
                     .closed
                     .append
-                    .as_ref()
+                    .as_mut()
                     .ok_or_else(|| state_error("original8 store append absent"))?;
-                self.pending.closed.readback = Some(writer.commit_prepared(append)?);
+                writer.commit_prepared_retaining_v5(append)?;
 
                 // Park the real readback and leave Commit before all postchecks.
                 self.pending.closed.stage = ClosedStage::Install;
                 let phase11 = self
                     .pending
                     .closed
-                    .readback
+                    .append
                     .as_ref()
-                    .ok_or_else(|| state_error("original8 stored readback absent"))?;
+                    .ok_or_else(|| state_error("original8 stored append absent"))?
+                    .readback()?;
                 session
                     .revalidate_original_root_closed_v5(writer, phase11, authorization, received)
                     .map_err(|_| state_error("original8 actual store lost currentness"))?;
@@ -194,9 +196,10 @@ impl OriginalNativeAcquireFlightV5 {
                 let phase11 = self
                     .pending
                     .closed
-                    .readback
+                    .append
                     .as_ref()
-                    .ok_or_else(|| state_error("original8 install readback absent"))?;
+                    .ok_or_else(|| state_error("original8 install append absent"))?
+                    .readback()?;
                 session
                     .revalidate_original_root_closed_v5(writer, phase11, authorization, received)
                     .map_err(|_| state_error("original8 preinstall lost currentness"))?;
@@ -210,9 +213,10 @@ impl OriginalNativeAcquireFlightV5 {
                 let phase11 = self
                     .pending
                     .closed
-                    .readback
+                    .append
                     .as_ref()
-                    .ok_or_else(|| state_error("original8 send readback absent"))?;
+                    .ok_or_else(|| state_error("original8 send append absent"))?
+                    .readback()?;
                 Self::install(table, native_index, writer, phase11)?;
                 if !session
                     .send_original_root_closed_v5(writer, phase11, authorization, received)
