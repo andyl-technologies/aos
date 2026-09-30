@@ -217,6 +217,7 @@ let
     "libtirpc"
     "libtpms"
     "libusb1"
+    "usbredir"
     "libuv"
     "libxcrypt"
     "libxml2"
