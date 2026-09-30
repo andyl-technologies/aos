@@ -65,6 +65,11 @@ impl RuntimeBoundary {
     }
 }
 
+/// Returns whether the official container restricts packages to user scope.
+pub(crate) fn is_container() -> bool {
+    RuntimeBoundary::from_env().container
+}
+
 /// Checks the process runtime markers against one parsed package command.
 ///
 /// This is intentionally the first operation in [`crate::run`].
