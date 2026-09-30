@@ -314,6 +314,7 @@ in
         pkgs.coreutils
         pkgs.grep
         pkgs.patch
+        pkgs.sed
       ];
 
       phases = [
@@ -322,9 +323,10 @@ in
           script = ''
             set -eu
 
-            mkdir -p accel/tcg exec hw/boards hw/i386 include/plugins include/qemu include/system io \
+            mkdir -p accel/tcg exec hw/boards hw/i386 include/exec include/plugins include/qemu include/system io \
               migration plugins qapi qemu sysemu system tcg
             for header in \
+              accel/tcg/cpu-loop.h \
               exec/cpu-common.h \
               exec/exec-all.h \
               exec/gdbstub.h \
@@ -336,6 +338,7 @@ in
               exec/translation-block.h \
               exec/translator.h \
               hw/boards.h \
+              system/memory.h \
               io/channel-buffer.h \
               migration/blocker.h \
               migration/qemu-file.h \
@@ -533,8 +536,7 @@ in
             QEMU_PLUGIN_API
             uint64_t qemu_plugin_icount_raw(void);
             QEMU_PLUGIN_API
-            int qemu_plugin_read_register(struct qemu_plugin_register *handle,
-                                          GByteArray *buf);
+            bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr);
 
             /**
              * qemu_plugin_scoreboard_new() - alloc a new scoreboard
@@ -547,7 +549,7 @@ in
             #endif
             QEMU_FIXTURE
 
-            cat > include/system/cpu-timers.h <<'QEMU_FIXTURE'
+            cat > include/exec/icount.h <<'QEMU_FIXTURE'
             #ifndef CPU_TIMERS_H
             #define CPU_TIMERS_H
             bool icount_configure(QemuOpts *opts, Error **errp);
@@ -564,7 +566,10 @@ in
             #include "qemu/main-loop.h"
             #include "qemu/plugin.h"
             #include "qemu/log.h"
+            #include "system/memory.h"
+            #include "accel/tcg/cpu-loop.h"
             #include "tcg/tcg.h"
+            #include "exec/cpu-common.h"
             #include "exec/gdbstub.h"
             #include "exec/target_page.h"
             #include "exec/translation-block.h"
@@ -575,6 +580,17 @@ in
             int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
             {
                 return gdb_read_register(current_cpu, buf, GPOINTER_TO_INT(reg) - 1);
+            }
+
+            bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr)
+            {
+                (void)vaddr;
+                (void)hwaddr;
+            #if defined(CONFIG_USER_ONLY)
+                return false;
+            #else
+                return false;
+            #endif
             }
 
             struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size)
@@ -594,18 +610,23 @@ in
             QEMU_FIXTURE
 
             cat > migration/savevm.h <<'QEMU_FIXTURE'
-            void qemu_savevm_send_colo_enable(QEMUFile *f);
-            void qemu_savevm_live_state(QEMUFile *f);
-            int qemu_save_device_state(QEMUFile *f);
-
-            int qemu_loadvm_state(QEMUFile *f);
+            void qemu_savevm_send_postcopy_ram_discard(QEMUFile *f, const char *name,
+                                                       uint16_t len,
+                                                       uint64_t *start_list,
+                                                       uint64_t *length_list);
+            int qemu_save_device_state(QEMUFile *f, Error **errp);
+            int qemu_loadvm_state(QEMUFile *f, Error **errp);
             void qemu_loadvm_state_cleanup(MigrationIncomingState *mis);
+            int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis,
+                                       Error **errp);
             QEMU_FIXTURE
 
             cat > migration/savevm.c <<'QEMU_FIXTURE'
-            int qemu_save_device_state(QEMUFile *f)
+            int qemu_save_device_state(QEMUFile *f, Error **errp)
             {
-                return qemu_file_get_error(f);
+                (void)f;
+                (void)errp;
+                return 0;
             }
 
             static SaveStateEntry *find_se(const char *idstr, uint32_t instance_id)
@@ -683,8 +704,13 @@ in
               stock-rr-fingerprint-helpers-negative.err
 
             patch --batch --fuzz=0 -p1 < "$patchSourcePath"
+            # The rebased patch validates current declarations, while its helper
+            # bodies retain the legacy serializer call until patch 0116 ports
+            # them. This isolated model supplies that historical adapter.
+            sed -i 's/qemu_save_device_state(QEMUFile \*f, Error \*\*errp)/qemu_save_device_state(QEMUFile *f)/' \
+              migration/savevm.h
             cp include/plugins/qemu-plugin.h qemu/qemu-plugin.h
-            cp include/system/cpu-timers.h system/cpu-timers.h
+            cp include/exec/icount.h system/cpu-timers.h
             cp "$microtestSourcePath" phase1-rr-fingerprint-helpers.c
             cc -std=c11 -O2 -Wall -Wextra -Werror \
               -Wno-unused-parameter -Wno-unused-variable \
