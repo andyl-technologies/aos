@@ -200,6 +200,7 @@ impl<
         writable::<WRITABLE>()?;
         self.bucket.put_locked(upload).await
     }
+
     async fn get(
         &self,
         identity: &Identity,
@@ -207,9 +208,11 @@ impl<
     ) -> Result<Vec<u8>, StoreFailure> {
         self.bucket.get_locked(identity, range).await
     }
+
     async fn has(&self, identities: &[Identity]) -> Result<Vec<bool>, StoreFailure> {
         self.bucket.has_locked(identities).await
     }
+
     async fn list(&self, prefix: &IdentityPrefix) -> Result<Vec<Identity>, StoreFailure> {
         self.bucket.list_locked(prefix).await
     }
@@ -217,6 +220,7 @@ impl<
 
 /// Rejects live watching during a bounded held transaction.
 pub(crate) struct HeldWatch;
+
 #[cfg_attr(feature = "send", async_trait::async_trait)]
 #[cfg_attr(not(feature="send"),async_trait::async_trait(?Send))]
 impl RefWatch for HeldWatch {
@@ -235,9 +239,11 @@ impl<
 > RefStore for HeldBucket<'_, F, C, V, WRITABLE>
 {
     type Watch = HeldWatch;
+
     async fn ref_get(&self, name: &str) -> Result<Option<RefRecord>, StoreFailure> {
         self.bucket.ref_get_locked(name).await
     }
+
     async fn ref_cas(
         &self,
         name: &str,
@@ -247,6 +253,7 @@ impl<
         writable::<WRITABLE>()?;
         self.bucket.ref_cas_locked(name, expect, new).await
     }
+
     async fn ref_log_append(
         &self,
         name: &str,
@@ -256,6 +263,7 @@ impl<
         writable::<WRITABLE>()?;
         self.bucket.ref_log_append_locked(name, seq, record).await
     }
+
     async fn ref_log_read(
         &self,
         name: &str,
@@ -263,6 +271,7 @@ impl<
     ) -> Result<Vec<RefLogRecord>, StoreFailure> {
         self.bucket.ref_log_read_locked(name, from_seq).await
     }
+
     async fn ref_watch(&self, _name: &str, _from_seq: u64) -> Result<Self::Watch, StoreFailure> {
         Err(StoreFailure::new(StoreErrorKind::Unsupported))
     }

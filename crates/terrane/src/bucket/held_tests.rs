@@ -222,12 +222,15 @@ impl LocalFs for ObservedFs {
         }
         Ok(guard)
     }
+
     async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>> {
         TokioLocalFs.random_bytes(length).await
     }
+
     async fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         TokioLocalFs.read(path).await
     }
+
     async fn read_range(
         &self,
         path: &Path,
@@ -235,36 +238,47 @@ impl LocalFs for ObservedFs {
     ) -> std::io::Result<Vec<u8>> {
         TokioLocalFs.read_range(path, range).await
     }
+
     async fn write_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         TokioLocalFs.write_new(path, bytes).await
     }
+
     async fn create_dir_new(&self, path: &Path) -> std::io::Result<()> {
         TokioLocalFs.create_dir_new(path).await
     }
+
     async fn create_dir_all(&self, path: &Path) -> std::io::Result<()> {
         TokioLocalFs.create_dir_all(path).await
     }
+
     async fn read_dir(&self, path: &Path) -> std::io::Result<Vec<PathBuf>> {
         TokioLocalFs.read_dir(path).await
     }
+
     async fn metadata(&self, path: &Path) -> std::io::Result<std::fs::Metadata> {
         TokioLocalFs.metadata(path).await
     }
+
     async fn symlink_metadata(&self, path: &Path) -> std::io::Result<std::fs::Metadata> {
         TokioLocalFs.symlink_metadata(path).await
     }
+
     async fn remove_file(&self, path: &Path) -> std::io::Result<()> {
         TokioLocalFs.remove_file(path).await
     }
+
     async fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         TokioLocalFs.rename(from, to).await
     }
+
     async fn rename_no_replace(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         TokioLocalFs.rename_no_replace(from, to).await
     }
+
     async fn sync_file(&self, path: &Path) -> std::io::Result<()> {
         TokioLocalFs.sync_file(path).await
     }
+
     async fn sync_directory(&self, path: &Path) -> std::io::Result<()> {
         TokioLocalFs.sync_directory(path).await
     }
