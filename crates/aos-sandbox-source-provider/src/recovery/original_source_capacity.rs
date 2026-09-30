@@ -134,7 +134,14 @@ fn compare_original_source_floor_union_transaction_v5(
     if &reapplied != after {
         return Err(corrupt("original Source full after differs from ordered TX"));
     }
-    validate_edge(before, after, transaction, &admission, edge)?;
+    validate_edge(
+        before,
+        transaction,
+        &before_floors,
+        &after_floors,
+        &admission,
+        edge,
+    )?;
     preserve_other_floors(&before_floors, &after_floors, &admission)?;
     if edge == OriginalSourceFloorEdgeV5::Applying
         && (before != original.original_before || transaction != original.applying_transaction)
@@ -199,8 +206,9 @@ fn validate_original_admission(
 
 fn validate_edge(
     before: &State,
-    after: &State,
     transaction: &JournalTransaction,
+    before_floors: &Floors,
+    after_floors: &Floors,
     admission: &ValidatedAdmission,
     edge: OriginalSourceFloorEdgeV5,
 ) -> Result<(), ProviderLedgerError> {
@@ -210,15 +218,15 @@ fn validate_edge(
     let floor = &admission.initial_floor;
     let provenance = floor.original_provenance();
     let configuration = provenance.claims().configuration;
-    let old = selected_floor(before, admission)?;
-    let next = selected_floor(after, admission)?;
+    let old = selected_floor(before_floors, admission)?;
+    let next = selected_floor(after_floors, admission)?;
 
-    if old.as_ref().map(|row| row.request().future_transactions) != old_count
-        || next.as_ref().map(|row| row.request().future_transactions) != next_count
+    if old.map(|row| row.request().future_transactions) != old_count
+        || next.map(|row| row.request().future_transactions) != next_count
     {
         return Err(corrupt("original Source edge exact counts"));
     }
-    if let Some(old) = old.as_ref() {
+    if let Some(old) = old {
         require_retained_floor(old, floor)?;
         let expected = JournalRecord::delete(
             RecordNamespace::GlobalCapacityReservation,
@@ -228,12 +236,12 @@ fn validate_edge(
             return Err(corrupt("original Source ordered floor DELETE"));
         }
     }
-    if let Some(next) = next.as_ref() {
+    if let Some(next) = next {
         require_retained_floor(next, floor)?;
         if records[record_count - 1] != next.to_journal_record()? {
             return Err(corrupt("original Source ordered floor PUT"));
         }
-        if let Some(old) = old.as_ref() {
+        if let Some(old) = old {
             require_no_budget_growth(old, next)?;
         }
     }
@@ -258,7 +266,7 @@ fn validate_edge(
                 configuration,
             )
             .map_err(crate::transaction::map_pure_ledger_error)?;
-            if let Some(next) = next.as_ref() {
+            if let Some(next) = next {
                 require_owner_binding(next, proposed.data())?;
             }
             proposed.mutations().to_vec()
@@ -544,11 +552,12 @@ fn require_owner_binding(
     Ok(())
 }
 
-fn selected_floor(
-    state: &State,
+// The comparison passes inventories already checked for complete families,
+// owner/configuration and the exact union. Selection never reconstructs a cut.
+fn selected_floor<'floor>(
+    floors: &'floor Floors,
     admission: &ValidatedAdmission,
-) -> Result<Option<OriginalSourceCapacityRecordV5>, ProviderLedgerError> {
-    let floors = Floors::collect_original_source_comparison(capacity_rows(state))?;
+) -> Result<Option<&'floor OriginalSourceCapacityRecordV5>, ProviderLedgerError> {
     let mut selected = None;
     for entry in floors.0.values() {
         let Floor::OriginalSource(floor) = &entry.floor else {
@@ -557,7 +566,7 @@ fn selected_floor(
         if floor.request().owner_id != admission.initial_floor.request().owner_id {
             continue;
         }
-        if selected.replace(floor.clone()).is_some() {
+        if selected.replace(floor).is_some() {
             return Err(corrupt("duplicate selected Source floor"));
         }
     }
