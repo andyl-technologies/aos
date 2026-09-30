@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Component;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_core::nar::cache::canonical_sha256_hex;
 use aos_core::nix::NixRunner;
 use aos_image_finalizer::assembly::UnsignedImageAssemblyV1;
