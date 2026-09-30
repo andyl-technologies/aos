@@ -10,28 +10,23 @@ use std::process::Command;
 use anyhow::{Context, Result, bail, ensure};
 use base64::Engine as _;
 
-/// Resolves an AOS-built executable before constructing a scrubbed command.
-pub(crate) fn command_from_path(name: &str) -> Result<Command> {
-    let path = std::env::var_os("PATH").context("PATH is unavailable while resolving evaluator")?;
-    for directory in std::env::split_paths(&path) {
-        let candidate = directory.join(name);
-        if candidate.is_file() {
-            return Ok(Command::new(candidate));
-        }
-    }
-    anyhow::bail!("cannot find {name} in the AOS command path")
-}
-
 /// Constructs a scrubbed stock-Nix command for an explicit evaluator store.
 ///
-/// The executable is resolved before the environment is cleared. Callers add
-/// only exact authenticated inputs and the expression/attribute they need.
+/// The supplied immutable Nix suite is shared with source admission. Callers
+/// add only exact authenticated inputs and the expression/attribute they need.
 pub(crate) fn pure_eval_command_in(
+    nix_store: &Path,
     store: Option<&OsStr>,
     read_root: Option<&Path>,
     eval_root: &Path,
 ) -> Result<Command> {
-    let mut command = command_from_path("nix-instantiate")?;
+    let selected = aos_core::nix::identity::store_command(nix_store)?;
+    let executable = Path::new(selected.get_program())
+        .parent()
+        .context("selected Nix suite has no directory")?
+        .join("nix-instantiate");
+    ensure!(executable.is_file(), "selected Nix suite has no evaluator");
+    let mut command = Command::new(executable);
     let nix_cache_home = std::env::var_os("XDG_CACHE_HOME");
     configure_pure_eval_command(
         &mut command,

@@ -87,6 +87,8 @@ pub fn resolve_packages(
 
 /// Supplies the immutable inputs for one target-independent evaluation.
 pub struct Evaluation {
+    /// Selects the immutable Nix tool suite used for source access and evaluation.
+    pub nix_store: PathBuf,
     /// Identifies the generic AOS module library, rather than an image base library.
     pub library: PathBuf,
     /// Separates this profile or deployment from other installations.
@@ -332,10 +334,16 @@ impl Evaluation {
                     .iter()
                     .map(|module| Path::new(&module.config_root)),
             );
-        let views = super::source_views::SourceViews::prepare(paths, staging, &control)?;
+        let views =
+            super::source_views::SourceViews::prepare(&self.nix_store, paths, staging, &control)?;
         let expression = self.expression_for(output, &views)?;
         let store = evaluator_store()?;
-        let mut command = pure_eval_command_in(store.as_deref(), Some(views.directory()), staging)?;
+        let mut command = pure_eval_command_in(
+            &self.nix_store,
+            store.as_deref(),
+            Some(views.directory()),
+            staging,
+        )?;
         command.arg("-");
         let environment: Vec<_> = command
             .get_envs()
