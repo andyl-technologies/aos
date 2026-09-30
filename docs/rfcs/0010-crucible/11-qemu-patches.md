@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **114 patches**. This count is checked against
+The carried series contains **115 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -307,6 +307,7 @@ RECENT PATCH COMPLETIONS                              class  enforces
   crucible-clock-impulse-read-error-policies impulse clock transforms retain their effective monotonicity and overdue-timer policies in versioned clock VMState, while an x86 TSC read-error transition raises a deterministic guest #GP and internal projections retain the last source value F QFP-CLOCK-TRANSFORM, QFP-CLOCK-SOURCE, FAULT-ORDER
   crucible-qemu-11-api-port Crucible accelerator, fault, migration, timer, and plugin integrations use QEMU 11's public headers and current callback, atomic, TCG, and VMState APIs D DET-1, QEMU-43
   crucible-qemu-11-runtime-semantics QEMU 11 translation success, realized ARM hardware-error dispatch, terminal VMState stream headers, and ordinary zero-budget TCG execution retain their runtime semantics D DET-1, QEMU-43
+  crucible-queued-runtime-tb-invalidation Instruction and lifecycle invalidation queues a global TB flush in an exclusive CPU context before serialized RR guest execution resumes D DET-1, QEMU-43
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
@@ -1705,6 +1706,22 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Inertness:** the patch only adapts Crucible integration points to upstream
   QEMU 11 interfaces. It adds no independently selectable behavior or protocol
   fields.
+- **Risk:** D.
+
+### crucible-queued-runtime-tb-invalidation — flush at an exclusive CPU boundary
+
+- **Patch:** `0118-crucible-queued-runtime-tb-invalidation.patch`.
+- **Enforces:** [DET-1], [QEMU-43].
+- **Mechanism:** instruction mutation preserves current-CPU selection, with a
+  CPU0 fallback for main-loop admission, and queues the global TB flush instead
+  of calling the serial-context helper directly. Lifecycle RAM clearing queues
+  the same exclusive operation. RR drains queued work before guest execution.
+- **Micro-test:** a two-CPU ARM guest caches CPU1's target instruction before a
+  main-loop boundary installs a mutation. The next target translation produces
+  the transformed value and exactly one global flush. A non-distributable
+  variant restoring the direct call must fail QEMU's serial-context assertion.
+- **Inertness:** ordinary execution schedules no flush; cursor admission and
+  CPU selection retain their existing semantics.
 - **Risk:** D.
 
 ### crucible-qemu-11-runtime-semantics — preserve runtime contracts
