@@ -25,6 +25,13 @@
   majorMinor = builtins.concatStringsSep "." (
     builtins.genList (i: builtins.elemAt (builtins.split "\\." version) (i * 2)) 2
   );
+  # The image stack uses upstream's new nanosecond ready-time and concurrent
+  # source lifetime implementation. Its native fence patch must preserve those
+  # interfaces rather than projecting the 2.82 implementation onto them.
+  crucibleMainContextPatch =
+    if version == "2.89.4"
+    then ./glib-crucible-main-context-2.89.patch
+    else ./glib-crucible-main-context.patch;
 in
   mkDerivation {
     pname = "glib";
@@ -90,7 +97,7 @@ in
             ''
               tar xf $src
               cd glib-${version}
-              patch --batch -p1 < ${./glib-crucible-main-context.patch}
+              patch --batch -p1 < ${crucibleMainContextPatch}
             ''
             + (
               if stdenv.hostPlatform.isDarwin
@@ -291,7 +298,8 @@ in
             # AOS build recipe with every redistributed patched runtime library.
             mkdir -p "$source/tests" "$out/nix-support"
             cp "$src" "$source/glib-upstream-source.tar.xz"
-            cp ${./glib-crucible-main-context.patch} "$source/glib-crucible-main-context.patch"
+            cp ${crucibleMainContextPatch} "$source/glib-crucible-main-context.patch"
+            cp ${./glib-crucible-main-context-2.89.patch} "$source/glib-crucible-main-context-2.89.patch"
             cp ${./glib.nix} "$source/glib.nix"
             cp ${./tests/glib-crucible-main-context.c} "$source/tests/glib-crucible-main-context.c"
             cp COPYING "$source/COPYING"

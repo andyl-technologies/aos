@@ -940,6 +940,79 @@ static void test_foreign_inventory_freshness(void)
     g_main_context_unref(context);
 }
 
+#if GLIB_CHECK_VERSION(2, 89, 0)
+static void test_nanosecond_ready_time_fence(void)
+{
+    GMainContext *context = g_main_context_new();
+    GSource *source = g_timeout_source_new(100000);
+    GCrucibleMainContextHold hold = { 0 };
+    GCrucibleSourceObservation sources[1];
+    GCrucibleMainContextObservation observation;
+    uint64_t ready_time;
+
+    g_source_set_callback(source, count_callback, NULL, NULL);
+    g_source_attach(source, context);
+    g_source_clear_ready_time(source);
+    g_assert_true(g_crucible_main_context_try_hold(context, &hold));
+    g_assert_true(g_crucible_main_context_inventory(&hold, sources, 1,
+                                                   &observation));
+    g_assert_false(sources[0].armed);
+
+    g_source_set_ready_time_ns(source, 7);
+    g_assert_false(g_crucible_main_context_current(&hold));
+    g_assert_true(g_source_get_ready_time_ns(source, &ready_time));
+    g_assert_cmpuint(ready_time, ==, 7);
+    release_context(&hold);
+
+    g_assert_true(g_crucible_main_context_try_hold(context, &hold));
+    g_assert_true(g_crucible_main_context_inventory(&hold, sources, 1,
+                                                   &observation));
+    g_assert_true(sources[0].armed);
+
+    /* Both values ceil to the same public microsecond coordinate. A genuine
+     * nanosecond mutation must still revoke the exact physical inventory.
+     */
+    g_source_set_ready_time_ns(source, 8);
+    g_assert_false(g_crucible_main_context_current(&hold));
+    g_assert_true(g_source_get_ready_time_ns(source, &ready_time));
+    g_assert_cmpuint(ready_time, ==, 8);
+    release_context(&hold);
+
+    g_assert_true(g_crucible_main_context_try_hold(context, &hold));
+    g_source_clear_ready_time(source);
+    g_assert_false(g_crucible_main_context_current(&hold));
+    g_assert_false(g_source_get_ready_time_ns(source, &ready_time));
+    release_context(&hold);
+
+    g_source_destroy(source);
+    g_source_unref(source);
+    g_main_context_unref(context);
+}
+
+static void test_multi_reference_unref_fence(void)
+{
+    GMainContext *context = g_main_context_new();
+    GSource *source = g_idle_source_new();
+    GCrucibleMainContextHold hold = { 0 };
+
+    g_source_set_callback(source, count_callback, NULL, NULL);
+    g_source_attach(source, context);
+    g_source_ref(source);
+    g_assert_true(g_crucible_main_context_try_hold(context, &hold));
+
+    /* Upstream can decrement multiple references without running disposal.
+     * Public lifetime mutations still invalidate the retained cohort first.
+     */
+    g_source_unref(source);
+    g_assert_false(g_crucible_main_context_current(&hold));
+    release_context(&hold);
+
+    g_source_destroy(source);
+    g_source_unref(source);
+    g_main_context_unref(context);
+}
+#endif
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -963,5 +1036,11 @@ int main(int argc, char **argv)
                     test_control_after_fork_membership);
     g_test_add_func("/crucible/foreign-inventory-freshness",
                     test_foreign_inventory_freshness);
+#if GLIB_CHECK_VERSION(2, 89, 0)
+    g_test_add_func("/crucible/nanosecond-ready-time-fence",
+                    test_nanosecond_ready_time_fence);
+    g_test_add_func("/crucible/multi-reference-unref-fence",
+                    test_multi_reference_unref_fence);
+#endif
     return g_test_run();
 }
