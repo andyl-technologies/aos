@@ -523,7 +523,9 @@ async fn registry_home_carries_setup_snippets_and_fingerprints() {
         body.contains("substituters = http://127.0.0.1:8420/demo"),
         "{body}"
     );
-    assert!(body.contains("trusted-public-keys ="), "{body}");
+    // The fixture has a Git trust key, but no separate Nix cache key. The
+    // setup page must not advertise the Git key as a Nix signing authority.
+    assert!(!body.contains("trusted-public-keys ="), "{body}");
     // The pinned anchor appears in full and as a SHA256: fingerprint.
     assert!(body.contains(&fixture.trust_key), "{body}");
     assert!(body.contains("SHA256:"), "{body}");
