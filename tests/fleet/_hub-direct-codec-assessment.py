@@ -93,8 +93,11 @@ def run_direct_native_codec_observer(selection, manifest):
 
 
 def assess_direct_native_bodies(body_receipts, control_joins, provider_classification,
-                               mapping, source_digest, issuer_verifier, native_executable):
+                               mapping, source_digest, issuer_verifier, native_executable,
+                               storage_work_boundary=None):
     """Require complete positive-workload type and provider evidence before zero."""
+    if storage_work_boundary is None:
+        raise ValueError("Native outbound StorageWork bodies remain unclassified; bulk bytes stay unknown")
     if body_receipts["incompleteCaptures"] or control_joins["unresolvedDirectRequestIds"]:
         raise ValueError("Native accepted-workload capture or authenticated joins are incomplete")
     if (provider_classification["unresolvedReceiptIndexes"]
