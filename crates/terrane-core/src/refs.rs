@@ -17,6 +17,9 @@ mod entry_receipts;
 mod record_codec;
 mod token_shape;
 
+#[cfg(test)]
+mod candidate_tests;
+
 pub use codec::{
     Commit, CommitIdentityError, CommitSource, Lease, PackLocation, PrincipalKind, ProfilePair,
     Provenance,
@@ -516,6 +519,8 @@ pub struct RefRecord {
     pub home: Locality,
     /// Optional multi-writer, retention, and annotation policy.
     pub policy: Option<RefPolicy>,
+    /// Fresh secure-random selector for a new branch candidate; absent on legacy refs.
+    pub candidate_id: Option<[u8; 32]>,
 }
 
 /// A rejected ref-record transition.
@@ -574,6 +579,8 @@ pub struct RefLogRecord {
     pub reason: RefLogReason,
     /// Advisory seconds since the Unix epoch.
     pub timestamp: u64,
+    /// Complete predecessor: absent for legacy logs, explicit null for a first write.
+    pub expected_previous: Option<Option<RefRecord>>,
 }
 
 /// One immutable commit's ordered parent edges.
@@ -855,6 +862,7 @@ mod tests {
             principal: long_text,
             reason: RefLogReason::Commit,
             timestamp: 1,
+            expected_previous: None,
         };
 
         let encoded = record.encode().unwrap();

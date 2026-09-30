@@ -4,9 +4,10 @@
 //! stand for 32-byte byte strings; the previous commit may instead be null:
 //!
 //! ```text
-//! RefRecord:    {1: commit, 2: seq, 3: writer_epoch, 4: locality}
+//! RefRecord:    {1: commit, 2: seq, 3: writer_epoch, 4: locality,
+//!                ?6: candidate_id}
 //! RefLogRecord: {1: ref_record, 2: previous_commit, 3: principal,
-//!                4: reason, 5: timestamp}
+//!                4: reason, 5: timestamp, ?6: expected_previous_or_null}
 //! ```
 
 use super::*;
@@ -225,7 +226,10 @@ impl RefPolicy {
 }
 
 impl RefRecord {
-    /// Creates the first record of a ref.
+    /// Creates a legacy-compatible first record without a candidate selector.
+    ///
+    /// New branch authors attach a fresh secure-random candidate ID before
+    /// appending their proposal; this pure constructor performs no I/O.
     pub fn first(commit: Digest, writer_epoch: u64, home: Locality) -> Self {
         Self {
             commit,
@@ -233,10 +237,14 @@ impl RefRecord {
             writer_epoch,
             home,
             policy: None,
+            candidate_id: None,
         }
     }
 
     /// Returns the next record while preserving the ref's authority home.
+    ///
+    /// The successor has no candidate ID. Its caller must allocate a fresh ID
+    /// for a new branch transaction rather than reuse its predecessor's selector.
     ///
     /// # Errors
     ///
@@ -257,6 +265,7 @@ impl RefRecord {
             writer_epoch,
             home: self.home.clone(),
             policy: self.policy.clone(),
+            candidate_id: None,
         })
     }
 
@@ -319,7 +328,10 @@ impl RefRecord {
         if self.seq == 0 {
             return Err(RecordError::Schema);
         }
-        cbor::write_map(output, 4 + usize::from(self.policy.is_some()));
+        cbor::write_map(
+            output,
+            4 + usize::from(self.policy.is_some()) + usize::from(self.candidate_id.is_some()),
+        );
         cbor::write_uint(output, 1);
         cbor::write_bytes(output, &self.commit);
         cbor::write_uint(output, 2);
@@ -331,6 +343,10 @@ impl RefRecord {
         if let Some(policy) = &self.policy {
             cbor::write_uint(output, 5);
             policy.encode_into(output)?;
+        }
+        if let Some(candidate_id) = &self.candidate_id {
+            cbor::write_uint(output, 6);
+            cbor::write_bytes(output, candidate_id);
         }
         Ok(())
     }
@@ -349,41 +365,43 @@ impl RefRecord {
     }
 
     fn decode_from(decoder: &mut Decoder<'_>) -> Result<Self, RecordError> {
-        let count = decoder.map(5)?;
-        if !(4..=5).contains(&count) {
+        let count = decoder.map(6)?;
+        if !(4..=6).contains(&count) {
             return Err(RecordError::Schema);
         }
         let mut previous = 0;
-        if read_key(decoder, &mut previous, 5)? != 1 {
+        if read_key(decoder, &mut previous, 6)? != 1 {
             return Err(RecordError::Schema);
         }
         let commit = read_digest(decoder)?;
-        if read_key(decoder, &mut previous, 5)? != 2 {
+        if read_key(decoder, &mut previous, 6)? != 2 {
             return Err(RecordError::Schema);
         }
         let seq = decoder.uint()?;
-        if seq == 0 || read_key(decoder, &mut previous, 5)? != 3 {
+        if seq == 0 || read_key(decoder, &mut previous, 6)? != 3 {
             return Err(RecordError::Schema);
         }
         let writer_epoch = decoder.uint()?;
-        if read_key(decoder, &mut previous, 5)? != 4 {
+        if read_key(decoder, &mut previous, 6)? != 4 {
             return Err(RecordError::Schema);
         }
         let home = Locality::decode_from(decoder)?;
-        let policy = if count == 5 {
-            if read_key(decoder, &mut previous, 5)? != 5 {
-                return Err(RecordError::Schema);
+        let mut policy = None;
+        let mut candidate_id = None;
+        for _ in 4..count {
+            match read_key(decoder, &mut previous, 6)? {
+                5 => policy = Some(RefPolicy::decode_from(decoder)?),
+                6 => candidate_id = Some(read_digest(decoder)?),
+                _ => return Err(RecordError::Schema),
             }
-            Some(RefPolicy::decode_from(decoder)?)
-        } else {
-            None
-        };
+        }
         Ok(Self {
             commit,
             seq,
             writer_epoch,
             home,
             policy,
+            candidate_id,
         })
     }
 }
@@ -414,14 +432,78 @@ impl RefLogReason {
 }
 
 impl RefLogRecord {
+    /// Returns the complete predecessor carried by a candidate-selected log.
+    ///
+    /// An explicit null denotes a selected first write. An absent key remains
+    /// a legacy record and cannot supply complete predecessor evidence.
+    ///
+    /// # Errors
+    /// Returns [`RecordError`] for absent or contradictory predecessor evidence,
+    /// invalid sequence/epoch transitions, or an ordinary authority-home change.
+    pub fn selected_previous(&self) -> Result<Option<&RefRecord>, RecordError> {
+        self.validate_predecessor()?;
+        self.expected_previous
+            .as_ref()
+            .map(Option::as_ref)
+            .ok_or(RecordError::Schema)
+    }
+
+    /// Checks that a durable candidate exactly binds one conditional ref write.
+    ///
+    /// This checks whole predecessor and successor records, including their
+    /// selectors and policies. It does not establish that CAS succeeded or
+    /// grant migration authority to a structurally valid migration proposal.
+    ///
+    /// # Errors
+    /// Returns [`RecordError`] for absent selection, incomplete predecessor
+    /// evidence, any whole-record mismatch, or an invalid transition.
+    pub fn validate_candidate(
+        &self,
+        expected: Option<&RefRecord>,
+        new: &RefRecord,
+    ) -> Result<(), RecordError> {
+        if new.candidate_id.is_none()
+            || self.record != *new
+            || self.selected_previous()? != expected
+        {
+            return Err(RecordError::Schema);
+        }
+        Ok(())
+    }
+
+    fn validate_predecessor(&self) -> Result<(), RecordError> {
+        let Some(previous) = &self.expected_previous else {
+            return if self.record.candidate_id.is_none() {
+                Ok(())
+            } else {
+                Err(RecordError::Schema)
+            };
+        };
+        if self.previous_commit != previous.as_ref().map(|record| record.commit) {
+            return Err(RecordError::Schema);
+        }
+        match RefRecord::validate_successor(previous.as_ref(), &self.record) {
+            Ok(()) => Ok(()),
+            // Region moves need separate native authorization and validation.
+            // The pure codec recognizes their structural representation only.
+            Err(RefSequenceError::HomeChanged) if self.reason == RefLogReason::Migrate => Ok(()),
+            Err(_) => Err(RecordError::Schema),
+        }
+    }
+
     /// Encodes the complete reflog record in canonical CBOR.
     ///
     /// # Errors
     ///
-    /// Returns [`RecordError`] when the embedded ref record is invalid.
+    /// Returns [`RecordError`] for an invalid embedded record, missing selected
+    /// predecessor, contradictory previous commit, or invalid transition.
     pub fn encode(&self) -> Result<Vec<u8>, RecordError> {
+        self.validate_predecessor()?;
         let mut output = Vec::new();
-        cbor::write_map(&mut output, 5);
+        cbor::write_map(
+            &mut output,
+            5 + usize::from(self.expected_previous.is_some()),
+        );
         cbor::write_uint(&mut output, 1);
         self.record.encode_into(&mut output)?;
         cbor::write_uint(&mut output, 2);
@@ -436,6 +518,14 @@ impl RefLogRecord {
         cbor::write_text(&mut output, self.reason.as_str());
         cbor::write_uint(&mut output, 5);
         cbor::write_uint(&mut output, self.timestamp);
+        if let Some(previous) = &self.expected_previous {
+            cbor::write_uint(&mut output, 6);
+            if let Some(previous) = previous {
+                previous.encode_into(&mut output)?;
+            } else {
+                output.push(0xf6);
+            }
+        }
         Ok(output)
     }
 
@@ -447,15 +537,16 @@ impl RefLogRecord {
     /// trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, RecordError> {
         let mut decoder = Decoder::new(bytes);
-        if decoder.map(5)? != 5 {
+        let count = decoder.map(6)?;
+        if !(5..=6).contains(&count) {
             return Err(RecordError::Schema);
         }
         let mut previous_key = 0;
-        if read_key(&mut decoder, &mut previous_key, 5)? != 1 {
+        if read_key(&mut decoder, &mut previous_key, 6)? != 1 {
             return Err(RecordError::Schema);
         }
         let record = RefRecord::decode_from(&mut decoder)?;
-        if read_key(&mut decoder, &mut previous_key, 5)? != 2 {
+        if read_key(&mut decoder, &mut previous_key, 6)? != 2 {
             return Err(RecordError::Schema);
         }
         let previous_commit = if decoder.peek_major()? == 7 {
@@ -466,25 +557,43 @@ impl RefLogRecord {
         } else {
             Some(read_digest(&mut decoder)?)
         };
-        if read_key(&mut decoder, &mut previous_key, 5)? != 3 {
+        if read_key(&mut decoder, &mut previous_key, 6)? != 3 {
             return Err(RecordError::Schema);
         }
         let principal = decoder.text(decoder.remaining().len())?.to_string();
-        if read_key(&mut decoder, &mut previous_key, 5)? != 4 {
+        if read_key(&mut decoder, &mut previous_key, 6)? != 4 {
             return Err(RecordError::Schema);
         }
         let reason = RefLogReason::parse(decoder.text(32)?)?;
-        if read_key(&mut decoder, &mut previous_key, 5)? != 5 {
+        if read_key(&mut decoder, &mut previous_key, 6)? != 5 {
             return Err(RecordError::Schema);
         }
         let timestamp = decoder.uint()?;
+        let expected_previous = if count == 6 {
+            if read_key(&mut decoder, &mut previous_key, 6)? != 6 {
+                return Err(RecordError::Schema);
+            }
+            if decoder.peek_major()? == 7 {
+                if decoder.simple()? != 0xf6 {
+                    return Err(RecordError::Schema);
+                }
+                Some(None)
+            } else {
+                Some(Some(RefRecord::decode_from(&mut decoder)?))
+            }
+        } else {
+            None
+        };
         decoder.finish()?;
-        Ok(Self {
+        let log = Self {
             record,
             previous_commit,
             principal,
             reason,
             timestamp,
-        })
+            expected_previous,
+        };
+        log.validate_predecessor()?;
+        Ok(log)
     }
 }
