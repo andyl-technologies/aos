@@ -1,5 +1,10 @@
 //! Exercises whole-record candidate selection and legacy codec compatibility.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "Canonical fixture failures intentionally panic."
+)]
+
 use super::*;
 use alloc::vec;
 
