@@ -34,10 +34,13 @@ pub(crate) struct CheckedMutation<'operation, 'held> {
     final_check: Box<FinalCheck<'operation>>,
 }
 
-/// Distinguishes genuine Guard installation from checked candidate admission.
+/// Distinguishes the privately checked kinds of repository publication.
 enum CheckedEvidence {
     Guard { snapshot: Vec<u8> },
     Candidate { snapshot: Vec<u8>, lineage: Vec<u8> },
+    // Tags and notes retain the selected Guard without acquiring branch history
+    // or candidate lineage. Their genuine request checks remain in the producer.
+    Advisory { snapshot: Vec<u8> },
 }
 
 impl<'operation, 'held> CheckedMutation<'operation, 'held> {
@@ -79,16 +82,16 @@ impl<'operation, 'held> CheckedMutation<'operation, 'held> {
     /// Borrows the complete independently checked canonical Guard bytes.
     pub(crate) fn guard_snapshot(&self) -> &[u8] {
         match &self.evidence {
-            CheckedEvidence::Guard { snapshot } | CheckedEvidence::Candidate { snapshot, .. } => {
-                snapshot
-            }
+            CheckedEvidence::Guard { snapshot }
+            | CheckedEvidence::Candidate { snapshot, .. }
+            | CheckedEvidence::Advisory { snapshot } => snapshot,
         }
     }
 
-    /// Borrows checked candidate lineage, absent for a Guard-only transition.
+    /// Borrows candidate lineage, absent for Guard and advisory transitions.
     pub(crate) fn lineage(&self) -> Option<&[u8]> {
         match &self.evidence {
-            CheckedEvidence::Guard { .. } => None,
+            CheckedEvidence::Guard { .. } | CheckedEvidence::Advisory { .. } => None,
             CheckedEvidence::Candidate { lineage, .. } => Some(lineage),
         }
     }
@@ -102,6 +105,7 @@ impl<'operation, 'held> CheckedMutation<'operation, 'held> {
             CheckedEvidence::Candidate { lineage, .. } => {
                 PublicationProof::Candidate(*blake3::hash(lineage).as_bytes())
             }
+            CheckedEvidence::Advisory { .. } => PublicationProof::Raw,
         }
     }
 }
