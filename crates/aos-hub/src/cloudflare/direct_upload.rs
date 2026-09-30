@@ -308,14 +308,14 @@ mod tests {
                 maximum_parallel_objects: 4,
                 bulk_delivery_policy: aos_hub_core::direct_upload::DirectQueueDeliveryPolicy {
                     maximum_batch_size: aos_hub_core::direct_upload::WireInteger::new(3),
-                    maximum_concurrent_invocations: aos_hub_core::direct_upload::WireInteger::new(
-                        2,
+                    maximum_concurrent_invocations: Some(
+                        aos_hub_core::direct_upload::WireInteger::new(2),
                     ),
                 },
                 metadata_delivery_policy: aos_hub_core::direct_upload::DirectQueueDeliveryPolicy {
                     maximum_batch_size: aos_hub_core::direct_upload::WireInteger::new(4),
-                    maximum_concurrent_invocations: aos_hub_core::direct_upload::WireInteger::new(
-                        2,
+                    maximum_concurrent_invocations: Some(
+                        aos_hub_core::direct_upload::WireInteger::new(2),
                     ),
                 },
             }),
@@ -429,10 +429,10 @@ mod tests {
 
         let mut cfg = config();
         let queues = cfg.direct_upload_queues.as_mut().unwrap();
-        queues.bulk_delivery_policy.maximum_concurrent_invocations = WireInteger::new(1);
+        queues.bulk_delivery_policy.maximum_concurrent_invocations = Some(WireInteger::new(1));
         queues
             .metadata_delivery_policy
-            .maximum_concurrent_invocations = WireInteger::new(8);
+            .maximum_concurrent_invocations = Some(WireInteger::new(8));
         let source = render_hybrid_wrangler_toml(&cfg).unwrap();
         let rendered: toml::Value = toml::from_str(&source).unwrap();
         assert_eq!(
@@ -463,9 +463,17 @@ mod tests {
                 .unwrap()
                 .metadata_delivery_policy;
             policy.maximum_batch_size = WireInteger::new(batch);
-            policy.maximum_concurrent_invocations = WireInteger::new(invocations);
+            policy.maximum_concurrent_invocations = Some(WireInteger::new(invocations));
             assert!(render_hybrid_wrangler_toml(&cfg).is_err());
         }
+        let policy = &mut cfg
+            .direct_upload_queues
+            .as_mut()
+            .unwrap()
+            .metadata_delivery_policy;
+        policy.maximum_batch_size = WireInteger::new(4);
+        policy.maximum_concurrent_invocations = None;
+        assert!(render_hybrid_wrangler_toml(&cfg).is_err());
     }
 
     #[test]

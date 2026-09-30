@@ -410,7 +410,14 @@ pub fn render_hybrid_wrangler_toml(cfg: &HybridDeployConfig) -> Result<String> {
             direct_variables.push_str(&format!(
                 "{binding}_MAX_BATCH_SIZE = {}\n{binding}_MAX_CONCURRENT_INVOCATIONS = {}\n",
                 toml_string(&policy.maximum_batch_size.get().to_string()),
-                toml_string(&policy.maximum_concurrent_invocations.get().to_string()),
+                toml_string(
+                    &policy
+                        .maximum_concurrent_invocations
+                        .as_ref()
+                        .context("hosted queue invocation bound absent")?
+                        .get()
+                        .to_string()
+                ),
             ));
         }
         if let Some(limits) = &cfg.direct_upload_qualification {
@@ -440,7 +447,7 @@ pub fn render_hybrid_wrangler_toml(cfg: &HybridDeployConfig) -> Result<String> {
             "\n[[kv_namespaces]]\nbinding = \"HUB_DIRECT_UPLOAD_ACCEPTANCE\"\nid = {}\n\n[version_metadata]\nbinding = \"CF_VERSION_METADATA\"\n",
             toml_string(&trust.namespace_id),
         ));
-        direct_bindings.push_str(&queues.render_bindings());
+        direct_bindings.push_str(&queues.render_bindings()?);
     } else {
         anyhow::ensure!(
             cfg.direct_upload_trust.is_none()

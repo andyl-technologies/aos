@@ -578,7 +578,8 @@ impl DirectQueueMeasurement {
         } else {
             runtime.maximum_parallel_objects.get()
         };
-        self.delivery_policy.validate(class_limit)?;
+        self.delivery_policy
+            .validate_for_execution(class_limit, artifact.execution_kind)?;
         ensure!(
             valid_direct_queue_name(&self.queue_name)
                 && self.dependency_phase == phase

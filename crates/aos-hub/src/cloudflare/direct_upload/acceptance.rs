@@ -180,14 +180,19 @@ impl HybridDirectUploadQueueConfig {
                 && (2..=32).contains(&self.maximum_parallel_objects),
             "direct verification queue coordinates invalid"
         );
-        self.bulk_delivery_policy
-            .validate(u64::from(self.maximum_parallel_objects - 1))?;
-        self.metadata_delivery_policy
-            .validate(u64::from(self.maximum_parallel_objects))?;
+        self.bulk_delivery_policy.validate_for_execution(
+            u64::from(self.maximum_parallel_objects - 1),
+            aos_hub_core::direct_upload::DirectWorkerExecutionKind::Hosted,
+        )?;
+        self.metadata_delivery_policy.validate_for_execution(
+            u64::from(self.maximum_parallel_objects),
+            aos_hub_core::direct_upload::DirectWorkerExecutionKind::Hosted,
+        )?;
         Ok(())
     }
 
-    pub(in crate::cloudflare) fn render_bindings(&self) -> String {
+    pub(in crate::cloudflare) fn render_bindings(&self) -> Result<String> {
+        self.validate()?;
         let mut rendered = String::new();
         for (binding, name, policy) in [
             (
@@ -205,9 +210,10 @@ impl HybridDirectUploadQueueConfig {
                 "\n[[queues.producers]]\nbinding = {}\nqueue = {}\n\n[[queues.consumers]]\nqueue = {}\nmax_batch_size = {}\nmax_batch_timeout = 1\nmax_concurrency = {}\nmax_retries = 3\n",
                 crate::cloudflare::toml_string(binding), crate::cloudflare::toml_string(name),
                 crate::cloudflare::toml_string(name), policy.maximum_batch_size.get(),
-                policy.maximum_concurrent_invocations.get(),
+                policy.maximum_concurrent_invocations.as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("hosted queue invocation bound absent"))?.get(),
             ));
         }
-        rendered
+        Ok(rendered)
     }
 }

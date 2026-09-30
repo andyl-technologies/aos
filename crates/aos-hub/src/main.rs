@@ -459,8 +459,9 @@ impl HybridConfigArgs {
                         maximum_batch_size: aos_hub_core::direct_upload::WireInteger::new(
                             u64::from(batch),
                         ),
-                        maximum_concurrent_invocations:
+                        maximum_concurrent_invocations: Some(
                             aos_hub_core::direct_upload::WireInteger::new(u64::from(invocations)),
+                        ),
                     }
                 };
 

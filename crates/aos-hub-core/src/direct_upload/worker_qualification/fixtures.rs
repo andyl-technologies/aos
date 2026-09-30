@@ -82,7 +82,7 @@ pub fn direct_worker_qualification_fixture() -> (DirectWorkerQualificationArtifa
     let queue = |phase: &str| DirectQueueMeasurement {
         delivery_policy: DirectQueueDeliveryPolicy {
             maximum_batch_size: WireInteger::new(if phase == "content" { 3 } else { 4 }),
-            maximum_concurrent_invocations: WireInteger::new(2),
+            maximum_concurrent_invocations: Some(WireInteger::new(2)),
         },
         configuration_readback_sha256: "9a".repeat(32),
         observation_sha256: "55".repeat(32),

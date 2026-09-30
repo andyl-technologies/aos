@@ -203,6 +203,39 @@ mod measured_fixture;
 fn artifact() -> DirectWorkerQualificationArtifact {
     let (mut item, _) = measured_fixture::direct_worker_qualification_fixture();
     item.execution_kind = DirectWorkerExecutionKind::EmulatedExternal;
+    item.script_version = direct_worker_emulated_script_id(&item.source_digest).unwrap();
+    item.evidence.bulk_queue.script_version = item.script_version.clone();
+    item.evidence.metadata_queue.script_version = item.script_version.clone();
+    item.evidence
+        .bulk_queue
+        .delivery_policy
+        .maximum_concurrent_invocations = None;
+    item.evidence
+        .metadata_queue
+        .delivery_policy
+        .maximum_concurrent_invocations = None;
+    // Independent installed-byte observations are explicit test inputs only.
+    item.evidence.installation = Some(DirectWorkerInstallationMeasurement {
+        observation_sha256: "91".repeat(32),
+        report: DirectWorkerInstallationReport {
+            version: 1,
+            execution_kind: item.execution_kind,
+            deployment_id: item.deployment_id.clone(),
+            public_origin: item.public_origin.clone(),
+            source_digest: item.source_digest.clone(),
+            script_version: item.script_version.clone(),
+            source_nar_sha256: "92".repeat(32),
+            distribution_nar_sha256: "93".repeat(32),
+            wasm_sha256: "94".repeat(32),
+            wasm_byte_size: WireInteger::new(1024),
+            shim_sha256: "95".repeat(32),
+            shim_byte_size: WireInteger::new(256),
+            runtime_bindings_sha256: "96".repeat(32),
+            runner_sha256: Some("97".repeat(32)),
+            runtime_executable_sha256: Some("98".repeat(32)),
+            observed_process_executable_sha256: Some("98".repeat(32)),
+        },
+    });
     item.evidence.clock_policy.uncertainty_seconds = WireInteger::new(2);
     item.evidence.clock.uncertainty_seconds = WireInteger::new(2);
     item.evidence.managed_profile = None;
@@ -265,6 +298,12 @@ pub(in crate::direct_upload::authority) fn external_fixture(
     let mut item = artifact();
     let profile = profile_from_publication(publication_for_binding(Some(binding)));
     item.public_origin = origin.into();
+    item.evidence
+        .installation
+        .as_mut()
+        .unwrap()
+        .report
+        .public_origin = origin.into();
     item.evidence.issued_at = WireInteger::new(now.saturating_sub(1));
     item.evidence.valid_until = WireInteger::new(expiry);
     item.evidence.external_profiles =

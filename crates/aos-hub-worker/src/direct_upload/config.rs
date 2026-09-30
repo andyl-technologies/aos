@@ -275,12 +275,29 @@ pub(crate) fn queue_policy(
 ) -> Result<DirectQueueDeliveryPolicy> {
     let policy = DirectQueueDeliveryPolicy {
         maximum_batch_size: integer(env, &format!("{binding}_MAX_BATCH_SIZE"))?,
-        maximum_concurrent_invocations: integer(
-            env,
-            &format!("{binding}_MAX_CONCURRENT_INVOCATIONS"),
-        )?,
+        maximum_concurrent_invocations: if cfg!(feature = "do-e2e") {
+            ensure!(
+                env.var(&format!("{binding}_MAX_CONCURRENT_INVOCATIONS"))?
+                    .to_string()
+                    == "unsupported",
+                "emulated queue global concurrency must be explicitly unsupported"
+            );
+            None
+        } else {
+            Some(integer(
+                env,
+                &format!("{binding}_MAX_CONCURRENT_INVOCATIONS"),
+            )?)
+        },
     };
-    policy.validate(class_ceiling)?;
+    policy.validate_for_execution(
+        class_ceiling,
+        if cfg!(feature = "do-e2e") {
+            DirectWorkerExecutionKind::EmulatedExternal
+        } else {
+            DirectWorkerExecutionKind::Hosted
+        },
+    )?;
     Ok(policy)
 }
 

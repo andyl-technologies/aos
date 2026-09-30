@@ -166,6 +166,12 @@ providers with `inspect-hybrid-direct-upload
 requires full accepted external wrappers and the same measured runtime, clock
 and separate queues. Production installation accepts hosted execution only.
 Explicit emulated external acceptance is restricted to the qualification build.
+When the emulator does not support a global queue invocation bound, its actual
+consumer readback and signed delivery policy record that bound as `null`.
+This grants no global invocation cap claim. Observed batch sizes, participating
+isolate object/provider ceilings, mixed metadata progress and exact installed
+runtime bytes still require independent review. Hosted delivery requires an
+explicit numeric invocation bound for each queue.
 External direct providers currently require objects of at least one byte until
 exact-incarnation zero-byte deletion is independently qualified. Use a qualified
 managed profile for empty objects; otherwise discovery refuses that capability.

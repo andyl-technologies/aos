@@ -31,8 +31,8 @@ const RESPONSE_DOMAIN: &[u8] = b"aos.direct-upload.deployment-identity-response.
 pub struct DirectQueueDeliveryPolicy {
     /// Maximum jobs delivered in one queue invocation.
     pub maximum_batch_size: WireInteger,
-    /// Maximum concurrent invocations for this global queue.
-    pub maximum_concurrent_invocations: WireInteger,
+    /// Maximum concurrent global invocations; absent only for unsupported emulator delivery.
+    pub maximum_concurrent_invocations: Option<WireInteger>,
 }
 
 impl DirectQueueDeliveryPolicy {
@@ -43,8 +43,32 @@ impl DirectQueueDeliveryPolicy {
     pub fn validate(&self, class_ceiling: u64) -> Result<()> {
         ensure!(
             (1..=class_ceiling).contains(&self.maximum_batch_size.get())
-                && (1..=32).contains(&self.maximum_concurrent_invocations.get()),
+                && self
+                    .maximum_concurrent_invocations
+                    .as_ref()
+                    .is_none_or(|bound| (1..=32).contains(&bound.get())),
             "direct queue delivery policy invalid"
+        );
+        Ok(())
+    }
+
+    /// Checks delivery bounds for the actual execution environment.
+    ///
+    /// A missing invocation bound records unsupported emulator configuration,
+    /// without making a global concurrency claim. Hosted policies require a cap.
+    ///
+    /// # Errors
+    /// Returns an error for invalid bounds or a missing hosted invocation cap.
+    pub fn validate_for_execution(
+        &self,
+        class_ceiling: u64,
+        kind: DirectWorkerExecutionKind,
+    ) -> Result<()> {
+        self.validate(class_ceiling)?;
+        ensure!(
+            kind == DirectWorkerExecutionKind::EmulatedExternal
+                || self.maximum_concurrent_invocations.is_some(),
+            "hosted queue invocation bound absent"
         );
         Ok(())
     }
@@ -309,6 +333,28 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn unsupported_emulator_invocation_bound_cannot_qualify_hosted_delivery() {
+        let mut policy = DirectQueueDeliveryPolicy {
+            maximum_batch_size: WireInteger::new(4),
+            maximum_concurrent_invocations: None,
+        };
+        policy
+            .validate_for_execution(4, DirectWorkerExecutionKind::EmulatedExternal)
+            .unwrap();
+        assert!(policy
+            .validate_for_execution(4, DirectWorkerExecutionKind::Hosted)
+            .is_err());
+        policy.maximum_concurrent_invocations = Some(WireInteger::new(2));
+        policy
+            .validate_for_execution(4, DirectWorkerExecutionKind::Hosted)
+            .unwrap();
+        policy.maximum_concurrent_invocations = Some(WireInteger::new(33));
+        assert!(policy
+            .validate_for_execution(4, DirectWorkerExecutionKind::EmulatedExternal)
+            .is_err());
+    }
+
     fn identity(
         artifact: &DirectWorkerQualificationArtifact,
         reviewer: &str,
@@ -461,7 +507,7 @@ mod tests {
                 6 => changed.maximum_parallel_objects = WireInteger::new(8),
                 7 => {
                     changed.metadata_queue_policy.maximum_concurrent_invocations =
-                        WireInteger::new(3)
+                        Some(WireInteger::new(3))
                 }
                 _ => unreachable!(),
             }
