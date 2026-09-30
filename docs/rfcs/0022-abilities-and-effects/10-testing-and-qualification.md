@@ -13,16 +13,34 @@ its own matrix, source context, handlers, and effect identities. Different
 cohorts may exercise the same logical operation under different configurations;
 their evidence must retain those distinct contexts.
 
+A retained scenario may select a test wrapper that delegates to the real handler
+and controls when its response returns. Such evidence identifies the wrapper,
+backend, and scenario graph explicitly. It qualifies that composition, not the
+unwrapped baseline handler's exact bytes. Production handlers do not acquire
+test-only fault controls.
+
 Required semantic coverage is explicit. An empty domain selection or a missing
 required operation fails instead of producing vacuous success. Evidence for a
 selected operation must cover every applicable cell in that cohort's closed
 specification. Combining reports cannot invent coverage for an unexecuted cell.
 
+The authored scenario policy also constrains meaningful actions. An empty
+`required_actions` list permits both actions. Restoring retained state applies
+the selected configuration; orphan retention and explicit retirement remove the
+desired source. The opposite action remains in the matrix inventory with an
+explicit inapplicability reason. Missing implementation support is not such a
+reason. Retaining a persistent orphan produces no removal dispatch: its evidence
+binds the original application receipt, unchanged live state, and the new
+committed desired graph.
+
 A future operation such as image rollout need not be enabled during initial
 boot. Its scenario source is retained and evaluated against the authenticated
 candidate's module library and package context before the test applies it.
-This separates the boot baseline from the desired state being tested without
-relaxing artifact or source identity checks.
+The cohort binds both its adopted baseline and its selected target evaluation
+with independent source commitments and digests. The fixture imports the baseline
+first; it does not apply the target graph before the test starts. This separates
+boot adoption from the desired state being tested while preserving exact
+artifact and source identities.
 
 Observations must come from the domain: service-manager state, account records,
 filesystem contents, network behavior, cluster state, or actual image identity.

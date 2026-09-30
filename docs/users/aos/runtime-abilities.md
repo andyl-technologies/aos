@@ -242,7 +242,10 @@ other authenticated outputs that modules may reference; it does not install or
 retain all of them. Module dependencies make configuration available without
 installing their payloads. Evaluation adds outputs actually used by the bound
 graph to the transaction's retained inputs. Runtime dependencies remain governed
-by the selected payload's actual store references.
+by the selected payload's actual store references. The pre-evaluation descriptor
+also retains the real deployment envelopes for module-only dependencies, so
+subsequent offline reconfiguration can resolve their original dependency edges.
+These metadata companions do not select additional payload outputs.
 
 | Build output | Contents |
 | --- | --- |

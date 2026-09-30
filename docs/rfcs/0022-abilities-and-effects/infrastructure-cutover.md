@@ -37,8 +37,9 @@ Only explicit package selections and their `moduleDeps` enter the fixed point.
 APM retains the module selections in the evaluation descriptor separately from
 installed payload artifacts, so later reconfiguration preserves this distinction.
 The generic build projections are `lib.packageModules`, `lib.packageArtifacts`,
-and `lib.build.closureInfo`; image builders use these public helpers rather than
-importing private library files.
+`lib.build.evaluationInput`, and `lib.build.closureInfo`. Host and container
+builders share the same descriptor builder; image builders use these public
+helpers rather than importing private library files.
 
 The builder exposes these derived values:
 
@@ -156,11 +157,24 @@ baseline/operator sources, never the output graph. Package modules receive its
 path as an ordinary argument and may use it in typed effect inputs. This avoids
 self-references when an operation performs a further authorized evaluation.
 
+`lib.build.evaluationInput` constructs this descriptor for both host and
+container builders. Its `moduleEnvelopes` map retains the actual deployment
+companions for the complete module closure, including schema-only dependencies.
+APM verifies each decoded envelope against the retained module context before
+resolving a later configuration. This preserves dependency edges offline without
+installing the dependencies' payloads or reconstructing envelopes from a flattened
+evaluation result.
+
 The descriptor also retains `supplementalInputs`: immutable source receipts or
 other provenance needed by the caller across reconfiguration. They retain exact
 source identities without becoming installed payload packages or executable
 operations. Reconfiguration preserves these inputs together with their original
 source roles.
+
+Image stages retain their ordered policy files through
+`aos.activation.stages.<stage>.configuration`. Package modules and these sources
+participate in both image evaluation and later replay. There is no separate
+inline stage-module channel whose configuration disappears from the descriptor.
 
 `aos-package::native_deployment::evaluate_input` replays a descriptor without
 building payloads or applying effects. It temporarily roots the descriptor and
@@ -169,6 +183,13 @@ and returns a checked desired deployment. The caller supplies a staging director
 a Nix store executable, a timeout, and cancellation. The API creates no generation,
 effect journal, or persistent deployment root. Callers authenticate the source
 before using its result; integrity checking alone does not grant source authority.
+
+`deployment::evaluation::Evaluation` carries the selected `nix_store` executable
+explicitly. Source access and pure evaluation use that immutable tool suite;
+they do not select another evaluator from `PATH`. Private NAR-backed read views
+make selected-store sources readable without replacing their original retained
+identities. The [runtime guide](../../users/aos/runtime-abilities.md) describes
+the source limits and the early-provisioning projection boundary.
 
 The same path is available for inspection:
 
