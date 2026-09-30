@@ -32,6 +32,88 @@ fn full_canonical_inventory_retains_original_row_and_admission_bytes() {
 }
 
 #[test]
+fn selected_floor_borrows_the_existing_inventory_entry() {
+    let admission = fixtures::origin(fixtures::floor());
+    let floor = &admission.initial_floor;
+    let inventory = Floors::collect_original_source_comparison(vec![
+        floor.to_journal_record().unwrap(),
+    ]).unwrap();
+    let Floor::OriginalSource(stored) = &inventory.0[&floor.reservation_id()].floor else {
+        panic!("canonical Source5 entry");
+    };
+
+    let selected = {
+        let lookup = fixtures::origin(floor.clone());
+        selected_floor(&inventory, &lookup).unwrap().unwrap()
+    };
+
+    assert!(std::ptr::eq(selected, stored));
+    assert_eq!(selected, floor);
+}
+
+#[test]
+fn selected_floor_matches_canonical_recollection_at_each_edge_count() {
+    let admission = fixtures::origin(fixtures::floor());
+    let (_, legacy) = fixtures::legacy_row(43);
+    for count in [20, 19, 2, 1] {
+        let floor = fixtures::successor(&admission.initial_floor, count);
+        let row = floor.to_journal_record().unwrap();
+        let state = state_with(&[row.clone(), legacy.clone()]);
+        let inventory = Floors::collect_original_source_comparison(capacity_rows(&state)).unwrap();
+        let canonical = OriginalSourceCapacityRecordV5::from_journal_record(&row).unwrap();
+
+        let selected = selected_floor(&inventory, &admission).unwrap().unwrap();
+
+        assert_eq!(selected, &canonical, "count {count}");
+        assert_eq!(selected.to_journal_record().unwrap(), row);
+        assert_eq!(inventory.0.len(), 2);
+    }
+}
+
+#[test]
+fn selected_floor_is_absent_without_the_typed_original_source_row() {
+    let admission = fixtures::origin(fixtures::floor());
+    let (_, legacy) = fixtures::legacy_row(44);
+    let mut native_request = admission.initial_floor.request();
+    native_request.future_transactions = 19;
+    let native = NativeHeldCapacityRecordV3::new(native_request, [45; 16])
+        .unwrap()
+        .to_journal_record();
+    let inventories = [
+        Vec::new(),
+        vec![legacy],
+        // An equal owner ID in another family cannot substitute for Source5.
+        vec![native],
+    ];
+
+    for rows in inventories {
+        let inventory = Floors::collect_original_source_comparison(rows).unwrap();
+
+        assert!(selected_floor(&inventory, &admission).unwrap().is_none());
+    }
+}
+
+#[test]
+fn selected_floor_rejects_duplicate_owner_identity_in_either_record_order() {
+    let admission = fixtures::origin(fixtures::floor());
+    let original = admission.initial_floor.to_journal_record().unwrap();
+    let successor = fixtures::successor(&admission.initial_floor, 19)
+        .to_journal_record()
+        .unwrap();
+    assert_ne!(original.key(), successor.key());
+    let inventories = [
+        vec![original.clone(), successor.clone()],
+        vec![successor, original],
+    ];
+
+    for rows in inventories {
+        let inventory = Floors::collect_original_source_comparison(rows).unwrap();
+
+        assert!(selected_floor(&inventory, &admission).is_err());
+    }
+}
+
+#[test]
 fn foreign_native_unknown_and_duplicate_families_fail_closed() {
     let floor = fixtures::floor();
     let row = floor.to_journal_record().unwrap();
