@@ -340,7 +340,10 @@ impl RefName {
         self.class
     }
 
-    /// Returns the immutable reflog key for a branch advance.
+    /// Formats a version-one numbered reflog key for a branch.
+    ///
+    /// This spelling belongs to the read-only legacy layout. Version-two code
+    /// uses the suffix-safe bucket key constructors for its selected layout.
     ///
     /// # Errors
     ///
