@@ -15,6 +15,7 @@
 mod client;
 mod controller_peer;
 mod images;
+mod nix_startup;
 mod profile;
 mod service;
 mod startup;
@@ -44,6 +45,10 @@ pub use client::{
     ProductionControllerNormalRootStartupPartsV1,
 };
 pub(crate) use controller_peer::OriginalControllerPolicyPeerV1;
+pub use nix_startup::{
+    ProductionControllerNixStartupCaptureV1, ProductionControllerNixStartupV1,
+    ProductionNixOwnerStartupCaptureV1, ProductionNixOwnerStartupV1,
+};
 
 pub(super) const PID1_FD_NAME: &str = "aos-normal-root-pid1-image";
 pub(super) const PROFILE_FD_NAME: &str = "aos-normal-root-profile";
