@@ -154,13 +154,10 @@ version = "0.1.0"
 dependencies = [
  "alejandra",
  "anyhow",
- "aos-ability-inspect",
  "aos-ability-model",
  "aos-ability-plan",
  "aos-ability-runtime",
- "aos-ability-validate",
  "aos-cache",
- "aos-configuration-provider",
  "aos-contract",
  "aos-core",
  "aos-doc",
@@ -173,7 +170,6 @@ dependencies = [
  "aos-oci",
  "aos-oci-types",
  "aos-package",
- "aos-package-store-model",
  "aos-profile",
  "aos-proto-types",
  "aos-registry-surface",
@@ -226,28 +222,13 @@ name = "aos-ability-crucible"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-ability-model",
+ "aos-ability-runtime",
  "aos-contract",
  "crucible",
  "crucible-guest",
  "rustix 1.1.4",
  "serde",
  "tempfile",
-]
-
-[[package]]
-name = "aos-ability-inspect"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-ability-model",
- "aos-ability-plan",
- "aos-ability-validate",
- "aos-contract",
- "aos-doc-model",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -269,7 +250,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-ability-model",
- "aos-ability-validate",
  "aos-contract",
  "serde",
  "serde_json",
@@ -283,7 +263,6 @@ dependencies = [
  "anyhow",
  "aos-ability-model",
  "aos-ability-plan",
- "aos-ability-validate",
  "aos-contract",
  "rustix 1.1.4",
  "serde",
@@ -293,30 +272,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-ability-validate"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-ability-model",
- "aos-contract",
- "base64 0.22.1",
- "hex",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "aos-block-storage-provider"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-ability-model",
+ "aos-ability-runtime",
  "aos-contract",
- "aos-provider-protocol",
  "aos-storage-provisioning",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -328,9 +295,8 @@ name = "aos-boot-preparation-provider"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-ability-model",
+ "aos-ability-runtime",
  "aos-contract",
- "aos-provider-protocol",
  "serde",
  "serde_json",
  "tempfile",
@@ -362,19 +328,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-configuration-provider"
+name = "aos-configuration-lower"
 version = "0.1.0"
 dependencies = [
- "aos-ability-model",
+ "anyhow",
+ "aos-ability-runtime",
  "aos-contract",
- "aos-provider-protocol",
+ "base64 0.22.1",
  "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "thiserror 2.0.18",
- "toml 0.8.23",
 ]
 
 [[package]]
@@ -393,6 +358,7 @@ version = "0.1.0"
 dependencies = [
  "alejandra",
  "anyhow",
+ "aos-contract",
  "base64 0.22.1",
  "console",
  "ed25519-dalek",
@@ -432,7 +398,7 @@ name = "aos-doc-model"
 version = "0.1.0"
 dependencies = [
  "aos-ability-model",
- "aos-ability-validate",
+ "aos-ability-plan",
  "aos-contract",
  "schemars",
  "serde",
@@ -446,9 +412,8 @@ name = "aos-ebpf-lsm-provider"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-ability-model",
+ "aos-ability-runtime",
  "aos-contract",
- "aos-provider-protocol",
  "serde",
  "serde_json",
  "tempfile",
@@ -459,9 +424,8 @@ name = "aos-ebpf-net-policy-provider"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-ability-model",
+ "aos-ability-runtime",
  "aos-contract",
- "aos-provider-protocol",
  "serde",
  "serde_json",
  "tempfile",
@@ -473,8 +437,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-ability-model",
+ "aos-ability-runtime",
  "aos-contract",
- "aos-provider-protocol",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -574,9 +538,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
- "aos-ability-inspect",
  "aos-ability-model",
- "aos-ability-validate",
  "aos-contract",
  "aos-doc-model",
  "aos-hub-console-contract",
@@ -668,8 +630,7 @@ name = "aos-image-finalizer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-ability-model",
- "aos-ability-validate",
+ "aos-package",
  "aos-release",
  "async-trait",
  "base64 0.22.1",
@@ -686,9 +647,7 @@ name = "aos-kernel-tunable-provider"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-ability-model",
  "aos-contract",
- "aos-provider-protocol",
  "serde",
  "serde_json",
  "tempfile",
@@ -698,9 +657,8 @@ dependencies = [
 name = "aos-kubernetes-provider"
 version = "0.1.0"
 dependencies = [
- "aos-ability-model",
+ "aos-ability-runtime",
  "aos-contract",
- "aos-provider-protocol",
  "serde",
  "serde_json",
  "tempfile",
@@ -725,9 +683,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-ability-model",
+ "aos-ability-plan",
+ "aos-ability-runtime",
  "aos-contract",
+ "aos-core",
  "aos-net",
- "aos-provider-protocol",
  "aos-storage-provisioning",
  "async-trait",
  "base64 0.22.1",
@@ -783,9 +743,8 @@ name = "aos-network-ruleset-provider"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-ability-model",
+ "aos-ability-runtime",
  "aos-contract",
- "aos-provider-protocol",
  "serde",
  "serde_json",
  "tempfile",
@@ -797,9 +756,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-ability-model",
+ "aos-ability-runtime",
  "aos-contract",
- "aos-package-store-model",
- "aos-provider-protocol",
  "libc",
  "serde",
  "serde_json",
@@ -851,11 +809,9 @@ name = "aos-package"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-ability-inspect",
  "aos-ability-model",
  "aos-ability-plan",
  "aos-ability-runtime",
- "aos-ability-validate",
  "aos-boot-identity",
  "aos-cache",
  "aos-contract",
@@ -864,9 +820,7 @@ dependencies = [
  "aos-metadata",
  "aos-net",
  "aos-oci-types",
- "aos-package-store-model",
  "aos-proto-types",
- "aos-provider-protocol",
  "aos-registry-surface",
  "aos-release",
  "aos-remote",
@@ -910,18 +864,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-package-store-model"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-ability-model",
- "aos-ability-validate",
- "aos-contract",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "aos-profile"
 version = "0.1.0"
 dependencies = [
@@ -957,18 +899,6 @@ dependencies = [
  "prost-types",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "aos-provider-protocol"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-ability-model",
- "aos-contract",
- "serde",
- "serde_json",
- "tempfile",
 ]
 
 [[package]]
@@ -1018,6 +948,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-ability-model",
+ "aos-ability-plan",
  "aos-contract",
  "aos-registry-surface",
  "base64 0.22.1",
@@ -1146,20 +1077,18 @@ name = "aos-systemd-provider"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-ability-model",
- "aos-ability-validate",
+ "aos-ability-runtime",
+ "aos-boot-identity",
  "aos-contract",
- "aos-net",
- "aos-provider-protocol",
  "aos-systemd",
  "hex",
  "rustix 1.1.4",
  "serde",
  "serde_json",
- "serde_path_to_error",
  "sha2 0.10.9",
  "tempfile",
  "tokio",
+ "zstd",
 ]
 
 [[package]]
