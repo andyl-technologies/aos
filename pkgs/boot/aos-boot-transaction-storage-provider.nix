@@ -84,7 +84,7 @@ in
     doCheck = true;
     buildDeps = [patchelf];
     runtimeDeps = [];
-    abilities = ./_aos-boot-transaction-storage-provider;
+    module = ./_aos-boot-transaction-storage-provider;
     preBuild = staticBuildSetup;
 
     postInstall = ''
@@ -99,6 +99,7 @@ in
 
     meta = {
       description = "Checked ESP-backed boot stage transaction-storage provider";
+      mainProgram = "aos-boot-transaction-storage-provider";
       homepage = "https://github.com/andyl/andyl-os";
       license = "Apache-2.0";
     };

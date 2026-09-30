@@ -1,84 +1,8 @@
-##! Package-owned convergence of the image-authored system package profile.
-{
-  config,
-  lib,
-  ...
-}: let
+##! Converges signed install-at-boot selections after the native host profile commits.
+{config, lib, package, ...}: let
   cfg = config.aos.packageRuntime.packageProfile;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  resultOf = lib.abilities.resultOf;
-  consumerInstance = "package-profile-convergence";
-  readinessAlias = "package-profile-readiness";
-  specificationRequest = "package-profile-specification";
-  evaluationReadiness = resultOf "configuration-evaluation-lifecycle" "resource";
-  hostStage =
-    config.aos.abilities.environment
-    != null
-    && config.aos.abilities.environment.stage == "host";
-  readinessDeclaration = lib.abilities.declareInterface {
-    name = "aos.package.profile-convergence-readiness";
-    description = "Publishes the exact service resource that completed convergence of the selected system package profile.";
-    abi = 1;
-    requestType = lib.abilities.types.enum ["system-profile"];
-    configurationType = null;
-    outputs.resource = {
-      description = "References the package-profile convergence service resource.";
-      schema = serviceTypes.resourceReference;
-      phase = "planning";
-      visibility = "protected";
-      lifetime = "instance";
-    };
-    methods = {};
-    lifecycle.persistentDeleteMethod = null;
-    guarantees = [];
-    aggregation = {
-      scope = "provider-instance";
-      key = "slot";
-      rejectSlotCollisions = true;
-      mergeContract = null;
-      controllerGroup = readinessAlias;
-    };
-  };
-  readinessIdentity = lib.abilities.interfaceIdentity (
-    lib.abilities.interfaceDocumentFromDeclaration readinessDeclaration
-  );
-
-  specification = serviceManagement.forConfiguration {
-    inherit serviceTypes consumerInstance;
-    declaration = {
-      name = specificationRequest;
-      source = {
-        kind = "inline-text";
-        content = cfg.desiredText;
-      };
-      mode = "0600";
-    };
-  };
-  specificationPath = resultOf specificationRequest "planned-path";
-  specificationResource = resultOf specificationRequest "resource";
-  packageManager = {
-    executable = {
-      artifact = config.aos.packageRuntime.artifacts.apm;
-      entry_point = "bin/apm";
-      arguments = [
-        "install"
-        "--system"
-        "--from"
-        specificationPath
-        "--yes"
-      ];
-    };
-    ignore_failure = false;
-  };
-  noPackagesSelected = {
-    executable = {
-      artifact = lib.abilities.packageOutput {package = "coreutils";};
-      entry_point = "bin/true";
-      arguments = [];
-    };
-    ignore_failure = false;
-  };
+  hostStage = (config.aos.boot.stage or "host") == "host";
+  specification = config.aos.abilities.configuration.operations.file.effects.package-profile-specification;
   service = {
     policy.hardening = {
       allow_privilege_escalation = false;
@@ -112,21 +36,23 @@
       operation_profile = "system-service";
       isolated_identity_mapping = "none";
     };
-    inherit consumerInstance;
-    service = consumerInstance;
+    service = "package-profile-convergence";
+    activationOwner = "manager";
+    autoStart = false;
+    activationAfter = [specification.output.resource];
     lifecycle = {
       description = "Converge the image-authored system package profile";
       execution_model = "oneshot";
       environment_files = [];
       condition = [];
       pre_start = [];
-      start = [
-        (
-          if cfg.enable
-          then packageManager
-          else noPackagesSelected
-        )
-      ];
+      start = [{
+        executable = {
+          path = "${package.outputs.apm}/bin/apm";
+          arguments = ["install" "--system" "--from" specification.output.path "--yes"];
+        };
+        ignore_failure = false;
+      }];
       post_start = [];
       stop = [];
       post_stop = [];
@@ -138,32 +64,20 @@
       stop_timeout_millis = 90000;
     };
     dependencies = {
-      prerequisites =
-        [evaluationReadiness]
-        ++ lib.optional cfg.enable specificationResource;
-      after = [];
+      after = ["aos-activate.service" "aos-registry-sync.service"];
       before = [];
-      requires = [];
+      requires = ["aos-activate.service" "aos-registry-sync.service"];
       wants = [];
       required_by = [];
+      wanted_by = ["multi-user.target"];
     };
-    conditions.all = lib.optionals cfg.enable [
-      {
-        kind = "path";
-        predicate = "exists";
-        path = "/run/aos/manifest.json";
-        negated = true;
-      }
-    ];
     readiness = {
       mechanism = "successful-exit";
       signal_scope = "none";
       timeout_millis = 120000;
     };
     environment = {
-      variables = lib.optionalAttrs cfg.enable {
-        AOS_EXPOSE_START_NO_WAIT = "1";
-      };
+      variables = {};
       search_path = [];
     };
     isolation = {
@@ -175,7 +89,7 @@
       termination_scope = "all-processes";
       temporary_directory = "private";
       devices = [];
-      host_paths = lib.optionals cfg.enable [
+      host_paths = [
         {
           source = "/nix";
           mode = "read-write";
@@ -185,8 +99,8 @@
           mode = "read-write";
         }
         {
-          source = "/run/aos";
-          mode = "read-only";
+          source = "/var/lib/profiles/system";
+          mode = "read-write";
         }
       ];
       permit_core_dumps = false;
@@ -195,52 +109,27 @@
 in {
   options.aos.packageRuntime.packageProfile = {
     enable = lib.mkOption {
-      type = lib.abilities.types.boolean;
+      type = lib.types.bool;
       default = false;
       internal = true;
-      description = "Whether the image-authored system package profile is selected.";
+      description = "Install the image-authored signed registry package selection after native bootstrap.";
     };
-
     desiredText = lib.mkOption {
-      type = lib.abilities.types.string {
-        maxLength = lib.abilities.types.limits.maxStringLength;
-        syntax = null;
-      };
+      type = lib.types.str;
       default = "";
       internal = true;
-      description = "Canonical desired-package profile rendered from install-at-boot policy.";
+      description = "Canonical desired package selection and configuration.";
     };
   };
 
-  config = lib.mkMerge [
-    {
-      aos.services."package-profile-convergence.package-profile-convergence" =
-        service
-        // {
-          enable = hostStage;
-        };
-      aos.abilities = {
-        interfaces.${readinessAlias} = readinessDeclaration;
-        implementations.${readinessAlias} = {
-          description = "Publishes package-profile convergence through the package-owned lifecycle resource.";
-          interface = readinessIdentity;
-          artifact = lib.abilities.packageOutput {};
-          artifacts = [config.aos.packageRuntime.artifacts.apm];
-          methods = [];
-          guarantees = [];
-          providerModule = {
-            artifact = lib.abilities.packageOutput {output = "module";};
-            path = "package-profile-readiness-provider.nix";
-          };
-          desiredType = null;
-          requiredFeatures = [];
-        };
-      };
-    }
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [specification];
-      enabled = hostStage && cfg.enable;
-    })
-  ];
+  config = lib.mkIf (hostStage && cfg.enable) {
+    aos.abilities.configuration.operations.file.effects.package-profile-specification.input = {
+      path = "/run/apm/package-profile-desired.toml";
+      content = cfg.desiredText;
+      mode = "0600";
+    };
+    # Manager startup follows aos-activate, so APM cannot recursively enter the
+    # profile journal while the image's host transaction still holds its lock.
+    aos.services."package-profile-convergence.package-profile-convergence" = service // {enable = true;};
+  };
 }

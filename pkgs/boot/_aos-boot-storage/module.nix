@@ -2,61 +2,30 @@
 {
   config,
   lib,
+  package,
+  dependencies,
   ...
 }: let
   cfg = config.aos.boot.storageServices;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  milestones = serviceManagement.milestones;
-  interfaces = serviceManagement.interfaces;
-  resultOf = lib.abilities.resultOf;
-  consumerInstance = "boot-storage";
-  transactionStorage = lib.abilities.interfaces.bootTransactionStorage.interfaces.view;
-  transactionStorageAlias = transactionStorage.alias;
+  stage = config.aos.boot.stage;
   transactionStorageRoot = cfg.transactionStorageRoot;
   stagedZfsCredential = "/run/aos/boot-credentials/zfs-key.cred";
-  stage =
-    if config.aos.abilities.environment == null
-    then null
-    else config.aos.abilities.environment.stage;
-
   command = entryPoint: arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "bin/${entryPoint}";
+      path = "${package}/bin/${entryPoint}";
       inherit arguments;
     };
     ignore_failure = false;
   };
-  earlySystem = serviceManagement.forProducer {
-    inherit consumerInstance;
-    key = "early-system";
-    interface = interfaces.activationMilestone;
-    parameters.milestone = "early-system";
-  };
-  earlySystemReadiness = resultOf "early-system" "resource";
-  systemMilestone = key: milestone:
-    serviceManagement.forProducer {
-      inherit consumerInstance key;
-      interface = interfaces.systemMilestoneReadiness;
-      parameters = {inherit milestone;};
-    };
-  localFilesystems = systemMilestone "local-filesystems" milestones.localFilesystems;
-  multiUser = systemMilestone "multi-user" milestones.multiUser;
-  sysroot = systemMilestone "sysroot" milestones.sysroot;
-  deviceSettle = systemMilestone "device-settle" milestones.deviceSettle;
-  kernelModules = systemMilestone "kernel-modules" milestones.kernelModules;
-  bootIdentity = systemMilestone "boot-identity" milestones.bootIdentityValidated;
-  initrdStage = systemMilestone "initrd-stage" milestones.initrdStageExecuted;
-  espReady = systemMilestone "esp-ready" milestones.espReady;
-  imageBootCommitted = systemMilestone "image-boot-committed" milestones.imageBootCommitted;
-  localFilesystemsReadiness = resultOf "local-filesystems" "resource";
-  multiUserReadiness = resultOf "multi-user" "resource";
-  sysrootReadiness = resultOf "sysroot" "resource";
-  deviceSettleReadiness = resultOf "device-settle" "resource";
-  kernelModulesReadiness = resultOf "kernel-modules" "resource";
-  bootIdentityReadiness = resultOf "boot-identity" "resource";
-  initrdStageReadiness = resultOf "initrd-stage" "resource";
-  imageBootCommittedReadiness = resultOf "image-boot-committed" "resource";
+  earlySystemReadiness = "initrd-fs.target";
+  localFilesystemsReadiness = "local-fs.target";
+  multiUserReadiness = "multi-user.target";
+  sysrootReadiness = "sysroot.mount";
+  deviceSettleReadiness = "systemd-udev-settle.service";
+  kernelModulesReadiness = "systemd-modules-load.service";
+  bootIdentityReadiness = "aos-boot-identity-guard.service";
+  initrdStageReadiness = "aos-ability-initrd-controller.service";
+  imageBootCommittedReadiness = "aos-image-boot-commit.service";
   service = {
     key,
     description,
@@ -70,8 +39,8 @@
     logging ? null,
   }:
     {
-      inherit consumerInstance;
       inherit activationOwner;
+      autoStart = false;
       service = key;
       manager_identity = {
         name = key;
@@ -189,13 +158,10 @@
     };
     environment = {
       variables = {};
-      search_path = builtins.map lib.abilities.packageOutput [
-        {package = "coreutils";}
-        {package = "util-linux";}
-      ];
+      search_path = [dependencies.coreutils.path dependencies.util-linux.path];
     };
   };
-  stagedZfsCredentialReadiness = resultOf "aos-stage-zfs-credential-lifecycle" "resource";
+  stagedZfsCredentialReadiness = "aos-stage-zfs-credential.service";
   unlockArguments = [cfg.zfs.poolName cfg.zfs.encryptionRoot] ++ cfg.zfs.expectedDevices;
   zfsUnlock = service {
     activationOwner = "image";
@@ -230,10 +196,7 @@
     ];
     environment = {
       variables = {};
-      search_path = builtins.map lib.abilities.packageOutput [
-        {package = "coreutils";}
-        {package = "zfs";}
-      ];
+      search_path = [dependencies.coreutils.path cfg.zfs.packagePath];
     };
     logging = {
       standard_output = "structured-and-console";
@@ -275,63 +238,66 @@
     ];
   };
 in {
+  imports = [./options.nix ./measurement-options.nix];
+  options.aos.boot.stage = lib.mkOption {
+    type = lib.types.enum ["host" "initrd"];
+    default = "host";
+    internal = true;
+    description = "Boot package deployment scope selected by image orchestration.";
+  };
+
   options.aos.boot.storageServices = {
     transactionStorageRoot = lib.mkOption {
-      type = lib.abilities.types.executionPath;
+      type = lib.types.str;
       default = "/run/aos-boot-transaction-storage";
       internal = true;
       description = "Mount root for the package-owned boot stage journals.";
     };
     espDevices = lib.mkOption {
-      type = lib.abilities.types.list {
-        element = lib.abilities.types.executionPath;
-        maxItems = 64;
-      };
+      type = lib.types.listOf lib.types.str;
       default = ["/dev/disk/by-partlabel/ESP"];
       internal = true;
       description = "Stable EFI System Partition device paths available during early boot.";
     };
 
     zfs = {
+      packagePath = lib.mkOption {
+        extensible = true;
+        type = lib.types.str;
+        default = "";
+        internal = true;
+        description = "Selected kernel-compatible ZFS runtime output.";
+      };
       enable = lib.mkOption {
-        type = lib.abilities.types.boolean;
+        type = lib.types.bool;
         default = false;
         internal = true;
         description = "Whether initrd boot storage requires native ZFS pool import and key loading.";
       };
 
       poolName = lib.mkOption {
-        type = lib.abilities.types.string {
-          maxLength = 255;
-          syntax = null;
-        };
+        type = lib.types.str;
         default = "rpool";
         internal = true;
         description = "Pool containing immutable image zvols.";
       };
 
       encryptionRoot = lib.mkOption {
-        type = lib.abilities.types.string {
-          maxLength = 4096;
-          syntax = null;
-        };
+        type = lib.types.str;
         default = "rpool";
         internal = true;
         description = "Native-encryption root unlocked before zvol discovery.";
       };
 
       sealedKeyPath = lib.mkOption {
-        type = lib.abilities.types.relativePath;
+        type = lib.types.str;
         default = "aos/zfs-key.cred";
         internal = true;
         description = "ESP-relative TPM-sealed native ZFS key path.";
       };
 
       expectedDevices = lib.mkOption {
-        type = lib.abilities.types.list {
-          element = lib.abilities.types.executionPath;
-          maxItems = 64;
-        };
+        type = lib.types.listOf lib.types.str;
         default = [];
         internal = true;
         description = "Zvol device paths that must appear after the encryption root is unlocked.";
@@ -341,6 +307,17 @@ in {
 
   config = lib.mkMerge [
     {
+      aos.filesystems.espDevice = lib.mkDefault (builtins.head config.aos.boot.storage.espDevices);
+      aos.boot.storageServices = {
+        espDevices = lib.mkDefault config.aos.boot.storage.espDevices;
+        zfs = {
+          enable = lib.mkDefault (config.aos.boot.storage.backend == "zfs-zvol");
+          poolName = lib.mkDefault config.aos.boot.storage.zfs.poolName;
+          encryptionRoot = lib.mkDefault config.aos.boot.storage.zfs.encryptionRoot;
+          sealedKeyPath = lib.mkDefault config.aos.boot.storage.zfs.sealedKeyPath;
+          expectedDevices = lib.mkDefault (builtins.attrValues config.aos.boot.storage.resolvedDevices);
+        };
+      };
       aos.services = {
         "boot-storage.aos-mount-esp" = mountEsp // {enable = stage == "host";};
         "boot-storage.aos-sync-esps" = syncEsps // {enable = stage == "host";};
@@ -348,41 +325,10 @@ in {
         "boot-storage.aos-zfs-unlock" = zfsUnlock // {enable = stage == "initrd" && cfg.zfs.enable;};
         "boot-storage.aos-boot-transaction-storage" = transactionStorageMount // {enable = stage == "initrd";};
       };
-      aos.abilities.requirementTemplates.${transactionStorageAlias} = {
-        description = "Requires the selected ESP-backed boot transaction journal.";
-        abi = transactionStorage.identity.abi;
-        descriptor = null;
-        interface = transactionStorage.identity.name;
-        inherit (transactionStorage) methods;
-        guarantees = [];
-        strength = "required";
-        fallback = null;
-      };
     }
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [localFilesystems multiUser espReady imageBootCommitted];
-      enabled = stage == "host";
-    })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [bootIdentity deviceSettle initrdStage sysroot];
-      enabled = stage == "initrd";
-    })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [earlySystem kernelModules];
-      enabled = stage == "initrd" && cfg.zfs.enable;
-    })
     (lib.mkIf (builtins.elem stage ["initrd" "host"]) {
-      aos.abilities.requests.${transactionStorageAlias} = {
-        requirement = transactionStorageAlias;
-        consumer = consumerInstance;
-        scope = ["${stage}-stage-journal"];
-        parameters = {
-          name = "${stage}-stage-journal";
-          purpose = "${stage}-stage-journal";
-        };
+      aos.abilities.bootTransactionStorage.operations.view.effects.stage = {
+        input.path = "${transactionStorageRoot}/aos/${stage}-stage-journal";
       };
     })
   ];
