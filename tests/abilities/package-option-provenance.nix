@@ -1,6 +1,14 @@
-##! Checks that package option documents retain their owning source file.
-{pkgs}: let
-  declarations = pkgs."aos-zfs-provider".contract.value.option_declarations;
+##! Native option documents retain package ownership and authored policy sources.
+{
+  pkgs,
+  lib,
+}: let
+  package = pkgs.aos-zfs-provider;
+  declarations =
+    (lib.evalPackageModules {
+      scope = ["test" "option-provenance"];
+      packages = [package];
+    }).documentation.options;
   maintenanceOptions =
     builtins.filter
     (declaration:
@@ -14,8 +22,9 @@
   paths = builtins.map (declaration: builtins.toJSON declaration.path) declarations;
 in
   assert maintenanceOptions != [];
+  assert builtins.readFile "${package.module}/maintenance.nix" == builtins.readFile ../../pkgs/filesystem/_aos-zfs-provider/maintenance.nix;
   assert builtins.all
-  (declaration: declaration.source.path == "maintenance.nix")
+  (declaration: declaration.owner == "aos-zfs-provider")
   maintenanceOptions;
   assert builtins.length paths
   == builtins.length (builtins.attrNames (builtins.listToAttrs (
