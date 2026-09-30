@@ -1476,12 +1476,12 @@
     homeBind = mountUnitFor homesEnabledSystem "/home";
     outsideVar = builtins.tryEval (homesOutsideVarSystem.config.system.build.toplevel.outPath);
   in
-    if rootBind == null || rootBind.what != "/var/roothome" || rootBind.options != "bind"
-    then throw "/root must always be bound from /var/roothome"
+    if rootBind == null || rootBind.what != "/var/roothome" || rootBind.options != "bind,nosuid,nodev"
+    then throw "/root must always be bound nosuid,nodev from /var/roothome"
     else if mountUnitFor system "/home" != null
     then throw "/home must not be bound while aos.homes is disabled"
-    else if homeBind == null || homeBind.what != "/var/home" || homeBind.options != "bind"
-    then throw "/home must be bound from aos.homes.directory when homes are enabled"
+    else if homeBind == null || homeBind.what != "/var/home" || homeBind.options != "bind,nosuid,nodev"
+    then throw "/home must be bound nosuid,nodev from aos.homes.directory when homes are enabled"
     else if homesDisabledUserSystem.config.aos.users.users.alice.home != "/"
     then throw "interactive accounts must keep the placeholder home while aos.homes is disabled"
     else if homesDisabledUserSystem.config.aos.users.users.alice.createHome
@@ -1502,7 +1502,9 @@
     then throw "the root apm authoring tree must be created by tmpfiles on the state volume"
     else if outsideVar.success
     then throw "aos.homes.directory outside /var must be rejected"
-    else "root always, /home opt-in";
+    else if !(containsStr "pam_keyinit.so force revoke" serverRoleSystem.config.environment.etc."pam.d/sshd".text)
+    then throw "SSH logins must start a per-session kernel keyring"
+    else "root always, /home opt-in, keyring per login";
 in
   # Use a raw derivation with AOS bash so we don't pull in host tools. The
   # builtins.toJSON calls still force the system config at instantiation time;

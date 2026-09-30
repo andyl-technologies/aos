@@ -62,13 +62,16 @@
     })
     cfg.skel;
 
+  # Homes never carry setuid binaries or device nodes. The flags would be
+  # inherited from /var anyway; naming them keeps the policy visible and
+  # independent of how the state volume happens to be mounted.
   bindMount = {
     what,
     where,
   }: {
     inherit what where;
     type = "none";
-    options = "bind";
+    options = "bind,nosuid,nodev";
     wantedBy = ["local-fs.target"];
     before = ["local-fs.target"];
   };
@@ -198,6 +201,8 @@ in {
             script = ''
               mounts = vm.succeed("cat /proc/mounts")
               assert " /root " in mounts, f"/root is not a mount point:\n{mounts}"
+              root_line = next(line for line in mounts.splitlines() if " /root " in line)
+              assert "nosuid" in root_line and "nodev" in root_line, root_line
               vm.succeed("test \"$(stat -c %a /root)\" = 700")
               vm.succeed("touch /root/.aos-home-probe")
               vm.succeed("test -e /var/roothome/.aos-home-probe")
@@ -230,6 +235,8 @@ in {
             script = ''
               mounts = vm.succeed("cat /proc/mounts")
               assert " /home " in mounts, f"/home is not a mount point:\n{mounts}"
+              home_line = next(line for line in mounts.splitlines() if " /home " in line)
+              assert "nosuid" in home_line and "nodev" in home_line, home_line
               vm.succeed("touch /home/.aos-home-probe")
               vm.succeed("test -e ${cfg.directory}/.aos-home-probe")
               vm.succeed("rm /home/.aos-home-probe")

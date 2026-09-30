@@ -99,6 +99,35 @@
   };
   aosBasePp = "${aosBaseModule}/${aosBaseModuleName}.pp";
 
+  # Home directories live on the state volume and are bound onto the FHS
+  # paths (modules/base/homes.nix). refpolicy labels homes by their FHS path,
+  # so alias the backing directories to those paths the way Fedora does for
+  # its /var/home layout: files created under /var/home then get the
+  # user_home_dir_t tree and /var/roothome gets admin_home_t without any
+  # per-file rule, and tmpfiles labels the directories it creates.
+  homeContextAliases = ''
+    /var/home /home
+    /var/roothome /root
+  '';
+  contexts = pkgs.mkDerivation {
+    pname = "aos-selinux-contexts";
+    version = "1.0";
+    src = null;
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -r ${refpolicy}/etc/selinux/refpolicy/contexts/. "$out/"
+          chmod -R u+w "$out"
+          subs="$out/files/file_contexts.subs_dist"
+          test -f "$subs"
+          printf '%s' ${lib.escapeShellArg homeContextAliases} >> "$subs"
+        '';
+      }
+    ];
+  };
+
   # libsemanage (used by semodule when it commits a policy) forks several
   # external helpers and the `.pp` high-level-language compiler. Its
   # compiled-in defaults are FHS paths (/usr/sbin/sefcontext_compile,
@@ -293,6 +322,15 @@ in {
           '';
         }
         {
+          name = "home-context-aliases";
+          description = "the state-volume home directories alias their FHS paths";
+          script = ''
+            subs = vm.succeed("cat /etc/selinux/${policyName}/contexts/files/file_contexts.subs_dist")
+            assert "/var/home /home" in subs, subs
+            assert "/var/roothome /root" in subs, subs
+          '';
+        }
+        {
           name = "enforce-file";
           description = "SELinux enforce file exists";
           script = ''
@@ -317,7 +355,7 @@ in {
       };
 
       "selinux/semanage.conf".text = semanageConfText;
-      "selinux/${policyName}/contexts".source = "${refpolicy}/etc/selinux/refpolicy/contexts";
+      "selinux/${policyName}/contexts".source = "${contexts}";
     };
 
     systemd.services = {
