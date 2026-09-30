@@ -131,6 +131,9 @@ async fn native_file_lock(
                 .write(true)
                 .create(matches!(mode, LockOpenMode::Create))
                 .truncate(false)
+                // Creation must keep namespace exclusion private regardless
+                // of the process umask; existing inode modes remain unchanged.
+                .mode(0o600)
                 .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
                 .open(&path)?;
             lock_opened(&path, file)
@@ -598,11 +601,28 @@ mod tests {
             );
             assert!(!path.exists());
 
+            let guard = fs.lock_exclusive(&path).await.unwrap();
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                assert_eq!(
+                    fs.metadata(&path).await.unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+            drop(guard);
+            fs.remove_file(&path).await.unwrap();
+
             fs.write_new(&path, b"registered coordination")
                 .await
                 .unwrap();
+            let original_permissions = fs.metadata(&path).await.unwrap().permissions();
             let guard = fs.lock_existing_exclusive(&path).await.unwrap();
             assert_eq!(fs.read(&path).await.unwrap(), b"registered coordination");
+            assert_eq!(
+                fs.metadata(&path).await.unwrap().permissions(),
+                original_permissions
+            );
             drop(guard);
             fs.symlink(&path, &link).await.unwrap();
             assert!(fs.lock_existing_exclusive(&link).await.is_err());
