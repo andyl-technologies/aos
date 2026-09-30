@@ -10,13 +10,13 @@
 use std::error::Error;
 use std::fmt;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 const PACKAGE_RUNTIME: &str = env!("AOS_PACKAGE_RUNTIME");
-const MKFS_EROFS: &str = env!("AOS_MKFS_EROFS");
-const FSCK_EROFS: &str = env!("AOS_FSCK_EROFS");
-const MOUNT: &str = env!("AOS_MOUNT");
+const BOOT_CONFIGURATION: &str = env!("AOS_BOOT_CONFIGURATION");
+const CONFIGURATION_BOOT: &str = env!("AOS_CONFIGURATION_BOOT");
+const SHA256SUM: &str = env!("AOS_SHA256SUM");
 const SYSROOT: &str = "/sysroot";
 const PROFILE_ENV: &str = "/run/aos-profile-gen.env";
 
@@ -56,75 +56,177 @@ fn run() -> Result<()> {
         [command] if command == "seed-configuration" => {
             seed_configuration(Path::new(SYSROOT), Path::new(PROFILE_ENV))
         }
+        [
+            operation,
+            input_flag,
+            bundle,
+            state_flag,
+            state_directory,
+            store_flag,
+            nix_store,
+        ] if matches!(operation.as_str(), "apply-deployment" | "verify-deployment")
+            && input_flag == "--input"
+            && state_flag == "--state-directory"
+            && store_flag == "--nix-store" =>
+        {
+            run_deployment(operation, Path::new(bundle), state_directory, nix_store)
+        }
         _ => Err(PreparationError::message(
-            "usage: aos-boot-preparations seed-configuration",
+            "usage: aos-boot-preparations seed-configuration | \
+             <apply-deployment|verify-deployment> --input BUNDLE \
+             --state-directory STATE --nix-store EXECUTABLE",
         )),
     }
 }
 
-fn seed_configuration(root: &Path, profile_environment: &Path) -> Result<()> {
-    let generation_number = read_profile_generation(profile_environment)?;
-    let generation = root
-        .join("var/lib/profiles/system")
-        .join(format!("gen-{generation_number}"));
-    let manifest = generation.join("manifest.json");
-    let lower = PathBuf::from(format!("/run/etc/config-{generation_number}/etc"));
-    fs::create_dir_all(&lower)
-        .map_err(|error| PreparationError::io("creating configuration lower mountpoint", error))?;
-    if !is_nonempty_regular_file(&manifest)? {
-        return Ok(());
+/// Dispatches a native package transaction rooted in the verified boot image.
+///
+/// The fixed image locations are populated before boot and remain on the
+/// authenticated immutable image. The caller must already have established the
+/// image's integrity and mounted the stage journal; this command creates neither.
+fn run_deployment(
+    operation: &str,
+    bundle: &Path,
+    state_directory: &str,
+    nix_store: &str,
+) -> Result<()> {
+    if !matches!(
+        bundle.to_str(),
+        Some(
+            "/lib/aos/initrd/deployment"
+                | "/usr/lib/aos/initrd/deployment"
+                | "/usr/lib/aos/host/deployment"
+        )
+    ) {
+        return Err(PreparationError::message(
+            "deployment bundle is outside the fixed verified image locations",
+        ));
     }
+    // The verified image retains the original immutable bundle and its member
+    // aliases. Resolve this member only to its canonical store identity.
+    let digest_path = fs::canonicalize(bundle.join("admission-sha256"))
+        .map_err(|error| PreparationError::io("resolving image admission digest", error))?;
+    if !digest_path.starts_with("/nix/store") {
+        return Err(PreparationError::message(
+            "image admission digest is outside the immutable store",
+        ));
+    }
+    let metadata = fs::symlink_metadata(&digest_path)
+        .map_err(|error| PreparationError::io("inspecting image admission digest", error))?;
+    if !metadata.is_file() || metadata.len() > 128 {
+        return Err(PreparationError::message(
+            "image admission digest is not a bounded regular file",
+        ));
+    }
+    let digest = fs::read_to_string(&digest_path)
+        .map_err(|error| PreparationError::io("reading image admission digest", error))?;
+    let digest = digest.trim_end_matches('\n');
+    validate_admission_digest(digest)?;
 
-    let generation_text = generation
+    let bundle_text = bundle
         .to_str()
-        .ok_or_else(|| PreparationError::message("configuration generation path is not UTF-8"))?;
-    let manifest_text = manifest
+        .ok_or_else(|| PreparationError::message("bundle path is not UTF-8"))?;
+    let admission = bundle.join("admission.json");
+    let admission_text = admission
         .to_str()
-        .ok_or_else(|| PreparationError::message("configuration manifest path is not UTF-8"))?;
-    run_exact(
-        PACKAGE_RUNTIME,
-        &[
-            "__materialize",
-            "--manifest",
-            manifest_text,
-            "--generation-dir",
-            generation_text,
-            "--mkfs-erofs",
-            MKFS_EROFS,
-            "--fsck-erofs",
-            FSCK_EROFS,
-        ],
-        &[],
-    )
-    .map_err(|error| {
-        PreparationError::message(format!(
-            "materializing the retained configuration lower: {error}"
-        ))
+        .ok_or_else(|| PreparationError::message("admission path is not UTF-8"))?;
+    let mut arguments = vec![
+        operation,
+        "--input",
+        bundle_text,
+        "--state-directory",
+        state_directory,
+        "--nix-store",
+        nix_store,
+        "--admission",
+        admission_text,
+        "--admission-sha256",
+        digest,
+    ];
+    if bundle_text == "/usr/lib/aos/host/deployment" {
+        if state_directory != "/var/lib/profiles/system/deployment" {
+            return Err(PreparationError::message(
+                "host deployment state must belong to the system profile",
+            ));
+        }
+        if operation == "apply-deployment" {
+            seed_store_registration(nix_store)?;
+        }
+        arguments.extend(["--profile", "/var/lib/profiles/system"]);
+    }
+    if bundle_text == "/usr/lib/aos/host/deployment" && operation == "apply-deployment" {
+        run_exact(BOOT_CONFIGURATION, &arguments[1..], &[])
+    } else {
+        run_exact(PACKAGE_RUNTIME, &arguments, &[])
+    }
+}
+
+fn seed_store_registration(nix_store: &str) -> Result<()> {
+    let digest = fs::read_to_string("/aos-registration.sha256").map_err(|error| {
+        PreparationError::io("reading verified-image registration digest", error)
     })?;
-    let image = generation.join("config-lower/etc.erofs");
-    let image_text = image
+    let digest = digest.trim_end_matches('\n');
+    validate_admission_digest(digest)?;
+    let output = Command::new(SHA256SUM)
+        .env_clear()
+        .arg("/aos-registration")
+        .output()
+        .map_err(|error| PreparationError::io("hashing the image registration stream", error))?;
+    let observed = std::str::from_utf8(&output.stdout).map_err(|error| {
+        PreparationError::message(format!("registration hash is not UTF-8: {error}"))
+    })?;
+    if !output.status.success()
+        || observed.split_whitespace().next() != digest.strip_prefix("sha256:")
+    {
+        return Err(PreparationError::message(
+            "image registration stream checksum differs",
+        ));
+    }
+    let registration = fs::File::open("/aos-registration")
+        .map_err(|error| PreparationError::io("opening verified registration", error))?;
+    let status = Command::new(nix_store)
+        .env_clear()
+        .arg("--load-db")
+        .stdin(Stdio::from(registration))
+        .status()
+        .map_err(|error| PreparationError::io("seeding the image Nix database", error))?;
+    if !status.success() {
+        return Err(PreparationError::message(format!(
+            "Nix registration seeding failed: {status}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_admission_digest(digest: &str) -> Result<()> {
+    let Some(hex) = digest.strip_prefix("sha256:") else {
+        return Err(PreparationError::message(
+            "image admission digest has an unsupported algorithm",
+        ));
+    };
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(PreparationError::message(
+            "image admission digest is not canonical SHA-256",
+        ));
+    }
+    Ok(())
+}
+
+fn seed_configuration(root: &Path, profile_environment: &Path) -> Result<()> {
+    let generation = read_profile_generation(profile_environment)?;
+    let lower = format!("/run/etc/config-{generation}/etc");
+    let root_text = root
         .to_str()
-        .ok_or_else(|| PreparationError::message("configuration lower image path is not UTF-8"))?;
-    let lower_text = lower
-        .to_str()
-        .ok_or_else(|| PreparationError::message("configuration lower mountpoint is not UTF-8"))?;
+        .ok_or_else(|| PreparationError::message("sysroot is not UTF-8"))?;
     run_exact(
-        MOUNT,
-        &[
-            "-t",
-            "erofs",
-            "-o",
-            "ro,nodev,nosuid",
-            image_text,
-            lower_text,
-        ],
+        CONFIGURATION_BOOT,
+        &[root_text, &generation.to_string(), &lower],
         &[],
     )
-    .map_err(|error| {
-        PreparationError::message(format!(
-            "mounting the retained configuration lower: {error}"
-        ))
-    })
 }
 
 fn read_profile_generation(path: &Path) -> Result<u32> {
@@ -145,23 +247,7 @@ fn read_profile_generation(path: &Path) -> Result<u32> {
     let generation = value.parse::<u32>().map_err(|error| {
         PreparationError::message(format!("profile generation is not a u32: {error}"))
     })?;
-    if generation == 0 {
-        return Err(PreparationError::message(
-            "profile generation must be positive",
-        ));
-    }
     Ok(generation)
-}
-
-fn is_nonempty_regular_file(path: &Path) -> Result<bool> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => Ok(metadata.is_file() && metadata.len() > 0),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(PreparationError::io(
-            "inspecting configuration manifest",
-            error,
-        )),
-    }
 }
 
 fn run_exact(
@@ -193,6 +279,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn deployment_rejects_mutable_or_unrecognized_bundle_locations() {
+        for path in [
+            "/tmp/deployment",
+            "/var/lib/profiles/deployment",
+            "/usr/lib/aos/../deployment",
+        ] {
+            assert!(
+                run_deployment(
+                    "apply-deployment",
+                    Path::new(path),
+                    "/run/journal",
+                    "/nix/store/tool/bin/nix-store"
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn admission_digest_accepts_only_canonical_sha256() {
+        assert!(validate_admission_digest(&format!("sha256:{}", "a".repeat(64))).is_ok());
+        for digest in [
+            "sha256:abc",
+            "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "sha512:abc",
+        ] {
+            assert!(validate_admission_digest(digest).is_err());
+        }
+    }
+
+    #[test]
     fn profile_generation_requires_one_exact_assignment() {
         let directory =
             std::env::temp_dir().join(format!("aos-boot-preparations-test-{}", std::process::id()));
@@ -200,6 +317,11 @@ mod tests {
         let path = directory.join("profile.env");
         fs::write(&path, "AOS_PROFILE_GEN=17\n").expect("write environment");
         assert_eq!(read_profile_generation(&path).expect("generation"), 17);
+        fs::write(&path, "AOS_PROFILE_GEN=0\n").expect("write bootstrap environment");
+        assert_eq!(
+            read_profile_generation(&path).expect("bootstrap generation"),
+            0
+        );
 
         fs::write(&path, "AOS_PROFILE_GEN=17\nEXTRA=1\n").expect("write invalid environment");
         assert!(read_profile_generation(&path).is_err());
