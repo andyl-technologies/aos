@@ -628,10 +628,18 @@ impl ProtectedJournalAuthority<'_> {
             ProtectedAuthorityScope::RootLocalRecoveryKind2
                 | ProtectedAuthorityScope::RootLocalRecoveryKind5
                 | ProtectedAuthorityScope::RootOriginalNativeV5
+                | ProtectedAuthorityScope::RootOriginalInventoryV6
         ) {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
         super::root_local_recovery::graph(&self.journal.state)?;
+        if self.scope == ProtectedAuthorityScope::RootOriginalInventoryV6 {
+            super::root_original_inventory::validate_rejoined_capacity(
+                &self.journal.state, self.journal.materialized_bytes,
+                self.journal.file.metadata()?.len(), self.journal.committed_transactions,
+                self.journal.limits, self.journal.next_sequence,
+            )?;
+        }
         self.validate_startup_policy_replay()
     }
 

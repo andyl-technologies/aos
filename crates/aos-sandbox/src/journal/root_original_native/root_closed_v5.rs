@@ -180,3 +180,6 @@ fn require_store_transfer(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(super) use tests::phase11_funded_data;
