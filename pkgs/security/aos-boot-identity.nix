@@ -1,6 +1,8 @@
 ##! aos-boot-identity — fail-closed normal boot command-line validator
 {
   lib,
+  service-management,
+  aos-boot-storage,
   mkDerivation,
   bash,
   coreutils,
@@ -23,8 +25,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -89,7 +102,8 @@ in
     buildDeps = [buildRust];
     runtimeDeps = [bash coreutils util-linux];
     propagatedDeps = [];
-    abilities = ./_aos-boot-identity;
+    module = ./_aos-boot-identity;
+    moduleDeps = [service-management aos-boot-storage];
 
     phases = [
       {

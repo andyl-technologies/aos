@@ -2,35 +2,23 @@
 {
   config,
   lib,
+  package,
+  dependencies,
   ...
 }: let
+  packageDependencies = dependencies;
   cfg = config.aos.security.bootIdentityServices;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  milestones = serviceManagement.milestones;
-  interfaces = serviceManagement.interfaces;
-  resultOf = lib.abilities.resultOf;
-  consumerInstance = "boot-identity";
-  initrdStage =
-    config.aos.abilities.environment
-    != null
-    && config.aos.abilities.environment.stage == "initrd";
-  packageArtifact = lib.abilities.packageOutput {};
-
-  systemMilestone = key: milestone:
-    serviceManagement.forProducer {
-      inherit consumerInstance key;
-      interface = interfaces.systemMilestoneReadiness;
-      parameters = {inherit milestone;};
-    };
-  deviceSettle = systemMilestone "device-settle" milestones.deviceSettle;
-  initrdFilesystems = systemMilestone "initrd-filesystems" milestones.initrdFilesystems;
-  integrityFailure = systemMilestone "integrity-failure" milestones.bootIntegrityFailure;
-  readiness = key: resultOf key "resource";
-  serviceResource = key: resultOf "${key}-lifecycle" "resource";
+  initrdStage = config.aos.boot.stage == "initrd";
+  units = {
+    device-settle = "systemd-udev-settle.service";
+    initrd-filesystems = "initrd-fs.target";
+    integrity-failure = "aos-boot-integrity-failure.target";
+  };
+  readiness = key: units.${key};
+  serviceResource = key: "${key}.service";
   command = key: {
     executable = {
-      artifact = packageArtifact;
-      entry_point = "bin/${key}";
+      path = "${package}/bin/${key}";
       arguments = [];
     };
     ignore_failure = false;
@@ -60,8 +48,8 @@
     logging ? false,
   }:
     {
-      inherit consumerInstance;
       inherit activationOwner;
+      autoStart = false;
       service = key;
       manager_identity = {
         name = key;
@@ -87,11 +75,7 @@
       inherit dependencies;
       environment = {
         variables = {};
-        search_path = builtins.map lib.abilities.packageOutput [
-          {}
-          {package = "coreutils";}
-          {package = "util-linux";}
-        ];
+        search_path = [package.path packageDependencies.coreutils.path packageDependencies.util-linux.path];
       };
       readiness = {
         mechanism = "successful-exit";
@@ -149,26 +133,17 @@
       };
     logging = true;
   };
-  producers = [deviceSettle initrdFilesystems integrityFailure];
 in {
   options.aos.security.bootIdentityServices.enable = lib.mkOption {
-    type = lib.abilities.types.boolean;
-    default = false;
+    type = lib.types.bool;
+    default = config.aos.security.verity.enable;
     internal = true;
     description = "Whether fail-closed normal-boot identity services are active.";
   };
 
-  config = lib.mkMerge [
-    {
-      aos.services = {
-        "boot-identity.aos-boot-identity-success" = identitySuccess // {enable = initrdStage && cfg.enable;};
-        "boot-identity.aos-boot-identity-guard" = identityGuard // {enable = initrdStage && cfg.enable;};
-        "boot-identity.aos-boot-identity-failure-report" = failureReport // {enable = initrdStage && cfg.enable;};
-      };
-    }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = initrdStage && cfg.enable;
-    })
-  ];
+  config.aos.services = {
+    "boot-identity.aos-boot-identity-success" = identitySuccess // {enable = initrdStage && cfg.enable;};
+    "boot-identity.aos-boot-identity-guard" = identityGuard // {enable = initrdStage && cfg.enable;};
+    "boot-identity.aos-boot-identity-failure-report" = failureReport // {enable = initrdStage && cfg.enable;};
+  };
 }

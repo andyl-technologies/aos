@@ -2,43 +2,32 @@
 {
   config,
   lib,
+  package,
   ...
 }: let
   cfg = config.aos.security.verityRootVerification;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  milestones = serviceManagement.milestones;
-  interfaces = serviceManagement.interfaces;
-  resultOf = lib.abilities.resultOf;
-  consumerInstance = "verity-root-verification";
-  initrdStage =
-    config.aos.abilities.environment
-    != null
-    && config.aos.abilities.environment.stage == "initrd";
-
+  initrdStage = config.aos.boot.stage == "initrd";
+  units = {
+    boot-identity = "aos-boot-identity-guard.service";
+    verity-root-mapping = "aos-systemd-verity-root-setup.service";
+    device-events = "systemd-udev-settle.service";
+    initrd-stage = "aos-ability-initrd-controller.service";
+    initrd-filesystems = "initrd-fs.target";
+    persistent-state = "mount-var.service";
+    integrity-failure = "aos-boot-integrity-failure.target";
+  };
+  resultOf = key: _: units.${key};
   command = {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "bin/aos-verity-root-verify";
+      path = "${package}/bin/aos-verity-root-verify";
       arguments = [];
     };
     ignore_failure = false;
   };
-  systemMilestone = key: name:
-    serviceManagement.forProducer {
-      inherit consumerInstance key;
-      interface = interfaces.systemMilestoneReadiness;
-      parameters.milestone = name;
-    };
-  bootIdentity = systemMilestone "boot-identity" milestones.bootIdentityValidated;
-  verityRootMapping = systemMilestone "verity-root-mapping" milestones.verityRootMappingReady;
-  deviceEvents = systemMilestone "device-events" milestones.deviceSettle;
-  initrdStageExecution = systemMilestone "initrd-stage" milestones.initrdStageExecuted;
-  initrdFilesystems = systemMilestone "initrd-filesystems" milestones.initrdFilesystems;
-  persistentState = systemMilestone "persistent-state" milestones.var;
-  integrityFailure = systemMilestone "integrity-failure" milestones.bootIntegrityFailure;
-
   verificationService = {
     activationOwner = "image";
+    autoStart = false;
+    service = "aos-verity-root-verify";
     lifecycle = {
       description = "Verify the complete dm-verity root before persistent state";
       execution_model = "oneshot";
@@ -100,29 +89,12 @@
       timeout_millis = 90000;
     };
   };
-  producers = [
-    bootIdentity
-    verityRootMapping
-    deviceEvents
-    initrdStageExecution
-    initrdFilesystems
-    persistentState
-    integrityFailure
-  ];
 in {
   options.aos.security.verityRootVerification.enable = lib.mkOption {
-    type = lib.abilities.types.boolean;
-    default = false;
+    type = lib.types.bool;
+    default = config.aos.security.verity.enable;
     description = "Verify every dm-verity root block before persistent state is exposed.";
   };
 
-  config = lib.mkMerge [
-    {
-      aos.services."verity-root-verification.aos-verity-root-verify" = verificationService // {enable = cfg.enable && initrdStage;};
-    }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = config.aos.services."verity-root-verification.aos-verity-root-verify".enable;
-    })
-  ];
+  config.aos.services."verity-root-verification.aos-verity-root-verify" = verificationService // {enable = cfg.enable && initrdStage;};
 }
