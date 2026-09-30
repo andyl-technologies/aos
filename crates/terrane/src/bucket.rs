@@ -9,6 +9,9 @@ mod catalog;
 mod containers;
 mod content;
 mod files;
+pub(crate) mod held;
+#[cfg(all(test, feature = "tokio", unix))]
+mod held_tests;
 mod quarantine;
 mod retirement;
 

@@ -201,26 +201,32 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     }
 }
 
-#[cfg_attr(feature = "send", async_trait::async_trait)]
-#[cfg_attr(not(feature="send"),async_trait::async_trait(?Send))]
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
-    RefStore for FileBucket<F, C, V>
+    FileBucket<F, C, V>
 {
-    type Watch = FileRefWatch<F, C, V>;
-
-    async fn ref_get(&self, name: &str) -> Result<Option<RefRecord>, StoreFailure> {
+    /// Runs the ordinary ref_get path while its caller retains stable exclusion.
+    ///
+    /// # Errors
+    /// Returns the same validation, conflict, corruption, or binding failures as the ordinary operation.
+    pub(super) async fn ref_get_locked(
+        &self,
+        name: &str,
+    ) -> Result<Option<RefRecord>, StoreFailure> {
         let key = ref_key(name)?;
         self.read_ref(&key).await
     }
 
-    async fn ref_cas(
+    /// Runs the ordinary ref_cas path while its caller retains stable exclusion.
+    ///
+    /// # Errors
+    /// Returns the same validation, conflict, corruption, or binding failures as the ordinary operation.
+    pub(super) async fn ref_cas_locked(
         &self,
         name: &str,
         expect: Option<&RefRecord>,
         new: &RefRecord,
     ) -> Result<RefCasOutcome, StoreFailure> {
         let key = ref_key(name)?;
-        let _guard = self.exclusive().await?;
         let current = self.read_ref(&key).await?;
         if current.as_ref() != expect
             || (key.mutability() == Mutability::CreateOnce && current.is_some())
@@ -252,7 +258,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(RefCasOutcome::Applied)
     }
 
-    async fn ref_log_append(
+    /// Runs the ordinary ref_log_append path while its caller retains stable exclusion.
+    ///
+    /// # Errors
+    /// Returns the same validation, conflict, corruption, or binding failures as the ordinary operation.
+    pub(super) async fn ref_log_append_locked(
         &self,
         name: &str,
         seq: u64,
@@ -263,7 +273,6 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             return Err(files::malformed());
         }
         let bytes = record.encode().map_err(|_| files::malformed())?;
-        let _guard = self.exclusive().await?;
         if self.read_optional(&key).await?.is_some() {
             return Ok(RefLogAppendOutcome::Exists);
         }
@@ -297,7 +306,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         }
     }
 
-    async fn ref_log_read(
+    /// Runs the ordinary ref_log_read path while its caller retains stable exclusion.
+    ///
+    /// # Errors
+    /// Returns the same validation, conflict, corruption, or binding failures as the ordinary operation.
+    pub(super) async fn ref_log_read_locked(
         &self,
         name: &str,
         from_seq: u64,
@@ -306,7 +319,6 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         if !branch(name)? {
             return Err(files::malformed());
         }
-        let _guard = self.exclusive().await?;
         let Some(current) = self.read_ref(&key).await? else {
             return Ok(Vec::new());
         };
@@ -319,6 +331,47 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .into_iter()
             .filter(|log| log.record.seq >= from_seq)
             .collect())
+    }
+}
+
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature="send"),async_trait::async_trait(?Send))]
+impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
+    RefStore for FileBucket<F, C, V>
+{
+    type Watch = FileRefWatch<F, C, V>;
+
+    async fn ref_get(&self, name: &str) -> Result<Option<RefRecord>, StoreFailure> {
+        self.ref_get_locked(name).await
+    }
+
+    async fn ref_cas(
+        &self,
+        name: &str,
+        expect: Option<&RefRecord>,
+        new: &RefRecord,
+    ) -> Result<RefCasOutcome, StoreFailure> {
+        let _guard = self.exclusive().await?;
+        self.ref_cas_locked(name, expect, new).await
+    }
+
+    async fn ref_log_append(
+        &self,
+        name: &str,
+        seq: u64,
+        record: &RefLogRecord,
+    ) -> Result<RefLogAppendOutcome, StoreFailure> {
+        let _guard = self.exclusive().await?;
+        self.ref_log_append_locked(name, seq, record).await
+    }
+
+    async fn ref_log_read(
+        &self,
+        name: &str,
+        from_seq: u64,
+    ) -> Result<Vec<RefLogRecord>, StoreFailure> {
+        let _guard = self.exclusive().await?;
+        self.ref_log_read_locked(name, from_seq).await
     }
 
     async fn ref_watch(&self, name: &str, from_seq: u64) -> Result<Self::Watch, StoreFailure> {
@@ -345,6 +398,7 @@ pub struct FileRefWatch<F, C, V> {
     next: Option<u64>,
 }
 
+#[cfg_attr(feature = "send", async_trait::async_trait)]
 #[cfg_attr(feature = "send", async_trait::async_trait)]
 #[cfg_attr(not(feature="send"),async_trait::async_trait(?Send))]
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>

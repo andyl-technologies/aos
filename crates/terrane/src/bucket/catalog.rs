@@ -440,6 +440,17 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// be verified. Directory listing never selects authoritative content.
     pub async fn live_identities(&self, kind: IdentityKind) -> Result<Vec<Identity>, StoreFailure> {
         let _guard = self.exclusive().await?;
+        self.live_identities_locked(kind).await
+    }
+
+    /// Verifies live identities while a caller retains the bucket exclusion.
+    ///
+    /// # Errors
+    /// Returns catalog, body verification, and binding failures.
+    pub(super) async fn live_identities_locked(
+        &self,
+        kind: IdentityKind,
+    ) -> Result<Vec<Identity>, StoreFailure> {
         let catalog = self.catalog().await?;
         let identities = self.catalog_identities(&catalog, kind)?;
         for identity in &identities {

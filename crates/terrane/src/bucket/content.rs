@@ -384,13 +384,17 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     }
 }
 
-#[cfg_attr(feature = "send", async_trait::async_trait)]
-#[cfg_attr(not(feature="send"),async_trait::async_trait(?Send))]
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
-    ContentStore for FileBucket<F, C, V>
+    FileBucket<F, C, V>
 {
-    async fn put(&self, upload: ContentUpload<'_>) -> Result<Identity, StoreFailure> {
-        let _guard = self.exclusive().await?;
+    /// Runs the ordinary put path while its caller retains stable exclusion.
+    ///
+    /// # Errors
+    /// Returns the same validation, conflict, corruption, or binding failures as the ordinary operation.
+    pub(super) async fn put_locked(
+        &self,
+        upload: ContentUpload<'_>,
+    ) -> Result<Identity, StoreFailure> {
         let catalog = self.catalog().await?;
         let mut dictionaries = BTreeMap::new();
         let identity = match upload {
@@ -507,12 +511,15 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(identity)
     }
 
-    async fn get(
+    /// Runs the ordinary get path while its caller retains stable exclusion.
+    ///
+    /// # Errors
+    /// Returns the same validation, conflict, corruption, or binding failures as the ordinary operation.
+    pub(super) async fn get_locked(
         &self,
         identity: &Identity,
         range: Option<ByteRange>,
     ) -> Result<Vec<u8>, StoreFailure> {
-        let _guard = self.exclusive().await?;
         let catalog = self.catalog().await?;
         let bytes = self.verified_body(&catalog, identity).await?;
         let Some(range) = range else {
@@ -531,8 +538,14 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(bytes[start..end].to_vec())
     }
 
-    async fn has(&self, identities: &[Identity]) -> Result<Vec<bool>, StoreFailure> {
-        let _guard = self.exclusive().await?;
+    /// Runs the ordinary has path while its caller retains stable exclusion.
+    ///
+    /// # Errors
+    /// Returns the same validation, conflict, corruption, or binding failures as the ordinary operation.
+    pub(super) async fn has_locked(
+        &self,
+        identities: &[Identity],
+    ) -> Result<Vec<bool>, StoreFailure> {
         let catalog = self.catalog().await?;
         let mut results = Vec::with_capacity(identities.len());
         for identity in identities {
@@ -547,11 +560,48 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(results)
     }
 
-    async fn list(&self, prefix: &IdentityPrefix) -> Result<Vec<Identity>, StoreFailure> {
-        let identities = self.live_identities(prefix.kind).await?;
+    /// Runs the ordinary list path while its caller retains stable exclusion.
+    ///
+    /// # Errors
+    /// Returns the same validation, conflict, corruption, or binding failures as the ordinary operation.
+    pub(super) async fn list_locked(
+        &self,
+        prefix: &IdentityPrefix,
+    ) -> Result<Vec<Identity>, StoreFailure> {
+        let identities = self.live_identities_locked(prefix.kind).await?;
         Ok(identities
             .into_iter()
             .filter(|identity| identity.digest().starts_with(&prefix.digest_prefix))
             .collect())
+    }
+}
+
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature="send"),async_trait::async_trait(?Send))]
+impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
+    ContentStore for FileBucket<F, C, V>
+{
+    async fn put(&self, upload: ContentUpload<'_>) -> Result<Identity, StoreFailure> {
+        let _guard = self.exclusive().await?;
+        self.put_locked(upload).await
+    }
+
+    async fn get(
+        &self,
+        identity: &Identity,
+        range: Option<ByteRange>,
+    ) -> Result<Vec<u8>, StoreFailure> {
+        let _guard = self.exclusive().await?;
+        self.get_locked(identity, range).await
+    }
+
+    async fn has(&self, identities: &[Identity]) -> Result<Vec<bool>, StoreFailure> {
+        let _guard = self.exclusive().await?;
+        self.has_locked(identities).await
+    }
+
+    async fn list(&self, prefix: &IdentityPrefix) -> Result<Vec<Identity>, StoreFailure> {
+        let _guard = self.exclusive().await?;
+        self.list_locked(prefix).await
     }
 }
