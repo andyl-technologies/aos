@@ -7,10 +7,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_sandbox::{
-    GlobalCapacityReservationRequestV1, JournalRecord,
+    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1, JournalRecord,
     SourceProviderHeldReadOnlyJournalAuthorityV1, decode_capacity_reservation_request_v1,
     journal::native_held::{
-        NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, validate_capacity_snapshot_data_v2,
+        NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, OriginalSourceCapacityRecordV5,
+        validate_capacity_snapshot_data_v2,
     },
 };
 use aos_sandbox_core::ObjectDigest;
@@ -134,15 +135,41 @@ pub(crate) fn recover(
     })
 }
 
-enum Floor {
+pub(super) enum Floor {
     Legacy(GlobalCapacityReservationRequestV1),
     Held(NativeHeldCapacityRecordV3),
+    OriginalSource(OriginalSourceCapacityRecordV5),
 }
 
-struct Floors(BTreeMap<[u8; 32], Floor>);
+pub(super) struct FloorEntry {
+    pub(super) floor: Floor,
+    pub(super) row: JournalRecord,
+    pub(super) admission_transaction_id: [u8; 16],
+}
+
+pub(super) struct Floors(pub(super) BTreeMap<[u8; 32], FloorEntry>);
+
+enum InventoryKind {
+    StrictHeldReadback,
+    OriginalSourceComparison,
+}
 
 impl Floors {
     fn collect(records: Vec<JournalRecord>) -> Result<Self, ProviderLedgerError> {
+        Self::collect_for(records, InventoryKind::StrictHeldReadback)
+    }
+
+    /// Admits Source5 only to the private original comparison, never readback.
+    pub(super) fn collect_original_source_comparison(
+        records: Vec<JournalRecord>,
+    ) -> Result<Self, ProviderLedgerError> {
+        Self::collect_for(records, InventoryKind::OriginalSourceComparison)
+    }
+
+    fn collect_for(
+        records: Vec<JournalRecord>,
+        kind: InventoryKind,
+    ) -> Result<Self, ProviderLedgerError> {
         let complete = records
             .iter()
             .map(|row| {
@@ -157,25 +184,68 @@ impl Floors {
             let value = row
                 .value()
                 .ok_or(ProviderLedgerError::Corrupt("capacity observation DELETE"))?;
-            let (identifier, floor) = if value.get(8..10) == Some(&3_u16.to_be_bytes()) {
+            let (identifier, admission_transaction_id, floor) = if value.get(8..10)
+                == Some(&3_u16.to_be_bytes())
+            {
                 let native = NativeHeldCapacityRecordV3::from_journal_record(&row)?;
-                (native.reservation_id(), Floor::Held(native))
+                if matches!(kind, InventoryKind::OriginalSourceComparison)
+                    && native.request().purpose != NativeHeldCapacityPurposeV3::Provider
+                {
+                    return Err(ProviderLedgerError::Corrupt("foreign native floor family"));
+                }
+                (
+                    native.reservation_id(),
+                    native.admission_transaction_id(),
+                    Floor::Held(native),
+                )
+            } else if matches!(kind, InventoryKind::OriginalSourceComparison)
+                && value.get(8..10) == Some(&5_u16.to_be_bytes())
+            {
+                let original = OriginalSourceCapacityRecordV5::from_journal_record(&row)?;
+                (
+                    original.reservation_id(),
+                    original.admission_transaction_id(),
+                    Floor::OriginalSource(original),
+                )
             } else {
-                let (request, _, identifier) = decode_capacity_reservation_request_v1(&row)?;
-                (identifier, Floor::Legacy(request))
+                if matches!(kind, InventoryKind::OriginalSourceComparison)
+                    && value.get(8..10) != Some(&1_u16.to_be_bytes())
+                {
+                    // Query6 and all other families remain unsupported here,
+                    // even if the shared syntax gate learns their codecs.
+                    return Err(ProviderLedgerError::Corrupt(
+                        "unsupported Source floor family",
+                    ));
+                }
+                let (request, admission, identifier) =
+                    decode_capacity_reservation_request_v1(&row)?;
+                if matches!(kind, InventoryKind::OriginalSourceComparison)
+                    && request.purpose
+                        != GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal
+                {
+                    return Err(ProviderLedgerError::Corrupt(
+                        "unsupported Source floor family",
+                    ));
+                }
+                (identifier, admission, Floor::Legacy(request))
             };
-            if floors.insert(identifier, floor).is_some() {
+            let entry = FloorEntry {
+                floor,
+                row,
+                admission_transaction_id,
+            };
+            if floors.insert(identifier, entry).is_some() {
                 return Err(ProviderLedgerError::Corrupt("duplicate physical floor"));
             }
         }
         Ok(Self(floors))
     }
 
-    fn identities(&self) -> BTreeSet<[u8; 32]> {
+    pub(super) fn identities(&self) -> BTreeSet<[u8; 32]> {
         self.0.keys().copied().collect()
     }
 
-    fn exact_legacy(
+    pub(super) fn exact_legacy(
         &self,
         expected: GlobalCapacityReservationRequestV1,
     ) -> Result<[u8; 32], ProviderLedgerError> {
@@ -183,7 +253,8 @@ impl Floors {
             .0
             .iter()
             .filter_map(|(identifier, row)| {
-                matches!(row, Floor::Legacy(actual) if *actual == expected).then_some(*identifier)
+                matches!(&row.floor, Floor::Legacy(actual) if *actual == expected)
+                    .then_some(*identifier)
             })
             .collect::<Vec<_>>();
         match matches.as_slice() {
@@ -194,7 +265,7 @@ impl Floors {
         }
     }
 
-    fn exact_held(
+    pub(super) fn exact_held(
         &self,
         held: &SourceNativeHeldCompletionRecordV1,
         owners: &RecoveredProviderLedgerV1,
@@ -231,7 +302,7 @@ impl Floors {
             .0
             .iter()
             .filter_map(|(identifier, row)| {
-                let Floor::Held(row) = row else {
+                let Floor::Held(row) = &row.floor else {
                     return None;
                 };
                 let request = row.request();

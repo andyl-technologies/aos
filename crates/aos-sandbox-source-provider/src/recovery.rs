@@ -34,6 +34,7 @@ mod graph;
 #[path = "recovery/history.rs"]
 mod history;
 pub(crate) mod native_profile;
+mod original_source_capacity;
 #[path = "recovery/sessions.rs"]
 mod sessions;
 #[path = "recovery/work.rs"]
@@ -135,6 +136,44 @@ fn recover_records_with_held<'record>(
         crate::ledger::native_held_completion::SourceNativeHeldCompletionRecordV1,
     >,
 ) -> Result<RecoveredProviderLedgerV1, ProviderLedgerError> {
+    let profiles = held
+        .iter()
+        .map(|(identifier, record)| (*identifier, CanonicalNativeProfile::Held(record.clone())))
+        .collect();
+    recover_records_with_profiles(records, configuration, &profiles)
+}
+
+// Each skipped legacy row must equal a real canonical typed profile, never an
+// identifier whitelist. The old reader constructs Held only; cold projection
+// is confined to the original Source comparison after the complete Ledger gate.
+enum CanonicalNativeProfile {
+    Held(crate::ledger::native_held_completion::SourceNativeHeldCompletionRecordV1),
+    Cold(crate::ledger::native_completion::SourcePreRequestedColdArchiveV1),
+}
+
+impl CanonicalNativeProfile {
+    fn acquisition_id(&self) -> ObjectDigest {
+        match self {
+            Self::Held(record) => record.original().acquisition_id,
+            Self::Cold(record) => record.prepared().claims().acquisition_id,
+        }
+    }
+
+    fn canonical_bytes(&self) -> Result<Vec<u8>, ProviderLedgerError> {
+        match self {
+            Self::Held(record) => record
+                .to_canonical_bytes()
+                .map_err(crate::transaction::map_pure_ledger_error),
+            Self::Cold(record) => Ok(record.to_canonical_bytes()),
+        }
+    }
+}
+
+fn recover_records_with_profiles<'record>(
+    records: impl IntoIterator<Item = (&'record [u8], &'record [u8])>,
+    configuration: &ProtectedProviderConfigurationV1,
+    profiles: &BTreeMap<ObjectDigest, CanonicalNativeProfile>,
+) -> Result<RecoveredProviderLedgerV1, ProviderLedgerError> {
     let mut authorities = Vec::new();
     let mut catalogs = BTreeMap::new();
     let mut sessions = BTreeMap::new();
@@ -145,16 +184,14 @@ fn recover_records_with_held<'record>(
     let mut native_completions = BTreeMap::new();
     let mut aggregate_bytes = 0_usize;
     let mut record_count = 0_usize;
-    let held_rows = held
+    let profile_rows = profiles
         .values()
         .map(|record| {
             Ok((
                 crate::ledger::native_completion::native_completion_key_v2(
-                    record.original().acquisition_id,
+                    record.acquisition_id(),
                 ),
-                record
-                    .to_canonical_bytes()
-                    .map_err(crate::transaction::map_pure_ledger_error)?,
+                record.canonical_bytes()?,
             ))
         })
         .collect::<Result<BTreeMap<_, _>, ProviderLedgerError>>()?;
@@ -178,7 +215,7 @@ fn recover_records_with_held<'record>(
                 "recovered aggregate bounds",
             ));
         }
-        if let Some(expected) = held_rows.get(key) {
+        if let Some(expected) = profile_rows.get(key) {
             if expected.as_slice() != bytes {
                 return Err(ProviderLedgerError::Corrupt("changed held profile row"));
             }
@@ -343,7 +380,7 @@ fn recover_records_with_held<'record>(
         &acquisitions,
         &native_completions
             .keys()
-            .chain(held.keys())
+            .chain(profiles.keys())
             .copied()
             .collect(),
     );
@@ -351,7 +388,7 @@ fn recover_records_with_held<'record>(
         crate::native_completion::is_native_dispatch_acquisition(acquisition)
             && acquisition.state != ProviderAcquisitionStateV1::Applying
             && !native_completions.contains_key(&acquisition.acquisition_id)
-            && !held.contains_key(&acquisition.acquisition_id)
+            && !profiles.contains_key(&acquisition.acquisition_id)
     }) {
         return Err(ProviderLedgerError::Corrupt(
             "native acquisition missing completion",
@@ -389,7 +426,10 @@ fn recover_records_with_held<'record>(
             .ok_or(ProviderLedgerError::Corrupt(
                 "native fence current acquisition",
             ))?;
-        if held.contains_key(&acquisition.acquisition_id) {
+        if matches!(
+            profiles.get(&acquisition.acquisition_id),
+            Some(CanonicalNativeProfile::Held(_))
+        ) {
             // The complete held gate checks its actual envelope8 export/fence
             // join. Historical signature eligibility remains checked above;
             // do not re-encode the held outer into the legacy envelope7 helper.
