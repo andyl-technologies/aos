@@ -50,8 +50,24 @@ mod original_source_owner;
 
 pub use original_source_owner::{
     OriginalSourceOwnerDataV5, OriginalSourceOwnerPrefixV5, OriginalSourceOwnerTransactionV5,
-    classify_original_source_owner_v5, propose_original_source_applying_v5,
-    propose_original_source_requested_v5,
+    classify_original_source_owner_v5, derive_original_source_pre_requested_retirement_v1,
+    propose_original_source_applying_v5, propose_original_source_requested_v5,
+};
+
+#[path = "native_completion/pre_requested_cold.rs"]
+pub(crate) mod pre_requested_cold;
+
+pub use pre_requested_cold::{
+    MAXIMUM_SOURCE_PRE_REQUESTED_COLD_ARCHIVE_BYTES_V1,
+    MAXIMUM_SOURCE_PRE_REQUESTED_COLD_FLOOR_DATA_BYTES_V1,
+    SOURCE_PRE_REQUESTED_COLD_ARCHIVE_FIXED_BYTES_V1,
+    OriginalSourcePreRequestedRetirementV1, SourcePreRequestedColdArchiveV1,
+    SourcePreRequestedColdPhaseV1, SourcePreRequestedColdTransactionV1,
+    classify_original_source_pre_requested_cold_v1,
+    propose_original_source_pre_requested_closed_v1,
+    propose_original_source_pre_requested_closure_stored_v1,
+    propose_original_source_pre_requested_root_acknowledged_v1,
+    validate_original_source_pre_requested_cold_records_v1,
 };
 
 #[path = "native_completion/export_fence.rs"]
