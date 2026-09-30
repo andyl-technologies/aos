@@ -56,10 +56,31 @@
     maxItems,
     unique ? false,
     canonicalOrder ? false,
-  }:
-    lib.types.listWith {
+  }: let
+    bounded = lib.types.listWith {
       elemType = element;
       inherit maxItems unique canonicalOrder;
+    };
+    elements = lib.types.listOf element;
+  in
+    bounded
+    // lib.optionalAttrs canonicalOrder {
+      # These fields denote sets. Resolve ordinary module definitions first,
+      # then canonicalize identities; authored order and repeated definitions
+      # cannot change the resulting dependency graph. The wire schema remains
+      # bounded, unique, and canonical for independently submitted payloads.
+      merge = location: definitions: let
+        merged = elements.merge location definitions;
+        byIdentity = builtins.listToAttrs (builtins.map (value: {
+            name = builtins.unsafeDiscardStringContext (builtins.toJSON value);
+            inherit value;
+          })
+          merged);
+        normalized = builtins.map (identity: byIdentity.${identity}) (builtins.attrNames byIdentity);
+      in
+        if bounded.check normalized
+        then normalized
+        else throw "Service set '${builtins.concatStringsSep "." location}' violates its declared bounds.";
     };
   map = {
     value,

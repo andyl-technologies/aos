@@ -589,7 +589,9 @@ in rec {
   }: let
     base = listOf elemType;
     valid = value: let
-      encoded = builtins.map builtins.toJSON value;
+      # Equality and ordering compare JSON bytes. Contexts on the original
+      # values still retain artifacts, but cannot be used as attribute names.
+      encoded = builtins.map (item: builtins.unsafeDiscardStringContext (builtins.toJSON item)) value;
       names = builtins.attrNames (builtins.listToAttrs (builtins.map (name: {
           inherit name;
           value = true;

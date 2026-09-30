@@ -5,6 +5,7 @@
 //! The serialized document is `{ "schema": "aos.activation.graph", "nodes":
 //! { ... }, "order": [ ... ] }`. Node keys are hashes of logical identities.
 
+mod resolution;
 mod validation;
 
 #[cfg(test)]
@@ -185,6 +186,23 @@ impl Effect {
             validation::check_concrete(value, schema)?;
         }
         Ok(())
+    }
+
+    /// Resolves predecessor results and canonicalizes declared input sets.
+    ///
+    /// The graph must already have passed admission. Canonical sets are sorted
+    /// and deduplicated after substitution because distinct references may
+    /// return the same value or reverse their symbolic order. Ordered lists
+    /// retain their order. Concrete input validation remains strict.
+    ///
+    /// # Errors
+    /// Returns an error for missing or incompatible predecessor results,
+    /// ambiguous union collection semantics, or invalid resolved input.
+    pub fn resolve_input(&self, results: &BTreeMap<String, Value>) -> Result<Value> {
+        let mut input = resolve(&self.input, results)?;
+        resolution::normalize(&mut input, &self.input_type)?;
+        self.check_input(&input)?;
+        Ok(input)
     }
 
     /// Checks a fully resolved operation input against its module contract.

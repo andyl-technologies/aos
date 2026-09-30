@@ -22,6 +22,7 @@
     fixtureConsumers = import ./fixture-consumers.nix;
     observerServices = import ./observer-services.nix;
     serviceManagement = import ./service-management.nix;
+    serviceSetMerging = import ./service-set-merge.nix;
     serviceFlights = import ./native-service-flights.nix;
     filesystemFirewallFlights = import ../fleet/native-reference-filesystem-fixture-self-test.nix {inherit lib;};
     databaseConsumers = import ./database-consumers.nix;
