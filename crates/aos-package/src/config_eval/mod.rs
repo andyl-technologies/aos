@@ -44,6 +44,7 @@ pub mod runtime;
 pub mod runtime_modules;
 pub mod stock;
 pub mod system_roots;
+mod unit_policy;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -2351,6 +2352,7 @@ fn add_fixed_input_to_store(path: &Path) -> Result<PathBuf> {
         }
     }
     let output = std::process::Command::new("nix-store")
+        .envs(aos_core::nix::aos_management_nix_env())
         .args(["--add-fixed", "sha256"])
         .arg(path)
         .output()
@@ -2399,6 +2401,7 @@ fn add_fixed_eval_host_source(path: &Path, eval_root: &Path) -> Result<PathBuf> 
         .with_context(|| format!("copying authorized host input {}", path.display()))?;
 
     let output = std::process::Command::new("nix-store")
+        .envs(aos_core::nix::aos_management_nix_env())
         .args(["--add-fixed", "--recursive", "sha256"])
         .arg(&source)
         .output()
@@ -2767,7 +2770,7 @@ where
 /// Recomputes a store path's NAR hash from its current bytes.
 fn retained_store_path_nar_hash(path: &Path) -> Result<String> {
     let mut child = std::process::Command::new("nix-store")
-        .envs(aos_core::nix::aos_nix_env())
+        .envs(aos_core::nix::aos_management_nix_env())
         .arg("--dump")
         .arg(path)
         .stdout(Stdio::piped())
