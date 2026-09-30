@@ -1045,6 +1045,7 @@ fn storage_projection_is_strict_and_renders_pending_marker() {
             size_max: None,
             weight: 1000,
             format: None,
+            encryption: None,
             uuid: None,
             grow: true,
             grow_fs: true,
@@ -1053,7 +1054,10 @@ fn storage_projection_is_strict_and_renders_pending_marker() {
     );
     let mut plan = ProvisioningPlan {
         schema: "aos.provisioning-plan/v1".into(),
-        storage: StoragePlan { partitions },
+        storage: StoragePlan {
+            partitions,
+            arrays: BTreeMap::new(),
+        },
     };
     validate_provisioning_plan(&plan, true).unwrap();
     let output = tempdir().unwrap();
@@ -1163,6 +1167,7 @@ fn provisioning_state_persists_audit_definitions_and_runtime_input() {
             size_max: None,
             weight: 1000,
             format: None,
+            encryption: None,
             uuid: None,
             grow: true,
             grow_fs: true,
@@ -1171,7 +1176,10 @@ fn provisioning_state_persists_audit_definitions_and_runtime_input() {
     );
     let mut plan = ProvisioningPlan {
         schema: "aos.provisioning-plan/v1".into(),
-        storage: StoragePlan { partitions },
+        storage: StoragePlan {
+            partitions,
+            arrays: BTreeMap::new(),
+        },
     };
     render_provisioning_plan(
         stash.path(),
@@ -1233,6 +1241,7 @@ fn provisioning_marker_is_first_and_protected_from_space_pressure() {
             size_max: None,
             weight: 1000,
             format: None,
+            encryption: None,
             uuid: None,
             grow: true,
             grow_fs: true,
@@ -1242,7 +1251,10 @@ fn provisioning_marker_is_first_and_protected_from_space_pressure() {
     let output = tempdir().unwrap();
     let mut plan = ProvisioningPlan {
         schema: "aos.provisioning-plan/v1".into(),
-        storage: StoragePlan { partitions },
+        storage: StoragePlan {
+            partitions,
+            arrays: BTreeMap::new(),
+        },
     };
     render_provisioning_plan(
         output.path(),
@@ -1297,6 +1309,7 @@ fn provisioning_renderer_groups_devices_and_places_growth_last() {
                 size_max: size_max.map(str::to_owned),
                 weight: 1000,
                 format: Some("ext4".into()),
+                encryption: None,
                 uuid: None,
                 grow,
                 grow_fs: true,
@@ -1322,7 +1335,10 @@ fn provisioning_renderer_groups_devices_and_places_growth_last() {
     let output = tempdir().unwrap();
     let mut plan = ProvisioningPlan {
         schema: "aos.provisioning-plan/v1".into(),
-        storage: StoragePlan { partitions },
+        storage: StoragePlan {
+            partitions,
+            arrays: BTreeMap::new(),
+        },
     };
     render_provisioning_plan(
         output.path(),
@@ -1353,4 +1369,283 @@ fn provisioning_renderer_groups_devices_and_places_growth_last() {
 #[allow(dead_code)]
 fn _assert_static_network_default() -> StaticNetwork {
     StaticNetwork::default()
+}
+
+/// Builds a plan from partition and array literals for topology tests.
+fn topology_plan(
+    partitions: &[(&str, Option<&str>, Option<&str>, Option<&str>)],
+    arrays: &[(&str, &str, &[&str], Option<&str>, Option<&str>)],
+) -> super::repart::ProvisioningPlan {
+    use std::collections::BTreeMap;
+
+    use super::repart::{ArraySpec, PartitionSpec, ProvisioningPlan, StoragePlan};
+
+    let mut partition_map = BTreeMap::new();
+    for (name, device, format, encryption) in partitions {
+        partition_map.insert(
+            (*name).to_owned(),
+            PartitionSpec {
+                device: device.map(str::to_owned),
+                label: (*name).to_owned(),
+                partition_type: "linux-generic".into(),
+                size_min: "1G".into(),
+                size_max: Some("1G".into()),
+                weight: 1000,
+                format: format.map(str::to_owned),
+                encryption: encryption.map(str::to_owned),
+                uuid: None,
+                grow: false,
+                grow_fs: true,
+                priority: 1000,
+            },
+        );
+    }
+    let mut array_map = BTreeMap::new();
+    for (name, level, members, format, encryption) in arrays {
+        array_map.insert(
+            (*name).to_owned(),
+            ArraySpec {
+                level: (*level).to_owned(),
+                members: members.iter().map(|member| (*member).to_owned()).collect(),
+                format: format.map(str::to_owned),
+                encryption: encryption.map(str::to_owned),
+            },
+        );
+    }
+    ProvisioningPlan {
+        schema: "aos.provisioning-plan/v1".into(),
+        storage: StoragePlan {
+            partitions: partition_map,
+            arrays: array_map,
+        },
+    }
+}
+
+#[test]
+fn storage_topology_renders_arrays_and_volumes() {
+    use super::repart::{PENDING_LABEL, render_provisioning_plan};
+    use super::topology::{ARRAYS_FILE, LINUX_RAID_TYPE_GUID, VOLUMES_FILE};
+
+    const DISK_B: &str = "/dev/disk/by-id/virtio-b";
+    const DISK_C: &str = "/dev/disk/by-id/virtio-c";
+    let mut plan = topology_plan(
+        &[
+            ("var", None, None, None),
+            ("var-mirror", Some(DISK_B), None, None),
+            ("data-a", Some(DISK_B), None, None),
+            ("data-b", Some(DISK_C), None, None),
+            ("scratch", Some(DISK_C), Some("ext4"), None),
+        ],
+        &[
+            ("var", "raid1", &["var", "var-mirror"], Some("ext4"), None),
+            ("data", "raid1", &["data-a", "data-b"], Some("ext4"), None),
+        ],
+    );
+    let output = tempdir().unwrap();
+    render_provisioning_plan(
+        output.path(),
+        &mut plan,
+        false,
+        PENDING_LABEL,
+        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    )
+    .unwrap();
+
+    let arrays = std::fs::read_to_string(output.path().join(ARRAYS_FILE)).unwrap();
+    assert_eq!(
+        arrays,
+        "var\traid1\t2\t/dev/disk/by-partlabel/var,/dev/disk/by-partlabel/var-mirror\n\
+         data\traid1\t2\t/dev/disk/by-partlabel/data-a,/dev/disk/by-partlabel/data-b\n"
+    );
+    let volumes = std::fs::read_to_string(output.path().join(VOLUMES_FILE)).unwrap();
+    assert_eq!(
+        volumes,
+        "var\tarray\t/dev/md/var\tvar\tnone\text4\n\
+         data\tarray\t/dev/md/data\tdata\tnone\text4\n\
+         scratch\tpartition\t/dev/disk/by-partlabel/scratch\tscratch\tnone\text4\n"
+    );
+
+    // Member partitions are typed linux-raid and left raw; the plain partition
+    // keeps its repart format.
+    let var_conf = std::fs::read_to_string(output.path().join("repart.d/0000/0010-var.conf")).unwrap();
+    assert!(var_conf.contains(&format!("Type={LINUX_RAID_TYPE_GUID}\n")));
+    assert!(!var_conf.contains("Format="));
+    let targets = std::fs::read_to_string(output.path().join("repart-targets")).unwrap();
+    let disk_c_dir = targets
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{DISK_C}\t")))
+        .unwrap();
+    let scratch_conf = std::fs::read_dir(output.path().join("repart.d").join(disk_c_dir))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.file_name().unwrap().to_str().unwrap().ends_with("-scratch.conf"))
+        .unwrap();
+    assert!(std::fs::read_to_string(scratch_conf).unwrap().contains("Format=ext4\n"));
+}
+
+#[test]
+fn storage_topology_rejects_invalid_arrays() {
+    use super::repart::validate_provisioning_plan;
+
+    const DISK_B: &str = "/dev/disk/by-id/virtio-b";
+    let invalid = [
+        // Undeclared member.
+        topology_plan(
+            &[("var", None, None, None)],
+            &[("data", "raid1", &["missing", "var"], Some("ext4"), None)],
+        ),
+        // Member declares its own filesystem.
+        topology_plan(
+            &[("var", None, None, None), ("a", Some(DISK_B), Some("ext4"), None), ("b", Some(DISK_B), None, None)],
+            &[("data", "raid1", &["a", "b"], Some("ext4"), None)],
+        ),
+        // Too few members for the level.
+        topology_plan(
+            &[("var", None, None, None), ("a", Some(DISK_B), None, None)],
+            &[("data", "raid1", &["a"], Some("ext4"), None)],
+        ),
+        // The var array omits the root-disk var partition.
+        topology_plan(
+            &[("var", None, None, None), ("a", Some(DISK_B), None, None), ("b", Some(DISK_B), None, None)],
+            &[("var", "raid1", &["a", "b"], Some("ext4"), None)],
+        ),
+        // The var partition joins an unrelated array.
+        topology_plan(
+            &[("var", None, None, None), ("a", Some(DISK_B), None, None)],
+            &[("data", "raid1", &["var", "a"], Some("ext4"), None)],
+        ),
+        // Array name collides with a partition label.
+        topology_plan(
+            &[("var", None, None, None), ("a", Some(DISK_B), None, None), ("b", Some(DISK_B), None, None), ("data", Some(DISK_B), Some("ext4"), None)],
+            &[("data", "raid1", &["a", "b"], Some("ext4"), None)],
+        ),
+        // One partition in two arrays.
+        topology_plan(
+            &[("var", None, None, None), ("a", Some(DISK_B), None, None), ("b", Some(DISK_B), None, None), ("c", Some(DISK_B), None, None)],
+            &[("x", "raid1", &["a", "b"], Some("ext4"), None), ("y", "raid1", &["b", "c"], Some("ext4"), None)],
+        ),
+        // Unsupported level.
+        topology_plan(
+            &[("var", None, None, None), ("a", Some(DISK_B), None, None), ("b", Some(DISK_B), None, None)],
+            &[("data", "linear", &["a", "b"], Some("ext4"), None)],
+        ),
+    ];
+    for plan in invalid {
+        assert!(validate_provisioning_plan(&plan, false).is_err(), "{plan:?}");
+    }
+}
+
+#[test]
+fn storage_encryption_follows_measured_boot_policy() {
+    use super::repart::{PENDING_LABEL, render_provisioning_plan, validate_provisioning_plan};
+    use super::topology::{VOLUMES_FILE, resolve_topology};
+
+    const DISK_B: &str = "/dev/disk/by-id/virtio-b";
+
+    // Image policy: var is sealed on a measured image, plain otherwise.
+    let plan = topology_plan(&[("var", None, None, None)], &[]);
+    let measured = resolve_topology(&plan, true).unwrap();
+    assert_eq!(measured.volumes[0].encryption.as_str(), "tpm2");
+    let unmeasured = resolve_topology(&plan, false).unwrap();
+    assert_eq!(unmeasured.volumes[0].encryption.as_str(), "none");
+
+    // A sealed volume is rendered raw so the unlock unit can format it; a data
+    // partition may opt in on a measured image.
+    let mut plan = topology_plan(
+        &[("var", None, None, None), ("data", Some(DISK_B), Some("ext4"), Some("tpm2"))],
+        &[],
+    );
+    let output = tempdir().unwrap();
+    render_provisioning_plan(
+        output.path(),
+        &mut plan,
+        true,
+        PENDING_LABEL,
+        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    )
+    .unwrap();
+    let var_conf = std::fs::read_to_string(output.path().join("repart.d/0000/0010-var.conf")).unwrap();
+    assert!(!var_conf.contains("Format="));
+    let volumes = std::fs::read_to_string(output.path().join(VOLUMES_FILE)).unwrap();
+    assert_eq!(
+        volumes,
+        "var\tpartition\t/dev/disk/by-partlabel/var\tvar\ttpm2\text4\n\
+         data\tpartition\t/dev/disk/by-partlabel/data\tdata\ttpm2\text4\n"
+    );
+
+    let invalid = [
+        // Sealing needs measured boot.
+        (topology_plan(&[("var", None, None, None), ("data", Some(DISK_B), Some("ext4"), Some("tpm2"))], &[]), false),
+        // A measured image never runs a plaintext system-state volume.
+        (topology_plan(&[("var", None, None, Some("none"))], &[]), true),
+        // Only ext4 volumes can be sealed.
+        (topology_plan(&[("var", None, None, None), ("esp2", Some(DISK_B), Some("vfat"), Some("tpm2"))], &[]), true),
+        // Members are never encrypted individually.
+        (
+            topology_plan(
+                &[("var", None, None, None), ("a", Some(DISK_B), None, Some("tpm2")), ("b", Some(DISK_B), None, None)],
+                &[("data", "raid1", &["a", "b"], Some("ext4"), None)],
+            ),
+            true,
+        ),
+    ];
+    for (plan, measured_boot) in invalid {
+        assert!(validate_provisioning_plan(&plan, measured_boot).is_err(), "{plan:?}");
+    }
+}
+
+#[test]
+fn storage_topology_admits_xfs_data_volumes_only() {
+    use super::repart::validate_provisioning_plan;
+    use super::topology::resolve_topology;
+
+    const DISK_B: &str = "/dev/disk/by-id/virtio-b";
+
+    // xfs on a data array and a data partition, sealed or plain.
+    let plan = topology_plan(
+        &[
+            ("var", None, None, None),
+            ("a", Some(DISK_B), None, None),
+            ("b", Some(DISK_B), None, None),
+            ("scratch", Some(DISK_B), Some("xfs"), Some("tpm2")),
+        ],
+        &[("bulk", "raid1", &["a", "b"], Some("xfs"), None)],
+    );
+    let topology = resolve_topology(&plan, true).unwrap();
+    assert!(topology.volumes.iter().any(|volume| {
+        volume.name == "bulk" && volume.filesystem.as_deref() == Some("xfs")
+    }));
+    assert!(topology.volumes.iter().any(|volume| {
+        volume.name == "scratch" && volume.encryption.as_str() == "tpm2"
+    }));
+
+    let invalid = [
+        // The system-state array is ext4 only.
+        topology_plan(
+            &[("var", None, None, None), ("m", Some(DISK_B), None, None)],
+            &[("var", "raid1", &["var", "m"], Some("xfs"), None)],
+        ),
+        // The root-disk var partition is ext4 only.
+        topology_plan(&[("var", None, Some("xfs"), None)], &[]),
+        // An xfs array name must fit the 12-byte xfs label.
+        topology_plan(
+            &[("var", None, None, None), ("a", Some(DISK_B), None, None), ("b", Some(DISK_B), None, None)],
+            &[("thirteen-char", "raid1", &["a", "b"], Some("xfs"), None)],
+        ),
+        // An xfs partition label must fit as well.
+        topology_plan(
+            &[("var", None, None, None), ("thirteen-char", Some(DISK_B), Some("xfs"), None)],
+            &[],
+        ),
+    ];
+    for plan in invalid {
+        assert!(validate_provisioning_plan(&plan, false).is_err(), "{plan:?}");
+    }
+
+    // The same 13-byte name is fine for ext4.
+    let ext4 = topology_plan(
+        &[("var", None, None, None), ("a", Some(DISK_B), None, None), ("b", Some(DISK_B), None, None)],
+        &[("thirteen-char", "raid1", &["a", "b"], Some("ext4"), None)],
+    );
+    validate_provisioning_plan(&ext4, false).unwrap();
 }
