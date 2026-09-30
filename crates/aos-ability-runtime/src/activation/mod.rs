@@ -7,7 +7,11 @@
 //! requires an explicit retirement decision.
 
 mod controller;
+mod inspection;
 mod journal;
+mod observer;
+#[cfg(target_os = "linux")]
+mod socket_observer;
 
 #[cfg(test)]
 mod tests;
@@ -21,6 +25,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use controller::Activation;
+pub use inspection::{
+    ActivationInspection, CompletedTransaction, DispatchIdentity, InspectionRecord, inspect,
+};
+pub use observer::{Boundary, BoundaryEvent, BoundaryObserver};
+#[cfg(target_os = "linux")]
+pub use socket_observer::SocketBoundaryObserver;
 
 /// Selects the mutation performed by a terminal handler.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -83,6 +93,18 @@ pub enum Observation {
 /// until release. Calls must honor `effect.timeout_ms`; errors after dispatch
 /// leave an indeterminate mutation that must be observed on the next attempt.
 pub trait ActivationAdapter {
+    /// Acknowledges optional instrumentation at an execution boundary.
+    ///
+    /// # Errors
+    /// Returns an error to stop execution while preserving the journal state.
+    fn boundary(
+        &mut self,
+        _event: &BoundaryEvent,
+        _cancellation: &CancellationToken,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Authenticates and retains an exact handler artifact before any mutation.
     ///
     /// # Errors

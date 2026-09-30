@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use super::*;
 use crate::journal::JournalLimits;
 
-fn graph(value: Option<&str>, lifetime: &str) -> CheckedModuleGraph {
+pub(super) fn graph(value: Option<&str>, lifetime: &str) -> CheckedModuleGraph {
     let mut nodes = serde_json::Map::new();
     let mut order = Vec::new();
     if let Some(value) = value {
@@ -50,7 +50,7 @@ fn graph(value: Option<&str>, lifetime: &str) -> CheckedModuleGraph {
 }
 
 #[derive(Default)]
-struct Host {
+pub(super) struct Host {
     resources: BTreeMap<String, Value>,
     mutations: Vec<Action>,
     previous: Vec<Option<PreviousState>>,
@@ -59,9 +59,19 @@ struct Host {
     invalid_output: bool,
     interrupt_release: bool,
     releases: usize,
+    boundaries: Vec<BoundaryEvent>,
+    pub(super) halt_boundary: Option<Boundary>,
 }
 
 impl ActivationAdapter for Host {
+    fn boundary(&mut self, event: &BoundaryEvent, _: &CancellationToken) -> Result<()> {
+        self.boundaries.push(event.clone());
+        if self.halt_boundary == Some(event.boundary) {
+            bail!("observer requested interruption");
+        }
+        Ok(())
+    }
+
     fn retain(&mut self, _: &Effect) -> Result<()> {
         Ok(())
     }
@@ -384,4 +394,101 @@ fn caller_transaction_receipt_survives_generation_commit_interruption() {
         host.mutations,
         [Action::Apply, Action::Remove, Action::Apply, Action::Remove]
     );
+}
+
+#[test]
+fn observer_interruption_after_dispatch_recovers_the_same_durable_intent() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("activation.journal");
+    let desired = graph(Some("value"), "instance");
+    let mut host = Host {
+        halt_boundary: Some(Boundary::DispatchReturned),
+        ..Host::default()
+    };
+    let cancellation = CancellationToken::default();
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+
+    assert!(
+        activation
+            .activate_once(
+                "generation-1",
+                &desired,
+                &BTreeSet::new(),
+                &mut host,
+                &cancellation
+            )
+            .is_err()
+    );
+    assert_eq!(host.mutations.len(), 1);
+    let intent = host.boundaries[0].journal_sequence;
+    drop(activation);
+
+    host.halt_boundary = None;
+    let mut recovered = Activation::open(&path, JournalLimits::default()).unwrap();
+    recovered
+        .activate_once(
+            "generation-1",
+            &desired,
+            &BTreeSet::new(),
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+
+    assert_eq!(host.mutations.len(), 1);
+    assert!(
+        host.boundaries
+            .iter()
+            .any(|event| event.boundary == Boundary::ObservationStarted)
+    );
+    assert!(
+        host.boundaries
+            .iter()
+            .all(|event| event.journal_sequence == intent)
+    );
+    assert_eq!(
+        host.boundaries.last().unwrap().boundary,
+        Boundary::OutcomeDurable
+    );
+    let wire = serde_json::to_value(host.boundaries.last().unwrap()).unwrap();
+    assert!(wire.get("input").is_none());
+    assert!(wire.get("outputs").is_none());
+}
+
+#[test]
+fn observer_failure_after_durable_outcome_does_not_repeat_dispatch() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("activation.journal");
+    let desired = graph(Some("value"), "instance");
+    let cancellation = CancellationToken::default();
+    let mut host = Host {
+        halt_boundary: Some(Boundary::OutcomeDurable),
+        ..Host::default()
+    };
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+
+    assert!(
+        activation
+            .activate_once(
+                "generation-1",
+                &desired,
+                &BTreeSet::new(),
+                &mut host,
+                &cancellation
+            )
+            .is_err()
+    );
+    drop(activation);
+    host.halt_boundary = None;
+    let mut recovered = Activation::open(&path, JournalLimits::default()).unwrap();
+    recovered
+        .activate_once(
+            "generation-1",
+            &desired,
+            &BTreeSet::new(),
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    assert_eq!(host.mutations.len(), 1);
 }
