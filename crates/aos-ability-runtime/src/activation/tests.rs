@@ -580,3 +580,49 @@ fn dispatch_attempt_boundary_precedes_handler_and_survives_failure() {
             .any(|event| event.boundary == Boundary::DispatchReturned)
     );
 }
+
+#[test]
+fn declarative_retirement_is_repeatable_but_unknown_identities_are_rejected() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("journal");
+    let cancellation = CancellationToken::default();
+    let desired = graph(Some("value"), "persistent");
+    let absent = graph(None, "persistent");
+    let retire: BTreeSet<_> = desired.graph().nodes.keys().cloned().collect();
+    let mut host = Host::default();
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    activation
+        .activate(&desired, &BTreeSet::new(), &mut host, &cancellation)
+        .unwrap();
+    activation
+        .activate(&absent, &retire, &mut host, &cancellation)
+        .unwrap();
+    drop(activation);
+
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    activation
+        .activate(&absent, &retire, &mut host, &cancellation)
+        .unwrap();
+    assert_eq!(activation.retired(), &retire);
+    assert_eq!(host.mutations, [Action::Apply, Action::Remove]);
+    assert!(
+        activation
+            .activate(
+                &absent,
+                &BTreeSet::from(["unknown".into()]),
+                &mut host,
+                &cancellation
+            )
+            .is_err()
+    );
+
+    activation
+        .activate(&desired, &BTreeSet::new(), &mut host, &cancellation)
+        .unwrap();
+    assert!(activation.retired().is_empty());
+    assert!(
+        activation
+            .activate(&desired, &retire, &mut host, &cancellation)
+            .is_err()
+    );
+}

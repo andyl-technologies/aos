@@ -211,6 +211,11 @@ in {
       readOnly = true;
       description = "Bound deferred effect graph derived from the final module configuration.";
     };
+    activation.retire = mkOption {
+      type = types.listOf types.str;
+      default = [];
+      description = "Exact retained effect identities explicitly released by this deployment; configured effects cannot be retired.";
+    };
     activation.scope = mkOption {
       type = types.listOf types.str;
       default = [];

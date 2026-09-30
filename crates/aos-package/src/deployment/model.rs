@@ -23,9 +23,9 @@ pub struct Artifact {
     pub name: String,
     /// Names its selected package version.
     pub version: String,
-    /// Identifies the default runtime output.
+    /// Identifies the selected output for a payload, or canonical output in a module catalog.
     pub path: String,
-    /// Names the exact available output roots.
+    /// Names authenticated available outputs; listing one does not select or retain it.
     pub outputs: BTreeMap<String, String>,
     /// Selects the main binary when this artifact supplies a terminal handler.
     pub main_program: Option<String>,
@@ -110,7 +110,7 @@ impl Envelope {
             config_root: module.source.clone(),
             module: format!("{}/{}", module.source, module.entrypoint),
             artifacts: ArtifactContext {
-                package: self.package.clone(),
+                package: self.package.canonical_catalog(),
                 dependencies: self.runtime_dependencies.clone(),
             },
         })
@@ -118,6 +118,23 @@ impl Envelope {
 }
 
 impl Artifact {
+    /// Normalizes module identity independently of the selected payload output.
+    ///
+    /// The `out` output is preferred; packages without it use the first named
+    /// output in canonical key order. The available catalog remains exact.
+    #[must_use]
+    pub fn canonical_catalog(&self) -> Self {
+        let mut catalog = self.clone();
+        if let Some(path) = self
+            .outputs
+            .get("out")
+            .or_else(|| self.outputs.values().next())
+        {
+            catalog.path = path.clone();
+        }
+        catalog
+    }
+
     pub(super) fn check(&self) -> Result<()> {
         ensure!(
             !self.name.is_empty() && !self.version.is_empty(),
@@ -188,7 +205,7 @@ pub struct PackageModule {
 pub struct ResolvedPackages {
     /// Selects one explicit target platform for the entire scope.
     pub system: String,
-    /// Includes selected payloads and their explicit runtime dependency artifacts.
+    /// Includes only explicit payload selections; module and runtime catalogs remain available.
     pub artifacts: Vec<Artifact>,
     /// Supplies modules and their individual artifact contexts.
     pub modules: Vec<PackageModule>,
@@ -204,6 +221,7 @@ struct TransactionDocument {
     inputs: Vec<String>,
     packages: Vec<PackageModule>,
     graph: Value,
+    retire: Vec<String>,
 }
 
 /// Contains a checked transaction bound to one resolved package module set.
@@ -216,6 +234,7 @@ pub struct Deployment {
     inputs: Vec<String>,
     packages: Vec<PackageModule>,
     graph: CheckedModuleGraph,
+    retire: BTreeSet<String>,
 }
 
 impl Deployment {
@@ -287,18 +306,13 @@ impl Deployment {
             artifact_index(&transaction.artifacts)? == payloads,
             "evaluation changed the payload set"
         );
-        for record in &expected.modules {
-            ensure!(
-                payloads.get(&record.artifacts.package.path) == Some(&record.artifacts.package),
-                "module payload is not selected"
-            );
-        }
         let expected = index(&expected.modules)?;
         ensure!(
             index(&transaction.packages)? == expected,
             "evaluation changed the resolved package set"
         );
         let graph = CheckedModuleGraph::decode(&serde_json::to_vec(&transaction.graph)?)?;
+        let retire = aos_ability_plan::module_graph::check_retirement(&graph, &transaction.retire)?;
         let roots: BTreeSet<_> = transaction
             .packages
             .iter()
@@ -306,6 +320,7 @@ impl Deployment {
                 std::iter::once(&record.artifacts.package)
                     .chain(record.artifacts.dependencies.values())
             })
+            .chain(transaction.artifacts.iter())
             .flat_map(|artifact| artifact.outputs.values())
             .collect();
         for effect in graph.graph().nodes.values() {
@@ -322,6 +337,14 @@ impl Deployment {
                     roots.contains(artifact),
                     "handler is outside the resolved package artifacts"
                 );
+                ensure!(
+                    transaction.inputs.contains(artifact)
+                        || transaction
+                            .artifacts
+                            .iter()
+                            .any(|selected| &selected.path == artifact),
+                    "handler is available but not retained by the transaction"
+                );
             }
         }
         Ok(Self {
@@ -332,12 +355,18 @@ impl Deployment {
             inputs: transaction.inputs,
             packages: transaction.packages,
             graph,
+            retire,
         })
     }
 
     /// Returns the immutable execution graph.
     pub fn graph(&self) -> &CheckedModuleGraph {
         &self.graph
+    }
+
+    /// Returns the explicit retained-effect retirement decision.
+    pub fn retire(&self) -> &BTreeSet<String> {
+        &self.retire
     }
 
     /// Returns the explicit installation scope.

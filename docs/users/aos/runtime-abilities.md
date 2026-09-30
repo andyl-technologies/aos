@@ -217,7 +217,14 @@ mkDerivation {
 
 `moduleDeps` supplies configuration interfaces or implementations. It is
 separate from `buildDeps` and `runtimeDeps`. An ordinary payload-only package
-needs no module.
+needs no module; it still publishes a native deployment envelope.
+
+Selecting an output installs that payload. The envelope's `outputs` map describes
+other authenticated outputs that modules may reference; it does not install or
+retain all of them. Module dependencies make configuration available without
+installing their payloads. Evaluation adds outputs actually used by the bound
+graph to the transaction's retained inputs. Runtime dependencies remain governed
+by the selected payload's actual store references.
 
 | Build output | Contents |
 | --- | --- |
@@ -345,6 +352,21 @@ result substitution.
 | `transaction` | Remove after its dependent operations finish |
 | `persistent` | Retain until explicitly retired, including after package removal |
 
+Explicit retirement is part of the ordinary configuration evaluated into the
+transaction:
+
+```nix
+{
+  aos.activation.retire = [ "<retained-effect-id>" ];
+}
+```
+
+Use an exact identity from retained runtime state. It must be absent from the
+new configured graph and present in the retained or durably retired effect
+inventory. Keeping a completed retirement declaration in later generations is a
+no-op; an unknown identity is rejected. Removing a
+package or pruning a generation alone does not retire persistent state.
+
 Reconfiguration prepares a new desired document. Handlers receive previous
 state when inputs or implementations change. Interrupted mutations are observed
 before retry. Effect completion and generation commit are separately durable;
@@ -372,7 +394,11 @@ entries while preserving unrelated operator edits.
 Optional execution observers receive only transaction/effect identities and
 journal boundaries, without arguments or results. An observer failure stops
 execution; recovery observes the exact durable invocation before retry. Observer
-acknowledgements cannot supply a handler outcome. The observer must already be
+acknowledgements cannot supply a handler outcome. `dispatch-started` records an
+attempt boundary immediately before calling the handler, including attempts
+whose call fails. It does not prove the call ran: interruption can occur between
+acknowledgement and dispatch. A missing `dispatch-returned` event therefore does
+not establish that no attempt occurred. The observer must already be
 available before the first observed dispatch; it cannot observe its own creation.
 Image-owned startup or an externally supplied test listener can establish that
 prerequisite.
@@ -384,7 +410,10 @@ aos ability journal activation.journal --format json
 ```
 
 It distinguishes desired state, pending invocations, and durable completion.
-It does not query live services or repair an interrupted journal.
+It does not query live services or repair an interrupted journal. Package
+inspection also holds a shared generation-journal lock while reading its checked
+snapshot and associated profile publication. Incomplete final frames are
+reported and left unchanged.
 
 The current process transport uses Linux facilities; another execution platform
 needs a transport implementation as well as its own domain handlers. These

@@ -5,7 +5,7 @@
   recordFor = package: {
     name = nameFor package;
     version = package.version or "0";
-    configRoot = builtins.toString package.module;
+    configRoot = "${package.module}";
     module = "${package.module}/module.nix";
     artifacts = {
       package = artifacts.canonicalReference package;
@@ -59,12 +59,12 @@
       in
         if selected ? ${name}
         then
-          if record == builtins.removeAttrs selected.${name} ["selectedArtifacts"]
-          then visit (selected // {${name} = selected.${name} // {selectedArtifacts = artifacts.unique (selected.${name}.selectedArtifacts ++ [(artifacts.reference package)]);};}) rest
-          else throw "Module dependency '${name}' has conflicting package identities."
-        else visit (selected // {${name} = record // {selectedArtifacts = [(artifacts.reference package)];};}) ((package.moduleDeps or []) ++ rest);
+          if record == selected.${name}
+          then visit selected rest
+          else throw "Module dependency '${name}' has conflicting package identities in: ${builtins.concatStringsSep ", " (builtins.filter (field: record.${field} != selected.${name}.${field}) (builtins.attrNames record))}. Catalogs: ${builtins.toJSON [(artifacts.metadata record.artifact) (artifacts.metadata selected.${name}.artifact)]}"
+        else visit (selected // {${name} = record;}) ((package.moduleDeps or []) ++ rest);
   in
     visit {} packages;
   closure = packages: builtins.filter (record: record != null) (builtins.map (record: record.module) (resolved packages));
-  payloads = packages: artifacts.unique (builtins.concatLists (builtins.map (record: [record.artifact] ++ record.selectedArtifacts ++ record.runtimeDependencies) (resolved packages)));
+  payloads = packages: artifacts.unique (builtins.map artifacts.reference packages);
 in {inherit nameFor recordFor identity canonicalize select closure payloads;}

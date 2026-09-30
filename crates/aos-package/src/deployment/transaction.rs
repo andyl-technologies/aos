@@ -7,17 +7,19 @@
 //! generation pointer; profile frontends may publish their links from it.
 //!
 //! ```text
-//! prepared { sequence, document, packages, retire }
+//! prepared { sequence, document, packages }
 //! committed { sequence, outputs }
 //! ```
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Result, ensure};
 use aos_ability_runtime::activation::{Activation, ActivationResults};
 use aos_ability_runtime::adapter::CancellationToken;
-use aos_ability_runtime::journal::{FileJournal, JournalError, JournalLimits, JournalPayload};
+use aos_ability_runtime::journal::{
+    FileJournal, JournalError, JournalLimits, JournalPayload, JournalReader,
+};
 use aos_contract::{
     canonical,
     limits::{BoundedWriter, JsonLimits},
@@ -55,7 +57,6 @@ enum Event {
         sequence: u64,
         document: Value,
         packages: ResolvedPackages,
-        retire: BTreeSet<String>,
     },
     Committed {
         sequence: u64,
@@ -106,7 +107,6 @@ pub struct Generation {
 struct Pending {
     sequence: u64,
     deployment: Deployment,
-    retire: BTreeSet<String>,
 }
 
 /// Owns one installation scope's generation and effect journals.
@@ -114,13 +114,21 @@ pub struct Transactions<S> {
     journal: FileJournal<Event>,
     activation: Activation,
     adapter: ProcessAdapter<S>,
-    scope: Option<Vec<String>>,
-    pending: Option<Pending>,
-    generations: BTreeMap<u64, Generation>,
-    pruning: Option<u64>,
+    state: GenerationState,
 }
 
 impl<S: DeploymentStore> Transactions<S> {
+    /// Selects optional instrumentation for subsequent activation and recovery.
+    ///
+    /// The owning profile must authenticate the observer configuration. Clearing
+    /// an observer is an explicit caller decision, never an error fallback.
+    pub fn set_observer(
+        &mut self,
+        observer: Option<Box<dyn aos_ability_runtime::activation::BoundaryObserver>>,
+    ) {
+        self.adapter.set_observer(observer);
+    }
+
     /// Opens an existing private scope directory and recovers both durable journals.
     ///
     /// # Errors
@@ -132,13 +140,10 @@ impl<S: DeploymentStore> Transactions<S> {
             journal: opened.journal,
             activation,
             adapter: ProcessAdapter::new(store),
-            scope: None,
-            pending: None,
-            generations: BTreeMap::new(),
-            pruning: None,
+            state: GenerationState::default(),
         };
         for record in opened.recovery.records() {
-            result.replay(record.body())?;
+            result.state.replay(record.body())?;
         }
         Ok(result)
     }
@@ -146,21 +151,44 @@ impl<S: DeploymentStore> Transactions<S> {
     /// Returns the last durably committed generation, if any.
     #[must_use]
     pub fn current(&self) -> Option<&Generation> {
-        self.generations
-            .last_key_value()
-            .map(|(_, generation)| generation)
+        self.state.current()
     }
 
     /// Returns the committed generation history retained by this scope.
     #[must_use]
     pub fn generations(&self) -> &BTreeMap<u64, Generation> {
-        &self.generations
+        &self.state.generations
+    }
+
+    /// Reports the next generation sequence while this scope is exclusively locked.
+    ///
+    /// Consumers can durably associate a staged profile generation with this sequence
+    /// before calling `apply`. The value is not a reservation: it remains valid only
+    /// while the caller retains this transaction owner without applying another document.
+    ///
+    /// # Errors
+    /// Returns an error when activation or pruning still needs recovery, or the
+    /// sequence space is exhausted.
+    pub fn next_sequence(&self) -> Result<u64> {
+        self.state.next_sequence()
     }
 
     /// Returns the prepared document when recovery or activation is still pending.
     #[must_use]
     pub fn pending(&self) -> Option<&Deployment> {
-        self.pending.as_ref().map(|pending| &pending.deployment)
+        self.state
+            .pending
+            .as_ref()
+            .map(|pending| &pending.deployment)
+    }
+
+    /// Returns the durable sequence of the generation awaiting recovery.
+    ///
+    /// The sequence identifies its staged inputs even when several generations
+    /// evaluate to identical deployment content.
+    #[must_use]
+    pub fn pending_sequence(&self) -> Option<u64> {
+        self.state.pending.as_ref().map(|pending| pending.sequence)
     }
 
     /// Lists retained effect results, including persistent state absent from the current graph.
@@ -176,7 +204,7 @@ impl<S: DeploymentStore> Transactions<S> {
     /// recovery, cancellation, or failure to commit the generation journal.
     pub fn resume(&mut self, cancellation: &CancellationToken) -> Result<Option<Generation>> {
         self.finish_pruning()?;
-        let Some(pending) = &self.pending else {
+        let Some(pending) = &self.state.pending else {
             return Ok(None);
         };
         let content = pending.deployment.id()?;
@@ -188,7 +216,7 @@ impl<S: DeploymentStore> Transactions<S> {
         let outputs = self.activation.activate_once(
             &identity,
             pending.deployment.graph(),
-            &pending.retire,
+            pending.deployment.retire(),
             &mut self.adapter,
             cancellation,
         )?;
@@ -197,7 +225,7 @@ impl<S: DeploymentStore> Transactions<S> {
             outputs,
         };
         self.journal.append(&event)?;
-        self.replay(&event)?;
+        self.state.replay(&event)?;
         Ok(self.current().cloned())
     }
 
@@ -211,34 +239,35 @@ impl<S: DeploymentStore> Transactions<S> {
     pub fn apply(
         &mut self,
         deployment: &Deployment,
-        retire: BTreeSet<String>,
         cancellation: &CancellationToken,
     ) -> Result<Generation> {
         self.finish_pruning()?;
-        if let Some(pending) = &self.pending {
-            let same = pending.deployment.id()? == deployment.id()? && pending.retire == retire;
+        if let Some(pending) = &self.state.pending {
+            let same = pending.deployment.id()? == deployment.id()?;
             let recovered = self.resume(cancellation)?;
             if same {
                 return recovered.ok_or_else(|| anyhow::anyhow!("recovered generation is absent"));
             }
         }
         ensure!(
-            self.scope
+            self.state
+                .scope
                 .as_deref()
                 .is_none_or(|scope| scope == deployment.scope()),
             "transaction targets a different installation scope"
         );
         let retained = self.activation.retained();
-        for id in &retire {
+        for id in deployment.retire() {
             ensure!(
                 !deployment.graph().graph().nodes.contains_key(id),
                 "cannot retire a configured effect"
             );
-            ensure!(retained.contains_key(id), "cannot retire an unknown effect");
+            ensure!(
+                retained.contains_key(id) || self.activation.retired().contains(id),
+                "cannot retire an unknown effect"
+            );
         }
-        let sequence = self
-            .current()
-            .map_or(1, |generation| generation.sequence + 1);
+        let sequence = self.next_sequence()?;
         let identity = format!("package-{sequence}-{}", deployment.id()?);
         self.adapter
             .artifacts_mut()
@@ -248,10 +277,9 @@ impl<S: DeploymentStore> Transactions<S> {
             sequence,
             document: serde_json::from_slice(&deployment.canonical_bytes()?)?,
             packages: deployment.resolved(),
-            retire,
         };
         self.journal.append(&event)?;
-        self.replay(&event)?;
+        self.state.replay(&event)?;
         self.resume(cancellation)?
             .ok_or_else(|| anyhow::anyhow!("prepared generation did not commit"))
     }
@@ -265,17 +293,17 @@ impl<S: DeploymentStore> Transactions<S> {
     /// Returns an error for an unknown or current generation, pending activation,
     /// artifact release failure, or journal failure.
     pub fn prune(&mut self, sequence: u64) -> Result<()> {
-        let recovering = self.pruning == Some(sequence);
+        let recovering = self.state.pruning == Some(sequence);
         self.finish_pruning()?;
         if recovering {
             return Ok(());
         }
         ensure!(
-            self.pending.is_none(),
+            self.state.pending.is_none(),
             "cannot prune during pending activation"
         );
         ensure!(
-            self.generations.contains_key(&sequence),
+            self.state.generations.contains_key(&sequence),
             "cannot prune an unknown generation"
         );
         ensure!(
@@ -286,15 +314,16 @@ impl<S: DeploymentStore> Transactions<S> {
         self.journal.ensure_capacity(2)?;
         let event = Event::Pruning { sequence };
         self.journal.append(&event)?;
-        self.replay(&event)?;
+        self.state.replay(&event)?;
         self.finish_pruning()
     }
 
     fn finish_pruning(&mut self) -> Result<()> {
-        let Some(sequence) = self.pruning else {
+        let Some(sequence) = self.state.pruning else {
             return Ok(());
         };
         let generation = self
+            .state
             .generations
             .get(&sequence)
             .ok_or_else(|| anyhow::anyhow!("pruned generation is absent"))?;
@@ -305,7 +334,37 @@ impl<S: DeploymentStore> Transactions<S> {
             .release_generation(&identity, &generation.deployment)?;
         let event = Event::Pruned { sequence };
         self.journal.append(&event)?;
-        self.replay(&event)
+        self.state.replay(&event)
+    }
+}
+
+#[derive(Default)]
+struct GenerationState {
+    scope: Option<Vec<String>>,
+    pending: Option<Pending>,
+    generations: BTreeMap<u64, Generation>,
+    pruning: Option<u64>,
+}
+
+impl GenerationState {
+    fn current(&self) -> Option<&Generation> {
+        self.generations
+            .last_key_value()
+            .map(|(_, generation)| generation)
+    }
+
+    fn next_sequence(&self) -> Result<u64> {
+        ensure!(
+            self.pending.is_none(),
+            "package generation recovery is pending"
+        );
+        ensure!(self.pruning.is_none(), "generation pruning is pending");
+        self.current().map_or(Ok(1), |generation| {
+            generation
+                .sequence
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("package generation sequence is exhausted"))
+        })
     }
 
     fn replay(&mut self, event: &Event) -> Result<()> {
@@ -314,15 +373,11 @@ impl<S: DeploymentStore> Transactions<S> {
                 sequence,
                 document,
                 packages,
-                retire,
             } => {
                 ensure!(self.pruning.is_none(), "generation pruning is pending");
                 ensure!(self.pending.is_none(), "package generation already pending");
                 ensure!(
-                    *sequence
-                        == self
-                            .current()
-                            .map_or(1, |generation| generation.sequence + 1),
+                    *sequence == self.next_sequence()?,
                     "invalid package generation sequence"
                 );
                 let deployment = Deployment::decode(&canonical::to_vec(document)?, packages)?;
@@ -336,7 +391,6 @@ impl<S: DeploymentStore> Transactions<S> {
                 self.pending = Some(Pending {
                     sequence: *sequence,
                     deployment,
-                    retire: retire.clone(),
                 });
             }
             Event::Committed { sequence, outputs } => {
@@ -395,4 +449,120 @@ impl<S: DeploymentStore> Transactions<S> {
         }
         Ok(())
     }
+}
+
+/// Holds a read-only, replay-checked view of package and activation history.
+///
+/// The generation journal's shared lock remains held until this value is
+/// dropped. Writers acquire that journal before the activation journal, so
+/// profile links can be read consistently while this snapshot is retained.
+/// Retained outcomes do not establish the current state of external resources.
+pub struct Snapshot {
+    journal: JournalReader<Event>,
+    state: GenerationState,
+    activation: aos_ability_runtime::activation::ActivationInspection,
+}
+
+impl Snapshot {
+    /// Returns the last durably committed generation.
+    #[must_use]
+    pub fn current(&self) -> Option<&Generation> {
+        self.state.current()
+    }
+
+    /// Returns the retained committed generation history.
+    #[must_use]
+    pub fn generations(&self) -> &BTreeMap<u64, Generation> {
+        &self.state.generations
+    }
+
+    /// Returns the prepared document awaiting completion, if any.
+    #[must_use]
+    pub fn pending(&self) -> Option<&Deployment> {
+        self.state
+            .pending
+            .as_ref()
+            .map(|pending| &pending.deployment)
+    }
+
+    /// Returns the exact durable sequence of a pending generation.
+    #[must_use]
+    pub fn pending_sequence(&self) -> Option<u64> {
+        self.state.pending.as_ref().map(|pending| pending.sequence)
+    }
+
+    /// Reports whether activation or pruning requires writable recovery.
+    #[must_use]
+    pub fn has_pending_work(&self) -> bool {
+        self.state.pending.is_some()
+            || self.state.pruning.is_some()
+            || self.activation.transaction.is_some()
+    }
+
+    /// Reports incomplete generation bytes without repairing them.
+    #[must_use]
+    pub fn incomplete_tail_bytes(&self) -> u64 {
+        self.journal.snapshot().incomplete_tail_bytes()
+    }
+
+    /// Returns the checked effect history without claiming live verification.
+    #[must_use]
+    pub fn activation(&self) -> &aos_ability_runtime::activation::ActivationInspection {
+        &self.activation
+    }
+}
+
+/// Inspects existing native journals without creation, repair, or execution.
+///
+/// The same event decoder and generation state machine serve readers and
+/// writers. The shared generation lock is held for the returned snapshot's
+/// lifetime, including reads of profile links protected by that journal.
+///
+/// # Errors
+/// Returns an error for missing or insecure journals, lock contention, corrupt
+/// complete frames, exceeded limits, or invalid generation/activation history.
+pub fn inspect(directory: &Path, limits: JournalLimits) -> Result<Snapshot> {
+    let journal = FileJournal::<Event>::read_only(directory.join("generations.journal"), limits)?;
+    let mut state = GenerationState::default();
+    for record in journal.snapshot().records() {
+        state.replay(record.body())?;
+    }
+    let activation =
+        aos_ability_runtime::activation::inspect(directory.join("effects.journal"), limits)?;
+    let pending_identity = state
+        .pending
+        .as_ref()
+        .map(|pending| {
+            pending
+                .deployment
+                .id()
+                .map(|content| format!("package-{}-{content}", pending.sequence))
+        })
+        .transpose()?;
+    let current_identity = state
+        .current()
+        .map(|current| format!("package-{}-{}", current.sequence, current.content));
+    if let Some(active) = &activation.transaction {
+        ensure!(
+            Some(active) == pending_identity.as_ref(),
+            "activation journal does not match the pending package generation"
+        );
+    }
+    if let Some(completed) = &activation.completed {
+        ensure!(
+            Some(&completed.transaction) == current_identity.as_ref()
+                || Some(&completed.transaction) == pending_identity.as_ref(),
+            "activation receipt does not match package generation history"
+        );
+    } else {
+        ensure!(
+            current_identity.is_none(),
+            "committed generation has no activation receipt"
+        );
+    }
+    Ok(Snapshot {
+        journal,
+        state,
+        activation,
+    })
 }

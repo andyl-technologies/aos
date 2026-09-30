@@ -11,10 +11,44 @@
     }) (package.outputs or ["out"]));
     mainProgram = package.meta.mainProgram or package.pname or null;
   };
-  # Every output of a derivation carries the same deployment envelope. Module
-  # identity follows that envelope; selected payload outputs remain explicit.
-  canonicalReference = package: package.deployment.package or (reference package);
-  canonicalDependencies = package: package.deployment.runtimeDependencies or (keyed (package.runtimeDeps or []));
+  # Catalog locators authenticate availability without retaining every payload.
+  metadata = artifact:
+    artifact
+    // {
+      path = builtins.unsafeDiscardStringContext artifact.path;
+      outputs = builtins.mapAttrs (_: builtins.unsafeDiscardStringContext) artifact.outputs;
+    };
+  canonical = artifact: let
+    catalog = artifact;
+    output =
+      if catalog.outputs ? out
+      then "out"
+      else builtins.head (builtins.attrNames catalog.outputs);
+  in
+    catalog // {path = catalog.outputs.${output};};
+  sourceContexts = declared: source: let
+    restore = path: let
+      matching = builtins.filter (candidate: candidate == path) (builtins.attrValues source.outputs);
+    in
+      if matching == []
+      then path
+      else builtins.head matching;
+  in
+    declared
+    // {
+      path = restore declared.path;
+      outputs = builtins.mapAttrs (_: restore) declared.outputs;
+    };
+  canonicalReference = package:
+    canonical (sourceContexts
+      (package.deployment.package or (reference package)) (reference package));
+  canonicalDependencies = package: let
+    source = keyed (package.runtimeDeps or []);
+    declared = package.deployment.runtimeDependencies or source;
+  in
+    builtins.mapAttrs (name: dependency:
+      sourceContexts dependency (source.${name} or dependency))
+    declared;
   keyed = packages:
     builtins.foldl' (result: package: let
       name = nameFor package;
@@ -35,18 +69,18 @@
   moduleReference = package: {
     name = nameFor package;
     version = package.version or "0";
-    source = builtins.toString package.module;
+    source = "${package.module}";
     entrypoint = "module.nix";
   };
   envelope = package: {
     schema = "aos.package.deployment";
     system = package.targetSystem or package.system;
-    package = reference package;
+    package = metadata (reference package);
     module =
       if package ? module
       then moduleReference package
       else null;
-    runtimeDependencies = keyed (package.runtimeDeps or []);
+    runtimeDependencies = builtins.mapAttrs (_: metadata) (keyed (package.runtimeDeps or []));
     moduleDependencies = builtins.map moduleReference (package.moduleDeps or []);
   };
   valid = reference:
@@ -63,12 +97,21 @@
   # These are artifact values, deliberately not pretend derivations. Their
   # string coercion permits ordinary interpolation in module configuration.
   value = reference: let
-    base = selected:
+    attach = path: let
+      root = builtins.unsafeDiscardStringContext path;
+    in
+      if builtins.getContext path != {}
+      then path
+      else builtins.appendContext root {${root} = {path = true;};};
+    base = path: let
+      selected = attach path;
+    in
       reference
       // {
         _type = "aos-package-artifact";
         path = selected;
         outPath = selected;
+        outputs = builtins.mapAttrs (_: attach) reference.outputs;
         __toString = _: selected;
         meta =
           if reference.mainProgram == null
@@ -78,4 +121,56 @@
     outputs = builtins.mapAttrs (_: path: base path // outputs) reference.outputs;
   in
     base reference.path // outputs;
-in {inherit nameFor reference canonicalReference canonicalDependencies keyed unique moduleReference envelope value valid;}
+
+  # Only coercions of authenticated artifact values contribute payload roots.
+  graphInputs = {
+    graph,
+    packageArtifacts ? [],
+    packageModules ? [],
+    evaluationInputs ? [],
+  }: let
+    graphContexts = builtins.getContext (builtins.toJSON graph);
+    availableRoots =
+      builtins.concatLists (builtins.map (record:
+        builtins.concatLists (builtins.map (artifact: builtins.attrValues artifact.outputs)
+          ([record.artifacts.package] ++ builtins.attrValues record.artifacts.dependencies)))
+      packageModules)
+      ++ builtins.concatLists (builtins.map (artifact: builtins.attrValues artifact.outputs) packageArtifacts);
+    sourceRoots = builtins.map (input: "${input}") evaluationInputs ++ builtins.map (record: "${record.configRoot}") packageModules;
+    graphRoots = builtins.concatLists (builtins.map (root: let
+      context = graphContexts.${root};
+      matches = builtins.filter (path: let
+        candidate = (builtins.getContext path).${root} or {};
+      in
+        builtins.any (output: builtins.elem output (candidate.outputs or [])) (context.outputs or []))
+      availableRoots;
+    in
+      if context ? outputs
+      then
+        if matches == []
+        then [root]
+        else matches
+      else [root]) (builtins.attrNames graphContexts));
+    invalidRoots = builtins.filter (root: !(builtins.elem root (availableRoots ++ sourceRoots))) graphRoots;
+    retainedRoots = builtins.attrNames (builtins.listToAttrs (builtins.map (root: {
+      name = builtins.unsafeDiscardStringContext root;
+      value = true;
+    }) (sourceRoots ++ graphRoots)));
+    inputs = builtins.map (root: let
+      originals = builtins.filter (path: path == root) (availableRoots ++ sourceRoots);
+      original =
+        if originals == []
+        then root
+        else builtins.head originals;
+    in
+      if builtins.getContext original != {}
+      then original
+      else
+        builtins.appendContext (builtins.unsafeDiscardStringContext root) {
+          ${builtins.unsafeDiscardStringContext root} = {path = true;};
+        }) (builtins.sort builtins.lessThan retainedRoots);
+  in
+    if invalidRoots != []
+    then throw "Effect graph references artifacts outside its authenticated package catalogs: ${builtins.concatStringsSep ", " invalidRoots}"
+    else inputs;
+in {inherit nameFor reference metadata canonical canonicalReference canonicalDependencies keyed unique moduleReference envelope value valid graphInputs;}

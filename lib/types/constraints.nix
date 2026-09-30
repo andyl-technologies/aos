@@ -20,7 +20,7 @@ let
     if builtins.isAttrs value
     then (value._type or null) == "aos-effect-output" || builtins.any deferred (builtins.attrValues value)
     else builtins.isList value && builtins.any deferred value;
-  supported = ["string-pattern" "minimum-size" "integer-set" "map-keys-pattern" "string-excludes" "at-most-one-non-null" "unique-at" "disjoint-at" "subset-unless"];
+  supported = ["boolean-value" "string-pattern" "minimum-size" "integer-set" "map-keys-pattern" "string-excludes" "at-most-one-non-null" "unique-at" "disjoint-at" "subset-unless"];
   validate = constraint:
     if !(builtins.elem (constraint.kind or null) supported)
     then throw "Unsupported portable refinement '${constraint.kind or "<missing>"}'."
@@ -28,7 +28,9 @@ let
     then constraint // {pattern = (import ./portable-pattern.nix) constraint.pattern;}
     else constraint;
   satisfies = constraint: value:
-    if constraint.kind == "string-pattern"
+    if constraint.kind == "boolean-value"
+    then builtins.isBool value && value == constraint.value
+    else if constraint.kind == "string-pattern"
     then builtins.isString value && builtins.match constraint.pattern value != null
     else if constraint.kind == "minimum-size"
     then

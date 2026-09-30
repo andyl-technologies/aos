@@ -1845,11 +1845,10 @@
       # building it forces every config leaf to WHNF (to resolve mkIf markers),
       # including toplevel-only builders like `system.build.etcBasedir =
       # pkgs.runCommand …`. Forcing one declared option (e.g.
-      # `system.build.configManifest`) would then force every sibling builder —
-      # fatal under the on-host eval-only `pkgs`, which has no builder
-      # functions. Using `finalConfig` keeps the result lazy per-option (so
-      # broken-config paths stay inspectable, and the eval-only manifest never
-      # touches the build graph) while remaining identical for any config whose
+      # `aos.activation.graph`) would then force every sibling builder.
+      # Using `finalConfig` keeps the result lazy per option: native deployment
+      # evaluation can read package configuration without building the image,
+      # while returning identical values for any config whose
       # paths are all declared.
       #
       # When strict-mode or a freeformType is set, the walk runs and

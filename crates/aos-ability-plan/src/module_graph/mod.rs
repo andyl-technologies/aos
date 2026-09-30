@@ -10,7 +10,7 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, ensure};
 use aos_ability_model::OptionType;
@@ -237,4 +237,29 @@ pub fn resolve(value: &Value, results: &BTreeMap<String, Value>) -> Result<Value
         )),
         value => Ok(value.clone()),
     }
+}
+
+/// Checks explicit retirement decisions against the configured desired graph.
+///
+/// The returned set preserves exact identities without inferring retirement from
+/// effects omitted from the graph.
+///
+/// # Errors
+/// Returns an error for duplicate, empty, or still-configured effect identities.
+pub fn check_retirement(
+    graph: &CheckedModuleGraph,
+    identities: &[String],
+) -> Result<BTreeSet<String>> {
+    let retirement: BTreeSet<_> = identities.iter().cloned().collect();
+    ensure!(
+        retirement.len() == identities.len(),
+        "duplicate retirement identity"
+    );
+    for identity in &retirement {
+        ensure!(
+            !identity.is_empty() && !graph.graph().nodes.contains_key(identity),
+            "cannot retire an empty or configured effect"
+        );
+    }
+    Ok(retirement)
 }

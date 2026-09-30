@@ -159,15 +159,60 @@ impl<A: ArtifactAdmission> DeploymentStore for NixStore<A> {
 fn generation_roots(deployment: &Deployment) -> BTreeSet<&str> {
     let mut roots: BTreeSet<_> = deployment.inputs().iter().map(String::as_str).collect();
     for artifact in deployment.artifacts() {
-        roots.extend(artifact.outputs.values().map(String::as_str));
+        roots.insert(artifact.path.as_str());
     }
     for package in deployment.packages() {
         roots.insert(package.config_root.as_str());
-        for artifact in std::iter::once(&package.artifacts.package)
-            .chain(package.artifacts.dependencies.values())
-        {
-            roots.extend(artifact.outputs.values().map(String::as_str));
-        }
     }
     roots
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::deployment::model::{Artifact, ResolvedPackages};
+    use serde_json::json;
+
+    #[test]
+    fn generation_roots_keep_selected_and_referenced_outputs_only() {
+        let root = |name: &str| format!("/nix/store/00000000000000000000000000000000-{name}");
+        let artifact = Artifact {
+            name: "slice".into(),
+            version: "1".into(),
+            path: root("selected"),
+            outputs: [
+                ("out".into(), root("selected")),
+                ("tools".into(), root("used")),
+                ("unused".into(), root("unused")),
+            ]
+            .into(),
+            main_program: None,
+        };
+        let resolved = ResolvedPackages {
+            system: "x86_64-linux".into(),
+            artifacts: vec![artifact.clone()],
+            modules: vec![],
+        };
+        let desired = Deployment::decode(
+            &serde_json::to_vec(&json!({
+                "schema":"aos.package.transaction", "scope":["profile","slice"],
+                "system":"x86_64-linux", "artifacts":[artifact], "packages":[],
+                "inputs":[root("library"),root("used")], "retire":[],
+                "graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}
+            }))
+            .unwrap(),
+            &resolved,
+        )
+        .unwrap();
+
+        assert_eq!(
+            generation_roots(&desired),
+            BTreeSet::from([
+                root("library").as_str(),
+                root("selected").as_str(),
+                root("used").as_str()
+            ])
+        );
+        assert!(!generation_roots(&desired).contains(root("unused").as_str()));
+    }
 }

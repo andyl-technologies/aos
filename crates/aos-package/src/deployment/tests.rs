@@ -69,6 +69,7 @@ fn empty_deployment(scope: &str) -> Deployment {
     Deployment::decode(
         &serde_json::to_vec(&json!({
             "schema": "aos.package.transaction",
+            "retire": [],
             "scope": ["profile", scope],
             "system": resolved.system,
             "inputs": [],
@@ -93,27 +94,26 @@ fn recovers_prepared_generation_and_interrupted_pruning() {
         || Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
 
     let mut transactions = open();
-    assert!(
-        transactions
-            .apply(&deployment, BTreeSet::new(), &cancellation)
-            .is_err()
-    );
+    assert_eq!(transactions.next_sequence().unwrap(), 1);
+    assert!(transactions.apply(&deployment, &cancellation).is_err());
     assert!(transactions.current().is_none());
+    assert!(transactions.next_sequence().is_err());
     drop(transactions);
 
     let mut transactions = open();
     let recovered = transactions.resume(&cancellation).unwrap().unwrap();
     assert_eq!(recovered.sequence, 1);
-    let next = transactions
-        .apply(&deployment, BTreeSet::new(), &cancellation)
-        .unwrap();
+    assert_eq!(transactions.next_sequence().unwrap(), 2);
+    let next = transactions.apply(&deployment, &cancellation).unwrap();
     assert_eq!(next.sequence, 2);
     store.0.lock().unwrap().fail_release = true;
     assert!(transactions.prune(1).is_err());
+    assert!(transactions.next_sequence().is_err());
     drop(transactions);
 
     let mut transactions = open();
     assert!(transactions.resume(&cancellation).unwrap().is_none());
+    assert_eq!(transactions.next_sequence().unwrap(), 3);
     assert_eq!(
         transactions
             .generations()
@@ -133,24 +133,126 @@ fn rejects_scope_change_and_invalid_retirement_without_preparing() {
         Transactions::open(directory.path(), Store::default(), JournalLimits::default()).unwrap();
     let cancellation = CancellationToken::default();
     let deployment = empty_deployment("main");
-    transactions
-        .apply(&deployment, BTreeSet::new(), &cancellation)
-        .unwrap();
+    transactions.apply(&deployment, &cancellation).unwrap();
 
     assert!(
         transactions
-            .apply(&empty_deployment("other"), BTreeSet::new(), &cancellation)
+            .apply(&empty_deployment("other"), &cancellation)
             .is_err()
     );
-    assert!(
-        transactions
-            .apply(
-                &deployment,
-                BTreeSet::from(["unknown".into()]),
-                &cancellation
-            )
-            .is_err()
-    );
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&deployment.canonical_bytes().unwrap()).unwrap();
+    document["retire"] = json!(["unknown"]);
+    let retirement = Deployment::decode(
+        &serde_json::to_vec(&document).unwrap(),
+        &deployment.resolved(),
+    )
+    .unwrap();
+    assert!(transactions.apply(&retirement, &cancellation).is_err());
     assert!(transactions.resume(&cancellation).unwrap().is_none());
     assert_eq!(transactions.current().unwrap().sequence, 1);
+}
+
+#[test]
+fn named_payload_selection_does_not_install_available_module_dependencies() {
+    let root = |name: &str| format!("/nix/store/00000000000000000000000000000000-{name}");
+    let make = |name: &str, output: &str| {
+        Envelope::decode(&serde_json::to_vec(&json!({
+            "schema":"aos.package.deployment", "system":"x86_64-linux",
+            "package":{"name":name,"version":"1","path":root(output),
+                "outputs":{"out":root(name),"tools":root(output),"unused":root("unused")},
+                "mainProgram":null},
+            "module":{"name":name,"version":"1","source":root(&format!("{name}-module")),"entrypoint":"module.nix"},
+            "runtimeDependencies":{}, "moduleDependencies":[]
+        })).unwrap()).unwrap()
+    };
+    let dependency = make("interface", "interface-tools");
+    let mut owner = make("owner", "owner-tools");
+    owner.module_dependencies = vec![dependency.module.clone().unwrap()];
+    owner
+        .runtime_dependencies
+        .insert("runtime".into(), make("runtime", "runtime-tools").package);
+    struct Catalog(Envelope);
+    impl PackageResolver for Catalog {
+        fn resolve(&mut self, _: &ModuleSource) -> Result<Envelope> {
+            Ok(self.0.clone())
+        }
+    }
+
+    let resolved = resolve_packages("x86_64-linux", vec![owner], &mut Catalog(dependency)).unwrap();
+
+    assert_eq!(resolved.artifacts.len(), 1);
+    assert_eq!(resolved.artifacts[0].path, root("owner-tools"));
+    assert_eq!(resolved.modules.len(), 2);
+    let owner = resolved
+        .modules
+        .iter()
+        .find(|module| module.name == "owner")
+        .unwrap();
+    assert_eq!(owner.artifacts.package.path, root("owner"));
+    assert_eq!(owner.artifacts.package.outputs.len(), 3);
+    assert!(owner.artifacts.dependencies.contains_key("runtime"));
+}
+
+#[test]
+fn inspection_retains_shared_lock_and_leaves_both_torn_tails_untouched() {
+    use super::transaction::inspect;
+    use std::io::Write as _;
+
+    let directory = tempfile::tempdir().unwrap();
+    let limits = JournalLimits::default();
+    let mut writer = Transactions::open(directory.path(), Store::default(), limits).unwrap();
+    writer
+        .apply(&empty_deployment("main"), &CancellationToken::default())
+        .unwrap();
+    assert!(inspect(directory.path(), limits).is_err());
+    drop(writer);
+
+    let paths = ["generations.journal", "effects.journal"].map(|name| directory.path().join(name));
+    for path in &paths {
+        let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        file.write_all(b"torn").unwrap();
+    }
+    let before = paths.each_ref().map(|path| std::fs::read(path).unwrap());
+    let snapshot = inspect(directory.path(), limits).unwrap();
+    assert_eq!(snapshot.current().unwrap().sequence, 1);
+    assert!(!snapshot.has_pending_work());
+    assert_eq!(snapshot.incomplete_tail_bytes(), 4);
+    assert_eq!(snapshot.activation().incomplete_tail_bytes, 4);
+    assert!(Transactions::open(directory.path(), Store::default(), limits).is_err());
+    assert_eq!(
+        before,
+        paths.each_ref().map(|path| std::fs::read(path).unwrap())
+    );
+    drop(snapshot);
+    assert!(Transactions::open(directory.path(), Store::default(), limits).is_ok());
+}
+
+#[test]
+fn inspection_never_creates_journals_and_distinguishes_pending_generation() {
+    use super::transaction::inspect;
+
+    let directory = tempfile::tempdir().unwrap();
+    let limits = JournalLimits::default();
+    assert!(inspect(directory.path(), limits).is_err());
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+
+    let store = Store::default();
+    let mut writer = Transactions::open(directory.path(), store.clone(), limits).unwrap();
+    let deployment = empty_deployment("main");
+    writer
+        .apply(&deployment, &CancellationToken::default())
+        .unwrap();
+    store.0.lock().unwrap().fail_retain_at = Some(4);
+    assert!(
+        writer
+            .apply(&deployment, &CancellationToken::default())
+            .is_err()
+    );
+    drop(writer);
+
+    let snapshot = inspect(directory.path(), limits).unwrap();
+    assert_eq!(snapshot.current().unwrap().sequence, 1);
+    assert_eq!(snapshot.pending_sequence(), Some(2));
+    assert!(snapshot.has_pending_work());
 }
