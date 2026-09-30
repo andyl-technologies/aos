@@ -1,10 +1,10 @@
-"""Runs one native ability contract or adapter cohort in a published AOS image.
+"""Runs native operation cohorts against an exact published AOS image.
 
 The release coordinator has already authenticated and downloaded the complete
 case object set. This runner binds the server/x86_64 image cell, its unsigned
 assembly, and the published AOS command outputs before it imports an
-executor-owned reference-provider fixture. The fleet body drives the published
-guest through SSH and retains either contract checks or exact matrix probes.
+executor-authorized fixture sources. Each disposable guest runs its selected
+operation flight through SSH and retains independent substrate and journal facts.
 """
 
 from __future__ import annotations
@@ -43,11 +43,8 @@ RUNTIME_COMPANIONS = json.loads(
 )
 FIXTURE_SCRIPT = pathlib.Path(os.environ["AOS_QUALIFICATION_FIXTURE_SCRIPT"])
 SETUP_MODULE = pathlib.Path(os.environ["AOS_QUALIFICATION_SETUP_MODULE"])
-MATRIX_SPEC_NAME = os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_MATRIX_SPEC"]
-MATRIX_SPEC_PATH = pathlib.Path(MATRIX_SPEC_NAME) if MATRIX_SPEC_NAME else None
-MATRIX_QUALIFIED_CELLS = json.loads(
-    os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_QUALIFIED_CELLS"]
-)
+NATIVE_OPERATION_SPEC_NAME = os.environ["AOS_QUALIFICATION_NATIVE_OPERATION_SPEC"]
+NATIVE_OPERATION_SPEC_PATH = pathlib.Path(NATIVE_OPERATION_SPEC_NAME) if NATIVE_OPERATION_SPEC_NAME else None
 QUALIFICATION_COHORTS = json.loads(os.environ["AOS_QUALIFICATION_COHORTS"])
 MATRIX_COHORT_SUPPORT_NAME = os.environ[
     "AOS_QUALIFICATION_NATIVE_ADAPTER_COHORT_SUPPORT"
@@ -56,17 +53,15 @@ MATRIX_COHORT_SUPPORT = (
     pathlib.Path(MATRIX_COHORT_SUPPORT_NAME) if MATRIX_COHORT_SUPPORT_NAME else None
 )
 NATIVE_ADAPTER_PACKAGE_SUBJECT_SCHEMA = (
-    "aos.qualification.native-adapter-package-subject/v1"
+    "aos.qualification.native-operation-package-subject"
 )
 IMAGE_SUPPORT = pathlib.Path(os.environ["AOS_QUALIFICATION_IMAGE_SUPPORT"])
 NAR_SUPPORT = pathlib.Path(os.environ["AOS_QUALIFICATION_NAR_SUPPORT"])
 
 IMAGE_VARIANT = "server"
 MANIFEST_OBJECT = "control/release-manifest-envelope"
-ASSEMBLY_MEDIA_TYPE = "application/vnd.aos.image.unsigned-assembly.v2+json"
+ASSEMBLY_MEDIA_TYPE = "application/vnd.aos.image.unsigned-assembly.v3+json"
 FINALIZED_SET_MEDIA_TYPE = "application/vnd.aos.image.finalized-set.v1+json"
-INITRD_STATIC_CONTRACT = "lib/aos/initrd/static-ability-contract.json"
-INITRD_ACTIVATION_SELECTION = "etc/aos/initrd-ability-activation.json"
 
 
 def load_support(name: str, path: pathlib.Path) -> Any:
@@ -85,27 +80,12 @@ def load_support(name: str, path: pathlib.Path) -> Any:
     return module
 
 
-def store_view_read_path(locator: dict[str, Any], identity: str) -> str:
-    """Maps one canonical store identity through a selected read-view locator."""
-
-    if locator.get("schema") != "aos.package-store.read-view-locator/v1":
-        raise RuntimeError("running manifest has an unsupported package-store locator")
-    identity_root = pathlib.PurePosixPath(locator["identity_root"])
-    read_root = pathlib.PurePosixPath(locator["read_root"])
-    identity_path = pathlib.PurePosixPath(identity)
-    if not identity_root.is_absolute() or not read_root.is_absolute():
-        raise RuntimeError("running package-store locator contains a relative root")
-    try:
-        relative = identity_path.relative_to(identity_root)
-    except ValueError as error:
-        raise RuntimeError("package identity is outside the selected store root") from error
-    if not relative.parts:
-        raise RuntimeError("package identity names the store root")
-    return str(read_root / relative)
-
-
 IMAGE = load_support("aos_qualification_image_support", IMAGE_SUPPORT)
 NAR = load_support("aos_qualification_nar_support", NAR_SUPPORT)
+NATIVE_IMAGE = load_support(
+    "aos_qualification_native_image", pathlib.Path(os.environ["AOS_QUALIFICATION_NATIVE_IMAGE_SUPPORT"])
+)
+NATIVE_CUSTODY = load_support("aos_qualification_native_custody", pathlib.Path(os.environ["AOS_QUALIFICATION_NATIVE_CUSTODY_SUPPORT"]))
 MATRIX_COHORT = (
     load_support("aos_qualification_native_adapter_cohort", MATRIX_COHORT_SUPPORT)
     if MATRIX_COHORT_SUPPORT is not None
@@ -168,17 +148,6 @@ def local_artifact_id(identity: str) -> str:
     return identity.rsplit("/", 1)[-1]
 
 
-def require_distinct_predecessor_runtime(
-    predecessor_runtime: str, candidate_runtime: str
-) -> None:
-    """Rejects a bootstrap fixture backed by the candidate under test."""
-
-    if predecessor_runtime == candidate_runtime:
-        raise RuntimeError(
-            "candidate runtime is not distinct from its qualification predecessor"
-        )
-
-
 class PublishedImageMachine(IMAGE.VirtualMachine):
     """Adapts the published-image VM to the fleet test machine interface."""
 
@@ -189,6 +158,7 @@ class PublishedImageMachine(IMAGE.VirtualMachine):
         self.scenario = scenario
         self.metadata_attached = True
         self.native_tools: dict[str, str] = {}
+        self.native_image_bundle: dict[str, Any] | None = None
         self.native_package_runtime = ""
         self.hard_power_cycles = 0
         self.metadata_free_reboots = 0
@@ -300,37 +270,22 @@ class PublishedImageMachine(IMAGE.VirtualMachine):
             raise RuntimeError("published package runtime was not bound")
         return self.native_package_runtime
 
-    def candidate_handler_packages(
-        self, packages: list[dict[str, str]]
-    ) -> list[dict[str, str]]:
-        """Substitutes candidate-bound signed ability companions."""
+    def native_evaluation_bundle(self) -> str:
+        """Returns the exact bundle validated against this running published image."""
+        if self.native_image_bundle is None:
+            raise RuntimeError("running native image bundle was not authenticated")
+        return "/usr/lib/aos/host/deployment"
 
-        package_abilities = {entry["abilities"] for entry in packages}
-        expected = {
-            (entry["name"], entry["primary"], entry["abilities"])
-            for entry in RUNTIME_COMPANIONS
-            if entry["abilities"] in package_abilities
-        }
-        observed = {
-            (entry["name"], entry["package"], entry["abilities"])
-            for entry in packages
-            if entry["abilities"] in self.scenario.candidate_companions
-        }
-        if observed != expected:
-            raise RuntimeError("fleet package list differs from candidate runtime bindings")
-        self.scenario.used_candidate_companions.update(
-            package_abilities & set(self.scenario.candidate_companions)
-        )
-
-        bound = []
-        for entry in packages:
-            replacement = dict(entry)
-            if entry["abilities"] in self.scenario.candidate_companions:
-                replacement["abilities"] = self.scenario.candidate_companions[
-                    entry["abilities"]
-                ]
-            bound.append(replacement)
-        return bound
+    def candidate_handler_packages(self, packages: list[dict[str, str]]) -> list[dict[str, str]]:
+        """Requires native package envelopes retained by the verified image."""
+        if self.native_image_bundle is None:
+            raise RuntimeError("candidate package custody was not validated")
+        for package in packages:
+            if "abilities" in package or "deployment" not in package:
+                raise RuntimeError("fleet package declaration requires its native deployment envelope")
+            if package["deployment"] not in self.native_image_bundle["roots"]:
+                raise RuntimeError("fleet package envelope is absent from the authenticated image admission")
+        return packages
 
     def published_boot_identity(self) -> str:
         return self.scenario.boot_identity
@@ -425,22 +380,21 @@ class Scenario:
         self.handoff_assertions = 0
         self.handoff_boot_ids: set[str] = set()
         self.candidate_closure: Any | None = None
-        self.candidate_companions: dict[str, str] = {}
-        self.used_candidate_companions: set[str] = set()
+        self.candidate_evaluations: dict[str, str] = {}
+        self.used_candidate_evaluations: set[str] = set()
         self.guest_initially_absent: list[str] = []
         self.total_warm_reboots = 0
         self.total_hard_power_cycles = 0
         self.total_metadata_free_reboots = 0
         self.fixture_namespace: dict[str, Any] = {}
         self.fixture_namespaces: dict[str, dict[str, Any]] = {}
-        self.matrix_spec = (
-            read_json(MATRIX_SPEC_PATH) if MATRIX_SPEC_PATH is not None else None
+        self.native_operation_spec = (
+            read_json(NATIVE_OPERATION_SPEC_PATH) if NATIVE_OPERATION_SPEC_PATH is not None else None
         )
 
         self.work = ROOT / "ability-work"
         self.work.mkdir()
         self.candidate_export = self.work / "candidate-tools.export"
-        self.candidate_companion_export = self.work / "candidate-companions.export"
         self.key = self.work / "ssh-key"
         IMAGE.run(
             [IMAGE.SSH_KEYGEN, "-q", "-t", "ed25519", "-N", "", "-f", str(self.key)]
@@ -464,7 +418,7 @@ class Scenario:
     def _validate_cohort(cohort: Any) -> None:
         """Validates one closed qualification cohort declaration."""
 
-        if not isinstance(cohort, dict) or set(cohort) != {
+        expected_fields = {
             "execution",
             "id",
             "qualifiedCells",
@@ -472,8 +426,26 @@ class Scenario:
             "requiredInputs",
             "script",
             "setup",
-        }:
+            "selectedEvaluation",
+        }
+        if isinstance(cohort, dict) and cohort.get("report", {}).get("kind") == "matrix":
+            expected_fields |= {"matrixSpec"}
+        if not isinstance(cohort, dict) or set(cohort) != expected_fields:
             raise RuntimeError("qualification cohort input is malformed")
+        selection = cohort["selectedEvaluation"]
+        if (not isinstance(selection, dict) or set(selection) != {"role", "locator", "scenario_sources"}
+                or selection["role"] not in {"scenario", "candidate-baseline"}
+                or not isinstance(selection["scenario_sources"], list)
+                or len(selection["scenario_sources"]) > 4096
+                or not all(isinstance(source, str) for source in selection["scenario_sources"])
+                or len(selection["scenario_sources"]) != len(set(selection["scenario_sources"]))
+                or (selection["role"] == "scenario" and not selection["scenario_sources"])
+                or (selection["role"] == "candidate-baseline" and selection["scenario_sources"])):
+            raise RuntimeError("qualification cohort lacks its exact native evaluation source roles")
+        if NATIVE_IMAGE.store_root(selection["locator"]) != selection["locator"]:
+            raise RuntimeError("qualification cohort evaluation is not an exact immutable bundle root")
+        for source in selection["scenario_sources"]:
+            NATIVE_IMAGE.store_root(source)
         if not isinstance(cohort["id"], str) or not cohort["id"]:
             raise RuntimeError("qualification cohort lacks its identity")
         if not isinstance(cohort["script"], str) or not cohort["script"]:
@@ -569,12 +541,19 @@ class Scenario:
         if len(set(cohort_ids)) != len(cohort_ids):
             raise RuntimeError("qualification repeats a production cohort")
         report_kinds = {cohort["report"]["kind"] for cohort in QUALIFICATION_COHORTS}
-        if self.matrix_spec is not None and report_kinds != {"matrix"}:
+        if self.native_operation_spec is not None and report_kinds != {"matrix"}:
             raise RuntimeError("matrix qualification carries another report policy")
         if "release-transition" in report_kinds and report_kinds != {
             "release-transition"
         }:
             raise RuntimeError("release-transition report policy is incomplete")
+
+        if self.native_operation_spec is not None:
+            declared = MATRIX_COHORT.validate_qualification_spec(self.native_operation_spec)
+            actual = [{"id": cohort["id"], "matrix_spec": cohort["matrixSpec"],
+                       "selected_evaluation": cohort["selectedEvaluation"]} for cohort in QUALIFICATION_COHORTS]
+            if actual != declared or any(cohort["qualifiedCells"] != cohort["matrixSpec"]["applicability"]["applicable_cell_ids"] for cohort in QUALIFICATION_COHORTS):
+                raise RuntimeError("native execution cohorts differ from exact authored qualification")
 
         requires_predecessor = self._requires_predecessor_image()
         if requires_predecessor and not STAGING_HUB_URL:
@@ -592,10 +571,10 @@ class Scenario:
             or self.case["checks"] != EXPECTED_CHECKS
         ):
             raise RuntimeError("ability case differs from the implemented native scenario")
-        if self.matrix_spec is not None:
+        if self.native_operation_spec is not None:
             if (
                 EXPECTED_CHECKS.count("native-adapter-matrix") != 1
-                or self.case.get("matrix_spec") != self.matrix_spec
+                or self.case.get("native_operation_spec") != self.native_operation_spec
             ):
                 raise RuntimeError("matrix specification differs from the exact case")
         if requires_predecessor:
@@ -664,7 +643,7 @@ class Scenario:
         if requires_predecessor:
             self._bind_predecessor_image()
         self._bind_published_package_outputs()
-        self._prepare_candidate_handler_companions()
+        self._prepare_candidate_evaluations()
 
         self.boot_identity = "+".join(
             [
@@ -772,7 +751,7 @@ class Scenario:
         finalized_facts = {entry["id"]: entry for entry in finalized["artifacts"]}
         files = {entry["kind"]: entry for entry in assembly["files"]}
         if (
-            assembly["schema_version"] != "aos.image.unsigned-assembly/v2"
+            assembly["schema_version"] != "aos.image.unsigned-assembly/v3"
             or assembly["release_id"] != expected["release_id"]
             or assembly["platform"] != PLATFORM
             or assembly["system_variant"] != IMAGE_VARIANT
@@ -792,7 +771,7 @@ class Scenario:
             != uki_b["sha256"]
             or metadata["efi"]["normal_b"]["artifact"]["size_bytes"]
             != uki_b["size_bytes"]
-            or "host-static-ability-contract" not in files
+            or not {"host-transaction", "host-packages", "host-admission", "host-evaluation"} <= files.keys()
         ):
             raise RuntimeError("predecessor finalized image controls disagree")
         for local_id, kind, artifact in (
@@ -811,11 +790,20 @@ class Scenario:
                     f"predecessor finalized {local_id} differs from its manifest"
                 )
 
+        extracted = self.work / "predecessor-slot-a.initrd.zst"
+        IMAGE.run([IMAGE.OBJCOPY, "-O", "binary", "--only-section=.initrd",
+                   str(uki_path), str(extracted)])
+        archive = self.work / "predecessor-slot-a.initrd.cpio"
+        IMAGE.decode_zstd_bounded(extracted, archive)
+        initrd_documents = NATIVE_IMAGE.archive_documents(IMAGE, archive, "initrd")
+        initrd_native_bundle = NATIVE_IMAGE.validate_bundle("initrd", initrd_documents, files, PLATFORM)
+
         self.predecessor_image = {
             "assembly": assembly,
             "assembly_artifact": assembly_artifact,
             "finalized_artifact": finalized_artifact,
-            "host_static_contract": files["host-static-ability-contract"],
+            "native_files": files,
+            "initrd_native_bundle": initrd_native_bundle,
             "metadata": metadata,
             "metadata_artifact": metadata_artifact,
             "qcow2_artifact": qcow2,
@@ -826,332 +814,172 @@ class Scenario:
             "version": payload["version"],
         }
 
-    def _candidate_runtime_artifact(self) -> dict[str, str]:
-        if self.candidate_closure is None:
-            raise RuntimeError("candidate NAR closure was not validated")
-        root = self.package_outputs["packageRuntime"]["store_path"]
-        pending = [root]
-        reachable: set[str] = set()
-        while pending:
-            store_path = pending.pop()
-            if store_path in reachable:
-                continue
-            info = self.candidate_closure.infos.get(store_path)
-            if info is None:
-                raise RuntimeError("candidate runtime closure is incomplete")
-            reachable.add(store_path)
-            pending.extend(
-                reference
-                for reference in info.references
-                if reference != store_path
-            )
+    def _candidate_document(self, directory: str, filename: str) -> dict[str, Any]:
+        """Reads source-built candidate bytes already bound to image provenance."""
+        if directory not in self.candidate_documents:
+            raise RuntimeError("candidate native evaluation was not authenticated")
+        return self.candidate_documents[directory][filename]
 
-        members = []
-        for store_path in sorted(reachable):
-            info = self.candidate_closure.infos[store_path]
-            references = sorted(
-                {
-                    pathlib.PurePosixPath(reference).name.split("-", 1)[0]
-                    for reference in info.references
-                    if reference != store_path
-                }
-            )
-            member: dict[str, Any] = {
-                "store_path": store_path,
-                "nar_hash": self.candidate_closure.imported_nar_hashes[store_path],
-                "nar_size": info.nar_size,
-            }
-            if references:
-                member["references"] = references
-            members.append(member)
-
-        nar_hash = self.candidate_closure.imported_nar_hashes[root]
-        content = digest(
-            "aos.ability.artifact/v1",
-            {"store_path": root, "nar_hash": nar_hash},
-        )
-        return {
-            "content": content,
-            "store_path": root,
-            "nar_hash": nar_hash,
-            "closure": digest("aos.ability.closure/v1", members),
-        }
-
-    @staticmethod
-    def _replace_artifact(
-        value: Any, old_runtime: str, artifact: dict[str, str]
-    ) -> tuple[Any, int]:
-        artifact_keys = {"content", "store_path", "nar_hash", "closure"}
-        if (
-            isinstance(value, dict)
-            and set(value) == artifact_keys
-            and value.get("store_path") == old_runtime
-        ):
-            return dict(artifact), 1
-        if isinstance(value, dict):
-            replaced: dict[str, Any] = {}
-            count = 0
-            for key, child in value.items():
-                replaced[key], child_count = Scenario._replace_artifact(
-                    child, old_runtime, artifact
-                )
-                count += child_count
-            return replaced, count
-        if isinstance(value, list):
-            replaced_list = []
-            count = 0
-            for child in value:
-                replacement, child_count = Scenario._replace_artifact(
-                    child, old_runtime, artifact
-                )
-                replaced_list.append(replacement)
-                count += child_count
-            return replaced_list, count
-        return value, 0
-
-    def _patch_companion(
-        self,
-        binding: dict[str, str],
-        artifact: dict[str, str],
-        destination: pathlib.Path,
-    ) -> None:
-        source = pathlib.Path(binding["abilities"])
-        document = read_json(source / "package.json")
-        providers_before = document["implementation"]["providers"]
-        patched, replacements = self._replace_artifact(
-            document, binding["originalRuntime"], artifact
-        )
-        if replacements == 0:
-            raise RuntimeError(
-                f"{binding['name']} does not declare the executor runtime artifact"
-            )
-
-        providers_after = patched["implementation"]["providers"]
-        for before, after in zip(providers_before, providers_after, strict=True):
-            if before == after:
-                continue
-            implementation = digest(
-                "aos.ability.provider-implementation/v1", after
-            )
-            exports = [
-                export
-                for export in patched["exports"]
-                if export["interface"] == after["interface"]
-            ]
-            one(exports, f"candidate-bound export in {binding['name']}")[
-                "implementation"
-            ] = implementation
-
-        artifacts = {entry["content"]: entry for entry in patched["artifacts"]}
-        if len(artifacts) != len(patched["artifacts"]):
-            raise RuntimeError("candidate-bound companion repeats an artifact identity")
-        patched["artifacts"] = [artifacts[key] for key in sorted(artifacts)]
-
-        destination.mkdir()
-        interfaces = source / "interfaces"
-        if interfaces.is_symlink() or not interfaces.is_dir():
-            raise RuntimeError("ability companion interface root is not a directory")
-        shutil.copytree(interfaces, destination / "interfaces")
-        (destination / "package.json").write_bytes(canonical(patched))
-
-    def _prepare_candidate_handler_companions(self) -> None:
-        if self.candidate_closure is None:
-            raise RuntimeError("candidate NAR closure was not validated")
+    def _prepare_candidate_evaluations(self) -> None:
+        """Admits baseline image bytes and independently executor-authorized sources."""
         if not isinstance(RUNTIME_COMPANIONS, list) or not RUNTIME_COMPANIONS:
-            raise RuntimeError("native ability scenario lacks candidate runtime bindings")
-
-        with FIXTURE_ARCHIVE.open("rb") as source:
-            result = subprocess.run(
-                [self.candidate_closure.nix_store, "--import"],
-                env=self.candidate_closure.environment,
-                check=False,
-                stdin=source,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=3600,
+            raise RuntimeError("native scenario lacks an evaluated candidate bundle")
+        declarations = {}
+        evaluation_boot_inputs = {}
+        for cohort in QUALIFICATION_COHORTS:
+            locator = cohort["selectedEvaluation"]["locator"]
+            boot_input = cohort["execution"]["bootInput"]
+            if evaluation_boot_inputs.setdefault(locator, boot_input) != boot_input:
+                raise RuntimeError("one selected evaluation is bound to conflicting signed image roles")
+        fixture_inventory = None
+        expected_evaluations = {cohort["id"]: cohort["selectedEvaluation"] for cohort in QUALIFICATION_COHORTS}
+        if expected_evaluations:
+            fixture_inventory = NATIVE_CUSTODY.verify_fixture_inputs(
+                read_json(SCENARIO_REGISTRY), self.request,
+                {"archive": FIXTURE_ARCHIVE,
+                 "inventory": pathlib.Path(os.environ["AOS_QUALIFICATION_FIXTURE_INVENTORY"]),
+                 "evaluations": pathlib.Path(os.environ["AOS_QUALIFICATION_FIXTURE_EVALUATIONS"])},
+                expected_evaluations, NAR.canonical_sha256,
             )
-        if result.returncode != 0:
-            raise RuntimeError(
-                "isolated store rejected the fixture closure: "
-                + result.stderr[-64 * 1024 :].decode(errors="replace")
-            )
-
-        artifact = self._candidate_runtime_artifact()
-        patch_root = self.work / "candidate-companions"
-        patch_root.mkdir()
-        patched_paths = []
-        seen_bindings: dict[tuple[str, str], dict[str, str]] = {}
+        for evaluation in expected_evaluations.values():
+            previous = declarations.setdefault(evaluation["locator"], evaluation)
+            if previous != evaluation:
+                raise RuntimeError("native cohorts disagree on one selected evaluation's custody")
+        self.fixture_inventory = fixture_inventory
+        self.candidate_document_bytes = {}
+        self.candidate_documents = {}
+        self.candidate_native_bundles = {}
+        self.candidate_evaluation_digests = {}
+        verified_roots = set()
         for binding in RUNTIME_COMPANIONS:
-            required = {"name", "primary", "abilities", "originalRuntime"}
-            identity = (binding.get("name"), binding.get("abilities"))
-            if set(binding) != required:
-                raise RuntimeError("candidate runtime companion binding is malformed")
-            duplicate = seen_bindings.get(identity)
-            if duplicate is not None:
-                if duplicate != binding:
-                    raise RuntimeError(
-                        "candidate runtime companion identity is ambiguous"
-                    )
+            if not isinstance(binding, dict) or set(binding) != {"evaluation"}:
+                raise RuntimeError("native candidate evaluation binding has unexpected fields")
+            evaluation = binding["evaluation"]
+            if NATIVE_IMAGE.store_root(evaluation) != evaluation:
+                raise RuntimeError("candidate native evaluation is not one immutable store root")
+            if evaluation in self.candidate_documents:
                 continue
-            seen_bindings[identity] = binding
-            require_distinct_predecessor_runtime(
-                binding["originalRuntime"], artifact["store_path"]
-            )
-
-            abilities_suffix = hashlib.sha256(
-                binding["abilities"].encode()
-            ).hexdigest()[:16]
-            destination = (
-                patch_root
-                / f"{binding['name']}-{abilities_suffix}-candidate-abilities"
-            )
-            self._patch_companion(binding, artifact, destination)
-            added = NAR.run(
-                [self.candidate_closure.nix_store, "--add", str(destination)],
-                environment=self.candidate_closure.environment,
-            ).stdout.decode().strip()
-            if not NAR.STORE_PATH.fullmatch(added):
-                raise RuntimeError("isolated store returned an invalid companion path")
-            references = NAR.run(
-                [self.candidate_closure.nix_store, "--query", "--references", added],
-                environment=self.candidate_closure.environment,
-            ).stdout.decode().splitlines()
-            if artifact["store_path"] not in references:
-                raise RuntimeError("candidate-bound companion does not retain its runtime")
-            self.candidate_companions[binding["abilities"]] = added
-            patched_paths.append(added)
-
-        with self.candidate_companion_export.open("xb") as destination:
-            result = subprocess.run(
-                [self.candidate_closure.nix_store, "--export", *patched_paths],
-                env=self.candidate_closure.environment,
-                check=False,
-                stdout=destination,
-                stderr=subprocess.PIPE,
-                timeout=3600,
-            )
-        if result.returncode != 0:
-            self.candidate_companion_export.unlink(missing_ok=True)
-            raise RuntimeError(
-                "could not export candidate-bound companions: "
-                + result.stderr[-64 * 1024 :].decode(errors="replace")
-            )
-
-    def native_adapter_package_subject(self) -> dict[str, Any]:
-        """Projects matrix routes from the exact candidate ability companions."""
-
-        if self.matrix_spec is None:
-            raise RuntimeError("native adapter package subject requires a matrix")
-        adapters = self.matrix_spec.get("surface", {}).get("adapters")
-        if not isinstance(adapters, list):
-            raise RuntimeError("native adapter matrix surface is malformed")
-        adapter_by_interface = {
-            canonical(
-                {
-                    "name": adapter["interface_name"],
-                    "abi": adapter["interface_abi"],
-                    "descriptor": adapter["interface_descriptor"],
-                }
-            ): adapter["adapter"]
-            for adapter in adapters
-        }
-        if len(adapter_by_interface) != len(adapters):
-            raise RuntimeError("native adapter matrix repeats an interface identity")
-
-        routes: dict[bytes, dict[str, Any]] = {}
-        seen_contracts = set()
-        for binding in RUNTIME_COMPANIONS:
-            source_contract = binding["abilities"]
-            if source_contract in seen_contracts:
-                continue
-            seen_contracts.add(source_contract)
-            try:
-                candidate_contract = pathlib.Path(
-                    self.candidate_companions[source_contract]
-                )
-                package = read_json(candidate_contract / "package.json")
-                providers = package["implementation"]["providers"]
-                handlers = package["implementation"]["handlers"]
-            except (KeyError, TypeError) as error:
-                raise RuntimeError(
-                    "candidate ability companion lacks its implementation projection"
-                ) from error
-            if not isinstance(providers, list) or not isinstance(handlers, dict):
-                raise RuntimeError("candidate ability implementation projection is malformed")
-
-            contract_digest = raw_digest(package)
-            package_name = package.get("package", {}).get("name")
-            if not isinstance(package_name, str):
-                raise RuntimeError("candidate ability package identity is malformed")
-            provenance = {
-                "package": package_name,
-                "ability-contract": contract_digest,
+            selected = declarations.get(evaluation, {"role": "candidate-baseline", "locator": evaluation, "scenario_sources": []})
+            if declarations and evaluation not in declarations:
+                raise RuntimeError("candidate bundle is outside the authored cohort population")
+            documents = {}
+            physical_roots = {evaluation}
+            for filename in [*NATIVE_IMAGE.BUNDLE_FILES, "installed.json"]:
+                path = (pathlib.Path(evaluation) / filename).resolve(strict=True)
+                physical_roots.add(NATIVE_IMAGE.store_root(str(path)))
+                if not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
+                    raise RuntimeError("candidate native document is not a bounded immutable file")
+                documents[filename] = path.read_bytes()
+            predecessor = evaluation_boot_inputs.get(evaluation) == "predecessor-image"
+            baseline_files = self.predecessor_image["native_files"] if predecessor else self.native_files
+            baseline_bundle = self.predecessor_image["initrd_native_bundle"] if predecessor else self.initrd_native_bundle
+            if selected["role"] == "candidate-baseline":
+                native = NATIVE_IMAGE.validate_bundle("host", documents, baseline_files, PLATFORM)
+            else:
+                if fixture_inventory is None:
+                    raise RuntimeError("scenario native evaluation lacks its original executor inventory")
+                native = NATIVE_IMAGE.validate_documents("host", documents, PLATFORM)
+                NATIVE_CUSTODY.verify_admission(native["admission"], fixture_inventory)
+                physical_roots.update(native["roots"])
+                physical_roots.update(NATIVE_IMAGE.store_root(source) for source in selected["scenario_sources"])
+                NATIVE_CUSTODY.verify_realized_roots(physical_roots - verified_roots,
+                    fixture_inventory, IMAGE.NIX_STORE, NAR.canonical_sha256)
+                verified_roots.update(physical_roots)
+                descriptor = native["evaluation"]
+                baseline_library = baseline_bundle["evaluation"]
+                if (descriptor["library"] != baseline_library["library"]
+                        or descriptor["libraryNarHash"] != baseline_library["libraryNarHash"]):
+                    raise RuntimeError("scenario evaluator library differs from its exact signed boot baseline")
+                sources = descriptor["configuration"] + descriptor.get("runtimeConfiguration", [])
+                positions = []
+                for source in selected["scenario_sources"]:
+                    if sources.count(source) != 1:
+                        raise RuntimeError("scenario descriptor omits or repeats an authored source")
+                    positions.append(sources.index(source))
+                if positions != sorted(positions):
+                    raise RuntimeError("scenario descriptor reorders its authored sources")
+                aos = os.environ["AOS_QUALIFICATION_EVALUATOR"]
+                evaluator_root = NATIVE_IMAGE.store_root(aos)
+                NATIVE_CUSTODY.verify_realized_roots({evaluator_root} - verified_roots,
+                    fixture_inventory, IMAGE.NIX_STORE, NAR.canonical_sha256)
+                verified_roots.add(evaluator_root)
+                replay = json.loads(IMAGE.run([aos, "ability", "evaluate",
+                    str(pathlib.Path(evaluation) / "evaluation.json"), "--nix-store", IMAGE.NIX_STORE]).stdout)
+                transaction = native["transaction"]
+                if any(replay.get(key) != transaction.get(key) for key in ("schema", "scope", "system", "graph", "artifacts", "packages", "retire")):
+                    raise RuntimeError("scenario native transaction differs from independent locked source replay")
+                if not set(replay["inputs"]).issubset(transaction["inputs"]):
+                    raise RuntimeError("scenario transaction omits an independently replayed source input")
+            self.candidate_document_bytes[evaluation] = documents
+            self.candidate_native_bundles[evaluation] = native
+            self.candidate_evaluation_digests[evaluation] = raw_digest({
+                "selected_evaluation": selected,
+                "documents": {name: {"sha256": "sha256:" + hashlib.sha256(contents).hexdigest(), "size_bytes": len(contents)} for name, contents in sorted(documents.items())},
+            })
+            self.candidate_documents[evaluation] = {
+                name: json.loads(contents) for name, contents in documents.items() if name.endswith(".json")
             }
-            for provider in providers:
-                if not isinstance(provider, dict):
-                    raise RuntimeError("candidate provider implementation is malformed")
-                interface = provider.get("interface")
-                if not isinstance(interface, dict):
-                    raise RuntimeError("candidate provider interface is malformed")
-                adapter = adapter_by_interface.get(canonical(interface))
-                if adapter is None:
+            self.candidate_evaluations[evaluation] = evaluation
+        if declarations and set(self.candidate_documents) != set(declarations):
+            raise RuntimeError("candidate native evaluations differ from authored cohort selections")
+
+    def native_adapter_package_subject(self, cohort: dict[str, Any]) -> dict[str, Any]:
+        """Derives operation custody from the exact signed candidate native graph."""
+        if self.native_operation_spec is None or self.candidate_closure is None:
+            raise RuntimeError("native operation subject requires a matrix and admitted candidate")
+        matrix_spec = cohort["matrixSpec"]
+        adapters = {}
+        families = matrix_spec["surface"]["families"]
+        for evaluation in [cohort["selectedEvaluation"]["locator"]]:
+            transaction = self._candidate_document(evaluation, "transaction.json")
+            graph = transaction.get("graph")
+            if not isinstance(graph, dict) or graph.get("schema") != "aos.activation.graph":
+                raise RuntimeError("candidate evaluation lacks its checked native graph")
+            selected_effects = MATRIX_COHORT.selected_terminal_effects(matrix_spec, graph)
+            grouped = {}
+            for effect_id, node in graph["nodes"].items():
+                if effect_id not in selected_effects:
                     continue
-                handler_name = provider.get("handler")
-                handler = handlers.get(handler_name)
-                if not isinstance(handler_name, str) or not isinstance(handler, dict):
-                    raise RuntimeError("native adapter lacks an exact terminal handler")
-                descriptor = interface.get("descriptor")
-                if not isinstance(descriptor, str) or not descriptor.startswith("sha256:"):
-                    raise RuntimeError("native adapter interface descriptor is malformed")
-                interface_document = read_json(
-                    candidate_contract
-                    / "interfaces"
-                    / f"{descriptor.removeprefix('sha256:')}.json"
-                )
-                if interface_document.get("interface") != {
-                    "name": interface["name"],
-                    "abi": interface["abi"],
-                }:
-                    raise RuntimeError("candidate interface document has another identity")
-                methods = interface_document.get("methods")
-                artifact = handler.get("artifact", {}).get("content")
-                entry_point = handler.get("entry_point")
-                if (
-                    not isinstance(methods, dict)
-                    or not isinstance(artifact, str)
-                    or not isinstance(entry_point, str)
-                ):
-                    raise RuntimeError("candidate interface method projection is malformed")
-
-                route = {
-                    "adapter": adapter,
-                    "interface": interface,
-                    "methods": sorted(methods),
-                    "implementation": digest(
-                        "aos.ability.provider-implementation/v1", provider
-                    ),
-                    "handler": handler_name,
-                    "artifact": artifact,
-                    "entry-point": entry_point,
+                handler = node["handler"]
+                if handler["kind"] != "process":
+                    continue
+                if handler["artifact"] not in self.candidate_native_bundles[evaluation]["roots"]:
+                    raise RuntimeError("candidate native handler is absent from the authenticated closure")
+                if not handler["executable"].startswith(handler["artifact"] + "/"):
+                    raise RuntimeError("candidate native handler executable escapes its artifact")
+                identity = node["identity"]
+                operation = {"ability": identity[-3], "name": identity[-2]}
+                scope = identity[:-4]
+                group = {"operation": operation, "handler": handler, "scope": scope}
+                key = hashlib.sha256(canonical(group)).hexdigest()
+                grouped.setdefault(key, {"group": group, "nodes": []})["nodes"].append((effect_id, node))
+            for key, selected in grouped.items():
+                nodes = sorted(selected["nodes"])
+                first = nodes[0][1]
+                input_type = first["input_type"]
+                result_type = {"kind": "submodule", "open": False, "fields": first["results"]}
+                if any(node["input_type"] != input_type or node["results"] != first["results"] for _, node in nodes):
+                    raise RuntimeError("candidate operation has conflicting native declaration types")
+                group = selected["group"]
+                adapter = {
+                    "adapter": "operation-" + key,
+                    "operation": group["operation"] | {"input_type": input_type, "result_type": result_type},
+                    "handler": group["handler"], "scope": group["scope"],
+                    "effects": [{"id": effect_id, **{name: node[name] for name in ("identity", "revision", "lifetime", "dependencies")}} for effect_id, node in nodes],
+                    "actions": ["apply", "remove"], "conformance_families": families,
+                    "state_contract": {"resource_lifetimes": sorted({node["lifetime"] for _, node in nodes}), "state_format": None},
                 }
-                route_key = canonical(route)
-                existing = routes.setdefault(
-                    route_key, route | {"provenance": []}
-                )
-                if provenance not in existing["provenance"]:
-                    existing["provenance"].append(provenance)
-
-        projected = []
-        for route in routes.values():
-            route["provenance"].sort(
-                key=lambda entry: (entry["package"], entry["ability-contract"])
-            )
-            projected.append(route)
-        projected.sort(key=canonical)
+                previous = adapters.setdefault(adapter["adapter"], adapter)
+                if previous != adapter:
+                    raise RuntimeError("candidate evaluation bundles disagree on one native operation")
+            self.used_candidate_evaluations.add(evaluation)
+        projected = [adapters[key] for key in sorted(adapters)]
+        if projected != matrix_spec["surface"]["adapters"]:
+            raise RuntimeError("signed candidate operation surface differs from the qualification matrix")
         return {
             "schema": NATIVE_ADAPTER_PACKAGE_SUBJECT_SCHEMA,
-            "matrix-spec-digest": raw_digest(self.matrix_spec),
-            "routes": projected,
+            "matrixSpecDigest": raw_digest(matrix_spec),
+            "operations": projected,
         }
 
     def _cell_artifact(self, kind: str, suffix: str) -> dict[str, Any]:
@@ -1203,12 +1031,12 @@ class Scenario:
 
     def _validate_image_controls(self) -> None:
         if (
-            self.assembly["schema_version"] != "aos.image.unsigned-assembly/v2"
+            self.assembly["schema_version"] != "aos.image.unsigned-assembly/v3"
             or self.assembly["release_id"] != self.request["release_id"]
             or self.assembly["platform"] != PLATFORM
             or self.assembly["system_variant"] != IMAGE_VARIANT
         ):
-            raise RuntimeError("unsigned image assembly lacks the native ability contracts")
+            raise RuntimeError("unsigned image assembly lacks the native deployment inputs")
         assembly_digest = digest(self.assembly["schema_version"], self.assembly)
         if (
             self.finalized["schema_version"] != "aos.image.finalized-set/v1"
@@ -1251,69 +1079,26 @@ class Scenario:
         ):
             raise RuntimeError("image metadata differs from the published slot UKIs")
         self.initrd_contract = self.assembly["initrd_contract"]
-        files = {entry["kind"]: entry for entry in self.assembly["files"]}
-        required_files = {
-            "host-static-ability-contract",
-            "initrd",
-            "initrd-static-ability-contract",
-        }
-        if (
-            len(files) != len(self.assembly["files"])
-            or not required_files <= files.keys()
-        ):
-            raise RuntimeError("unsigned image assembly repeats or omits a handoff file")
-        if self.initrd_contract["schema_version"] != "aos.boot.initrd-stage-contract/v1":
-            raise RuntimeError("published initrd omits its stage handoff contract")
-        if files["initrd"]["sha256"] != self.initrd_contract["artifact"]["sha256"]:
-            raise RuntimeError("initrd stage contract differs from its assembly file")
+        self.native_files = {entry["kind"]: entry for entry in self.assembly["files"]}
+        required = {"initrd", "initrd-contract"}
+        required.update(f"{stage}-{purpose}" for stage in ("initrd", "host")
+                        for purpose in NATIVE_IMAGE.BUNDLE_FILES.values())
+        required.add("host-installed")
+        if len(self.native_files) != len(self.assembly["files"]) or not required <= self.native_files.keys():
+            raise RuntimeError("native image assembly repeats or omits a deployment input")
+        if (self.initrd_contract["schema_version"] != "aos.boot.initrd-stage-contract/v1"
+                or self.native_files["initrd"]["sha256"] != self.initrd_contract["artifact"]["sha256"]):
+            raise RuntimeError("unsigned initrd provenance differs from its stage contract")
 
         extracted = self.work / "published-slot-a.initrd.zst"
-        IMAGE.run(
-            [
-                IMAGE.OBJCOPY,
-                "-O",
-                "binary",
-                "--only-section=.initrd",
-                str(self.uki_path),
-                str(extracted),
-            ]
-        )
-        if (
-            extracted.stat().st_size != self.initrd_contract["artifact"]["size_bytes"]
-            or sha256_file(extracted) != self.initrd_contract["artifact"]["sha256"]
-        ):
-            raise RuntimeError("published UKI embeds another initrd")
-
+        IMAGE.run([IMAGE.OBJCOPY, "-O", "binary", "--only-section=.initrd",
+                   str(self.uki_path), str(extracted)])
         archive = self.work / "published-slot-a.initrd.cpio"
         IMAGE.decode_zstd_bounded(extracted, archive)
-        entries = IMAGE.read_newc_entries(
-            archive,
-            {INITRD_ACTIVATION_SELECTION, INITRD_STATIC_CONTRACT},
+        documents = NATIVE_IMAGE.archive_documents(IMAGE, archive, "initrd")
+        self.initrd_native_bundle = NATIVE_IMAGE.validate_bundle(
+            "initrd", documents, self.native_files, PLATFORM,
         )
-        mode, contents = entries[INITRD_STATIC_CONTRACT]
-        static_file = files["initrd-static-ability-contract"]
-        static_digest = "sha256:" + hashlib.sha256(contents).hexdigest()
-        if mode & 0o170000 != 0o100000 or static_digest != static_file["sha256"]:
-            raise RuntimeError("published initrd static ability contract differs from its assembly")
-
-        selection_mode, selection_bytes = entries[INITRD_ACTIVATION_SELECTION]
-        selection = json.loads(selection_bytes)
-        if (
-            selection_mode & 0o170000 != 0o100000
-            or canonical(selection) != selection_bytes
-            or selection.get("schema")
-            != "aos.ability.initrd-activation-selection/v1"
-            or selection.get("execution_stage") != "initrd"
-            or selection.get("disposition") != "none"
-            or selection.get("activation") is not None
-            or selection.get("static_ability_contract_sha256") != static_digest
-        ):
-            raise RuntimeError("published initrd activation selection is not canonical no-work input")
-
-        self.initrd_selection = selection
-        self.initrd_selection_bytes = selection_bytes
-        self.initrd_static_contract = static_file
-        self.host_static_contract = files["host-static-ability-contract"]
 
     def _bind_published_package_outputs(self) -> None:
         package = one(
@@ -1372,7 +1157,7 @@ class Scenario:
         else:
             image = {
                 "assembly": self.assembly,
-                "host_static_contract": self.host_static_contract,
+                "native_files": self.native_files,
                 "metadata": self.metadata,
                 "qcow2_artifact": self.qcow2_artifact,
                 "uki_artifact": self.uki_artifact,
@@ -1415,110 +1200,60 @@ class Scenario:
             raise RuntimeError("running kernel differs from the published image contract")
         root_hash = image["metadata"]["root"]["root_hash"]
         machine.ssh(f"grep -Eq '(^| )roothash={re.escape(root_hash)}($| )' /proc/cmdline")
-        manifest = json.loads(machine.ssh("cat /run/aos/manifest.json"))
-        store_view = manifest["inputs"]["store_view"]
-        host_contract_path = store_view_read_path(
-            store_view, store_view["static_contract"]
-        )
-        host_contract = machine.ssh(
-            f"sha256sum {shlex.quote(host_contract_path)} | cut -d ' ' -f1"
-        ).strip()
-        if "sha256:" + host_contract != image["host_static_contract"]["sha256"]:
-            raise RuntimeError(
-                "selected package-store view differs from its host ability contract"
-            )
+        documents = {}
+        for filename in [*NATIVE_IMAGE.BUNDLE_FILES, "installed.json"]:
+            path = f"/usr/lib/aos/host/deployment/{filename}"
+            contents = machine.ssh(f"cat {shlex.quote(path)}").encode()
+            documents[filename] = contents
+        native = NATIVE_IMAGE.validate_bundle("host", documents, image["native_files"], PLATFORM)
+        machine.native_image_bundle = native
+        if machine.expected_image_role == "candidate":
+            self.used_candidate_evaluations.update(self.candidate_documents)
         if machine.native_package_runtime and machine.expected_image_role == "candidate":
+            self.verify_native_package_runtime_service(machine)
             self.assert_initrd_handoff(machine, boot_id)
 
         self.boot_ids.add(boot_id)
         self.rollout_boot_ids[machine.expected_image_role].add(boot_id)
         self.boot_assertions = len(self.boot_ids)
 
-    def assert_initrd_handoff(
-        self, machine: PublishedImageMachine, boot_id: str
-    ) -> None:
-        """Checks the selected initrd work and its durable host receipt."""
-
+    def assert_initrd_handoff(self, machine: PublishedImageMachine, boot_id: str) -> None:
+        """Rechecks native stage admission and durable completion without mutation."""
         if boot_id in self.handoff_boot_ids:
             return
-
-        checkpoint_text = machine.ssh(
-            "cat /run/aos/ability-stage-handoff/initrd.json"
-        )
-        checkpoint = json.loads(checkpoint_text)
-        state = json.loads(machine.ssh("cat /var/lib/profiles/image/state.json"))
-        running = one(
-            [
-                generation
-                for generation in state["generations"]
-                if generation["number"] == state["running"]
-            ],
-            "running image generation for initrd handoff",
-        )
-        contract_sha256 = "sha256:" + machine.ssh(
-            "sha256sum /usr/lib/aos/initrd/static-ability-contract.json "
-            "| cut -d ' ' -f1"
-        ).strip()
-        selection_sha256 = "sha256:" + hashlib.sha256(
-            self.initrd_selection_bytes
-        ).hexdigest()
-        transaction = checkpoint.get("transaction", "")
-        expected_transaction = "initrd-" + boot_id.replace("-", "")
-
-        if (
-            contract_sha256 != self.initrd_static_contract["sha256"]
-            or self.initrd_selection.get("static_ability_contract_sha256")
-            != contract_sha256
-        ):
-            raise RuntimeError("running root differs from the published initrd selection")
-        expected_image = {
-            "generation": running["number"],
-            "toplevel": running["toplevel"],
-            "module_abi": running["module_abi"],
-            "base_lib_abi_hash": running["base_lib_abi_hash"],
-            "root_verity_roothash": running.get("root_verity_roothash"),
-        }
-        if (
-            checkpoint.get("schema")
-            != "aos.ability.stage-handoff-checkpoint/v1"
-            or checkpoint.get("source_stage") != "initrd"
-            or checkpoint.get("receiver_stage") != "host"
-            or checkpoint.get("boot_id") != boot_id
-            or transaction != expected_transaction
-            or checkpoint.get("image") != expected_image
-            or checkpoint.get("selection_sha256") != selection_sha256
-            or checkpoint.get("static_ability_contract_sha256") != contract_sha256
-            or checkpoint.get("disposition") != "none"
-            or checkpoint.get("activation_sha256") is not None
-            or checkpoint.get("status") != "ownership-released"
-            or re.fullmatch(r"sha256:[0-9a-f]{64}", checkpoint.get("journal_head", ""))
-            is None
-        ):
-            raise RuntimeError("initrd ownership checkpoint differs from the running image")
-
-        journal = (
-            "/var/lib/profiles/image/ability-stage-transactions/initrd/"
-            f"{transaction}/execution.journal"
-        )
         machine.succeed(
-            "systemctl is-active --quiet aos-ability-host-receiver.service && "
-            f"test -f {journal} && test ! -L {journal} && "
-            f"test $(stat -c %u {journal}) -eq 0 && "
-            f"test $(stat -c %h {journal}) -eq 1 && "
-            f"test $((0$(stat -c %a {journal}) & 022)) -eq 0"
+            "systemctl is-active --quiet aos-ability-host-receiver.service "
+            "aos-ability-host-controller.service multi-user.target"
         )
-        before = machine.ssh(
-            f"stat -c '%s' {journal}; sha256sum {journal} | cut -d ' ' -f1"
-        )
-        machine.succeed(
-            f"{machine.guest_package_runtime()} __ability-stage-receive "
-            "--from-stage initrd --image-profile /var/lib/profiles/image"
-        )
-        after = machine.ssh(
-            f"stat -c '%s' {journal}; sha256sum {journal} | cut -d ' ' -f1"
-        )
-        if before != after:
-            raise RuntimeError("idempotent host receipt changed the initrd handoff journal")
+        native = machine.native_image_bundle
+        artifacts = native["packages"]["artifacts"]
+        preparations = one([artifact for artifact in artifacts if artifact["name"] == "aos-boot-preparations"],
+                           "admitted boot preparation package")
+        nix = one([artifact for artifact in artifacts if artifact["name"] == "nix"], "admitted Nix package")
+        executable = preparations["path"] + "/bin/aos-boot-preparations"
+        nix_store = nix["path"] + "/bin/nix-store"
+        for bundle, state in (
+            ("/usr/lib/aos/initrd/deployment", "/run/aos-boot-transaction-storage/aos/initrd-stage-journal"),
+            ("/usr/lib/aos/host/deployment", "/var/lib/profiles/system/deployment"),
+        ):
+            journal = state + "/effects.journal"
+            before = machine.ssh(f"stat -c '%s' {journal}; sha256sum {journal} | cut -d ' ' -f1")
+            machine.succeed(
+                f"{shlex.quote(executable)} verify-deployment --input {bundle} "
+                f"--state-directory {state} --nix-store {shlex.quote(nix_store)}",
+                timeout=1200,
+            )
+            inspection = json.loads(machine.ssh(
+                f"{shlex.quote(self.package_outputs["out"]["store_path"] + "/bin/aos")} ability journal {journal} --format json"
+            ))
+            if (inspection.get("schema") != "aos.activation.inspection"
+                    or inspection.get("liveStateVerified") is not False
+                    or inspection.get("pending") is not None or inspection.get("completed") is None
+                    or inspection.get("incompleteTailBytes") != 0):
+                raise RuntimeError("native boot scope lacks a complete durable deployment")
+            after = machine.ssh(f"stat -c '%s' {journal}; sha256sum {journal} | cut -d ' ' -f1")
+            if before != after:
+                raise RuntimeError("read-only native handoff verification changed the journal")
         self.handoff_boot_ids.add(boot_id)
         self.handoff_assertions += 1
 
@@ -1534,21 +1269,15 @@ class Scenario:
             f"nix-store --verify-path {runtime_path}",
             timeout=1200,
         )
-        if machine.expected_image_role == "candidate":
-            self.verify_native_package_runtime_service(machine)
 
-    def verify_native_package_runtime_service(
-        self, machine: PublishedImageMachine
-    ) -> None:
-        """Confirms that system activation selected the candidate runtime."""
-
-        runtime_path = self.package_outputs["packageRuntime"]["store_path"]
+    def verify_native_package_runtime_service(self, machine: PublishedImageMachine) -> None:
+        """Requires the host controller's admitted native preparation executable."""
+        artifacts = machine.native_image_bundle["packages"]["artifacts"]
+        preparation = one([artifact for artifact in artifacts if artifact["name"] == "aos-boot-preparations"],
+                          "native host boot preparation package")
         machine.succeed(
-            "unit=$(systemctl show aos-activate.service -p ExecStart --value) && "
-            "script=$(printf '%s' \"$unit\" | sed -n "
-            "'s/.*path=\\([^ ;}}]*\\).*/\\1/p') && "
-            "test -n \"$script\" && "
-            f"grep -F {runtime_path} \"$script\"",
+            "systemctl show aos-ability-host-controller.service -p ExecStart --value | "
+            f"grep -F {shlex.quote(preparation['path'] + '/bin/aos-boot-preparations')}",
             timeout=1200,
         )
 
@@ -1656,10 +1385,6 @@ class Scenario:
                     f"guest store inspection failed with status {status}: {error}"
                 )
 
-        apr_path = self.package_outputs["apr"]["store_path"]
-        if apr_path not in self.guest_initially_absent:
-            raise RuntimeError("published apr was present before guest import")
-
         destination = "/var/lib/aos/qualification-candidate-tools.export"
         machine.succeed("install -d -m 0700 /var/lib/aos")
         machine.copy_to(self.candidate_export, destination)
@@ -1751,179 +1476,91 @@ class Scenario:
         self.assert_running_published_boot(machine)
 
     def import_fixture(
-        self, machine: PublishedImageMachine, setup_module: pathlib.Path = SETUP_MODULE
+        self, machine: PublishedImageMachine, cohort: dict[str, Any],
     ) -> None:
         destination = "/var/lib/aos/qualification-ability-fixture.export"
         machine.ssh("install -d -m 0700 /var/lib/aos")
         machine.copy_to(FIXTURE_ARCHIVE, destination)
         machine.succeed(f"nix-store --import < {destination}", timeout=3600)
-        companion_destination = "/var/lib/aos/qualification-candidate-companions.export"
-        machine.copy_to(self.candidate_companion_export, companion_destination)
-        machine.succeed(
-            f"nix-store --import < {companion_destination}", timeout=3600
-        )
-        machine.succeed(
-            f"{machine.guest_tool('apm')} switch "
-            f"--from {setup_module} "
-            f"--eval-root /run/qualification-ability-setup-{SCENARIO_ID}",
-            timeout=1800,
-        )
-        machine.succeed("systemd-tmpfiles --create", timeout=600)
-        self.verify_native_package_runtime_service(machine)
+        if cohort is not None:
+            selection = cohort["selectedEvaluation"]
+            locator = selection["locator"]
+            if locator not in self.candidate_native_bundles or self.fixture_inventory is None:
+                raise RuntimeError("fixture adoption lacks original executor custody and replay")
+            driver = os.environ["AOS_QUALIFICATION_FIXTURE_DRIVER"]
+            driver_root = NATIVE_IMAGE.store_root(driver)
+            NATIVE_CUSTODY.verify_realized_roots(
+                {driver_root}, self.fixture_inventory, IMAGE.NIX_STORE, NAR.canonical_sha256,
+            )
+            machine.succeed(f"test -x {shlex.quote(driver)} && nix-store --verify-path {shlex.quote(driver_root)}", timeout=1200)
+            admission_digest = "sha256:" + hashlib.sha256(
+                self.candidate_document_bytes[locator]["admission.json"]
+            ).hexdigest()
+            # The catalog bytes were authenticated before import against the
+            # original executor inventory. Its own digest cannot authorize it.
+            machine.succeed(
+                " ".join(shlex.quote(argument) for argument in (
+                    driver, "adopt-native-fixture", locator, admission_digest,
+                    IMAGE.NIX_STORE, "/var/lib/profiles/system",
+                )), timeout=1800,
+            )
+            machine.succeed("systemd-tmpfiles --create", timeout=600)
+            self.verify_native_package_runtime_service(machine)
+            return
+        raise RuntimeError("fixture adoption requires an exact authored native evaluation context")
 
     def execute_fixture(
-        self, machine: PublishedImageMachine, fixture_script: pathlib.Path = FIXTURE_SCRIPT
+        self, machine: PublishedImageMachine, fixture_script: pathlib.Path = FIXTURE_SCRIPT, execution_cells: list[str] | None = None
     ) -> dict[str, Any]:
         source = fixture_script.read_text(encoding="utf-8")
         namespace = {"__name__": "__main__", "runtime": machine}
+        if execution_cells is not None:
+            namespace["NATIVE_EXECUTION_CELLS"] = execution_cells
         exec(compile(source, str(fixture_script), "exec"), namespace)
         self.fixture_namespace = namespace
         return namespace
 
+    def _merge_cell_execution(self, cohort_id: str, cell_id: str, namespace: dict[str, Any], execution_id: str) -> None:
+        """Retains a disposable guest's exact cell within its authored cohort."""
+        retained = self.fixture_namespaces.setdefault(cohort_id, {})
+        for name in ("NATIVE_ADAPTER_MATRIX_PROBES", "NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS", "NATIVE_ADAPTER_MATRIX_COHORT_EVIDENCE"):
+            values = namespace.get(name)
+            if not isinstance(values, dict) or set(values) != {cell_id}:
+                raise RuntimeError("disposable native execution submitted another cell population")
+            destination = retained.setdefault(name, {})
+            if cell_id in destination:
+                raise RuntimeError("native cohort executes a cell more than once")
+            destination.update(values)
+        audits = namespace.get("NATIVE_RUNTIME_AUDITS")
+        MATRIX_COHORT.runtime_evidence.validate_framework_audits(audits)
+        retained.setdefault("NATIVE_RUNTIME_AUDITS_BY_EXECUTION", {})[execution_id] = audits
+
     def build_matrix_report(self, guest_kernel_release: str) -> bytes:
         """Builds partial matrix evidence from the executed cohort probes."""
 
-        if self.matrix_spec is None or MATRIX_COHORT is None:
+        if self.native_operation_spec is None or MATRIX_COHORT is None:
             raise RuntimeError("matrix report lacks its immutable specification")
-        submissions: dict[str, Any] = {}
-        cohort_subjects: dict[str, Any] = {}
-        cohort_evidence: dict[str, bytes] = {}
-        runtime_audit: dict[str, Any] | None = None
-        interruption_audit: dict[str, Any] | None = None
-        provider_negative_audit: dict[str, Any] | None = None
-        for cohort_id, namespace in self.fixture_namespaces.items():
-            cohort_input = one(
-                [entry for entry in QUALIFICATION_COHORTS if entry["id"] == cohort_id],
-                f"matrix cohort {cohort_id}",
-            )
-            cohort_probes = namespace.get("NATIVE_ADAPTER_MATRIX_PROBES")
-            subject_map = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS")
-            evidence_map = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_EVIDENCE")
-            cohort_runtime_audit = namespace.get(
-                "NATIVE_ADAPTER_MATRIX_RUNTIME_AUDIT"
-            )
-            cohort_interruption_audit = namespace.get(
-                "NATIVE_ADAPTER_MATRIX_INTERRUPTION_AUDIT"
-            )
-            cohort_provider_negative_audit = namespace.get(
-                "NATIVE_ADAPTER_MATRIX_PROVIDER_NEGATIVE_AUDIT"
-            )
-            runtime_cells: dict[str, Any] = {}
-            if cohort_runtime_audit is not None:
-                if not isinstance(cohort_runtime_audit, dict) or not isinstance(
-                    cohort_runtime_audit.get("cells"), dict
-                ):
-                    raise RuntimeError(
-                        "matrix cohort retained a malformed runtime audit"
-                    )
-                runtime_cells = cohort_runtime_audit["cells"]
-            interruption_cells: dict[str, Any] = {}
-            if cohort_interruption_audit is not None:
-                if not isinstance(cohort_interruption_audit, dict) or not isinstance(
-                    cohort_interruption_audit.get("cells"), dict
-                ):
-                    raise RuntimeError(
-                        "matrix cohort retained a malformed interruption audit"
-                    )
-                interruption_cells = cohort_interruption_audit["cells"]
-            provider_negative_cells: dict[str, Any] = {}
-            if cohort_provider_negative_audit is not None:
-                if not isinstance(
-                    cohort_provider_negative_audit, dict
-                ) or not isinstance(
-                    cohort_provider_negative_audit.get("cells"), dict
-                ):
-                    raise RuntimeError(
-                        "matrix cohort retained a malformed provider-negative audit"
-                    )
-                provider_negative_cells = cohort_provider_negative_audit["cells"]
-            if cohort_probes is None and (
-                runtime_cells or interruption_cells or provider_negative_cells
-            ):
-                cohort_probes = {}
-                subject_map = {}
-                evidence_map = {}
-            if (
-                not isinstance(cohort_probes, dict)
-                or not isinstance(subject_map, dict)
-                or not isinstance(evidence_map, dict)
-                or any(not isinstance(value, bytes) for value in evidence_map.values())
-                or set(cohort_probes)
-                & (
-                    set(runtime_cells)
-                    | set(interruption_cells)
-                    | set(provider_negative_cells)
-                )
-                or set(runtime_cells) & set(interruption_cells)
-                or set(runtime_cells) & set(provider_negative_cells)
-                or set(interruption_cells) & set(provider_negative_cells)
-            ):
-                raise RuntimeError(
-                    f"matrix cohort {cohort_id!r} did not retain exact production evidence"
-                )
-            if (
-                set(cohort_probes)
-                | set(runtime_cells)
-                | set(interruption_cells)
-                | set(provider_negative_cells)
-                != set(cohort_input["qualifiedCells"])
-            ):
-                raise RuntimeError(
-                    f"matrix cohort {cohort_id!r} differs from its declared cells"
-                )
-            if (
-                set(submissions) & set(cohort_probes)
-                or set(cohort_subjects) & set(subject_map)
-                or set(cohort_evidence) & set(evidence_map)
-            ):
-                raise RuntimeError("matrix production cohorts repeat a cell identity")
-            submissions.update(cohort_probes)
-            cohort_subjects.update(subject_map)
-            cohort_evidence.update(evidence_map)
-            if cohort_runtime_audit is not None:
-                if runtime_audit is not None or not isinstance(
-                    cohort_runtime_audit, dict
-                ):
-                    raise RuntimeError("matrix cohorts repeat or malformed runtime audit")
-                runtime_audit = cohort_runtime_audit
-            if cohort_interruption_audit is not None:
-                if interruption_audit is not None or not isinstance(
-                    cohort_interruption_audit, dict
-                ):
-                    raise RuntimeError(
-                        "matrix cohorts repeat or malformed interruption audit"
-                    )
-                interruption_audit = cohort_interruption_audit
-            if cohort_provider_negative_audit is not None:
-                if not isinstance(cohort_provider_negative_audit, dict):
-                    raise RuntimeError(
-                        "matrix cohort retained a malformed provider-negative audit"
-                    )
-                if provider_negative_audit is None:
-                    provider_negative_audit = {
-                        "schema": cohort_provider_negative_audit.get("schema"),
-                        "matrix_spec_digest": cohort_provider_negative_audit.get(
-                            "matrix_spec_digest"
-                        ),
-                        "cells": {},
-                    }
-                if (
-                    cohort_provider_negative_audit.get("schema")
-                    != provider_negative_audit["schema"]
-                    or cohort_provider_negative_audit.get("matrix_spec_digest")
-                    != provider_negative_audit["matrix_spec_digest"]
-                    or set(provider_negative_audit["cells"])
-                    & set(provider_negative_cells)
-                ):
-                    raise RuntimeError(
-                        "matrix provider-negative cohorts conflict or repeat a cell"
-                    )
-                provider_negative_audit["cells"].update(provider_negative_cells)
+        executions = {}
+        framework_audits = {}
+        package_subjects = {}
+        for cohort_input in QUALIFICATION_COHORTS:
+            cohort_id = cohort_input["id"]
+            namespace = self.fixture_namespaces[cohort_id]
+            maps = [namespace.get(name) for name in ("NATIVE_ADAPTER_MATRIX_PROBES", "NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS", "NATIVE_ADAPTER_MATRIX_COHORT_EVIDENCE")]
+            expected = set(cohort_input["qualifiedCells"])
+            if any(not isinstance(values, dict) or set(values) != expected for values in maps):
+                raise RuntimeError("native cohort lacks its exact complete retained flight population")
+            for execution_id, audit in namespace.get("NATIVE_RUNTIME_AUDITS_BY_EXECUTION", {}).items():
+                MATRIX_COHORT.runtime_evidence.validate_framework_audits(audit)
+                framework_audits[execution_id] = audit
+            subject = self.native_adapter_package_subject(cohort_input)
+            package_subjects[cohort_id] = subject
+            executions[cohort_id] = {
+                "submissions": maps[0], "subjects": maps[1], "evidence": maps[2],
+                "qualification_subject": subject,
+                "candidate_digest": self.candidate_evaluation_digests[cohort_input["selectedEvaluation"]["locator"]],
+            }
 
-        if runtime_audit is None:
-            raise RuntimeError("matrix cohort did not retain its runtime audit")
-        if interruption_audit is None:
-            raise RuntimeError("matrix cohort did not retain its interruption audit")
         if self._requires_predecessor_image() and (
             not self.rollout_boot_ids["candidate"]
             or not self.rollout_boot_ids["predecessor"]
@@ -1932,11 +1569,14 @@ class Scenario:
                 "matrix predecessor input did not boot both frozen published subjects"
             )
 
+        if not framework_audits:
+            raise RuntimeError("native matrix cohorts did not retain the framework audit pair")
+        framework_bytes = canonical(framework_audits)
+        (self.work / "native-runtime-audits.json").write_bytes(framework_bytes)
         qemu_output = IMAGE.run([IMAGE.QEMU, "--version"]).stdout.splitlines()[0]
         qemu_match = re.search(r"version ([0-9][A-Za-z0-9.+_-]*)", qemu_output)
         if qemu_match is None:
             raise RuntimeError("QEMU returned an unsupported version identity")
-        package_qualification_subject = self.native_adapter_package_subject()
         scenario_registry_digest = raw_digest(read_json(SCENARIO_REGISTRY))
         environment = {
             "schema_version": "aos.release.native-adapter-matrix-environment/v1",
@@ -1981,25 +1621,18 @@ class Scenario:
                 "digest": raw_digest(
                     {
                         "fixture": sha256_file(FIXTURE_ARCHIVE),
-                        "package-subject": package_qualification_subject,
+                        "package-subjects": package_subjects,
+                        "native-framework-audits": framework_audits,
                     }
                 ),
             },
         }
         environment_digest = raw_digest(environment)
-        cells, postcondition_count = MATRIX_COHORT.build_cells(
-            self.matrix_spec,
-            submissions,
-            MATRIX_QUALIFIED_CELLS,
-            cohort_subjects,
-            cohort_evidence,
-            self.case["subjects_digest"],
-            environment_digest,
-            runtime_audit,
-            interruption_audit,
-            provider_negative_audit,
-            package_qualification_subject,
+        observed_cohorts, postcondition_count = MATRIX_COHORT.build_cohorts(
+            self.native_operation_spec, executions,
+            self.case["subjects_digest"], environment_digest,
         )
+        cell_count = sum(len(cohort["cells"]) for cohort in observed_cohorts)
 
         finished = time.time()
         report = {
@@ -2020,14 +1653,15 @@ class Scenario:
                 if check != "native-adapter-matrix"
             },
             "operations": {
-                "matrix_cells_reported": len(cells),
+                "matrix_cells_reported": cell_count,
                 "matrix_postconditions_reported": postcondition_count,
+                "native_framework_checks": 6,
             },
             "environment": environment,
             "native_adapter_matrix": {
                 "schema_version": "aos.release.native-adapter-matrix-observation/v1",
                 "environment": environment,
-                "cells": cells,
+                "cohorts": observed_cohorts,
             },
         }
         return canonical(report)
@@ -2036,7 +1670,7 @@ class Scenario:
         if self.machine is None or self.candidate_closure is None:
             raise RuntimeError("ability scenario has no executed published guest")
         machine = self.machine
-        if self.matrix_spec is not None:
+        if self.native_operation_spec is not None:
             return self.build_matrix_report(guest_kernel_release)
 
         release_transition = self._is_release_transition()
@@ -2113,15 +1747,10 @@ class Scenario:
                 "guest_initially_absent": sorted(self.guest_initially_absent),
             },
             "fixture": {
-                "kind": "candidate-runtime-bound-reference-provider-closure",
+                "kind": "authenticated-native-evaluation-bundle",
                 "contract_digest": FIXTURE_CONTRACT,
                 "candidate_runtime": self.package_outputs["packageRuntime"]["store_path"],
-                "differs_from_executor": all(
-                    entry["originalRuntime"]
-                    != self.package_outputs["packageRuntime"]["store_path"]
-                    for entry in RUNTIME_COMPANIONS
-                ),
-                "companions": sorted(self.candidate_companions.values()),
+                "evaluation_roots": sorted(self.candidate_evaluations.values()),
             },
             "guest_kernel_release": guest_kernel_release,
             "host_kernel_release": os.uname().release,
@@ -2182,21 +1811,9 @@ class Scenario:
         try:
             self.validate_inputs()
             cohorts = QUALIFICATION_COHORTS
-            qualified_cells = [
-                cell_id
-                for cohort in cohorts
-                if isinstance(cohort, dict)
-                for cell_id in cohort.get("qualifiedCells", [])
-            ]
-            if (
-                qualified_cells != MATRIX_QUALIFIED_CELLS
-                or len(set(qualified_cells)) != len(qualified_cells)
-            ):
-                raise RuntimeError(
-                    "matrix cohort inputs differ from the exact qualification scope"
-                )
-
-            for index, cohort in enumerate(cohorts):
+            execution_units = [(cohort, cell_id) for cohort in cohorts
+                               for cell_id in (cohort["qualifiedCells"] if cohort["report"]["kind"] == "matrix" else [None])]
+            for index, (cohort, cell_id) in enumerate(execution_units):
                 execution = cohort["execution"]
                 uses_predecessor = execution["bootInput"] == "predecessor-image"
                 image_path = (
@@ -2221,11 +1838,14 @@ class Scenario:
                     self.enroll(machine)
                     self.import_candidate_tools(machine)
                     self.bind_native_guest_tools(machine)
-                    self.import_fixture(machine, pathlib.Path(cohort["setup"]))
+                    self.import_fixture(machine, cohort)
                     namespace = self.execute_fixture(
-                        machine, pathlib.Path(cohort["script"])
+                        machine, pathlib.Path(cohort["script"]), [cell_id] if cell_id is not None else None
                     )
-                    self.fixture_namespaces[cohort["id"]] = namespace
+                    if cell_id is None:
+                        self.fixture_namespaces[cohort["id"]] = namespace
+                    else:
+                        self._merge_cell_execution(cohort["id"], cell_id, namespace, f"{cohort['id']}/{index}")
                     self.assert_running_published_boot(machine)
                     observed_kernel = machine.ssh("uname -r").strip()
                     if execution["recordsGuestKernel"]:
@@ -2240,7 +1860,10 @@ class Scenario:
                     self.total_metadata_free_reboots += machine.metadata_free_reboots
                 finally:
                     machine.stop_processes()
-            if self.used_candidate_companions != set(self.candidate_companions):
+            if self.native_operation_spec is not None:
+                for cohort in cohorts:
+                    self.native_adapter_package_subject(cohort)
+            if self.used_candidate_evaluations != set(self.candidate_evaluations):
                 raise RuntimeError(
                     "production cohorts did not exercise every candidate runtime companion"
                 )
@@ -2265,9 +1888,9 @@ def check_detail(check):
 
 GENERATED_CHECK_DETAILS = {
     "native-adapter-matrix": (
-        "The package-derived native-adapter matrix bound every applicable "
-        "durability and authority cell plus every exact provider-contract "
-        "exclusion to the adapter interface name, ABI, and descriptor."
+        "The authenticated native operation surface bound each applicable "
+        "matrix cell to its exact handler artifact, effect identity, action, "
+        "checked durable journal, and independent substrate observations."
     ),
 }
 
@@ -2304,9 +1927,9 @@ CHECK_DETAILS = {
         "The published AOS activation engine admitted only authenticated "
         "reference packages and explicit operator authority."
     ),
-    "exact-interface-binding-effect-plan-and-artifact-identities": (
-        "Native plans retained exact interface, provider, handler, plan, and "
-        "artifact identities inside the published guest."
+    "exact-native-operation-effect-handler-and-artifact-identities": (
+        "The authenticated native deployment retained exact operation, effect, handler, "
+        "and artifact identities inside the published guest."
     ),
     "consumer-scoped-access-and-independent-service-observation": (
         "Independent HTTP observations proved each consumer-scoped service result."
@@ -2437,9 +2060,9 @@ CHECK_DETAILS = {
         "Teardown executed its exact six-operation, five-edge graph and retained "
         "the persistent PostgreSQL storage identity."
     ),
-    "exact-boot-initrd-artifact-and-static-stage-handoff-contract": (
+    "exact-published-boot-and-native-stage-journals": (
         "The exact published QCOW2 and slot-A UKI booted with its assembly-bound "
-        "initrd, static stage contracts, initrd selection, and durable host receipt."
+        "native deployment inputs, selected initrd, and verified initrd and host journals."
     ),
     "process-loss-after-external-effect-reconciles-before-retry": (
         "Process loss after an external effect reconciled the retained operation before any retry."

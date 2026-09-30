@@ -53,7 +53,7 @@ OPENSSL = os.environ["AOS_QUALIFICATION_OPENSSL"]
 OBJCOPY = os.environ["AOS_QUALIFICATION_OBJCOPY"]
 NIX_STORE = os.environ["AOS_QUALIFICATION_NIX_STORE"]
 BOUND_IMAGE_VARIANT = os.environ.get("AOS_QUALIFICATION_BOUND_IMAGE_VARIANT")
-PACKAGE_CHECKS = frozenset(json.loads(os.environ["AOS_QUALIFICATION_PACKAGE_CHECKS"]))
+PACKAGE_CHECKS = frozenset(json.loads(os.environ.get("AOS_QUALIFICATION_PACKAGE_CHECKS", "[]")))
 
 MAX_RECOVERY_INITRD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_RECOVERY_EXECUTABLE_BYTES = 128 * 1024 * 1024
@@ -621,12 +621,16 @@ class Scenario:
 
     @staticmethod
     def _host_config(public_key: str) -> str:
-        return f'''{{ pkgs, ... }}: {{
+        return f'''{{ config, ... }}: {{
   aos.roles.server.enable = true;
   aos.services.ssh.enable = true;
   aos.services.ssh.permitRootLogin = "prohibit-password";
   aos.networking.hostName = "qualification-initial";
-  environment.etc."ssh/authorized_keys/root".text = "{public_key}";
+  aos.abilities.configuration.operations.file.effects.qualification-root-key.input = {{
+    path = "/etc/ssh/authorized_keys/root";
+    content = "{public_key}\\n";
+    mode = "0600";
+  }};
 }}
 '''
 
@@ -1195,36 +1199,78 @@ http {
         host_one = self.work / "runtime-one.nix"
         host_two = self.work / "runtime-two.nix"
         base = self.host_config.read_text(encoding="utf-8").rsplit("}", 1)[0]
-        service = '''  aos.apm.desiredPackages = [
-    "cryptsetup"
-    "curl"
-    "iproute2"
-    "nginx"
-  ];
-  aos.users.groups.qualification = {
-    gid = 2000;
-    members = [ "qualification" ];
+        service = '''  aos.abilities.identity.operations.group.effects.qualification.input = {
+    name = "qualification";
+    requested_id = 2000;
   };
-  aos.users.users.qualification = {
-    uid = 2000;
-    group = "qualification";
-    home = "/var/lib/qualification-user";
-    shell = "${pkgs.bash}/bin/bash";
-    description = "Qualification operator";
-    extraGroups = [];
+  aos.abilities.identity.operations.principal.effects.qualification = {
+    after = [config.aos.abilities.identity.operations.group.effects.qualification.outputs.resource];
+    input = {
+      name = "qualification";
+      requested_id = 2000;
+      primary_group = config.aos.abilities.identity.operations.group.effects.qualification.outputs.name;
+      home_directory = "/var/lib/qualification-user";
+      login_access = "enabled";
+      description = "Qualification operator";
+    };
   };
-  environment.etc."ssh/authorized_keys/qualification" = {
-    text = "__PUBLIC_KEY__";
-    mode = "0600";
+  aos.abilities.configuration.operations.file.effects.qualification-user-key = {
+    after = [config.aos.abilities.identity.operations.principal.effects.qualification.outputs.resource];
+    input = {
+      path = "/etc/ssh/authorized_keys/qualification";
+      content = "__PUBLIC_KEY__\\n";
+      mode = "0600";
+      owner = config.aos.abilities.identity.operations.principal.effects.qualification.outputs.name;
+      group = config.aos.abilities.identity.operations.group.effects.qualification.outputs.name;
+    };
   };
-  systemd.services.qualification-nginx = {
-    wantedBy = [ "multi-user.target" ];
-    after = [ "network.target" ];
-    serviceConfig = {
-      Type = "simple";
-      ExecStart = "/bin/nginx -c /var/lib/qualification/nginx.conf -g 'daemon off;'";
-      ExecReload = "/bin/nginx -c /var/lib/qualification/nginx.conf -s reload";
-      Restart = "on-failure";
+  aos.abilities.filesystem.operations.directory.effects.qualification-home = {
+    lifetime = "persistent";
+    after = [config.aos.abilities.identity.operations.principal.effects.qualification.outputs.resource];
+    input = {
+      path = "/var/lib/qualification-user";
+      mode = "0700";
+      owner = config.aos.abilities.identity.operations.principal.effects.qualification.outputs.name;
+      group = config.aos.abilities.identity.operations.group.effects.qualification.outputs.name;
+    };
+  };
+  aos.services.qualification-nginx = {
+    enable = true;
+    lifecycle = {
+      description = "Qualification persistent nginx workload";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [{
+        executable.path = "/bin/nginx";
+        executable.arguments = ["-c" "/var/lib/qualification/nginx.conf" "-g" "daemon off;"];
+        ignore_failure = false;
+      }];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "on-failure";
+      restart_delay_millis = 1000;
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = ["network.target"];
+      before = [];
+      requires = [];
+      wants = [];
+      wanted_by = ["multi-user.target"];
+    };
+    reload = {
+      strategy = "command";
+      completion = "command-exit";
+      commands = [{
+        executable.path = "/bin/nginx";
+        executable.arguments = ["-c" "/var/lib/qualification/nginx.conf" "-s" "reload"];
+        ignore_failure = false;
+      }];
     };
   };
 '''.replace(
@@ -1251,25 +1297,24 @@ http {
             base
             + service
             + dhcp_policy
-            + '  environment.etc."qualification-generation".text = "one\\n";\n}\n'
+            + '  aos.abilities.configuration.operations.file.effects.qualification-generation.input = { path = "/etc/qualification-generation"; content = "one\\n"; };\n}\n'
         )
         host_two.write_text(
             base
             + service
             + static_policy
-            + '  environment.etc."qualification-generation".text = "two\\n";\n}\n'
+            + '  aos.abilities.configuration.operations.file.effects.qualification-generation.input = { path = "/etc/qualification-generation"; content = "two\\n"; };\n}\n'
         )
         machine.copy_to(host_one, "/run/runtime-one.nix")
         machine.copy_to(host_two, "/run/runtime-two.nix")
         machine.ssh(
-            "apm switch --from /run/runtime-one.nix "
+            "apm config add /run/runtime-one.nix --name 10-runtime.nix "
+            "--worktree /var/lib/aos/config/qualification-image; "
+            "apm switch --worktree /var/lib/aos/config/qualification-image "
             "--eval-root /run/qualification-switch-one",
             timeout=600,
         )
-        generation_one = read_remote_json(
-            machine,
-            "/var/lib/profiles/system/state.json",
-        )["current"]
+        generation_one = self._native_profile_generation(machine)
         if not isinstance(generation_one, int) or generation_one < 1:
             raise RuntimeError("first configuration activation lacks a valid generation")
         machine.ssh('test "$(cat /proc/sys/kernel/hostname)" = qualification-one')
@@ -1300,12 +1345,16 @@ http {
 
         machine.ssh(
             "set -eu; printf '{ invalid = ; }\\n' >/run/invalid.nix; "
-            "! apm switch --from /run/invalid.nix "
+            "apm config replace 10-runtime.nix /run/invalid.nix "
+            "--worktree /var/lib/aos/config/qualification-image; "
+            "! apm switch --worktree /var/lib/aos/config/qualification-image "
             "--eval-root /run/qualification-switch-invalid"
         )
         self._assert_persistent_workload(machine)
         machine.ssh(
-            "apm switch --from /run/runtime-two.nix "
+            "apm config replace 10-runtime.nix /run/runtime-two.nix "
+            "--worktree /var/lib/aos/config/qualification-image; "
+            "apm switch --worktree /var/lib/aos/config/qualification-image "
             "--eval-root /run/qualification-switch-two",
             timeout=600,
         )
@@ -1339,6 +1388,32 @@ http {
         )
         machine.ssh("systemctl restart qualification-nginx.service")
         self._assert_persistent_workload(machine)
+
+    @staticmethod
+    def _native_package_runtime(machine: VirtualMachine) -> str:
+        """Selects the exact private runtime output admitted by the native image."""
+        bundle = "/usr/lib/aos/host/deployment"
+        packages = read_remote_json(machine, bundle + "/packages.json")
+        admission = read_remote_json(machine, bundle + "/admission.json")
+        roots = {root["storePath"] for root in admission["roots"]}
+        runtime_roots = {
+            artifact["outputs"]["packageRuntime"] for artifact in packages["artifacts"]
+            if artifact["name"] == "aos" and "packageRuntime" in artifact["outputs"]
+        }
+        if len(runtime_roots) != 1 or not runtime_roots.issubset(roots):
+            raise RuntimeError("native image lacks one exact admitted package runtime output")
+        return next(iter(runtime_roots)) + "/bin/aos-package-runtime"
+
+    @staticmethod
+    def _native_profile_generation(machine: VirtualMachine) -> int:
+        """Reads the checked committed generation through its admitted private helper."""
+        executable = shlex.quote(Scenario._native_package_runtime(machine))
+        generation = json.loads(machine.ssh(
+            f"{executable} deployment-current --profile /var/lib/profiles/system --committed-during-recovery"
+        ))["generation"]
+        if type(generation) is not int or generation < 0:
+            raise RuntimeError("native image profile lacks a committed generation")
+        return generation
 
     def _assert_persistent_workload(self, machine: VirtualMachine) -> None:
         machine.ssh("systemctl is-active --quiet qualification-nginx.service")

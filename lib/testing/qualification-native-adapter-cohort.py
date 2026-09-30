@@ -1,52 +1,29 @@
-"""Builds exact matrix cells from independently retained production probes.
+"""Binds checked native flights to an exact operation matrix partition.
 
-This module owns one fail-closed aggregation transaction: it verifies the
-matrix partition, binds every normalized subject and probe to the same subject,
-policy, executor, and environment digests, rejects replay across cells, and
-returns the closed cell map. Keeping those generic scenario validators together
-lets one replay set and one partition check cover the whole result. Raw plan and
-live-resource formats remain in provider-owned modules behind a small normalized
-validation API.
+Only independently validated flights produce passing postconditions. This
+aggregator retains immutable cell, subject, environment, and observation
+bindings and rejects replay or unsupported evidence kinds.
 """
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
-import native_adapter_evidence as provider_evidence
 import native_adapter_runtime_evidence as runtime_evidence
-
 from native_adapter_evidence_common import (
-    DIGEST,
-    LOCAL_KEY,
-    MAX_PROBE_BYTES,
-    MAX_PROBE_FACTS,
-    PROBE_SCHEMA,
-    TOKEN,
-    _bound_cohort_subject,
-    _expected_disposition,
-    _matches,
-    _postcondition_kind,
-    canonical,
-    sha256,
+    DIGEST, PROBE_SCHEMA, _bound_cohort_subject, _expected_disposition,
+    _matches, _postcondition_kind, canonical, sha256, required_operations, selected_terminal_effects,
 )
 
-
-RELATIVE_PATH = re.compile(
-    r"(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*"
-).fullmatch
-QUALIFICATION_SUBJECT_SCHEMA = (
-    "aos.qualification.native-adapter-package-subject/v1"
-)
-MATRIX_APPLICABILITY_SCHEMA = (
-    "aos.qualification.native-adapter-matrix-applicability/v1"
-)
-
+QUALIFICATION_SUBJECT_SCHEMA = "aos.qualification.native-operation-package-subject"
+MATRIX_APPLICABILITY_SCHEMA = "aos.qualification.native-operation-matrix-applicability"
 
 def _applicable_specification_cells(spec: dict[str, Any]) -> list[dict[str, Any]]:
     """Returns the authoritative applicability partition after reference checks."""
 
+    if spec.get("schema") != "aos.qualification.native-operation-matrix-spec":
+        raise RuntimeError("native matrix specification has an unsupported schema")
+    required_operations(spec)
     cells = spec.get("cells")
     applicability = spec.get("applicability")
     if not isinstance(cells, list) or not isinstance(applicability, dict):
@@ -78,404 +55,173 @@ def _applicable_specification_cells(spec: dict[str, Any]) -> list[dict[str, Any]
             not in {
                 "required-resource-lifetime-unavailable",
                 "missing-authenticated-state-format",
+                "unsupported-scenario-action",
             }
             for entry in inapplicable
         )
     ):
         raise RuntimeError("matrix applicability is not an exact cell partition")
 
+    exclusions = {entry["cell_id"]: entry["reason"] for entry in inapplicable}
+    for cell_id, cell in cell_by_id.items():
+        predicate = cell.get("applicability")
+        if not isinstance(predicate, dict) or set(predicate) != {"required_actions", "required_resource_lifetimes", "requires_state_format"}:
+            raise RuntimeError("native scenario lacks its closed applicability predicate")
+        actions = predicate["required_actions"]
+        if (not isinstance(actions, list) or any(action not in {"apply", "remove"} for action in actions)
+                or actions != sorted(set(actions))):
+            raise RuntimeError("native scenario action applicability is malformed")
+        supported = not actions or cell["action"] in actions
+        if (not supported and exclusions.get(cell_id) != "unsupported-scenario-action") or (supported and exclusions.get(cell_id) == "unsupported-scenario-action"):
+            raise RuntimeError("native scenario action partition contradicts its authored predicate")
+
     return [cell_by_id[cell_id] for cell_id in applicable_ids]
 
 
-def _qualification_routes(
-    subject: Any, spec: dict[str, Any]
-) -> list[dict[str, Any]]:
-    """Validates package-derived executable routes for the matrix surface."""
 
-    if (
-        not isinstance(subject, dict)
-        or set(subject) != {"schema", "matrix-spec-digest", "routes"}
-        or subject.get("schema") != QUALIFICATION_SUBJECT_SCHEMA
-        or subject.get("matrix-spec-digest") != sha256(spec)
-        or not isinstance(subject.get("routes"), list)
-    ):
-        raise RuntimeError("native adapter package subject is malformed")
-
-    surface = spec.get("surface", {}).get("adapters")
-    if not isinstance(surface, list):
-        raise RuntimeError("native adapter package subject lacks a matrix surface")
-    adapters = {entry.get("adapter"): entry for entry in surface}
-    routes = subject["routes"]
-    identities = set()
-    coverage = set()
-    for route in routes:
-        if not isinstance(route, dict) or set(route) != {
-            "adapter",
-            "interface",
-            "methods",
-            "provenance",
-            "implementation",
-            "handler",
-            "artifact",
-            "entry-point",
-        }:
-            raise RuntimeError("native adapter package route is malformed")
-        adapter = adapters.get(route.get("adapter"))
-        methods = route.get("methods")
-        provenance = route.get("provenance")
-        identity = canonical(route)
-        if (
-            adapter is None
-            or route.get("interface")
-            != {
-                "name": adapter.get("interface_name"),
-                "abi": adapter.get("interface_abi"),
-                "descriptor": adapter.get("interface_descriptor"),
-            }
-            or not isinstance(methods, list)
-            or methods != sorted(set(methods))
-            or not methods
-            or any(not _matches(TOKEN, method) for method in methods)
-            or not isinstance(provenance, list)
-            or not provenance
-            or provenance
-            != sorted(
-                provenance,
-                key=lambda entry: (entry.get("package", ""), entry.get("ability-contract", "")),
-            )
-            or len({canonical(entry) for entry in provenance}) != len(provenance)
-            or any(
-                not isinstance(entry, dict)
-                or set(entry) != {"package", "ability-contract"}
-                or not _matches(TOKEN, entry.get("package"))
-                or not _matches(DIGEST, entry.get("ability-contract"))
-                for entry in provenance
-            )
-            or not _matches(DIGEST, route.get("implementation"))
-            or not _matches(LOCAL_KEY, route.get("handler"))
-            or not _matches(DIGEST, route.get("artifact"))
-            or not _matches(RELATIVE_PATH, route.get("entry-point"))
-            or identity in identities
-        ):
-            raise RuntimeError("native adapter package route differs from its matrix")
-        identities.add(identity)
-        coverage.update((route["adapter"], method) for method in methods)
-
-    expected = {
-        (adapter["adapter"], method["method"])
-        for adapter in surface
-        for method in adapter["methods"]
-    }
-    if coverage != expected:
-        raise RuntimeError("package projections do not cover the native adapter surface")
-    return routes
-
-
-def _adapter_for_interface(
-    spec: dict[str, Any], interface: Any
-) -> str | None:
-    """Finds the one matrix adapter owning an exact interface identity."""
-
-    matches = [
-        adapter["adapter"]
-        for adapter in spec["surface"]["adapters"]
-        if interface
-        == {
-            "name": adapter["interface_name"],
-            "abi": adapter["interface_abi"],
-            "descriptor": adapter["interface_descriptor"],
-        }
-    ]
-    return matches[0] if len(matches) == 1 else None
-
-
-def _matching_package_routes(
-    routes: list[dict[str, Any]],
-    cell: dict[str, Any],
-    *,
-    implementation: Any = None,
-    handler: Any = None,
-    artifact: Any = None,
-    entry_point: Any = None,
-) -> list[dict[str, Any]]:
-    """Selects exact package routes matching one realized matrix operation."""
-
-    return [
-        route
-        for route in routes
-        if route["adapter"] == cell["adapter"]
-        and route["interface"] == cell["interface"]
-        and cell["method"] in route["methods"]
-        and (implementation is None or route["implementation"] == implementation)
-        and (handler is None or route["handler"] == handler)
-        and (artifact is None or route["artifact"] == artifact)
-        and (entry_point is None or route["entry-point"] == entry_point)
-    ]
+def _qualification_routes(subject: Any, spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Requires the independently evaluated candidate operation surface."""
+    if (not isinstance(subject, dict)
+            or set(subject) != {"schema", "matrixSpecDigest", "operations"}
+            or subject.get("schema") != QUALIFICATION_SUBJECT_SCHEMA
+            or subject.get("matrixSpecDigest") != sha256(spec)
+            or subject.get("operations") != spec.get("surface", {}).get("adapters")):
+        raise RuntimeError("candidate native operation surface differs from its matrix")
+    return subject["operations"]
 
 
 def build_cells(
-    spec: dict[str, Any],
-    submissions: dict[str, Any],
-    expected_qualified_cells: list[str],
-    cohort_subjects: dict[str, dict[str, Any]],
-    cohort_evidence: dict[str, bytes],
-    subject_digest: str,
-    environment_digest: str,
-    runtime_audit: dict[str, Any] | None = None,
-    interruption_audit: dict[str, Any] | None = None,
-    provider_negative_audit: dict[str, Any] | None = None,
+    spec: dict[str, Any], submissions: dict[str, Any],
+    expected_qualified_cells: list[str], cohort_subjects: dict[str, dict[str, Any]],
+    cohort_evidence: dict[str, bytes], subject_digest: str, environment_digest: str,
     qualification_subject: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Builds all cell observations and proves every positive claim is expected."""
+    """Validates retained flights before emitting any positive matrix claims."""
+    if not _matches(DIGEST, subject_digest) or not _matches(DIGEST, environment_digest):
+        raise RuntimeError("native qualification subject or environment digest is malformed")
+    operations = _qualification_routes(qualification_subject, spec)
+    cells = _applicable_specification_cells(spec)
+    expected = {cell["id"] for cell in cells}
+    if (len(expected_qualified_cells) != len(set(expected_qualified_cells))
+            or set(expected_qualified_cells) != expected
+            or any(set(values) != expected for values in (submissions, cohort_subjects, cohort_evidence))):
+        raise RuntimeError("native flights differ from the exact applicable matrix partition")
 
-    has_runtime_audit = runtime_audit is not None
-    runtime_audit = runtime_audit or {
-        "schema": runtime_evidence.RUNTIME_AUDIT_SCHEMA,
-        "matrix_spec_digest": "sha256:" + "0" * 64,
-        "cells": {},
-    }
-    runtime_cells = runtime_audit.get("cells")
-    if not isinstance(runtime_cells, dict):
-        raise RuntimeError("runtime audit cells are malformed")
-    has_interruption_audit = interruption_audit is not None
-    interruption_audit = interruption_audit or {
-        "schema": runtime_evidence.INTERRUPTION_AUDIT_SCHEMA,
-        "matrix_spec_digest": "sha256:" + "0" * 64,
-        "cells": {},
-    }
-    interruption_cells = interruption_audit.get("cells")
-    if not isinstance(interruption_cells, dict):
-        raise RuntimeError("interruption audit cells are malformed")
-    provider_negative_audit = provider_negative_audit or {
-        "schema": runtime_evidence.PROVIDER_NEGATIVE_AUDIT_SCHEMA,
-        "matrix_spec_digest": "sha256:" + "0" * 64,
-        "cells": {},
-    }
-    provider_negative_cells = provider_negative_audit.get("cells")
-    if not isinstance(provider_negative_cells, dict):
-        raise RuntimeError("provider-negative audit cells are malformed")
-    routes = _qualification_routes(qualification_subject, spec)
-    submitted_cells = (
-        set(submissions)
-        | set(runtime_cells)
-        | set(interruption_cells)
-        | set(provider_negative_cells)
-    )
-    if submitted_cells != set(expected_qualified_cells):
-        raise RuntimeError("cohort probe cells differ from its explicit qualification scope")
-    if len(set(expected_qualified_cells)) != len(expected_qualified_cells):
-        raise RuntimeError("cohort qualification scope repeats a matrix cell")
-
-    applicable_specification_cells = _applicable_specification_cells(spec)
-    specification_cells = {cell["id"]: cell for cell in spec["cells"]}
-    if len(specification_cells) != len(spec["cells"]):
-        raise RuntimeError("matrix specification repeats a cell identity")
-    if any(cell_id not in specification_cells for cell_id in submitted_cells):
-        raise RuntimeError("cohort submitted a probe outside the exact matrix surface")
-    if "schema" in spec and set(expected_qualified_cells) != {
-        cell["id"] for cell in applicable_specification_cells
-    }:
-        raise RuntimeError(
-            "cohort qualification scope differs from the applicable matrix partition"
-        )
-    if set(cohort_subjects) != set(submissions):
-        raise RuntimeError("cohort subjects differ from its explicit qualification scope")
-    if set(cohort_evidence) != set(submissions):
-        raise RuntimeError("cohort evidence differs from its explicit qualification scope")
-    for cell_id in submissions:
-        _validate_cohort_subject(
-            specification_cells[cell_id],
-            cohort_subjects[cell_id],
-            cohort_evidence[cell_id],
-            spec,
-            routes,
-        )
-    if has_runtime_audit:
-        runtime_evidence.validate_runtime_audit(runtime_audit, spec, specification_cells)
-    if has_interruption_audit:
-        runtime_evidence.validate_interruption_audit(interruption_audit, spec, specification_cells)
-    if provider_negative_cells:
-        runtime_evidence.validate_provider_negative_audit(
-            provider_negative_audit, spec, specification_cells, set(submissions)
-        )
-
-    observed_cells = []
-    postcondition_count = 0
-    probe_digests = set()
-    for cell in applicable_specification_cells:
-        submitted = submissions.get(cell["id"])
-        runtime_record = runtime_cells.get(cell["id"])
-        interruption_record = interruption_cells.get(cell["id"])
-        provider_negative_record = provider_negative_cells.get(cell["id"])
-        names = cell["postconditions"]
-        postcondition_count += len(names)
-        if runtime_record is not None:
-            scenario = cell["id"].rsplit("/", 1)[-1]
-            if scenario in runtime_evidence.ROLE_SCENARIOS:
-                bound_subject, postconditions, probes = runtime_evidence.validate_authority_cell(
-                    cell, runtime_record, subject_digest, probe_digests
-                )
-            elif scenario in runtime_evidence.REPLACEMENT_SCENARIOS:
-                bound_subject, postconditions, probes = runtime_evidence.validate_replacement_cell(
-                    cell, runtime_record, subject_digest, probe_digests
-                )
-            else:
-                bound_subject, postconditions, probes = (
-                    runtime_evidence.validate_failure_control_cell(
-                        cell, runtime_record, subject_digest, probe_digests
-                    )
-                )
-        elif interruption_record is not None:
-            bound_subject, postconditions, probes = runtime_evidence.validate_interruption_cell(
-                cell,
-                interruption_record,
-                subject_digest,
-                probe_digests,
-            )
-        elif provider_negative_record is not None:
-            bound_subject, postconditions, probes = (
-                runtime_evidence.validate_provider_negative_cell(
-                    cell,
-                    provider_negative_record,
-                    subject_digest,
-                    probe_digests,
-                    spec,
-                )
-            )
-        elif submitted is None:
-            postconditions = {
-                name: {
-                    "passed": False,
-                    "detail": "not exercised by this production cohort",
-                }
-                for name in names
+    observations = []
+    seen_flights = set()
+    seen_probes = set()
+    count = 0
+    for cell in cells:
+        subject = cohort_subjects[cell["id"]]
+        evidence = cohort_evidence[cell["id"]]
+        flight = runtime_evidence.validate_flight(cell, subject, evidence, spec, operations)
+        evidence_digest = sha256(flight)
+        if evidence_digest in seen_flights:
+            raise RuntimeError("native matrix cells replay a retained flight")
+        seen_flights.add(evidence_digest)
+        submitted = submissions[cell["id"]]
+        if submitted != {"disposition": "checked", "evidenceDigest": evidence_digest}:
+            raise RuntimeError("native flight submission differs from its exact evidence")
+        bound_subject = _bound_cohort_subject(cell, subject)
+        postconditions = {}
+        probes = {}
+        for name in cell["postconditions"]:
+            facts = runtime_evidence.probe_facts(name, flight)
+            if len(canonical(facts)) > 64 * 1024:
+                raise RuntimeError("native semantic probe exceeds the retained evidence limit")
+            observation_digest = sha256(facts)
+            if observation_digest in seen_probes:
+                raise RuntimeError("native postconditions replay an observation")
+            seen_probes.add(observation_digest)
+            postconditions[name] = {"passed": True, "detail": "Checked native journal and independent substrate facts"}
+            probes[name] = {
+                "schema_version": PROBE_SCHEMA, "kind": _postcondition_kind(cell, name),
+                "cell_id": cell["id"], "cell_digest": sha256(cell),
+                "disposition": _expected_disposition(cell, subject),
+                "subject_digest": subject_digest, "cohort_subject_digest": sha256(bound_subject),
+                "observation_digest": observation_digest, "observations": facts,
             }
-            probes = {}
-        else:
-            cohort_subject = cohort_subjects[cell["id"]]
-            bound_subject = _bound_cohort_subject(cell, cohort_subject)
-            postconditions, probes = _validated_probes(
-                cell,
-                submitted,
-                cohort_subject,
-                bound_subject,
-                subject_digest,
-                probe_digests,
-                spec,
-            )
-
-        observation = {
-            "id": cell["id"],
-            "cell_digest": sha256(cell),
-            "environment_digest": environment_digest,
-            "postconditions": postconditions,
-        }
-        if probes:
-            observation["probes"] = probes
-            observation["cohort_subject"] = bound_subject
-        observed_cells.append(observation)
-
-    return observed_cells, postcondition_count
+            count += 1
+        observations.append({
+            "id": cell["id"], "cell_digest": sha256(cell),
+            "environment_digest": environment_digest, "cohort_subject": bound_subject,
+            "postconditions": postconditions, "probes": probes,
+        })
+    return observations, count
 
 
-def _validated_probes(
-    cell: dict[str, Any],
-    submitted: dict[str, Any],
-    cohort_subject: dict[str, Any],
-    bound_subject: dict[str, Any],
-    subject_digest: str,
-    cohort_probe_digests: set[str],
-    matrix_spec: dict[str, Any] | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    postcondition_names = cell["postconditions"]
-    if set(submitted) != set(postcondition_names):
-        raise RuntimeError("qualified cell lacks an exact postcondition probe set")
-    if bound_subject != _bound_cohort_subject(cell, cohort_subject):
-        raise RuntimeError("cohort subject is bound to another matrix cell")
-
-    cell_digest = sha256(cell)
-    cohort_subject_digest = sha256(bound_subject)
-    expected_disposition = _expected_disposition(cell, cohort_subject)
-    postconditions = {}
-    probes = {}
-    for name in postcondition_names:
-        record = submitted[name]
-        if set(record) != {"kind", "detail", "disposition", "observations"}:
-            raise RuntimeError("postcondition probe has unknown or missing fields")
-        expected_kind = _postcondition_kind(cell, name)
-        observations = record["observations"]
-        if (
-            record["kind"] != expected_kind
-            or not isinstance(record["detail"], str)
-            or not record["detail"].strip()
-            or record["disposition"] != expected_disposition
-            or not isinstance(observations, dict)
-            or not 1 <= len(observations) <= MAX_PROBE_FACTS
-            or any(
-                not isinstance(key, str) or TOKEN(key) is None or value is None
-                for key, value in observations.items()
-            )
-            or len(canonical(observations)) > MAX_PROBE_BYTES
-        ):
-            raise RuntimeError("postcondition probe is malformed")
-        _validate_probe_facts(name, observations, cohort_subject, cell, matrix_spec)
-        observation_digest = sha256(observations)
-        if observation_digest in cohort_probe_digests:
-            raise RuntimeError("passing matrix postconditions replay a production probe")
-        cohort_probe_digests.add(observation_digest)
-
-        postconditions[name] = {"passed": True, "detail": record["detail"]}
-        probes[name] = {
-            "schema_version": PROBE_SCHEMA,
-            "kind": record["kind"],
-            "cell_id": cell["id"],
-            "cell_digest": cell_digest,
-            "disposition": record["disposition"],
-            "subject_digest": subject_digest,
-            "cohort_subject_digest": cohort_subject_digest,
-            "observation_digest": observation_digest,
-            "observations": observations,
-        }
-
-    return postconditions, probes
+def validate_qualification_spec(spec: Any) -> list[dict[str, Any]]:
+    """Checks authored cohort custody and semantic coverage without a graph union."""
+    if (not isinstance(spec, dict) or set(spec) != {"schema", "required_operations", "cohorts"}
+            or spec.get("schema") != "aos.qualification.native-operation-spec"):
+        raise RuntimeError("unsupported native operation qualification specification")
+    required = required_operations(spec)
+    cohorts = spec["cohorts"]
+    if not isinstance(cohorts, list) or not 1 <= len(cohorts) <= 4096:
+        raise RuntimeError("native operation specification lacks bounded closed cohorts")
+    selected = set()
+    ids = []
+    for cohort in cohorts:
+        if (not isinstance(cohort, dict) or set(cohort) != {"id", "matrix_spec", "selected_evaluation"}
+                or not isinstance(cohort["id"], str) or not cohort["id"]):
+            raise RuntimeError("native cohort declaration is malformed")
+        ids.append(cohort["id"])
+        matrix = cohort["matrix_spec"]
+        selected.update((operation["ability"], operation["name"]) for operation in required_operations(matrix))
+        _applicable_specification_cells(matrix)
+        evaluation = cohort["selected_evaluation"]
+        if (not isinstance(evaluation, dict) or set(evaluation) != {"role", "locator", "scenario_sources"}
+                or evaluation["role"] not in {"candidate-baseline", "scenario"}
+                or not _immutable_locator(evaluation["locator"])
+                or not isinstance(evaluation["scenario_sources"], list)
+                or len(evaluation["scenario_sources"]) > 4096
+                or not all(_immutable_locator(source) for source in evaluation["scenario_sources"])
+                or len(evaluation["scenario_sources"]) != len(set(evaluation["scenario_sources"]))
+                or (evaluation["role"] == "candidate-baseline" and evaluation["scenario_sources"])
+                or (evaluation["role"] == "scenario" and not evaluation["scenario_sources"])):
+            raise RuntimeError("native cohort evaluation custody is malformed")
+    if ids != sorted(set(ids)):
+        raise RuntimeError("native operation cohorts are duplicated or unordered")
+    if any((operation["ability"], operation["name"]) not in selected for operation in required):
+        raise RuntimeError("required semantic operation lacks an independently selected cohort")
+    return cohorts
 
 
-def _validate_probe_facts(
-    postcondition: str,
-    observations: dict[str, Any],
-    cohort_subject: dict[str, Any],
-    cell: dict[str, Any],
-    matrix_spec: dict[str, Any] | None = None,
-) -> None:
-    """Checks semantic facts for one exact matrix postcondition."""
-
-    result = provider_evidence.validate_probe(
-        postcondition, observations, cohort_subject, cell, matrix_spec
-    )
-    if result != {
-        "schema": "aos.qualification.provider-evidence-validation/v1",
-        "cell-id": cell["id"],
-        "kind": "postcondition",
-        "postcondition": postcondition,
-    }:
-        raise RuntimeError("provider evidence returned a malformed validation result")
+def _immutable_locator(value: Any) -> bool:
+    return (isinstance(value, str) and len(value) <= 4096 and value.startswith("/nix/store/")
+            and len(value) > len("/nix/store/") and "\0" not in value
+            and not any(component in {".", ".."} for component in value.split("/")))
 
 
-def _validate_cohort_subject(
-    cell: dict[str, Any],
-    subject: Any,
-    evidence_bytes: Any,
-    matrix_spec: dict[str, Any] | None = None,
-    routes: list[dict[str, Any]] | None = None,
-) -> None:
-    """Validates a retained subject through its unique declared validator."""
+def build_cohorts(spec: dict[str, Any], executions: dict[str, dict[str, Any]],
+                  subject_digest: str, environment_digest: str) -> tuple[list[dict[str, Any]], int]:
+    """Validates full per-cohort evidence with separately authenticated candidate custody.
 
-    result = provider_evidence.validate_subject(
-        cell, subject, evidence_bytes, matrix_spec, routes or []
-    )
-    if result != {
-        "schema": "aos.qualification.provider-evidence-validation/v1",
-        "cell-id": cell["id"],
-        "kind": "subject",
-    }:
-        raise RuntimeError("provider evidence returned a malformed validation result")
+    The caller authenticates each candidate against the case-selected source
+    artifacts before supplying its exact digest and reconstructed subject.
+    A digest received from a flight is never substituted for that admission.
+    """
+    cohorts = validate_qualification_spec(spec)
+    if set(executions) != {cohort["id"] for cohort in cohorts}:
+        raise RuntimeError("native executions differ from the complete authored cohort population")
+    observations = []
+    count = 0
+    for cohort in cohorts:
+        execution = executions[cohort["id"]]
+        if (set(execution) != {"submissions", "subjects", "evidence", "qualification_subject", "candidate_digest"}
+                or not _matches(DIGEST, execution["candidate_digest"])):
+            raise RuntimeError("native cohort lacks its authenticated candidate commitment")
+        matrix = cohort["matrix_spec"]
+        cells, checked_count = build_cells(
+            matrix, execution["submissions"], matrix["applicability"]["applicable_cell_ids"],
+            execution["subjects"], execution["evidence"], subject_digest, environment_digest,
+            qualification_subject=execution["qualification_subject"],
+        )
+        observations.append({
+            "id": cohort["id"], "matrix_spec": matrix,
+            "selected_evaluation": cohort["selected_evaluation"],
+            "spec_digest": sha256(matrix), "candidate_digest": execution["candidate_digest"],
+            "cells": cells,
+        })
+        count += checked_count
+    return observations, count

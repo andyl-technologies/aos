@@ -11,6 +11,7 @@
   setupBody ? "",
   extraClosures ? [],
   candidateRuntimeCompanions ? [],
+  selectedEvaluation ? null,
   stagingHubUrl ? null,
   nativeOperationSpec ? null,
   nativeOperationCohorts ? [],
@@ -93,18 +94,22 @@
   allCandidateRuntimeCompanions =
     candidateRuntimeCompanions
     ++ lib.concatMap (cohort: cohort.candidateRuntimeCompanions) additionalCohorts;
-  cohortInput = cohort: script: setup: qualifiedCells: {
-    inherit (cohort) id requiredInputs execution report;
-    inherit script setup qualifiedCells;
-  } // lib.optionalAttrs (cohort.report.kind == "matrix") {
-    matrixSpec = cohort.matrixSpec;
-    selectedEvaluation = cohort.selectedEvaluation;
-  };
+  cohortInput = cohort: script: setup: qualifiedCells:
+    {
+      inherit (cohort) id requiredInputs execution report;
+      inherit script setup qualifiedCells;
+    }
+    // lib.optionalAttrs (cohort.report.kind == "matrix") {
+      matrixSpec = cohort.matrixSpec;
+    }
+    // lib.optionalAttrs (cohort ? selectedEvaluation) {
+      inherit (cohort) selectedEvaluation;
+    };
   matrixCohortInputs = map (cohort:
     cohortInput cohort cohort.script cohort.setup cohort.qualifiedCells)
-    additionalCohorts;
+  additionalCohorts;
   scenarioCohortInputs = map (cohort:
-    cohortInput cohort fixtureScript setupModule [])
+    cohortInput (cohort // lib.optionalAttrs (selectedEvaluation != null) {inherit selectedEvaluation;}) fixtureScript setupModule [])
   cohorts;
   qualificationCohorts =
     if nativeOperationSpec == null
@@ -115,6 +120,7 @@
       cohort: builtins.elem "predecessor-image" cohort.requiredInputs
     )
     qualificationCohorts;
+  selectedEvaluationCohorts = builtins.filter (cohort: cohort ? selectedEvaluation) qualificationCohorts;
   selectedEvaluationRoots = lib.concatMap (cohort: let
     selection = cohort.selectedEvaluation;
     sourceRoot = locator: let
@@ -127,18 +133,19 @@
       else builtins.appendContext (builtins.head match) (builtins.getContext locator);
   in
     [selection.locator] ++ map sourceRoot selection.scenario_sources)
-  additionalCohorts;
+  selectedEvaluationCohorts;
   fixtureEvaluations = pkgs.writeTextFile {
     name = "${name}-fixture-evaluations";
     destination = "/evaluations.json";
     text = builtins.toJSON (builtins.listToAttrs (map (cohort: {
-      name = cohort.id;
-      value = cohort.selectedEvaluation;
-    }) additionalCohorts));
+        name = cohort.id;
+        value = cohort.selectedEvaluation;
+      })
+      selectedEvaluationCohorts));
   };
   fixtureRoots = lib.unique (
     map builtins.toString (
-      [fixtureScriptRoot setupModuleRoot fixtureEvaluations]
+      [fixtureScriptRoot setupModuleRoot fixtureEvaluations pkgs.aos.testSupport]
       ++ selectedEvaluationRoots
       ++ lib.concatMap (cohort: [cohort.scriptRoot cohort.setupRoot]) additionalCohorts
       ++ lib.optional (nativeOperationSpecRoot != null) nativeOperationSpecRoot
@@ -361,6 +368,7 @@
     export AOS_QUALIFICATION_SCENARIO_ID=${lib.escapeShellArg scenarioId}
     export AOS_QUALIFICATION_CHECKS=${lib.escapeShellArg (builtins.toJSON checks)}
     export AOS_QUALIFICATION_FIXTURE_CONTRACT=${lib.escapeShellArg fixtureContractDigest}
+    export AOS_QUALIFICATION_FIXTURE_DRIVER=${lib.escapeShellArg "${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture"}
     export AOS_QUALIFICATION_FIXTURE_ARCHIVE=${lib.escapeShellArg fixtureArchive}
     export AOS_QUALIFICATION_FIXTURE_INVENTORY=${lib.escapeShellArg fixtureInventoryPath}
     export AOS_QUALIFICATION_FIXTURE_EVALUATIONS=${lib.escapeShellArg fixtureEvaluationsPath}
@@ -376,6 +384,7 @@
     export AOS_QUALIFICATION_NATIVE_ADAPTER_COHORT_SUPPORT=${lib.escapeShellArg matrixCohortSupportPath}
     export AOS_QUALIFICATION_SETUP_MODULE=${lib.escapeShellArg setupModule}
     export AOS_QUALIFICATION_IMAGE_SUPPORT=${lib.escapeShellArg "${support}/share/aos-release/qualification-image.py"}
+    export AOS_QUALIFICATION_EVALUATOR=${lib.escapeShellArg "${pkgs.aos}/bin/aos"}
     export AOS_QUALIFICATION_NATIVE_CUSTODY_SUPPORT=${lib.escapeShellArg "${nativeCustodySupport}/share/aos-release/qualification-native-custody.py"}
     export AOS_QUALIFICATION_NATIVE_IMAGE_SUPPORT=${lib.escapeShellArg "${nativeImageSupport}/share/aos-release/qualification-native-image.py"}
     export AOS_QUALIFICATION_NAR_SUPPORT=${lib.escapeShellArg "${narSupport}/share/aos-release/qualification-nar.py"}
@@ -445,7 +454,11 @@ in
   assert nativeOperationSpec != null || testScript != "";
   assert builtins.all (cohort:
     builtins.sort builtins.lessThan (builtins.attrNames cohort)
-    == (if cohort.report.kind == "matrix" then ["execution" "id" "matrixSpec" "qualifiedCells" "report" "requiredInputs" "script" "selectedEvaluation" "setup"] else ["execution" "id" "qualifiedCells" "report" "requiredInputs" "script" "setup"])
+    == (
+      if cohort.report.kind == "matrix"
+      then ["execution" "id" "matrixSpec" "qualifiedCells" "report" "requiredInputs" "script" "selectedEvaluation" "setup"]
+      else ["execution" "id" "qualifiedCells" "report" "requiredInputs" "script" "selectedEvaluation" "setup"]
+    )
     && cohort.id != ""
     && builtins.all (input: builtins.elem input ["predecessor-image"]) cohort.requiredInputs
     && builtins.length cohort.requiredInputs == builtins.length (lib.unique cohort.requiredInputs)
@@ -477,14 +490,20 @@ in
   assert !(builtins.any (cohort: cohort.report.kind == "release-transition") qualificationCohorts)
   || builtins.all (cohort: cohort.report.kind == "release-transition") qualificationCohorts;
   assert (nativeOperationCohorts != []) == (nativeOperationSpec != null);
-  assert nativeOperationSpec == null || map (cohort: {
+  assert nativeOperationSpec
+  == null
+  || map (cohort: {
     inherit (cohort) id;
     matrix_spec = cohort.matrixSpec;
     selected_evaluation = cohort.selectedEvaluation;
-  }) matrixCohortInputs == nativeOperationSpec.cohorts;
+  })
+  matrixCohortInputs
+  == nativeOperationSpec.cohorts;
   assert builtins.all (cohort:
-    cohort.qualifiedCells == cohort.matrixSpec.applicability.applicable_cell_ids
-    && cohort.qualifiedCells != []) matrixCohortInputs;
+    cohort.qualifiedCells
+    == cohort.matrixSpec.applicability.applicable_cell_ids
+    && cohort.qualifiedCells != [])
+  matrixCohortInputs;
   assert builtins.length matrixCohortInputs == builtins.length (lib.unique (map (cohort: cohort.id) matrixCohortInputs));
   assert builtins.all (cohort:
     (cohort.id
