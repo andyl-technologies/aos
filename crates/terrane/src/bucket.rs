@@ -280,6 +280,15 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(())
     }
 
+    /// Borrows the actual configured filesystem binding for internal authority checks.
+    #[allow(
+        dead_code,
+        reason = "The D74 domain signing adapter is integrated separately."
+    )]
+    pub(crate) fn fs(&self) -> &F {
+        &self.inner.fs
+    }
+
     fn path(&self, key: &BucketKey) -> PathBuf {
         self.inner.config.root.join(key.as_str())
     }
