@@ -20,6 +20,7 @@ pub use client::{
     FailedUnit, FailedUnitsReport, JobOutcome, JobResult, RestartPolicy,
     ServiceControlGroupObservation, SettleOutcome, SystemdClient,
 };
+pub use client::GitSourceSocketObservationV1;
 pub use error::{Error, Result};
 pub use manager_proxy::ListUnitsEntry;
 pub use sandbox::{

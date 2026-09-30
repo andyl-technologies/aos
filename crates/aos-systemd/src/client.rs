@@ -22,6 +22,8 @@ use crate::error::{Error, Result, is_no_such_unit};
 use crate::manager_proxy::{ListUnitsEntry, ManagerProxy, ServiceProxy, UnitProxy};
 
 mod service_properties;
+mod git_source_socket;
+pub use git_source_socket::GitSourceSocketObservationV1;
 
 /// Classification of a systemd job's terminal `result`, per the `job_result`
 /// table in systemd's `src/core/job.h`. We name only the four cases
@@ -554,6 +556,24 @@ impl SystemdClient {
         )
         .await?;
         Ok(values)
+    }
+
+    /// Observes only the fixed Controller Git Source socket at unique PID 1.
+    ///
+    /// The uncached fixed properties and active/listening invocation must be
+    /// unchanged across readback. The result is data; the original listener,
+    /// configured Controller identity and immutable fragment need separate pins.
+    ///
+    /// # Errors
+    /// Rejects a missing, substituted, changed, transient or overridden socket,
+    /// wrong fixed profile, non-PID-1 manager, timeout or D-Bus failure.
+    ///
+    /// # Panics
+    /// Panics if polled without a Tokio runtime with its time driver enabled.
+    pub async fn observe_fixed_controller_git_source_socket_v1(
+        &self,
+    ) -> Result<GitSourceSocketObservationV1> {
+        git_source_socket::observe(self).await
     }
 
     /// Reads PID 1's exact starting or running service and unit properties.
