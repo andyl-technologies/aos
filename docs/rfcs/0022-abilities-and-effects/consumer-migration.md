@@ -21,9 +21,11 @@ provider-plan projections have been removed; standalone realized artifact-use
 evidence remains a separate feature.
 
 Focused Nix, Rust, and handler tests cover these paths. Remaining integration
-work includes authenticated image candidate staging and rollout submission,
-image finalization and boot sequencing, qualification evidence producers, and
-final source-built/VM checks. Passing schema or handler unit tests alone does
+work includes initial authorized host-source adoption, exact image/source replay
+for all selected image features, and qualification callers with independently
+observed domain evidence. Native image staging, rollout submission, finalization,
+and source-built evaluation/GC/materialization checks have focused coverage;
+combined boot and physical transition checks remain separate. Passing schema or handler unit tests alone does
 not qualify an image boot or physical image transition.
 
 Read the [target state](13-target-state.md),

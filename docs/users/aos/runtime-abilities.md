@@ -306,7 +306,9 @@ Package/version/source conflicts fail before execution.
 
 Production evaluation also retains an `aos.package.evaluation-input` document.
 It identifies the immutable module library and its NAR hash, installation scope,
-resolved packages, ordered baseline modules, and operator configuration snapshot.
+resolved packages, ordered baseline modules, operator configuration snapshot, and
+supplemental retained inputs. Supplemental inputs are evidence or artifacts, not
+modules to import; their original admission must survive later reconfiguration.
 It contains no output graph. Packages that need to perform another authorized
 evaluation receive its immutable path as the `evaluationInput` module argument:
 
@@ -327,6 +329,17 @@ Baseline modules remain authored source files, rather than snapshots of their
 final merged defaults. Reconfiguration replaces the operator snapshot and
 reevaluates the new package closure against those sources. Different outputs of
 one package share one module identity; selected payload outputs remain explicit.
+
+A retained descriptor can also be replayed without activation:
+
+```sh
+aos ability evaluate /nix/store/…-evaluation-input.json --nix-store "$AOS_NIX_STORE"
+```
+
+This emits a checked native transaction, verifies the declared library NAR, and
+keeps source roots alive during pure evaluation. It creates no profile generation
+or effect journal. It checks input integrity; authenticating the descriptor and
+its original source authority remains the caller's responsibility.
 
 ## Runtime state, reconfiguration, and recovery
 
