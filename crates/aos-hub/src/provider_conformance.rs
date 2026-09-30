@@ -14,6 +14,7 @@ mod journal;
 mod model;
 mod probe;
 mod transport;
+mod transport_failure;
 
 #[cfg(test)]
 mod tests;

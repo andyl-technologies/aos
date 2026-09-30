@@ -481,6 +481,58 @@ async fn provider_echoed_secrets_are_never_retained_as_receipts_or_printed_by_st
 }
 
 #[tokio::test]
+async fn actual_tls_and_connection_failures_have_safe_labels_and_retain_unknown_intents() {
+    for failure_class in ["tls_untrusted_certificate", "connection_refused"] {
+        let fixture = Fixture::new(Fault::None).await;
+        let config_path = fixture.directory.path().join("config.json");
+        let mut config: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+        let unavailable = tokio::net::TcpSocket::new_v4().unwrap();
+        unavailable.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        if failure_class == "tls_untrusted_certificate" {
+            config["tls_ca_file"] = serde_json::Value::Null;
+        } else {
+            config["endpoint"] = format!(
+                "https://localhost:{}",
+                unavailable.local_addr().unwrap().port()
+            )
+            .into();
+        }
+        write(&config_path, &serde_json::to_vec(&config).unwrap());
+
+        let error = fixture.run().await.unwrap_err();
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains(&format!("transport_class={failure_class}")));
+        assert!(rendered.contains("retained operation remains unknown"));
+        for forbidden in ["https://", "X-Amz-", "fixture-access", "fixture-secret"] {
+            assert!(!rendered.contains(forbidden));
+        }
+
+        let journal = fixture.directory.path().join("journal");
+        let original = std::fs::read(journal.join("original.json")).unwrap();
+        let intent = std::fs::read(journal.join("000.intent.json")).unwrap();
+        assert!(!journal.join("000.response.json").exists());
+        assert!(!journal.join("000.observation.json").exists());
+        assert!(!fixture.directory.path().join("report.json").exists());
+        assert_eq!(fixture.state.lock().unwrap().requests, 0);
+        for _ in 0..2 {
+            let status: serde_json::Value =
+                serde_json::from_str(&provider_conformance_status(&journal).unwrap()).unwrap();
+            assert_eq!(status["unknown_operation_ids"].as_array().unwrap().len(), 1);
+        }
+        assert_eq!(
+            std::fs::read(journal.join("original.json")).unwrap(),
+            original
+        );
+        assert_eq!(
+            std::fs::read(journal.join("000.intent.json")).unwrap(),
+            intent
+        );
+        assert_eq!(fixture.state.lock().unwrap().requests, 0);
+    }
+}
+
+#[tokio::test]
 async fn private_credential_and_policy_custody_fail_before_provider_dispatch() {
     use std::os::unix::fs::PermissionsExt as _;
     let fixture = Fixture::new(Fault::None).await;

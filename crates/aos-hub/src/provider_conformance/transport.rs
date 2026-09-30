@@ -71,9 +71,11 @@ pub(super) async fn dispatch(
     // A durable original precedes the first provider await. Transport and lost
     // replies leave this intent without an observation; no caller retries it.
     let index = journal.begin(&intent)?;
-    let response = loaded.http.execute(request).await.map_err(|_| {
-        anyhow::anyhow!("provider request failed; retained operation remains unknown")
-    })?;
+    let response = loaded
+        .http
+        .execute(request)
+        .await
+        .map_err(super::transport_failure::request_error)?;
     Ok(Exchange {
         index,
         intent,
@@ -137,9 +139,12 @@ impl Exchange {
         let mut body = Vec::new();
         let mut bytes = 0u64;
         let mut hash = Sha256::new();
-        while let Some(chunk) = self.response.chunk().await.map_err(|_| {
-            anyhow::anyhow!("provider response failed; retained operation remains unknown")
-        })? {
+        while let Some(chunk) = self
+            .response
+            .chunk()
+            .await
+            .map_err(super::transport_failure::response_error)?
+        {
             bytes = bytes
                 .checked_add(chunk.len() as u64)
                 .ok_or_else(|| anyhow::anyhow!("provider response size overflowed"))?;
