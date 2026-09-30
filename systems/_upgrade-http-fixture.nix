@@ -19,11 +19,7 @@ in {
     pkgs.upgrade-transition-fixture
   ];
 
-  aos.abilities.environment = {
-    authority = "test";
-    key = "upgrade-http-fixture";
-    stage = "host";
-  };
+  aos.boot.stage = "host";
 
   environment.systemPackages = [
     pkgs.test-http-server
