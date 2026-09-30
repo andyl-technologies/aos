@@ -2038,11 +2038,17 @@
           pathStr = key;
           typeSig = option.type.description;
           type =
-            (import ./type-schema.nix {
-              inherit lib;
-              allowOpaque = true;
-            })
-            option.type;
+            builtins.addErrorContext
+            "while documenting option '${key}' owned by '${ownerForProvenance (decl.provenance or "@base")}' from '${decl.file}':"
+            (let
+              schema =
+                (import ./type-schema.nix {
+                  inherit lib;
+                  allowOpaque = true;
+                })
+                option.type;
+            in
+              builtins.deepSeq schema schema);
           description =
             if builtins.isString option.description && !builtins.hasContext option.description
             then option.description
