@@ -245,8 +245,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   version-1 compatibility is read-only and qualified migration may be refused.
   Actual nested-name collisions, migrated-log coexistence, independent reopen,
   whole-record CAS and cancellation are qualified by the local backend gates.
-  Private identity proofs borrow the live paired exclusion and its existing
-  source/destination role; they cannot independently grant repository authority.
+  Private identity proofs borrow a live single or paired exclusion and its
+  existing source/destination role; they cannot independently grant repository
+  authority. Same-bucket publication retains one actual namespace lock across
+  source checks and durable CAS, with independent writer exclusion, cancellation
+  and durable reopen qualified by the local backend checks.
   Protected deletion-intent key classification grants no ordinary-write authority;
   physical deletion and current-root fencing remain joint work with T-GC-1.
   Narrowed to trunk scope: S3-compatible and GCS backends are

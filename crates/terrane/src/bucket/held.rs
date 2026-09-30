@@ -1,8 +1,8 @@
-//! Holds two actual bucket exclusions in physical identity order.
+//! Holds one actual namespace exclusion or an ordered pair of exclusions.
 
 #![allow(
     dead_code,
-    reason = "The paired adapter is a separately integrated ref coordinator prerequisite."
+    reason = "Single and paired held adapters are separately integrated ref coordinator prerequisites."
 )]
 
 use super::{BucketBinding, FileBucket, files};
@@ -59,6 +59,59 @@ async fn identity<
     #[cfg(not(unix))]
     {
         Err(StoreFailure::new(StoreErrorKind::Unsupported))
+    }
+}
+
+/// Retains one actual namespace guard for source and destination roles.
+///
+/// Both adapters borrow this holder, so neither can outlive its exclusion.
+pub(crate) struct SingleHeld<'a, F: LocalFs, C, V> {
+    bucket: &'a FileBucket<F, C, V>,
+    identity: PhysicalIdentity,
+    _guard: F::Lock,
+}
+
+impl<'a, F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
+    SingleHeld<'a, F, C, V>
+{
+    /// Acquires and revalidates one actual writable namespace exclusion.
+    ///
+    /// # Errors
+    /// Rejects legacy read-only access before effects, unsafe or changed physical
+    /// identities, incompatible selected layouts, and unavailable locking.
+    pub(crate) async fn acquire(bucket: &'a FileBucket<F, C, V>) -> Result<Self, StoreFailure> {
+        if bucket.inner.access.read_only() {
+            return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
+        }
+
+        let checked_identity = identity(bucket).await?;
+        let guard = bucket.exclusive().await?;
+        if identity(bucket).await? != checked_identity {
+            return Err(files::layout_corrupt());
+        }
+        bucket.write_layout_locked().await?;
+
+        Ok(Self {
+            bucket,
+            identity: checked_identity,
+            _guard: guard,
+        })
+    }
+
+    /// Borrows a read-only source adapter under the single retained exclusion.
+    pub(crate) fn source(&self) -> HeldBucket<'_, F, C, V, false> {
+        HeldBucket {
+            bucket: self.bucket,
+            identity: self.identity,
+        }
+    }
+
+    /// Borrows a durable destination adapter under the same retained exclusion.
+    pub(crate) fn destination(&self) -> HeldBucket<'_, F, C, V, true> {
+        HeldBucket {
+            bucket: self.bucket,
+            identity: self.identity,
+        }
     }
 }
 
@@ -161,7 +214,7 @@ async fn recheck<
     Ok(())
 }
 
-/// Borrows synchronization evidence from a live paired namespace exclusion.
+/// Borrows synchronization evidence from a live single or paired namespace exclusion.
 ///
 /// This proof identifies a held namespace and adapter role; it does not authorize
 /// an actor, disclosure, or mutation independently of repository checks.
@@ -201,7 +254,7 @@ impl<
     const WRITABLE: bool,
 > HeldBucket<'_, F, C, V, WRITABLE>
 {
-    /// Borrows proof of this adapter's live paired namespace exclusion.
+    /// Borrows proof of this adapter's live single or paired namespace exclusion.
     pub(crate) fn identity_proof(&self) -> HeldIdentity<'_> {
         HeldIdentity {
             root: self.bucket.root(),
@@ -210,10 +263,10 @@ impl<
         }
     }
 
-    /// Returns the root and coordination inode identities rechecked under both guards.
+    /// Returns the root and coordination inode identities rechecked under the retained exclusion.
     ///
-    /// These device/inode pairs identify the namespace while the borrowed pair
-    /// guards live. They do not independently authorize disclosure or mutation.
+    /// These device/inode pairs identify the namespace while the borrowed namespace
+    /// guard lives. They do not independently authorize disclosure or mutation.
     pub(crate) fn physical_identity(&self) -> ((u64, u64), (u64, u64)) {
         (self.identity.root, self.identity.lock)
     }
