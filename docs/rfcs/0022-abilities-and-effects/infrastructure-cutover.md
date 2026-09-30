@@ -32,6 +32,14 @@ paths. They supply configuration interfaces or implementations; they are separat
 from build dependencies and runtime libraries. Packages without a module remain
 ordinary payload packages and still belong to their generation.
 
+A runtime dependency carrying its own optional module does not enable that module.
+Only explicit package selections and their `moduleDeps` enter the fixed point.
+APM retains the module selections in the evaluation descriptor separately from
+installed payload artifacts, so later reconfiguration preserves this distinction.
+The generic build projections are `lib.packageModules`, `lib.packageArtifacts`,
+and `lib.build.closureInfo`; image builders use these public helpers rather than
+importing private library files.
+
 The builder exposes these derived values:
 
 | Attribute | Meaning |
