@@ -107,7 +107,7 @@ in
           cp ${rootImage}/overlay.qcow2 "$run_dir/crucible-root-overlay.qcow2"
           chmod u+w "$run_dir/crucible-root-overlay.qcow2"
           report="$TMPDIR/live-plugin-install.result"
-          timeout -k 15 180 \
+          CRUCIBLE_LIVE_PLUGIN_FINGERPRINT=on timeout -k 15 180 \
             "$TMPDIR/live-plugin-install-target/debug/examples/crucible-qemu-live-plugin-install" \
             ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
             ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
