@@ -549,7 +549,7 @@ selector = [ "issuer", tstr ]
 ;    60   4  uncompressed length
 ;    64   1  codec
 ;    65   1  kind
-;    66   1  state       0 live, 1 tombstone
+;    66   1  state       0 live, 1 GC tombstone, 2 identity quarantine
 ;    67   5  reserved
 ;
 ; Chunk body (05-chunking.md §Compression):

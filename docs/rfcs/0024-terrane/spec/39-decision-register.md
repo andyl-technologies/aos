@@ -1147,6 +1147,25 @@ is added rather than editing history.
   - **Affects:** REF-19, REF-20, AUTH-22 and the tag verb table. Stored field
     numbers, epoch width and SnapshotEnvelope signature bytes remain unchanged.
 
+- **[D-71] Distinguish GC placement retirement from identity quarantine.**
+  - **Status:** Decided
+  - **Decision:** Merged-record state zero remains live and state one remains
+    GC retirement of a placement. State two records an identity quarantine
+    that ordinary put, per-pack fallback and rebuild cannot clear. A verified
+    fresh upload may replace a state-one selected row with a fresh live pack,
+    while the old pack remains excluded through its durable GC evidence.
+    Quarantine survives deletion of its recorded pack until explicit verified
+    repair. All other state values remain reserved.
+  - **Rationale:** Treating GC retirement as identity corruption permanently
+    rejects valid content uploaded after collection. Treating quarantine as
+    ordinary retirement lets an upload or fallback silently readmit invalid
+    derived data. Distinct states preserve both fresh verified readmission and
+    sticky quarantine, without resurrecting an old physical placement or
+    making unrelated members unavailable.
+  - **Affects:** PACK-18, PACK-20, merged-record state registration, GC-15 and
+    DRV-2. Existing live and GC-tombstone bytes retain their meaning; the new
+    state is registered before T1's encoding freeze under D-66.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

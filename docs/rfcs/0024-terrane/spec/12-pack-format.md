@@ -221,7 +221,7 @@ Each shard has the same preamble as a pack index and entries of this shape:
 | 60 | 4 | uncompressed length | |
 | 64 | 1 | codec | |
 | 65 | 1 | kind | |
-| 66 | 1 | state | `0` live, `1` tombstone |
+| 66 | 1 | state | `0` live, `1` GC tombstone, `2` identity quarantine |
 | 67 | 5 | reserved | zero |
 
 - **[PACK-17]** Merged shards MUST be sorted by hash, MUST be immutable once
@@ -232,7 +232,17 @@ Each shard has the same preamble as a pack index and entries of this shape:
 - **[PACK-18]** A tombstone entry MUST be written for every hash whose pack
   was tombstoned by garbage collection, and MUST persist until the following
   compaction generation confirms the pack's bytes were deleted. A reader MUST NOT
-  serve a hash whose newest entry is a tombstone.
+  serve the tombstoned placement. A fully verified fresh upload MAY select a
+  new live placement for the same identity; it MUST NOT restore the old pack
+  implicitly. The old pack's durable exclusion and deletion-window evidence
+  MUST remain authoritative even when the selected hash row names the new
+  placement. State `1` denotes only GC retirement, not corruption quarantine.
+  State `2` denotes identity quarantine: ordinary uploads, newer per-pack
+  fallback indexes and rebuilds MUST NOT supersede it. It MUST persist until
+  an explicit verified repair procedure clears it, independently of deletion
+  of its recorded pack. States `3` through `255` are reserved and MUST be
+  rejected. Quarantine MUST NOT make unrelated identities in the pack
+  unavailable.
   *Gate:* `gate:index-tombstones`.
 - **[PACK-19]** An index refresh MUST be expressible as the set of shards
   whose generation is newer than the reader's, so that refreshing costs bytes
@@ -244,6 +254,8 @@ Each shard has the same preamble as a pack index and entries of this shape:
   Live versus tombstoned state MUST be reconciled with the durable GC trash
   records and verified deletion confirmations (GC-15 and GC-20), retaining
   a prior generation's tombstones until PACK-18 permits their removal.
+  Identity-quarantine rows MUST be retained from authoritative generations;
+  pack inventory or a fresh upload alone is not evidence of verified repair.
   Publication generations MUST come from authoritative generation manifests
   or verified publication records; they MUST NOT be guessed from LIST order,
   random pack IDs, or timestamps. Rebuilding MUST NOT require pack-body reads
