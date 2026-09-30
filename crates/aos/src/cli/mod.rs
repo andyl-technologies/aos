@@ -181,7 +181,7 @@ pub struct AprCli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Inspect checked ability plans from portable bundles
+    /// Inspect native declarations, desired effects, and retained outputs
     Ability {
         #[command(subcommand)]
         command: AbilityCommand,
@@ -366,13 +366,20 @@ pub enum Commands {
     },
     /// Browse documentation
     #[command(
-        after_help = "Examples:\n  aos doc . --search services\n  aos doc package nginx\n  aos doc package --search listener\n  aos doc hub listener --hub https://hub.example --registry org/main"
+        visible_alias = "docs",
+        after_help = "Examples:\n  aos docs runtime options.json\n  aos docs runtime transaction.json --format html --output execution.html\n  aos doc . --search services\n  aos doc package nginx\n  aos doc package --search listener\n  aos doc hub listener --hub https://hub.example --registry org/main"
     )]
     Doc {
-        /// Repository path/flake URI, package, or hub (default: current directory)
+        /// Repository path/flake URI, package, hub, or runtime (default: current directory)
         source: Option<String>,
-        /// Look up a specific doc path
+        /// Look up a doc path, or read a native JSON file in runtime mode
         path: Option<String>,
+        /// Render a native runtime document as text, JSON, or HTML
+        #[arg(long, value_parser = ["text", "json", "html"])]
+        format: Option<String>,
+        /// Write a rendered runtime document to this file
+        #[arg(long)]
+        output: Option<std::path::PathBuf>,
         /// Search all entries
         #[arg(long)]
         search: Option<String>,

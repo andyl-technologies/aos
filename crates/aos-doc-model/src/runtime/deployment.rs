@@ -389,7 +389,7 @@ mod tests {
         let mut report = report();
         report.validate_reference(&reference()).unwrap();
         let transaction=RuntimeDocument::from_json(&serde_json::to_vec(&json!({
-            "schema":"aos.package.transaction","scope":["package","sample"],"system":"x86_64-linux","graph":report.graph
+            "schema":"aos.package.transaction","scope":["package","sample"],"system":"x86_64-linux","retire":[],"graph":report.graph
         })).unwrap()).unwrap();
         assert_eq!(
             transaction.transaction_graph().unwrap().graph().nodes.len(),

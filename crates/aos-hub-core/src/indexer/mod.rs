@@ -1724,7 +1724,8 @@ fn release_snapshot_artifacts(
                     store_hash: store_hash_component(&entry.store_path),
                     store_path: entry.store_path.clone(),
                 });
-                for store_path in entry.named_outputs.values() {
+                for output in entry.named_outputs.values() {
+                    let store_path = &output.store_path;
                     artifacts.push(ReleaseSnapshotArtifact {
                         package_name: package.package.name.clone(),
                         package_version: version.version.clone(),
@@ -1733,6 +1734,16 @@ fn release_snapshot_artifacts(
                         store_hash: store_hash_component(store_path),
                         store_path: store_path.clone(),
                     });
+                    if let Some(deployment) = &output.deployment {
+                        artifacts.push(ReleaseSnapshotArtifact {
+                            package_name: package.package.name.clone(),
+                            package_version: version.version.clone(),
+                            platform: platform.clone(),
+                            artifact_kind: "output".to_string(),
+                            store_hash: store_hash_component(&deployment.store_path),
+                            store_path: deployment.store_path.clone(),
+                        });
+                    }
                 }
                 if !entry.source_drv.is_empty() {
                     artifacts.push(ReleaseSnapshotArtifact {
@@ -1746,7 +1757,11 @@ fn release_snapshot_artifacts(
                 }
                 // Native documents are retained derivation outputs. Their role and
                 // exact JSON identity live in the authenticated package catalog.
-                for artifact in [&entry.deployment, &entry.module_documentation, &entry.qualification] {
+                for artifact in [
+                    &entry.deployment,
+                    &entry.module_documentation,
+                    &entry.qualification,
+                ] {
                     if let Some(artifact) = artifact {
                         artifacts.push(ReleaseSnapshotArtifact {
                             package_name: package.package.name.clone(),
@@ -3466,7 +3481,7 @@ mod tests {
 
     #[test]
     fn release_snapshots_retain_every_named_output() {
-        let package = aos_registry_surface::manifest::parse_package_file(
+        let mut package = aos_registry_surface::manifest::parse_package_file(
             r#"
 [package]
 name = "compiler"
@@ -3484,11 +3499,28 @@ source_drv = ""
 source_nar_hash = ""
 
 [versions.platforms.x86_64-linux.named_outputs]
-dev = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-compiler-dev"
-tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
+dev = { store_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-compiler-dev" }
+tools = { store_path = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools" }
 "#,
         )
         .expect("parse multi-output package");
+
+        package.versions[0]
+            .platforms
+            .get_mut("x86_64-linux")
+            .unwrap()
+            .named_outputs
+            .get_mut("dev")
+            .unwrap()
+            .deployment = Some(aos_registry_surface::manifest::NativeArtifactMeta {
+            store_path: "/nix/store/dddddddddddddddddddddddddddddddd-compiler-dev-deployment"
+                .into(),
+            nar_hash: format!("sha256:{}", "d".repeat(64)),
+            nar_size: 1,
+            references: Vec::new(),
+            document_sha256: format!("sha256:{}", "e".repeat(64)),
+            document_size: 1,
+        });
 
         let required_hashes = load::required_package_store_hashes(std::slice::from_ref(&package));
         assert_eq!(
@@ -3497,12 +3529,13 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
                 "cccccccccccccccccccccccccccccccc".to_string(),
+                "dddddddddddddddddddddddddddddddd".to_string(),
             ])
         );
 
         let artifacts = release_snapshot_artifacts(&[package]);
 
-        assert_eq!(artifacts.len(), 3);
+        assert_eq!(artifacts.len(), 4);
         assert!(
             artifacts
                 .iter()
@@ -3517,6 +3550,7 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
                 "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-compiler",
                 "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-compiler-dev",
                 "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools",
+                "/nix/store/dddddddddddddddddddddddddddddddd-compiler-dev-deployment",
             ])
         );
     }

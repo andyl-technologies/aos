@@ -96,6 +96,8 @@ pub async fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
                     "removed": removed,
                     "changed": changed,
                     "desiredOnly": true,
+                    "retirementBefore": before.transaction_retirement(),
+                    "retirementAfter": after.transaction_retirement(),
                     "orderChanged": before_graph.graph().order != after_graph.graph().order,
                 }));
             } else {

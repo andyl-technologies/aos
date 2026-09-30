@@ -256,6 +256,25 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         .await;
     }
 
+    if let Commands::Doc {
+        source,
+        path,
+        format,
+        output,
+        ..
+    } = &cli.command
+    {
+        if source.as_deref() == Some("runtime") {
+            return commands::runtime_docs::run(
+                path.as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("runtime document path is absent"))?,
+                format.as_deref(),
+                output.as_deref(),
+                printer,
+            );
+        }
+    }
+
     // Cache commands use NixCli (classic nix commands), not NixRunner.
     if let Commands::Cache { command } = &cli.command {
         return commands::cache::run(printer, command).await;
@@ -562,68 +581,64 @@ mod tests {
     }
 
     #[test]
-    fn source_stage_materialization_uses_the_typed_runtime_command_surface() {
-        let cli = ApmCli::try_parse_from([
-            "apm",
-            "__ability-materialize-source-stage",
-            "--spec",
-            "/tmp/specification.json",
-            "--exported-graph",
-            "/tmp/exported-graph.json",
-            "--out",
-            "/tmp/source-stage.json",
-        ])
-        .expect("source-stage command should parse");
-
-        assert!(cli.command.is_runtime_internal());
-    }
-
-    #[test]
-    fn stage_handoff_commands_accept_the_embedded_contract_inputs() {
-        let initrd_inputs = [
-            "--source-stage-bundle",
-            "/lib/aos/initrd/source-stage-bundle.json",
-            "--static-contract-identity-file",
-            "/lib/aos/initrd/static-ability-contract-identity",
-            "--static-contract",
-            "/lib/aos/initrd/static-ability-contract.json",
-        ];
-        let host_inputs = [
-            "--source-stage-bundle",
-            "/usr/lib/aos/initrd/source-stage-bundle.json",
-            "--static-contract-identity-file",
-            "/usr/lib/aos/initrd/static-ability-contract-identity",
-            "--static-contract",
-            "/usr/lib/aos/initrd/static-ability-contract.json",
-        ];
-
-        for (command, stage_arguments, inputs) in [
-            (
-                "__ability-stage-run",
-                vec!["--stage", "initrd", "--root", "/sysroot"],
-                initrd_inputs,
-            ),
-            (
-                "__ability-stage-validate",
-                vec!["--from-stage", "initrd", "--root", "/sysroot"],
-                initrd_inputs,
-            ),
-            (
-                "__ability-stage-receive",
-                vec![
-                    "--from-stage",
-                    "initrd",
-                    "--image-profile",
-                    "/var/lib/profiles/image",
-                ],
-                host_inputs,
-            ),
-        ] {
-            let arguments = [vec!["apm", command], stage_arguments, inputs.to_vec()].concat();
-            let cli = ApmCli::try_parse_from(arguments).expect("stage command should parse");
+    fn native_deployment_commands_use_the_private_runtime_surface() {
+        for command in ["apply-deployment", "verify-deployment"] {
+            let cli = ApmCli::try_parse_from([
+                "apm",
+                command,
+                "--input",
+                "/nix/store/00000000000000000000000000000000-transaction",
+                "--state-directory",
+                "/var/lib/aos/deployment",
+                "--profile",
+                "/var/lib/profiles/system",
+                "--nix-store",
+                "/nix/store/00000000000000000000000000000000-nix/bin/nix-store",
+                "--admission",
+                "/nix/store/00000000000000000000000000000000-admission.json",
+                "--admission-sha256",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ])
+            .expect("native deployment command should parse");
 
             assert!(cli.command.is_runtime_internal());
         }
+    }
+
+    #[test]
+    fn native_committed_state_commands_preserve_exact_profile_selection() {
+        let current = ApmCli::try_parse_from([
+            "apm",
+            "deployment-current",
+            "--profile",
+            "/var/lib/profiles/system",
+            "--committed-during-recovery",
+        ])
+        .expect("native committed-state command should parse");
+        let result = ApmCli::try_parse_from([
+            "apm",
+            "deployment-result",
+            "--profile",
+            "/var/lib/profiles/system",
+            "--generation",
+            "7",
+            "--effect",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ])
+        .expect("native retained-result command should parse");
+
+        assert!(current.command.is_runtime_internal());
+        assert!(matches!(
+            result.command,
+            aos_package::PackageCommand::DeploymentResult { generation: 7, .. }
+        ));
+        assert!(ApmCli::try_parse_from([
+            "apm",
+            "deployment-result",
+            "--profile",
+            "/var/lib/profiles/system",
+        ])
+        .is_err());
     }
 
     #[test]

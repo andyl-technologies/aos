@@ -74,7 +74,7 @@ fn commands_do_not_cross_public_cli_boundaries() -> Result<()> {
     assert!(
         !run(
             env!("CARGO_BIN_EXE_apm"),
-            &["__ability-materialize-source-stage", "--help"]
+            &["apply-deployment", "--help"]
         )?
         .status
         .success()
@@ -99,9 +99,9 @@ fn commands_do_not_cross_public_cli_boundaries() -> Result<()> {
     require_success(
         run(
             env!("CARGO_BIN_EXE_aos-package-runtime"),
-            &["__eval", "--help"],
+            &["apply-deployment", "--help"],
         )?,
-        "aos-package-runtime __eval --help",
+        "aos-package-runtime apply-deployment --help",
     )?;
     Ok(())
 }
@@ -121,5 +121,39 @@ fn system_scope_rejects_an_unidentified_target_before_loading_state() -> Result<
         stderr.contains("is not an AOS root"),
         "unexpected system-target error: {stderr}"
     );
+    Ok(())
+}
+
+#[test]
+fn native_deployment_dispatch_stays_private_and_rejects_retired_stage_commands() -> Result<()> {
+    for command in [
+        "apply-deployment",
+        "verify-deployment",
+        "deployment-current",
+        "deployment-result",
+    ] {
+        for arguments in [vec![command, "--help"], vec!["--json", command, "--help"]] {
+            assert!(!run(env!("CARGO_BIN_EXE_apm"), &arguments)?.status.success());
+            require_success(
+                run(env!("CARGO_BIN_EXE_aos-package-runtime"), &arguments)?,
+                &format!("native runtime {command} help"),
+            )?;
+        }
+    }
+
+    for command in [
+        "__ability-materialize-source-stage",
+        "__ability-stage-run",
+        "__ability-stage-validate",
+        "__ability-stage-receive",
+    ] {
+        for binary in [
+            env!("CARGO_BIN_EXE_apm"),
+            env!("CARGO_BIN_EXE_aos-package-runtime"),
+        ] {
+            assert!(!run(binary, &[command, "--help"])?.status.success());
+        }
+    }
+
     Ok(())
 }

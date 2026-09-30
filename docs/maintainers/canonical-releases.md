@@ -421,8 +421,10 @@ digests before it requests either Git signature.
 
 Each package/platform coordinate must contain exactly one `out` output. That
 output remains the installable `store_path`; every additional named output is
-retained in the platform entry's `named_outputs` table and receives its own
-store-graph and static-cache root. Preparation fails closed on a missing,
+retained in the platform entry's `named_outputs` table with its exact
+`store_path`, native deployment companion when present, and output-specific
+attestation facts. Each output receives its own store-graph and static-cache
+root; NAR identities remain in the signed store graph. Preparation fails closed on a missing,
 duplicate, or mismatched output binding.
 
 ```sh

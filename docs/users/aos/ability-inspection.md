@@ -26,7 +26,9 @@ aos ability operator transaction.json --serve
 
 The reference document describes merged options, operations, handlers, and
 package links. A transaction describes the exact desired effects, dependency
-order, selected immutable handler programs, and inputs for one deployment.
+order, selected immutable handler programs, inputs, and explicit `retire` effect
+identities for one deployment. Omission from the desired graph does not imply
+retirement.
 Neither proves that those effects ran. The local browser uses a loopback
 listener and presents the same checked document.
 
@@ -45,7 +47,8 @@ aos ability compare before.json after.json
 ```
 
 For transactions with the same scope and platform, the report lists added,
-removed, and changed effect identities and whether execution order changed.
+removed, and changed effect identities, whether execution order changed, and
+the explicit retirement decisions before and after the change.
 Effect revisions are derived from execution-relevant inputs and retained
 artifacts. Documentation edits do not change them.
 
