@@ -31,6 +31,15 @@ needed to run the package runtime; package-owned operations describe subsequent
 changes. A smaller container scope selects a package-managed base instead of
 inheriting every server payload.
 
+Early provisioning projects and validates the typed storage plan from the
+original accepted module fixed point before committing disk changes. Its source
+descriptor preserves the host descriptor's data while retaining only evaluation
+sources and supplemental evidence. Available artifact catalog entries do not
+retain unused payload outputs. Full host graph evaluation and validation happen
+at host activation, before host effects; they are not prerequisites for the
+earlier storage projection. See the [runtime guide](../../users/aos/runtime-abilities.md)
+for the handoff and its validation boundary.
+
 Alternative service, networking, storage, or sandbox implementations can expose
 compatible domain options and operations. Required features remain explicit and
 composable. Supporting another kernel also requires its toolchain, packages,

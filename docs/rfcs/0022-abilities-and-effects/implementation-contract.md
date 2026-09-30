@@ -14,6 +14,7 @@ the shared examples rather than another set of declarations.
 | Portable graph validation | `aos-ability-plan::module_graph` |
 | Effect state machine and typed results | `aos-ability-runtime::activation` |
 | Module resolution and restricted Nix evaluation | `aos-package::deployment::evaluation` |
+| Original store identities and private source read views | `aos-package::deployment::source_views` |
 | Process dispatch and artifact admission | `aos-package::deployment::{handler,process,retention}` |
 | Durable generations and recovery | `aos-package::deployment::transaction` |
 | Native reference and graph rendering | `aos-doc-model::runtime` |

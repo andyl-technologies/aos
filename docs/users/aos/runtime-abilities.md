@@ -359,6 +359,14 @@ keeps source roots alive during pure evaluation. It creates no profile generatio
 or effect journal. It checks input integrity; authenticating the descriptor and
 its original source authority remains the caller's responsibility.
 
+The selected Nix store supplies source bytes through its store accessor. The
+evaluator exports each distinct source root as a bounded NAR and restores a
+private, hash-locked read view for pure Nix. This also works when the selected
+store's logical paths are absent from the machine's `/nix/store`. Temporary read
+locations do not replace the original source identities in the descriptor or
+transaction. Source loading and evaluation share one deadline; each source NAR
+is limited to 64 MiB.
+
 ## Runtime state, reconfiguration, and recovery
 
 A process handler implements `apply`, `remove`, and `observe`, accepting a JSON
@@ -424,6 +432,19 @@ and facts with their original receipt, and evaluates them before any host
 effects run. Later boots recover the existing profile and preserve subsequent
 operator changes. They do not reacquire metadata as a replacement for accepted
 configuration.
+
+Initrd evaluates the accepted configuration only far enough to obtain the typed
+`aos.provisioning.storage` plan. It validates and persists that plan before disk
+changes. The capsule retains the original library, module sources, configuration,
+and evidence required for this projection; describing the host's available
+artifacts does not pull their payloads into initrd. The projection descriptor has
+the same data as the host descriptor, with a smaller retained closure.
+
+The host then evaluates and validates the complete activation graph before
+running host effects. This is a phase boundary: provisioning checks run before
+disk changes, while failures in unrelated host configuration may be discovered
+later. The accepted configuration and its original receipts remain available
+across that boundary.
 
 Configuration-lower construction is an OS-owned operation. Its immutable output
 is retained by the native transaction and mounted before dependent file and
