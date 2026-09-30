@@ -761,16 +761,28 @@ fn select<'a>(
     }
     if let Some(inputs) = registry.fixture_inputs.get(executable) {
         for file in [&inputs.archive, &inputs.inventory, &inputs.evaluations] {
-            if !file.path.starts_with("/nix/store/") || file.path.len() > 4096
-                || file.path.contains('\0') || file.path.split('/').any(|component| matches!(component, "." | ".."))
+            if !file.path.starts_with("/nix/store/")
+                || file.path.len() > 4096
+                || file.path.contains('\0')
+                || file
+                    .path
+                    .split('/')
+                    .any(|component| matches!(component, "." | ".."))
                 || file.size_bytes == 0
             {
                 bail!("scenario fixture identity is malformed or mutable");
             }
         }
-    } else if request.qualification_case.as_ref()
+    } else if request
+        .qualification_case
+        .as_ref()
         .and_then(|case| case.native_operation_spec.as_ref())
-        .is_some_and(|spec| spec.cohorts.iter().any(|cohort| cohort.selected_evaluation.role == aos_release::qualification_evidence::NativeEvaluationRole::Scenario))
+        .is_some_and(|spec| {
+            spec.cohorts.iter().any(|cohort| {
+                cohort.selected_evaluation.role
+                    == aos_release::qualification_evidence::NativeEvaluationRole::Scenario
+            })
+        })
     {
         bail!("native scenario lacks its original executor-bound fixture inputs");
     }
