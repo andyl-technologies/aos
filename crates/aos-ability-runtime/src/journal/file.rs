@@ -72,12 +72,41 @@ impl<T> JournalSnapshot<T> {
 /// required by their filesystem boundary.
 pub struct FileJournal<T> {
     path: PathBuf,
-    file: File,
+    file: LockedFile,
     limits: JournalLimits,
     next_sequence: u64,
     previous_digest: Sha256Digest,
     requires_recovery: bool,
     marker: PhantomData<fn() -> T>,
+}
+
+// A fork can temporarily retain the open description despite CLOEXEC. Release
+// the advisory lock at the controller's ownership boundary, rather than waiting
+// for every inherited descriptor to close in another process.
+struct LockedFile(File);
+
+impl std::ops::Deref for LockedFile {
+    type Target = File;
+
+    fn deref(&self) -> &File {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for LockedFile {
+    fn deref_mut(&mut self) -> &mut File {
+        &mut self.0
+    }
+}
+
+impl Drop for LockedFile {
+    fn drop(&mut self) {
+        while let Err(error) = rustix::fs::flock(&self.0, FlockOperation::Unlock) {
+            if error != rustix::io::Errno::INTR {
+                break;
+            }
+        }
+    }
 }
 
 impl<T> std::fmt::Debug for FileJournal<T> {
@@ -132,13 +161,14 @@ where
     /// shared lock, exceeds configured limits, or contains a corrupt complete
     /// frame or invalid record body.
     pub fn read_only_snapshot_file(
-        mut file: File,
+        file: File,
         path: impl AsRef<Path>,
         limits: JournalLimits,
     ) -> Result<JournalSnapshot<T>, JournalError> {
         let path = path.as_ref();
         rustix::fs::flock(&file, FlockOperation::NonBlockingLockShared)
             .map_err(|source| io_error("acquire shared lock", path, source.into()))?;
+        let mut file = LockedFile(file);
         validate_private_regular_file(&file, path)?;
 
         let RecoveryReport {
@@ -168,9 +198,10 @@ where
         limits: JournalLimits,
     ) -> Result<JournalOpenResult<T>, JournalError> {
         let path = path.as_ref().to_path_buf();
-        let (mut file, created) = open_private(&path)?;
+        let (file, created) = open_private(&path)?;
         rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive)
             .map_err(|source| io_error("acquire exclusive lock", &path, source.into()))?;
+        let mut file = LockedFile(file);
         validate_private_regular_file(&file, &path)?;
 
         if created {
@@ -549,6 +580,31 @@ mod tests {
             state: state.to_string(),
             attempt,
         }
+    }
+
+    #[test]
+    fn lock_ends_with_owner_even_when_a_descriptor_is_inherited() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("execution.journal");
+        let limits = JournalLimits::default();
+        let opened = FileJournal::<TestEvent>::open(&path, limits).unwrap();
+        let inherited = opened.journal.file.0.try_clone().unwrap();
+        assert!(FileJournal::<TestEvent>::open(&path, limits).is_err());
+
+        drop(opened);
+        let reopened = FileJournal::<TestEvent>::open(&path, limits).unwrap();
+        drop(reopened);
+
+        FileJournal::<TestEvent>::read_only_snapshot_file(
+            inherited.try_clone().unwrap(),
+            &path,
+            limits,
+        )
+        .unwrap();
+        // The inherited descriptor remains open across both ownership scopes.
+        // It must not keep either writer or inspection locks alive.
+        let _writer = FileJournal::<TestEvent>::open(&path, limits).unwrap();
+        drop(inherited);
     }
 
     #[test]
