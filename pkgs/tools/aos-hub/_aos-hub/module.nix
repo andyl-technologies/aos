@@ -91,7 +91,7 @@
   releaseEvidenceComplete = builtins.all (value: value != null) releaseEvidenceValues;
   usesTls = cfg.credentials.tlsCertificate != null;
   boundedString = types.str;
-  endpoint = types.strMatching "https://[^[:space:]]+";
+  endpoint = types.strMatching "https://[!-~]+";
   optionalString = types.nullOr types.str;
   optionalCredential = types.nullOr (types.strMatching "[A-Za-z0-9][A-Za-z0-9._-]*");
   command = arguments: {
@@ -268,7 +268,7 @@ in {
       description = "Address and port on which the registry hub accepts requests.";
     };
     root = lib.mkOption {
-      type = types.strMatching "/[^\n\r]*";
+      type = types.strMatching "/[ -~]*";
       default = "/var/lib/aos-hub";
       description = "Persistent directory containing the hub database and local storage bindings.";
     };
