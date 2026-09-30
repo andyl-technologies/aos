@@ -214,9 +214,23 @@ fixed-NAR source inputs, pure/restricted evaluation, and IFD disabled. Its proce
 transport bounds input, output, duration, and cancellation. The generated document
 must retain the selected platform, package contexts, and artifact identities.
 
-A package appears once in a scope's resolved module closure. Conflicting versions
-or source identities fail before evaluation. An empty package set is valid and
-allows removal of all configured instance effects. Runtime output paths retain
+A package appears once in a scope's resolved module closure. Exact dependencies
+pin source identity. Compatible dependencies carry an exact seed plus independent
+ability and optional package SemVer ranges; build evaluation checks the seed and
+APM resolves compatible authenticated releases. A versioned ability has one
+version and declaring owner per scope. Conflicts fail before evaluation.
+
+`resolutionLock` in the evaluation descriptor retains original dependency edges,
+exact selections, and requester companions whenever ranges occur. Saved
+activation inputs replay that lock, including declarations from moduleless
+packages. Signed `abilityExports` and `moduleDependencies` must match generated
+companions; evaluation must reproduce declared owned ability versions. Generated
+`abilityContracts` and `moduleRequirements` documentation projects the same data.
+See [resolution and binding](04-resolution-and-binding.md) for solver policy and
+[user examples](../../users/aos/runtime-abilities.md#version-and-compose-interfaces-across-packages)
+for authoring syntax.
+
+An empty package set is valid and allows removal of all configured instance effects. Runtime output paths retain
 their canonical identities even when module sources are read from another
 immutable store view.
 
