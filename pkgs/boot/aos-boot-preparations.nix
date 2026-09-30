@@ -4,6 +4,10 @@
   mkDerivation,
   rust,
   aos,
+  nix,
+  service-management,
+  aos-boot-storage,
+  aos-configuration-lower,
   bash,
   coreutils,
   erofs-utils,
@@ -44,6 +48,8 @@ in
 
     buildDeps = [rust];
     runtimeDeps = [
+      nix
+      aos-configuration-lower
       packageRuntime
       bash
       coreutils
@@ -54,16 +60,17 @@ in
       util-linux
     ];
     propagatedDeps = [];
-    abilities = ./_aos-boot-preparations;
+    module = ./_aos-boot-preparations;
+    moduleDeps = [service-management aos-boot-storage];
 
     phases = [
       {
         name = "build";
         script = ''
           export AOS_PACKAGE_RUNTIME=${packageRuntime}/bin/.aos-package-runtime-unwrapped
-          export AOS_MKFS_EROFS=${erofs-utils}/bin/mkfs.erofs
-          export AOS_FSCK_EROFS=${erofs-utils}/bin/fsck.erofs
-          export AOS_MOUNT=${util-linux}/bin/mount
+          export AOS_BOOT_CONFIGURATION=${packageRuntime}/bin/aos-boot-configuration
+          export AOS_CONFIGURATION_BOOT=${aos-configuration-lower}/bin/aos-configuration-boot
+          export AOS_SHA256SUM=${coreutils}/bin/sha256sum
 
           rustc --edition=2024 ${source}/src/main.rs -o aos-boot-preparations
           rustc --edition=2024 --test ${source}/src/main.rs -o aos-boot-preparations-tests

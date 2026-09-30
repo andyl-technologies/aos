@@ -101,70 +101,12 @@ validate_rooted_executable() {
     && [ -x "$rooted_target" ]
 }
 
-validate_profile_state() {
-  jq -e '
-    type == "object"
-    and (keys | sort) == ["current", "generations", "next"]
-    and (.current | type) == "number"
-    and (.next | type) == "number"
-    and (.generations | type) == "array"
-    and all(.generations[];
-      type == "object"
-      and ((keys - ["host_nix_commit"]) | sort) == [
-        "base_lib_ref", "created_at", "evaluator_ref", "facts_hash",
-        "facts_ref", "host_nix_ref", "image_gen_parent", "manifest_hash",
-        "module_abi_pinned", "number", "package_modules"
-      ]
-      and (.number | type) == "number"
-      and (.image_gen_parent | type) == "number"
-      and (.module_abi_pinned | type) == "number"
-      and (.manifest_hash | type) == "string" and (.manifest_hash | length) > 0
-      and (.package_modules | type) == "array"
-      and all(.package_modules[];
-        type == "object"
-        and (keys | sort) == [
-          "document_digest", "entrypoint", "nar_hash", "origin", "package",
-          "store_path"
-        ]
-        and all(.[]; type == "string" and length > 0)
-      )
-      and (.host_nix_ref | type) == "string" and (.host_nix_ref | length) > 0
-      and ((has("host_nix_commit") | not)
-        or (.host_nix_commit == null)
-        or ((.host_nix_commit | type) == "string"))
-      and (.facts_hash | type) == "string" and (.facts_hash | length) > 0
-      and (.facts_ref | type) == "string" and (.facts_ref | length) > 0
-      and (.base_lib_ref | type) == "string" and (.base_lib_ref | length) > 0
-      and (.evaluator_ref | type) == "string" and (.evaluator_ref | length) > 0
-      and (.created_at | type) == "string" and (.created_at | length) > 0
-    )
-  ' "$1" >/dev/null
-}
-
-read_pcr11() {
-  # cryptsetup may leave the swtpm resource manager busy briefly after
-  # an unattended unlock. Never let an informational PCR read wedge
-  # switch-root indefinitely.
-  output=$(timeout -k 5 15 \
-    tpm2_pcrread sha256:11 2>/dev/null) || return 1
-  for word in $output; do
-    case "$word" in
-      0x*)
-        value=${word#0x}
-        [ "${#value}" -eq 64 ] || continue
-        printf '%s' "$value" | tr '[:upper:]' '[:lower:]'
-        return 0
-        ;;
-    esac
-  done
-  return 1
-}
-
-abi=$(read_meta module-abi)
 state_version=$(read_meta state-version)
-baselib_digest=$(read_meta baselib-digest)
 native_executor=$(read_meta native-executor-ref)
-base_lib=$(readlink "/sysroot$toplevel/base-lib")
+boot_contract=$(read_meta boot-artifact-contract)
+evaluation_descriptor=$(read_meta evaluation-descriptor)
+module_library=$(cat "/sysroot$toplevel/meta/module-library.json")
+module_library_root=$(printf '%s' "$module_library" | jq -er '.store_path')
 uki_path=$(read_meta uki-path)
 kern=$(readlink "/sysroot$toplevel/kernel" 2>/dev/null || true)
 [ -n "$kern" ] || kern="$toplevel/kernel"
@@ -192,10 +134,25 @@ if [ -e /run/current-system ] && [ ! -L /run/current-system ]; then
 fi
 ln -sfn "$toplevel" /run/current-system
 
-case "$base_lib" in
-  /nix/store/*) ;;
-  *) fail_image_identity "immutable base-lib has unsafe target $base_lib" ;;
+validate_nix_store_root "$module_library_root" \
+  || fail_image_identity "immutable native module library root is malformed"
+validate_nix_store_root "$boot_contract" \
+  || fail_image_identity "immutable boot contract root is malformed"
+printf '%s' "$module_library" | jq -e '
+  type == "object" and (keys | sort) == ["nar_hash", "nar_size", "store_path"]
+  and (.nar_hash | type == "string" and startswith("sha256-"))
+  and (.nar_size | type == "number" and . > 0 and floor == .)
+' >/dev/null || fail_image_identity "immutable native library NAR identity is malformed"
+case "$evaluation_descriptor" in
+  /nix/store/*/*) ;;
+  *) fail_image_identity "native evaluation descriptor is not an immutable store member" ;;
 esac
+case "$evaluation_descriptor/" in
+  *"//"*|*"/./"*|*"/../"*)
+    fail_image_identity "native evaluation descriptor is not normalized" ;;
+esac
+[ -f "/sysroot$evaluation_descriptor" ] \
+  || fail_image_identity "immutable native evaluation descriptor is missing"
 validate_nix_store_root "$native_executor" \
   || fail_image_identity "immutable native executor is not a canonical Nix store root"
 [ -n "$state_version" ] \
@@ -210,18 +167,14 @@ case "$os_release" in
   /nix/store/*) ;;
   *) fail_image_identity "immutable os-release has unsafe target $os_release" ;;
 esac
-os_abi=$(read_os_release AOS_MODULE_ABI "/sysroot$os_release") \
-  || fail_image_identity "immutable os-release has no unique module ABI"
-os_digest=$(read_os_release AOS_BASELIB_DIGEST "/sysroot$os_release") \
-  || fail_image_identity "immutable os-release has no unique base-lib digest"
+os_library=$(read_os_release AOS_PACKAGE_MODULE_LIBRARY "/sysroot$os_release") \
+  || fail_image_identity "immutable os-release has no unique native module library"
 os_version=$(read_os_release VERSION_ID "/sysroot$os_release") \
   || fail_image_identity "immutable os-release has no unique version"
 os_state_version=$(read_os_release AOS_STATE_VERSION "/sysroot$os_release") \
   || fail_image_identity "immutable os-release has no unique state version"
-[ "$abi" = "$os_abi" ] \
-  || fail_image_identity "toplevel metadata disagrees with measured module ABI"
-[ "$baselib_digest" = "$os_digest" ] \
-  || fail_image_identity "toplevel metadata disagrees with measured base-lib digest"
+[ "$module_library_root" = "$os_library" ] \
+  || fail_image_identity "toplevel metadata disagrees with signed native module library identity"
 [ "$(read_meta version)" = "$os_version" ] \
   || fail_image_identity "toplevel metadata disagrees with measured version"
 [ "$state_version" = "$os_state_version" ] \
@@ -269,7 +222,20 @@ if [ "$AOS_RECOVERY_ENABLED" = true ]; then
   recovery_entry="loader/entries/recovery-$recovery_lower.conf"
   [ -f "$recovery_mount/$recovery_uki" ] \
     || fail_image_identity "paired recovery UKI is missing"
-  sbverify --cert "$AOS_DB_CERT" \
+  boot_db_certificate=/sysroot/usr/lib/aos/image-trust/boot-db.crt
+  for component in /sysroot/usr /sysroot/usr/lib /sysroot/usr/lib/aos \
+    /sysroot/usr/lib/aos/image-trust "$boot_db_certificate"; do
+    [ ! -L "$component" ] \
+      || fail_image_identity "image boot trust path contains a symlink"
+  done
+  [ -f "$boot_db_certificate" ] && [ -s "$boot_db_certificate" ] \
+    || fail_image_identity "verified image boot trust certificate is missing"
+  certificate_mount_options=$(findmnt --noheadings --output OPTIONS --target "$boot_db_certificate")
+  case ",$certificate_mount_options," in
+    *,ro,*) ;;
+    *) fail_image_identity "image boot trust certificate is not on a read-only mount" ;;
+  esac
+  sbverify --cert "$boot_db_certificate" \
     "$recovery_mount/$recovery_uki" >/dev/null \
     || fail_image_identity "paired recovery UKI is not authorized by Secure Boot db"
   recovery_audit=/run/aos-seed-recovery-audit
@@ -322,212 +288,101 @@ if [ "$AOS_RECOVERY_ENABLED" = true ]; then
       source_path: $source, sha256: $digest, byte_size: $size,
       release: $release, recovery_abi: $abi}')
 fi
-# `/aos-toplevel` is baked into the booted immutable root. Reconcile
-# the userspace image index to that identity before stage 2; the
-# currently selected config generation is never used as authority.
+# Index the verified image independently of the native package profile. Image
+# metadata retains its exact module library and input descriptor, not a second
+# configuration-generation authority or a synthetic empty package deployment.
 mkdir -p "$image_dir"
+provider_generation=$(jq -n --arg entry "$uki_path" --arg slot "$boot_slot" \
+  --argjson recovery "$recovery_json" \
+  '{schema: "aos.systemd.boot-generation-state/v1",
+    evidence: ({"installed-entry":$entry,"uki-source-path":$entry,slot:$slot}
+      + (if $recovery == null then {} else {recovery:$recovery} end))}')
+generation=$(jq -n --arg pn "$(read_meta package-name)" --arg ver "$(read_meta version)" \
+  --arg top "$toplevel" --arg kern "$kern" --arg state "$state_version" \
+  --arg executor "$native_executor" --arg contract "$boot_contract" \
+  --arg descriptor "$evaluation_descriptor" --arg now "$now" \
+  --argjson library "$module_library" --argjson provider "$provider_generation" \
+  '{number:0,boot_artifact_contract:$contract,boot_provider_state:$provider,
+    toplevel:$top,package_name:$pn,version:$ver,state_version:$state,
+    native_executor_ref:$executor,registry:"seed",kernel_path:$kern,
+    module_library:$library,evaluation_descriptor:$descriptor,created_at:$now}')
+
 publish_image_state() {
-  source=$1
-  sync "$source"
-  mv "$source" "$image_dir/state.json"
+  sync "$image_dir/.state.json.new"
+  mv "$image_dir/.state.json.new" "$image_dir/state.json"
   sync "$image_dir"
 }
 
-existing=0
-if [ -e "$image_dir/state.json" ]; then
-  existing=$(jq --arg top "$toplevel" \
-    '[.generations[] | select(.toplevel == $top) | .number][0] // 0' \
-    "$image_dir/state.json")
-fi
-initrd_pcr11=
-steady_recurrent=false
-if [ "$existing" -eq 0 ]; then
-  # Indexing a genuinely new immutable image requires a live reading.
-  # An unavailable TPM preserves the historical unmeasured-record
-  # representation rather than inventing an expected PCR value.
-  if measured=$(read_pcr11); then
-    initrd_pcr11=$measured
-  fi
-else
-  # On a recurrent boot, /var has just been unsealed and the immutable
-  # image record is checked field-by-field below. Reuse its indexed
-  # expectation here instead of contending with cryptsetup for the TPM;
-  # stage 2 independently quotes the live PCR bank for attestation.
-  initrd_pcr11=$(jq -er --argjson existing "$existing" \
-    '[.generations[] | select(.number == $existing) | .initrd_pcr11][0] // ""' \
-    "$image_dir/state.json")
-  if [ -z "$initrd_pcr11" ]; then
-    if measured=$(read_pcr11); then
-      initrd_pcr11=$measured
-    fi
-  fi
-  case "$initrd_pcr11" in
-    "") ;;
-    *[!0-9A-Fa-f]*)
-      fail_image_identity "persisted image record has malformed initrd PCR 11"
-      ;;
-    *)
-      [ "${#initrd_pcr11}" -eq 64 ] \
-        || fail_image_identity "persisted image record has malformed initrd PCR 11"
-      ;;
-  esac
-  initrd_pcr11=$(printf '%s' "$initrd_pcr11" | tr '[:upper:]' '[:lower:]')
-fi
-
 if [ ! -e "$image_dir/state.json" ]; then
-  jq -n \
-    --arg pn "$(read_meta package-name)" \
-    --arg ver "$(read_meta version)" \
-    --arg top "$toplevel" \
-    --arg kern "$kern" \
-    --arg base "$base_lib" \
-    --arg state_version "$state_version" \
-    --arg native_executor "$native_executor" \
-    --arg digest "$baselib_digest" \
-    --arg now "$now" \
-    --arg uki "$uki_path" \
-    --arg slot "$boot_slot" \
-    --arg root_hash "$root_hash" \
-    --arg initrd_pcr11 "$initrd_pcr11" \
-    --argjson abi "$abi" \
-    --argjson recovery "$recovery_json" \
-    --argjson recovery_enabled $AOS_RECOVERY_ENABLED \
-    '({ running: 1, default: 1, pending: 1,
-       generations: [({ number: 1, slot: $slot, uki_path: $uki,
-         toplevel: $top, package_name: $pn, version: $ver,
-         state_version: $state_version,
-         native_executor_ref: $native_executor,
-         registry: "seed", kernel_path: $kern,
-         evaluator_ref: $base, module_abi: $abi,
-         baselib_digest: $digest, created_at: $now }
-         + (if $root_hash == "" then {} else {root_verity_roothash: $root_hash} end)
-         + (if $initrd_pcr11 == "" then {} else {initrd_pcr11: $initrd_pcr11} end)
-         + (if $recovery_enabled then {recovery: $recovery} else {} end))] }
-      + (if $recovery_enabled then {recovery_known_good: $slot} else {} end))' \
+  jq -n --argjson generation "$generation" --argjson provider "$provider_generation" \
+    '{schema:"aos.image-generation-state/v1",running:1,pending:1,
+      boot_provider_state:{schema:"aos.systemd.boot-state/v1",
+        evidence:$provider.evidence},generations:[$generation + {number:1}]}' \
     > "$image_dir/.state.json.new"
-  publish_image_state "$image_dir/.state.json.new"
-  existing=1
+  publish_image_state
 else
-  if [ "$existing" -eq 0 ]; then
-    next=$(jq '[.generations[].number] | max + 1' "$image_dir/state.json")
-    jq \
-      --arg pn "$(read_meta package-name)" --arg ver "$(read_meta version)" \
-      --arg top "$toplevel" --arg kern "$kern" --arg base "$base_lib" \
-      --arg state_version "$state_version" --arg native_executor "$native_executor" \
-      --arg digest "$baselib_digest" --arg now "$now" \
-      --arg uki "$uki_path" --arg slot "$boot_slot" \
-      --arg root_hash "$root_hash" --arg initrd_pcr11 "$initrd_pcr11" \
-      --argjson abi "$abi" --argjson next "$next" \
-      --argjson recovery "$recovery_json" \
-      --argjson recovery_enabled $AOS_RECOVERY_ENABLED \
-      '.generations += [({ number: $next,
-         slot: $slot,
-         uki_path: $uki, toplevel: $top, package_name: $pn,
-         version: $ver, state_version: $state_version,
-         native_executor_ref: $native_executor,
-         registry: "seed", kernel_path: $kern,
-         evaluator_ref: $base, module_abi: $abi,
-         baselib_digest: $digest, created_at: $now }
-         + (if $root_hash == "" then {} else {root_verity_roothash: $root_hash} end)
-         + (if $initrd_pcr11 == "" then {} else {initrd_pcr11: $initrd_pcr11} end)
-         + (if $recovery_enabled then {recovery: $recovery} else {} end))]
-       | .running = $next' \
+  jq -e '.schema == "aos.image-generation-state/v1" and (.generations | type == "array")' \
+    "$image_dir/state.json" >/dev/null \
+    || fail_image_identity "image index is not a native generation state"
+  matches=$(jq --arg top "$toplevel" '[.generations[] | select(.toplevel == $top)] | length' \
+    "$image_dir/state.json")
+  [ "$matches" -le 1 ] || fail_image_identity "image index contains ambiguous immutable identity"
+  if [ "$matches" -eq 0 ]; then
+    jq --argjson generation "$generation" \
+      '([.generations[].number] | max + 1) as $next
+       | .generations += [$generation + {number:$next}] | .running = $next' \
       "$image_dir/state.json" > "$image_dir/.state.json.new"
-    publish_image_state "$image_dir/.state.json.new"
-    existing=$next
+    publish_image_state
   else
-    top_count=$(jq --arg top "$toplevel" \
-      '[.generations[] | select(.toplevel == $top)] | length' \
-      "$image_dir/state.json")
-    matching=$(jq \
-      --arg top "$toplevel" --arg pn "$(read_meta package-name)" \
-      --arg ver "$(read_meta version)" --arg kern "$kern" \
-      --arg base "$base_lib" --arg digest "$baselib_digest" \
-      --arg state_version "$state_version" --arg native_executor "$native_executor" \
-      --arg uki "$uki_path" --arg slot "$boot_slot" \
-      --arg root_hash "$root_hash" --arg initrd_pcr11 "$initrd_pcr11" \
-      --argjson abi "$abi" --argjson recovery "$recovery_json" \
-      --argjson recovery_enabled $AOS_RECOVERY_ENABLED \
-      '[.generations[] | select(
-         .toplevel == $top and .package_name == $pn and .version == $ver
-         and .state_version == $state_version
-         and .native_executor_ref == $native_executor
-         and .kernel_path == $kern and .evaluator_ref == $base
-         and .module_abi == $abi and .baselib_digest == $digest
-         and ((.uki_source_path // .uki_path) == $uki) and .slot == $slot
-         and ((.root_verity_roothash // "") == $root_hash)
-         and (if $recovery_enabled then .recovery == $recovery
-              else .recovery == null end)
-         and ((.initrd_pcr11 == null)
-              or (.initrd_pcr11 != null and $initrd_pcr11 != ""
-                  and (.initrd_pcr11 | ascii_downcase) == $initrd_pcr11))
-       )] | length' "$image_dir/state.json")
-    [ "$top_count" -eq 1 ] && [ "$matching" -eq 1 ] \
-      || fail_image_identity "persisted image record disagrees with the booted immutable image"
-    recorded_running=$(jq -er '.running' \
-      "$image_dir/state.json")
-    recorded_initrd=$(jq -r --argjson existing "$existing" \
-      '[.generations[] | select(.number == $existing) | .initrd_pcr11][0] // ""' \
-      "$image_dir/state.json")
-    if [ -z "$recorded_initrd" ] && [ -n "$initrd_pcr11" ]; then
-      jq \
-        --argjson existing "$existing" --arg initrd "$initrd_pcr11" \
-        '.running = $existing
-         | (.generations[] | select(.number == $existing)) |=
-           (.initrd_pcr11 = $initrd)' \
-        "$image_dir/state.json" > "$image_dir/.state.json.new"
-      publish_image_state "$image_dir/.state.json.new"
-    elif [ "$recorded_running" -ne "$existing" ]; then
-      jq --argjson running "$existing" \
-        '.running = $running' \
-        "$image_dir/state.json" > "$image_dir/.state.json.new"
-      publish_image_state "$image_dir/.state.json.new"
+    jq -e --argjson expected "$generation" \
+      '.generations[] | select(.toplevel == $expected.toplevel)
+       | (.boot_provider_state.schema == "aos.systemd.boot-generation-state/v1")
+         and (.boot_provider_state.evidence.slot == $expected.boot_provider_state.evidence.slot)
+         and (.boot_provider_state.evidence.retired != true)
+         and (del(.number,.created_at,.registry,.boot_provider_state)
+              == ($expected | del(.number,.created_at,.registry,.boot_provider_state)))' \
+      "$image_dir/state.json" >/dev/null \
+      || fail_image_identity "native image index disagrees with the verified immutable image"
+    jq --arg top "$toplevel" \
+      '(.generations[] | select(.toplevel == $top) | .number) as $running
+       | .running = $running
+       | if .active_rollout != null then
+           if .active_rollout.candidate == $running
+              and .active_rollout.status == "staged" then
+             .active_rollout.status = "candidate_booted"
+           else . end
+         else . end' "$image_dir/state.json" > "$image_dir/.state.json.new"
+    if cmp -s "$image_dir/state.json" "$image_dir/.state.json.new"; then
+      rm "$image_dir/.state.json.new"
     else
-      steady_recurrent=true
+      publish_image_state
     fi
   fi
 fi
 
-# A fully reconciled recurrent boot is read-only. Avoid refreshing
-# durable roots and copying state immediately after TPM-unlocking
-# /var; those mutations are repair operations, not boot requirements.
-# Any missing retained root falls through to the repair path.
-if [ "$steady_recurrent" = true ]; then
-  retained_base=$(readlink \
-    "$image_dir/image-gen-$existing/baselib/$abi" 2>/dev/null || true)
-  if [ "$retained_base" = "$base_lib" ] && [ -e "$profile_dir/state.json" ]; then
-    validate_profile_state "$profile_dir/state.json" \
-      || fail_image_identity "system profile state does not match the current schema"
-    link=$(readlink "$profile_dir/current" 2>/dev/null || true)
-    GEN=${link#gen-}
-    [ -n "$GEN" ] || GEN=0
-    printf 'AOS_PROFILE_GEN=%s\n' "$GEN" > /run/aos-profile-gen.env
-    exit 0
-  fi
+if jq -e '.pending != null or .active_rollout != null' "$image_dir/state.json" >/dev/null; then
+  mkdir -p /run/aos
+  touch /run/aos/image-reeval-required
 fi
 
-mkdir -p "$image_dir/image-gen-$existing/baselib"
-ln -sfn "$base_lib" "$image_dir/image-gen-$existing/baselib/$abi"
+existing=$(jq -er '.running' "$image_dir/state.json")
+retention="$image_dir/image-gen-$existing"
+mkdir -p "$retention"
+ln -sfn "$toplevel" "$retention/toplevel"
+ln -sfn "$native_executor" "$retention/native-executor"
+ln -sfn "$boot_contract" "$retention/boot-artifact-contract"
+ln -sfn "$module_library_root" "$retention/module-library"
+# A member link also retains the descriptor's containing immutable Nix object.
+ln -sfn "$evaluation_descriptor" "$retention/evaluation-descriptor"
+sync "$retention"
+
 mkdir -p "$profile_dir"
-
-if [ -e "$profile_dir/state.json" ]; then
-  validate_profile_state "$profile_dir/state.json" \
-    || fail_image_identity "system profile state does not match the current schema"
-fi
-
-if [ ! -e "$profile_dir/state.json" ]; then
-  # A baked image is an image-generation, not an empty synthetic
-  # config-generation. The first successful on-host evaluation creates
-  # config-gen 1 with all authenticated input/output bindings present.
-  jq -n \
-    '{current: 0, next: 1, generations: []}' \
-    > "$profile_dir/.state.json.new"
-  sync "$profile_dir/.state.json.new"
-  mv "$profile_dir/.state.json.new" "$profile_dir/state.json"
-  sync "$profile_dir"
-fi
-
-link=$(readlink "$profile_dir/current" 2>/dev/null || true)
-GEN=${link#gen-}
-[ -n "$GEN" ] || GEN=0
+current=$(.aos-package-runtime-unwrapped deployment-current --profile "$profile_dir" \
+  --committed-during-recovery) \
+  || fail_image_identity "native profile publication inspection failed"
+GEN=$(printf '%s' "$current" | jq -er '
+  if .generation == null then 0
+  elif (.generation | type == "number" and . > 0 and floor == .) then .generation
+  else error("invalid native profile generation") end') \
+  || fail_image_identity "native profile publication is malformed"
 printf 'AOS_PROFILE_GEN=%s\n' "$GEN" > /run/aos-profile-gen.env
