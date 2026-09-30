@@ -11,7 +11,13 @@
   buildPlatform = buildPackages.stdenv.hostPlatform.system;
   isX86 = platform == "x86_64-linux";
   formats = ["qcow2" "raw" "vhd" "vmdk"];
-  systemNames = builtins.attrNames systems;
+  # External signing produces assemblies, not locally bootable disk formats.
+  # Build those inputs here; qualification of their signed disks belongs to
+  # the release executor, which has access to the signing authorities.
+  localSystems = lib.filterAttrs (_: system: !system.config.aos.boot.secureBoot.externalFinalization.enable) systems;
+  externalSystems = lib.filterAttrs (_: system: system.config.aos.boot.secureBoot.externalFinalization.enable) systems;
+  systemNames = builtins.attrNames localSystems;
+  assemblies = lib.mapAttrs (_: system: system.build.unsignedImageAssembly) externalSystems;
 
   # Firmware is target data. Every executable launched by the harness is native.
   firmwareCode = "${pkgs.edk2}/FV/${
@@ -168,14 +174,15 @@ in
   assert builtins.elem platform ["x86_64-linux" "aarch64-linux"];
   assert buildPlatform == "x86_64-linux";
   assert systemNames != [];
-  assert builtins.all (name: builtins.attrNames systems.${name}.build.image == formats) systemNames; {
-    inherit inventory runner;
+  assert builtins.all (name: builtins.attrNames localSystems.${name}.build.image == formats) systemNames;
+  assert builtins.all (assembly: assembly != null) (builtins.attrValues assemblies); {
+    inherit inventory runner assemblies;
     systems = checks;
     all = buildPackages.mkDerivation {
       pname = "aos-image-matrix-${platform}";
       version = "1";
       src = null;
-      buildDeps = [buildPackages.coreutils buildPackages.python3 runner] ++ builtins.attrValues checks;
+      buildDeps = [buildPackages.coreutils buildPackages.python3 runner] ++ builtins.attrValues checks ++ builtins.attrValues assemblies;
       outputChecks.out = {};
       dontStrip = true;
       dontNukeRefs = true;
