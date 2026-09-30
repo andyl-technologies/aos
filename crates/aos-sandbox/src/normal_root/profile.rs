@@ -135,7 +135,7 @@ impl NormalRootProfileV1 {
     }
 }
 
-pub(super) fn require_store_path(path: &str) -> Result<(), NormalRootStartupErrorV1> {
+pub(crate) fn require_store_path(path: &str) -> Result<(), NormalRootStartupErrorV1> {
     let relative = path
         .strip_prefix("/nix/store/")
         .filter(|value| !value.is_empty() && path.len() <= 1024)

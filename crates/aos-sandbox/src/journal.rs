@@ -16,6 +16,7 @@
 //! writes and syncs a replacement file, atomically renames it, then syncs the
 //! parent directory. A separate advisory lock remains held across replacement.
 
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
@@ -39,6 +40,8 @@ mod prepared_transaction;
 mod root_local_recovery;
 mod root_original_inventory;
 mod root_original_native;
+#[cfg(target_os = "linux")]
+mod runtime_deployment_history;
 pub use root_original_inventory::{
     MountOriginalInventoryJournalAuthorityV6, OriginalInventoryProtectedReadbackV6,
     PreparedOriginalInventoryAppendV6,
@@ -1240,6 +1243,9 @@ struct ProtectedJournalLocation {
     directory: File,
     name: String,
     expected_uid: u32,
+    // Denial only; this never substitutes for the actual native-history audit.
+    #[cfg(target_os = "linux")]
+    original_compaction_selection: runtime_deployment_history::OriginalCompactionSelectionV1,
 }
 
 #[derive(Clone, Copy)]
@@ -1366,6 +1372,11 @@ impl Journal {
             directory,
             name: name.to_owned(),
             expected_uid,
+            #[cfg(target_os = "linux")]
+            original_compaction_selection:
+                runtime_deployment_history::OriginalCompactionSelectionV1::capture(
+                    directory_path, name,
+                ),
         };
         let (journal, report) = Self::recover_opened(
             PathBuf::from(name),
@@ -1463,8 +1474,16 @@ impl Journal {
         name: &str,
         limits: JournalLimits,
     ) -> Result<(Self, RecoveryReport), JournalError> {
-        let directory = resolve_protected_directory_from_root(directory.as_ref(), 0)?;
-        Self::open_protected_directory(directory, name, limits, ProtectedOwnerPolicy::Root, true)
+        let directory_path = directory.as_ref();
+        let directory = resolve_protected_directory_from_root(directory_path, 0)?;
+        Self::open_protected_directory(
+            directory_path,
+            directory,
+            name,
+            limits,
+            ProtectedOwnerPolicy::Root,
+            true,
+        )
     }
 
     /// Replays an already provisioned root-owned journal without creating it.
@@ -1482,8 +1501,16 @@ impl Journal {
         name: &str,
         limits: JournalLimits,
     ) -> Result<(Self, RecoveryReport), JournalError> {
-        let directory = resolve_protected_directory_from_root(directory.as_ref(), 0)?;
-        Self::open_protected_directory(directory, name, limits, ProtectedOwnerPolicy::Root, false)
+        let directory_path = directory.as_ref();
+        let directory = resolve_protected_directory_from_root(directory_path, 0)?;
+        Self::open_protected_directory(
+            directory_path,
+            directory,
+            name,
+            limits,
+            ProtectedOwnerPolicy::Root,
+            false,
+        )
     }
 
     /// Opens a protected journal owned by one configured service UID.
@@ -1514,8 +1541,10 @@ impl Journal {
         limits: JournalLimits,
         expected_uid: u32,
     ) -> Result<(Self, RecoveryReport), JournalError> {
-        let directory = resolve_protected_directory_from_root(directory.as_ref(), expected_uid)?;
+        let directory_path = directory.as_ref();
+        let directory = resolve_protected_directory_from_root(directory_path, expected_uid)?;
         Self::open_protected_directory(
+            directory_path,
             directory,
             name,
             limits,
@@ -1540,8 +1569,10 @@ impl Journal {
         limits: JournalLimits,
         expected_uid: u32,
     ) -> Result<(Self, RecoveryReport), JournalError> {
-        let directory = resolve_protected_directory_from_root(directory.as_ref(), expected_uid)?;
+        let directory_path = directory.as_ref();
+        let directory = resolve_protected_directory_from_root(directory_path, expected_uid)?;
         Self::open_protected_directory(
+            directory_path,
             directory,
             name,
             limits,
@@ -1750,6 +1781,7 @@ impl Journal {
         .map_err(protected_open_error)?
         .into();
         Self::open_protected_directory(
+            directory_path,
             directory,
             name,
             limits,
@@ -1781,6 +1813,7 @@ impl Journal {
         .map_err(protected_open_error)?
         .into();
         Self::open_protected_directory(
+            directory_path,
             directory,
             name,
             limits,
@@ -1790,6 +1823,7 @@ impl Journal {
     }
 
     fn open_protected_directory(
+        directory_path: &Path,
         directory: File,
         name: &str,
         limits: JournalLimits,
@@ -1833,6 +1867,11 @@ impl Journal {
             directory,
             name: name.to_owned(),
             expected_uid,
+            #[cfg(target_os = "linux")]
+            original_compaction_selection:
+                runtime_deployment_history::OriginalCompactionSelectionV1::capture(
+                    directory_path, name,
+                ),
         };
         Self::recover_opened(
             PathBuf::from(name),
@@ -3103,7 +3142,8 @@ impl Journal {
     /// Returns [`JournalError`] when the compacted state exceeds transaction
     /// bounds or any temporary-file, sync, rename, directory-sync, reopen, or
     /// validation operation fails, or while a closed policy owner hold or Host
-    /// Effect fence is held.
+    /// Effect fence is held, or for the fixed deployment preparation main,
+    /// whose original native history must remain intact.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
         if self.source_original_replay.has_dependencies()
@@ -3115,6 +3155,8 @@ impl Journal {
         {
             return Err(JournalError::ProtectedBoundary);
         }
+        #[cfg(target_os = "linux")]
+        runtime_deployment_history::require_no_compaction(self)?;
         root_local_recovery::pending(&self.state)?;
         root_original_native::pending(&self.state, self.limits)?;
         root_original_inventory::validate_rejoined_capacity(
@@ -4542,6 +4584,34 @@ fn replay_with_source_original(
     limits: JournalLimits,
     challenges: Option<&source_original_native::SourceOriginalChallengeHistoryViewV5<'_>>,
 ) -> Result<ReplayState, JournalError> {
+    #[cfg(target_os = "linux")]
+    {
+        replay_original_observed(file, limits, challenges, None)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        replay_original_observed(file, limits, challenges)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn replay_observed<R: Read + Seek + Borrow<File>>(
+    file: &mut R,
+    limits: JournalLimits,
+    deployment_history: Option<&mut runtime_deployment_history::HistoryAuditV1<'_>>,
+) -> Result<ReplayState, JournalError> {
+    replay_original_observed(file, limits, None, deployment_history)
+}
+
+// Both native observers use the original parser and its actual retained File.
+// A private read-at cursor changes no append-description offset or identity.
+fn replay_original_observed<R: Read + Seek + Borrow<File>>(
+    file: &mut R,
+    limits: JournalLimits,
+    challenges: Option<&source_original_native::SourceOriginalChallengeHistoryViewV5<'_>>,
+    #[cfg(target_os = "linux")]
+    mut deployment_history: Option<&mut runtime_deployment_history::HistoryAuditV1<'_>>,
+) -> Result<ReplayState, JournalError> {
     file.seek(SeekFrom::Start(0))?;
     let mut offset = 0_u64;
     let mut durable_end = 0_u64;
@@ -4564,7 +4634,7 @@ fn replay_with_source_original(
     let mut source_original_replay =
         source_original_native::replay::SourceOriginalReplayCacheV5::default();
     let mut source_history_compacted = false;
-    let source_journal_identity = FileIdentity::of(file)?;
+    let source_journal_identity = FileIdentity::of(<R as Borrow<File>>::borrow(file))?;
 
     loop {
         let Some((frame, bytes_read)) = read_frame(file, offset, limits)? else {
@@ -4635,6 +4705,12 @@ fn replay_with_source_original(
                     records: transaction.records,
                 };
                 validate_transaction(&replay_transaction, limits)?;
+
+                #[cfg(target_os = "linux")]
+                if let Some(history) = deployment_history.as_deref_mut() {
+                    history.observe(&replay_transaction, begin_sequence, frame.sequence)?;
+                }
+
                 let mut query_edge = None;
                 let mut logical_replay = false;
                 let mut compaction_id = [0_u8; 16];
@@ -4797,8 +4873,8 @@ fn replay_with_source_original(
     })
 }
 
-fn read_frame(
-    file: &mut File,
+fn read_frame<R: Read>(
+    file: &mut R,
     offset: u64,
     limits: JournalLimits,
 ) -> Result<Option<(Frame, u64)>, JournalError> {
@@ -6774,6 +6850,11 @@ mod tests {
             directory,
             name: "protected.journal".to_owned(),
             expected_uid: uid,
+            #[cfg(target_os = "linux")]
+            original_compaction_selection:
+                super::runtime_deployment_history::OriginalCompactionSelectionV1::capture(
+                    path, "protected.journal",
+                ),
         };
         let (journal, _) = Journal::recover_opened(
             PathBuf::from("protected.journal"),
@@ -7323,6 +7404,7 @@ mod tests {
         )
         .unwrap();
         let (journal, _) = Journal::open_protected_directory(
+            &root.0.join("trusted/final"),
             directory,
             "state.journal",
             JournalLimits::default(),
