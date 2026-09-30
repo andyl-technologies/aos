@@ -24,6 +24,37 @@ use crate::immutable_image::require_readonly_launch_flags;
 
 const MAXIMUM_MAPS_BYTES: u64 = 64 * 1024;
 
+// Only these image-built purposes can enter the shared measurement engine.
+enum HelperImagePurposeV1 {
+    Broker,
+    RuntimeDeployment,
+}
+
+impl HelperImagePurposeV1 {
+    fn compiled_path(&self) -> Result<&'static str, FloorErrorV1> {
+        match self {
+            Self::Broker => option_env!("AOS_METHOD46_TPM_HELPER"),
+            Self::RuntimeDeployment => option_env!("AOS_RUNTIME_DEPLOYMENT_TPM_HELPER"),
+        }
+        .ok_or(FloorErrorV1::Unavailable)
+    }
+
+    const fn names(&self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Broker => (
+                "aos-method46-tpm-helper",
+                "aos-method46-tpm-helper.sha256",
+                "aos-method46-tpm-helper.loader",
+            ),
+            Self::RuntimeDeployment => (
+                "aos-runtime-deployment-tpm-helper",
+                "aos-runtime-deployment-tpm-helper.sha256",
+                "aos-runtime-deployment-tpm-helper.loader",
+            ),
+        }
+    }
+}
+
 pub(crate) struct MeasuredHelperImageV1 {
     executable: MeasuredFileV1,
     loader: MeasuredFileV1,
@@ -31,8 +62,20 @@ pub(crate) struct MeasuredHelperImageV1 {
 
 impl MeasuredHelperImageV1 {
     pub(crate) fn open() -> Result<Self, FloorErrorV1> {
-        let path =
-            PathBuf::from(option_env!("AOS_METHOD46_TPM_HELPER").ok_or(FloorErrorV1::Unavailable)?);
+        Self::open_purpose(HelperImagePurposeV1::Broker)
+    }
+
+    /// Retains the compiled Host helper and loader through the same image engine.
+    ///
+    /// # Errors
+    /// Rejects missing compiled pins or unsafe, malformed or changed images.
+    pub(crate) fn open_runtime_deployment() -> Result<Self, FloorErrorV1> {
+        Self::open_purpose(HelperImagePurposeV1::RuntimeDeployment)
+    }
+
+    fn open_purpose(purpose: HelperImagePurposeV1) -> Result<Self, FloorErrorV1> {
+        let path = PathBuf::from(purpose.compiled_path()?);
+        let (basename, executable_pin_name, loader_pin_name) = purpose.names();
         let relative = path
             .strip_prefix("/nix/store")
             .map_err(|_| FloorErrorV1::Provisioning)?;
@@ -43,14 +86,14 @@ impl MeasuredHelperImageV1 {
                 .is_none_or(|part| part.as_os_str() != "libexec")
             || path
                 .file_name()
-                .is_none_or(|name| name != "aos-method46-tpm-helper")
+                .is_none_or(|name| name != basename)
         {
             return Err(FloorErrorV1::Provisioning);
         }
         let directory = path.parent().ok_or(FloorErrorV1::Provisioning)?;
-        let executable_pin = read_pin(directory, "aos-method46-tpm-helper.sha256", 65, 65)?;
+        let executable_pin = read_pin(directory, executable_pin_name, 65, 65)?;
         let executable_digest = decode_hash(&executable_pin)?;
-        let loader_pin = read_pin(directory, "aos-method46-tpm-helper.loader", 79, 578)?;
+        let loader_pin = read_pin(directory, loader_pin_name, 79, 578)?;
         let mut lines = loader_pin.split_inclusive(|byte| *byte == b'\n');
         let loader_path = lines.next().ok_or(FloorErrorV1::Provisioning)?;
         let loader_digest = decode_hash(lines.next().ok_or(FloorErrorV1::Provisioning)?)?;

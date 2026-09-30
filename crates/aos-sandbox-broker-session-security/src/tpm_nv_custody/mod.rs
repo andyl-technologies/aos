@@ -11,6 +11,12 @@ pub(crate) mod framing;
 pub(crate) mod child;
 pub(crate) mod physical;
 
+#[allow(
+    dead_code,
+    reason = "Host input admission has no physical coordinator or activation"
+)]
+mod host;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NvCustodyEndpointV1 {
     ControllerStorageClient,

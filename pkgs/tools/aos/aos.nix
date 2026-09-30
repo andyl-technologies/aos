@@ -13,6 +13,7 @@
   openssl,
   aos-landlock,
   aos-method46-tpm-helper,
+  aos-runtime-deployment-tpm-helper,
   aos-fuse-transport,
   aos-service-root,
   aos-selinux-run,
@@ -206,7 +207,10 @@
     nativeInputs = map toString (
       [openssl sqlite buildProtobuf buildCmake libssh2]
       ++ lib.optionals (!isDarwinCross) [aos-fuse-transport]
-      ++ lib.optionals stdenv.hostPlatform.isLinux [aos-method46-tpm-helper]
+      ++ lib.optionals stdenv.hostPlatform.isLinux [
+        aos-method46-tpm-helper
+        aos-runtime-deployment-tpm-helper
+      ]
     );
   };
   cargoEnv =
@@ -222,6 +226,7 @@
     // lib.optionalAttrs stdenv.hostPlatform.isLinux {
       AOS_METHOD46_TPM_HELPER = "${aos-method46-tpm-helper}/libexec/aos-method46-tpm-helper";
       AOS_METHOD46_TPM_PID1 = "${systemd}/lib/systemd/systemd";
+      AOS_RUNTIME_DEPLOYMENT_TPM_HELPER = "${aos-runtime-deployment-tpm-helper}/libexec/aos-runtime-deployment-tpm-helper";
     };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-native-release-and-test-artifacts";
