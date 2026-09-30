@@ -60,7 +60,10 @@ async fn candidates_bind_the_complete_proposal_and_predecessor_before_head_cas()
     let bucket = fixture().await;
     let name = "refs/jobs/_/work";
     let first = RefRecord::first([1; 32], 1, Locality::default()).selected();
-    assert!(bucket.ref_cas(name, None, &first).await.is_err());
+    assert!(matches!(
+        bucket.ref_cas(name, None, &first).await.unwrap_err().kind(),
+        StoreErrorKind::Invalid(_)
+    ));
     bucket.prepared_cas(name, None, &first).await.unwrap();
 
     let mut wrong_previous = first.clone();
@@ -81,12 +84,14 @@ async fn candidates_bind_the_complete_proposal_and_predecessor_before_head_cas()
         .unwrap();
     let mut unproposed_policy = correct.clone();
     unproposed_policy.policy = Some(terrane_core::refs::RefPolicy::default());
-    assert!(
+    assert!(matches!(
         bucket
             .ref_cas(name, Some(&first), &unproposed_policy)
             .await
-            .is_err()
-    );
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Invalid(_)
+    ));
     assert_eq!(bucket.ref_get(name).await.unwrap(), Some(first.clone()));
     assert_eq!(
         bucket.ref_cas(name, Some(&first), &correct).await.unwrap(),

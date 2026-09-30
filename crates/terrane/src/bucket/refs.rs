@@ -232,7 +232,12 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             if new.candidate_id.is_none() {
                 return Err(files::malformed());
             }
-            let proposal = self.read_log(name, new).await?;
+            let proposal_key = log_key(name, new)?;
+            let proposal_bytes = self
+                .read_optional(&proposal_key)
+                .await?
+                .ok_or_else(files::malformed)?;
+            let proposal = RefLogRecord::decode(&proposal_bytes).map_err(|_| corrupt(name))?;
             proposal
                 .validate_candidate(expect, new)
                 .map_err(|_| files::malformed())?;
