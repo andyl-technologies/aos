@@ -136,6 +136,7 @@ fn parent_and_name(path: &Path) -> Result<(Directory, OsString)> {
 pub(super) struct SourceAdmission {
     pub path: PathBuf,
     parent: Directory,
+    parent_path: PathBuf,
     name: OsString,
     retained: OwnedFd,
 }
@@ -156,6 +157,17 @@ impl SourceAdmission {
             working_directory.is_absolute(),
             "snapshot working directory is invalid"
         );
+        // Relative inputs use the same trusted CWD boundary as archive and
+        // credential custody. SQLx still receives an absolute literal filename.
+        // An explicitly supplied different working directory keeps its full
+        // absolute ancestor checks.
+        let custody_path = if path.is_relative() && working_directory == std::env::current_dir()? {
+            path.to_owned()
+        } else if path.is_relative() {
+            working_directory.join(path)
+        } else {
+            path.to_owned()
+        };
         let joined = if path.is_absolute() {
             path.to_owned()
         } else {
@@ -170,9 +182,10 @@ impl SourceAdmission {
             }
         }
         let path = absolute.as_path();
-        let parent_path = path
+        let parent_path = custody_path
             .parent()
-            .ok_or_else(|| anyhow::anyhow!("snapshot source has no parent"))?;
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
         let parent = Directory::open(parent_path, true)?;
         let name = path
             .file_name()
@@ -192,14 +205,28 @@ impl SourceAdmission {
         Ok(Self {
             path: path.to_owned(),
             parent,
+            parent_path: parent_path.to_owned(),
             name,
             retained,
         })
     }
 
     pub fn check_identity(&self) -> Result<()> {
+        let current_parent = Directory::open(&self.parent_path, true)?;
+        let original_parent = fs::fstat(&self.parent.fd)?;
+        let named_parent = fs::fstat(&current_parent.fd)?;
+        ensure!(
+            original_parent.st_dev == named_parent.st_dev
+                && original_parent.st_ino == named_parent.st_ino,
+            "snapshot source parent identity changed"
+        );
         let before = fs::fstat(&self.retained)?;
         let now = fs::statat(&self.parent.fd, &self.name, AtFlags::SYMLINK_NOFOLLOW)?;
+        let absolute = fs::statat(fs::CWD, &self.path, AtFlags::SYMLINK_NOFOLLOW)?;
+        ensure!(
+            before.st_dev == absolute.st_dev && before.st_ino == absolute.st_ino,
+            "snapshot absolute source identity changed"
+        );
         ensure!(
             before.st_dev == now.st_dev
                 && before.st_ino == now.st_ino

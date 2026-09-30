@@ -6,6 +6,7 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use aos_hub_core::backend::sqlite_snapshot::SqliteSnapshotReader;
 use aos_hub_core::backend::SqlxBackend;
 use aos_hub_core::db::Database;
 use aos_hub_core::snapshot::archive::root::ArchiveSigningKey;
@@ -20,8 +21,19 @@ use super::workflow::{self, SnapshotBudget, SnapshotError};
 use super::*;
 
 struct Fixture {
-    directory: TempDir,
+    directory: PrivateFixtureDirectory,
     credentials: CaptureCredentials,
+}
+
+struct PrivateFixtureDirectory {
+    _owner: TempDir,
+    relative_path: PathBuf,
+}
+
+impl PrivateFixtureDirectory {
+    fn path(&self) -> &Path {
+        &self.relative_path
+    }
 }
 
 fn private_file(directory: &Path, name: &str, bytes: &[u8]) -> PathBuf {
@@ -32,7 +44,15 @@ fn private_file(directory: &Path, name: &str, bytes: &[u8]) -> PathBuf {
 }
 
 fn fixture() -> Fixture {
-    let directory = tempfile::tempdir().unwrap();
+    // Keep tempfile's absolute cleanup owner, but exercise custody through the
+    // relative path rooted at the trusted working-directory descriptor.
+    let owner = tempfile::tempdir_in(".").unwrap();
+    let relative_path = PathBuf::from(owner.path().file_name().unwrap());
+    assert!(relative_path.is_relative());
+    let directory = PrivateFixtureDirectory {
+        _owner: owner,
+        relative_path,
+    };
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let signer = ArchiveSigningKey::from_seed("offline-export", [91; 32]).unwrap();
     let trust = serde_json::to_vec(&json!({"version":1,"signers":[{
@@ -107,6 +127,10 @@ async fn actual_capture_publishes_private_files_and_verifies_without_source_muta
     let f = fixture();
     let source = source(f.directory.path()).await;
     let before = Sha256::digest(fs::read(&source).unwrap());
+    let expected_tables = {
+        let reader = SqliteSnapshotReader::open(&source).await.unwrap();
+        u64::try_from(reader.schema().tables.len()).unwrap()
+    };
     let destination = f.directory.path().join("capture");
 
     let captured = workflow::capture(&source, &destination, &f.credentials, budget())
@@ -116,8 +140,8 @@ async fn actual_capture_publishes_private_files_and_verifies_without_source_muta
         .await
         .unwrap();
 
-    assert_eq!(captured.tables, 267);
-    assert_eq!(verified.tables, 267);
+    assert_eq!(captured.tables, expected_tables);
+    assert_eq!(verified.tables, expected_tables);
     assert_eq!(captured.retained_rows, verified.retained_rows);
     assert!(captured.private_cells > 0);
     assert!(captured.omitted_rows > 0);
@@ -126,9 +150,9 @@ async fn actual_capture_publishes_private_files_and_verifies_without_source_muta
         captured.schema_version,
         "aos.hub.offline-database-capture-report/v2"
     );
-    assert_eq!(captured.checked_retained_tables, 257);
+    assert_eq!(captured.checked_retained_tables, 263);
     assert_eq!(captured.synthetic_lineage_rows, 2);
-    assert_eq!(verified.checked_retained_tables, 257);
+    assert_eq!(verified.checked_retained_tables, 263);
     assert_eq!(captured.signed_root_profile, "framing_only");
     assert!(!captured
         .pending_recovery_requirements
@@ -527,12 +551,8 @@ async fn literal_file_uri_filename_is_anchored_before_sqlite_open() {
         .await
         .unwrap();
     pool.close().await;
-    let admitted = SourceAdmission::open_with_working_directory(
-        Path::new("file:other.db?mode=ro"),
-        f.directory.path(),
-    )
-    .unwrap();
-    assert_eq!(admitted.path, literal);
+    let admitted = SourceAdmission::open(&literal).unwrap();
+    assert_eq!(admitted.path, std::env::current_dir().unwrap().join(&literal));
     assert!(admitted.path.is_absolute());
     admitted.check_identity().unwrap();
     // A URI interpretation would wrongly open the other valid production DB.
@@ -682,3 +702,45 @@ fn archive_key_refuses_systemd_group_exception_without_changing_runtime_loader()
 
 #[path = "tests/constraints.rs"]
 mod constraints;
+
+#[test]
+fn relative_source_custody_rechecks_private_ancestors_and_absolute_identity() {
+    let f = fixture();
+    let parent = f.directory.path().join("source-parent");
+    fs::create_dir(&parent).unwrap();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+    let source = private_file(&parent, "source.db", b"original-source");
+    let admitted = SourceAdmission::open(&source).unwrap();
+    admitted.check_identity().unwrap();
+
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o720)).unwrap();
+    assert!(SourceAdmission::open(&source).is_err());
+    assert!(admitted.check_identity().is_err());
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let retained_parent = f.directory.path().join("retained-parent");
+    fs::rename(&parent, &retained_parent).unwrap();
+    fs::create_dir(&parent).unwrap();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+    private_file(&parent, "source.db", b"substitute-source");
+    assert!(admitted.check_identity().is_err());
+
+    let linked_parent = f.directory.path().join("linked-parent");
+    symlink(&retained_parent, &linked_parent).unwrap();
+    assert!(SourceAdmission::open(&linked_parent.join("source.db")).is_err());
+}
+
+#[test]
+fn absolute_source_keeps_full_ancestor_custody_when_root_is_foreign() {
+    use std::os::unix::fs::MetadataExt;
+
+    let f = fixture();
+    let source = private_file(f.directory.path(), "source.db", b"original-source");
+    let relative = SourceAdmission::open(&source).unwrap();
+    relative.check_identity().unwrap();
+    let root_owner = fs::metadata("/").unwrap().uid();
+    let absolute = std::env::current_dir().unwrap().join(&source);
+    if root_owner != 0 && root_owner != rustix::process::geteuid().as_raw() {
+        assert!(SourceAdmission::open(&absolute).is_err());
+    }
+}
