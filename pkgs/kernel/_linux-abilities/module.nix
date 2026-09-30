@@ -1,80 +1,40 @@
-##! Linux kernel artifact implementation selected through the ability graph.
+##! Package-owned Linux boot image and module ABI declarations.
 {
-  abilitySelection ? null,
-  config,
   lib,
-  packageArtifactFor,
+  package,
   packageName,
   packageVersion,
   ...
-}: let
-  kernelInterface = lib.abilities.interfaces.kernelPlatform.interfaces.kernel;
-  kernelArtifactSelector = lib.abilities.packageOutput {};
-  selectedBindings =
-    if abilitySelection == null
-    then []
-    else abilitySelection.bindingsForImplementation "kernel";
-  selected = builtins.length selectedBindings == 1;
-  selectedBinding =
-    if selected
-    then builtins.head selectedBindings
-    else if selectedBindings != []
-    then throw "the Linux kernel implementation requires exactly one selected binding"
-    else null;
-  providerReady =
-    selected
-    && selectedBinding.implementation.value.provide != null;
-  selectedKernelOutput =
-    config.aos.abilities.compositionOutputs.${selectedBinding.binding.request}."selected-kernel".value or null;
-  kernelArtifact = packageArtifactFor kernelArtifactSelector;
-  authoredKernel = {
-    _type = "aos-selected-kernel";
-    artifact = selectedKernelOutput;
-    name = "linux";
-    package = kernelArtifact;
-    targetPlatform = config.aos.kernel.targetPlatform;
-    identity = {
-      binding = selectedBinding.navigationKey;
-      implementation = selectedBinding.binding.implementation;
-      package = {
-        name = packageName;
-        version = packageVersion;
-      };
-      providerInstance = selectedBinding.providerInstance.identity;
-    };
-    configuration = {
-      bootImage = "${kernelArtifact}/boot/vmlinuz-${packageVersion}";
-      moduleTree = "${kernelArtifact}/lib/modules/${packageVersion}";
-      release = packageVersion;
-    };
-  };
-  kernelProjectionReady =
-    selectedKernelOutput
-    != null
-    && selectedKernelOutput == kernelArtifactSelector;
-  checkedProviderReady =
-    providerReady
-    && (
-      if kernelProjectionReady
-      then true
-      else throw "selected kernel projection differs from its checked planning output"
-    );
-in {
-  config = {
-    aos.abilities = {
-      implementations.kernel = {
-        description = "Supplies the selected Linux kernel artifact and module ABI.";
-        interface = kernelInterface.alias;
-        artifact = kernelArtifactSelector;
-        methods = [];
-        guarantees = [];
-        providerModule = {
-          artifact = lib.abilities.packageOutput {output = "module";};
-          path = "provider.nix";
+}: {
+  options.aos.kernel.available = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.submodule {
+      options = {
+        package = lib.mkOption {
+          type = lib.types.package;
+          description = "Immutable kernel package output.";
+        };
+        bootImage = lib.mkOption {
+          type = lib.types.str;
+          description = "Bootable image supplied by the kernel package.";
+        };
+        moduleTree = lib.mkOption {
+          type = lib.types.str;
+          description = "Loadable modules built against the kernel ABI.";
+        };
+        release = lib.mkOption {
+          type = lib.types.str;
+          description = "Kernel ABI release identifier.";
         };
       };
-    };
+    });
+    default = {};
+    description = "Kernel artifacts contributed by selected package modules.";
+  };
 
-    aos.kernel.selected = lib.mkIf checkedProviderReady authoredKernel;
+  config.aos.kernel.available.${packageName} = {
+    inherit package;
+    bootImage = "${package}/boot/vmlinuz-${packageVersion}";
+    moduleTree = "${package}/lib/modules/${packageVersion}";
+    release = packageVersion;
   };
 }

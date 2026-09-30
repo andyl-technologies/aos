@@ -22,6 +22,7 @@
   config,
   lib,
   pkgs,
+  packageModulesAvailable ? false,
   ...
 }: let
   cfg = config.aos.boot.secureBoot;
@@ -138,22 +139,31 @@
   # The PCR-policy public key must live inside the initrd: first-boot
   # sealing of /var reads it pre-switch-root. The initrd copies a fixed
   # package set, not the whole toplevel closure, so the measured-boot branch
-  # registers a minimal image-fixed artifact and adds it via
-  # aos.boot.initrd.packageRoots. The frozen artifact path keeps this module
-  # evaluable on-host without exposing a derivation builder.
-  pcrKeyForInitrd = config.aos.config.artifacts.pcr-public-key;
+  # retains a normal native artifact with a checked-in module. Re-evaluation
+  # receives this same public-only artifact rather than a derivation builder.
+  pcrKeyForInitrd = pkgs.mkDerivation {
+    pname = "aos-pcr-pubkey";
+    version = "1";
+    module = ../../pkgs/boot/_aos-boot-storage/pcr-policy-key;
+    moduleDeps = [pkgs.aos-boot-storage];
+    src = null;
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp ${toString cfg.measuredBoot.pcrPublicKey} "$out/pcr.pem"
+        '';
+      }
+    ];
+  };
+  retainPcrPolicy = _: {
+    packages = [pcrKeyForInitrd];
+    configuration = [];
+  };
 in {
+  imports = lib.optionals (!packageModulesAvailable) [../../pkgs/boot/_aos-boot-storage/measurement-options.nix];
   options.aos.boot.secureBoot = {
-    enable = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = ''
-        Sign the UKI and sd-boot for UEFI Secure Boot and ship the
-        guest-side enrollment tooling. Off by default: the reproducible
-        base owns no signing key.
-      '';
-    };
-
     externalFinalization = {
       enable = lib.mkOption {
         type = lib.types.bool;
@@ -286,21 +296,6 @@ in {
     };
 
     measuredBoot = {
-      enable = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = ''
-          Measure boot into the TPM and seal `/var` encryption to a
-          *signed PCR policy* (RFC-0006 phase 3). The UKI gets a signed
-          PCR policy (`.pcrsig`/`.pcrpkey`), and first boot LUKS2-formats
-          `/var` and enrolls a TPM2 token sealed to that policy plus a
-          recovery key. Because the seal tracks the policy key — not a
-          fixed PCR hash — any db-signed UKI unseals `/var` across OTA
-          upgrades, while a tampered/unsigned UKI or an SB-state change
-          does not. Requires `aos.boot.secureBoot.enable`.
-        '';
-      };
-
       pcrPrivateKey = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -309,24 +304,6 @@ in {
           PCR policy with it at build time. A release-time offline key,
           distinct from the db key and the module-signing key.
         '';
-      };
-
-      pcrPublicKey = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = ''
-          Path to the PCR-policy public key (PEM). The selected boot and
-          persistent-state providers publish and enforce this policy.
-          Required with pcrPrivateKey.
-        '';
-      };
-
-      _effectivePcrPublicKey = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        readOnly = true;
-        internal = true;
-        description = "Public-only PCR policy key retained by the image.";
       };
 
       signedPcrs = lib.mkOption {
@@ -485,32 +462,12 @@ in {
     })
 
     (lib.mkIf cfg.measuredBoot.enable {
-      # This is an image-fixed input, not a host-config build. Capture its
-      # stage-1 store path in the base library so the on-host evaluator can
-      # reuse it without requiring mkDerivation in the frozen package set.
-      aos.config._artifactSources.pcr-public-key =
-        if config.aos.config.frozenArtifacts ? "pcr-public-key"
-        then null
-        else
-          pkgs.mkDerivation {
-            pname = "aos-pcr-pubkey";
-            version = "1";
-            src = null;
-            phases = [
-              {
-                name = "install";
-                script = ''
-                  mkdir -p $out
-                  cp ${toString cfg.measuredBoot.pcrPublicKey} $out/pcr.pem
-                '';
-              }
-            ];
-          };
-
-      aos.boot.secureBoot.measuredBoot._effectivePcrPublicKey =
-        if cfg.measuredBoot.enable
-        then "${pcrKeyForInitrd}/pcr.pem"
-        else null;
+      aos.config._artifactSources.pcr-public-key = pcrKeyForInitrd;
+      aos.activation.stages.host.configurationBuilders = [retainPcrPolicy];
+      aos.activation.stages.initrd.configurationBuilders = [retainPcrPolicy];
+      # Selection exposes the public path to image-only builders. Final stages
+      # obtain the declaration solely from the selected native key module.
+      aos.boot.secureBoot.measuredBoot._effectivePcrPublicKey = lib.mkIf (!packageModulesAvailable) "${pcrKeyForInitrd}/pcr.pem";
 
       assertions = [
         {
@@ -542,7 +499,7 @@ in {
     # resulting stage module does not depend on package-owned host options
     # that are absent from the smaller selection and initrd option trees.
     (lib.mkIf (cfg.measuredBoot.enable && config.aos.boot.storage.backend != "zfs-zvol") {
-      aos.abilities.stages.initrd = {
+      aos.activation.stages.initrd = {
         modules = [
           {
             aos.security.measuredVar = {

@@ -60,11 +60,10 @@ else
             --arg release ${lib.escapeShellArg config.aos.system.version} \
             --arg architecture ${lib.escapeShellArg targetPlatform.constraints.cpu} \
             --arg platform ${lib.escapeShellArg targetPlatform.system} \
-            --argjson module_abi ${toString config.aos.system.moduleAbi} \
             --argjson recovery_abi ${toString config.aos.boot.recovery.abi} \
             --argjson components "$components" \
             '{schema: $schema, release: $release, architecture: $architecture,
-              platform: $platform, module_abi: $module_abi,
+              platform: $platform,
               recovery_abi: $recovery_abi, components: $components}' \
             > "$out/recovery-bundle.json"
           openssl dgst -sha256 \

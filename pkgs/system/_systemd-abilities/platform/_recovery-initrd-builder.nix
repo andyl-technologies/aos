@@ -18,7 +18,6 @@
   recoveryCopy,
   recoveryAbi,
   platform,
-  moduleAbi,
 }: let
   inherit
     (pkgs)
@@ -208,7 +207,6 @@ in
           AOS_RECOVERY_COPY=${copy}
           AOS_RECOVERY_ABI=${toString recoveryAbi}
           AOS_PLATFORM=${platform}
-          AOS_MODULE_ABI=${toString moduleAbi}
           OS_RELEASE
           cp root/etc/os-release root/etc/initrd-release
           cat > root/etc/passwd <<'PASSWD'

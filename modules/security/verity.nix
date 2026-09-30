@@ -27,60 +27,14 @@
 ##!   enable, dataDevice, hashDevice
 {
   config,
+  packageModulesAvailable ? false,
   pkgs,
   lib,
   ...
 }: let
   cfg = config.aos.security.verity;
 in {
-  options.aos.security.verity = {
-    ## Enable dm-verity root anchoring for the immutable erofs root.
-    ##
-    ## Opt-in. When false (the default, and every ext4/VM-test system) this
-    ## module is completely inert: no kernel params, no initrd module, no root
-    ## device change, and the build-side hash tree / partition / cmdline append
-    ## stay gated off. Enable it only on a measured-boot production variant whose
-    ## root filesystem is `erofs` (a writable ext4 root must never be verity-
-    ## protected — it would be mutated and break the root hash).
-    ##
-    ## # See Also
-    ## - `aos.security.verity.dataDevice`, `aos.security.verity.hashDevice`
-    enable = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = ''
-        Enable dm-verity root anchoring. When enabled, the build
-        produces a Merkle hash tree over the read-only erofs root, ships it in a
-        dedicated `root-a-hash` GPT partition, and bakes the root hash into the
-        measured UKI `.cmdline`. At boot, systemd-veritysetup-generator assembles
-        `/dev/mapper/root` and the kernel verifies every block on read. Requires
-        an `erofs` root filesystem.
-      '';
-    };
-
-    ## Block device carrying the read-only root filesystem data (verity lower).
-    dataDevice = lib.mkOption {
-      type = lib.types.str;
-      default = config.aos.boot.storage.resolvedDevices.rootA;
-      description = ''
-        Block device containing the read-only root filesystem data — the device
-        dm-verity verifies on every read. Discovered by GPT partlabel so it is
-        stable across disk renaming (vda vs. nvme0n1); matches the `root-a`
-        partition the image builder writes.
-      '';
-    };
-
-    ## Block device carrying the dm-verity Merkle hash tree.
-    hashDevice = lib.mkOption {
-      type = lib.types.str;
-      default = config.aos.boot.storage.resolvedDevices.rootAHash;
-      description = ''
-        Block device containing the dm-verity hash tree (Merkle tree). This is
-        the `root-a-hash` partition the image builder places immediately after
-        `root-a`, sized from the build-time `root-verity-size-bytes`.
-      '';
-    };
-  };
+  imports = lib.optionals (!packageModulesAvailable) [../../pkgs/boot/_aos-boot-storage/policy-options.nix];
 
   config = lib.mkIf cfg.enable {
     assertions = [
@@ -128,15 +82,5 @@ in {
     # before persistent state becomes available.
     environment.systemPackages = [pkgs.aos-boot-identity pkgs.aos-verity-root-guard];
     aos.boot.initrd.packageRoots = [pkgs.aos-boot-identity pkgs.aos-verity-root-guard];
-    aos.abilities.stages.initrd = {
-      modules = [
-        {
-          aos.security = {
-            bootIdentityServices.enable = true;
-            verityRootVerification.enable = true;
-          };
-        }
-      ];
-    };
   };
 }

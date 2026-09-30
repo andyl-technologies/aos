@@ -16,12 +16,8 @@
   config = system.config;
   receivedInitrdPaths = config.aos.boot.stageInputPaths.receivedInitrd;
   receivedInitrdBundleDestination = lib.escapeShellArg ("rootfs" + receivedInitrdPaths.bundle);
-  receivedInitrdIdentityDestination = lib.escapeShellArg ("rootfs" + receivedInitrdPaths.identity);
-  receivedInitrdContractDestination = lib.escapeShellArg ("rootfs" + receivedInitrdPaths.contract);
   hostStagePaths = config.aos.boot.stageInputPaths.host;
   hostStageBundleDestination = lib.escapeShellArg ("rootfs" + hostStagePaths.bundle);
-  hostStageIdentityDestination = lib.escapeShellArg ("rootfs" + hostStagePaths.identity);
-  hostStageContractDestination = lib.escapeShellArg ("rootfs" + hostStagePaths.contract);
   sb = config.aos.boot.secureBoot;
   externalFinalization = sb.externalFinalization.enable;
   localSecureBootSigning = sb.enable && !externalFinalization;
@@ -80,28 +76,19 @@
       kernelModulePackages = config.aos.kernel.modulePackages;
       firmwarePackages = config.aos.kernel.firmwarePackages;
       postPopulate = ''
+        ${lib.optionalString ((config.system.build.bootMetadataBinding or null) != null) ''
+          mkdir -p rootfs/usr/lib/aos
+          cp ${config.system.build.bootMetadataBinding}/binding.json rootfs/usr/lib/aos/boot-metadata-binding.json
+        ''}
         ${lib.optionalString config.aos.boot.initrd.abilityHandoff.enable ''
-          install -D -m 0444 ${config.system.build.initrdStaticAbilityContract}/contract.json \
-            ${receivedInitrdContractDestination}
-          mkdir -p "$(dirname ${receivedInitrdIdentityDestination})"
-          printf '%s' '${config.system.build.initrdStaticAbilityContract}/contract.json' \
-            > ${receivedInitrdIdentityDestination}
-          chmod 0444 ${receivedInitrdIdentityDestination}
-          install -D -m 0444 ${config.system.build.initrdSourceStageBundle}/source-stage-bundle.json \
-            ${receivedInitrdBundleDestination}
-
-          install -D -m 0444 ${config.system.build.staticAbilityContract}/contract.json \
-            ${hostStageContractDestination}
-          mkdir -p "$(dirname ${hostStageIdentityDestination})"
-          printf '%s' '${config.system.build.staticAbilityContract}/contract.json' \
-            > ${hostStageIdentityDestination}
-          chmod 0444 ${hostStageIdentityDestination}
-          install -D -m 0444 ${config.system.build.hostSourceStageBundle}/source-stage-bundle.json \
-            ${hostStageBundleDestination}
+          mkdir -p ${receivedInitrdBundleDestination} ${hostStageBundleDestination}
+          cp -a ${config.system.build.initrdDeploymentBundle}/. ${receivedInitrdBundleDestination}/
+          cp -a ${config.system.build.hostDeploymentBundle}/. ${hostStageBundleDestination}/
         ''}
 
         ${lib.optionalString sb.enable ''
           mkdir -p rootfs/usr/lib/aos/image-trust
+          cp ${dbCertificate} rootfs/usr/lib/aos/image-trust/boot-db.crt
           cp ${activeImageDbCerts}/active-db-certs.pem \
             rootfs/usr/lib/aos/image-trust/active-db-certs.pem
         ''}

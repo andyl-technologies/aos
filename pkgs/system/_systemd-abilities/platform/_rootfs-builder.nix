@@ -396,11 +396,18 @@ in
               # edge. See spec v12 §6.1.
               ln -sfn "$TOPLEVEL" rootfs/aos-toplevel
 
+              # The native host controller consumes this authenticated bundle
+              # before a profile generation has been published.
+              mkdir -p rootfs/usr/lib/aos/host/deployment
+              cp -a "$TOPLEVEL/host-deployment/." rootfs/usr/lib/aos/host/deployment/
+
               # ── 9. /aos-registration Nix DB seed ───────────────────────────
               # Stage-2 loads this plain text `nix-store --load-db` stream to
               # register the image closure without canonicalising/chowning store
               # contents. Copy the bytes instead of symlinking the derivation.
               cp "$REGINFO/registration" rootfs/aos-registration
+              registrationDigest=$(sha256sum rootfs/aos-registration)
+              printf '%s\n' "''${registrationDigest%% *}" > rootfs/aos-registration.sha256
 
               # /etc/machine-id no longer touched here — stage-1's
               # aos-machine-id.service generates /var/etc/machine-id on
@@ -554,6 +561,7 @@ in
             # decoded hash bytes; dm-verity passes argv as the hex string to
             # verify_pkcs7_signature.
             printf '%s' "$root_hash" > root.roothash
+            printf '%s' "$VERITY_UUID" > root.verity-uuid
             if [ -n "''${SIGN_VERITY:-}" ]; then
               openssl cms -sign -binary \
                 -in root.roothash \
@@ -597,6 +605,7 @@ in
               + lib.optionalString verity ''
                 mv root.verity $out/root.verity
                 mv root.roothash $out/root.roothash
+                mv root.verity-uuid $out/root.verity-uuid
                 mv root.roothash.p7s $out/root.roothash.p7s
                 mv root-verity-size-bytes $out/root-verity-size-bytes
               '';

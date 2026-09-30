@@ -1,7 +1,7 @@
 //! Closed unsigned-image assembly manifest.
 //!
-//! Current v2 assemblies include the resolved kernel configuration, exact
-//! initrd contract, and stage-labelled static ability contracts as captured
+//! Current v3 assemblies include the resolved kernel configuration, exact
+//! initrd contract, and native deployment bundles as captured
 //! inputs. Archived v1 assemblies retain their original file contract.
 //!
 //! ```json
@@ -25,8 +25,8 @@ use crate::initrd_contract::InitrdStageContractV1;
 /// Schema for deterministic public-only image inputs.
 pub const UNSIGNED_IMAGE_ASSEMBLY_V1: &str = "aos.image.unsigned-assembly/v1";
 
-/// Current assembly schema requiring the checked image and ability contracts.
-pub const UNSIGNED_IMAGE_ASSEMBLY_V2: &str = "aos.image.unsigned-assembly/v2";
+/// Current assembly schema requiring the checked image and native deployments.
+pub const UNSIGNED_IMAGE_ASSEMBLY_V3: &str = "aos.image.unsigned-assembly/v3";
 
 /// Required deterministic input or public trust artifact.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -34,16 +34,34 @@ pub const UNSIGNED_IMAGE_ASSEMBLY_V2: &str = "aos.image.unsigned-assembly/v2";
 pub enum AssemblyFileKind {
     /// Linux kernel output, including its embedded module authority.
     Kernel,
-    /// Resolved configuration of the exact built kernel; required by v2.
+    /// Resolved configuration of the exact built kernel; required by v3.
     KernelConfig,
     /// Unsigned normal initrd input.
     Initrd,
     /// Canonical stage and handoff contract for the normal initrd.
     InitrdContract,
-    /// Static ability declarations and obligations for the initrd stage.
-    InitrdStaticAbilityContract,
-    /// Static ability declarations and obligations for the host stage.
-    HostStaticAbilityContract,
+    /// Captured native initrd deployment transaction input.
+    InitrdTransaction,
+    /// Captured native initrd deployment packages input.
+    InitrdPackages,
+    /// Captured native initrd deployment admission input.
+    InitrdAdmission,
+    /// Captured native initrd deployment admissiondigest input.
+    InitrdAdmissionDigest,
+    /// Captured native initrd deployment evaluation input.
+    InitrdEvaluation,
+    /// Captured native host deployment transaction input.
+    HostTransaction,
+    /// Captured native host deployment packages input.
+    HostPackages,
+    /// Captured native host deployment admission input.
+    HostAdmission,
+    /// Captured native host deployment admissiondigest input.
+    HostAdmissionDigest,
+    /// Captured native host deployment evaluation input.
+    HostEvaluation,
+    /// Captured native host deployment installed input.
+    HostInstalled,
     /// Unsigned immutable root filesystem input.
     RootFilesystem,
     /// Deterministic dm-verity hash tree for the unsigned root.
@@ -120,8 +138,6 @@ pub struct UnsignedImageAssemblyV1 {
     pub system_variant: String,
     /// Exact kernel release used for module signatures.
     pub kernel_release: String,
-    /// Monotonic AOS module ABI.
-    pub module_abi: u64,
     /// Recovery environment compatibility ABI.
     pub recovery_abi: u64,
     /// Monotonic SBAT generation.
@@ -137,7 +153,7 @@ pub struct UnsignedImageAssemblyV1 {
     /// Fail-closed maximum artifact sizes.
     pub budgets: ImageBudgetsV1,
     /// Checked stage and handoff facts for the unsigned initrd input required
-    /// by v2 assemblies. Finalized rebuilt archive bytes have their own output
+    /// by v3 assemblies. Finalized rebuilt archive bytes have their own output
     /// artifact identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initrd_contract: Option<InitrdStageContractV1>,
@@ -314,7 +330,7 @@ impl UnsignedImageAssemblyV1 {
     pub fn validate(&self) -> Result<()> {
         if !matches!(
             self.schema_version.as_str(),
-            UNSIGNED_IMAGE_ASSEMBLY_V1 | UNSIGNED_IMAGE_ASSEMBLY_V2
+            UNSIGNED_IMAGE_ASSEMBLY_V1 | UNSIGNED_IMAGE_ASSEMBLY_V3
         ) || !self.platform.supports_images()
         {
             bail!("unsigned image assembly requires a supported schema and a Linux platform");
@@ -340,11 +356,7 @@ impl UnsignedImageAssemblyV1 {
         {
             bail!("image artifact budgets must be nonzero");
         }
-        if self.version.is_empty()
-            || self.module_abi == 0
-            || self.recovery_abi == 0
-            || self.sbat_generation == 0
-        {
+        if self.version.is_empty() || self.recovery_abi == 0 || self.sbat_generation == 0 {
             bail!("unsigned image assembly has an invalid version or monotonic generation");
         }
         self.sbat.validate()?;
@@ -400,10 +412,10 @@ impl UnsignedImageAssemblyV1 {
         }
         let has_resolved_kernel_config = self.schema_version != UNSIGNED_IMAGE_ASSEMBLY_V1;
         if kinds.contains(&AssemblyFileKind::KernelConfig) != has_resolved_kernel_config {
-            bail!("resolved kernel configuration requires the v2 assembly schema");
+            bail!("resolved kernel configuration requires the v3 assembly schema");
         }
         self.validate_initrd_contract(&kinds)?;
-        self.validate_static_ability_contracts(&kinds)?;
+        self.validate_native_deployments(&kinds)?;
         for tool in &self.tools {
             require_identifier(&tool.id, "assembly tool id")?;
             require_store_executable_path(&tool.executable).with_context(|| {
@@ -435,11 +447,11 @@ impl UnsignedImageAssemblyV1 {
     }
 
     fn validate_initrd_contract(&self, kinds: &BTreeSet<AssemblyFileKind>) -> Result<()> {
-        let requires_contract = self.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V2;
+        let requires_contract = self.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V3;
         if kinds.contains(&AssemblyFileKind::InitrdContract) != requires_contract
             || self.initrd_contract.is_some() != requires_contract
         {
-            bail!("initrd stage contract requires the v2 assembly schema");
+            bail!("initrd stage contract requires the v3 assembly schema");
         }
         let Some(contract) = &self.initrd_contract else {
             return Ok(());
@@ -453,7 +465,7 @@ impl UnsignedImageAssemblyV1 {
             .files
             .iter()
             .find(|file| file.kind == AssemblyFileKind::Initrd)
-            .ok_or_else(|| anyhow::anyhow!("v2 assembly lacks its normal initrd"))?;
+            .ok_or_else(|| anyhow::anyhow!("v3 assembly lacks its normal initrd"))?;
         if contract.artifact.size_bytes != initrd.size_bytes
             || contract.artifact.sha256 != initrd.sha256
         {
@@ -464,7 +476,7 @@ impl UnsignedImageAssemblyV1 {
             .files
             .iter()
             .find(|file| file.kind == AssemblyFileKind::InitrdContract)
-            .ok_or_else(|| anyhow::anyhow!("v2 assembly lacks its initrd contract file"))?;
+            .ok_or_else(|| anyhow::anyhow!("v3 assembly lacks its initrd contract file"))?;
         let contract_bytes = canonical::to_vec(contract)?;
         if contract_file.size_bytes != u64::try_from(contract_bytes.len())?
             || contract_file.sha256 != Sha256Digest::of_bytes(&contract_bytes)
@@ -474,14 +486,13 @@ impl UnsignedImageAssemblyV1 {
         Ok(())
     }
 
-    fn validate_static_ability_contracts(&self, kinds: &BTreeSet<AssemblyFileKind>) -> Result<()> {
-        let requires_contracts = self.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V2;
-        for kind in [
-            AssemblyFileKind::InitrdStaticAbilityContract,
-            AssemblyFileKind::HostStaticAbilityContract,
-        ] {
-            if kinds.contains(&kind) != requires_contracts {
-                bail!("static ability contracts require the v2 assembly schema");
+    fn validate_native_deployments(&self, kinds: &BTreeSet<AssemblyFileKind>) -> Result<()> {
+        let requires_contracts = self.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V3;
+        for stage in ["initrd", "host"] {
+            for (kind, _) in native_deployment_files(stage) {
+                if kinds.contains(&kind) != requires_contracts {
+                    bail!("native deployment inputs require the current assembly schema");
+                }
             }
         }
         Ok(())
@@ -693,5 +704,28 @@ mod tests {
         let current: ImageBudgetsV1 = serde_json::from_str(updated).unwrap();
         assert_eq!(current.converted_download_limit_mib(), 896);
         assert_eq!(current.recovery_bundle_limit_mib(), 1024);
+    }
+}
+
+/// Enumerates the complete captured native document set for one image stage.
+pub(crate) fn native_deployment_files(stage: &str) -> Vec<(AssemblyFileKind, &'static str)> {
+    use AssemblyFileKind::*;
+    match stage {
+        "initrd" => vec![
+            (InitrdTransaction, "transaction.json"),
+            (InitrdPackages, "packages.json"),
+            (InitrdAdmission, "admission.json"),
+            (InitrdAdmissionDigest, "admission-sha256"),
+            (InitrdEvaluation, "evaluation.json"),
+        ],
+        "host" => vec![
+            (HostTransaction, "transaction.json"),
+            (HostPackages, "packages.json"),
+            (HostAdmission, "admission.json"),
+            (HostAdmissionDigest, "admission-sha256"),
+            (HostEvaluation, "evaluation.json"),
+            (HostInstalled, "installed.json"),
+        ],
+        _ => Vec::new(),
     }
 }

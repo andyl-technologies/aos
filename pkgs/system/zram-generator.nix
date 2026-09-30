@@ -11,6 +11,12 @@
   pkg-config,
   lowdown,
   systemd,
+  service-management,
+  kmod,
+  aos-filesystem-provider,
+  storage-interface,
+  aos-runtime-checks,
+  util-linux,
 }: let
   version = "1.2.1";
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
@@ -60,8 +66,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -119,11 +136,12 @@ in
     inherit version src;
 
     buildDeps = [rustForBuild jq pkg-config lowdown];
-    runtimeDeps = [systemd];
+    runtimeDeps = [systemd util-linux];
     propagatedDeps = [];
     disallowedReferences = [cargoDeps rust];
 
-    abilities = ./_zram-generator;
+    module = ./_zram-generator;
+    moduleDeps = [systemd service-management kmod aos-filesystem-provider storage-interface aos-runtime-checks];
 
     phases = [
       {

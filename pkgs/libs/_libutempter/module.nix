@@ -1,38 +1,30 @@
-##! Package-owned privileged helper request for terminal accounting.
+##! Owns the privileged terminal-accounting helper and its utmp group.
 {
   config,
   lib,
+  package,
   ...
 }: let
   cfg = config.aos.security.utempter;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  wrapper = serviceManagement.forProducer {
-    consumerInstance = "runtime";
-    key = "wrapper-utempter";
-    interface = serviceManagement.interfaces.privilegedExecutable;
-    methods = ["observe"];
-    parameters = {
-      name = "utempter";
-      source = {
-        artifact = lib.abilities.packageOutput {};
-        path = "lib/utempter/utempter";
-      };
-      owner = "root";
-      group = "utmp";
-      mode = "2711";
-      maximum_size_bytes = lib.abilities.types.limits.maxSafeInteger;
-    };
-  };
+  group = config.aos.abilities.identity.operations.group.effects.utempter;
 in {
-  options.aos.security.utempter.enable = lib.mkOption {
-    type = lib.abilities.types.boolean;
-    default = false;
-    description = "Allow terminal programs to update utmp through libutempter.";
-  };
-
-  config = serviceManagement.producerModule {
-    inherit config lib;
-    producers = [wrapper];
-    enabled = cfg.enable;
+  options.aos.security.utempter.enable = lib.mkEnableOption "terminal accounting through libutempter";
+  config = lib.mkIf cfg.enable {
+    aos.abilities = {
+      identity.operations.group.effects.utempter.input = {
+        name = "utmp";
+        requested_id = 22;
+      };
+      filesystem.operations.privilegedExecutable.effects.utempter = {
+        after = [group.outputs.name];
+        input = {
+          name = "utempter";
+          source = "${package}/libexec/utempter/utempter";
+          owner = "root";
+          group = "utmp";
+          mode = "2711";
+        };
+      };
+    };
   };
 }

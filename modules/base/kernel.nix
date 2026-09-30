@@ -9,77 +9,32 @@
   config,
   pkgs,
   lib,
-  packageArtifactForOwner,
+  packageModulesAvailable ? false,
   ...
 }: let
-  selectedPackage = owner: selector: let
-    package = pkgs.${selector.package} or (throw "unknown external kernel package '${selector.package}'");
-    defaultOutput = package.outputName or "out";
-    authenticatedArtifact = packageArtifactForOwner owner selector;
-  in
-    if selector.output != defaultOutput
-    then throw "external kernel package '${selector.package}' must select its default output"
-    else if builtins.toString package != builtins.toString authenticatedArtifact
-    then throw "external kernel package '${selector.package}' is outside package '${owner}'s authenticated dependency view"
-    else package;
   contributedPackages =
-    lib.concatMap
-    (owner:
-      builtins.map
-      (selector: {inherit owner selector;})
-      config.aos.kernel.externalPackages.${owner})
-    (builtins.attrNames config.aos.kernel.externalPackages);
+    lib.concatLists
+    (builtins.attrValues config.aos.kernel.externalPackages);
   kernelPackages = lib.uniqueBy builtins.toString (
     builtins.map
-    (entry: (selectedPackage entry.owner entry.selector).override {kernel = config.system.build.kernel;})
+    (package: let
+      source =
+        if package ? override
+        then package
+        else pkgs.${package.name}
+          or (throw "external kernel package '${package.name}' has no source recipe");
+    in
+      if builtins.toString source != builtins.toString package
+      then throw "external kernel source recipe differs from its retained package artifact"
+      else source.override {kernel = config.system.build.kernel;})
     contributedPackages
   );
 in {
-  imports = [
-    ./_kernel-abilities.nix
-    ./_kernel-package-options.nix
+  imports = lib.optionals (!packageModulesAvailable) [
+    ../../pkgs/system/_aos-host-policy/kernel.nix
   ];
 
   options.aos.kernel = {
-    ## Enable TCP BBR congestion control.
-    bbr = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = ''
-        Enable TCP BBR congestion control. BBR achieves higher throughput and
-        lower latency than CUBIC on lossy or high-BDP paths. When enabled,
-        the tcp_bbr module is loaded and the default congestion control
-        algorithm and queue discipline are converged through the native
-        kernel providers.
-      '';
-    };
-
-    ## Performance-oriented sysctl parameters.
-    ##
-    ## # See Also
-    ## - `aos.security.hardening.sysctl` (security sysctls)
-    sysctl = lib.mkOption {
-      type = lib.types.attrsOf lib.types.str;
-      # Keep the base map in a normal definition below. An option default is
-      # discarded wholesale as soon as any module contributes one key.
-      default = {};
-      description = ''
-        Kernel parameters converged through the native kernel-tunable
-        provider. Modules merge definitions per key; normal priority can
-        replace one base key without discarding unrelated performance policy.
-      '';
-    };
-
-    ## Kernel modules to load at boot.
-    modules = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [];
-      description = ''
-        Kernel modules loaded and observed through the native kmod provider.
-        Example: ["br_netfilter" "overlay"].
-      '';
-    };
-
     modulePackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [];
@@ -116,30 +71,6 @@ in {
   config = {
     aos.kernel = {
       modulePackages = kernelPackages;
-      sysctl = lib.mkDefault {
-        # This must be a mergeable definition rather than the option default so a
-        # package policy adding one tunable retains every unrelated base key.
-        # -- Network performance --
-        "net.core.somaxconn" = "32768";
-        "net.core.netdev_max_backlog" = "16384";
-        # Socket buffer ceilings for high-throughput network services.
-        "net.core.rmem_max" = "7500000";
-        "net.core.wmem_max" = "7500000";
-
-        # -- Virtual memory --
-        "vm.swappiness" = "10";
-        # Raise the mmap region ceiling so apps that map many regions
-        # (modern games, large JVMs, container runtimes) don't hit
-        # ENOMEM from the default 65530 limit.
-        "vm.max_map_count" = "1048576";
-
-        # -- Filesystem watches (IDEs, file sync, container runtimes) --
-        "fs.inotify.max_user_instances" = "8192";
-        "fs.inotify.max_user_watches" = "524288";
-
-        # -- Process limits --
-        "kernel.pid_max" = "4194304";
-      };
     };
 
     aos.boot.recovery.extraPackages = kernelPackages;

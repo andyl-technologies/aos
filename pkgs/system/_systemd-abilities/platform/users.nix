@@ -1,14 +1,8 @@
 ##! Package-owned systemd service accounts.
 {
-  abilitySelection ? null,
   lib,
   ...
 }: let
-  managerBindings =
-    if abilitySelection == null
-    then []
-    else abilitySelection.bindingsForImplementation "system-manager";
-  selected = builtins.length managerBindings == 1;
   systemdUsers = {
     systemd-journal = {
       uid = 190;
@@ -66,7 +60,7 @@
     })
     systemdUsers;
 in {
-  config = lib.mkIf selected {
+  config = {
     aos.users.users = systemdUsers;
     aos.users.groups = systemdGroups;
   };

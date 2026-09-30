@@ -42,6 +42,9 @@
 ##!                    image. `null` (default) leaves the cmdline untouched, so
 ##!                    non-verity UKIs are byte-identical.
 ##!
+##! rootVerityUuidFile binds the matching verity superblock UUID in the signed
+##! command line, so boot evidence never substitutes a live observed UUID.
+##!
 ##! Output: $out/aos-${name}-${version}.efi
 {
   mkDerivation,
@@ -63,6 +66,7 @@
   pcrPrivateKey ? null,
   pcrPublicKey ? null,
   rootHashFile ? null,
+  rootVerityUuidFile ? null,
 }: let
   efiArchitectures = {
     x86_64 = "x64";
@@ -139,6 +143,16 @@ in
             if rootHashFile != null
             then ''printf '%s roothash=%s' "${cmdline}" "$(cat ${rootHashFile})" > cmdline''
             else ''printf '%s' "${cmdline}" > cmdline''
+          }
+
+          ${
+            if rootVerityUuidFile != null
+            then ''
+              verity_uuid=$(cat ${rootVerityUuidFile})
+              printf '%s' "$verity_uuid" | grep -Eq '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$'
+              printf ' aos.verity-uuid=%s' "$verity_uuid" >> cmdline
+            ''
+            else ""
           }
 
           # Resolve the kernel's actual vmlinuz path — the kernel

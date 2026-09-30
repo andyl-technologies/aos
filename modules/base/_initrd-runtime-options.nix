@@ -5,17 +5,6 @@
   pkgs,
   ...
 }: let
-  types = lib.abilities.types;
-  packageOwnedMap = import ../_package-owned-map.nix {inherit lib;};
-  runtimeFileMap = types.map {
-    keyMaxLength = 128;
-    keySyntax = "local-key-v1";
-    maxEntries = 4096;
-    value = types.string {
-      maxLength = types.limits.maxStringLength;
-      syntax = null;
-    };
-  };
   validFileName = name:
     builtins.match "[A-Za-z0-9][A-Za-z0-9._-]*" name != null;
   runtimeFileTree = group: files:
@@ -31,12 +20,7 @@ in {
   options = {
     aos.initrdRuntime = {
       artifacts = lib.mkOption {
-        type = packageOwnedMap (types.list {
-          element = types.executionPath;
-          maxItems = 256;
-          unique = true;
-          canonicalOrder = true;
-        });
+        type = lib.types.attrsOf (lib.types.listOf lib.types.str);
         default = {};
         extensible = true;
         description = ''
@@ -46,7 +30,7 @@ in {
       };
 
       files = lib.mkOption {
-        type = packageOwnedMap runtimeFileMap;
+        type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
         default = {};
         extensible = true;
         description = ''

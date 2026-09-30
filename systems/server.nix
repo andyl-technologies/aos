@@ -7,17 +7,20 @@
 ##! Buildable with empty config root — all required options have defaults.
 {
   lib,
+  packageModulesAvailable ? false,
   pkgs,
   ...
 }: {
-  imports = [
-    ./_artifact-backend.nix
-    ./_base-packages.nix
-    ./_full-host-budgets.nix
-    ./_image-builder.nix
-    ./_kernel.nix
-    ./_system-manager.nix
-  ];
+  imports =
+    lib.optionals (!packageModulesAvailable) [../pkgs/system/_aos-host-policy/baseline/boot-policy.nix]
+    ++ [
+      ./_artifact-backend.nix
+      ./_base-packages.nix
+      ./_full-host-budgets.nix
+      ./_image-builder.nix
+      ./_kernel.nix
+      ./_system-manager.nix
+    ];
 
   # Image capability: immutable root with writable state provisioned on /var.
   aos.image.enable = true;
@@ -27,8 +30,6 @@
   # F1 is part of the production image contract: the base library/evaluator
   # root is authenticated by the roothash carried in the signed/measured UKI.
   # Specialized writable-root test variants may override this mkDefault.
-  aos.security.verity.enable = lib.mkDefault true;
-  aos.boot.initrd.abilityHandoff.enable = lib.mkDefault true;
   aos.image.budgets = {
     maxVerityMiB = 16;
     maxInitrdMiB = 132;
@@ -40,10 +41,8 @@
   # the golden image policy-neutral at a weaker priority so authenticated
   # host.nix or aos.roles.server/aos.roles.edge can select runtime services
   # without rebuilding the image.
-  aos.services.chrony.enable = lib.mkOverride 1500 false;
-  aos.services.ssh.enable = lib.mkOverride 1500 false;
+  aos.activation.stages.host.configuration = ["${pkgs.aos-host-policy.module}/baseline/server.nix"];
   aos.image.hostConfigClosures = [pkgs.chrony pkgs.openssh];
 
   # Image capability: support encrypted state/swap selected by host policy.
-  aos.kernel.modules = ["dm-crypt" "aes" "xts"];
 }

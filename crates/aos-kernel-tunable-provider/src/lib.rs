@@ -1,9 +1,8 @@
-//! Checked convergence of bounded kernel-tunable maps through procfs.
+//! Native Linux kernel-tunable operations with durable baseline restoration.
 //!
-//! The provider owns the Linux-specific realization of the portable
-//! `aos.kernel.tunables` interface. It records the exact values it displaced
-//! before the first write so removal can restore them, and it derives every
-//! procfs path from a checked tunable key.
+//! Each effect saves displaced procfs values before writing. Reconfiguration
+//! restores keys removed from the desired map; teardown restores every baseline.
+//! Pending restoration remains in the marker until its writes have completed.
 
 #![forbid(unsafe_code)]
 
@@ -14,83 +13,47 @@ use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_ability_model::{
-    AbilityValue, AccessMode, LocalKey, MethodSemantics, ResourceReference, RevisionId,
-};
 use aos_contract::Sha256Digest;
-use aos_provider_protocol::{
-    ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
-    AdmissionResult, AdmissionRevision, BoundNativeContext, INVOCATION_SCHEMA, Invocation,
-    InvocationDisposition, InvocationPurpose, InvocationResult, RESULT_SCHEMA, ResourceContext,
-    SupportedPurposes, resource_set_digest, validate_admission_resource, validate_resource_context,
-    validate_resource_contexts,
-};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-const CONTEXT_SCHEMA: &str = "aos.kernel.tunables-context/v1";
-const MARKER_SCHEMA: &str = "aos.kernel.tunables-state/v1";
+const MARKER_SCHEMA: &str = "aos.kernel.tunables-native-state/v1";
 const PROC_ROOT: &str = "/proc/sys";
 const STATE_ROOT: &str = "/run/aos/kernel-tunables";
-const MAX_MARKER_BYTES: u64 = 3 * 1024 * 1024;
+const MAX_MARKER_BYTES: u64 = 256 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct TunableRequest {
     values: BTreeMap<String, String>,
-    dependencies: Vec<ResourceReference>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct TunableRealization {
-    #[serde(rename = "schema")]
-    _schema: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum TunableState {
-    Applied,
-    Drifted,
-    Unmanaged,
-    Unknown,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct TunableObservation {
-    schema: String,
-    expected: TunableRequest,
-    observed: BTreeMap<String, String>,
-    state: TunableState,
-    discrepancies: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ProviderContext {
-    schema: String,
+#[derive(Deserialize)]
+struct Invocation {
+    id: String,
+    revision: String,
+    action: String,
+    input: TunableRequest,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StateMarker {
     schema: String,
-    revision: RevisionId,
+    revision: String,
     baseline: BTreeMap<String, String>,
     managed: BTreeSet<String>,
     pending_restore: BTreeSet<String>,
 }
 
-/// Handles the package-owned kernel-tunable ability.
+/// Converges Linux procfs tunables and retains the values it displaced.
 pub struct KernelTunableProvider {
     proc_root: PathBuf,
     state_root: PathBuf,
 }
 
 impl KernelTunableProvider {
-    /// Constructs the production provider over the Linux procfs ABI.
+    /// Constructs a provider for the production procfs and runtime state paths.
     #[must_use]
     pub fn production() -> Self {
         Self {
@@ -99,269 +62,88 @@ impl KernelTunableProvider {
         }
     }
 
-    #[cfg(test)]
-    fn for_test(proc_root: PathBuf, state_root: PathBuf) -> Self {
-        Self {
-            proc_root,
-            state_root,
-        }
-    }
-
-    /// Handles one bounded command invocation and emits canonical JSON.
+    /// Executes one native apply, remove, or observe invocation.
     ///
     /// # Errors
-    ///
-    /// Returns an error when the wire contract, selected method, dependency
-    /// contexts, tunable keys, state marker, or procfs operation is invalid.
+    /// Returns an error for malformed input, invalid tunables, unreadable state,
+    /// or unsuccessful procfs writes and baseline restoration.
     pub fn handle(&self, purpose: &str, input: &[u8]) -> Result<Vec<u8>> {
-        let result = match purpose {
-            "admit" => {
-                let request: AdmissionRequest =
-                    aos_contract::canonical::from_slice(input, "kernel-tunable admission request")?;
+        ensure!(
+            input.len() <= 256 * 1024,
+            "invocation exceeds its byte bound"
+        );
+        let invocation: Invocation = serde_json::from_slice(input)?;
+        validate_request(&invocation.input)?;
+        ensure!(
+            !invocation.id.is_empty() && invocation.id.len() <= 128,
+            "invalid effect identity"
+        );
+        ensure!(
+            matches!(invocation.action.as_str(), "apply" | "remove"),
+            "invalid action"
+        );
+        ensure!(
+            !invocation.revision.is_empty() && invocation.revision.len() <= 128,
+            "invalid revision"
+        );
+        ensure!(
+            purpose == "observe" || purpose == invocation.action,
+            "action differs from argv"
+        );
+
+        let response = match purpose {
+            "apply" => {
+                self.apply(&invocation.input, &invocation.id, invocation.revision)?;
+                let values = self.observed_values(&invocation.input)?;
                 ensure!(
-                    request.schema == ADMISSION_REQUEST_SCHEMA,
-                    "unsupported admission schema"
+                    values == invocation.input.values,
+                    "kernel did not retain requested tunables"
                 );
-                serde_json::to_value(self.admit(request)?)?
+                json!({"values": values})
             }
-            "effect" | "reconcile" | "cancel" | "compensate" | "reconcile-compensation" => {
-                let invocation: Invocation =
-                    aos_contract::canonical::from_slice(input, "kernel-tunable invocation")?;
-                ensure!(
-                    invocation.schema == INVOCATION_SCHEMA,
-                    "unsupported invocation schema"
-                );
-                ensure!(
-                    purpose == purpose_name(invocation.purpose),
-                    "purpose differs from argv"
-                );
-                serde_json::to_value(self.invoke(invocation)?)?
+            "remove" => {
+                self.remove(&invocation.id)?;
+                json!({})
             }
-            _ => bail!("unsupported command-handler purpose {purpose:?}"),
-        };
-
-        aos_contract::canonical::canonical_json(&result)
-            .context("encoding canonical kernel-tunable response")
-    }
-
-    fn admit(&self, request: AdmissionRequest) -> Result<AdmissionResult> {
-        validate_method(request.method.method.as_str(), &request.semantics)?;
-        validate_admission_resource(&request)?;
-        validate_resource_contexts(&request.resources)?;
-        let observation_schema = request
-            .contract
-            .observation_discriminator()
-            .context("selected kernel-tunable method has no exact observation discriminator")?;
-        let desired: TunableRequest = decode_value(&request.resource_spec.value)?;
-        validate_request(&desired)?;
-        let _realization: TunableRealization = decode_value(&request.resource_spec.realization)?;
-        require_dependencies(&desired.dependencies, &request.resources)?;
-
-        let observation = self.observe(observation_schema, &desired, &request.target)?;
-        let revision = observation_revision(&observation, request.resource_spec.revision)?;
-        let supported_purposes = if request.method.method.as_str() == "observe" {
-            SupportedPurposes::from_ordered(vec![InvocationPurpose::Effect])
-        } else {
-            SupportedPurposes::from_ordered(vec![
-                InvocationPurpose::Effect,
-                InvocationPurpose::Reconcile,
-                InvocationPurpose::Cancel,
-            ])
-        }
-        .context("constructing canonical purpose support")?;
-
-        Ok(AdmissionResult {
-            schema: ADMISSION_SCHEMA.into(),
-            disposition: AdmissionDisposition::Admitted,
-            revision,
-            incarnation: Some(request.assignment.incarnation),
-            observation: ability_value(serde_json::to_value(observation)?)?,
-            native_context: ability_value(json!({"schema": CONTEXT_SCHEMA}))?,
-            supported_purposes,
-        })
-    }
-
-    fn invoke(&self, invocation: Invocation) -> Result<InvocationResult> {
-        ensure!(
-            invocation.method_is_bound(),
-            "invocation method is not durably bound"
-        );
-        validate_method(invocation.method.method.as_str(), &invocation.semantics)?;
-        let observation_schema = invocation
-            .contract
-            .observation_discriminator()
-            .context("selected kernel-tunable method has no exact observation discriminator")?;
-        validate_resource_contexts(&invocation.request.resources)?;
-        ensure!(
-            resource_set_digest(&invocation.request.resources)?
-                == invocation.request.native_context_digest,
-            "resource contexts differ from their authenticated set digest"
-        );
-        let target = require_resource(&invocation.request.resources, &invocation.request.target)?;
-        let bound: BoundNativeContext = validate_resource_context(target)?;
-        ensure!(
-            invocation.method.interface == invocation.request.method.interface
-                && invocation.method.interface == invocation.request.target.interface
-                && invocation
-                    .request
-                    .target
-                    .operations
-                    .binary_search(&invocation.method.method)
-                    .is_ok(),
-            "invocation method is outside the target resource authority"
-        );
-        ensure!(
-            bound.resource_spec.value == invocation.request.inputs,
-            "bound inputs differ"
-        );
-        let _realization: TunableRealization = decode_value(&bound.resource_spec.realization)?;
-        let context: ProviderContext = decode_value(&bound.provider_context)?;
-        ensure!(
-            context.schema == CONTEXT_SCHEMA,
-            "unsupported provider context"
-        );
-
-        let desired: TunableRequest = decode_value(&bound.resource_spec.value)?;
-        validate_request(&desired)?;
-        require_dependencies(&desired.dependencies, &invocation.request.resources)?;
-        let removing = invocation.method.method.as_str() == "remove";
-        let before = self.observe(observation_schema, &desired, &invocation.request.target)?;
-        let (disposition, evidence) = match invocation.purpose {
-            InvocationPurpose::Effect if invocation.method.method.as_str() == "observe" => {
-                (InvocationDisposition::Completed, before)
-            }
-            InvocationPurpose::Effect if invocation.control.cancelled => {
-                (InvocationDisposition::RejectedBeforeEffect, before)
-            }
-            InvocationPurpose::Effect if invocation.method.method.as_str() == "apply" => {
-                self.apply(&desired, &invocation.request.target, target.revision)?;
-                let after =
-                    self.observe(observation_schema, &desired, &invocation.request.target)?;
-                let disposition = if after.state == TunableState::Applied {
-                    InvocationDisposition::Completed
+            "observe" => {
+                let marker = self.read_marker(&invocation.id)?;
+                if invocation.action == "remove" {
+                    json!({"status": if marker.is_none() { "absent" } else { "retry-safe" }})
                 } else {
-                    InvocationDisposition::Indeterminate
-                };
-                (disposition, after)
-            }
-            InvocationPurpose::Effect => {
-                self.remove(&invocation.request.target)?;
-                let after =
-                    self.observe(observation_schema, &desired, &invocation.request.target)?;
-                let disposition = if after.state == TunableState::Unmanaged {
-                    InvocationDisposition::Completed
-                } else {
-                    InvocationDisposition::Indeterminate
-                };
-                (disposition, after)
-            }
-            InvocationPurpose::Reconcile => {
-                let complete = if removing {
-                    before.state == TunableState::Unmanaged
-                } else {
-                    before.state == TunableState::Applied
-                };
-                (
+                    let values = self.observed_values(&invocation.input)?;
+                    let complete = marker.is_some_and(|marker| {
+                        marker.revision == invocation.revision
+                            && marker.pending_restore.is_empty()
+                            && marker.managed == invocation.input.values.keys().cloned().collect()
+                    }) && values == invocation.input.values;
                     if complete {
-                        InvocationDisposition::Completed
-                    } else if before.state == TunableState::Unknown {
-                        InvocationDisposition::StillIndeterminate
+                        json!({"status": "current", "outputs": {"values": values}})
                     } else {
-                        InvocationDisposition::SafeToRetry
-                    },
-                    before,
-                )
-            }
-            InvocationPurpose::Cancel => {
-                let complete = if removing {
-                    before.state == TunableState::Unmanaged
-                } else {
-                    before.state == TunableState::Applied
-                };
-                (
-                    if complete {
-                        InvocationDisposition::Completed
-                    } else if before.state == TunableState::Unmanaged {
-                        InvocationDisposition::RejectedBeforeEffect
-                    } else {
-                        InvocationDisposition::Indeterminate
-                    },
-                    before,
-                )
-            }
-            InvocationPurpose::Compensate | InvocationPurpose::ReconcileCompensation => {
-                (InvocationDisposition::InterventionRequired, before)
-            }
-        };
-
-        let evidence = ability_value(serde_json::to_value(evidence)?)?;
-        let mut outputs = BTreeMap::new();
-        if disposition == InvocationDisposition::Completed {
-            outputs.insert(LocalKey::new("observation")?, evidence.clone());
-            if invocation.method.method.as_str() == "apply" {
-                outputs.insert(
-                    LocalKey::new("retained-resource")?,
-                    ability_value(serde_json::to_value(&invocation.request.target)?)?,
-                );
-            }
-        }
-        Ok(InvocationResult {
-            schema: RESULT_SCHEMA.into(),
-            disposition,
-            evidence,
-            outputs,
-            native_context_digest: invocation.request.native_context_digest,
-        })
-    }
-
-    fn observe(
-        &self,
-        observation_schema: &str,
-        desired: &TunableRequest,
-        target: &ResourceReference,
-    ) -> Result<TunableObservation> {
-        let managed = self.read_marker(target)?.is_some();
-        let mut observed = BTreeMap::new();
-        let mut discrepancies = Vec::new();
-        for (key, expected) in &desired.values {
-            match fs::read_to_string(self.tunable_path(key)) {
-                Ok(value) => {
-                    let value = value.trim_end_matches(['\n', '\r']).to_string();
-                    if &value != expected {
-                        discrepancies.push(key.clone());
+                        json!({"status": "retry-safe"})
                     }
-                    observed.insert(key.clone(), value);
                 }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    discrepancies.push(key.clone());
-                }
-                Err(error) => return Err(error).with_context(|| format!("reading tunable {key}")),
             }
-        }
-        let state = if !managed {
-            TunableState::Unmanaged
-        } else if discrepancies.is_empty() {
-            TunableState::Applied
-        } else if managed {
-            TunableState::Drifted
-        } else {
-            TunableState::Unmanaged
+            _ => bail!("unsupported operation {purpose:?}"),
         };
-        Ok(TunableObservation {
-            schema: observation_schema.into(),
-            expected: desired.clone(),
-            observed,
-            state,
-            discrepancies,
-        })
+
+        serde_json::to_vec(&response).context("encoding native handler response")
     }
 
-    fn apply(
-        &self,
-        desired: &TunableRequest,
-        target: &ResourceReference,
-        revision: RevisionId,
-    ) -> Result<()> {
+    fn observed_values(&self, desired: &TunableRequest) -> Result<BTreeMap<String, String>> {
+        desired
+            .values
+            .keys()
+            .map(|key| {
+                let value = fs::read_to_string(self.tunable_path(key))
+                    .with_context(|| format!("reading tunable {key}"))?
+                    .trim_end_matches(['\n', '\r'])
+                    .to_string();
+                Ok((key.clone(), value))
+            })
+            .collect()
+    }
+
+    fn apply(&self, desired: &TunableRequest, target: &str, revision: String) -> Result<()> {
         let mut marker = match self.read_marker(target)? {
             Some(mut marker) => {
                 marker.revision = revision;
@@ -386,6 +168,11 @@ impl KernelTunableProvider {
             }
         }
         let desired_keys = desired.values.keys().cloned().collect::<BTreeSet<_>>();
+        // A retry may reintroduce a key whose earlier restoration was pending.
+        // Keep its original baseline, but let the new desired value own it.
+        marker
+            .pending_restore
+            .retain(|key| !desired_keys.contains(key));
         marker
             .pending_restore
             .extend(marker.managed.difference(&desired_keys).cloned());
@@ -413,7 +200,7 @@ impl KernelTunableProvider {
         Ok(())
     }
 
-    fn remove(&self, target: &ResourceReference) -> Result<()> {
+    fn remove(&self, target: &str) -> Result<()> {
         let Some(marker) = self.read_marker(target)? else {
             return Ok(());
         };
@@ -422,7 +209,10 @@ impl KernelTunableProvider {
                 .with_context(|| format!("restoring tunable {key}"))?;
         }
         match fs::remove_file(self.marker_path(target)?) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                fs::File::open(&self.state_root)?.sync_all()?;
+                Ok(())
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error).context("removing kernel-tunable state marker"),
         }
@@ -432,15 +222,14 @@ impl KernelTunableProvider {
         self.proc_root.join(key.replace('.', "/"))
     }
 
-    fn marker_path(&self, target: &ResourceReference) -> Result<PathBuf> {
-        let digest =
-            Sha256Digest::of_canonical("aos.kernel.tunables-resource/v1", &target.resource)?;
+    fn marker_path(&self, target: &str) -> Result<PathBuf> {
+        let digest = Sha256Digest::of_canonical("aos.kernel.tunables-resource/v1", &target)?;
         Ok(self
             .state_root
             .join(digest.to_string().trim_start_matches("sha256:")))
     }
 
-    fn read_marker(&self, target: &ResourceReference) -> Result<Option<StateMarker>> {
+    fn read_marker(&self, target: &str) -> Result<Option<StateMarker>> {
         let path = self.marker_path(target)?;
         let file = match fs::File::open(path) {
             Ok(file) => file,
@@ -461,7 +250,7 @@ impl KernelTunableProvider {
         Ok(Some(marker))
     }
 
-    fn write_marker(&self, target: &ResourceReference, marker: &StateMarker) -> Result<()> {
+    fn write_marker(&self, target: &str, marker: &StateMarker) -> Result<()> {
         validate_marker(marker)?;
         fs::create_dir_all(&self.state_root)?;
         fs::set_permissions(&self.state_root, fs::Permissions::from_mode(0o700))?;
@@ -477,6 +266,7 @@ impl KernelTunableProvider {
         file.write_all(&bytes)?;
         file.sync_all()?;
         fs::rename(temporary, path)?;
+        fs::File::open(&self.state_root)?.sync_all()?;
         Ok(())
     }
 }
@@ -490,10 +280,9 @@ fn write_tunable(path: &Path, value: &str) -> Result<()> {
 }
 
 fn validate_request(request: &TunableRequest) -> Result<()> {
-    ensure!(!request.values.is_empty(), "tunable map must not be empty");
     ensure!(
-        request.values.len() <= 256,
-        "tunable map exceeds 256 entries"
+        !request.values.is_empty() && request.values.len() <= 256,
+        "invalid tunable count"
     );
     for (key, value) in &request.values {
         ensure!(valid_tunable_key(key), "invalid tunable key {key:?}");
@@ -502,18 +291,8 @@ fn validate_request(request: &TunableRequest) -> Result<()> {
             "invalid tunable value"
         );
     }
-    let dependencies = request
-        .dependencies
-        .iter()
-        .map(serde_json::to_vec)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    ensure!(
-        dependencies.windows(2).all(|pair| pair[0] < pair[1]),
-        "dependencies are not canonical and unique"
-    );
     Ok(())
 }
-
 fn validate_marker(marker: &StateMarker) -> Result<()> {
     ensure!(marker.schema == MARKER_SCHEMA, "unsupported marker schema");
     ensure!(
@@ -564,305 +343,150 @@ fn valid_tunable_key(key: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
-fn validate_method(method: &str, semantics: &MethodSemantics) -> Result<()> {
-    let access = match method {
-        "observe" => AccessMode::Read,
-        "apply" | "remove" => AccessMode::ExclusiveWrite,
-        _ => bail!("unsupported kernel-tunable method"),
-    };
-    ensure!(
-        *semantics == MethodSemantics::ordinary(access),
-        "method semantics differ"
-    );
-    Ok(())
-}
-
-fn require_dependencies(
-    dependencies: &[ResourceReference],
-    resources: &[ResourceContext],
-) -> Result<()> {
-    for dependency in dependencies {
-        require_resource(resources, dependency)?;
-    }
-    Ok(())
-}
-
-fn require_resource<'a>(
-    resources: &'a [ResourceContext],
-    reference: &ResourceReference,
-) -> Result<&'a ResourceContext> {
-    let index = resources
-        .binary_search_by(|context| context.reference.resource.cmp(&reference.resource))
-        .map_err(|_| anyhow::anyhow!("request omits a referenced resource context"))?;
-    let context = &resources[index];
-    ensure!(
-        &context.reference == reference,
-        "resource context authority differs from the exact reference"
-    );
-    Ok(context)
-}
-
-fn observation_revision(
-    observation: &TunableObservation,
-    desired: RevisionId,
-) -> Result<AdmissionRevision> {
-    match observation.state {
-        TunableState::Applied => Ok(AdmissionRevision::Present { revision: desired }),
-        TunableState::Unmanaged => Ok(AdmissionRevision::Absent),
-        TunableState::Drifted => Ok(AdmissionRevision::Present {
-            revision: RevisionId(Sha256Digest::of_canonical(
-                "aos.kernel.tunables-observed/v1",
-                observation,
-            )?),
-        }),
-        TunableState::Unknown => Ok(AdmissionRevision::Unknown),
-    }
-}
-
-fn ability_value(value: serde_json::Value) -> Result<AbilityValue> {
-    AbilityValue::new(value).context("constructing canonical ability value")
-}
-
-fn decode_value<T: for<'de> Deserialize<'de>>(value: &AbilityValue) -> Result<T> {
-    serde_json::from_value(value.as_json().clone()).context("decoding checked ability value")
-}
-
-const fn purpose_name(purpose: InvocationPurpose) -> &'static str {
-    match purpose {
-        InvocationPurpose::Effect => "effect",
-        InvocationPurpose::Reconcile => "reconcile",
-        InvocationPurpose::Cancel => "cancel",
-        InvocationPurpose::Compensate => "compensate",
-        InvocationPurpose::ReconcileCompensation => "reconcile-compensation",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_ability_model::{
-        EnvironmentId, ExecutionStage, InstanceId, InterfaceKey, InterfaceName, ResourceId,
-    };
-    use tempfile::tempdir;
+    use serde_json::Value;
+    use tempfile::{TempDir, tempdir};
 
-    const TEST_INTERFACE: &str = "aos.test.kernel-tunable-effects";
+    fn fixture() -> (TempDir, KernelTunableProvider) {
+        let root = tempdir().unwrap();
+        let provider = KernelTunableProvider {
+            proc_root: root.path().join("proc"),
+            state_root: root.path().join("state"),
+        };
+        fs::create_dir_all(provider.proc_root.join("vm")).unwrap();
+        fs::write(provider.proc_root.join("vm/swappiness"), "60\n").unwrap();
+        fs::write(provider.proc_root.join("vm/max_map_count"), "65530\n").unwrap();
+        (root, provider)
+    }
 
-    fn reference() -> ResourceReference {
-        ResourceReference {
-            interface: InterfaceKey {
-                name: InterfaceName::new(TEST_INTERFACE).expect("interface"),
-                abi: std::num::NonZeroU32::new(1).expect("nonzero ABI"),
-                descriptor: Sha256Digest::of_bytes(b"kernel tunables test"),
-            },
-            resource: ResourceId {
-                provider: InstanceId {
-                    environment: EnvironmentId {
-                        authority: LocalKey::new("test").expect("authority"),
-                        key: LocalKey::new("host").expect("environment"),
-                        stage: ExecutionStage::Host,
-                    },
-                    key: LocalKey::new("procps").expect("provider"),
+    fn invoke(
+        provider: &KernelTunableProvider,
+        purpose: &str,
+        action: &str,
+        revision: &str,
+        values: Value,
+    ) -> Value {
+        let input = serde_json::to_vec(&json!({
+            "id": "stable-effect", "revision": revision, "action": action,
+            "effect": {}, "previous": null, "input": {"values": values}
+        }))
+        .unwrap();
+        serde_json::from_slice(&provider.handle(purpose, &input).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn reconfiguration_restores_removed_keys_and_teardown_restores_baselines() {
+        let (_root, provider) = fixture();
+        invoke(
+            &provider,
+            "apply",
+            "apply",
+            "one",
+            json!({
+                "vm.swappiness": "10", "vm.max_map_count": "1048576"
+            }),
+        );
+
+        invoke(
+            &provider,
+            "apply",
+            "apply",
+            "two",
+            json!({"vm.swappiness": "20"}),
+        );
+        assert_eq!(
+            fs::read_to_string(provider.proc_root.join("vm/max_map_count")).unwrap(),
+            "65530\n"
+        );
+        assert_eq!(
+            invoke(
+                &provider,
+                "observe",
+                "apply",
+                "two",
+                json!({"vm.swappiness": "20"})
+            )["status"],
+            "current"
+        );
+
+        invoke(
+            &provider,
+            "remove",
+            "remove",
+            "two",
+            json!({"vm.swappiness": "20"}),
+        );
+        assert_eq!(
+            fs::read_to_string(provider.proc_root.join("vm/swappiness")).unwrap(),
+            "60\n"
+        );
+        assert_eq!(
+            invoke(
+                &provider,
+                "observe",
+                "remove",
+                "two",
+                json!({"vm.swappiness": "20"})
+            )["status"],
+            "absent"
+        );
+    }
+
+    #[test]
+    fn interrupted_write_is_observed_before_retry_without_losing_baseline() {
+        let (_root, provider) = fixture();
+        let desired = TunableRequest {
+            values: BTreeMap::from([("vm.swappiness".into(), "10".into())]),
+        };
+        provider
+            .write_marker(
+                "stable-effect",
+                &StateMarker {
+                    schema: MARKER_SCHEMA.into(),
+                    revision: "one".into(),
+                    baseline: BTreeMap::from([("vm.swappiness".into(), "60".into())]),
+                    managed: BTreeSet::from(["vm.swappiness".into()]),
+                    pending_restore: BTreeSet::new(),
                 },
-                key: LocalKey::new("network").expect("resource"),
-            },
-            operations: vec![LocalKey::new("observe").expect("operation")],
-            lifetime: aos_ability_model::ResourceLifetime::Instance,
-        }
-    }
-
-    #[test]
-    fn apply_and_remove_restore_the_original_values() {
-        let temporary = tempdir().expect("temporary directory");
-        let proc_root = temporary.path().join("proc");
-        let state_root = temporary.path().join("state");
-        let tunable = proc_root.join("net/ipv4/ip_forward");
-        fs::create_dir_all(tunable.parent().expect("parent")).expect("create proc tree");
-        fs::write(&tunable, "0\n").expect("seed tunable");
-        let provider = KernelTunableProvider::for_test(proc_root, state_root);
-        let request = TunableRequest {
-            values: BTreeMap::from([("net.ipv4.ip_forward".into(), "1".into())]),
-            dependencies: Vec::new(),
-        };
-        let target = reference();
-
-        provider
-            .apply(
-                &request,
-                &target,
-                RevisionId(Sha256Digest::of_bytes(b"desired")),
             )
-            .expect("apply tunable");
-        assert_eq!(fs::read_to_string(&tunable).expect("read applied"), "1\n");
+            .unwrap();
+
         assert_eq!(
-            provider
-                .observe("aos.test.tunable-observation/v1", &request, &target)
-                .expect("observe")
-                .state,
-            TunableState::Applied
+            invoke(
+                &provider,
+                "observe",
+                "apply",
+                "one",
+                json!({"vm.swappiness": "10"})
+            )["status"],
+            "retry-safe"
         );
-
-        provider.remove(&target).expect("remove tunable resource");
-        assert_eq!(fs::read_to_string(&tunable).expect("read restored"), "0\n");
-        assert_eq!(
-            provider
-                .observe("aos.test.tunable-observation/v1", &request, &target)
-                .expect("observe removal")
-                .state,
-            TunableState::Unmanaged
-        );
-    }
-
-    #[test]
-    fn matching_unowned_values_do_not_claim_the_desired_revision() {
-        let temporary = tempdir().expect("temporary directory");
-        let proc_root = temporary.path().join("proc");
-        let state_root = temporary.path().join("state");
-        let tunable = proc_root.join("net/ipv4/ip_forward");
-        fs::create_dir_all(tunable.parent().expect("parent")).expect("create proc tree");
-        fs::write(&tunable, "1\n").expect("seed matching tunable");
-        let provider = KernelTunableProvider::for_test(proc_root, state_root);
-        let request = TunableRequest {
-            values: BTreeMap::from([("net.ipv4.ip_forward".into(), "1".into())]),
-            dependencies: Vec::new(),
-        };
-        let target = reference();
-        let desired_revision = RevisionId(Sha256Digest::of_bytes(b"matching desired"));
-
-        let unowned = provider
-            .observe("aos.test.tunable-observation/v1", &request, &target)
-            .expect("observe matching unowned value");
-        assert_eq!(unowned.state, TunableState::Unmanaged);
-        assert_eq!(
-            observation_revision(&unowned, desired_revision).expect("derive admission revision"),
-            AdmissionRevision::Absent
-        );
-
         provider
-            .apply(&request, &target, desired_revision)
-            .expect("establish ownership");
-        assert!(
-            provider
-                .read_marker(&target)
-                .expect("read marker")
-                .is_some()
-        );
+            .apply(&desired, "stable-effect", "one".into())
+            .unwrap();
+        provider.remove("stable-effect").unwrap();
         assert_eq!(
-            provider
-                .observe("aos.test.tunable-observation/v1", &request, &target)
-                .expect("observe owned value")
-                .state,
-            TunableState::Applied
-        );
-
-        provider.remove(&target).expect("remove owned resource");
-        assert!(
-            provider
-                .read_marker(&target)
-                .expect("read marker")
-                .is_none()
-        );
-        assert_eq!(
-            fs::read_to_string(tunable).expect("read restored value"),
-            "1\n"
+            fs::read_to_string(provider.proc_root.join("vm/swappiness")).unwrap(),
+            "60\n"
         );
     }
 
     #[test]
-    fn replacing_an_exact_map_restores_removed_keys_and_tracks_added_baselines() {
-        let temporary = tempdir().expect("temporary directory");
-        let proc_root = temporary.path().join("proc");
-        let state_root = temporary.path().join("state");
-        let forwarding = proc_root.join("net/ipv4/ip_forward");
-        let panic = proc_root.join("kernel/panic");
-        fs::create_dir_all(forwarding.parent().expect("forwarding parent"))
-            .expect("create networking proc tree");
-        fs::create_dir_all(panic.parent().expect("panic parent")).expect("create kernel proc tree");
-        fs::write(&forwarding, "0\n").expect("seed forwarding");
-        fs::write(&panic, "5\n").expect("seed panic");
-        let provider = KernelTunableProvider::for_test(proc_root, state_root);
-        let target = reference();
-        let first = TunableRequest {
-            values: BTreeMap::from([("net.ipv4.ip_forward".into(), "1".into())]),
-            dependencies: Vec::new(),
-        };
-        let replacement = TunableRequest {
-            values: BTreeMap::from([("kernel.panic".into(), "30".into())]),
-            dependencies: Vec::new(),
-        };
+    fn malformed_keys_fail_before_any_mutation() {
+        let (_root, provider) = fixture();
+        let input = serde_json::to_vec(&json!({
+            "id": "stable-effect", "revision": "one", "action": "apply",
+            "input": {"values": {"vm.swappiness": "10", "../escape": "x"}}
+        }))
+        .unwrap();
 
-        provider
-            .apply(
-                &first,
-                &target,
-                RevisionId(Sha256Digest::of_bytes(b"first")),
-            )
-            .expect("apply first map");
-        provider
-            .apply(
-                &replacement,
-                &target,
-                RevisionId(Sha256Digest::of_bytes(b"replacement")),
-            )
-            .expect("apply replacement map");
-
+        assert!(provider.handle("apply", &input).is_err());
         assert_eq!(
-            fs::read_to_string(&forwarding).expect("read restored forwarding"),
-            "0\n"
+            fs::read_to_string(provider.proc_root.join("vm/swappiness")).unwrap(),
+            "60\n"
         );
-        assert_eq!(
-            fs::read_to_string(&panic).expect("read applied panic"),
-            "30\n"
-        );
-
-        provider.remove(&target).expect("remove replacement map");
-        assert_eq!(
-            fs::read_to_string(&forwarding).expect("read unowned forwarding"),
-            "0\n"
-        );
-        assert_eq!(
-            fs::read_to_string(&panic).expect("read restored panic"),
-            "5\n"
-        );
-    }
-
-    #[test]
-    fn request_rejects_path_traversal_and_noncanonical_dependencies() {
-        assert!(!valid_tunable_key("net..ipv4.ip_forward"));
-        assert!(!valid_tunable_key("../proc/sys/kernel"));
-
-        let dependency = reference();
-        let request = TunableRequest {
-            values: BTreeMap::from([("net.ipv4.ip_forward".into(), "1".into())]),
-            dependencies: vec![dependency.clone(), dependency],
-        };
-        assert!(validate_request(&request).is_err());
-    }
-
-    #[test]
-    fn corrupt_marker_is_rejected_before_a_procfs_write() {
-        let temporary = tempdir().expect("temporary directory");
-        let proc_root = temporary.path().join("proc");
-        let state_root = temporary.path().join("state");
-        let provider = KernelTunableProvider::for_test(proc_root, state_root.clone());
-        let target = reference();
-        let marker = StateMarker {
-            schema: MARKER_SCHEMA.into(),
-            revision: RevisionId(Sha256Digest::of_bytes(b"corrupt marker")),
-            baseline: BTreeMap::from([("../outside".into(), "1".into())]),
-            managed: BTreeSet::from(["../outside".into()]),
-            pending_restore: BTreeSet::new(),
-        };
-        fs::create_dir_all(&state_root).expect("create state root");
-        fs::write(
-            provider.marker_path(&target).expect("marker path"),
-            aos_contract::canonical::canonical_json(
-                &serde_json::to_value(marker).expect("serialize marker"),
-            )
-            .expect("encode marker"),
-        )
-        .expect("write corrupt marker");
-
-        assert!(provider.remove(&target).is_err());
-        assert!(!temporary.path().join("outside").exists());
+        assert!(!provider.state_root.exists());
     }
 }

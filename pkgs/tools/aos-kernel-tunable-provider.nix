@@ -85,7 +85,7 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [];
 
-    abilities = ./_aos-kernel-tunable-provider;
+    module = ./_aos-kernel-tunable-provider;
 
     preBuild = staticBuildSetup;
 

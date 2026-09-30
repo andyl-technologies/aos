@@ -12,7 +12,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use aos_release::digest::Sha256Digest;
-use rustix::fs::{Mode, OFlags, open, openat};
+use rustix::fs::{Mode, OFlags, open, openat, readlinkat};
 use sha2::{Digest as _, Sha256};
 
 use crate::assembly::{AssemblyFileKind, AssemblyFileV1, AssemblyToolV1, UnsignedImageAssemblyV1};
@@ -210,6 +210,64 @@ pub fn digest_regular_file_beneath(root: &Path, relative: &Path) -> Result<(u64,
     bail!("confined digest path has no file component")
 }
 
+/// Hashes a native document alias without resolving links on the host.
+///
+/// Only the final alias may link, and its absolute target must lie in the Nix
+/// store copied into the extracted image. Every target component is opened
+/// without following links, so an archive cannot redirect validation elsewhere.
+///
+/// # Errors
+/// Returns an error for linked parents, a non-store target, changed aliases,
+/// missing or special documents, or failed point-in-time hashing.
+pub(crate) fn digest_native_document_beneath(
+    root: &Path,
+    relative: &Path,
+    store_directory: &Path,
+) -> Result<(u64, Sha256Digest)> {
+    let mut directory = File::from(open(
+        root,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?);
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            bail!("native alias path is not normalized");
+        };
+        if components.peek().is_some() {
+            directory = File::from(openat(
+                &directory,
+                name,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?);
+            continue;
+        }
+        let target = match readlinkat(&directory, name, Vec::new()) {
+            Ok(target) => target,
+            Err(rustix::io::Errno::INVAL) => return digest_regular_file_beneath(root, relative),
+            Err(error) => return Err(error.into()),
+        };
+        let target_text = target
+            .to_str()
+            .context("native document alias is not UTF-8")?;
+        let suffix = target_text
+            .strip_prefix("/nix/store/")
+            .context("native document alias escapes store")?;
+        let component = suffix
+            .split('/')
+            .next()
+            .context("native document alias lacks root")?;
+        aos_release::artifact::require_store_path(&format!("/nix/store/{component}"), false)?;
+        let identity = digest_regular_file_beneath(root, &store_directory.join(suffix))?;
+        if readlinkat(&directory, name, Vec::new())? != target {
+            bail!("native document alias changed while hashing");
+        }
+        return Ok(identity);
+    }
+    bail!("native document alias path is empty")
+}
+
 fn digest_opened_regular_file(mut file: File) -> Result<(u64, Sha256Digest)> {
     let before = file.metadata()?;
     if !before.is_file() || before.nlink() != 1 {
@@ -376,6 +434,62 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn native_alias_resolves_only_inside_extracted_store() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let tree = temporary.path();
+        let store_root = "00000000000000000000000000000000-native-input";
+        let document = tree
+            .join("nix/store")
+            .join(store_root)
+            .join("transaction.json");
+        std::fs::create_dir_all(document.parent().context("fixture lacks parent")?)?;
+        std::fs::create_dir_all(tree.join("lib/aos/initrd/deployment"))?;
+        std::fs::write(&document, b"native transaction bytes")?;
+        let alias = tree.join("lib/aos/initrd/deployment/transaction.json");
+        symlink(format!("/nix/store/{store_root}/transaction.json"), &alias)?;
+
+        let identity = digest_native_document_beneath(
+            tree,
+            Path::new("lib/aos/initrd/deployment/transaction.json"),
+            Path::new("nix/store"),
+        )?;
+        assert_eq!(identity, digest_regular_file(&document)?);
+
+        std::fs::remove_file(&alias)?;
+        symlink("/etc/passwd", &alias)?;
+        assert!(
+            digest_native_document_beneath(
+                tree,
+                Path::new("lib/aos/initrd/deployment/transaction.json"),
+                Path::new("nix/store")
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_alias_cannot_follow_a_linked_store_directory() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let tree = temporary.path();
+        std::fs::create_dir_all(tree.join("lib/aos/initrd/deployment"))?;
+        symlink(temporary.path(), tree.join("nix"))?;
+        symlink(
+            "/nix/store/00000000000000000000000000000000-input/transaction.json",
+            tree.join("lib/aos/initrd/deployment/transaction.json"),
+        )?;
+        assert!(
+            digest_native_document_beneath(
+                tree,
+                Path::new("lib/aos/initrd/deployment/transaction.json"),
+                Path::new("nix/store")
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
     fn fixture_assembly() -> UnsignedImageAssemblyV1 {
         UnsignedImageAssemblyV1 {
             schema_version: UNSIGNED_IMAGE_ASSEMBLY_V1.to_owned(),
@@ -384,7 +498,6 @@ mod tests {
             platform: Platform::X86_64Linux,
             system_variant: "production".to_owned(),
             kernel_release: "6.18.33".to_owned(),
-            module_abi: 1,
             recovery_abi: 1,
             sbat_generation: 1,
             sbat: SbatPolicyV1 {

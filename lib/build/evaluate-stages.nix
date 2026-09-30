@@ -4,13 +4,13 @@
   pkgs,
   modules,
   moduleList,
-  baseLibProbe,
   selectionEvaluation,
   packageModules,
   operatorModules,
   runtimeModules,
   moduleSpecialArgs,
   systemName,
+  stageSpecialArgsFor ? (_: {}),
 }: let
   packageModuleLib = import ./package-modules.nix {};
   callerModules = packageModuleLib.canonicalize packageModules;
@@ -18,8 +18,8 @@
     builtins.map (selection: selection.package)
     (builtins.attrValues (lib.filterAttrs (_: selection: selection.enable || selection.bundle)
         selectionEvaluation.config.aos.packages));
-  hostPackages = selectionEvaluation.config.environment.systemPackages ++ declaredPackages;
-  initrdPackages = selectionEvaluation.config.aos.boot.initrd.packageRoots;
+  initialHostPackages = selectionEvaluation.config.environment.systemPackages ++ declaredPackages;
+  initialInitrdPackages = selectionEvaluation.config.aos.boot.initrd.packageRoots;
   recordsFor = packages:
     packageModuleLib.canonicalize (
       builtins.map (record: let
@@ -37,39 +37,92 @@
     recordsFor hostPackages ++ builtins.filter (record: !(builtins.elem record.name hostNames)) callerModules
   );
   initrdPackageModules = recordsFor initrdPackages;
-  hostScope = [systemName "host"];
+  # Image activation seeds the same profile later changed by package management.
+  hostScope = ["profile" "system"];
   initrdScope = [systemName "initrd"];
   hostConfigurationModules = selectionEvaluation.config.aos.activation.stages.host.modules or [];
   initrdConfigurationModules = selectionEvaluation.config.aos.activation.stages.initrd.modules or [];
-  evaluate = scope: packages: configurationModules:
+  buildStage = stage: packages: scope: let
+    authored = selectionEvaluation.config.aos.activation.stages.${stage}.configuration or [];
+    builders = selectionEvaluation.config.aos.activation.stages.${stage}.configurationBuilders or [];
+  in
+    builtins.foldl' (prior: build: let
+      additions = build {
+        inherit scope;
+        inherit (prior) packages configuration;
+      };
+    in {
+      packages = prior.packages ++ additions.packages;
+      configuration = prior.configuration ++ additions.configuration;
+    }) {
+      inherit packages;
+      configuration = authored;
+    }
+    builders;
+  hostStage = buildStage "host" initialHostPackages hostScope;
+  initrdStage = buildStage "initrd" initialInitrdPackages initrdScope;
+  hostPackages = hostStage.packages;
+  initrdPackages = initrdStage.packages;
+  hostConfigurationSources = hostStage.configuration;
+  initrdConfigurationSources = initrdStage.configuration;
+  hostStageSpecialArgs = stageSpecialArgsFor {
+    packages = hostPackages;
+    scope = hostScope;
+    configuration = hostConfigurationSources;
+    runtimeConfiguration = runtimeModules;
+  };
+  initrdStageSpecialArgs = stageSpecialArgsFor {
+    packages = initrdPackages;
+    scope = initrdScope;
+    configuration = initrdConfigurationSources;
+    runtimeConfiguration = [];
+  };
+  evaluate = scope: packages: configurationModules: configurationSources: stageSpecialArgs:
     lib.evalModules {
-      modules = modules ++ moduleList ++ [baseLibProbe {aos.activation.scope = scope;}] ++ configurationModules;
-      inherit pkgs lib operatorModules runtimeModules;
+      modules = modules ++ moduleList ++ [{aos.activation.scope = scope;}] ++ configurationModules;
+      inherit pkgs lib runtimeModules;
+      operatorModules = operatorModules ++ configurationSources;
       packageModules = packages;
       specialArgs =
         moduleSpecialArgs
+        // stageSpecialArgs
         // {
-          inherit hostPackages initrdPackages initrdPackageModules;
+          packageModulesAvailable = true;
+          inherit hostPackages initrdPackages initrdPackageModules hostConfigurationSources initrdConfigurationSources;
           hostPackageModules = finalPackageModules;
         };
     };
-  hostAbilityEvaluation = evaluate hostScope finalPackageModules hostConfigurationModules;
-  initrdAbilityEvaluation = evaluate initrdScope initrdPackageModules initrdConfigurationModules;
+  hostAbilityEvaluation = evaluate hostScope finalPackageModules hostConfigurationModules hostConfigurationSources hostStageSpecialArgs;
+  # Initrd admits its native scope directly. Importing the complete image
+  # module list here would also import host-only effects and package selectors.
+  initrdAbilityEvaluation = lib.evalPackageModules {
+    packages = initrdPackages;
+    packageModules = initrdPackageModules;
+    scope = initrdScope;
+    modules = initrdConfigurationModules;
+    operatorModules = initrdConfigurationSources;
+    evaluationInput = initrdStageSpecialArgs.evaluationInput or null;
+  };
 in {
   inherit
     finalPackageModules
     hostPackages
+    hostStageSpecialArgs
+    initrdStageSpecialArgs
     initrdPackages
     initrdPackageModules
     hostScope
     initrdScope
     hostConfigurationModules
+    hostConfigurationSources
+    initrdConfigurationSources
     initrdConfigurationModules
     hostAbilityEvaluation
     initrdAbilityEvaluation
     ;
   qualificationProjection = {
     packages = hostPackages;
+    operations = hostAbilityEvaluation.config.aos.abilities;
     graph = hostAbilityEvaluation.config.aos.activation.graph;
   };
 }

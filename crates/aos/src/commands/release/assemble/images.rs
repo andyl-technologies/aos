@@ -97,7 +97,7 @@ pub(super) fn assemble(
                     u64::try_from(assembly_bytes.len())?,
                     Sha256Digest::of_bytes(&assembly_bytes),
                 )),
-                ..ArtifactAttributes::plain("application/vnd.aos.image.unsigned-assembly.v2+json")
+                ..ArtifactAttributes::plain("application/vnd.aos.image.unsigned-assembly.v3+json")
             },
         )?;
         payload.copy(

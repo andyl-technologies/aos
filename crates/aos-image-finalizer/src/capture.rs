@@ -1,16 +1,14 @@
 //! No-follow capture of a Nix-produced unsigned assembly.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Read as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
-use aos_ability_validate::{
-    StaticAbilityArtifactClass, StaticAbilityContractExpectation, StaticAbilityExecutionStage,
-    StaticAbilityPlatform, validate_static_ability_artifacts,
-};
+use aos_package::deployment::model::{Deployment, ResolvedPackages};
+use aos_package::native_deployment::{AdmissionCatalog, EvaluationInput};
 use aos_release::artifact::BundlePath;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
@@ -21,13 +19,13 @@ use sha2::{Digest as _, Sha256};
 
 use crate::assembly::{
     AssemblyFileKind, AssemblyFileV1, AssemblyToolV1, ImageBudgetsV1, ImageCommandLinesV1,
-    ImageLayoutV1, ImageSignerRolesV1, UNSIGNED_IMAGE_ASSEMBLY_V2, UnsignedImageAssemblyV1,
+    ImageLayoutV1, ImageSignerRolesV1, UNSIGNED_IMAGE_ASSEMBLY_V3, UnsignedImageAssemblyV1,
 };
-use crate::initrd_contract::{ArtifactExecutionStage, InitrdStageContractV1};
+use crate::initrd_contract::InitrdStageContractV1;
 
-const RECIPE_SCHEMA_V2: &str = "aos.image.assembly-recipe/v2";
+const RECIPE_SCHEMA_V3: &str = "aos.image.assembly-recipe/v3";
 const MAX_RECIPE_BYTES: u64 = 1024 * 1024;
-const MAX_STATIC_ABILITY_CONTRACT_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_DEPLOYMENT_DOCUMENT_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -37,7 +35,6 @@ struct AssemblyRecipeV1 {
     platform: Platform,
     system_variant: String,
     kernel_release: String,
-    module_abi: u64,
     recovery_abi: u64,
     sbat_generation: u64,
     sbat: crate::assembly::SbatPolicyV1,
@@ -90,16 +87,16 @@ pub fn capture_unsigned_assembly(
     let recipe_bytes = capture_control_file(&recipe_path, "image assembly recipe")?;
     canonical::require_canonical(&recipe_bytes, "image assembly recipe")?;
     let recipe: AssemblyRecipeV1 = canonical::from_slice(&recipe_bytes, "image assembly recipe")?;
-    if recipe.schema_version != RECIPE_SCHEMA_V2 {
+    if recipe.schema_version != RECIPE_SCHEMA_V3 {
         bail!("unsupported image assembly recipe schema");
     }
     if [
-        recipe.command_lines.slot_a.as_str(),
-        recipe.command_lines.slot_b.as_str(),
-        recipe.command_lines.recovery.as_str(),
-        recipe.signer_roles.secure_boot.as_str(),
-        recipe.signer_roles.module.as_str(),
-        recipe.signer_roles.pcr.as_str(),
+        recipe.command_lines.slot_a.to_string(),
+        recipe.command_lines.slot_b.to_string(),
+        recipe.command_lines.recovery.to_string(),
+        recipe.signer_roles.secure_boot.to_string(),
+        recipe.signer_roles.module.to_string(),
+        recipe.signer_roles.pcr.to_string(),
     ]
     .iter()
     .any(|value| value.is_empty())
@@ -208,22 +205,9 @@ pub fn capture_unsigned_assembly(
         size_bytes: u64::try_from(contract_bytes.len())?,
         sha256: Sha256Digest::of_bytes(&contract_bytes),
     });
-    files.push(capture_static_ability_contract(
-        root,
-        "initrd-ability-contract",
-        AssemblyFileKind::InitrdStaticAbilityContract,
-        "inputs/initrd-static-ability-contract.json",
-        recipe.platform,
-        ArtifactExecutionStage::Initrd,
-    )?);
-    files.push(capture_static_ability_contract(
-        root,
-        "host-ability-contract",
-        AssemblyFileKind::HostStaticAbilityContract,
-        "inputs/host-static-ability-contract.json",
-        recipe.platform,
-        ArtifactExecutionStage::Host,
-    )?);
+    for stage in ["initrd", "host"] {
+        files.extend(capture_deployment(root, stage, recipe.platform)?);
+    }
     files.sort_by(|left, right| left.id.cmp(&right.id));
 
     let tools = recipe
@@ -241,13 +225,12 @@ pub fn capture_unsigned_assembly(
         })
         .collect::<Result<Vec<_>>>()?;
     let assembly = UnsignedImageAssemblyV1 {
-        schema_version: UNSIGNED_IMAGE_ASSEMBLY_V2.to_owned(),
+        schema_version: UNSIGNED_IMAGE_ASSEMBLY_V3.to_owned(),
         release_id: release_id.to_owned(),
         version: recipe.release,
         platform: recipe.platform,
         system_variant: recipe.system_variant,
         kernel_release: recipe.kernel_release,
-        module_abi: recipe.module_abi,
         recovery_abi: recipe.recovery_abi,
         sbat_generation: recipe.sbat_generation,
         sbat: recipe.sbat,
@@ -271,52 +254,150 @@ pub fn capture_unsigned_assembly(
     Ok(assembly)
 }
 
-fn capture_static_ability_contract(
-    root: &Path,
-    id: &str,
-    kind: AssemblyFileKind,
-    relative: &str,
-    platform: Platform,
-    expected_stage: ArtifactExecutionStage,
-) -> Result<AssemblyFileV1> {
-    let bytes = capture_control_file_with_limit(
-        &root.join(relative),
-        "static ability contract",
-        MAX_STATIC_ABILITY_CONTRACT_BYTES,
-    )?;
-    let (os, architecture) = match platform {
-        Platform::X86_64Linux => ("linux", "amd64"),
-        Platform::Aarch64Linux => ("linux", "arm64"),
-        Platform::X86_64Darwin | Platform::Aarch64Darwin => {
-            bail!("boot static ability contract requires a Linux platform")
+fn capture_deployment(root: &Path, stage: &str, platform: Platform) -> Result<Vec<AssemblyFileV1>> {
+    let mut documents = BTreeMap::new();
+    let mut files = Vec::new();
+    for (kind, filename) in crate::assembly::native_deployment_files(stage) {
+        let relative = format!("inputs/{stage}-deployment/{filename}");
+        let bytes = capture_control_file_with_limit(
+            &root.join(&relative),
+            "native deployment document",
+            MAX_DEPLOYMENT_DOCUMENT_BYTES,
+        )?;
+        files.push(AssemblyFileV1 {
+            id: format!("{stage}-{}", filename.replace('.', "-")),
+            kind,
+            path: BundlePath::parse(&relative)?,
+            size_bytes: u64::try_from(bytes.len())?,
+            sha256: Sha256Digest::of_bytes(&bytes),
+        });
+        documents.insert(filename, bytes);
+    }
+    let packages: ResolvedPackages = serde_json::from_slice(&documents["packages.json"])?;
+    let deployment = Deployment::decode(&documents["transaction.json"], &packages)?;
+    let expected_platform = match platform {
+        Platform::X86_64Linux => "x86_64-linux",
+        Platform::Aarch64Linux => "aarch64-linux",
+        _ => bail!("native boot deployment requires a Linux platform"),
+    };
+    if packages.system != expected_platform {
+        bail!("native deployment target differs from the image target");
+    }
+    let scope = deployment.scope();
+    if (stage == "host" && scope != ["profile", "system"])
+        || (stage == "initrd" && (scope.len() != 2 || scope[1] != "initrd"))
+    {
+        bail!("native deployment has the wrong stage scope");
+    }
+    let evaluation = EvaluationInput::decode(&documents["evaluation.json"])?;
+    if evaluation.schema != "aos.package.evaluation-input"
+        || evaluation.packages != packages
+        || evaluation.scope != scope
+    {
+        bail!("native evaluation descriptor differs from the checked deployment");
+    }
+    for source in std::iter::once(&evaluation.library)
+        .chain(&evaluation.configuration)
+        .chain(&evaluation.runtime_configuration)
+    {
+        let source = source.to_str().context("native source path is not UTF-8")?;
+        let suffix = source
+            .strip_prefix("/nix/store/")
+            .context("native source is outside the store")?;
+        let component = suffix
+            .split('/')
+            .next()
+            .context("native source lacks its store root")?;
+        let root = format!("/nix/store/{component}");
+        aos_release::artifact::require_store_path(&root, false)?;
+        if !deployment.inputs().contains(&root) {
+            bail!("native evaluation source is not retained by the deployment");
         }
-    };
-    let execution_stage = match expected_stage {
-        ArtifactExecutionStage::Initrd => StaticAbilityExecutionStage::Initrd,
-        ArtifactExecutionStage::Host => StaticAbilityExecutionStage::Host,
-        ArtifactExecutionStage::Build => {
-            bail!("boot static ability contract cannot describe the build stage")
+    }
+    let expected_digest =
+        Sha256Digest::parse(std::str::from_utf8(&documents["admission-sha256"])?.trim())?;
+    let admission = AdmissionCatalog::decode(&documents["admission.json"], expected_digest)?;
+    let mut required_roots = BTreeSet::new();
+    for artifact in &packages.artifacts {
+        required_roots.insert(artifact.path.as_str());
+    }
+    for module in &packages.modules {
+        required_roots.insert(module.config_root.as_str());
+    }
+    admission.require_roots(required_roots)?;
+    for source in evaluation
+        .configuration
+        .iter()
+        .chain(&evaluation.runtime_configuration)
+    {
+        let source = source
+            .to_str()
+            .context("native configuration source is not UTF-8")?;
+        let suffix = source
+            .strip_prefix("/nix/store/")
+            .context("native source is outside store")?;
+        let component = suffix
+            .split('/')
+            .next()
+            .context("native source lacks root")?;
+        admission.require_roots(std::iter::once(format!("/nix/store/{component}").as_str()))?;
+    }
+    if stage == "host" {
+        let installed: Vec<aos_package::types::InstalledMeta> =
+            serde_json::from_slice(&documents["installed.json"])?;
+        let selected: BTreeSet<_> = packages
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.path.as_str())
+            .collect();
+        let records: BTreeSet<_> = installed
+            .iter()
+            .map(|record| record.store_path.as_str())
+            .collect();
+        if records.len() != installed.len() || records != selected {
+            bail!("native installed metadata differs from selected image payloads");
         }
-    };
-    let expectation = StaticAbilityContractExpectation {
-        artifact_class: StaticAbilityArtifactClass::Bootable,
-        execution_stage: Some(execution_stage),
-        platform: Some(StaticAbilityPlatform {
-            os: os.to_string(),
-            architecture: architecture.to_string(),
-            variant: None,
-            target: None,
-        }),
-    };
-    validate_static_ability_artifacts(&bytes, &expectation)?;
-
-    Ok(AssemblyFileV1 {
-        id: id.to_owned(),
-        kind,
-        path: BundlePath::parse(relative)?,
-        size_bytes: u64::try_from(bytes.len())?,
-        sha256: Sha256Digest::of_bytes(&bytes),
-    })
+        for record in &installed {
+            let package = record
+                .apm
+                .as_ref()
+                .context("image payload lacks package metadata")?;
+            let envelope = package
+                .deployment
+                .as_ref()
+                .context("image payload lacks native envelope locator")?;
+            admission.require_roots(std::iter::once(envelope.store_path.as_str()))?;
+            if !deployment.inputs().contains(&envelope.store_path) {
+                bail!("native package envelope is not retained by image deployment");
+            }
+            if let Some(documentation) = &package.module_documentation {
+                admission.require_roots(std::iter::once(documentation.store_path.as_str()))?;
+                if !deployment.inputs().contains(&documentation.store_path) {
+                    bail!("native module documentation is not retained by image deployment");
+                }
+            }
+        }
+    }
+    let library = evaluation
+        .library
+        .to_str()
+        .context("native library is not UTF-8")?;
+    let component = library
+        .strip_prefix("/nix/store/")
+        .context("native library is outside store")?
+        .split('/')
+        .next()
+        .context("native library lacks root")?;
+    let library_root = format!("/nix/store/{component}");
+    admission.require_roots(std::iter::once(library_root.as_str()))?;
+    let identity = admission
+        .roots()
+        .get(&library_root)
+        .context("native library lacks admission")?;
+    if identity.nar_hash != evaluation.library_nar_hash.to_string() {
+        bail!("native library descriptor differs from admitted NAR identity");
+    }
+    Ok(files)
 }
 
 fn capture_control_file(path: &Path, label: &str) -> Result<Vec<u8>> {
@@ -426,7 +507,6 @@ mod tests {
             "platform": "x86_64-linux",
             "system_variant": "production",
             "kernel_release": "6.18.33",
-            "module_abi": 1,
             "recovery_abi": 1,
             "sbat_generation": 1,
             "sbat":{"component":"aos","vendor":"Andyl Inc.","package":"aos","url":"https://aos.dev"},
@@ -452,33 +532,44 @@ mod tests {
             canonical::to_vec(&recipe)?,
         )?;
         write_initrd_contract(&temporary, "initrd")?;
-        write_static_ability_contract(&temporary, "initrd")?;
-        write_static_ability_contract(&temporary, "host")?;
+        write_native_deployment(&temporary, "initrd")?;
+        write_native_deployment(&temporary, "host")?;
         Ok(temporary)
     }
 
-    fn write_static_ability_contract(
-        temporary: &tempfile::TempDir,
-        execution_stage: &str,
-    ) -> Result<()> {
-        let contract = json!({
-            "schema":"aos.boot.static-abilities/v1",
-            "platforms":[{
-                "platform":{"os":"linux","architecture":"amd64"},
-                "target":{"system":"linux","architecture":"x86_64"},
-                "execution_stage":execution_stage,
-                "packages":[],
-                "abilities":[],
-                "unresolved_launch_obligations":[]
-            }],
-            "runtime_grants":[]
-        });
-        fs::write(
-            temporary.path().join(format!(
-                "inputs/{execution_stage}-static-ability-contract.json"
-            )),
-            canonical::to_vec(&contract)?,
+    fn write_native_deployment(temporary: &tempfile::TempDir, stage: &str) -> Result<()> {
+        let directory = temporary.path().join(format!("inputs/{stage}-deployment"));
+        fs::create_dir_all(&directory)?;
+        let scope = if stage == "host" {
+            json!(["profile", "system"])
+        } else {
+            json!(["fixture", "initrd"])
+        };
+        let packages = json!({"system":"x86_64-linux","artifacts":[],"modules":[]});
+        let library = "/nix/store/00000000000000000000000000000000-library/default.nix";
+        let transaction = json!({"schema":"aos.package.transaction","scope":scope,"system":"x86_64-linux",
+            "artifacts":[],"inputs":["/nix/store/00000000000000000000000000000000-library"],"packages":[],"retire":[],
+            "graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}});
+        let evaluation = json!({"schema":"aos.package.evaluation-input","library":library,
+            "libraryNarHash":format!("sha256:{}", "a".repeat(64)),"scope":scope,"packages":packages,"configuration":[]});
+        let admission = canonical::to_vec(
+            &json!({"schema":"aos.package.admission","roots":[{"storePath":"/nix/store/00000000000000000000000000000000-library","narHash":format!("sha256:{}", "a".repeat(64)),"narSize":1,"references":[]}]}),
         )?;
+        fs::write(
+            directory.join("admission-sha256"),
+            Sha256Digest::of_bytes(&admission).to_string(),
+        )?;
+        fs::write(directory.join("admission.json"), admission)?;
+        for (name, value) in [
+            ("transaction.json", transaction),
+            ("packages.json", packages),
+            ("evaluation.json", evaluation),
+        ] {
+            fs::write(directory.join(name), canonical::to_vec(&value)?)?;
+        }
+        if stage == "host" {
+            fs::write(directory.join("installed.json"), b"[]")?;
+        }
         Ok(())
     }
 
@@ -542,11 +633,11 @@ mod tests {
 
     #[test]
     fn captures_complete_public_only_assembly() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V2)?;
+        let temporary = fixture(RECIPE_SCHEMA_V3)?;
         let assembly = capture_unsigned_assembly(temporary.path(), "release-2026.9.0", |_| {
             Ok(format!("sha256:{}", "a".repeat(64)))
         })?;
-        assert_eq!(assembly.files.len(), 20);
+        assert_eq!(assembly.files.len(), 29);
         assert!(assembly.initrd_contract.is_some());
         assert_eq!(assembly.tools.len(), 1);
         Ok(())
@@ -554,12 +645,12 @@ mod tests {
 
     #[test]
     fn captures_initrd_contract_and_exact_archive_binding() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V2)?;
+        let temporary = fixture(RECIPE_SCHEMA_V3)?;
         let assembly = capture_unsigned_assembly(temporary.path(), "release-2026.9.0", |_| {
             Ok(format!("sha256:{}", "a".repeat(64)))
         })?;
-        assert_eq!(assembly.schema_version, UNSIGNED_IMAGE_ASSEMBLY_V2);
-        assert_eq!(assembly.files.len(), 20);
+        assert_eq!(assembly.schema_version, UNSIGNED_IMAGE_ASSEMBLY_V3);
+        assert_eq!(assembly.files.len(), 29);
         assert!(assembly.initrd_contract.is_some());
 
         fs::write(
@@ -577,70 +668,43 @@ mod tests {
     }
 
     #[test]
-    fn captures_stage_specific_static_ability_contracts() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V2)?;
-        let assembly = capture_unsigned_assembly(temporary.path(), "release-2026.9.0", |_| {
-            Ok(format!("sha256:{}", "a".repeat(64)))
-        })?;
-        assert_eq!(assembly.schema_version, UNSIGNED_IMAGE_ASSEMBLY_V2);
-        assert_eq!(assembly.files.len(), 20);
-
-        write_static_ability_contract(&temporary, "host")?;
-        fs::rename(
+    fn rejects_cross_stage_native_transaction() -> Result<()> {
+        let temporary = fixture(RECIPE_SCHEMA_V3)?;
+        fs::copy(
             temporary
                 .path()
-                .join("inputs/host-static-ability-contract.json"),
+                .join("inputs/host-deployment/transaction.json"),
             temporary
                 .path()
-                .join("inputs/initrd-static-ability-contract.json"),
+                .join("inputs/initrd-deployment/transaction.json"),
         )?;
         let error = capture_unsigned_assembly(temporary.path(), "release-2026.9.0", |_| {
             Ok(format!("sha256:{}", "a".repeat(64)))
         })
-        .expect_err("a host-stage contract cannot replace the initrd contract");
-        let message = format!("{error:#}");
-        assert!(message.contains("wrong execution stage"), "{message}");
+        .expect_err("host transaction cannot replace initrd transaction");
+        assert!(format!("{error:#}").contains("wrong stage scope"));
         Ok(())
     }
 
     #[test]
-    fn final_recipe_requires_both_static_ability_contracts() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V2)?;
-        fs::remove_file(
+    fn rejects_changed_native_admission_bytes() -> Result<()> {
+        let temporary = fixture(RECIPE_SCHEMA_V3)?;
+        fs::write(
             temporary
                 .path()
-                .join("inputs/host-static-ability-contract.json"),
+                .join("inputs/host-deployment/admission.json"),
+            b"{}",
         )?;
-
         capture_unsigned_assembly(temporary.path(), "release-2026.9.0", |_| {
             Ok(format!("sha256:{}", "a".repeat(64)))
         })
-        .expect_err("the final recipe cannot omit a static ability contract");
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_untyped_static_ability_records() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V2)?;
-        let path = temporary
-            .path()
-            .join("inputs/host-static-ability-contract.json");
-        let mut contract: serde_json::Value =
-            canonical::from_slice(&fs::read(&path)?, "static ability contract fixture")?;
-        contract["platforms"][0]["packages"] = json!([{}]);
-        fs::write(path, canonical::to_vec(&contract)?)?;
-
-        let error = capture_unsigned_assembly(temporary.path(), "release-2026.9.0", |_| {
-            Ok(format!("sha256:{}", "a".repeat(64)))
-        })
-        .expect_err("an arbitrary object is not a static package record");
-        assert!(error.to_string().contains("static ability contract"));
+        .expect_err("admission bytes must match authenticated digest");
         Ok(())
     }
 
     #[test]
     fn rejects_a_host_stage_initrd_dependency() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V2)?;
+        let temporary = fixture(RECIPE_SCHEMA_V3)?;
         write_initrd_contract(&temporary, "host")?;
 
         assert!(
@@ -655,7 +719,7 @@ mod tests {
 
     #[test]
     fn rejects_a_required_but_masked_handoff_unit() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V2)?;
+        let temporary = fixture(RECIPE_SCHEMA_V3)?;
         let path = temporary.path().join("inputs/initrd-stage-contract.json");
         let mut contract: serde_json::Value =
             canonical::from_slice(&fs::read(&path)?, "initrd stage contract fixture")?;
@@ -674,7 +738,7 @@ mod tests {
 
     #[test]
     fn rejects_a_contract_without_a_mandatory_producer_root() -> Result<()> {
-        let temporary = fixture(RECIPE_SCHEMA_V2)?;
+        let temporary = fixture(RECIPE_SCHEMA_V3)?;
         let path = temporary.path().join("inputs/initrd-stage-contract.json");
         let mut contract: serde_json::Value =
             canonical::from_slice(&fs::read(&path)?, "initrd stage contract fixture")?;
@@ -698,7 +762,7 @@ mod tests {
     fn rejects_a_link_substituted_for_an_input() -> Result<()> {
         use std::os::unix::fs::symlink;
 
-        let temporary = fixture(RECIPE_SCHEMA_V2)?;
+        let temporary = fixture(RECIPE_SCHEMA_V3)?;
         let target = temporary.path().join("target");
         fs::write(&target, b"replacement")?;
         fs::remove_file(temporary.path().join("inputs/vmlinuz"))?;

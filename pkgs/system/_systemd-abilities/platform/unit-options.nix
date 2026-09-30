@@ -631,7 +631,7 @@ in rec {
         # `scriptName`). That force faults under the on-host eval-only
         # `pkgs` (no builder functions). `attrs` validates each element is an
         # attrset without descending into (forcing) its values; `listOf`
-        # still concatenates contributions across the six Exec* mkMerge blocks.
+        # still concatenates definitions across the six Exec* mkMerge blocks.
         type = with types; listOf attrs;
         internal = true;
         description = "Job-script records for this unit.";

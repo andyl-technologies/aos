@@ -6,6 +6,7 @@
 }: let
   hostPackages = [
     pkgs.aos
+    pkgs.aos-host-policy
     pkgs.aos-ebpf-lsm-policy
     pkgs.aos-ebpf-net-policy
     pkgs.aos-hub
@@ -68,11 +69,14 @@ in {
       };
     };
 
-  aos.security.ebpfLsm.enable = lib.mkDefault true;
-
   # Keep the interactive image baseline explicit at the system-composition
   # boundary. Feature modules use absolute package paths, so selecting a
   # feature does not silently expand the login PATH.
+  aos.activation.stages.host.configurationBuilders = [
+    (import ../pkgs/system/_aos-host-policy/build-baseline.nix {inherit lib pkgs;})
+  ];
+  aos.activation.stages.initrd.configuration = ["${pkgs.aos-host-policy.module}/baseline/initrd.nix"];
+
   environment.systemPackages = portableShellPackages ++ hostUtilities;
   aos.containers.systemPackageSlice = portableShellPackages;
 }
