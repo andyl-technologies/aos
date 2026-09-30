@@ -20,7 +20,7 @@ async fn physical_retirement_survives_fresh_readmission_and_exact_restore() {
     let first = b"fresh replacement preserves physical exclusion";
     let other = b"restore eligible old body";
     let bad = b"sticky quarantine survives physical restore";
-    let old = publish_members(&bucket, &[first, other, bad]).await;
+    let (old, _, _) = publish_members_with_index_alias(&bucket, &[first, other, bad]).await;
     let first_id = chunk_identity(first);
     let other_id = chunk_identity(other);
     let bad_id = chunk_identity(bad);
@@ -211,7 +211,7 @@ async fn legacy_unknown_retirement_never_loses_its_last_physical_evidence() {
     let bucket = fixture().await;
     let body = b"legacy retirement evidence";
     let identity = chunk_identity(body);
-    let old = publish_members(&bucket, &[body]).await;
+    let (old, _, _) = publish_members_with_index_alias(&bucket, &[body]).await;
     let initial = bucket.catalog().await.unwrap();
     let old_entry = initial
         .inventory
@@ -439,4 +439,159 @@ async fn physical_exclusion_overrides_live_rows_during_fresh_admission() {
     );
     assert_eq!(reopened.has(&[other_identity]).await.unwrap(), vec![false]);
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+}
+
+#[tokio::test]
+async fn legacy_state1_without_inventory_blocks_opaque_index_aliases_even_with_empty_key6() {
+    let bucket = fixture().await;
+    let body = b"legacy state1 physical evidence outside key6";
+    let (old, _, _) = publish_members_with_index_alias(&bucket, &[body]).await;
+    let initial = bucket.catalog().await.unwrap();
+    let row = initial
+        .inventory
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|row| row.pack_id == *old.as_bytes())
+        .unwrap();
+    let index = bucket.verified_container(row).await.unwrap().1;
+    let identity = bucket
+        .put(ContentUpload::Meta(
+            MetaUpload::new(IdentityKind::Index, &index).unwrap(),
+        ))
+        .await
+        .unwrap();
+    let guard = bucket.exclusive().await.unwrap();
+    let mut catalog = bucket.catalog().await.unwrap();
+    catalog
+        .inventory
+        .as_mut()
+        .unwrap()
+        .retain(|row| row.pack_id != *old.as_bytes());
+    assert_eq!(catalog.exclusions, Some(Vec::new()));
+    let generation = bucket.next_generation(&catalog).await.unwrap();
+    let shards = catalog
+        .shards
+        .iter()
+        .map(|shard| {
+            let mut rows =
+                terrane_core::pack_format::decode_shard(&shard.encode(), shard.shard()).unwrap();
+            for row in &mut rows {
+                if row.pack == *old.as_bytes() {
+                    row.state = crate::pack::RecordState::Tombstone as u8;
+                }
+            }
+            crate::pack::MergedShard::decode(
+                &terrane_core::pack_format::encode_shard(&rows),
+                generation,
+                shard.shard(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    bucket
+        .publish_shards(catalog, generation, &shards)
+        .await
+        .unwrap();
+    drop(guard);
+
+    assert!(matches!(
+        bucket.get(&identity, None).await.unwrap_err().kind(),
+        StoreErrorKind::Unsupported
+    ));
+    assert!(matches!(
+        bucket
+            .has(std::slice::from_ref(&identity))
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Unsupported
+    ));
+    assert!(matches!(
+        bucket
+            .published_identities(IdentityKind::Index)
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Unsupported
+    ));
+    assert!(matches!(
+        bucket
+            .put(ContentUpload::Meta(
+                MetaUpload::new(IdentityKind::Index, &index).unwrap()
+            ))
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Unsupported
+    ));
+    let reopened = FileBucket::open(
+        config(bucket.root().to_owned()),
+        TokioLocalFs,
+        TokioClock,
+        Validator,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        reopened.get(&identity, None).await.unwrap_err().kind(),
+        StoreErrorKind::Unsupported
+    ));
+    assert_eq!(
+        reopened.catalog().await.unwrap().exclusions,
+        Some(Vec::new())
+    );
+    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+}
+
+/// Admits an independent index body before publishing its named physical pack.
+async fn publish_members_with_index_alias(
+    bucket: &FileBucket<TokioLocalFs, TokioClock, Validator>,
+    members: &[&[u8]],
+) -> (
+    crate::pack::PackId,
+    terrane_core::identity::Identity,
+    Vec<u8>,
+) {
+    use crate::pack::{EntryKind, PackClass, PackId, PackIndexSnapshot, PackWriter};
+    let id = PackId::generate(&bucket.inner.fs).await.unwrap();
+    let mut writer = PackWriter::new(id, PackClass::Data, false);
+    for member in members {
+        writer.append_raw(EntryKind::Chunk, member).unwrap();
+    }
+    let sealed = writer.seal().unwrap();
+    let index_bytes = sealed.index_object().to_vec();
+    let identity = bucket
+        .put(ContentUpload::Meta(
+            MetaUpload::new(IdentityKind::Index, &index_bytes).unwrap(),
+        ))
+        .await
+        .unwrap();
+    let guard = bucket.exclusive().await.unwrap();
+    let catalog = bucket.catalog().await.unwrap();
+    let independent = catalog
+        .shards
+        .iter()
+        .flat_map(|shard| shard.entries())
+        .find(|entry| entry.entry().hash() == &identity.terrane_v1_digest().unwrap())
+        .unwrap();
+    assert_ne!(independent.pack(), id);
+    assert_eq!(independent.entry().kind(), EntryKind::Index);
+    bucket
+        .immutable(&BucketKey::parse(&id.pack_key()).unwrap(), sealed.bytes())
+        .await
+        .unwrap();
+    bucket
+        .immutable(&BucketKey::parse(&id.index_key()).unwrap(), &index_bytes)
+        .await
+        .unwrap();
+    let generation = bucket.next_generation(&catalog).await.unwrap();
+    let index = PackIndexSnapshot::decode(&index_bytes, generation).unwrap();
+    let inventory = super::containers::inventory_entry(id, sealed.bytes(), &index_bytes).unwrap();
+    bucket
+        .publish_pack_catalog(catalog, index, inventory)
+        .await
+        .unwrap();
+    drop(guard);
+    (id, identity, index_bytes)
 }
