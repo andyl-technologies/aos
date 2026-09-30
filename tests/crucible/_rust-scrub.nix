@@ -156,12 +156,17 @@
         inherit (state) mode depth skip;
         out = "";
       } (chunkAt index);
-      chunks = [chunk.out] ++ state.chunks;
+      # A forced binding lets list entries share the flat string. A lazy
+      # selection captures this step's environment and every prior chunk list.
+      fragment = chunk.out;
+      chunks = [fragment] ++ state.chunks;
     in
-      builtins.seq (builtins.stringLength chunk.out) (builtins.seq (builtins.length chunks) {
+      # Force every parser field as well as the text. Lazy inherited fields
+      # otherwise retain the preceding line's character states indefinitely.
+      builtins.deepSeq chunk (builtins.seq fragment (builtins.seq (builtins.length chunks) {
         inherit (chunk) mode depth skip;
         inherit chunks;
-      }))
+      })))
     {
       chunks = [];
       mode = "code";
