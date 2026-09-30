@@ -20,6 +20,7 @@ let
   # Wave 1: target-independent inputs and small leaf packages.  These establish
   # the data and low-level library closure used by later Darwin packages.
   independentWave1 = [
+    "xorg-util-macros"
     "libglvnd-headers"
     "virglrenderer-headers"
     "xtrans"
@@ -495,6 +496,12 @@ let
   # fixture, and downloader closures are outside the first Darwin release.
   # The Darwin AOS clients retain their non-VM commands without target GLib.
   linuxScoped = [
+    "libx11"
+    "libxext"
+    "libxrender"
+    "libxrandr"
+    "libxxf86vm"
+    "libxshmfence"
     "libdrm"
     "aos-hub-cloudflare"
     # WebAssembly and Cargo developer tools for downstream project dev shells.
