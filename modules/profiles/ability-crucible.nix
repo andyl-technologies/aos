@@ -28,21 +28,11 @@ in {
       package = pkgs.aos-ability-crucible;
       bundle = true;
     };
-    aos.abilities.stages.host.modules = [
-      {
-    aos.services.abilityCrucible.enable = true;
-    aos.abilities.bindings."ability-crucible:observer-endpoint" = {
-      request = "aos-ability-crucible:observer-endpoint";
-          implementation = "aos-ability-crucible:execution-observation-endpoint";
-      providerInstance = "aos-ability-crucible:ability-crucible";
-      slot = "observer";
-    };
-    aos.abilities.executionObserver = lib.mkDefault {
-      request = "aos-ability-crucible:observer-endpoint";
-      resourceOutput = "resource";
-      socketOutput = "socket-path";
-    };
-      }
+    aos.activation.stages.host.configuration = [
+      (builtins.path {
+        path = ./_ability-crucible-enable.nix;
+        name = "aos-ability-crucible-policy.nix";
+      })
     ];
   };
 }

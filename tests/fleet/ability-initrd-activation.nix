@@ -1,4 +1,4 @@
-# Checked initrd-stage execution and host receipt qualification.
+##! Exercises interrupted native initrd activation and checked host receipt.
 {
   lib,
   mkSystem,
@@ -25,16 +25,18 @@
       };
       aos.boot.initrd.packageRoots = [observer.package];
 
-      aos.abilities.stages.host.modules = [
-        {aos.tests.executionObserver.enable = false;}
+      aos.activation.stages.host.configuration = [
+        (builtins.path {
+          path = ./_host-observer-disabled.nix;
+          name = "aos-initrd-host-observer-disabled.nix";
+        })
       ];
-      aos.abilities.stages.initrd.modules = [
-        observer.stageSettings
-        {
-          # Restart the same durable transaction after the observer kills its runner.
-          aos.services."boot-preparations.aos-ability-initrd-controller".lifecycle.restart =
-            lib.mkForce "on-failure";
-        }
+      aos.activation.stages.initrd.configuration = [
+        observer.source
+        (builtins.path {
+          path = ./_initrd-controller-recovery-policy.nix;
+          name = "aos-initrd-controller-recovery-policy.nix";
+        })
       ];
 
       # This test endpoint must be live before the ability graph it observes runs.
@@ -50,7 +52,12 @@
         script = ''
           mkdir -p -m 0700 ${interruptionStateRoot}
           printf '%s' \
-            '{"action":"terminate-peer","boundary":"effect-returned","purpose":"effect","sequence":"initrd-first-effect"}' \
+            ${lib.escapeShellArg (builtins.toJSON {
+            action = "terminate-peer";
+            boundary = "dispatch-returned";
+            invocation_action = "apply";
+            sequence = "initrd-first-effect";
+          })} \
             > ${interruptionStateRoot}/target.json
           exec ${observer.controller}/bin/aos-ability-boundary-controller \
             --state-root ${interruptionStateRoot} \
@@ -74,8 +81,7 @@
   ];
   initrdController =
     activatedSystem.config.boot.initrd.systemd.services.aos-ability-initrd-controller;
-  selectedObserver =
-    activatedSystem.config.system.build.initrdAbilityGraph.resolvedExecutionObserver;
+  selectedInitrd = activatedSystem.config.system.build.initrdDeploymentBundle.nativeTransaction;
   observerOrderedBeforeController =
     builtins.elem observerUnit initrdController.requires
     && builtins.elem observerUnit initrdController.after;
@@ -86,8 +92,8 @@
   checkedSystem =
     if !observerOrderedBeforeController
     then throw "initrd ability controller must require the interruption observer"
-    else if selectedObserver.socket != observer.settings.socketPath
-    then throw "initrd ability fixed point selected another observer socket"
+    else if !(builtins.elem "initrd" selectedInitrd.scope)
+    then throw "initrd activation must retain its native stage identity"
     else if !observerAvailableInInitrd
     then throw "initrd observer package is absent from the runtime roots"
     else activatedSystem;
@@ -105,107 +111,82 @@ in {
   testScript =
     # python
     ''
+      import hashlib
       import json
+      import shlex
 
+      AOS = "${pkgs.aos}/bin/aos"
+      COREUTILS = "${pkgs.coreutils}/bin"
+      PREPARATION = ${builtins.toJSON activatedSystem.config.aos.boot.preparationExecutable}
+      NIX_STORE = "${pkgs.nix}/bin/nix-store"
+      INITRD_STATE = ${builtins.toJSON activatedSystem.config.aos.boot.substrateServices.initrdStateDirectory}
+      HOST_STATE = ${builtins.toJSON activatedSystem.config.aos.boot.substrateServices.hostStateDirectory}
+      INTERRUPTION_STATE = ${builtins.toJSON interruptionStateRoot}
 
-      target.wait_for_unit("aos-ability-host-receiver.service", timeout=120)
-      target.succeed("systemctl is-active aos-ability-host-receiver.service")
+      def read_json(path):
+          return json.loads(target.succeed(f"{COREUTILS}/cat {shlex.quote(path)}"))
+
+      def inspect(state):
+          view = json.loads(target.succeed(
+              f"{AOS} ability journal {shlex.quote(state + '/effects.journal')} --format json"
+          ))
+          assert view["schema"] == "aos.activation.inspection", view
+          assert view["liveStateVerified"] is False, view
+          assert view["incompleteTailBytes"] == 0, view
+          assert view["pending"] is None, view
+          assert view["completed"] is not None, view
+          assert view["records"][-1]["event"] == "commit", view
+          return view
+
+      target.wait_for_unit("aos-ability-host-receiver.service", timeout=180)
+      target.wait_for_unit("aos-ability-host-controller.service", timeout=300)
       target.succeed("systemctl is-active multi-user.target")
 
-      interruption_state = ${builtins.toJSON interruptionStateRoot}
-      held = json.loads(target.succeed(
-          f"cat {interruption_state}/held-event.json"
-      ))
-      resumed = json.loads(target.succeed(
-          f"cat {interruption_state}/resumed-event.json"
-      ))
+      held = read_json(f"{INTERRUPTION_STATE}/held-event.json")
+      resumed = read_json(f"{INTERRUPTION_STATE}/resumed-event.json")
       assert held["sequence"] == "initrd-first-effect", held
-      assert held["event"]["boundary"] == "effect-returned", held
-      assert held["event"]["purpose"] == "effect", held
-      assert resumed["event"]["boundary"] == "reconciliation-returned", resumed
-      assert resumed["event"]["purpose"] == "reconcile", resumed
-      assert resumed["event"]["operation"] == held["event"]["operation"], resumed
-      assert resumed["event"]["transaction"] == held["event"]["transaction"], resumed
       assert resumed["sequence"] == held["sequence"], resumed
+      assert held["event"]["schema"] == "aos.activation.boundary", held
+      assert held["event"]["boundary"] == "dispatch-returned", held
+      assert resumed["event"]["boundary"] == "observation-returned", resumed
+      for field in ("transaction", "effect", "revision", "action", "journal_sequence"):
+          assert resumed["event"][field] == held["event"][field], (field, held, resumed)
+      assert held["event"]["action"] == "apply", held
 
-      observer_events = [json.loads(line) for line in target.succeed(
-          f"cat {interruption_state}/events.jsonl"
+      events = [json.loads(line) for line in target.succeed(
+          f"{COREUTILS}/cat {INTERRUPTION_STATE}/events.jsonl"
       ).splitlines()]
-      selected_effect_returns = [
-          event for event in observer_events
-          if event["operation"] == held["event"]["operation"]
-          and event["boundary"] == "effect-returned"
-      ]
-      assert len(selected_effect_returns) == 1, selected_effect_returns
+      selected = [event for event in events if all(
+          event[field] == held["event"][field]
+          for field in ("transaction", "effect", "revision", "action", "journal_sequence")
+      )]
+      assert [event["boundary"] for event in selected].count("dispatch-returned") == 1, selected
+      assert "observation-returned" in [event["boundary"] for event in selected], selected
 
-      checkpoint_path = "/run/aos/ability-stage-handoff/initrd.json"
-      checkpoint = json.loads(target.succeed(f"cat {checkpoint_path}"))
-      assert checkpoint["schema"] == (
-          "aos.ability.stage-handoff-checkpoint/v1"
-      ), checkpoint
-      assert checkpoint["source_stage"] == "initrd", checkpoint
-      assert checkpoint["receiver_stage"] == "host", checkpoint
-      assert checkpoint["source_stage_bundle_sha256"].startswith("sha256:"), checkpoint
-      assert checkpoint["execution_sha256"].startswith("sha256:"), checkpoint
-      assert checkpoint["status"] == "ownership-released", checkpoint
-      assert checkpoint["transaction_root"] == (
-          "/run/aos-boot-transaction-storage/aos/initrd-stage-journal"
-      ), checkpoint
-      transaction_storage = checkpoint["transaction_storage"]
-      assert transaction_storage["interface"]["name"] == (
-          "aos.boot.transaction-storage-view"
-      ), transaction_storage
-      assert transaction_storage["operations"] == ["observe"], transaction_storage
-      assert transaction_storage["lifetime"] == "transaction", transaction_storage
-
-      boot_id = target.succeed(
-          "cat /proc/sys/kernel/random/boot_id"
-      ).strip()
-      boot_token = boot_id.replace("-", "")
-      transaction = f"initrd-{boot_token}"
-      journal_path = (
-          "/var/lib/profiles/image/ability-stage-transactions/initrd/"
-          f"{transaction}/execution.journal"
-      )
-      admission_path = (
-          "/var/lib/profiles/image/ability-stage-transactions/initrd/"
-          f"{transaction}/source-admission.json"
-      )
-      admission = json.loads(target.succeed(f"cat {admission_path}"))
-      assert admission["schema"] == (
-          "aos.ability.source-stage-admission-evidence/v1"
-      ), admission
-      admission_sha256 = target.succeed(
-          f"sha256sum {admission_path}"
-      ).split()[0]
-      assert checkpoint["source_stage_admission_sha256"] == (
-          "sha256:" + admission_sha256
-      ), checkpoint
-
-      requests = admission["requests"]
-      responses = admission["responses"]
-      assert requests and len(requests) == len(responses), admission
-      for request, response in zip(requests, responses):
-          assert request["boot_id"] == boot_id, request
-          assert response["boot_id"] == boot_id, response
-          assert response["challenge"] == request["challenge"]
-          assert response["provider"] == request["provider"]
-          assert response["interface"] == request["interface"]
-          assert response["implementation"] == request["implementation"]
-          assert response["state"] == "available", response
-          assert response["incarnation"] is not None, response
-
-      journal_hex = target.succeed(
-          f"od -An -v -tx1 {journal_path}"
-      ).replace(" ", "").replace("\n", "")
-      for marker in (
-          '"event":"source-completed"',
-          '"terminal":"succeeded"',
-          '"retained_resources"',
-          '"name":"aos.boot.transaction-storage-view"',
-          '"output":"retained-resource"',
-          '"event":"host-received"',
-      ):
-          assert marker.encode().hex() in journal_hex, marker
+      # The production verifier reauthenticates immutable inputs and replays
+      # durable completion state after switch-root; inspector output is not a
+      # substitute for this receiving-stage check.
+      for stage, state in (("initrd", INITRD_STATE), ("host", HOST_STATE)):
+          bundle = f"/usr/lib/aos/{stage}/deployment"
+          target.succeed(
+              f"{PREPARATION} verify-deployment --input {bundle} "
+              f"--state-directory {shlex.quote(state)} --nix-store {NIX_STORE}"
+          )
+          transaction = read_json(f"{bundle}/transaction.json")
+          assert transaction["schema"] == "aos.package.transaction", transaction
+          assert stage in transaction["scope"], transaction["scope"]
+          admission_digest = target.succeed(f"{COREUTILS}/sha256sum {bundle}/admission.json").split()[0]
+          expected_digest = target.succeed(f"{COREUTILS}/cat {bundle}/admission-sha256").strip()
+          assert expected_digest == "sha256:" + admission_digest
+          assert read_json(f"{bundle}/admission.json")["schema"] == "aos.package.admission"
+          view = inspect(state)
+          assert view["retainedOutputs"], view
+          if stage == "initrd":
+              dispatches = [record for record in view["records"]
+                  if record["event"] == "finished" and record.get("dispatch")
+                  and record["transaction"] == held["event"]["transaction"]
+                  and record["dispatch"]["effect"] == held["event"]["effect"]
+                  and record["dispatch"]["journalSequence"] == held["event"]["journal_sequence"]]
+              assert len(dispatches) == 1, dispatches
     '';
 }
