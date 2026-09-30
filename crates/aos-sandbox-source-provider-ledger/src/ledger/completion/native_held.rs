@@ -129,12 +129,43 @@ pub(crate) enum HeldReleaseCompletion {
     Released,
 }
 
+/// Shares the materializer's actual cleanup families with bounded projections.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HeldReleaseMutationShape {
+    StatusOnly,
+    OrdinaryComplete,
+    ReceiptOnlyRecovery,
+}
+
+impl HeldReleaseMutationShape {
+    pub(crate) const fn key_widths(self) -> &'static [usize] {
+        match self {
+            Self::StatusOnly => &[63, 96, 103],
+            Self::OrdinaryComplete => &[49, 63, 95, 96, 99, 103],
+            Self::ReceiptOnlyRecovery => &[49, 95, 99],
+        }
+    }
+}
+
+fn held_release_mutation_shape(
+    completion: HeldReleaseCompletion,
+    attempt_unchanged: bool,
+) -> HeldReleaseMutationShape {
+    if completion == HeldReleaseCompletion::StatusOnly {
+        HeldReleaseMutationShape::StatusOnly
+    } else if attempt_unchanged {
+        HeldReleaseMutationShape::ReceiptOnlyRecovery
+    } else {
+        HeldReleaseMutationShape::OrdinaryComplete
+    }
+}
+
 pub(crate) fn validate_native_held_release(
     before: &BTreeMap<Vec<u8>, Vec<u8>>,
     after: &BTreeMap<Vec<u8>, Vec<u8>>,
     completion: HeldReleaseCompletion,
     held: &crate::ledger::native_held_completion::SourceNativeHeldCompletionRecordV1,
-) -> Result<(), LedgerFormatErrorV1> {
+) -> Result<HeldReleaseMutationShape, LedgerFormatErrorV1> {
     let native = held.original();
     let release_key = crate::ledger::format::release_key(&ReleaseKeyV1 {
         provider_id: native.provider_id,
@@ -163,7 +194,11 @@ pub(crate) fn validate_native_held_release(
         .ok_or(LedgerFormatErrorV1::Corrupt(
             "held Release completion Attempt",
         ))?;
-    let finalized = if completion == HeldReleaseCompletion::StatusOnly {
+    let shape = held_release_mutation_shape(
+        completion,
+        before.get(&attempt_key) == after.get(&attempt_key),
+    );
+    let finalized = if shape == HeldReleaseMutationShape::StatusOnly {
         if !crate::ledger::native_completion::release_fence::native_release_status_is_completed_v1(
             &attempt,
         ) {
@@ -198,7 +233,7 @@ pub(crate) fn validate_native_held_release(
                 .released_seconds
                 .ok_or(LedgerFormatErrorV1::Corrupt("held Released time"))?,
         )?;
-        if before.get(&attempt_key) == after.get(&attempt_key) {
+        if shape == HeldReleaseMutationShape::ReceiptOnlyRecovery {
             let signed_receipt =
                 SignedSourceReleaseReceiptV1::from_canonical_bytes(&release.signed_receipt)
                     .map_err(|_| LedgerFormatErrorV1::Corrupt("held Release recovery receipt"))?;
@@ -246,7 +281,7 @@ pub(crate) fn validate_native_held_release(
             "held exact Release reducer bytes",
         ));
     }
-    Ok(())
+    Ok(shape)
 }
 
 // Derives historical Complete evidence from the retained full signed artifacts.

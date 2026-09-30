@@ -146,6 +146,7 @@ pub fn propose_native_held_lifecycle_v1<'before, 'after>(
     let rows = graph::Companions::read(&before, &old)?;
     let mut status = None;
     let mut custody = None;
+    let mut release_shape = None;
 
     match lifecycle {
         SourceNativeHeldLifecycleV1::OriginalCustodyMarked => {
@@ -204,7 +205,7 @@ pub fn propose_native_held_lifecycle_v1<'before, 'after>(
             if old_bytes != new_bytes || old.original.state != Outer::CleanupRequired {
                 return Err(corrupt("held Release preserved native carrier"));
             }
-            completion::validate_native_held_release(
+            release_shape = Some(completion::validate_native_held_release(
                 &before,
                 &after,
                 if lifecycle == SourceNativeHeldLifecycleV1::ReleaseStatusCompleted {
@@ -213,7 +214,7 @@ pub fn propose_native_held_lifecycle_v1<'before, 'after>(
                     completion::HeldReleaseCompletion::Released
                 },
                 &old,
-            )?;
+            )?);
             if lifecycle == SourceNativeHeldLifecycleV1::ReleaseStatusCompleted {
                 status = Some(status_binding(&after, &new)?);
             }
@@ -281,6 +282,11 @@ pub fn propose_native_held_lifecycle_v1<'before, 'after>(
     if changed.is_empty() || changed.len() > maximum {
         return Err(corrupt("held lifecycle owner bounds"));
     }
+    if let Some(shape) = cleanup_key_widths(lifecycle, release_shape)
+        && (changed.len() > shape.len() || changed.iter().any(|key| !shape.contains(&key.len())))
+    {
+        return Err(corrupt("held lifecycle exact reducer family shape"));
+    }
     let mutations = transition::exact_mutations(&before, &after, &changed)?;
     Ok(SourceNativeHeldLifecycleTransactionV1 {
         lifecycle,
@@ -288,6 +294,25 @@ pub fn propose_native_held_lifecycle_v1<'before, 'after>(
         status,
         original_custody_required: custody,
     })
+}
+
+// These are owner families emitted by the existing lifecycle comparators and
+// completion materializers. Independent admission/current-work never consumes
+// the Source final slot, even when its row count happens to be small enough.
+pub(super) fn cleanup_key_widths(
+    lifecycle: SourceNativeHeldLifecycleV1,
+    release: Option<completion::HeldReleaseMutationShape>,
+) -> Option<&'static [usize]> {
+    use SourceNativeHeldLifecycleV1 as Lifecycle;
+    match lifecycle {
+        Lifecycle::OriginalCustodyMarked | Lifecycle::ColdTerminalCleanupMarked => Some(&[40]),
+        Lifecycle::ReleaseStatusCompleted => {
+            Some(completion::HeldReleaseMutationShape::StatusOnly.key_widths())
+        }
+        Lifecycle::ReleaseCompleted => release.map(|shape| shape.key_widths()),
+        Lifecycle::ReleasedArtifactsCompacted => Some(&[95, 99]),
+        Lifecycle::ReleaseAdmitted | Lifecycle::CurrentOwnersAdvanced => None,
+    }
 }
 
 fn validate_current_release_reservation(

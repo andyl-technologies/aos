@@ -105,6 +105,14 @@ impl NativeHeldCapacityAppendV2<'_> {
         self.step
     }
 
+    pub(super) fn measurement(&self) -> MeasurementAppend<'_> {
+        MeasurementAppend {
+            transaction_id: self.transaction_id,
+            changes: &self.changes,
+            final_append: self.is_final(),
+        }
+    }
+
     fn purpose(&self) -> NativeHeldCapacityPurposeV3 {
         match self.step {
             NativeHeldCapacityStepV2::Root(_) => NativeHeldCapacityPurposeV3::Root,

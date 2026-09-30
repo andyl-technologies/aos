@@ -35,7 +35,7 @@ use super::reopen::ReopenIdentityV1;
 
 mod native_held;
 pub(super) use native_held::{
-    HeldReleaseCompletion, finalize_native_held_complete, original_native_complete_artifact,
+    HeldReleaseCompletion, HeldReleaseMutationShape, finalize_native_held_complete, original_native_complete_artifact,
     validate_native_held_complete, validate_native_held_release,
 };
 

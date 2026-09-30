@@ -13,7 +13,13 @@ use super::super::super::{
 use super::super::reservation_key;
 use super::{NATIVE_HELD_CAPACITY_VALUE_BYTES_V3, NativeHeldCapacityPurposeV3, invalid};
 
+mod original_source;
 mod v2;
+
+pub(in crate::journal) use original_source::{
+    OriginalSourceGeometryDataV5, OriginalSourceMeasuredAlternativeV5,
+    check_original_source_candidate_spend_v5, derive_original_source_geometry_v5,
+};
 
 pub use v2::{
     NativeHeldCapacityAppendV2, NativeHeldCapacityStepV2, NativeHeldCapacitySuffixV2,
@@ -367,6 +373,20 @@ struct MeasurementAppend<'a> {
     final_append: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RetainedPrefix {
+    owner_bytes: i128,
+    owner_records: i64,
+    final_append: bool,
+}
+
+struct MeasuredAppends {
+    geometry: NativeHeldCapacityGeometryV3,
+    prefixes: Vec<RetainedPrefix>,
+    maximum_key_bytes: usize,
+    maximum_record_payload_bytes: usize,
+}
+
 // Both profiles use identical before-image, retained-growth and journal framing
 // arithmetic. Owner chronology is validated separately before reaching here.
 fn measure_appends<'a>(
@@ -375,6 +395,18 @@ fn measure_appends<'a>(
     limits: JournalLimits,
     floor_value_bytes: usize,
 ) -> Result<NativeHeldCapacityGeometryV3, JournalError> {
+    Ok(measure_appends_with_prefixes(purpose, appends, limits, floor_value_bytes)?.geometry)
+}
+
+// The old owner-only result and the original Source coupled view consume this
+// single retained accumulation pass. Extra observations do not change framing,
+// before-image chronology, conservative headroom or any old returned field.
+fn measure_appends_with_prefixes<'a>(
+    purpose: NativeHeldCapacityPurposeV3,
+    appends: impl IntoIterator<Item = MeasurementAppend<'a>>,
+    limits: JournalLimits,
+    floor_value_bytes: usize,
+) -> Result<MeasuredAppends, JournalError> {
     let namespace = purpose.owner_namespace();
     let mut states = BTreeMap::<Vec<u8>, Option<Vec<u8>>>::new();
     let mut original_bytes = 0_u64;
@@ -382,6 +414,9 @@ fn measure_appends<'a>(
     let mut original_records = 0_u32;
     let mut current_records = 0_u32;
     let mut geometry = NativeHeldCapacityGeometryV3::default();
+    let mut prefixes = Vec::new();
+    let mut maximum_key_bytes = 0;
+    let mut maximum_record_payload_bytes = 0;
 
     for append in appends {
         let mut records = Vec::with_capacity(append.changes.len() + 2);
@@ -434,6 +469,11 @@ fn measure_appends<'a>(
         }
         let transaction = JournalTransaction::new(append.transaction_id, records)?;
         validate_transaction(&transaction, limits)?;
+        for record in transaction.records() {
+            maximum_key_bytes = maximum_key_bytes.max(record.key().len());
+            maximum_record_payload_bytes =
+                maximum_record_payload_bytes.max(crate::journal::encode_record(record)?.len());
+        }
         let append_bytes = encoded_transaction_append_bytes(&transaction)?;
         let record_bytes = encoded_transaction_record_bytes(&transaction)?;
         let record_count = u32::try_from(transaction.records().len())
@@ -452,9 +492,19 @@ fn measure_appends<'a>(
         geometry.maximum_retained_growth_records = geometry
             .maximum_retained_growth_records
             .max(current_records.saturating_sub(original_records));
+        prefixes.push(RetainedPrefix {
+            owner_bytes: i128::from(current_bytes) - i128::from(original_bytes),
+            owner_records: i64::from(current_records) - i64::from(original_records),
+            final_append: append.final_append,
+        });
     }
     geometry.require_headroom(limits, NativeHeldCapacityUsageV3::default())?;
-    Ok(geometry)
+    Ok(MeasuredAppends {
+        geometry,
+        prefixes,
+        maximum_key_bytes,
+        maximum_record_payload_bytes,
+    })
 }
 
 fn normal_successor(purpose: NativeHeldCapacityPurposeV3, before: u8, after: u8) -> bool {
