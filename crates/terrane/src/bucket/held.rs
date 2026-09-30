@@ -161,6 +161,33 @@ async fn recheck<
     Ok(())
 }
 
+/// Borrows synchronization evidence from a live paired namespace exclusion.
+///
+/// This proof identifies a held namespace and adapter role; it does not authorize
+/// an actor, disclosure, or mutation independently of repository checks.
+pub(crate) struct HeldIdentity<'guard> {
+    root: &'guard std::path::Path,
+    identity: PhysicalIdentity,
+    writable: bool,
+}
+
+impl HeldIdentity<'_> {
+    /// Returns the configured root whose physical identity was rechecked.
+    pub(crate) fn root(&self) -> &std::path::Path {
+        self.root
+    }
+
+    /// Returns the checked root and stable coordination device/inode pairs.
+    pub(crate) fn physical_identity(&self) -> ((u64, u64), (u64, u64)) {
+        (self.identity.root, self.identity.lock)
+    }
+
+    /// Reports the existing adapter role rather than caller-supplied authority.
+    pub(crate) fn writable(&self) -> bool {
+        self.writable
+    }
+}
+
 /// Borrows an already excluded bucket without exposing its guard or reacquiring it.
 pub(crate) struct HeldBucket<'a, F, C, V, const WRITABLE: bool> {
     bucket: &'a FileBucket<F, C, V>,
@@ -174,6 +201,15 @@ impl<
     const WRITABLE: bool,
 > HeldBucket<'_, F, C, V, WRITABLE>
 {
+    /// Borrows proof of this adapter's live paired namespace exclusion.
+    pub(crate) fn identity_proof(&self) -> HeldIdentity<'_> {
+        HeldIdentity {
+            root: self.bucket.root(),
+            identity: self.identity,
+            writable: WRITABLE,
+        }
+    }
+
     /// Returns the root and coordination inode identities rechecked under both guards.
     ///
     /// These device/inode pairs identify the namespace while the borrowed pair
