@@ -12,7 +12,11 @@ use crate::journal::capacity_reservation::native_held::NativeRootDataFixture;
 #[path = "../../../../../aos-sandbox-protocol/src/mount_source_acquisition_state/native_held_completion/tests/fixture.rs"]
 mod fixture;
 
-fn funded_state(graph: &RootNativeHeldGraphV2, prepared: PreparedNativeHeldControlV1) -> State {
+/// Derives pure canonical DATA with the existing exact original floor.
+pub(in crate::journal::root_original_native) fn funded_state(
+    graph: &RootNativeHeldGraphV2,
+    prepared: PreparedNativeHeldControlV1,
+) -> State {
     let attempt = *prepared.scope().mount_attempt.as_bytes();
     let floor = OriginalRootCapacityRecordV5::for_graph(
         graph,
@@ -35,7 +39,11 @@ fn funded_state(graph: &RootNativeHeldGraphV2, prepared: PreparedNativeHeldContr
     state
 }
 
-fn pending_owners(original: &NativeRootDataFixture, sequence: u64) -> JournalTransaction {
+/// Derives the existing canonical Pending first-R DATA for sibling vectors.
+pub(in crate::journal::root_original_native) fn pending_owners(
+    original: &NativeRootDataFixture,
+    sequence: u64,
+) -> JournalTransaction {
     let before = original.graph(true, false);
     let old = &before.sidecars()[&original.attempt];
     let root1 = old

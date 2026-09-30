@@ -9,6 +9,8 @@ use aos_sandbox_source_provider_security::OriginalNativeReceivedOutcomeV5;
 use super::*;
 use crate::source_acquisition::reservation::SentProviderQueryV2;
 
+mod root_closed;
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum PendingStage {
     Receive,
@@ -26,6 +28,7 @@ pub(super) struct OriginalNativePendingFlightV5 {
     tentative: Option<SourceAcquisitionTableV2>,
     append: Option<PreparedOriginalRootAppendV5>,
     readback: Option<OriginalRootProtectedReadbackV5>,
+    closed: root_closed::OriginalRootClosedFlightV5,
 }
 
 impl OriginalNativePendingFlightV5 {
@@ -37,6 +40,7 @@ impl OriginalNativePendingFlightV5 {
             tentative: None,
             append: None,
             readback: None,
+            closed: root_closed::OriginalRootClosedFlightV5::new(),
         }
     }
 }

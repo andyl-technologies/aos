@@ -225,6 +225,19 @@ impl CurrentRootMountSourceProviderSessionV1 {
         {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
+        self.require_current_root_mount_record_role_v5(prepared.signer())
+    }
+
+    /// Checks the exact current RootMountRecord pin and protected secret role.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale protected authority, an ineligible or differently scoped
+    /// signer, or a public-key mismatch with the role-selected signing secret.
+    pub(in crate::handshake::mount_request) fn require_current_root_mount_record_role_v5(
+        &mut self,
+        expected: &NativeHeldSignerV1,
+    ) -> Result<(), SourceProviderSecurityError> {
         let now = super::current_unix_seconds()?;
         let inner = self.custody.inner_mut();
         inner.revalidate_at(now)?;
@@ -242,7 +255,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             })
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         if signer.usage() != SourceProviderKeyUsageV1::RootMountRecord
-            || prepared.signer() != &NativeHeldSignerV1::SourceProvider(signer.clone())
+            || expected != &NativeHeldSignerV1::SourceProvider(signer.clone())
             || *key.public_key() != inner.outcome_key().signing_key().verifying_key().to_bytes()
         {
             return Err(SourceProviderSecurityError::SessionContinuity);
