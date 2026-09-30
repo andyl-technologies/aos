@@ -187,7 +187,12 @@ pub(crate) fn publish_native_documents(
         envelope
             .module
             .iter()
-            .chain(envelope.module_dependencies.iter())
+            .chain(
+                envelope
+                    .module_dependencies
+                    .iter()
+                    .map(|dependency| dependency.seed()),
+            )
             .map(|module| module.source.clone()),
     );
     roots.push(deployment_path.to_owned());
@@ -196,6 +201,7 @@ pub(crate) fn publish_native_documents(
         let (metadata, bytes) = inspect_native_artifact(artifact, "options.json")?;
         let reference = RuntimeDocument::from_json(&bytes)?;
         reference.verify_package_identity(name, version, platform)?;
+        verify_documented_resolution(&envelope, &reference)?;
         roots.push(artifact.to_owned());
         Some(metadata)
     } else {
@@ -247,6 +253,15 @@ pub(crate) fn publish_native_documents(
     let content =
         fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     if outputs.get("out") != Some(&envelope.package.path) {
+        let catalog = crate::registry::parse::parse_package_file(&content)?;
+        let primary = catalog
+            .versions
+            .iter()
+            .find(|candidate| candidate.version == version)
+            .and_then(|candidate| candidate.platforms.get(platform))
+            .context("named output lacks its primary native catalog")?;
+        envelope
+            .verify_catalog_resolution(&primary.ability_exports, &primary.module_dependencies)?;
         let output = outputs
             .iter()
             .find(|(_, path)| *path == &envelope.package.path)
@@ -271,8 +286,61 @@ pub(crate) fn publish_native_documents(
         &deployment_meta,
         documentation.as_ref(),
         qualification.as_ref(),
+        &envelope.ability_exports,
+        &envelope.module_dependencies,
     )?;
     fs::write(&path, content).with_context(|| format!("writing {}", path.display()))
+}
+
+// The reference and discovery index come from the same native declarations.
+// Checking their owned projections prevents a signed, stale companion from
+// advertising a contract that the published module no longer declares.
+fn verify_documented_resolution(envelope: &Envelope, document: &RuntimeDocument) -> Result<()> {
+    use crate::deployment::model::{AbilityExport, ModuleDependency, ModuleRequirement};
+
+    let reference = document
+        .reference()
+        .context("native module reference is absent")?;
+    let exports = reference
+        .ability_contracts
+        .iter()
+        .filter(|(_, contract)| contract.owner == envelope.package.name)
+        .map(|(name, contract)| {
+            (
+                name.clone(),
+                AbilityExport {
+                    version: contract.version.clone(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    ensure!(
+        exports == envelope.ability_exports,
+        "module documentation ability versions differ from native envelope"
+    );
+
+    let mut documented = reference
+        .module_requirements
+        .iter()
+        .filter(|requirement| requirement.owner == envelope.package.name)
+        .map(|requirement| ModuleRequirement {
+            package: requirement.package.clone(),
+            abilities: requirement.abilities.clone(),
+            package_version: requirement.package_version.clone(),
+        })
+        .collect::<Vec<_>>();
+    let mut declared = envelope
+        .module_dependencies
+        .iter()
+        .filter_map(ModuleDependency::requirement)
+        .collect::<Vec<_>>();
+    documented.sort_by(|left, right| left.package.cmp(&right.package));
+    declared.sort_by(|left, right| left.package.cmp(&right.package));
+    ensure!(
+        documented == declared,
+        "module documentation requirements differ from native envelope"
+    );
+    Ok(())
 }
 
 pub(super) fn inspect_native_artifact(
@@ -315,6 +383,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_reference_versions_and_requirements_match_the_exact_envelope() {
+        use serde_json::json;
+
+        let path = "/nix/store/00000000000000000000000000000000-example";
+        let envelope = Envelope::decode(&serde_json::to_vec(&json!({
+            "schema":"aos.package.deployment","system":"x86_64-linux",
+            "package":{"name":"example","version":"7","path":path,"outputs":{"out":path},"mainProgram":null},
+            "module":{"name":"example","version":"7","source":"/nix/store/11111111111111111111111111111111-example-source","entrypoint":"module.nix"},
+            "abilityExports":{"filesystem":{"version":"1.2.3"}},"runtimeDependencies":{},
+            "moduleDependencies":[{"package":{"name":"interfaces","version":"9","source":"/nix/store/22222222222222222222222222222222-interfaces","entrypoint":"module.nix"},"abilities":{"service":"^2.0"}}]
+        })).unwrap()).unwrap();
+        let mut reference = json!({"schema":"aos.module.documentation","scope":["package","example"],
+            "system":"x86_64-linux","packages":[{"name":"example","version":"7"}],"options":[],"abilities":{},
+            "abilityContracts":{"filesystem":{"owner":"example","version":"1.2.3"}},
+            "moduleRequirements":[{"owner":"example","package":"interfaces","abilities":{"service":"^2.0"}}]});
+        let decode = |value: &serde_json::Value| {
+            RuntimeDocument::from_json(&serde_json::to_vec(value).unwrap()).unwrap()
+        };
+
+        verify_documented_resolution(&envelope, &decode(&reference)).unwrap();
+
+        reference["abilityContracts"]["filesystem"]["version"] = json!("1.3.0");
+        assert!(verify_documented_resolution(&envelope, &decode(&reference)).is_err());
+        reference["abilityContracts"]["filesystem"]["version"] = json!("1.2.3");
+        reference["moduleRequirements"][0]["abilities"]["service"] = json!("^3.0");
+        assert!(verify_documented_resolution(&envelope, &decode(&reference)).is_err());
+    }
+
+    #[test]
     fn qualification_package_coordinates_do_not_borrow_runtime_role_names() {
         use crate::deployment::model::Artifact;
         use aos_release::qualification_document::{QualificationBinding, QualificationSelector};
@@ -332,6 +429,7 @@ mod tests {
             system: "x86_64-linux".into(),
             package: dependency.clone(),
             module: None,
+            ability_exports: BTreeMap::new(),
             runtime_dependencies: BTreeMap::from([("lexical-role".into(), dependency.clone())]),
             module_dependencies: Vec::new(),
         };
@@ -358,6 +456,24 @@ mod tests {
 
     #[test]
     fn native_catalog_binding_retires_legacy_projection_and_gates_consumption() {
+        use crate::deployment::model::{AbilityExport, ModuleDependency, ModuleSource};
+
+        let exports = BTreeMap::from([(
+            "filesystem".into(),
+            AbilityExport {
+                version: "1.2.3".into(),
+            },
+        )]);
+        let dependencies = vec![ModuleDependency::Ranged {
+            package: ModuleSource {
+                name: "interfaces".into(),
+                version: "7.0.0".into(),
+                source: "/nix/store/22222222222222222222222222222222-interfaces".into(),
+                entrypoint: "module.nix".into(),
+            },
+            abilities: BTreeMap::from([("filesystem".into(), "^1.2".into())]),
+            package_version: Some("^7.0".into()),
+        }];
         let artifact = NativeArtifactMeta {
             store_path: "/nix/store/00000000000000000000000000000000-reference".to_owned(),
             nar_hash: format!("sha256:{}", "1".repeat(64)),
@@ -388,6 +504,8 @@ contract = { legacy = true }
             &artifact,
             Some(&artifact),
             Some(&artifact),
+            &exports,
+            &dependencies,
         )
         .unwrap();
         let document: toml::Value = toml::from_str(&encoded).unwrap();
@@ -410,6 +528,30 @@ contract = { legacy = true }
             platform["references"]["requires-features"][0].as_str(),
             Some("native-package-modules-v1")
         );
+        assert_eq!(
+            platform["ability_exports"]["filesystem"]["version"].as_str(),
+            Some("1.2.3")
+        );
+        let decoded: Vec<ModuleDependency> =
+            platform["module_dependencies"].clone().try_into().unwrap();
+        assert_eq!(decoded, dependencies);
+
+        let rewritten = record_native_artifacts(
+            &encoded,
+            "example",
+            "1",
+            "x86_64-linux",
+            &artifact,
+            Some(&artifact),
+            Some(&artifact),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        let rewritten: toml::Value = toml::from_str(&rewritten).unwrap();
+        let rewritten = &rewritten["versions"][0]["platforms"]["x86_64-linux"];
+        assert!(rewritten.get("ability_exports").is_none());
+        assert!(rewritten.get("module_dependencies").is_none());
         assert!(
             record_native_artifacts(
                 content,
@@ -418,7 +560,9 @@ contract = { legacy = true }
                 "x86_64-linux",
                 &artifact,
                 None,
-                None
+                None,
+                &BTreeMap::new(),
+                &[],
             )
             .is_err()
         );
@@ -541,7 +685,7 @@ mod publication_tests {
                     envelope
                         .module_dependencies
                         .iter()
-                        .map(|module| &module.source),
+                        .map(|dependency| &dependency.seed().source),
                 )
             {
                 assert!(

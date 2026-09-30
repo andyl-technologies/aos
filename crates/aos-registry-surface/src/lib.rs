@@ -41,6 +41,7 @@
 
 pub mod keymap;
 pub mod manifest;
+pub mod native_dependencies;
 pub mod object;
 pub mod object_bundle;
 pub mod pack_index;

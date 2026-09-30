@@ -17,6 +17,8 @@ use crate::deployment::nix::store_root_and_suffix;
 use crate::store::temp_roots::TemporaryRoots;
 use crate::store::verification::dump_store_path_identity_in;
 
+mod validation;
+
 /// Replays one immutable source descriptor without building or applying effects.
 ///
 /// The descriptor and its sources remain temporarily rooted during evaluation.
@@ -31,6 +33,7 @@ use crate::store::verification::dump_store_path_identity_in;
 /// # Errors
 /// Returns an error for invalid immutable paths or descriptors, unavailable
 /// artifacts, a changed library NAR, failed temporary retention, cancellation,
+/// changed envelope declarations or locked choices, conflicting ability owners,
 /// or an invalid graph or evaluation exceeding `timeout_ms`.
 pub fn evaluate_input(
     input: &Path,
@@ -46,6 +49,7 @@ pub fn evaluate_input(
 
     let descriptor = EvaluationInput::read_in(input, nix_store, cancellation)?;
     retained.retain(source_roots(&descriptor)?, cancellation)?;
+    validation::validate(&descriptor, nix_store, cancellation)?;
     let library_root = root_string(&descriptor.library)?;
     let (actual, _) = dump_store_path_identity_in(&library_root, Some(nix_store))?;
     ensure!(
@@ -59,6 +63,10 @@ pub fn evaluate_input(
         .chain(descriptor.runtime_configuration)
         .collect();
     let evaluation = Evaluation {
+        module_requirements: descriptor
+            .resolution_lock
+            .as_ref()
+            .map_or_else(Vec::new, |lock| lock.module_requirements()),
         nix_store: nix_store.to_path_buf(),
         library: descriptor.library,
         scope: descriptor.scope,
@@ -68,6 +76,12 @@ pub fn evaluate_input(
             .supplemental_inputs
             .into_iter()
             .chain(descriptor.module_envelopes.into_values())
+            .chain(
+                descriptor
+                    .resolution_lock
+                    .into_iter()
+                    .flat_map(|lock| lock.requesters.into_values()),
+            )
             .collect(),
         evaluation_input: Some(input.to_path_buf()),
     };
@@ -88,6 +102,12 @@ fn source_roots(descriptor: &EvaluationInput) -> Result<BTreeSet<String>> {
         .chain(descriptor.runtime_configuration.iter().cloned())
         .chain(descriptor.supplemental_inputs.iter().cloned())
         .chain(descriptor.module_envelopes.values().cloned())
+        .chain(
+            descriptor
+                .resolution_lock
+                .iter()
+                .flat_map(|lock| lock.requesters.values().cloned()),
+        )
         .chain(
             descriptor
                 .packages

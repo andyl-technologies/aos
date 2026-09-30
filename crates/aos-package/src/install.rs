@@ -545,6 +545,7 @@ async fn run_inner(
         &closures,
         &realized_modules,
         &obsolete_hashes,
+        None,
     )?;
     let new_gen = profile.new_generation()?;
 
@@ -1932,6 +1933,8 @@ mod tests {
             source_drv: String::new(),
             source_nar_hash: String::new(),
             named_outputs: std::collections::BTreeMap::new(),
+            ability_exports: Default::default(),
+            module_dependencies: Vec::new(),
             closure_size: 1,
             sysroot: false,
             previous: None,

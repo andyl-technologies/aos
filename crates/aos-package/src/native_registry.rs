@@ -6,6 +6,8 @@
 //! removal and recovery; a transaction document never supplies its own trust.
 
 mod available;
+mod roots;
+pub(crate) mod solver;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -17,7 +19,7 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use crate::deployment::evaluation::PackageResolver;
-use crate::deployment::model::{Envelope, ModuleSource};
+use crate::deployment::model::{Envelope, ModuleDependency, ModuleSource};
 use crate::deployment::retention::ArtifactAdmission;
 use crate::registry::{Registry, RegistrySet, ReleaseTrustReceipt, store_path_hash};
 use crate::store::verification::{
@@ -305,6 +307,11 @@ pub(crate) struct NativeRegistry<'a> {
     envelopes: BTreeMap<(String, String, String), Envelope>,
     retained_inputs: BTreeSet<PathBuf>,
     module_envelopes: BTreeMap<(String, String, String), PathBuf>,
+    resolution_lock: Option<solver::ResolutionLock>,
+    retained_module_sources: Vec<ModuleSource>,
+    retained_envelopes: Vec<Envelope>,
+    candidate_priorities: BTreeMap<(String, String, String), usize>,
+    companion_inputs: BTreeMap<(String, String, String), BTreeSet<PathBuf>>,
 }
 
 impl<'a> NativeRegistry<'a> {
@@ -315,6 +322,11 @@ impl<'a> NativeRegistry<'a> {
             envelopes: BTreeMap::new(),
             retained_inputs: BTreeSet::new(),
             module_envelopes: BTreeMap::new(),
+            resolution_lock: None,
+            retained_module_sources: Vec::new(),
+            retained_envelopes: Vec::new(),
+            candidate_priorities: BTreeMap::new(),
+            companion_inputs: BTreeMap::new(),
         }
     }
 
@@ -365,6 +377,27 @@ impl<'a> NativeRegistry<'a> {
             &self.admission.executable,
             &aos_ability_runtime::adapter::CancellationToken::default(),
         )?;
+        envelope.verify_catalog_resolution(&meta.ability_exports, &meta.module_dependencies)?;
+        let priority = self
+            .registries
+            .registries()
+            .iter()
+            .position(|registry| registry.config.name == registry_name)
+            .context("candidate registry priority is absent")?;
+        self.candidate_priorities
+            .entry(envelope_key(&envelope))
+            .and_modify(|previous| *previous = (*previous).min(priority))
+            .or_insert(priority);
+        self.companion_inputs.insert(
+            envelope_key(&envelope),
+            std::iter::once(PathBuf::from(&deployment.store_path))
+                .chain(
+                    meta.module_documentation
+                        .iter()
+                        .map(|metadata| PathBuf::from(&metadata.store_path)),
+                )
+                .collect(),
+        );
         ensure!(
             envelope
                 .package
@@ -376,12 +409,10 @@ impl<'a> NativeRegistry<'a> {
         self.admission
             .capture_available(registry, envelope.package.outputs.values().cloned())?;
         self.cache_envelope(envelope.clone())?;
-        if envelope.module.is_some() {
-            self.module_envelopes.insert(
-                envelope_key(&envelope),
-                PathBuf::from(&deployment.store_path),
-            );
-        }
+        self.module_envelopes.insert(
+            envelope_key(&envelope),
+            PathBuf::from(&deployment.store_path),
+        );
         Ok(envelope)
     }
 
@@ -415,8 +446,147 @@ impl<'a> NativeRegistry<'a> {
         Ok(Some(envelope.clone()))
     }
 
+    /// Checks whether an output has retained original admission evidence.
+    ///
+    /// # Errors
+    /// Returns an error if a retained image or signed release receipt is invalid.
+    pub(crate) fn has_output_authority(
+        &self,
+        artifact: &crate::deployment::model::Artifact,
+    ) -> Result<bool> {
+        self.admission.has_output_authority(&artifact.path)
+    }
+
     pub(crate) fn into_admission(self) -> RegistryAdmission {
         self.admission
+    }
+
+    pub(crate) fn resolve_scope(
+        &mut self,
+        system: &str,
+        roots: Vec<Envelope>,
+        payloads: &[crate::deployment::model::Artifact],
+        allow_resolution: bool,
+        refresh_names: Option<&BTreeSet<String>>,
+        cancellation: &aos_ability_runtime::adapter::CancellationToken,
+    ) -> Result<(
+        crate::deployment::model::ResolvedPackages,
+        Option<solver::ResolutionLock>,
+    )> {
+        if allow_resolution {
+            let mut candidates = self.envelopes.values().cloned().collect::<Vec<_>>();
+            candidates.retain(|candidate| candidate.system == system);
+            candidates.sort_by(|left, right| {
+                let priority = self
+                    .candidate_priorities
+                    .get(&envelope_key(left))
+                    .copied()
+                    .unwrap_or(usize::MAX)
+                    .cmp(
+                        &self
+                            .candidate_priorities
+                            .get(&envelope_key(right))
+                            .copied()
+                            .unwrap_or(usize::MAX),
+                    );
+                priority
+                    .then_with(|| {
+                        crate::registry::parse::compare_registry_versions(
+                            &right.package.version,
+                            &left.package.version,
+                        )
+                    })
+                    .then_with(|| envelope_key(left).cmp(&envelope_key(right)))
+            });
+            let mut solution = solver::solve(
+                &roots,
+                &candidates,
+                self.resolution_lock.as_ref(),
+                &self.retained_module_sources,
+                refresh_names,
+                cancellation,
+            )?;
+            if let Some(lock) = &mut solution.lock {
+                for edge in &lock.edges {
+                    let envelope = solution
+                        .envelopes
+                        .iter()
+                        .find(|envelope| envelope.package.canonical_catalog() == edge.requester)
+                        .context("solved requester envelope is absent")?;
+                    let path = self
+                        .module_envelopes
+                        .get(&envelope_key(envelope))
+                        .context("solved requester lacks authenticated companion")?;
+                    lock.requesters
+                        .insert(edge.requester.path.clone(), path.clone());
+                }
+                lock.validate(&solution.envelopes)?;
+            }
+            self.resolution_lock = solution.lock;
+        }
+        let packages =
+            crate::deployment::evaluation::resolve_packages(system, roots.clone(), self)?;
+        let mut selected = BTreeMap::new();
+        for mut root in roots {
+            root.package = root.package.canonical_catalog();
+            selected.insert(root.package.name.clone(), root);
+        }
+        for module in &packages.modules {
+            let envelope = self
+                .envelopes
+                .values()
+                .find(|envelope| envelope.module_record().as_ref() == Some(module))
+                .context("selected module envelope is absent")?;
+            selected
+                .entry(envelope.package.name.clone())
+                .or_insert_with(|| envelope.clone());
+        }
+        let selected = selected.into_values().collect::<Vec<_>>();
+        solver::check_exports(selected.iter())?;
+        let mut lock = self.resolution_lock.clone();
+        if let Some(value) = &mut lock {
+            value.edges.retain(|edge| {
+                selected
+                    .iter()
+                    .any(|envelope| envelope.package.canonical_catalog() == edge.requester)
+            });
+            value
+                .requesters
+                .retain(|path, _| value.edges.iter().any(|edge| &edge.requester.path == path));
+            value.validate(&selected)?;
+            if !value.edges.iter().any(|edge| edge.requirement.is_ranged()) {
+                lock = None;
+            }
+        }
+        let selected_keys: BTreeSet<_> = selected
+            .iter()
+            .map(envelope_key)
+            .chain(
+                self.envelopes
+                    .values()
+                    .filter(|envelope| {
+                        payloads.iter().any(|payload| {
+                            envelope.package.canonical_catalog() == payload.canonical_catalog()
+                        })
+                    })
+                    .map(envelope_key),
+            )
+            .collect();
+        let excluded: BTreeSet<_> = self
+            .companion_inputs
+            .iter()
+            .filter(|(key, _)| !selected_keys.contains(*key))
+            .flat_map(|(_, inputs)| inputs.iter().cloned())
+            .collect();
+        let retained: BTreeSet<_> = self
+            .companion_inputs
+            .iter()
+            .filter(|(key, _)| selected_keys.contains(*key))
+            .flat_map(|(_, inputs)| inputs.iter().cloned())
+            .collect();
+        self.retained_inputs
+            .retain(|input| !excluded.contains(input) || retained.contains(input));
+        Ok((packages, lock))
     }
 
     pub(crate) fn retained_inputs(&self) -> Vec<PathBuf> {
@@ -454,6 +624,48 @@ impl<'a> NativeRegistry<'a> {
         descriptor: &crate::native_deployment::EvaluationInput,
         desired: &crate::deployment::model::Deployment,
     ) -> Result<()> {
+        self.resolution_lock = descriptor.resolution_lock.clone();
+        self.retained_module_sources = descriptor
+            .packages
+            .modules
+            .iter()
+            .map(|module| {
+                Ok(ModuleSource {
+                    name: module.name.clone(),
+                    version: module.version.clone(),
+                    source: module.config_root.clone(),
+                    entrypoint: module
+                        .module
+                        .strip_prefix(&format!("{}/", module.config_root))
+                        .context("retained module entrypoint is outside its source root")?
+                        .to_owned(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if let Some(lock) = &descriptor.resolution_lock {
+            for (artifact, path) in &lock.requesters {
+                let root = path.to_str().context("requester envelope is not UTF-8")?;
+                ensure!(
+                    desired.inputs().iter().any(|input| input == root),
+                    "lock requester envelope is not retained"
+                );
+                self.admission.admit(root)?;
+                let bytes = crate::native_deployment::read_regular_store_document_in(
+                    &path.join("deployment.json"),
+                    &self.admission.executable,
+                    &Default::default(),
+                )?;
+                let envelope = Envelope::decode(&bytes)?;
+                ensure!(
+                    envelope.package.canonical_catalog().path == *artifact,
+                    "lock requester identity changed"
+                );
+                self.module_envelopes
+                    .insert(envelope_key(&envelope), path.clone());
+                self.retained_inputs.insert(path.clone());
+                self.cache_envelope(envelope)?;
+            }
+        }
         for module in &descriptor.packages.modules {
             let path = descriptor
                 .module_envelopes
@@ -477,6 +689,10 @@ impl<'a> NativeRegistry<'a> {
                 "retained module envelope differs from its admitted module catalog"
             );
             for dependency in &envelope.module_dependencies {
+                if dependency.is_ranged() {
+                    continue;
+                }
+                let dependency = dependency.seed();
                 ensure!(
                     descriptor
                         .packages
@@ -495,7 +711,56 @@ impl<'a> NativeRegistry<'a> {
             self.module_envelopes.insert(key, path.clone());
             self.retained_inputs.insert(path.clone());
         }
+        if let Some(lock) = &self.resolution_lock {
+            let envelopes = self
+                .envelopes
+                .values()
+                .filter(|envelope| {
+                    descriptor
+                        .packages
+                        .modules
+                        .iter()
+                        .any(|module| envelope.module_record().as_ref() == Some(module))
+                        || lock
+                            .requesters
+                            .contains_key(&envelope.package.canonical_catalog().path)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            lock.validate(&envelopes)?;
+        }
+        let retained = self
+            .envelopes
+            .values()
+            .filter(|envelope| {
+                descriptor
+                    .packages
+                    .modules
+                    .iter()
+                    .any(|module| envelope.module_record().as_ref() == Some(module))
+                    || descriptor.resolution_lock.as_ref().is_some_and(|lock| {
+                        lock.requesters
+                            .contains_key(&envelope.package.canonical_catalog().path)
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        self.retained_envelopes = retained;
         Ok(())
+    }
+
+    pub(crate) fn retained_roots(&self, original_packages: &[Envelope]) -> Result<Vec<Envelope>> {
+        let mut retained = self.retained_envelopes.clone();
+        for envelope in original_packages {
+            if !retained.contains(envelope) {
+                retained.push(envelope.clone());
+            }
+        }
+        let root_names = roots::root_names(&retained)?;
+        Ok(retained
+            .into_iter()
+            .filter(|envelope| root_names.contains(&envelope.package.name))
+            .collect())
     }
 
     pub(crate) fn metadata(&self, path: &str) -> Result<(String, PackageMeta)> {
@@ -610,10 +875,8 @@ impl<'a> NativeRegistry<'a> {
             "retained native envelope differs from installed payload"
         );
         self.cache_envelope(envelope.clone())?;
-        if envelope.module.is_some() {
-            self.module_envelopes
-                .insert(envelope_key(&envelope), PathBuf::from(&artifact.store_path));
-        }
+        self.module_envelopes
+            .insert(envelope_key(&envelope), PathBuf::from(&artifact.store_path));
         Ok(envelope)
     }
 }
@@ -629,6 +892,7 @@ pub(crate) fn same_package_context(left: &Envelope, right: &Envelope) -> bool {
         && left.module == right.module
         && left.runtime_dependencies == right.runtime_dependencies
         && left.module_dependencies == right.module_dependencies
+        && left.ability_exports == right.ability_exports
 }
 
 fn envelope_key(envelope: &Envelope) -> (String, String, String) {
@@ -640,10 +904,36 @@ fn envelope_key(envelope: &Envelope) -> (String, String, String) {
 }
 
 impl PackageResolver for NativeRegistry<'_> {
-    fn resolve(&mut self, source: &ModuleSource) -> Result<Envelope> {
+    fn resolve(&mut self, dependency: &ModuleDependency) -> Result<Envelope> {
+        let source = if dependency.is_ranged() {
+            let lock = self
+                .resolution_lock
+                .as_ref()
+                .context("ranged module dependency requires an exact retained resolution lock")?;
+            let matches = lock
+                .edges
+                .iter()
+                .filter(|edge| &edge.requirement == dependency)
+                .collect::<Vec<_>>();
+            let edge = matches
+                .first()
+                .context("ranged dependency is absent from retained lock")?;
+            ensure!(
+                matches.iter().all(|other| other.selected == edge.selected),
+                "lock has conflicting dependency choices"
+            );
+            edge.selected.clone()
+        } else {
+            dependency.seed().clone()
+        };
+        let source = &source;
         if let Some(envelope) = self.cached_module(source)? {
             return Ok(envelope);
         }
+        ensure!(
+            !dependency.is_ranged(),
+            "locked module companion is unavailable; replay does not discover new releases"
+        );
         let candidates = self
             .registries
             .all_versions(&source.name)
@@ -693,6 +983,7 @@ mod authority_tests {
             },
             module,
             runtime_dependencies: BTreeMap::new(),
+            ability_exports: BTreeMap::new(),
             module_dependencies: Vec::new(),
         }
     }
@@ -726,7 +1017,11 @@ mod authority_tests {
             .cache_envelope(envelope("predecessor", Some(source.clone())))
             .unwrap();
         assert_eq!(
-            resolver.resolve(&source).unwrap().package.path,
+            resolver
+                .resolve(&ModuleDependency::Exact(source.clone()))
+                .unwrap()
+                .package
+                .path,
             envelope("predecessor", None).package.path
         );
         resolver
@@ -734,7 +1029,7 @@ mod authority_tests {
             .unwrap();
         assert!(
             resolver
-                .resolve(&source)
+                .resolve(&ModuleDependency::Exact(source.clone()))
                 .unwrap_err()
                 .to_string()
                 .contains("ambiguous")
@@ -778,7 +1073,11 @@ mod authority_tests {
 
         assert_eq!(companions["system-image"], first_companion);
         assert_eq!(
-            resolver.resolve(&source).unwrap().module.as_ref(),
+            resolver
+                .resolve(&ModuleDependency::Exact(source.clone()))
+                .unwrap()
+                .module
+                .as_ref(),
             Some(&source)
         );
     }

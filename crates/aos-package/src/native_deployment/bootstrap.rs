@@ -180,6 +180,7 @@ mod tests {
                 modules: Vec::new(),
             },
             module_envelopes: Default::default(),
+            resolution_lock: None,
             configuration: vec![
                 root("baseline").join("first.nix"),
                 root("facts").join("second.nix"),

@@ -5,6 +5,11 @@
 //! hash (a new version or a rebuild). Held packages and `--exclude`d names
 //! are reported as held back instead of upgraded.
 //!
+//! Selected explicit packages also refresh compatible ranged interface
+//! dependencies while retaining their original signed payload envelopes.
+//! Held, excluded, and unselected owners preserve their exact dependency
+//! choices. An unchanged selected closure does not create a generation.
+//!
 //! The upgrade itself follows the same pipeline as install: resolve the new
 //! closures, enforce the sysroot lock, download/verify/import only the
 //! missing NARs, then create a new profile generation that carries forward
@@ -36,6 +41,8 @@ use super::types::{ApmMeta, InstalledMeta, PackageMeta};
 use super::verify::verify_downloads;
 use aos_core::error::AosError;
 use aos_core::output::{OutputMode, Printer};
+
+mod module_upgrade;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SecondaryArtifactDownload {
@@ -74,6 +81,7 @@ pub struct UpgradeCandidate {
 ///
 /// Compares installed packages against the registry to find upgradable ones,
 /// then downloads, verifies, imports, and switches to a new generation.
+/// Compatible interface dependencies may change even when payloads do not.
 ///
 /// With `packages` non-empty, only those names are considered; `exclude`
 /// names are held back; `dry_run` stops after printing the plan; `yes`
@@ -119,8 +127,64 @@ pub async fn run(
 
     // Step 4: Filter held and excluded packages.
     let (to_upgrade, held_back) = filter_held_and_excluded(candidates, &installed, exclude);
+    let allowed_names = module_upgrade::refresh_names(&installed, packages, exclude);
 
     if to_upgrade.is_empty() {
+        let prepared = crate::install::native::prepare_module_upgrade(
+            config,
+            &inspect_profile,
+            &registries,
+            &installed,
+            &allowed_names,
+            printer,
+        )
+        .await?;
+        if let Some(prepared) = prepared {
+            if !held_back.is_empty() {
+                print_held_back(&held_back, printer);
+            }
+            printer.info("Compatible interface dependency upgrades are available.");
+            let generation = if dry_run {
+                None
+            } else {
+                if !yes && !config.settings.assume_yes {
+                    confirm(printer)?;
+                }
+                let profile = Profile::open(config.scope)?;
+                Some(module_upgrade::commit(&profile, &installed, prepared, printer)?.number)
+            };
+            if json_mode {
+                let mut result = upgrade_result_json(
+                    if dry_run { "planned" } else { "upgraded" },
+                    packages,
+                    exclude,
+                    &to_upgrade,
+                    &held_back,
+                    dry_run,
+                    generation,
+                    &[],
+                    0,
+                    0,
+                );
+                // Companion discovery has its own download accounting; this
+                // branch must not report zero downloads as an observed count.
+                result
+                    .as_object_mut()
+                    .context("upgrade result is not an object")?
+                    .remove("downloads");
+                result["interface_dependencies_changed"] = true.into();
+                result["interface_refresh_scope"] = serde_json::to_value(&allowed_names)?;
+                printer.json(&result);
+            }
+            if let Some(generation) = generation {
+                printer.success(&format!(
+                    "Upgraded interface dependencies in generation {generation}."
+                ));
+            } else {
+                printer.info("Dry run -- no changes made.");
+            }
+            return Ok(());
+        }
         if !held_back.is_empty() {
             print_held_back(&held_back, printer);
         }
@@ -355,7 +419,7 @@ pub async fn run(
         printer.info("All packages already in store, skipping download.");
     }
 
-    let realized_modules = crate::install::native::realize_modules(
+    let mut realized_modules = crate::install::native::realize_modules(
         config,
         &registries,
         &native_closures,
@@ -364,6 +428,19 @@ pub async fn run(
         &mut temporary_roots,
     )
     .await?;
+    realized_modules.extend(
+        crate::install::native::realize_module_upgrades(
+            config,
+            &inspect_profile,
+            &registries,
+            &installed,
+            &allowed_names,
+            printer,
+            false,
+            &mut temporary_roots,
+        )
+        .await?,
+    );
 
     // Step 8: Create new generation.
     printer.step(6, 7, "Updating profile...");
@@ -377,6 +454,7 @@ pub async fn run(
         &native_closures,
         &realized_modules,
         &obsolete_hashes,
+        Some(&allowed_names),
     )?;
     let new_gen = profile.new_generation()?;
     all_new_metas.extend(native.additional.iter().map(|(_, meta)| meta.clone()));
@@ -1118,7 +1196,7 @@ mod tests {
         sample_installed_with_flags(name, version, hash, registry, true, held)
     }
 
-    fn sample_installed_with_flags(
+    pub(super) fn sample_installed_with_flags(
         name: &str,
         version: &str,
         hash: &str,
@@ -1419,6 +1497,8 @@ references = []
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
                     named_outputs: std::collections::BTreeMap::new(),
+                    ability_exports: Default::default(),
+                    module_dependencies: Vec::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
@@ -1452,6 +1532,8 @@ references = []
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
                     named_outputs: std::collections::BTreeMap::new(),
+                    ability_exports: Default::default(),
+                    module_dependencies: Vec::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
@@ -1503,6 +1585,8 @@ references = []
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
                     named_outputs: std::collections::BTreeMap::new(),
+                    ability_exports: Default::default(),
+                    module_dependencies: Vec::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
@@ -1536,6 +1620,8 @@ references = []
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
                     named_outputs: std::collections::BTreeMap::new(),
+                    ability_exports: Default::default(),
+                    module_dependencies: Vec::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
@@ -1588,6 +1674,8 @@ references = []
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
                     named_outputs: std::collections::BTreeMap::new(),
+                    ability_exports: Default::default(),
+                    module_dependencies: Vec::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
@@ -1621,6 +1709,8 @@ references = []
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
                     named_outputs: std::collections::BTreeMap::new(),
+                    ability_exports: Default::default(),
+                    module_dependencies: Vec::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,

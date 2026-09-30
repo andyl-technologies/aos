@@ -272,7 +272,7 @@ pub(crate) fn record_named_output(
     toml::to_string_pretty(&document).context("serializing package TOML with supplemental output")
 }
 
-/// Records native artifact identities and their structural feature gate.
+/// Records native artifacts and declaration-derived resolution metadata with their feature gate.
 ///
 /// # Errors
 /// Returns an error when the exact package coordinate is missing or malformed,
@@ -285,7 +285,10 @@ pub(crate) fn record_native_artifacts(
     deployment: &crate::types::NativeArtifactMeta,
     documentation: Option<&crate::types::NativeArtifactMeta>,
     qualification: Option<&crate::types::NativeArtifactMeta>,
+    exports: &std::collections::BTreeMap<String, crate::deployment::model::AbilityExport>,
+    dependencies: &[crate::deployment::model::ModuleDependency],
 ) -> Result<String> {
+    aos_registry_surface::native_dependencies::check_resolution_metadata(exports, dependencies)?;
     deployment.validate()?;
     if let Some(documentation) = documentation {
         documentation.validate()?;
@@ -316,6 +319,19 @@ pub(crate) fn record_native_artifacts(
         .and_then(toml::Value::as_table_mut)
         .with_context(|| format!("package {name} {version} is missing platform {platform}"))?;
     entry.insert("deployment".into(), toml::Value::try_from(deployment)?);
+    if exports.is_empty() {
+        entry.remove("ability_exports");
+    } else {
+        entry.insert("ability_exports".into(), toml::Value::try_from(exports)?);
+    }
+    if dependencies.is_empty() {
+        entry.remove("module_dependencies");
+    } else {
+        entry.insert(
+            "module_dependencies".into(),
+            toml::Value::try_from(dependencies)?,
+        );
+    }
     if let Some(documentation) = documentation {
         entry.insert(
             "module_documentation".into(),

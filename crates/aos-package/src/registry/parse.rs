@@ -330,6 +330,8 @@ fn package_metas_for_platform(
                 requires_features,
                 named_outputs: plat.named_outputs.clone(),
                 deployment: plat.deployment.clone(),
+                ability_exports: plat.ability_exports.clone(),
+                module_dependencies: plat.module_dependencies.clone(),
                 module_documentation: plat.module_documentation.clone(),
                 qualification: plat.qualification.clone(),
                 attestation,
@@ -388,7 +390,7 @@ fn version_matches_req(version: &str, req: &semver::VersionReq) -> bool {
 /// Order two version strings: semver pairs compare semantically, a semver
 /// version outranks a non-semver one, and two non-semver versions (e.g.
 /// calver like `2026.04`) fall back to lexicographic comparison.
-fn compare_registry_versions(left: &str, right: &str) -> Ordering {
+pub(crate) fn compare_registry_versions(left: &str, right: &str) -> Ordering {
     match (semver::Version::parse(left), semver::Version::parse(right)) {
         (Ok(left), Ok(right)) => left.cmp(&right),
         (Ok(_), Err(_)) => Ordering::Greater,

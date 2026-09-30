@@ -153,6 +153,25 @@ impl RegistryAdmission {
         Ok(())
     }
 
+    /// Checks original authority without realizing or rooting an available output.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid retained image receipt or release graph.
+    pub(crate) fn has_output_authority(&self, root: &str) -> Result<bool> {
+        if self.evidence.contains_key(root) || self.image.receipt_for(root)?.is_some() {
+            return Ok(true);
+        }
+        for catalog in self
+            .available
+            .values()
+            .filter(|catalog| catalog.roots.contains(root))
+        {
+            catalog.graph()?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// Realizes only graph-used available outputs under their original release.
     pub(crate) fn realize_inputs(
         &mut self,

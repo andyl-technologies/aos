@@ -37,6 +37,7 @@ pub(crate) use document::{read_descriptor_in, read_regular_store_document_in};
 mod bootstrap;
 mod evaluate;
 
+pub use crate::native_registry::solver::{LockedEdge, ResolutionLock};
 pub use admission::{AdmissionCatalog, AdmittedRoot};
 pub use bootstrap::{SourceAuthorization, apply_with_sources, resume_profile};
 pub use evaluate::evaluate_input;
@@ -113,6 +114,13 @@ pub struct EvaluationInput {
     /// Retains each resolved module's original authenticated deployment envelope.
     #[serde(rename = "moduleEnvelopes")]
     pub module_envelopes: std::collections::BTreeMap<String, PathBuf>,
+    /// Pins ranged dependency choices; exact-only closures omit this field.
+    #[serde(
+        default,
+        rename = "resolutionLock",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resolution_lock: Option<ResolutionLock>,
     /// Orders the retained baseline module sources.
     pub configuration: Vec<PathBuf>,
     /// Orders the replaceable operator module snapshot entrypoints.
@@ -197,6 +205,18 @@ impl EvaluationInput {
                 root == *path && suffix.as_os_str().is_empty(),
                 "module envelope must name a canonical store root"
             );
+        }
+        ensure!(
+            input.resolution_lock.is_some()
+                || input
+                    .packages
+                    .modules
+                    .iter()
+                    .all(|module| module.module_requirements.is_empty()),
+            "ranged module requirements have no exact resolution lock"
+        );
+        if let Some(lock) = &input.resolution_lock {
+            lock.check()?;
         }
         Ok(input)
     }
@@ -565,6 +585,10 @@ fn apply_profile(
                 .map(PathBuf::from)
                 .collect();
             let evaluator = crate::deployment::evaluation::Evaluation {
+                module_requirements: descriptor
+                    .resolution_lock
+                    .as_ref()
+                    .map_or_else(Vec::new, |lock| lock.module_requirements()),
                 nix_store: command.nix_store.clone(),
                 library: descriptor.library.clone(),
                 scope: descriptor.scope.clone(),
@@ -905,6 +929,10 @@ pub(crate) fn deployment_observer(
         admission.admit(&module.config_root)?;
     }
     let evaluation = crate::deployment::evaluation::Evaluation {
+        module_requirements: input
+            .resolution_lock
+            .as_ref()
+            .map_or_else(Vec::new, |lock| lock.module_requirements()),
         nix_store: executable.clone(),
         library: input.library,
         scope: input.scope,

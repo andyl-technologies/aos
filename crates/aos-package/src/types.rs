@@ -479,6 +479,15 @@ pub struct PackageMeta {
     /// Authenticated native package deployment envelope directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment: Option<NativeArtifactMeta>,
+    /// Owned native ability versions projected from the authenticated deployment document.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub ability_exports: std::collections::BTreeMap<
+        String,
+        aos_registry_surface::native_dependencies::AbilityExport,
+    >,
+    /// Exact and ranged native module dependencies projected from that same document.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub module_dependencies: Vec<aos_registry_surface::native_dependencies::ModuleDependency>,
     /// Authenticated module-generated reference directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub module_documentation: Option<NativeArtifactMeta>,
@@ -545,6 +554,15 @@ pub fn validate_supported_package_meta_with(
     supported_format: u32,
     supported_features: &[&str],
 ) -> Result<()> {
+    aos_registry_surface::native_dependencies::check_resolution_metadata(
+        &meta.ability_exports,
+        &meta.module_dependencies,
+    )?;
+    if (!meta.ability_exports.is_empty() || !meta.module_dependencies.is_empty())
+        && meta.deployment.is_none()
+    {
+        bail!("native resolution catalog lacks an authenticated deployment document");
+    }
     if let Some(min_format) = meta.min_format {
         if min_format > supported_format {
             bail!(
@@ -2574,6 +2592,8 @@ last_update = "2026-02-13T10:30:00Z"
     fn attestation_package_meta(requires_features: Vec<&str>) -> PackageMeta {
         PackageMeta {
             named_outputs: Default::default(),
+            ability_exports: Default::default(),
+            module_dependencies: Vec::new(),
             name: "verity-app".into(),
             version: "1.0.0".into(),
             description: "Package root with verity attestation".into(),
@@ -3113,6 +3133,8 @@ pin = "v2026.02"
     fn sample_package_meta() -> PackageMeta {
         PackageMeta {
             named_outputs: Default::default(),
+            ability_exports: Default::default(),
+            module_dependencies: Vec::new(),
             name: "firewall".to_string(),
             version: "1.4.0".to_string(),
             description: "host firewall".to_string(),

@@ -11,13 +11,13 @@ use serde_json::json;
 
 use super::evaluation::{PackageResolver, resolve_packages};
 use super::handler::HandlerArtifacts;
-use super::model::{Deployment, Envelope, ModuleSource};
+use super::model::{Deployment, Envelope, ModuleDependency};
 use super::transaction::{DeploymentStore, Transactions};
 
 struct NoDependencies;
 
 impl PackageResolver for NoDependencies {
-    fn resolve(&mut self, _: &ModuleSource) -> Result<Envelope> {
+    fn resolve(&mut self, _: &ModuleDependency) -> Result<Envelope> {
         bail!("unexpected module resolution")
     }
 }
@@ -168,13 +168,13 @@ fn named_payload_selection_does_not_install_available_module_dependencies() {
     };
     let dependency = make("interface", "interface-tools");
     let mut owner = make("owner", "owner-tools");
-    owner.module_dependencies = vec![dependency.module.clone().unwrap()];
+    owner.module_dependencies = vec![dependency.module.clone().unwrap().into()];
     owner
         .runtime_dependencies
         .insert("runtime".into(), make("runtime", "runtime-tools").package);
     struct Catalog(Envelope);
     impl PackageResolver for Catalog {
-        fn resolve(&mut self, _: &ModuleSource) -> Result<Envelope> {
+        fn resolve(&mut self, _: &ModuleDependency) -> Result<Envelope> {
             Ok(self.0.clone())
         }
     }

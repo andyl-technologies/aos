@@ -47,6 +47,10 @@ pub(super) fn evaluation(config: &ApmConfig) -> Result<(Evaluation, PathBuf)> {
             library: input.library,
             scope: input.scope,
             packages: input.packages,
+            module_requirements: input
+                .resolution_lock
+                .as_ref()
+                .map_or_else(Vec::new, |lock| lock.module_requirements()),
             configuration,
             retained_inputs: desired.inputs().iter().map(PathBuf::from).collect(),
             evaluation_input: Some(descriptor),

@@ -35,6 +35,10 @@ pub(super) fn verify(command: &NativeDeploymentCommand, number: u32) -> Result<(
         library: descriptor.library.clone(),
         scope: descriptor.scope.clone(),
         packages: descriptor.packages.clone(),
+        module_requirements: descriptor
+            .resolution_lock
+            .as_ref()
+            .map_or_else(Vec::new, |lock| lock.module_requirements()),
         configuration,
         retained_inputs: committed
             .deployment

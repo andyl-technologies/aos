@@ -16,7 +16,7 @@ use aos_ability_runtime::adapter::CancellationToken;
 use aos_ability_runtime::journal::JournalLimits;
 use aos_doc_model::runtime::RuntimeDocument;
 use aos_package::deployment::evaluation::{Evaluation, PackageResolver, resolve_packages};
-use aos_package::deployment::model::{Deployment, Envelope, ModuleSource};
+use aos_package::deployment::model::{Deployment, Envelope, ModuleDependency};
 use aos_package::deployment::retention::{ArtifactAdmission, NixStore};
 use aos_package::deployment::transaction::{DeploymentStore as _, Transactions};
 use aos_package::native_deployment::{EvaluationInput, evaluate_input};
@@ -43,9 +43,9 @@ struct Publication {
 struct Catalog(BTreeMap<String, Envelope>);
 
 impl PackageResolver for Catalog {
-    fn resolve(&mut self, module: &ModuleSource) -> Result<Envelope> {
+    fn resolve(&mut self, module: &ModuleDependency) -> Result<Envelope> {
         self.0
-            .get(&module.name)
+            .get(&module.seed().name)
             .cloned()
             .context("fixture module is absent")
     }

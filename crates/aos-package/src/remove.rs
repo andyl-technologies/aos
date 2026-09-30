@@ -313,6 +313,7 @@ fn publish_removal(
         &[],
         &[],
         removed,
+        None,
     )?;
     anyhow::ensure!(
         native.additional.is_empty(),
