@@ -93,6 +93,20 @@ pub struct VerifiedPair {
     pub peak_decoded_graph_bytes: u64,
 }
 
+/// Verified positive selections and explicit absences from one complete pair.
+///
+/// Together, `pair.objects` and `missing_oids` partition the original requested
+/// OIDs. Each list preserves their strict request order. Absence is reported
+/// only after complete pack/index validation; it never represents a failed read
+/// or a missing source pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvailablePair {
+    /// Exact source commitments and bounded content for the present selections.
+    pub pair: VerifiedPair,
+    /// Requested OIDs absent from this fully verified companion pair.
+    pub missing_oids: Vec<Oid>,
+}
+
 /// Incrementally verifies a pack and its bounded companion index.
 ///
 /// A failed feed invalidates the whole reader, even if previously fed bytes
@@ -177,6 +191,27 @@ impl PairReader {
     /// disagreement, delta violations, unordered/duplicate selections, absent
     /// objects, invalid ranges or output above the aggregate 128 KiB bound.
     pub fn finish(self, selections: &[Selection]) -> Result<VerifiedPair> {
+        let available = self.finish_available(selections)?;
+        ensure!(
+            available.missing_oids.is_empty(),
+            "selected object is absent from pack"
+        );
+        Ok(available.pair)
+    }
+
+    /// Validates the complete pair and partitions requested OIDs by presence.
+    ///
+    /// Present selections obey the same object, range and aggregate output
+    /// bounds as [`Self::finish`]. All original selections, including absent
+    /// ones, count toward the ordered batch and requested range limits. An
+    /// absent selection does not clip, replace or excuse a present object's
+    /// invalid range, and a corrupt pair never supplies an absence result.
+    ///
+    /// # Errors
+    /// Returns an error for incomplete or corrupt input, any index/pack
+    /// disagreement, delta violations, unordered/duplicate selections, invalid
+    /// ranges or present output above the aggregate 128 KiB bound.
+    pub fn finish_available(self, selections: &[Selection]) -> Result<AvailablePair> {
         ensure!(!self.failed, "pack pair reader previously failed");
         validate_selections(selections)?;
         let expected = parse_index(&self.index_path, &self.index)?;
@@ -194,11 +229,15 @@ impl PairReader {
         );
 
         let mut objects = Vec::with_capacity(selections.len());
+        let mut missing_oids = Vec::new();
         let mut total = 0_usize;
         for selection in selections {
-            let position = resolved
-                .binary_search_by(|(entry, _)| entry.oid.cmp(selection.oid.as_bytes()))
-                .map_err(|_| anyhow::anyhow!("selected object is absent from pack"))?;
+            let Ok(position) =
+                resolved.binary_search_by(|(entry, _)| entry.oid.cmp(selection.oid.as_bytes()))
+            else {
+                missing_oids.push(selection.oid);
+                continue;
+            };
             let object = &mut resolved[position].1;
             let object_size = object.data.len() as u64;
             let range = selection.range.unwrap_or(ContentRange {
@@ -232,7 +271,7 @@ impl PairReader {
                 content,
             });
         }
-        Ok(VerifiedPair {
+        let pair = VerifiedPair {
             index_path: self.index_path,
             pack_path: self.pack_path,
             pack_trailer_sha256: self.pack_checksum,
@@ -247,7 +286,8 @@ impl PairReader {
             objects,
             inflated_entry_bytes: parsed.decoded_bytes as u64,
             peak_decoded_graph_bytes: peak_decoded_graph_bytes as u64,
-        })
+        };
+        Ok(AvailablePair { pair, missing_oids })
     }
 }
 
@@ -263,6 +303,10 @@ fn validate_selections(selections: &[Selection]) -> Result<()> {
     let mut total = 0_u64;
     for selection in selections {
         if let Some(range) = selection.range {
+            ensure!(
+                range.end <= super::MAX_PACK_OBJECT_BYTES as u64,
+                "selected range exceeds the decoded object limit"
+            );
             let size = range
                 .end
                 .checked_sub(range.start)

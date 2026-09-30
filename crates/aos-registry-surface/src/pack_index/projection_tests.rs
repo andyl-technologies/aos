@@ -430,3 +430,184 @@ fn delta_depth_cycles_and_missing_bases_never_produce_projections() {
     let error = resolve_pack_entries(entries, &expected).unwrap_err();
     assert!(error.to_string().contains("delta-depth limit"));
 }
+
+fn absent_oid(byte: u8) -> Oid {
+    Oid::from_bytes(&[byte; 32]).unwrap()
+}
+
+#[test]
+fn available_selection_returns_an_exact_ordered_partition_and_keeps_strict_finish() {
+    let mut selections = vec![
+        Selection {
+            oid: fixture_oid("small"),
+            range: None,
+        },
+        Selection {
+            oid: absent_oid(0),
+            range: None,
+        },
+        Selection {
+            oid: fixture_oid("changed"),
+            range: Some(ContentRange { start: 0, end: 32 }),
+        },
+        Selection {
+            oid: absent_oid(255),
+            range: None,
+        },
+    ];
+    selections.sort_by_key(|selection| selection.oid);
+
+    for mode in ["ofs", "ref"] {
+        let (path, index, pack) = fixture(mode);
+        let available = read_pair(&path, index, pack, 1)
+            .finish_available(&selections)
+            .unwrap();
+        assert_eq!(available.missing_oids, vec![absent_oid(0), absent_oid(255)]);
+        let present = selections
+            .iter()
+            .filter(|selection| !available.missing_oids.contains(&selection.oid))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            available
+                .pair
+                .objects
+                .iter()
+                .map(|object| object.oid)
+                .collect::<Vec<_>>(),
+            present
+                .iter()
+                .map(|selection| selection.oid)
+                .collect::<Vec<_>>()
+        );
+        let strict = read_pair(&path, index, pack, 17).finish(&present).unwrap();
+        assert_eq!(available.pair, strict);
+        assert!(read_pair(&path, index, pack, 19)
+            .finish(&selections)
+            .is_err());
+    }
+}
+
+#[test]
+fn wholly_absent_or_empty_selections_still_require_the_complete_verified_pair() {
+    let (path, index, pack) = fixture("ref");
+    let selections = vec![
+        Selection {
+            oid: absent_oid(0),
+            range: None,
+        },
+        Selection {
+            oid: absent_oid(255),
+            range: None,
+        },
+    ];
+    let available = read_pair(&path, index, pack, 7)
+        .finish_available(&selections)
+        .unwrap();
+    assert_eq!(available.missing_oids, vec![absent_oid(0), absent_oid(255)]);
+    assert!(available.pair.objects.is_empty());
+    assert_eq!(
+        available.pair,
+        read_pair(&path, index, pack, 13).finish(&[]).unwrap()
+    );
+    let empty = read_pair(&path, index, pack, 3)
+        .finish_available(&[])
+        .unwrap();
+    assert!(empty.missing_oids.is_empty());
+    assert_eq!(empty.pair, available.pair);
+
+    let count = read_u32(index, HEADER_BYTES + FANOUT_BYTES - 4).unwrap() as usize;
+    let mut changed = index.to_vec();
+    changed[HEADER_BYTES + FANOUT_BYTES + count * OBJECT_ID_BYTES] ^= 1;
+    let checksum_at = changed.len() - 32;
+    let checksum = Sha256::digest(&changed[..checksum_at]);
+    changed[checksum_at..].copy_from_slice(&checksum);
+    validate(&path, &changed).unwrap();
+    assert!(read_pair(&path, &changed, pack, 31)
+        .finish_available(&selections)
+        .is_err());
+}
+
+#[test]
+fn available_selection_never_turns_incomplete_or_failed_input_into_absence() {
+    let (path, index, pack) = fixture("ofs");
+    let selections = [Selection {
+        oid: absent_oid(0),
+        range: None,
+    }];
+    assert!(read_pair(&path, index, &pack[..pack.len() - 1], 13)
+        .finish_available(&selections)
+        .is_err());
+    assert!(read_pair(&path, &index[..index.len() - 1], pack, 13)
+        .finish_available(&selections)
+        .is_err());
+    let mut reader = read_pair(&path, index, pack, 5);
+    assert!(reader.feed_pack(&[0]).is_err());
+    assert!(reader.finish_available(&selections).is_err());
+    let mut reader = read_pair(&path, index, pack, 5);
+    assert!(reader.feed_index(&vec![0; MAX_FEED_BYTES + 1]).is_err());
+    assert!(reader.finish_available(&selections).is_err());
+}
+
+#[test]
+fn absent_selections_do_not_relax_batch_range_or_present_output_bounds() {
+    let (path, index, pack) = fixture("ofs");
+    let absent = Selection {
+        oid: absent_oid(0),
+        range: None,
+    };
+    assert!(read_pair(&path, index, pack, 19)
+        .finish_available(&vec![absent.clone(); MAX_SELECTED_OBJECTS + 1])
+        .is_err());
+    assert!(read_pair(&path, index, pack, 19)
+        .finish_available(&[absent.clone(), absent])
+        .is_err());
+    for range in [
+        ContentRange {
+            start: 0,
+            end: MAX_SELECTED_CONTENT_BYTES as u64 + 1,
+        },
+        ContentRange { start: 10, end: 9 },
+        ContentRange {
+            start: MAX_PACK_OBJECT_BYTES as u64 + 1,
+            end: MAX_PACK_OBJECT_BYTES as u64 + 1,
+        },
+    ] {
+        let selection = Selection {
+            oid: absent_oid(0),
+            range: Some(range),
+        };
+        assert!(read_pair(&path, index, pack, 19)
+            .finish_available(&[selection])
+            .is_err());
+    }
+    let selections = [
+        Selection {
+            oid: absent_oid(0),
+            range: Some(ContentRange {
+                start: 0,
+                end: MAX_SELECTED_CONTENT_BYTES as u64,
+            }),
+        },
+        Selection {
+            oid: fixture_oid("small"),
+            range: Some(ContentRange { start: 0, end: 1 }),
+        },
+    ];
+    assert!(read_pair(&path, index, pack, 19)
+        .finish_available(&selections)
+        .is_err());
+    let selections = [
+        Selection {
+            oid: absent_oid(0),
+            range: None,
+        },
+        Selection {
+            oid: fixture_oid("small"),
+            range: Some(ContentRange { start: 0, end: 29 }),
+        },
+    ];
+    assert!(read_pair(&path, index, pack, 19)
+        .finish_available(&selections)
+        .is_err());
+}
