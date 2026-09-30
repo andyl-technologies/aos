@@ -1,5 +1,9 @@
 ##! systems/aos-testing-staging.nix — Testing artifacts for the staging Hub
-{lib, pkgs, ...}: {
+{
+  lib,
+  pkgs,
+  ...
+}: {
   imports = [./aos-testing.nix];
 
   # Destination identity is baked before signing so consumers use the same
