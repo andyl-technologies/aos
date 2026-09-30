@@ -2474,69 +2474,7 @@ fn parse_system_transition_mode(reboot: bool) -> SystemTransitionMode {
     }
 }
 
-const DEFAULT_SWITCH_BASE_LIB: &str = "/aos-toplevel/base-lib";
-const DEFAULT_SWITCH_OS_RELEASE: &str = "/aos-toplevel/os-release";
 const DEFAULT_SYSTEM_GENERATION_PROFILE: &str = "/var/lib/profiles/system";
-
-fn resolve_switch_manifest(selector: Option<&str>, profile: &Path) -> Result<(PathBuf, String)> {
-    let selector = selector.unwrap_or("current");
-    if selector == "current" {
-        return Ok((profile.join("current/manifest.json"), "current".to_string()));
-    }
-    if let Some(number) = selector.strip_prefix("gen-") {
-        if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
-            bail!("invalid configuration generation selector {selector:?}; expected gen-N");
-        }
-        return Ok((
-            profile.join(format!("gen-{number}/manifest.json")),
-            selector.to_string(),
-        ));
-    }
-    Ok((PathBuf::from(selector), selector.to_string()))
-}
-
-fn running_module_abi(os_release: &Path) -> Result<u32> {
-    let contents = std::fs::read_to_string(os_release)
-        .with_context(|| format!("reading running image identity {}", os_release.display()))?;
-    let value = contents
-        .lines()
-        .find_map(|line| line.strip_prefix("AOS_MODULE_ABI="))
-        .context("running image os-release has no AOS_MODULE_ABI")?;
-    value
-        .trim_matches('"')
-        .parse()
-        .context("running image has an invalid AOS_MODULE_ABI")
-}
-
-fn resolve_default_switch_host(current_manifest: &Path) -> Result<(PathBuf, bool)> {
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(current_manifest).with_context(|| {
-            format!(
-                "reading current configuration manifest {}",
-                current_manifest.display()
-            )
-        })?)
-        .with_context(|| format!("parsing current manifest {}", current_manifest.display()))?;
-    let host = manifest
-        .pointer("/inputs/host_nix")
-        .context("current manifest has no retained host input")?;
-    let trust_mode = host
-        .get("trust_mode")
-        .and_then(serde_json::Value::as_str)
-        .context("current manifest host input has no trust_mode")?;
-    let store_path = host
-        .get("store_path")
-        .and_then(serde_json::Value::as_str)
-        .context("current host input has no retained store path")?;
-    let store_path = PathBuf::from(store_path);
-    if !store_path.is_file() {
-        bail!(
-            "retained host input is unavailable: {}",
-            store_path.display()
-        );
-    }
-    Ok((store_path, matches!(trust_mode, "image" | "image-default")))
-}
 
 fn acquire_runtime_config_lock(worktree: &Path) -> Result<std::fs::File> {
     let parent = worktree
@@ -2892,6 +2830,38 @@ pub async fn run(
 
     if let PackageCommand::Config { command } = command {
         return run_runtime_config_command(command, printer).await;
+    }
+
+    // TPM quoting and verifier enrollment use explicit inputs. Neither needs
+    // mutable registry state, which may not exist on a verifier-only machine.
+    if let PackageCommand::Attest { command } = command {
+        match command {
+            AttestCommand::Quote {
+                nonce,
+                nonce_file,
+                output_dir,
+            } => {
+                let nonce = read_attestation_nonce(nonce, nonce_file)?;
+                return run_produce_package_attestation_quote(&nonce, output_dir, printer);
+            }
+            AttestCommand::Enroll {
+                quote_dir,
+                label,
+                method,
+                evidence_file,
+                catalog_file,
+            } => {
+                return run_enroll_package_attestation_quote(
+                    quote_dir,
+                    catalog_file,
+                    label,
+                    *method,
+                    evidence_file,
+                    printer,
+                );
+            }
+            AttestCommand::Verify { .. } | AttestCommand::Catalog { .. } => {}
+        }
     }
 
     // Documentation reads retained installed objects or the public Hub API and
@@ -5346,84 +5316,6 @@ mod tests {
         assert!(attestation::QuoteChecker::check(&checker, &exact, &[0x55; 32]).is_err());
     }
 
-    #[test]
-    fn switch_manifest_selectors_resolve_current_generation_and_paths() {
-        let profile = Path::new("/var/lib/profiles/system");
-        assert_eq!(
-            resolve_switch_manifest(None, profile).unwrap(),
-            (
-                PathBuf::from("/var/lib/profiles/system/current/manifest.json"),
-                "current".to_string()
-            )
-        );
-        assert_eq!(
-            resolve_switch_manifest(Some("gen-17"), profile).unwrap(),
-            (
-                PathBuf::from("/var/lib/profiles/system/gen-17/manifest.json"),
-                "gen-17".to_string()
-            )
-        );
-        assert_eq!(
-            resolve_switch_manifest(Some("/tmp/reference.json"), profile).unwrap(),
-            (
-                PathBuf::from("/tmp/reference.json"),
-                "/tmp/reference.json".to_string()
-            )
-        );
-        assert!(resolve_switch_manifest(Some("gen-../7"), profile).is_err());
-    }
-
-    #[test]
-    fn running_module_abi_reads_aos_os_release_field() {
-        let tmp = TempDir::new().unwrap();
-        let release = tmp.path().join("os-release");
-        std::fs::write(&release, "NAME=AOS\nAOS_MODULE_ABI=\"11\"\nVERSION_ID=1\n").unwrap();
-        assert_eq!(running_module_abi(&release).unwrap(), 11);
-        std::fs::write(&release, "NAME=AOS\n").unwrap();
-        assert!(running_module_abi(&release).is_err());
-    }
-
-    #[test]
-    fn switch_defaults_to_retained_image_authored_empty_module_only() {
-        let tmp = TempDir::new().unwrap();
-        let retained = tmp.path().join("store/host.nix");
-        let manifest = tmp.path().join("manifest.json");
-        std::fs::create_dir_all(retained.parent().unwrap()).unwrap();
-        std::fs::write(&retained, "{}\n").unwrap();
-        std::fs::write(
-            &manifest,
-            serde_json::to_vec(&serde_json::json!({
-                "inputs": {
-                    "host_nix": {
-                        "trust_mode": "image",
-                        "store_path": retained,
-                    }
-                }
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(
-            resolve_default_switch_host(&manifest).unwrap(),
-            (retained.clone(), true)
-        );
-
-        let operator_manifest = serde_json::json!({
-            "inputs": {
-                "host_nix": {
-                    "trust_mode": "platform",
-                    "store_path": retained,
-                }
-            }
-        });
-        std::fs::write(&manifest, serde_json::to_vec(&operator_manifest).unwrap()).unwrap();
-        assert_eq!(
-            resolve_default_switch_host(&manifest).unwrap(),
-            (retained, false)
-        );
-    }
-
     fn make_config(
         tmp: &TempDir,
         registries: Vec<(RegistryConfig, Option<types::RegistryState>)>,
@@ -5644,6 +5536,49 @@ mod tests {
             }
             .is_system()
         );
+    }
+
+    #[tokio::test]
+    async fn attest_quote_dispatches_before_registry_configuration() {
+        let temporary = TempDir::new().expect("private quote test directory");
+        let output_dir = temporary.path().join("quote-output");
+        let command = PackageCommand::Attest {
+            command: AttestCommand::Quote {
+                nonce: None,
+                nonce_file: None,
+                output_dir: output_dir.clone(),
+            },
+        };
+
+        let error = run(&command, false, false, &Printer::new(0, true, false))
+            .await
+            .expect_err("quoting requires its explicit nonce");
+
+        assert!(format!("{error:#}").contains("requires --nonce or --nonce-file"));
+        assert!(!output_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn attest_enroll_dispatches_before_registry_configuration() {
+        let temporary = TempDir::new().expect("private enrollment test directory");
+        let quote_dir = temporary.path().join("missing-quote-bundle");
+        let catalog_file = temporary.path().join("verifier-catalog.json");
+        let command = PackageCommand::Attest {
+            command: AttestCommand::Enroll {
+                quote_dir: quote_dir.clone(),
+                label: "test-node".into(),
+                method: AttestEnrollmentMethod::OutOfBand,
+                evidence_file: temporary.path().join("enrollment-proof"),
+                catalog_file: catalog_file.clone(),
+            },
+        };
+
+        let error = run(&command, false, false, &Printer::new(0, true, false))
+            .await
+            .expect_err("enrollment requires its explicit quote bundle");
+
+        assert!(format!("{error:#}").contains(&quote_dir.display().to_string()));
+        assert!(!catalog_file.exists());
     }
 
     #[test]
