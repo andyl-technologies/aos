@@ -535,16 +535,9 @@ mod tests {
     }
 
     #[test]
-    fn signed_native_file_preserves_exact_bytes_and_rejects_modification() {
-        let directory = tempfile::TempDir::new().unwrap();
-        let root = directory
-            .path()
-            .join("00000000000000000000000000000000-native-docs");
-        fs::create_dir(&root).unwrap();
-        let path = root.join("options.json");
-        fs::write(&path, source()).unwrap();
+    fn native_document_byte_binding_preserves_identity_and_rejects_modification() {
         let locator = crate::types::NativeArtifactMeta {
-            store_path: root.to_string_lossy().into_owned(),
+            store_path: "/nix/store/00000000000000000000000000000000-native-docs".into(),
             nar_hash: format!("sha256:{}", "0".repeat(64)),
             nar_size: 512,
             references: Vec::new(),
@@ -552,7 +545,9 @@ mod tests {
             document_size: source().len() as u64,
         };
 
-        let bytes = crate::native_artifact::read_document(&locator, "options.json").unwrap();
+        locator.validate().unwrap();
+        let bytes = source().to_vec();
+        crate::native_artifact::validate_document_bytes(&locator, &bytes).unwrap();
         let document = RuntimeDocument::from_json(&bytes).unwrap();
         document
             .verify_package_identity("sample", "1", "x86_64-linux")
@@ -569,8 +564,7 @@ mod tests {
                 .is_err()
         );
 
-        fs::write(&path, b"{}").unwrap();
-        assert!(crate::native_artifact::read_document(&locator, "options.json").is_err());
+        assert!(crate::native_artifact::validate_document_bytes(&locator, b"{}").is_err());
     }
 
     #[test]

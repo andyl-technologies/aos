@@ -182,7 +182,11 @@ the schema when building a client or integration.
 Native references are retained with completed signed releases. Hub checks the
 publication's documentation directory and exact `options.json` byte identity
 before returning or rendering the `aos.module.documentation` document.
-Packages without a native documentation artifact return not found.
+Packages without a native documentation artifact return not found. The
+`/{registry}/-/api/v1/` documentation, ability, and option reads accept the same
+registry read bearer as their RPC counterparts; a browser session cookie alone
+does not authenticate these JSON routes. Credentialed responses use private,
+no-store caching even when the document digest identifies immutable bytes.
 
 | Method | Native behavior |
 | --- | --- |
@@ -204,8 +208,10 @@ curl -fsS -H 'Content-Type: application/json' \
 ```
 
 Empty version/platform selectors use Hub's deterministic default selection.
-An explicit release never falls back to another release. The response identity
-includes the verified commit, tag object, completed snapshot, exact document
+An explicit release never falls back to another release. The HTTP package
+options list also honors its `release` query; the options RPC uses
+version/platform selection. The response identity includes the verified commit,
+tag object, completed snapshot, exact document
 digest and size, and artifact store path/NAR identity. The `canonicalJson`
 transport field carries the exact signed JSON bytes as protobuf JSON base64.
 Decode those bytes before checking their digest; do not parse and reserialize

@@ -346,10 +346,12 @@ Hub's deterministic default selection. The CLI package commands do not expose
 a release selector; use the documentation RPC when an explicit release pin is
 required.
 
-`option` lists typed native declarations, with optional owner, prefix, portable
-type JSON, and extensibility filters. Comparisons cover option types and
-mutability/extension policy, operation inputs/results, handler availability, and
-configured instances. They exclude prose and do not report live runtime state.
+`package` renders the same native reference as the browser, including complete
+recursive input/result contracts and each operation's declaring, handling, and
+consuming owners. `option` lists typed native declarations, with optional owner,
+prefix, portable type JSON, and extensibility filters. Comparisons cover option
+types and mutability/extension policy, operation inputs/results, handler
+availability, and configured instances. They exclude prose and do not report live runtime state.
 
 
 ## Inspect release operations and report a deployment

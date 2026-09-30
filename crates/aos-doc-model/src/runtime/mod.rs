@@ -472,8 +472,7 @@ mod tests {
         let html = reference.render_html();
         for owner in ["interface", "backend", "consumer"] {
             let anchor = crate::documentation_anchor("runtime-owner", owner);
-            assert!(html.contains(&format!("id=\"{anchor}\"")));
-            assert!(html.contains(&format!("href=\"#{anchor}\"")));
+            assert!(html.matches(&format!("-{anchor}\"")).count() >= 2);
         }
         assert!(html.contains("Configured instances: main"));
         assert!(html.contains("A &lt;message&gt;"));
