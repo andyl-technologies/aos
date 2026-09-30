@@ -6,6 +6,9 @@
 }: let
   allowedConceptualGuides = [
     "README.md"
+    "access-control.md"
+    "auditing.md"
+    "certificates.md"
     "cli.md"
     "configuration.md"
     "deployment.md"
@@ -14,11 +17,15 @@
     "networking.md"
     "operations.md"
     "package-authoring.md"
+    "package-sandbox.md"
     "packages.md"
     "quickstart.md"
     "recovery.md"
+    "registries.md"
     "secrets.md"
-    "security.md"
+    "secure-boot.md"
+    "security-hardening.md"
+    "storage-zfs.md"
     "support-status.md"
     "troubleshooting.md"
     "upgrades.md"
@@ -191,6 +198,8 @@ in
       docs/users/aos may contain only the reviewed conceptual guides. Package
       option/runtime reference belongs in configModule.documentation so every
       authenticated documentation surface is generated from one Nix authority.
+      Unexpected guides: ${builtins.concatStringsSep ", " (lib.subtractLists allowedConceptualGuides observedGuides)}
+      Missing guides: ${builtins.concatStringsSep ", " (lib.subtractLists observedGuides allowedConceptualGuides)}
     ''
   else if serviceCatalog.schema != "aos.service-documentation/v1"
   then throw "unsupported service documentation catalog schema"
