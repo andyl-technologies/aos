@@ -175,7 +175,7 @@
       }
       {
         label = "multi-vCPU spike pins the predeclared S11 horizon";
-        needle = "stopAt ? 4000000000";
+        needle = "stopAt ? 8000000000";
       }
       {
         label = "multi-vCPU spike sustains four-thread contention";
