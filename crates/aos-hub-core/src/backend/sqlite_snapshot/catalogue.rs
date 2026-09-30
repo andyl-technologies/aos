@@ -214,12 +214,30 @@ mod generation_tests {
         let historical = CompiledSqliteSnapshotCatalogue::load_generation(3)
             .await
             .unwrap();
-        let current = CompiledSqliteSnapshotCatalogue::load_generation(4)
+        let generation4 = CompiledSqliteSnapshotCatalogue::load_generation(4)
+            .await
+            .unwrap();
+        let current = CompiledSqliteSnapshotCatalogue::load_generation(5)
             .await
             .unwrap();
 
         assert_eq!(historical.schema().tables.len(), 267);
-        assert_eq!(current.schema().tables.len(), 275);
+        assert_eq!(generation4.schema().tables.len(), 275);
+        assert_eq!(current.schema().tables.len(), 276);
+        assert!(
+            !generation4
+                .definitions()
+                .iter()
+                .any(|value| value.name() == "mirror_import_objects")
+        );
+        assert!(
+            current
+                .definitions()
+                .iter()
+                .any(|value| value.name() == "mirror_import_objects")
+        );
+        assert_eq!(generation4.schema_manifest().migration_digests.len(), 4);
+        assert_eq!(current.schema_manifest().migration_digests.len(), 5);
         assert!(
             !historical
                 .definitions()
@@ -247,7 +265,7 @@ mod generation_tests {
         assert_eq!(historical.schema_manifest().version, 3);
         assert_eq!(historical.schema_manifest().migration_digests.len(), 3);
         assert!(
-            CompiledSqliteSnapshotCatalogue::load_generation(5)
+            CompiledSqliteSnapshotCatalogue::load_generation(6)
                 .await
                 .is_err()
         );

@@ -531,6 +531,8 @@ pub use delivery_workflow::*;
 mod egress_nonce;
 mod gc_topology;
 pub use gc_topology::*;
+mod mirror_imports;
+pub use mirror_imports::*;
 mod oci;
 pub use oci::*;
 mod oci_admin;
@@ -600,6 +602,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("002-r2-gc-incarnation.sql"),
     include_str!("003-physical-storage-authorities.sql"),
     include_str!("004-direct-upload-sessions.sql"),
+    include_str!("005-mirror-imports.sql"),
 ];
 
 // Shared by production initialization and trusted disposable schema compilation.
@@ -5897,30 +5900,26 @@ impl Database {
     }
 
     /// Deletes mirror configuration under an exact resource version.
+    /// Advances the registry generation so recreating a source cannot revive
+    /// authority held by an older mirror original.
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure.
+    /// Returns an error while a mirror original is retained, for a concurrent
+    /// configuration change, or on database failure.
     pub async fn delete_registry_mirror_at_version(
         &self,
         registry_id: i64,
         expected_resource_version: i64,
     ) -> Result<bool> {
-        Ok(self
-            .backend
-            .execute(
-                "DELETE FROM mirror_sources WHERE registry_id = ?1
-                 AND resource_version = ?2",
-                &vals![registry_id, expected_resource_version],
-            )
-            .await?
-            == 1)
+        self.delete_mirror_configuration(registry_id, Some(expected_resource_version)).await
     }
 
     /// Mark a registry as a mirror of `upstream_url` in `mode`.
     ///
     /// Idempotent: re-running for the same registry updates the upstream URL,
-    /// mode, verify flag, and schedule, preserving the last-sync record. `mode`
+    /// mode, verify flag, and schedule, advancing its source generation and
+    /// preserving the last-sync record. `mode`
     /// must be `full` or `pullthrough`. The `upstream_url` is validated as a
     /// safe remote target ([`crate::url_guard::is_safe_remote_url`]) so a mirror
     /// can never be pointed at the local filesystem or an internal address.
@@ -5951,7 +5950,8 @@ impl Database {
                upstream_url = excluded.upstream_url,
                mode = excluded.mode,
                verify = excluded.verify,
-               schedule_secs = excluded.schedule_secs",
+               schedule_secs = excluded.schedule_secs,
+               resource_version = mirror_sources.resource_version + 1",
                 &vals![registry_id, upstream_url, mode, verify, schedule_secs],
             )
             .await?;
@@ -6031,20 +6031,14 @@ impl Database {
     }
 
     /// Stop mirroring: remove a registry's mirror source. Returns whether a row
-    /// was removed.
+    /// was removed, advancing the registry generation before source retirement.
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure.
+    /// Returns an error while a mirror original is retained, for a concurrent
+    /// configuration change, or on database failure.
     pub async fn delete_mirror_source(&self, registry_id: i64) -> Result<bool> {
-        let n = self
-            .backend
-            .execute(
-                "DELETE FROM mirror_sources WHERE registry_id = ?1",
-                &vals![registry_id],
-            )
-            .await?;
-        Ok(n > 0)
+        self.delete_mirror_configuration(registry_id, None).await
     }
 
     /// Record the outcome of a mirror sync attempt.
@@ -27503,8 +27497,8 @@ source_nar_hash = ""
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            4,
-            "production baseline plus R2, physical authority and direct-upload identity/session migrations"
+            5,
+            "production baseline plus retained R2, physical authority, direct-upload and mirror originals"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection

@@ -44,6 +44,14 @@ impl Database {
             return Ok(false);
         }
 
+        let mirror = self.backend.query_opt(
+            "SELECT 1 FROM mirror_import_objects WHERE registry_id = ?1 LIMIT 1",
+            &vals![registry_id],
+        ).await?;
+        if mirror.is_some() {
+            bail!("registry retains a mirror original; settle its exact provider effects and acknowledge the Native commit before deletion");
+        }
+
         let now = unix_now();
         let oci_blockers = self.oci_registry_purge_blockers(registry_id, now).await?;
         if oci_blockers.any() {
@@ -116,6 +124,8 @@ impl Database {
                 Statement::new(
                     "UPDATE registries SET updated_at = updated_at
                      WHERE id = ?1 AND scope_key = ?2 AND resource_version = ?3
+                       AND NOT EXISTS (SELECT 1 FROM mirror_import_objects
+                         WHERE registry_id = ?1)
                        AND NOT EXISTS (SELECT 1 FROM registry_publications
                          WHERE registry_id = ?1
                            AND state IN ('preparing', 'writing_pointers'))

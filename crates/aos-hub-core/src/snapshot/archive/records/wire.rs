@@ -37,14 +37,15 @@ impl<'de> Deserialize<'de> for WireScalar {
     }
 }
 
-// The JSON arrays preserve historical generation-3 bytes. Only these exact
-// closed lengths decode; the authenticated header must separately match the
+// The JSON arrays preserve historical generation-3 and generation-4 bytes.
+// Only these exact closed lengths decode; the authenticated header must match the
 // corresponding compiled generation, identity and digest commitments.
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub(super) enum MigrationDigests {
     Generation3([String; 3]),
     Generation4([String; 4]),
+    Generation5([String; 5]),
 }
 
 impl MigrationDigests {
@@ -54,6 +55,9 @@ impl MigrationDigests {
                 anyhow::anyhow!("snapshot migration shape differs")
             })?)),
             4 => Ok(Self::Generation4(values.try_into().map_err(|_| {
+                anyhow::anyhow!("snapshot migration shape differs")
+            })?)),
+            5 => Ok(Self::Generation5(values.try_into().map_err(|_| {
                 anyhow::anyhow!("snapshot migration shape differs")
             })?)),
             _ => anyhow::bail!("snapshot migration generation is unsupported"),

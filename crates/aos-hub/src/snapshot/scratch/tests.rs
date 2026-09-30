@@ -13,6 +13,8 @@ use super::budget::TestControls;
 use super::fixture::*;
 use super::*;
 
+mod mirror;
+
 fn inputs(fixture: &Fixture) -> ScratchVerificationInputs<Cursor<Vec<u8>>, Cursor<Vec<u8>>> {
     ScratchVerificationInputs {
         root: fixture.output.root.as_bytes().to_vec(),
@@ -71,7 +73,7 @@ async fn valid_capture_enforces_child_before_parent_and_preserves_private_origin
     let fixture = fixture().await;
     let result = scratch(&fixture).await.unwrap();
     assert_eq!(result.records().counts(), &fixture.output.counts);
-    assert_eq!(result.checked_tables(), 265);
+    assert_eq!(result.checked_tables(), 266);
     assert_eq!(result.synthetic_lineage_rows(), 2);
     assert!(result.records().counts().private_cells >= 2);
     assert!(!format!("{result:?}").contains("private-credential"));
@@ -479,6 +481,51 @@ async fn genuine_generation3_capture_replays_with_matching_historical_ddl() {
 #[tokio::test]
 async fn truncated_generation3_capture_cannot_return_a_constraint_report() {
     let mut inputs = historical_generation3_inputs();
+    inputs.private.get_mut().pop();
+
+    let result = verify_capture_in_scratch(inputs, Default::default(), Default::default()).await;
+
+    assert!(result.is_err());
+}
+
+// This archive was captured by the generation-4 production implementation,
+// before migration 005 existed. Its schema commitments are never rewritten.
+fn historical_generation4_inputs() -> ScratchVerificationInputs<Cursor<Vec<u8>>, Cursor<Vec<u8>>> {
+    let signer = ArchiveSigningKey::from_seed("snapshot-operator", [1; 32]).unwrap();
+
+    ScratchVerificationInputs {
+        root: include_bytes!("fixtures/generation4-root.json").to_vec(),
+        trust: ArchiveSignerTrust::new([(signer.id().to_owned(), signer.public_key())]).unwrap(),
+        wrapping: ArchiveWrappingKeys::new(
+            ArchiveWrappingKey::from_bytes("metadata-wrap", [2; 32]).unwrap(),
+            ArchiveWrappingKey::from_bytes("private-wrap", [3; 32]).unwrap(),
+        )
+        .unwrap(),
+        exclusions: Vec::new(),
+        metadata: Cursor::new(include_bytes!("fixtures/generation4-metadata.enc").to_vec()),
+        private: Cursor::new(include_bytes!("fixtures/generation4-private.enc").to_vec()),
+    }
+}
+
+#[tokio::test]
+async fn genuine_generation4_capture_replays_with_matching_historical_ddl() {
+    let report = verify_capture_in_scratch(
+        historical_generation4_inputs(),
+        Default::default(),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(report.records().counts().tables, 275);
+    assert_eq!(report.checked_tables(), 265);
+    assert_eq!(report.synthetic_lineage_rows(), 2);
+    assert!(report.records().counts().private_cells >= 2);
+}
+
+#[tokio::test]
+async fn truncated_generation4_capture_cannot_return_a_constraint_report() {
+    let mut inputs = historical_generation4_inputs();
     inputs.private.get_mut().pop();
 
     let result = verify_capture_in_scratch(inputs, Default::default(), Default::default()).await;

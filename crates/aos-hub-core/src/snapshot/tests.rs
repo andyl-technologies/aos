@@ -5,25 +5,36 @@ use super::*;
 mod direct;
 mod direct_oci;
 mod direct_receipts;
+mod mirror;
 mod privacy;
 
 #[test]
 fn historical_contract_keeps_exact_digests_and_refuses_mixed_generations() {
     let historical = SnapshotClassifier::for_supported_generation(3).unwrap();
-    let current = SnapshotClassifier::for_supported_generation(4).unwrap();
+    let generation4 = SnapshotClassifier::for_supported_generation(4).unwrap();
+    let current = SnapshotClassifier::for_supported_generation(5).unwrap();
 
     assert_eq!(historical.tables.len(), 267);
-    assert_eq!(current.tables.len(), 275);
+    assert_eq!(generation4.tables.len(), 275);
+    assert_eq!(current.tables.len(), 276);
     assert!(!historical.tables.contains_key("direct_upload_sessions"));
     assert_eq!(historical.manifest().migration_digests, digests()[..3]);
+    assert_eq!(generation4.manifest().migration_digests, digests()[..4]);
+    assert!(!generation4.tables.contains_key("mirror_import_objects"));
+    assert!(current.tables.contains_key("mirror_import_objects"));
     assert_eq!(
         historical.manifest().classification_digest,
         hex::encode(Sha256::digest(LEGACY_CONTRACT))
     );
+    assert_eq!(
+        generation4.manifest().classification_digest,
+        hex::encode(Sha256::digest(GENERATION4_CONTRACT))
+    );
 
     assert!(SnapshotClassifier::new(SCHEMA_IDENTITY, 3, &digests(), &shapes()).is_err());
     assert!(SnapshotClassifier::new(SCHEMA_IDENTITY, 4, &digests()[..3], &shapes()).is_err());
-    for version in [0, 1, 2, 5, usize::MAX] {
+    assert!(SnapshotClassifier::new(SCHEMA_IDENTITY, 5, &digests()[..4], &shapes()).is_err());
+    for version in [0, 1, 2, 6, usize::MAX] {
         assert!(SnapshotClassifier::for_supported_generation(version).is_err());
     }
 }
@@ -159,13 +170,13 @@ async fn contract_covers_the_actual_production_initializer() {
     let tables = sqlx::query("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .fetch_all(&pool).await.unwrap();
     let contracts = contract().unwrap();
-    assert_eq!(contracts.len(), 275);
+    assert_eq!(contracts.len(), 276);
     assert_eq!(
         contracts
             .values()
             .map(|table| table.columns.len())
             .sum::<usize>(),
-        2688
+        2697
     );
     assert_eq!(tables.len(), contracts.len());
 

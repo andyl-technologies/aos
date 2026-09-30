@@ -1178,7 +1178,7 @@ fn admitted_probe_path(path: &str) -> bool {
             })
 }
 
-fn valid_relative_path(path: &str, allow_empty: bool) -> bool {
+pub(crate) fn valid_relative_path(path: &str, allow_empty: bool) -> bool {
     if path.len() > 2048 || (!allow_empty && path.is_empty()) {
         return false;
     }
