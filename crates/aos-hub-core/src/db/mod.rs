@@ -27757,8 +27757,7 @@ source_nar_hash = ""
         );
         assert!(current_artifacts.iter().any(|artifact| {
             artifact.artifact_kind == "output"
-                && artifact.store_path
-                    == "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
+                && artifact.store_path == "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
         }));
         assert!(current_artifacts
             .iter()

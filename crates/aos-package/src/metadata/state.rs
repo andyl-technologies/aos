@@ -36,8 +36,8 @@ use serde::{Deserialize, Serialize};
 use super::fetcher::Facts;
 use super::provisioning::{PROVISIONING_RESULT_FILE, ProvisioningResult, ProvisioningSource};
 use super::repart::{REPART_DIR, REPART_TARGETS_FILE, STORAGE_PLAN_FILE};
-use super::topology::{ARRAYS_FILE, VOLUMES_FILE};
 use super::stash::{MetadataResult, sha256_hex};
+use super::topology::{ARRAYS_FILE, VOLUMES_FILE};
 
 /// Default durable state directory.
 pub const DEFAULT_STATE_DIR: &str = "/var/lib/aos-provisioning";

@@ -53,7 +53,18 @@ in
     inherit version src;
 
     buildDeps =
-      [(if isDarwinCross then rustForBuild else rust) cmake ninja gettext pkg-config python3]
+      [
+        (
+          if isDarwinCross
+          then rustForBuild
+          else rust
+        )
+        cmake
+        ninja
+        gettext
+        pkg-config
+        python3
+      ]
       ++ lib.optionals isLinuxCross [rustForBuild];
     runtimeDeps =
       [

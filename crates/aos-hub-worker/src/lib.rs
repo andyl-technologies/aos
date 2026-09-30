@@ -1127,11 +1127,11 @@ mod entry {
         )));
         if let Ok(keys) = env.var("HUB_REGISTRY_CACHE_PUBLIC_KEYS") {
             service = service
-                .with_registry_cache_public_keys(
-                    serde_json::from_str(&keys.to_string()).map_err(|error| {
+                .with_registry_cache_public_keys(serde_json::from_str(&keys.to_string()).map_err(
+                    |error| {
                         worker::Error::RustError(format!("registry cache public keys: {error}"))
-                    })?,
-                )
+                    },
+                )?)
                 .map_err(|error| {
                     worker::Error::RustError(format!("registry cache public keys: {error:#}"))
                 })?;
