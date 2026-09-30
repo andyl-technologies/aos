@@ -20,6 +20,8 @@ let
   # Wave 1: target-independent inputs and small leaf packages.  These establish
   # the data and low-level library closure used by later Darwin packages.
   independentWave1 = [
+    "libglvnd-headers"
+    "virglrenderer-headers"
     "xtrans"
     "vulkan-headers"
     "docbook-xml-4-2"
