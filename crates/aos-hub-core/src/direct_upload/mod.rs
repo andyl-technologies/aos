@@ -22,6 +22,7 @@ mod logical;
 mod managed_profile;
 mod protected_profile;
 mod runtime_qualification;
+mod selected_complete;
 mod wire;
 
 pub use actor::*;
@@ -37,6 +38,7 @@ pub use logical::*;
 pub use managed_profile::*;
 pub use protected_profile::*;
 pub use runtime_qualification::*;
+pub use selected_complete::*;
 pub use wire::*;
 
 #[cfg(test)]
