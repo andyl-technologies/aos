@@ -289,3 +289,6 @@ impl<F, C, V> CapabilityReport for FileBucket<F, C, V> {
         &self.inner.capabilities
     }
 }
+
+#[cfg(all(test, feature = "tokio"))]
+mod requirement_tests;

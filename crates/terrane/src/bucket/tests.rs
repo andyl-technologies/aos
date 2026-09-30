@@ -4,7 +4,8 @@
 
 use super::*;
 use crate::store::{
-    MetaUpload, RefCasOutcome, RefLogAppendOutcome, RefStore, RefWatch, TokioClock, TokioLocalFs,
+    ChunkPosition, ChunkRequirement, InvalidReason, MetaUpload, RefCasOutcome, RefLogAppendOutcome,
+    RefStore, RefWatch, TokioClock, TokioLocalFs,
 };
 use terrane_core::refs::{RefLogReason, RefLogRecord, RefRecord};
 
@@ -13,6 +14,53 @@ impl ContentValidator for Validator {
     fn validate_meta(&self, _upload: &MetaUpload<'_>) -> Result<(), StoreFailure> {
         Ok(())
     }
+
+    fn chunk_requirements(
+        &self,
+        upload: &MetaUpload<'_>,
+    ) -> Result<Vec<ChunkRequirement>, StoreFailure> {
+        manifest_requirements(upload, &ChunkProfile::cdc_1m([0; 32]))
+    }
+}
+
+/// Supplies trusted schema declarations for the configured fixture metadata validator.
+///
+/// # Errors
+/// Rejects malformed manifests and unrepresentable declared chunk lengths.
+pub(super) fn manifest_requirements(
+    upload: &MetaUpload<'_>,
+    profile: &ChunkProfile,
+) -> Result<Vec<ChunkRequirement>, StoreFailure> {
+    if upload.kind() != terrane_core::identity::IdentityKind::Manifest {
+        return Ok(Vec::new());
+    }
+    let invalid = || {
+        StoreFailure::new(StoreErrorKind::Invalid(InvalidReason::Upload {
+            rule_id: "OBJ-15",
+        }))
+    };
+    let manifest =
+        terrane_core::manifest::Manifest::decode(upload.bytes(), profile).map_err(|_| invalid())?;
+    let count = manifest.chunks.len();
+    manifest
+        .chunks
+        .iter()
+        .enumerate()
+        .map(|(position, chunk)| {
+            Ok(ChunkRequirement {
+                identity: terrane_core::identity::TERRANE_V1
+                    .from_digest(terrane_core::identity::IdentityKind::Chunk, &chunk.digest)
+                    .map_err(|_| invalid())?,
+                declared_plaintext_len: usize::try_from(chunk.length).map_err(|_| invalid())?,
+                position: if position + 1 == count {
+                    ChunkPosition::Final
+                } else {
+                    ChunkPosition::NonFinal
+                },
+                missing_rule_id: "OBJ-15",
+            })
+        })
+        .collect()
 }
 
 pub(super) type Bucket = FileBucket<TokioLocalFs, TokioClock, Validator>;

@@ -408,6 +408,13 @@ impl ContentValidator for SchemaValidator {
         }
         Ok(())
     }
+
+    fn chunk_requirements(
+        &self,
+        upload: &MetaUpload<'_>,
+    ) -> Result<Vec<crate::store::ChunkRequirement>, StoreFailure> {
+        super::tests::manifest_requirements(upload, &self.profile)
+    }
 }
 
 #[tokio::test]
