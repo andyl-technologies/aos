@@ -2,8 +2,8 @@
 
 use super::{
     PACKAGE_PROVENANCE_TRANSPARENCY_LOG, PackageProvenanceTransparencyLogEntry,
-    append_package_provenance_transparency_log, bind_documentation_provenance,
-    publish_provenance_ref, read_package_provenance_transparency_log_state,
+    append_package_provenance_transparency_log, publish_provenance_ref,
+    read_package_provenance_transparency_log_state,
 };
 use crate::registry_ops::git::{commit_registry_paths, git};
 use crate::registry_ops::provenance::staged::validate_staged_package_provenance_transparency_log;
@@ -14,7 +14,6 @@ use crate::registry_ops::test_support::{
     signed_provenance_statement, write_sample_package_toml, write_sample_provenance_artifact,
     write_sample_store_record,
 };
-use crate::types::{AttestationMeta, DocumentationArtifactMeta};
 use anyhow::Result;
 use serde_json::Value;
 use std::fs;
@@ -35,68 +34,6 @@ fn publish_provenance_paths_are_platform_scoped() {
     assert_ne!(x86, arm);
     assert!(x86.contains("/x86_64-linux/"));
     assert!(arm.contains("/aarch64-linux/"));
-}
-
-#[test]
-fn documented_provenance_paths_change_with_the_documentation_nar() {
-    let measurement = crate::package_attestation::package_measurement_digest(
-        "webapp",
-        "1.0.0",
-        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-        "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-    );
-    let attestation = AttestationMeta {
-        root_digest: Some(
-            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
-        ),
-        measurement: Some(measurement),
-        ..AttestationMeta::default()
-    };
-    let documentation = |nar_hash: &str| DocumentationArtifactMeta {
-        format: aos_doc_model::DOCUMENT_FORMAT.to_string(),
-        store_path: "/nix/store/0000000000000000000000000000000e-webapp-docs.json".to_string(),
-        nar_hash: nar_hash.to_string(),
-        nar_size: 512,
-        document_sha256: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-            .to_string(),
-        document_size: 384,
-        semantic_schema_sha256:
-            "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string(),
-        references: vec![],
-    };
-
-    let first = bind_documentation_provenance(
-        attestation.clone(),
-        "webapp",
-        "x86_64-linux",
-        &documentation("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-    )
-    .unwrap();
-    let second = bind_documentation_provenance(
-        attestation,
-        "webapp",
-        "x86_64-linux",
-        &documentation("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-    )
-    .unwrap();
-
-    assert_ne!(first.provenance, second.provenance);
-    assert!(
-        first
-            .provenance
-            .as_deref()
-            .is_some_and(|path| path.ends_with(
-                "-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.intoto.jsonl"
-            ))
-    );
-    assert!(
-        second
-            .provenance
-            .as_deref()
-            .is_some_and(|path| path.ends_with(
-                "-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.intoto.jsonl"
-            ))
-    );
 }
 
 #[test]

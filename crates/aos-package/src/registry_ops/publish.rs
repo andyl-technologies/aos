@@ -1,45 +1,24 @@
 //! Package publication orchestration and its exclusive authoring-clone lock.
 
 use crate::config::ApmConfig;
-use crate::package_contract::{
-    PackageContractCoordinate, ability_provenance_statement, canonical_nar_hash,
-    contract_retention_digest,
-};
-use crate::provenance::{ProvenanceSigner, sign_statement_dsse_jsonl_external};
-use crate::registry::parse::parse_package_file;
+use crate::provenance::ProvenanceSigner;
 use crate::registry::{objectstore, store};
-use crate::registry_ops::attestation::publish_documentation_attestation_meta;
 use crate::registry_ops::config::{format_size, registry_content_addressed, resolve_registry_name};
-use crate::registry_ops::documentation::publish_package_documentation;
 use crate::registry_ops::git::{
     commit_registry_paths, current_git_head, refresh_registry_object_store,
 };
 use crate::registry_ops::images::{PublishedImage, inspect_published_image};
-use crate::registry_ops::metadata::{
-    build_package_toml, record_named_output, record_package_contract, record_package_documentation,
-};
-use crate::registry_ops::package_contract::{
-    PackageContractSelectorRegistry, resolve_release_projection, resolve_store_artifact,
-};
-use crate::registry_ops::package_contract_transparency::append_package_contract_transparency_log;
-use crate::registry_ops::provenance::{
-    append_package_provenance_transparency_log, bind_documentation_provenance,
-    publish_documentation_provenance_artifact, validate_external_provenance_signer,
-};
+use crate::registry_ops::metadata::{build_package_toml, record_named_output};
+use crate::registry_ops::provenance::validate_external_provenance_signer;
 use crate::registry_ops::signing::resolve_producer_signing_key;
 use crate::registry_ops::store_paths::{
     first_letter, introspect_deriver, introspect_store_path, parse_store_path,
     resolve_publish_platform, validate_store_path_release_policy, write_store_files,
 };
 use crate::registry_ops::workflow::{current_git_branch, git_branch_entries};
-use crate::types::{
-    PackageContractDocumentMeta, PackageContractMeta, validate_package_name, validate_registry_name,
-};
+use crate::types::{validate_package_name, validate_registry_name};
 use anyhow::{Context, Result, bail};
-use aos_ability_model::VersionedDocument;
-use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
-use std::collections::BTreeSet;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -50,7 +29,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Ordinary package publication selects the exact primary output from the
 /// target's evaluated derivation inventory. Package metadata, generated
-/// documentation, named outputs, and any package contract are authored from
+/// documentation and named outputs are authored from
 /// that one record and committed atomically with the complete realization
 /// graph.
 ///
@@ -195,7 +174,7 @@ pub(crate) async fn publish_to_registry_directory(
     message: Option<&str>,
     key: Option<&str>,
     key_id: Option<&str>,
-    _external_provenance_signer: Option<&mut dyn ProvenanceSigner>,
+    external_provenance_signer: Option<&mut dyn ProvenanceSigner>,
     printer: &Printer,
 ) -> Result<()> {
     let description = required_publish_metadata(description, "--description", "No description")?;
@@ -204,6 +183,9 @@ pub(crate) async fn publish_to_registry_directory(
 
     validate_registry_name(name)?;
     ensure_writable_registry_clone(name, dir)?;
+    if let Some(signer) = external_provenance_signer.as_deref() {
+        validate_external_provenance_signer(dir, signer)?;
+    }
     if let Some(name) = name_override {
         validate_package_name(name)?;
     }
@@ -521,9 +503,9 @@ pub(crate) async fn publish_canonical_release_entry(
 
 /// Retains one supplemental output for an already-authored canonical entry.
 ///
-/// The primary `out` publication owns package metadata, documentation, and
-/// provenance. This operation adds only the named path binding and its complete
-/// realisation graph.
+/// Adds the named path binding and its complete realization graph. Native
+/// companions and output-specific provenance are authored after every payload
+/// path is recorded, before the atomic publication commits.
 ///
 /// # Errors
 ///
@@ -566,280 +548,6 @@ pub(crate) fn publish_canonical_named_output(
     write_store_files(dir, &info.path, content_addressed, false, printer).with_context(|| {
         format!("writing store/ realisation graph for named output {store_path}")
     })?;
-    Ok(())
-}
-
-/// Publishes and signs the canonical RFC-0022 signed package ability publication output.
-///
-/// The operation decodes `package.json` canonically, binds it to the exact
-/// primary package coordinate, inventories every distinct artifact's complete
-/// Nix closure, signs a dedicated provenance statement, and records both the
-/// named output and fail-closed feature gates.
-///
-/// # Errors
-///
-/// Returns an error when the primary coordinate is absent, any store or
-/// manifest identity disagrees, closure introspection is incomplete, signing
-/// fails, or registry metadata/store-graph authoring fails.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn publish_package_contract(
-    dir: &Path,
-    registry: &str,
-    store_path: &str,
-    package: &str,
-    version: &str,
-    platform: &str,
-    selectors: &PackageContractSelectorRegistry,
-    provenance_signer: &mut dyn ProvenanceSigner,
-    printer: &Printer,
-) -> Result<()> {
-    validate_registry_name(registry)?;
-    validate_package_name(package)?;
-    ensure_writable_registry_clone(registry, dir)?;
-    validate_external_provenance_signer(dir, provenance_signer)?;
-
-    let projection = introspect_store_path(store_path)?;
-    validate_store_path_release_policy(&projection)?;
-    resolve_publish_platform(&projection.path, Some(platform))?;
-    if !projection.references.is_empty() {
-        bail!("package contract document must be reference-free");
-    }
-    let projection_bytes = crate::package_contract::read_package_manifest(&projection.path)?;
-
-    let letter = first_letter(package);
-    let toml_path = dir
-        .join("packages")
-        .join(letter)
-        .join(format!("{package}.toml"));
-    let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
-    let content = fs::read_to_string(&toml_path)
-        .with_context(|| format!("reading primary package entry {}", toml_path.display()))?;
-    let parsed = parse_package_file(&content)?;
-    let mut versions = parsed
-        .versions
-        .iter()
-        .filter(|candidate| candidate.version == version);
-    let version_entry = versions
-        .next()
-        .with_context(|| format!("package {package} is missing version {version}"))?;
-    if versions.next().is_some() {
-        bail!("package {package} repeats version {version}");
-    }
-    let platform_entry = version_entry
-        .platforms
-        .get(platform)
-        .with_context(|| format!("package {package} {version} is missing platform {platform}"))?;
-    let primary_path = &platform_entry.store_path;
-    let primary = introspect_store_path(primary_path)?;
-    validate_store_path_release_policy(&primary)?;
-    let primary_nar_hash = canonical_nar_hash(&primary.nar_hash)?;
-    let payload = resolve_store_artifact(&primary.path)?;
-    let source_info = introspect_store_path(&platform_entry.source_drv)?;
-    validate_store_path_release_policy(&source_info)?;
-    let source = resolve_store_artifact(&platform_entry.source_drv)?;
-    let (package_document, interface_bytes, selector_bindings) = resolve_release_projection(
-        &projection.path,
-        package,
-        version,
-        platform,
-        &primary.path,
-        &platform_entry.source_drv,
-        selectors,
-    )?;
-    let manifest_bytes = aos_ability_model::encode_canonical(&package_document)?;
-    let checked = aos_ability_validate::validate_ability_contract(
-        aos_ability_validate::AbilityContractData::PackageSource {
-            manifest: &manifest_bytes,
-            retained_interfaces: &interface_bytes,
-        },
-    )
-    .context("validating the resolved package contract")?;
-    let aos_ability_validate::CheckedAbilityContract::PackageSource(checked) = checked else {
-        bail!("resolved package contract returned another contract family");
-    };
-    let ability_reference = aos_doc_model::PackageAbilityReference::from_checked_contract(&checked)
-        .context("deriving the signed package reference from the checked contract")?;
-    let documentation = publish_package_documentation(
-        package,
-        version,
-        platform,
-        &parsed.package.description,
-        parsed.package.homepage.as_deref(),
-        &parsed.package.license,
-        &primary,
-        Some(&source_info),
-        ability_reference,
-    )?;
-    let documentation_attestation = bind_documentation_provenance(
-        publish_documentation_attestation_meta(package, version, platform, &primary)?,
-        package,
-        platform,
-        &documentation.metadata,
-    )?;
-    let documentation_provenance = publish_documentation_provenance_artifact(
-        registry,
-        package,
-        version,
-        platform,
-        &primary,
-        Some(&source_info),
-        &documentation.metadata,
-        &documentation_attestation,
-        provenance_signer,
-    )
-    .await?;
-
-    let package_digest = package_document.content_digest()?;
-    let mut contract = PackageContractMeta {
-        document: PackageContractDocumentMeta {
-            store_path: projection.path.clone(),
-            nar_hash: canonical_nar_hash(&projection.nar_hash)?,
-            nar_size: projection.nar_size,
-            document_sha256: Sha256Digest::of_bytes(&projection_bytes).to_string(),
-            document_size: projection_bytes.len() as u64,
-            references: Vec::new(),
-        },
-        payload: payload.retention,
-        source: source.retention,
-        selectors: selector_bindings,
-        provenance: "provenance/pending.contract.intoto.jsonl".to_string(),
-    };
-    let retention_digest = contract_retention_digest(&contract)?;
-    contract.provenance = format!(
-        "provenance/{}/{package}/{platform}/{}-{}.contract.intoto.jsonl",
-        first_letter(package),
-        package_digest.hex(),
-        retention_digest.hex()
-    );
-    crate::package_contract::validate_package_contract_meta(&contract)?;
-
-    let coordinate = PackageContractCoordinate {
-        name: package,
-        version,
-        platform,
-        store_path: &primary.path,
-        nar_hash: &primary_nar_hash,
-    };
-    let statement =
-        ability_provenance_statement(&coordinate, &contract, registry, provenance_signer.key_id())?;
-    let provenance_jsonl =
-        sign_statement_dsse_jsonl_external(&statement, provenance_signer).await?;
-    let content = record_package_documentation(
-        &content,
-        package,
-        version,
-        platform,
-        &documentation.metadata,
-        &documentation_attestation,
-    )?;
-    let new_content = record_package_contract(
-        &content,
-        package,
-        version,
-        platform,
-        &contract,
-        &package_document,
-    )?;
-
-    fs::write(&toml_path, new_content)
-        .with_context(|| format!("writing package contract to {}", toml_path.display()))?;
-    let provenance_path = dir.join(&contract.provenance);
-    let provenance_parent = provenance_path.parent().with_context(|| {
-        format!(
-            "package contract provenance path has no parent: {}",
-            provenance_path.display()
-        )
-    })?;
-    fs::create_dir_all(provenance_parent).with_context(|| {
-        format!(
-            "creating package contract provenance directory {}",
-            provenance_parent.display()
-        )
-    })?;
-    fs::write(&provenance_path, &provenance_jsonl).with_context(|| {
-        format!(
-            "writing package contract provenance {}",
-            provenance_path.display()
-        )
-    })?;
-    let documentation_provenance_path = dir.join(&documentation_provenance.path);
-    let documentation_provenance_parent =
-        documentation_provenance_path.parent().with_context(|| {
-            format!(
-                "package reference provenance path has no parent: {}",
-                documentation_provenance_path.display()
-            )
-        })?;
-    fs::create_dir_all(documentation_provenance_parent).with_context(|| {
-        format!(
-            "creating package reference provenance directory {}",
-            documentation_provenance_parent.display()
-        )
-    })?;
-    fs::write(
-        &documentation_provenance_path,
-        &documentation_provenance.jsonl,
-    )
-    .with_context(|| {
-        format!(
-            "writing package reference provenance {}",
-            documentation_provenance_path.display()
-        )
-    })?;
-    append_package_contract_transparency_log(
-        dir,
-        package,
-        version,
-        platform,
-        &package_digest.to_string(),
-        &retention_digest.to_string(),
-        &contract.provenance,
-        provenance_jsonl.as_bytes(),
-    )?;
-
-    let content_addressed = registry_content_addressed(dir);
-    write_store_files(
-        dir,
-        &documentation.info.path,
-        content_addressed,
-        false,
-        printer,
-    )
-    .with_context(|| {
-        format!(
-            "writing store/ realisation graph for package reference {}",
-            documentation.info.path
-        )
-    })?;
-    append_package_provenance_transparency_log(
-        dir,
-        package,
-        version,
-        platform,
-        &primary,
-        Some(&source_info),
-        &documentation_provenance,
-        &documentation_provenance_path,
-    )?;
-    write_store_files(dir, &projection.path, content_addressed, false, printer).with_context(
-        || format!("writing store/ realisation graph for package contract {store_path}"),
-    )?;
-    let mut retained_paths = BTreeSet::new();
-    for artifact in std::iter::once(&contract.payload)
-        .chain(std::iter::once(&contract.source))
-        .chain(contract.selectors.iter().map(|selector| &selector.artifact))
-    {
-        if !retained_paths.insert(&artifact.store_path) {
-            continue;
-        }
-        write_store_files(dir, &artifact.store_path, content_addressed, false, printer)
-            .with_context(|| {
-                format!(
-                    "writing store/ realisation graph for package contract artifact {}",
-                    artifact.store_path
-                )
-            })?;
-    }
     Ok(())
 }
 

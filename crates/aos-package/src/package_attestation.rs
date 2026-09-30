@@ -541,7 +541,7 @@ fn measurement_events(root: &Path, installed: &[InstalledMeta]) -> Result<Vec<Me
         let Some(apm) = entry.apm.as_ref() else {
             continue;
         };
-        if !apm.explicit || apm.contract.is_none() {
+        if !apm.explicit || apm.deployment.is_none() {
             continue;
         }
         packages.push(measured_package(root, entry, apm)?);
@@ -564,7 +564,11 @@ fn measurement_events(root: &Path, installed: &[InstalledMeta]) -> Result<Vec<Me
 }
 
 #[cfg(test)]
-fn measured_package(_root: &Path, _entry: &InstalledMeta, apm: &ApmMeta) -> Result<MeasuredPackage> {
+fn measured_package(
+    _root: &Path,
+    _entry: &InstalledMeta,
+    apm: &ApmMeta,
+) -> Result<MeasuredPackage> {
     let root_digest = package_root_digest(apm)?;
     let manifest_digest = package_manifest_digest(apm)?;
     let package = MeasuredPackage {
@@ -595,27 +599,55 @@ fn measured_package(_root: &Path, _entry: &InstalledMeta, apm: &ApmMeta) -> Resu
 
 #[cfg(test)]
 fn package_root_digest(apm: &ApmMeta) -> Result<String> {
-    let contract = apm.contract.as_ref().with_context(|| {
+    let root = apm.attestation.root_digest.as_ref().with_context(|| {
         format!(
-            "package '{}' has no authenticated package contract",
+            "package '{}' has no authenticated payload root digest",
             apm.name
         )
     })?;
-    Ok(format!(
-        "sha256:{}",
-        aos_registry_surface::store::canonical_digest_hex(&contract.payload.nar_hash)?,
-    ))
+    Ok(aos_contract::Sha256Digest::parse(root)?.to_string())
 }
 
 #[cfg(test)]
 fn package_manifest_digest(apm: &ApmMeta) -> Result<String> {
-    let contract = apm.contract.as_ref().with_context(|| {
+    let deployment = apm.deployment.as_ref().with_context(|| {
         format!(
-            "package '{}' has no authenticated package contract",
+            "package '{}' has no authenticated native deployment envelope",
             apm.name
         )
     })?;
-    Ok(canonical_digest(&contract.document.document_sha256))
+    native_package_binding_digest(
+        deployment,
+        apm.module_documentation.as_ref(),
+        apm.qualification.as_ref(),
+    )
+}
+
+/// Commits to the exact native companions used in a package measurement.
+///
+/// # Errors
+/// Rejects invalid native locators or failed canonical document encoding.
+pub(crate) fn native_package_binding_digest(
+    deployment: &crate::types::NativeArtifactMeta,
+    documentation: Option<&crate::types::NativeArtifactMeta>,
+    qualification: Option<&crate::types::NativeArtifactMeta>,
+) -> Result<String> {
+    deployment.validate()?;
+    for companion in [documentation, qualification].into_iter().flatten() {
+        companion.validate()?;
+    }
+    if documentation.is_none() && qualification.is_none() {
+        return Ok(deployment.document_sha256.clone());
+    }
+
+    // Optional authenticated companions participate in the package identity;
+    // their locators retain exact NAR and document commitments independently.
+    let canonical = aos_contract::canonical::to_vec(&serde_json::json!({
+        "deployment": deployment,
+        "documentation": documentation,
+        "qualification": qualification,
+    }))?;
+    Ok(aos_contract::Sha256Digest::of_bytes(&canonical).to_string())
 }
 
 /// Returns the RFC-0001 golden package measurement tuple digest.
@@ -802,12 +834,18 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
                     serde_json::from_str(&record.event).with_context(|| {
                         format!("parsing generation attestation event on line {}", index + 1)
                     })?;
+                let sequence = value.get("sequence").and_then(serde_json::Value::as_u64);
+                let content = value.get("content").and_then(serde_json::Value::as_str);
+                let expected_generation = match (sequence, content) {
+                    (Some(sequence), Some(content)) if sequence > 0 => {
+                        aos_contract::Sha256Digest::parse(content)?;
+                        Some(format!("{sequence}:{content}"))
+                    }
+                    _ => None,
+                };
                 if value.get("schema").and_then(serde_json::Value::as_str)
-                    != Some("aos.gen-attestation/v1")
-                    || value
-                        .get("generation_id")
-                        .and_then(serde_json::Value::as_str)
-                        != Some(generation_id)
+                    != Some(crate::attestation::native::GENERATION_SCHEMA)
+                    || expected_generation.as_deref() != Some(generation_id)
                     || value
                         .get("activation_id")
                         .and_then(serde_json::Value::as_str)
@@ -818,11 +856,9 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
                         index + 1
                     );
                 }
-                // `GenAttestation.quote` skips serialization while empty, so
-                // the measured pre-quote record normally omits the field. An
-                // explicit empty string is accepted for older CEL producers;
-                // any non-empty or non-string value would measure quote bytes
-                // into the record they are meant to authenticate.
+                // Native evidence measures the record before attaching quote
+                // bytes. A nonempty quote would authenticate itself and must
+                // never enter the generation's measured CEL record.
                 if value
                     .get("quote")
                     .is_some_and(|quote| quote.as_str() != Some(""))
@@ -2633,20 +2669,20 @@ fn digest_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::types::{
-        ApmMeta, AttestationMeta, InstalledMeta, PACKAGE_META_FORMAT, PackageContractArtifactMeta,
-        PackageContractDocumentMeta, PackageContractMeta, PackageMeta,
+        ApmMeta, AttestationMeta, InstalledMeta, NativeArtifactMeta, PACKAGE_META_FORMAT,
+        PackageMeta,
     };
     use tempfile::TempDir;
 
     fn installed_fixture(manifest: &[u8]) -> InstalledMeta {
         let document_digest = package_manifest_digest_bytes(manifest);
-        let retained_artifact = PackageContractArtifactMeta {
-            content: format!("sha256:{}", "c".repeat(64)),
-            store_path: "/nix/store/hash-web-1.0".into(),
+        let deployment = NativeArtifactMeta {
+            store_path: format!("/nix/store/{}-web-deployment", "0".repeat(32)),
             nar_hash: format!("sha256:{}", "a".repeat(64)),
-            nar_size: 1,
-            closure_digest: format!("sha256:{}", "d".repeat(64)),
-            closure: Vec::new(),
+            nar_size: manifest.len() as u64,
+            document_sha256: document_digest,
+            document_size: manifest.len() as u64,
+            references: Vec::new(),
         };
         InstalledMeta {
             store_path: "/nix/store/hash-web-1.0".into(),
@@ -2665,22 +2701,13 @@ mod tests {
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: "sha256:nar".into(),
-                documentation: None,
-                contract: Some(PackageContractMeta {
-                    document: PackageContractDocumentMeta {
-                        store_path: "/nix/store/hash-web-contract".into(),
-                        nar_hash: "sha256:contract".into(),
-                        nar_size: manifest.len() as u64,
-                        document_sha256: document_digest,
-                        document_size: manifest.len() as u64,
-                        references: Vec::new(),
-                    },
-                    payload: retained_artifact.clone(),
-                    source: retained_artifact,
-                    selectors: Vec::new(),
-                    provenance: "provenance/web.contract.intoto.jsonl".into(),
-                }),
-                attestation: Default::default(),
+                deployment: Some(deployment),
+                module_documentation: None,
+                qualification: None,
+                attestation: AttestationMeta {
+                    root_digest: Some(format!("sha256:{}", "a".repeat(64))),
+                    ..Default::default()
+                },
             }),
         }
     }
@@ -2695,6 +2722,7 @@ mod tests {
 
     fn catalog_meta(root_hash: &str, measurement: &str) -> PackageMeta {
         PackageMeta {
+            named_outputs: Default::default(),
             name: "web".into(),
             version: "1.0".into(),
             description: "Web package".into(),
@@ -2714,8 +2742,9 @@ mod tests {
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: vec!["attestation-v1".into()],
-            documentation: None,
-            contract: None,
+            deployment: None,
+            module_documentation: None,
+            qualification: None,
             attestation: AttestationMeta {
                 root_digest: Some(root_hash.into()),
                 root_hash: Some(root_hash.into()),
@@ -2828,9 +2857,17 @@ mod tests {
     }
 
     #[test]
-    fn package_measurement_uses_authenticated_contract_payload_digest() {
+    fn package_measurement_uses_authenticated_payload_root_digest() {
         let tmp = TempDir::new().expect("tempdir");
-        let installed = installed_fixture(br#"{"package":"web","network":"private"}"#);
+        let mut installed = installed_fixture(br#"{"package":"web","network":"private"}"#);
+        installed
+            .apm
+            .as_mut()
+            .unwrap()
+            .deployment
+            .as_mut()
+            .unwrap()
+            .nar_hash = format!("sha256:{}", "b".repeat(64));
         let expected_root_digest =
             package_root_digest(installed.apm.as_ref().expect("apm metadata"))
                 .expect("package root digest");
@@ -2842,6 +2879,40 @@ mod tests {
         assert_eq!(events[0].package_count, Some(1));
         let package = events[1].package.as_ref().expect("package event");
         assert_eq!(package.root_digest, expected_root_digest);
+        assert_eq!(package.root_digest, format!("sha256:{}", "a".repeat(64)));
+    }
+
+    #[test]
+    fn native_companion_commitments_change_package_measurements() {
+        let baseline = installed_fixture(br#"{"package":"web"}"#);
+        let baseline_apm = baseline.apm.as_ref().unwrap();
+        let original = package_manifest_digest(baseline_apm).unwrap();
+        let companion = NativeArtifactMeta {
+            store_path: format!("/nix/store/{}-web-companion", "1".repeat(32)),
+            nar_hash: format!("sha256:{}", "c".repeat(64)),
+            nar_size: 100,
+            document_sha256: format!("sha256:{}", "d".repeat(64)),
+            document_size: 50,
+            references: Vec::new(),
+        };
+
+        let mut with_docs = baseline_apm.clone();
+        with_docs.module_documentation = Some(companion.clone());
+        let mut with_qualification = baseline_apm.clone();
+        with_qualification.qualification = Some(companion);
+
+        let docs_digest = package_manifest_digest(&with_docs).unwrap();
+        let qualification_digest = package_manifest_digest(&with_qualification).unwrap();
+        assert_ne!(original, docs_digest);
+        assert_ne!(original, qualification_digest);
+        assert_ne!(docs_digest, qualification_digest);
+
+        with_qualification
+            .qualification
+            .as_mut()
+            .unwrap()
+            .document_sha256 = "invalid".into();
+        assert!(package_manifest_digest(&with_qualification).is_err());
     }
 
     #[test]
@@ -3002,9 +3073,11 @@ mod tests {
         append_event_log(tmp.path(), &events).expect("append log");
         let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
-        let catalog =
-            package_measurement_catalog_from_package_meta(&[catalog_meta(&root_hash, &measurement)])
-                .expect("catalog");
+        let catalog = package_measurement_catalog_from_package_meta(&[catalog_meta(
+            &root_hash,
+            &measurement,
+        )])
+        .expect("catalog");
 
         let verified = verify_package_event_log_against_measurement_catalog(
             &log,
@@ -3046,11 +3119,14 @@ mod tests {
     #[test]
     fn generation_attestation_event_is_replayable_and_identity_bound() {
         let tmp = TempDir::new().expect("tempdir");
+        let generation_id = format!("1:sha256:{}", "c".repeat(64));
         let record = serde_json::json!({
-            "schema": "aos.gen-attestation/v1",
+            "schema": crate::attestation::native::GENERATION_SCHEMA,
             "activation_id": format!("sha256:{}", "a".repeat(64)),
-            "generation_id": "sha256:generation",
-            "manifest_hash": "sha256:manifest",
+            "sequence": 1,
+            "profile_generation": 1,
+            "content": format!("sha256:{}", "c".repeat(64)),
+            "evaluation_sha256": "sha256:manifest",
             "inputs": {},
             "eval_mode": "pure-eval",
             "quote_status": "quoted"
@@ -3063,7 +3139,7 @@ mod tests {
         assert!(
             !measure_generation_attestation(
                 tmp.path(),
-                "sha256:generation",
+                &generation_id,
                 &activation_a,
                 canonical.as_bytes(),
             )
@@ -3072,7 +3148,7 @@ mod tests {
         assert!(
             !measure_generation_attestation(
                 tmp.path(),
-                "sha256:generation",
+                &generation_id,
                 &activation_a,
                 canonical.as_bytes(),
             )
@@ -3092,7 +3168,7 @@ mod tests {
             pcr_value: None,
             package: None,
             package_count: None,
-            generation_id: Some("sha256:generation".to_string()),
+            generation_id: Some(generation_id.clone()),
             activation_id: Some(activation_a.clone()),
         };
         let recovery = generation_measurement_recovery(tmp.path(), &recovery_event)
@@ -3116,7 +3192,7 @@ mod tests {
         let conflicting = canonical.replace("sha256:manifest", "sha256:other");
         let error = measure_generation_attestation(
             tmp.path(),
-            "sha256:generation",
+            &generation_id,
             &activation_a,
             conflicting.as_bytes(),
         )
@@ -3128,7 +3204,7 @@ mod tests {
         assert!(
             !measure_generation_attestation(
                 tmp.path(),
-                "sha256:generation",
+                &generation_id,
                 &activation_b,
                 second.as_bytes(),
             )

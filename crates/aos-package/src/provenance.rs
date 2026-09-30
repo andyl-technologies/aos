@@ -41,8 +41,6 @@ pub(crate) struct TrustedProvenanceKey {
     pub key: String,
     /// First transparency sequence that must not trust this key, if retired.
     pub retired_before_sequence: Option<u64>,
-    /// First package-contract publication sequence rejected for this key.
-    pub package_contract_retired_before_sequence: Option<u64>,
 }
 
 /// Returns an in-toto digest map for an AOS/Nix digest string.
@@ -550,34 +548,6 @@ pub(crate) fn verify_key_allowed_for_transparency_sequence(
     Ok(())
 }
 
-/// Verifies that a provenance key may sign a package-contract sequence.
-pub(crate) fn verify_key_allowed_for_package_contract_sequence(
-    trusted_keys: &[TrustedProvenanceKey],
-    key_id: &str,
-    sequence: u64,
-) -> Result<()> {
-    let trusted_by_id = trusted_provenance_keys_by_id(trusted_keys)?;
-    let trusted = trusted_by_id
-        .get(key_id)
-        .with_context(|| format!("package contract key id '{key_id}' is not trusted"))?;
-    if trusted.retired_before_sequence.is_none() {
-        return Ok(());
-    }
-    let retired_before_sequence = trusted
-        .package_contract_retired_before_sequence
-        .with_context(|| {
-            format!(
-                "retired package contract key id '{key_id}' has no contract retirement boundary"
-            )
-        })?;
-    if sequence >= retired_before_sequence {
-        bail!(
-            "package contract key id '{key_id}' was retired before contract sequence {retired_before_sequence}; entry sequence {sequence} is not trusted"
-        );
-    }
-    Ok(())
-}
-
 /// Verifies the package provenance transparency log hash chain.
 ///
 /// # Errors
@@ -983,7 +953,6 @@ mod tests {
                 key_id: KEY_ID.to_string(),
                 key: self.trusted_key.clone(),
                 retired_before_sequence: None,
-                package_contract_retired_before_sequence: None,
             }]
         }
     }
@@ -1066,6 +1035,7 @@ mod tests {
         );
         let measurement_hex = measurement.trim_start_matches("sha256:");
         PackageMeta {
+            named_outputs: Default::default(),
             name: "webapp".to_string(),
             version: "1.0.0".to_string(),
             description: String::new(),
@@ -1085,8 +1055,9 @@ mod tests {
             images: Vec::new(),
             min_format: None,
             requires_features: Vec::new(),
-            documentation: None,
-            contract: None,
+            deployment: None,
+            module_documentation: None,
+            qualification: None,
             attestation: AttestationMeta {
                 root_digest: Some(ROOT_HASH.to_string()),
                 root_hash: Some(ROOT_HASH.to_string()),
@@ -1311,7 +1282,6 @@ mod tests {
             key_id: "alias".to_string(),
             key: key.trusted_key.clone(),
             retired_before_sequence: None,
-            package_contract_retired_before_sequence: None,
         });
 
         let err = verify_statement_dsse_jsonl(&statement, &trusted).unwrap_err();
@@ -1326,18 +1296,12 @@ mod tests {
             key_id: KEY_ID.to_string(),
             key: key.trusted_key.clone(),
             retired_before_sequence: Some(3),
-            package_contract_retired_before_sequence: Some(5),
         }];
 
         verify_key_allowed_for_transparency_sequence(&trusted, KEY_ID, 2).unwrap();
         let err = verify_key_allowed_for_transparency_sequence(&trusted, KEY_ID, 3).unwrap_err();
 
         assert!(format!("{err:#}").contains("was retired before transparency sequence 3"));
-
-        verify_key_allowed_for_package_contract_sequence(&trusted, KEY_ID, 4).unwrap();
-        let err =
-            verify_key_allowed_for_package_contract_sequence(&trusted, KEY_ID, 5).unwrap_err();
-        assert!(format!("{err:#}").contains("was retired before contract sequence 5"));
     }
 
     #[test]

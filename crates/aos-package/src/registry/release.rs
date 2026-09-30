@@ -52,6 +52,13 @@ pub struct RegistryReleaseEntry {
     pub store_path: String,
 }
 
+fn is_native_companion(output: &str) -> bool {
+    matches!(
+        output,
+        "deploymentArtifact" | "documentationArtifact" | "qualificationArtifact"
+    ) || output.starts_with("deploymentArtifact.")
+}
+
 fn default_output_name() -> String {
     "out".to_string()
 }
@@ -75,7 +82,7 @@ pub struct CanonicalRegistryEntryAuthor<'a> {
     config: &'a ApmConfig,
     registry: &'a str,
     publications: &'a BTreeMap<String, RegistryPackagePublication>,
-    selectors: crate::registry_ops::PackageContractSelectorRegistry,
+    entries: Vec<RegistryReleaseEntry>,
     signer: &'a mut dyn ProvenanceSigner,
     printer: &'a aos_core::output::Printer,
 }
@@ -95,7 +102,7 @@ impl<'a> CanonicalRegistryEntryAuthor<'a> {
             config,
             registry,
             publications,
-            selectors: crate::registry_ops::PackageContractSelectorRegistry::new(entries),
+            entries: entries.to_vec(),
             signer,
             printer,
         }
@@ -109,20 +116,116 @@ impl RegistryEntryAuthor for CanonicalRegistryEntryAuthor<'_> {
         isolated_registry: &Path,
         entry: &RegistryReleaseEntry,
     ) -> Result<()> {
-        if entry.output == crate::types::PACKAGE_CONTRACT_OUTPUT {
-            return crate::registry_ops::publish_package_contract(
+        if is_native_companion(&entry.output) {
+            let coordinate = self
+                .entries
+                .iter()
+                .filter(|candidate| {
+                    candidate.name == entry.name
+                        && candidate.version == entry.version
+                        && candidate.platform == entry.platform
+                })
+                .collect::<Vec<_>>();
+            let selected_output = entry
+                .output
+                .strip_prefix("deploymentArtifact.")
+                .unwrap_or("out");
+            let deployment_output = if selected_output == "out" {
+                "deploymentArtifact".to_string()
+            } else {
+                format!("deploymentArtifact.{selected_output}")
+            };
+            let deployment = coordinate
+                .iter()
+                .find(|candidate| candidate.output == deployment_output)
+                .context("native release documentation lacks its deployment artifact")?;
+            let documentation = coordinate
+                .iter()
+                .find(|candidate| candidate.output == "documentationArtifact");
+            let qualification = coordinate
+                .iter()
+                .find(|candidate| candidate.output == "qualificationArtifact");
+            let outputs = coordinate
+                .iter()
+                .filter(|candidate| {
+                    !is_native_companion(&candidate.output) && candidate.output != "module"
+                })
+                .map(|candidate| (candidate.output.clone(), candidate.store_path.clone()))
+                .collect();
+            crate::registry_ops::publish_native_documents(
                 isolated_registry,
-                self.registry,
-                &entry.store_path,
                 &entry.name,
                 &entry.version,
                 &entry.platform,
-                &self.selectors,
-                self.signer,
+                &outputs,
+                &deployment.store_path,
+                documentation.map(|candidate| candidate.store_path.as_str()),
+                qualification.map(|candidate| candidate.store_path.as_str()),
                 self.printer,
-            )
-            .await
-            .with_context(|| format!("authoring ability release entry '{}'", entry.id));
+            )?;
+            if entry.output.starts_with("deploymentArtifact") {
+                crate::registry_ops::publish_output_evidence(
+                    isolated_registry,
+                    self.registry,
+                    &entry.name,
+                    &entry.version,
+                    &entry.platform,
+                    selected_output,
+                    self.signer,
+                )
+                .await?;
+            }
+            let path = isolated_registry
+                .join("packages")
+                .join(crate::types::package_name_bucket(&entry.name))
+                .join(format!("{}.toml", entry.name));
+            let content = fs::read_to_string(&path)?;
+            let package = aos_registry_surface::manifest::parse_package_file(&content)?;
+            if let Some(metadata) = package
+                .versions
+                .iter()
+                .find(|version| version.version == entry.version)
+                .and_then(|version| version.platforms.get(&entry.platform))
+                .and_then(|platform| platform.qualification.as_ref())
+            {
+                let document = crate::native_artifact::read_qualification(
+                    metadata,
+                    &entry.name,
+                    &entry.version,
+                )?;
+                for binding in document.artifacts() {
+                    let candidates = self
+                        .entries
+                        .iter()
+                        .filter(|candidate| {
+                            candidate.name == binding.selector.package
+                                && candidate.output == binding.selector.output
+                                && candidate.platform == entry.platform
+                        })
+                        .collect::<Vec<_>>();
+                    // Dependencies retained only through the companion NAR are
+                    // already fixed by its evaluated selector bindings. Explicit
+                    // release entries must agree with those same frozen roots.
+                    if !candidates.is_empty() {
+                        anyhow::ensure!(
+                            candidates
+                                .iter()
+                                .all(|candidate| candidate.store_path == binding.path),
+                            "qualification selector differs from the frozen release output"
+                        );
+                    }
+                }
+            }
+            let content = crate::registry_ops::record_named_output(
+                &content,
+                &entry.name,
+                &entry.version,
+                &entry.platform,
+                &entry.output,
+                &entry.store_path,
+            )?;
+            fs::write(&path, content)?;
+            return Ok(());
         }
         if entry.output != "out" {
             return crate::registry_ops::publish_canonical_named_output(
@@ -645,8 +748,17 @@ async fn prepare_registry(
     }
     for ((name, version, platform), mut entries) in entry_groups {
         entries.sort_by(|left, right| {
-            (left.output != "out", left.output.as_str())
-                .cmp(&(right.output != "out", right.output.as_str()))
+            let order = |output: &str| {
+                if output == "out" {
+                    0
+                } else if is_native_companion(output) {
+                    2
+                } else {
+                    1
+                }
+            };
+            (order(&left.output), left.output.as_str())
+                .cmp(&(order(&right.output), right.output.as_str()))
         });
         for entry in entries {
             author
@@ -1171,10 +1283,45 @@ fn validate_materialized_entries(directory: &Path, entries: &[RegistryReleaseEnt
         let actual = if entry.output == "out" {
             Some(&platform.store_path)
         } else {
-            platform.named_outputs.get(&entry.output)
+            platform
+                .named_outputs
+                .get(&entry.output)
+                .map(|metadata| &metadata.store_path)
         };
         if actual != Some(&entry.store_path) {
             bail!("prepared registry is missing exact entry '{}'", entry.id);
+        }
+        for artifact in [
+            &platform.deployment,
+            &platform.module_documentation,
+            &platform.qualification,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            artifact.validate()?;
+            let hash = aos_registry_surface::store::store_path_hash(&artifact.store_path)?;
+            let record = store_map
+                .get(hash)
+                .context("native artifact is absent from the signed store graph")?;
+            let matches = record.realisations.iter().any(|realization| {
+                let mut references = realization
+                    .deps
+                    .iter()
+                    .map(|edge| edge.dep_ia.clone())
+                    .collect::<Vec<_>>();
+                references.sort();
+                references.dedup();
+                realization
+                    .nar
+                    .matches(&artifact.nar_hash, artifact.nar_size)
+                    && references == artifact.references
+            });
+            if !matches {
+                bail!(
+                    "native artifact byte identity or reference edges differ from the signed store graph"
+                );
+            }
         }
         if entry.output == "out" {
             let expected_named_outputs = entries
@@ -1187,7 +1334,13 @@ fn validate_materialized_entries(directory: &Path, entries: &[RegistryReleaseEnt
                 })
                 .map(|candidate| (candidate.output.clone(), candidate.store_path.clone()))
                 .collect::<BTreeMap<_, _>>();
-            if platform.named_outputs != expected_named_outputs {
+            if platform
+                .named_outputs
+                .iter()
+                .map(|(name, metadata)| (name.clone(), metadata.store_path.clone()))
+                .collect::<BTreeMap<_, _>>()
+                != expected_named_outputs
+            {
                 bail!(
                     "prepared registry named outputs differ for {}/{}/{}",
                     entry.name,
@@ -1483,8 +1636,6 @@ mod tests {
 
     struct WritesPackageEntry;
 
-    struct WritesPackageContractEntries;
-
     #[derive(Default)]
     struct MockRegistrySigner {
         requests: Vec<RegistryGitSigningRequest>,
@@ -1539,19 +1690,6 @@ mod tests {
     }
 
     #[async_trait]
-    impl RegistryEntryAuthor for WritesPackageContractEntries {
-        async fn author_entry(
-            &mut self,
-            isolated_registry: &Path,
-            entry: &RegistryReleaseEntry,
-        ) -> Result<()> {
-            WritesPackageEntry
-                .author_entry(isolated_registry, entry)
-                .await
-        }
-    }
-
-    #[async_trait]
     impl RegistryObjectSigner for MockRegistrySigner {
         async fn sign_git_object(
             &mut self,
@@ -1600,7 +1738,7 @@ mod tests {
         }
     }
 
-    fn ability_transaction(base_commit: String) -> RegistryReleaseTransaction {
+    fn named_output_transaction(base_commit: String) -> RegistryReleaseTransaction {
         let empty_digest = format!("sha256:{}", "0".repeat(64));
         RegistryReleaseTransaction {
             schema: TRANSACTION_SCHEMA.to_string(),
@@ -1619,12 +1757,12 @@ mod tests {
                         .to_string(),
                 },
                 RegistryReleaseEntry {
-                    id: "alpha-1-abilities@x86_64-linux".to_string(),
+                    id: "alpha-1-debug@x86_64-linux".to_string(),
                     name: "alpha".to_string(),
                     version: "1.0.0".to_string(),
                     platform: "x86_64-linux".to_string(),
-                    output: crate::types::PACKAGE_CONTRACT_OUTPUT.to_string(),
-                    store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-alpha-abilities"
+                    output: "debug".to_string(),
+                    store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-alpha-debug"
                         .to_string(),
                 },
             ],
@@ -1781,19 +1919,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete_release_preparation_retains_the_package_contract_output() -> Result<()> {
+    async fn complete_release_preparation_retains_named_outputs() -> Result<()> {
         let temporary = tempfile::tempdir()?;
         let source = temporary.path().join("source");
         fs::create_dir(&source)?;
         let base = initialize_registry(&source)?;
-        let mut transaction = ability_transaction(base.clone());
+        let mut transaction = named_output_transaction(base.clone());
 
         let expected_clone = temporary.path().join("expected");
         Repository::clone(
             source.to_str().context("test path encoding")?,
             &expected_clone,
         )?;
-        let mut expected_author = WritesPackageContractEntries;
+        let mut expected_author = WritesPackageEntry;
         for entry in &transaction.entries {
             expected_author.author_entry(&expected_clone, entry).await?;
         }
@@ -1802,7 +1940,7 @@ mod tests {
 
         let output = temporary.path().join("prepared");
         let report = transaction
-            .prepare(&source, &output, &mut WritesPackageContractEntries)
+            .prepare(&source, &output, &mut WritesPackageEntry)
             .await?;
 
         assert_eq!(report.entry_count, 2);

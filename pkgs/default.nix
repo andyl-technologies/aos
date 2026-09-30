@@ -142,6 +142,141 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   # Raw stdenv.mkDerivation, without nuke-references injected. Used by
   # nuke-references itself (to break the self-referential cycle).
   rawMkDerivation = stdenv.mkDerivation;
+  # Companion metadata is an artifact of a package, not another installable
+  # package. Using the public builder here would recursively attach companions.
+  artifactBuilders = callPackage ./build-support/_trivial-builders.nix {
+    mkDerivation = rawMkDerivation;
+  };
+  qualificationArtifactsFor = package:
+    lib.optionalAttrs (package ? qualification) (let
+      packageName = package.catalogName or package.pname or package.name;
+      projected = lib.qualification.projectPackageProbe {
+        owner = packageName;
+        probe = package.qualification.packageProbe;
+      };
+      dependencies = builtins.genericClosure {
+        startSet = [
+          {
+            key = builtins.toString package;
+            value = package;
+          }
+        ];
+        operator = item:
+          map (dependency: {
+            key = builtins.toString dependency;
+            value = dependency;
+          }) ((item.value.runtimeDeps or [])
+            ++ (item.value.buildDeps or [])
+            ++ (item.value.propagatedDeps or []) ++ (item.value.moduleDeps or []));
+      };
+      retainOutput = item: knownOutputs: output: let
+        selector = {
+          package = item.value.catalogName or item.value.pname or item.value.name;
+          inherit output;
+        };
+        key = builtins.toJSON selector;
+        path = builtins.toString (item.value.${output} or item.value);
+      in
+        if !(builtins.elem selector projected.selectors)
+        then knownOutputs
+        else if knownOutputs ? ${key} && knownOutputs.${key} != path
+        then throw "Package '${packageName}' qualification selects conflicting artifacts for ${key}."
+        else knownOutputs // {${key} = path;};
+      outputs = builtins.foldl' (known: item:
+        builtins.foldl' (retainOutput item) known (item.value.outputs or ["out"])) {}
+      dependencies;
+      artifacts =
+        map (selector: let
+          key = builtins.toJSON selector;
+        in {
+          inherit selector;
+          path = outputs.${key} or (throw "Package '${packageName}' qualification selector ${key} is outside its declared dependency closure.");
+        })
+        projected.selectors;
+      document = {
+        schema = "aos.package.qualification";
+        package = {
+          name = packageName;
+          version = package.version or "0";
+        };
+        inherit (projected) selectors;
+        inherit artifacts;
+        probe = projected.value;
+      };
+    in {
+      qualificationDocument = document;
+      qualificationArtifact = artifactBuilders.writeTextFile {
+        name = "${packageName}-qualification";
+        destination = "/qualification.json";
+        text = builtins.toJSON document;
+      };
+    });
+
+  nativeArtifactsFor = package: let
+    artifactLib = import ../lib/packages/artifacts.nix {};
+    deploymentLib = import ../lib {system = stdenv.hostPlatform.system;};
+    packageName = artifactLib.nameFor package;
+    deployment = artifactLib.envelope package;
+    documentation =
+      (deploymentLib.evalPackageModules {
+        scope = ["package" packageName];
+        packages = [package];
+      }).documentation;
+  in {
+    inherit deployment documentation;
+    deploymentArtifact = artifactBuilders.writeTextFile {
+      name = "${packageName}-${package.outputName or "out"}-deployment";
+      destination = "/deployment.json";
+      text = builtins.toJSON deployment;
+    };
+    documentationArtifact = artifactBuilders.writeTextFile {
+      name = "${packageName}-documentation";
+      destination = "/options.json";
+      text = builtins.toJSON documentation;
+    };
+  };
+
+  # Audited bootstrap payloads keep their derivations while receiving the same
+  # source-independent publication companions as ordinary packages.
+  withNativeArtifacts = package: let
+    actualOutput = package.outputName or "out";
+    primaryOutput =
+      if builtins.elem actualOutput (package.outputs or ["out"])
+      then actualOutput
+      else "out";
+    common =
+      builtins.intersectAttrs {
+        pname = null;
+        catalogName = null;
+        version = null;
+        meta = null;
+        module = null;
+        moduleDeps = null;
+        runtimeDeps = null;
+        system = null;
+        targetSystem = null;
+        platformSupport = null;
+        qualification = null;
+        qualificationDocument = null;
+        qualificationArtifact = null;
+      }
+      package;
+    views = builtins.listToAttrs (builtins.map (output: {
+      name = output;
+      value =
+        if output == primaryOutput
+        then result
+        else let
+          selected = (package.${output} or package) // common // views // nativeArtifactsFor selected;
+        in
+          selected;
+    }) (package.outputs or [primaryOutput]));
+    result = package // views // {${actualOutput} = result;} // nativeArtifactsFor result;
+  in
+    if package ? deploymentArtifact
+    then package
+    else result;
+
   defaultMaintainers = ["Andyl, Inc."];
 
   # Keep public compiler and language-toolchain attrs on their ordinary
@@ -163,11 +298,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         // extra;
     };
   withDefaultMaintainers = withDistributionMeta {};
-  withContractFrom = declaration: package:
-    package
-    // {
-      inherit (declaration) contract platformSupport;
-    };
+  withPlatformSupport = declaration: package:
+    withNativeArtifacts (package
+      // {
+        inherit (declaration) platformSupport;
+      });
 
   # Bootstrap tools retain their audited derivations, but need the same public
   # metadata as their target builds. Never attach a different source version.
@@ -179,9 +314,24 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     };
     bootstrap = stdenv.${name};
     version = (builtins.parseDrvName bootstrap.name).version;
+    annotated =
+      (withDistributionMeta package.meta bootstrap)
+      // {
+        inherit version;
+        pname = name;
+        catalogName = name;
+      };
   in
     assert version == package.version;
-      (withDistributionMeta package.meta bootstrap) // {inherit version;};
+      if !(package ? qualification)
+      then annotated
+      else
+        withQualification {
+          packageName = name;
+          inherit version;
+          packageProbe = package.qualification.packageProbe;
+        }
+        annotated;
 
   cargoArtifactsSupport = import ./build-support/_cargo-artifacts.nix {
     inherit lib mkDerivation;
@@ -192,14 +342,14 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   # implementation files or rebuilding the tool splice themselves.
   mkOciTools = {
     buildPackages ? resolvedBuildPackages,
-    abilityContractValidator ? buildPackages.aos-ability-contract-validator,
     mkReferenceGraph ?
       lib.build.referenceGraph {
         inherit (buildPackages) mkDerivation coreutils jq;
       },
   }:
     import ./containers/_aos-oci-backend/oci {
-      inherit lib abilityContractValidator mkReferenceGraph;
+      inherit lib mkReferenceGraph;
+      deploymentChecker = buildPackages.aos-deployment-check;
       inherit (buildPackages) mkDerivation coreutils findutils gzip jq tar;
     };
   ociTools = mkOciTools {};
@@ -227,16 +377,38 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     version,
     packageProbe,
     platformSupport ? null,
-  }: package:
-    package
-    // {
-      catalogName = packageName;
-      inherit version;
-      qualification.packageProbe = packageProbe;
-    }
-    // lib.optionalAttrs (platformSupport != null) {
-      platformSupport = lib.packagePlatform.normalize "package '${packageName}' platformSupport" platformSupport;
-    };
+  }: package: let
+    normalized = lib.qualification.normalizePackageProbe packageProbe;
+    # Giving a selected derivation output its own public package coordinate
+    # creates one logical payload, rather than borrowing its parent's siblings.
+    selectedAlias =
+      (package.outputName or "out")
+      != "out"
+      && packageName != (package.catalogName or package.pname or package.name);
+    payload =
+      if selectedAlias
+      then
+        (builtins.removeAttrs package (package.outputs or []))
+        // {
+          outputs = ["out"];
+          out = package;
+        }
+      else package;
+    authored =
+      payload
+      // {
+        catalogName = packageName;
+        inherit version;
+        qualification.packageProbe = normalized;
+      };
+    result =
+      authored
+      // qualificationArtifactsFor authored
+      // lib.optionalAttrs (platformSupport != null) {
+        platformSupport = lib.packagePlatform.normalize "package '${packageName}' platformSupport" platformSupport;
+      };
+  in
+    builtins.deepSeq normalized (withNativeArtifacts result);
 
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
   # wrapped to inject nuke-references into every package's buildDeps so
@@ -257,27 +429,30 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       source = args.module or null;
     };
     moduleDeps = args.moduleDeps or [];
-    deploymentLib = import ../lib {system = stdenv.hostPlatform.system;};
-    documentation =
-      (deploymentLib.evalPackageModules {
-        scope = ["package" packageName];
-        packages = [result];
-      }).documentation;
-    artifactLib = import ../lib/packages/artifacts.nix {};
-    deployment =
+    checkedQualification =
+      if !(args ? qualification)
+      then null
+      else if !builtins.isAttrs args.qualification || builtins.attrNames args.qualification != ["packageProbe"]
+      then throw "Package '${packageName}' qualification must contain exactly packageProbe."
+      else {packageProbe = lib.qualification.normalizePackageProbe args.qualification.packageProbe;};
+    qualificationMetadata =
+      if checkedQualification == null
+      then {}
+      else
+        qualificationArtifactsFor (drv
+          // {
+            catalogName = packageName;
+            version = args.version or "0";
+            qualification = checkedQualification;
+            inherit moduleDeps;
+            buildDeps = args.buildDeps or [];
+            runtimeDeps = args.runtimeDeps or [];
+            propagatedDeps = args.propagatedDeps or [];
+          });
+    nativeArtifacts =
       if args ? abilities || args ? configModule
       then throw "Package '${packageName}' must migrate to module/moduleDeps."
-      else artifactLib.envelope result;
-    deploymentArtifact = trivialBuilders.writeTextFile {
-      name = "${packageName}-deployment";
-      destination = "/deployment.json";
-      text = builtins.toJSON deployment;
-    };
-    documentationArtifact = trivialBuilders.writeTextFile {
-      name = "${packageName}-documentation";
-      destination = "/options.json";
-      text = builtins.toJSON documentation;
-    };
+      else nativeArtifactsFor result;
     crossFixupPhase =
       if stdenv.hostPlatform.objectFormat == "macho"
       then phases.darwinCrossFixupPhase
@@ -346,14 +521,16 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     deploymentAttrs =
       {
         catalogName = packageName;
-        inherit moduleDeps deployment documentation deploymentArtifact documentationArtifact;
+        inherit moduleDeps;
+        inherit (nativeArtifacts) deployment documentation deploymentArtifact documentationArtifact;
         targetSystem = stdenv.hostPlatform.system;
       }
       // lib.optionalAttrs (moduleArtifact != null) {
         module = moduleArtifact;
       }
-      // lib.optionalAttrs (args ? qualification) {
-        inherit (args) qualification;
+      // lib.optionalAttrs (checkedQualification != null) {
+        qualification = checkedQualification;
+        inherit (qualificationMetadata) qualificationDocument qualificationArtifact;
       };
     platformAttrs = lib.optionalAttrs (packagePlatformSupport != null) {
       platformSupport = packagePlatformSupport;
@@ -361,25 +538,31 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     secondaryOutputAttrs = builtins.listToAttrs (
       builtins.map (outputName: {
         name = outputName;
-        value =
-          addBuilderOverrides
-          (updatedArgs: builtins.getAttr outputName (mkDerivation updatedArgs))
-          args
-          (
-            (builtins.getAttr outputName drv)
-            // {
-              pname = args.pname or packageName;
-              meta = drv.meta or {};
-            }
-            // lib.optionalAttrs (args ? version) {inherit (args) version;}
-            // deploymentAttrs
-            // platformAttrs
-          );
+        value = let
+          selected =
+            addBuilderOverrides
+            (updatedArgs: builtins.getAttr outputName (mkDerivation updatedArgs))
+            args
+            (
+              (builtins.getAttr outputName drv)
+              // {
+                pname = args.pname or packageName;
+                meta = drv.meta or {};
+              }
+              // lib.optionalAttrs (args ? version) {inherit (args) version;}
+              // deploymentAttrs
+              // platformAttrs
+              // secondaryOutputAttrs
+              // {${drv.outputName} = result;}
+              // nativeArtifactsFor selected
+            );
+        in
+          selected;
       }) (builtins.filter (outputName: outputName != drv.outputName) drv.outputs)
     );
-    result = drv // secondaryOutputAttrs // deploymentAttrs // platformAttrs;
+    result = drv // secondaryOutputAttrs // {${drv.outputName} = result;} // deploymentAttrs // platformAttrs;
   in
-    addBuilderOverrides mkDerivation args result;
+    builtins.deepSeq checkedQualification (addBuilderOverrides mkDerivation args result);
 
   # The stdenv cc-wrapper provides gcc/g++/ld/ar/etc.
   bootstrapTools =
@@ -1385,7 +1568,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     "ability-package-smoke"
     "aos-ability-boundary-observer"
     "ability-package-smoke-provider"
-    "aos-ability-contract-validator"
     "aos-ability-crucible"
     "aos"
     "aos-agent-rpc"
@@ -1686,6 +1868,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         enableIntrospection = true;
         gobject-introspection = self.gobject-introspection;
       };
+      kernel-interface = callPackage ./kernel/kernel-interface.nix {};
       linux = callPackage ./kernel/linux.nix {inherit linuxSource;};
       # Build a kernel variant with extra kconfig appended. Use this — not
       # `linux.override { extraConfig = …; }` — for deployment kernels:
@@ -2552,7 +2735,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
             ))
           // {version = "16.2.0";}
         );
-      gcc-libs = withContractFrom discoveredPackages.gcc-libs (
+      gcc-libs = withPlatformSupport discoveredPackages.gcc-libs (
         if stdenv.hostPlatform.isDarwin
         then withDefaultMaintainers darwinGcc
         else if stdenv.isCross && stdenv.hostPlatform.isLinux
@@ -2644,57 +2827,57 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       # Native package sets retain the final stdenv tools. Cross package roots
       # must be actual target builds; scheduler-native tools remain available
       # only through buildPackages and build-dependency splicing.
-      bash = withContractFrom discoveredPackages.bash (withDefaultMaintainers (
+      bash = withPlatformSupport discoveredPackages.bash (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.bash
         else withBootstrapPublication "bash"
       ));
-      coreutils = withContractFrom discoveredPackages.coreutils (withDefaultMaintainers (
+      coreutils = withPlatformSupport discoveredPackages.coreutils (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.coreutils
         else withBootstrapPublication "coreutils"
       ));
-      gnumake = withContractFrom discoveredPackages.gnumake (withDefaultMaintainers (
+      gnumake = withPlatformSupport discoveredPackages.gnumake (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.gnumake
         else withBootstrapPublication "gnumake"
       ));
-      sed = withContractFrom discoveredPackages.sed (withDefaultMaintainers (
+      sed = withPlatformSupport discoveredPackages.sed (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.sed
         else withBootstrapPublication "sed"
       ));
-      grep = withContractFrom discoveredPackages.grep (withDefaultMaintainers (
+      grep = withPlatformSupport discoveredPackages.grep (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.grep
         else withBootstrapPublication "grep"
       ));
-      findutils = withContractFrom discoveredPackages.findutils (withDefaultMaintainers (
+      findutils = withPlatformSupport discoveredPackages.findutils (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.findutils
         else withBootstrapPublication "findutils"
       ));
-      gawk = withContractFrom discoveredPackages.gawk (withDefaultMaintainers (
+      gawk = withPlatformSupport discoveredPackages.gawk (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.gawk
         else withBootstrapPublication "gawk"
       ));
-      diffutils = withContractFrom discoveredPackages.diffutils (withDefaultMaintainers (
+      diffutils = withPlatformSupport discoveredPackages.diffutils (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.diffutils
         else withBootstrapPublication "diffutils"
       ));
-      tar = withContractFrom discoveredPackages.tar (withDefaultMaintainers (
+      tar = withPlatformSupport discoveredPackages.tar (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.tar
         else withBootstrapPublication "tar"
       ));
-      gzip = withContractFrom discoveredPackages.gzip (withDefaultMaintainers (
+      gzip = withPlatformSupport discoveredPackages.gzip (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.gzip
         else withBootstrapPublication "gzip"
       ));
-      patch = withContractFrom discoveredPackages.patch (withDefaultMaintainers (
+      patch = withPlatformSupport discoveredPackages.patch (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.patch
         else withBootstrapPublication "patch"

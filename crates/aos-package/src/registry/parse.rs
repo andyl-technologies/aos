@@ -24,7 +24,7 @@
 //! [versions.platforms.x86_64-linux.references]
 //! hashes = ["r4q1m2kp8v3x"]
 //! min-format = 1
-//! requires-features = ["abilities-v1", "attestation-v1"]
+//! requires-features = ["native-package-modules-v1", "attestation-v1"]
 //! # nar_hash/nar_size may appear in pre-RFC-0005 registries; newer ones
 //! # publish the output's content binding in the store/ graph instead.
 //! ```
@@ -328,11 +328,16 @@ fn package_metas_for_platform(
                 images,
                 min_format,
                 requires_features,
-                documentation: plat.documentation.clone(),
-                contract: plat.contract.clone(),
+                named_outputs: plat.named_outputs.clone(),
+                deployment: plat.deployment.clone(),
+                module_documentation: plat.module_documentation.clone(),
+                qualification: plat.qualification.clone(),
                 attestation,
             };
-            if (meta.contract.is_some() || !meta.attestation.is_empty())
+            if (meta.deployment.is_some()
+                || meta.module_documentation.is_some()
+                || meta.qualification.is_some()
+                || !meta.attestation.is_empty())
                 && !plat.references.is_gate()
             {
                 bail!(
