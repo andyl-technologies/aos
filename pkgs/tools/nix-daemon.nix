@@ -60,6 +60,7 @@ in
     buildDeps = [];
     runtimeDeps = [nix bash coreutils systemd control];
     propagatedDeps = [];
+    passthru.evidenceSources = [./nix-daemon.nix ./_nix-daemon-config];
 
     phases = [
       {

@@ -1088,6 +1088,7 @@ let
     "tests/_config-module-smoke/module.nix" = "linux-only-test-source";
     "tests/_config-module-smoke/private.nix" = "linux-only-test-source";
     "tools/_conntrackd-config/module.nix" = "linux-only-config-source";
+    "tools/_nix-daemon-config/module.nix" = "linux-only-config-source";
     "tools/_rsyncd-config/module.nix" = "linux-only-config-source";
     "tools/_uv-darwin/security.tbd" = "target-independent-source";
     "tools/_uv-darwin/systemconfiguration.tbd" = "target-independent-source";
