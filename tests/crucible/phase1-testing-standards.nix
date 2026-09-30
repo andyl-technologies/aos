@@ -3,7 +3,10 @@
   lib,
 }: let
   cratesDir = ../../crates;
-  testingStandardsRust = builtins.readFile ../../crates/crucible-harness/tests/testing_standards.rs;
+  testingStandardsRust = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-harness/tests/testing_standards.rs;
+  };
   testingStandardsSupport = builtins.readFile ../../crates/crucible-harness/tests/support/testing_standards.rs;
   testingStandardsCode = testingStandardsRust + "\n" + testingStandardsSupport;
   testingStandardsBaseline = builtins.readFile ./testing-standards-baseline.txt;
@@ -778,7 +781,7 @@
   baselineWiringFailures = failuresFor "tests/crucible/testing-standards-baseline.txt" testingStandardsBaseline [
     {
       label = "thread sleep baseline";
-      needle = "crucible-qemu\tsrc/spawn\tstd::thread::sleep\t1";
+      needle = "crucible-qemu\tsrc/spawn_test\tstd::thread::sleep\t1";
     }
   ];
 
