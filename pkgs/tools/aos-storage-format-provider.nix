@@ -7,6 +7,7 @@
   mkCargoDummySource,
   aosWorkspaceVendor,
   patchelf,
+  util-linux,
 }: let
   version = "0.1.0";
   cargoDeps = aosWorkspaceVendor;
@@ -83,9 +84,9 @@ in
     cargoTestFlags = "-p aos-block-storage-provider";
     doCheck = true;
     buildDeps = [patchelf];
-    runtimeDeps = [];
+    runtimeDeps = [util-linux];
 
-    abilities = ./_aos-storage-format-provider;
+    module = ./_aos-storage-format-provider;
 
     preBuild = staticBuildSetup;
 
