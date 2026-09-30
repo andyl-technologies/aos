@@ -1,233 +1,187 @@
-##! Native provider declaration for typed configuration materialization.
+##! Native qualified image rollout operation owned by the OS package runtime.
 {
-  config,
   lib,
+  config,
+  package,
   ...
 }: let
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  interface = serviceManagement.interfaces.managedConfiguration;
-  imagePlatform = lib.abilities.interfaces.imageRolloutPlatform;
-  imagePlatformInterfaces = imagePlatform.interfaces;
-  abilityTypes = lib.abilities.types;
-  runtimeArtifact = lib.abilities.packageOutput {output = "packageRuntime";};
-  realizationType = abilityTypes.record {
-    fields = {
-      schema = abilityTypes.enum ["aos.configuration.materializer-realization/v1"];
-      path = serviceManagement.types.executionPath;
+  option = type: description: lib.mkOption {inherit type description;};
+  text = lib.types.str;
+  imageOptions =
+    lib.genAttrs ["toplevel" "boot-artifact-contract" "executor" "state-format"]
+    (name: option text "Exact admitted image ${name}.");
+  rolloutOptions = {
+    predecessor = option (lib.types.submodule {options = imageOptions;}) "Authenticated currently running image.";
+    candidate = option (lib.types.submodule {options = imageOptions;}) "Authenticated prepared candidate image.";
+    retention-expires-at-millis = option lib.types.ints.unsigned "Restart-stable deadline retaining both images.";
+  };
+  executable = lib.types.submodule {
+    options = {
+      path = option text "Exact retained immutable executable.";
+      arguments = lib.mkOption {
+        type = lib.types.listOf text;
+        default = [];
+        description = "Ordered arguments of the selected executable.";
+      };
     };
   };
-  terminalMethods = declaration:
-    builtins.mapAttrs
-    (_: method:
-      method
-      // {
-        description = "Executes one checked lower-level ${declaration.name} operation.";
-      })
-    declaration.methods;
-  configurationTerminalDeclaration = lib.abilities.declareInterface {
-    name = "aos.configuration.materialization-terminal";
-    description = "Executes configuration effects selected by a pure materialization controller.";
-    abi = 1;
-    requestType = interface.requestType;
-    outputs = {};
-    methods = terminalMethods interface.declaration;
-    inherit (interface.declaration) lifecycle aggregation;
-    guarantees = [];
-  };
-  configurationTerminalDocument =
-    lib.abilities.interfaceDocumentFromDeclaration configurationTerminalDeclaration;
-  configurationTerminalIdentity =
-    lib.abilities.interfaceIdentity configurationTerminalDocument;
-  rolloutRequest = imagePlatform.rolloutRequest;
-  rolloutDeclaration = imagePlatformInterfaces.rollout.declaration;
-  rolloutMethods = rolloutDeclaration.methods;
-  rolloutObservation = imagePlatformInterfaces.rollout.observationType;
-  rolloutRealizationType = abilityTypes.record {
-    fields.schema = abilityTypes.enum ["aos.image-rollout.realization/v1"];
-  };
-  rolloutTerminalDeclaration = lib.abilities.declareInterface {
-    name = "aos.apm.ab-image-rollout-terminal";
-    description = "Executes A/B image effects selected by the pure rollout controller.";
-    abi = 1;
-    requestType = rolloutRequest;
-    outputs = {};
-    methods = builtins.mapAttrs (name: method:
-      method
-      // {
-        description = "Executes one checked package-owned rollout-state operation.";
-        parameters = abilityTypes.record {
-          fields =
-            {rollout = rolloutRequest;}
-            // lib.optionalAttrs (name == "retain" || name == "retire") {
-              platform = imagePlatformInterfaces.artifactStorage.observationType;
-            }
-            // lib.optionalAttrs (name == "select") {
-              entry = abilityTypes.deferredResult abilityTypes.runtimeString;
-            }
-            // lib.optionalAttrs (name == "observe-health") {
-              health = abilityTypes.optional (
-                abilityTypes.deferredResult imagePlatformInterfaces.healthObservation.observationType
-              );
-            };
-        };
-      })
-    rolloutMethods;
-    inherit (rolloutDeclaration) lifecycle aggregation;
-    guarantees = [];
-  };
-  rolloutTerminalDocument =
-    lib.abilities.interfaceDocumentFromDeclaration rolloutTerminalDeclaration;
-  rolloutTerminalIdentity = lib.abilities.interfaceIdentity rolloutTerminalDocument;
-  terminalRequirement = alias: description: identity: methods: {
-    inherit alias description methods;
-    accepted_interfaces = [identity];
-    guarantees = [];
-    strength = "required";
-    fallback = null;
-  };
-  qualificationObserver = entryPoint:
-    lib.qualification.abilityObserver {
-      artifact = runtimeArtifact;
-      inherit entryPoint;
+  cfg = config.aos.imageRollout;
+  request =
+    if cfg.requests == []
+    then null
+    else lib.last cfg.requests;
+  requestType = lib.types.submodule {
+    options = {
+      rollout = option (lib.types.submodule {options = rolloutOptions;}) "Exact authored image transition request.";
+      qualified = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Require drain, boot health, and fallback qualification.";
+      };
+      restart = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Request a reboot after durable native selection.";
+      };
     };
-  conformanceFamilies = [
-    "authority-revocation"
-    "dependent-effect"
-    "durability-recovery"
-    "foreign-resource"
-    "incarnation-replacement"
-    "provider-state-transfer"
-  ];
-  rolloutConformanceFamilies = ["rollout-durability"];
+  };
+  resultOptions = outcomes: {
+    rollout = option (lib.types.submodule {options = rolloutOptions;}) "Retained authenticated rollout identity.";
+    outcome = option (lib.types.enum outcomes) "Observed image transition outcome.";
+    retentionDirectory = option text "OS-owned durable image transition receipt and closure roots.";
+  };
+  program =
+    package.packageRuntime
+    // {
+      meta = (package.packageRuntime.meta or {}) // {mainProgram = "aos-image-rollout-provider";};
+    };
 in {
-  config.aos.abilities = {
-    interfaces.configuration-materialization-terminal = configurationTerminalDeclaration;
-    interfaces.image-rollout-terminal = rolloutTerminalDeclaration;
-    implementations.configuration-materialization = {
-      description = "Materializes typed configuration through the AOS configuration provider.";
-      interface = "configuration-materialization";
-      artifact = runtimeArtifact;
-      inherit (interface) methods;
-      guarantees = [];
-      requirements.terminal =
-        terminalRequirement
-        "terminal"
-        "Selects the exact package-owned configuration effect handler."
-        configurationTerminalIdentity
-        interface.methods;
-      providerModule = {
-        artifact = lib.abilities.packageOutput {output = "module";};
-        path = "configuration-provider/provider.nix";
+  options.aos.imageRollout = {
+    activationAfter = lib.mkOption {
+      type = lib.types.listOf lib.types.effectOutput;
+      default = [];
+      extensible = true;
+      description = "Native prerequisites ordered before image transitions; these references do not change transition inputs.";
+    };
+    platformExecutable = lib.mkOption {
+      type = lib.types.nullOr lib.types.pathInStore;
+      default = config.aos.boot.imageRolloutPlatformExecutable or null;
+      extensible = true;
+      description = "Exact retained boot platform implementation selected for image transitions.";
+    };
+    drain = lib.mkOption {
+      type = lib.types.nullOr executable;
+      default = null;
+      extensible = true;
+      description = "Explicit site workload drain program.";
+    };
+    drainObservation = lib.mkOption {
+      type = lib.types.nullOr executable;
+      default = null;
+      extensible = true;
+      description = "Explicit read-only proof of completed interrupted workload drain.";
+    };
+    requests = lib.mkOption {
+      type = lib.types.listOf requestType;
+      default = [];
+      extensible = true;
+      description = "Ordered authored image requests; the latest request selects the desired transition.";
+    };
+    retiredRequests = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {options = rolloutOptions;});
+      default = [];
+      extensible = true;
+      description = "Explicit expired image leases submitted for authenticated physical retirement.";
+    };
+    retirementEffects = lib.mkOption {
+      type = lib.types.attrsOf text;
+      readOnly = true;
+      internal = true;
+      description = "Declaration-derived retirement effect identities indexed by exact request digest.";
+    };
+    selectedEffect = lib.mkOption {
+      type = lib.types.nullOr text;
+      readOnly = true;
+      internal = true;
+      description = "Declaration-derived native image transition effect identity.";
+    };
+  };
+  config.aos.imageRollout.retirementEffects = lib.listToAttrs (map (rollout: let
+    key = builtins.hashString "sha256" (builtins.toJSON rollout);
+  in {
+    name = key;
+    value = builtins.hashString "sha256" (builtins.toJSON config.aos.abilities.imageRetirement.operations.ensure.effects.${key}.outputs.rollout.identity);
+  }) cfg.retiredRequests);
+  config.aos.abilities.imageRetirement.operations.ensure = {
+    input.options = {
+      rollout = option (lib.types.submodule {options = rolloutOptions;}) "Exact committed lease being explicitly retired.";
+      platformExecutable = option text "Exact retained boot platform transport.";
+      retirement = lib.mkOption {type = lib.types.enum [true]; default = true; description = "Performs expired lease retirement rather than selection.";};
+    };
+    result.options = resultOptions ["retired"];
+    handler.program = program;
+    effects = lib.listToAttrs (map (rollout: {
+      name = builtins.hashString "sha256" (builtins.toJSON rollout);
+      value = {
+        lifetime = "persistent";
+        after = cfg.activationAfter;
+        input = {inherit rollout; inherit (cfg) platformExecutable; retirement = true;};
       };
-      desiredType = realizationType;
-      requiredFeatures = [];
-      qualification = {
-        adapter = "configuration-materialization";
-        observationKind = "filesystem";
-        scope = "host-resource";
-        inherit conformanceFamilies;
-        observer = qualificationObserver "libexec/aos-configuration-observer";
+    }) cfg.retiredRequests);
+  };
+  config.aos.imageRollout.selectedEffect =
+    if request == null
+    then null
+    else
+      builtins.hashString "sha256" (builtins.toJSON (
+        if request.qualified
+        then config.aos.abilities.imageRollout.operations.ensure.effects.qualified.outputs.rollout.identity
+        else config.aos.abilities.imageSelection.operations.ensure.effects.selected.outputs.rollout.identity
+      ));
+  config.aos.abilities.imageRollout.operations.ensure = {
+    input.options = {
+      rollout = option (lib.types.submodule {options = rolloutOptions;}) "Exact restart-stable image rollout identity.";
+      platformExecutable = option text "Admitted OS boot platform transport executable.";
+      drain = option executable "Required workload drain implementation; no implicit no-op is provided.";
+      drainObservation = option executable "Read-only interrupted-drain observation: zero proves completion, one leaves outcome uncertain.";
+    };
+    result.options = resultOptions ["candidate-healthy" "predecessor-fallback"];
+    effects = lib.mkIf (request != null && request.qualified) {
+      # A historical boot lease expires through explicit retirement, never source disappearance.
+      qualified.lifetime = "persistent";
+      qualified.after = cfg.activationAfter;
+      qualified.input = {
+        inherit (request) rollout;
+        inherit (cfg) platformExecutable drain drainObservation;
       };
     };
-    implementations.configuration-materialization-terminal = {
-      description = "Executes checked configuration effects for the pure materialization controller.";
-      interface = "configuration-materialization-terminal";
-      artifact = runtimeArtifact;
-      methods = interface.methods;
-      guarantees = [];
-      handlerDescriptor = {
-        artifact = runtimeArtifact;
-        entryPoint = "libexec/aos-configuration-provider";
-        arguments = interface.requestType;
-        result = interface.observationType;
+    handler.program = program;
+    description = "Drains workloads, selects and observes boot, assesses health, and preserves fallback with durable per-phase recovery.";
+  };
+  config.aos.abilities.imageSelection.operations.ensure = {
+    input.options = {
+      rollout = option (lib.types.submodule {options = rolloutOptions;}) "Exact unqualified image selection identity.";
+      platformExecutable = option text "Exact retained boot platform transport.";
+      qualified = lib.mkOption {
+        type = lib.types.enum [false];
+        default = false;
+        description = "Ordinary image selection does not claim qualified health.";
       };
-      desiredType = realizationType;
-      requiredFeatures = [];
-    };
-    implementations.image-rollout-effects = {
-      description = "Executes A/B image transitions through the AOS package-owned rollout handler.";
-      interface = imagePlatformInterfaces.rollout.alias;
-      artifact = runtimeArtifact;
-      methods = builtins.attrNames rolloutMethods;
-      guarantees = [];
-      requirements = {
-        terminal =
-          terminalRequirement
-          "terminal"
-          "Selects the exact package-owned A/B image state handler."
-          rolloutTerminalIdentity
-          (builtins.attrNames rolloutMethods);
-        artifact-storage =
-          terminalRequirement
-          "artifact-storage"
-          "Retains immutable boot payloads through the selected boot storage provider."
-          imagePlatformInterfaces.artifactStorage.identity
-          imagePlatformInterfaces.artifactStorage.methods;
-        boot-selection =
-          terminalRequirement
-          "boot-selection"
-          "Resolves and selects entries through the selected boot provider."
-          imagePlatformInterfaces.selection.identity
-          imagePlatformInterfaces.selection.methods;
-        boot-success =
-          terminalRequirement
-          "boot-success"
-          "Publishes running-boot success through the selected boot provider."
-          imagePlatformInterfaces.success.identity
-          imagePlatformInterfaces.success.methods;
-        health-observation =
-          terminalRequirement
-          "health-observation"
-          "Observes candidate health through the selected image provider."
-          imagePlatformInterfaces.healthObservation.identity
-          imagePlatformInterfaces.healthObservation.methods;
-        host-restart =
-          terminalRequirement
-          "host-restart"
-          "Requests image-transition restarts through the selected host provider."
-          imagePlatformInterfaces.hostRestart.identity
-          imagePlatformInterfaces.hostRestart.methods;
-      };
-      providerModule = {
-        artifact = lib.abilities.packageOutput {output = "module";};
-        path = "configuration-provider/provider.nix";
-      };
-      desiredType = rolloutRealizationType;
-      requiredFeatures = [];
-      qualification = {
-        adapter = "image-rollout";
-        observationKind = "rollout";
-        scope = "host-machine";
-        conformanceFamilies = rolloutConformanceFamilies;
-        observer = qualificationObserver "libexec/aos-image-rollout-observer";
+      restart = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Request reboot after native selection.";
       };
     };
-    implementations.image-rollout-terminal = {
-      description = "Executes checked A/B image effects for the pure rollout controller.";
-      interface = "image-rollout-terminal";
-      artifact = runtimeArtifact;
-      methods = builtins.attrNames rolloutMethods;
-      guarantees = [];
-      handlerDescriptor = {
-        artifact = runtimeArtifact;
-        entryPoint = "libexec/aos-image-rollout-provider";
-        arguments = rolloutRequest;
-        result = rolloutObservation;
+    result.options = resultOptions ["selected"];
+    handler.program = program;
+    effects = lib.mkIf (request != null && !request.qualified) {
+      selected.lifetime = "persistent";
+      selected.after = cfg.activationAfter;
+      selected.input = {
+        inherit (request) rollout restart;
+        inherit (cfg) platformExecutable;
       };
-      desiredType = rolloutRealizationType;
-      requiredFeatures = [];
     };
-
-    instances =
-      lib.mkIf (
-        config.aos.abilities.environment
-        != null
-        && config.aos.abilities.environment.stage == "host"
-      ) {
-        configuration-materialization.implementation = "configuration-materialization";
-        configuration-materialization-terminal.implementation = "configuration-materialization-terminal";
-        image-rollout-effects.implementation = "image-rollout-effects";
-        image-rollout-terminal.implementation = "image-rollout-terminal";
-      };
   };
 }
