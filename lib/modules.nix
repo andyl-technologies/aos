@@ -995,11 +995,11 @@
           if declaration != null
           then declaration.option.type._aosDocType or {}
           else {};
-        containsNamedContributions = (documentType.kind or null) == "attrs-of";
+        containsNamedDefinitions = (documentType.kind or null) == "attrs-of";
         detectsNestedEnable =
           declaration
           != null
-          && containsNamedContributions
+          && containsNamedDefinitions
           && submoduleDeclaresImmediateEnable declaration.option.type;
       in
         # A declared option is one authored leaf unless it is an attribute-set
@@ -1007,7 +1007,7 @@
         # packages cannot hide writes to nested foreign `enable` options.
         if declaration != null
         then
-          if containsNamedContributions
+          if containsNamedDefinitions
           then definitionPaths detectsNestedEnable path value
           else [path]
         else if isMkIf value
@@ -1032,7 +1032,7 @@
       # Package modules may define only these module-engine diagnostic
       # channels without declaring their options. They are typed and consumed
       # by the engine itself; they cannot materialize runtime state.
-      packageEngineContributionRoots = ["assertions" "warnings"];
+      packageEngineDefinitionRoots = ["assertions" "warnings"];
 
       # Use the merged declaration's extension owner, independent of module order.
       # Nested type origins still retain every contributing package's provenance.
@@ -1070,7 +1070,7 @@
           && builtins.elemAt path (builtins.length path - 1) == "enable";
         pathStr = builtins.concatStringsSep "." path;
       in
-        if builtins.elem root packageEngineContributionRoots
+        if builtins.elem root packageEngineDefinitionRoots
         then true
         else if declaration == null
         then throw "evalModules: package '${package}' writes undeclared option '${pathStr}'"

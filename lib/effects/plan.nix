@@ -86,14 +86,18 @@
   checkReference = reference: let
     key = keyFor reference.identity;
     producer = indexed.${key} or null;
+    # Attribute lookup requires a context-free name. Keep the original reference
+    # intact in the node so authorship checks and artifact projection still see
+    # the dependency annotations carried by an option default.
+    outputName = builtins.unsafeDiscardStringContext reference.output;
   in
     if !lib.types.effectOutput.check reference
     then throw "Activation graph contains a malformed deferred output."
     else if producer == null
     then fail reference.identity "output refers to an absent or disabled effect."
-    else if !(producer.results ? ${reference.output})
+    else if !(producer.results ? ${outputName})
     then fail reference.identity "operation has no output '${reference.output}'."
-    else if producer.results.${reference.output} != reference.schema
+    else if producer.results.${outputName} != reference.schema
     then fail reference.identity "output '${reference.output}' has an incompatible schema."
     else key;
 
