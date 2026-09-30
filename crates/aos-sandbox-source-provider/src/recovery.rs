@@ -34,7 +34,7 @@ mod graph;
 #[path = "recovery/history.rs"]
 mod history;
 pub(crate) mod native_profile;
-mod original_source_capacity;
+pub(crate) mod original_source_capacity;
 #[path = "recovery/sessions.rs"]
 mod sessions;
 #[path = "recovery/work.rs"]

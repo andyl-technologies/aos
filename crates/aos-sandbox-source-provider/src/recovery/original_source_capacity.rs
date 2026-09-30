@@ -139,6 +139,49 @@ fn authenticate_complete_cut(
     Ok(())
 }
 
+/// Authenticates one real complete cut under archived equality and current eligibility.
+///
+/// Neither input can replace the other: archived deployment owns durable head
+/// equality; freshly protected current configuration owns issuance/revocation.
+pub(crate) fn authenticate_archived_complete_cut_v5(
+    state: &State,
+    archived: &aos_sandbox_source_provider_security::ProtectedOriginalDeploymentV5,
+    current: &ProtectedProviderConfigurationV1,
+) -> Result<crate::model::RecoveredProviderLedgerV1, ProviderLedgerError> {
+    let configuration = ProtectedProviderConfigurationV1::from_original_archive_v5(archived)?;
+    let records = collect_bounded_records(owner_views(state))
+        .map_err(crate::transaction::map_pure_ledger_error)?;
+    let profiles = typed_profiles(&records)?;
+
+    // This unchanged recovery pass enforces exact durable heads, catalog floor,
+    // canonical graph, Session/history joins and signatures against archived A.
+    let recovered = super::recover_records_with_profiles(
+        records.iter().map(|(key, value)| (key.as_slice(), value.as_slice())),
+        &configuration,
+        &profiles,
+    )?;
+
+    // Only key/issuance/revocation eligibility is overlaid. In particular,
+    // today's catalog floor is not applied to the unchanged historical cut.
+    super::validate_historical_signatures(
+        current,
+        &recovered.authority,
+        &recovered.catalog_history,
+        &recovered.session_history,
+        &recovered.attempts,
+        &recovered.acquisitions,
+        &recovered.releases,
+    )?;
+    for catalog in recovered.catalog_history.values() {
+        let trusted = current.historical_key_projection_for(&catalog.publisher_signer)
+            .ok_or(ProviderLedgerError::ConfigurationMismatch)?;
+        aos_sandbox_source_provider_security::verify_retained_catalog_publication(
+            current.trust_history(), trusted, &catalog.canonical_publication,
+        )?;
+    }
+    Ok(recovered)
+}
+
 /// Borrows real retained comparison inputs; matching DATA is not a receipt.
 struct OriginalAdmissionComparisonV5<'a> {
     original_before: &'a State,

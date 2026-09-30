@@ -50,6 +50,45 @@ pub(super) enum ReceivedOriginalIngressV1 {
 }
 
 impl OriginalIngressV1 {
+    /// Borrows the already authenticated full pair without moving its custody.
+    pub(super) fn borrowed_pair_v5(
+        &self,
+    ) -> Result<(&CurrentRootPreparedCarrierV1, &CurrentProviderRequestV1), ProviderLedgerError> {
+        self.require_open()?;
+        let pending = self.pending.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
+        let acquire = pending.acquire.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
+        let VerifiedProviderRequestV1::Acquire(verified) = acquire.verified() else {
+            return Err(ProviderLedgerError::Equivocation);
+        };
+        if pending.acquire_packet.as_deref() != Some(verified.attempt().canonical_signed_request()) {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+
+        Ok((&pending.root, acquire))
+    }
+
+    /// Requires the original real preappend cut, not a later reconstructed cut.
+    pub(super) fn require_borrowed_cut_v5(
+        &self,
+        journal: &ProtectedJournalAuthority<'_>,
+        configuration: ObjectDigest,
+        session: ObjectDigest,
+    ) -> Result<(), ProviderLedgerError> {
+        self.borrowed_pair_v5()?;
+        let cut = &self.pending.as_ref().ok_or(ProviderLedgerError::Unavailable)?.cut;
+        journal.validate_fixed_source_provider_storage()?;
+        journal.validate_source_provider_authority_snapshot(&cut.snapshot)?;
+        if cut.configuration != configuration || cut.session != session {
+            return Err(ProviderLedgerError::ConfigurationMismatch);
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn close_original_writer_v5(&mut self) {
+        self.close_if_retained();
+    }
+
     fn require_idle(&self) -> Result<(), ProviderLedgerError> {
         if self.closed || self.pending.is_some() {
             return Err(ProviderLedgerError::InvalidTransition(

@@ -50,6 +50,13 @@ pub use catalog::{
     VerifiedCatalogPublicationV1, verify_catalog_publication, verify_retained_catalog_publication,
 };
 pub use configuration::{HistoricalProviderVerificationKeyV1, RevalidatedProviderConfigurationV1};
+#[doc(hidden)]
+pub use configuration::ProviderConfigurationDataV5;
+#[doc(hidden)]
+pub use configuration::original_archive::{
+    ProtectedOriginalConfigurationArchiveV5, ProtectedOriginalCutReferenceV5,
+    ProtectedOriginalDeploymentV5, ProtectedOriginalOriginV5,
+};
 pub use custody::{
     ProtectedProviderCustodyV1, ProtectedRootMountCustodyV1, validate_fixed_provider_authority_v1,
     validate_fixed_root_mount_authority_v1,

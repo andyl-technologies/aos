@@ -17,6 +17,12 @@ use aos_sandbox_source_provider_ledger::ledger::{
 
 mod fixtures;
 
+/// Shares only canonical DATA from the unchanged private Applying fixture.
+pub(super) fn original_replay_fixture_v5() -> (State, JournalTransaction, JournalTransaction) {
+    let fixture = fixtures::fixture();
+    (fixture.before, fixture.applying, fixture.requested)
+}
+
 fn configuration() -> ObjectDigest {
     ObjectDigest::from_bytes([102; 32])
 }

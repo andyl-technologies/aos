@@ -543,6 +543,16 @@ pub(crate) fn request_sequence_expectation_at(
 ) -> Result<ProviderRequestSequenceExpectationV1, ProviderLedgerError> {
     let journal_snapshot = journal.snapshot()?;
     journal.validate_source_provider_authority_snapshot(&journal_snapshot)?;
+    request_sequence_expectation_from_recovered_v5(recovered, signed)
+}
+
+/// Compares request sequence DATA after the caller authenticates its complete cut.
+///
+/// This pure projection supplies no snapshot, currentness or owner authority.
+pub(crate) fn request_sequence_expectation_from_recovered_v5(
+    recovered: &crate::model::RecoveredProviderLedgerV1,
+    signed: &SignedSourceProviderRequestV1,
+) -> Result<ProviderRequestSequenceExpectationV1, ProviderLedgerError> {
     let (session_binding, sequence, request_id) = match signed.method() {
         SourceProviderMethod::Acquire => {
             let request = decode_acquire_request(signed.subject())

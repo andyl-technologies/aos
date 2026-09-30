@@ -9,6 +9,22 @@ use aos_sandbox::journal::native_held::{NativeHeldCapacityPurposeV3, NativeHeldC
 
 mod fixtures;
 
+// Not #[test]: genuine archived public custody/current configuration/full cuts
+// are unavailable here. This harness is explicitly NOT coverage or Source GO.
+#[allow(dead_code)]
+fn archived_durable_cut_with_independent_current_eligibility_harness(
+    state: &State,
+    archived: &aos_sandbox_source_provider_security::ProtectedOriginalDeploymentV5,
+    current: &ProtectedProviderConfigurationV1,
+) {
+    let recovered = authenticate_archived_complete_cut_v5(state, archived, current).unwrap();
+    let durable = ProtectedProviderConfigurationV1::from_original_archive_v5(archived).unwrap();
+
+    assert!(durable.matches_authority_and_catalog(&recovered.authority, &recovered.catalog));
+    // Today's catalog floor/head need not equal this old durable cut. Its
+    // issuance/revocation policy still authenticates these SAME retained facts.
+}
+
 #[test]
 fn shared_union_admission_refuses_floor_only_data_and_preserves_borrowed_transaction() {
     let before = fixtures::floor_only_union_state();
