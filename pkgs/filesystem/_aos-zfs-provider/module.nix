@@ -1,231 +1,37 @@
-##! OpenZFS implementations and system storage-resource composition.
+##! Native OpenZFS configuration with pool and dataset effect ownership.
 {
   config,
   lib,
+  package,
+  dependencies,
   packageName,
   ...
 }: let
-  storage = lib.abilities.interfaces.blockStorage.interfaces;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  artifact = lib.abilities.packageOutput {};
-  moduleArtifact = lib.abilities.packageOutput {output = "module";};
   cfg = config.aos.filesystems.zfs;
-  consumerInstance = "zfs-storage";
-  resultOf = lib.abilities.resultOf;
-  packageResultOf = request: resultOf "${packageName}:${request}";
-  abilityTypes = lib.abilities.types;
-  zfsSelector = lib.abilities.packageOutput {package = "zfs";};
-
-  size = abilityTypes.refined {
-    name = "ZFS size";
-    description = "a non-negative integer with an optional K/M/G/T/P suffix";
-    type = abilityTypes.string {
-      maxLength = 32;
-      syntax = null;
-    };
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[0-9]+[KMGTP]?";
-      }
-    ];
-  };
-  optionalSize = abilityTypes.optional size;
-  compression = abilityTypes.refined {
-    name = "ZFS compression algorithm";
-    description = "a bounded lower-case ZFS compression algorithm and optional level";
-    type = abilityTypes.string {
-      maxLength = 64;
-      syntax = null;
-    };
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[a-z0-9-]+";
-      }
-    ];
-  };
-  propertyValue = abilityTypes.string {
-    maxLength = 4096;
-    syntax = null;
-  };
-  propertyMap = abilityTypes.map {
-    keyMaxLength = 255;
-    maxEntries = 256;
-    value = propertyValue;
-  };
-  recordSizes = [
-    "4K"
-    "8K"
-    "16K"
-    "32K"
-    "64K"
-    "128K"
-    "256K"
-    "512K"
-    "1M"
-    "2M"
-    "4M"
-    "8M"
-    "16M"
-  ];
-  safeRecordSizes = builtins.filter (value: builtins.elem value ["4K" "8K" "16K" "32K" "64K" "128K"]) recordSizes;
-  datasetType = abilityTypes.record {
-    fields = {
-      mountPoint = {
-        type = abilityTypes.optional abilityTypes.executionPath;
-        default = null;
-      };
-      recordSize = {
-        type = abilityTypes.enum recordSizes;
-        default = "128K";
-      };
-      compression = {
-        type = compression;
-        default = "zstd-3";
-      };
-      atime = {
-        type = abilityTypes.boolean;
-        default = false;
-      };
-      quota = {
-        type = optionalSize;
-        default = null;
-      };
-      reservation = {
-        type = optionalSize;
-        default = null;
-      };
-      deduplicate = {
-        type = abilityTypes.boolean;
-        default = false;
-      };
-      snapshot = {
-        type = abilityTypes.boolean;
-        default = true;
-      };
-      mountOptions = {
-        type = abilityTypes.list {
-          element = propertyValue;
-          maxItems = 64;
-        };
-        default = ["nosuid" "nodev"];
-      };
-      extraProperties = {
-        type = propertyMap;
-        default = {};
-      };
+  size = lib.types.strMatching "[0-9]+[KMGTP]?";
+  optionalSize = lib.types.nullOr size;
+  propertyMap = lib.types.attrsOf lib.types.str;
+  recordSizes = ["4K" "8K" "16K" "32K" "64K" "128K" "256K" "512K" "1M" "2M" "4M" "8M" "16M"];
+  safeRecordSizes = ["4K" "8K" "16K" "32K" "64K" "128K"];
+  option = type: default: description: lib.mkOption {inherit type default description;};
+  datasetType = lib.types.submodule {
+    options = {
+      mountPoint = option (lib.types.nullOr lib.types.str) null "Absolute mount point, or null for an unmounted dataset.";
+      recordSize = option (lib.types.enum recordSizes) "128K" "Dataset block record size.";
+      compression = option (lib.types.strMatching "[a-z0-9-]+") "zstd-3" "Compression algorithm and optional level.";
+      atime = option lib.types.bool false "Record file access timestamps.";
+      quota = option optionalSize null "Dataset space quota.";
+      reservation = option optionalSize null "Space reserved exclusively for the dataset.";
+      deduplicate = option lib.types.bool false "Enable deduplication within the bounded pool policy.";
+      snapshot = option lib.types.bool true "Participate in automatic snapshots.";
+      mountOptions = option (lib.types.listOf lib.types.str) ["nosuid" "nodev"] "Mount flags applied when mounting the dataset.";
+      extraProperties = option propertyMap {} "Additional exact OpenZFS dataset properties.";
     };
   };
-  datasetMap = abilityTypes.map {
-    keyMaxLength = 1024;
-    maxEntries = 1024;
-    value = datasetType;
-  };
-
-  terminal = {
-    alias,
-    interface,
-    interfaceName,
-    description,
-    entryPoint,
-    realizationType,
-  }: let
-    declaration = lib.abilities.declareInterface {
-      name = interfaceName;
-      inherit description;
-      abi = 1;
-      inherit (interface.declaration) requestType methods lifecycle;
-      outputs = {};
-      guarantees = [];
-      aggregation = interface.declaration.aggregation // {controllerGroup = alias;};
-    };
-    identity = lib.abilities.interfaceIdentity (
-      lib.abilities.interfaceDocumentFromDeclaration declaration
-    );
-  in {
-    inherit alias declaration identity realizationType;
-    implementation = {
-      inherit description artifact;
-      interface = alias;
-      inherit (interface) methods;
-      guarantees = [];
-      handlerDescriptor = {
-        inherit artifact;
-        entryPoint = entryPoint;
-        arguments = interface.requestType;
-        result = interface.observationType;
-      };
-      desiredType = null;
-      requiredFeatures = [];
-    };
-  };
-  poolTerminal = terminal {
-    alias = "storage-pool-effects";
-    interface = storage.pool;
-    interfaceName = "aos.zfs.storage-pool-effects";
-    description = "Executes admitted OpenZFS pool operations.";
-    entryPoint = "bin/aos-zfs-pool-provider";
-    realizationType = lib.abilities.types.record {
-      fields = {
-        schema = lib.abilities.types.enum ["aos.storage.pool-realization/v1"];
-        zpool = lib.abilities.types.executableReference;
-      };
-    };
-  };
-  datasetTerminal = terminal {
-    alias = "storage-dataset-effects";
-    interface = storage.dataset;
-    interfaceName = "aos.zfs.storage-dataset-effects";
-    description = "Executes admitted OpenZFS dataset operations.";
-    entryPoint = "bin/aos-zfs-dataset-provider";
-    realizationType = lib.abilities.types.record {
-      fields = {
-        schema = lib.abilities.types.enum ["aos.storage.dataset-realization/v1"];
-        zfs = lib.abilities.types.executableReference;
-      };
-    };
-  };
-  controller = interface: terminalValue: providerPath: description: {
-    inherit description artifact;
-    artifacts = [zfsSelector];
-    interface = interface.identity;
-    inherit (interface) methods;
-    guarantees = [];
-    requirements.effects = {
-      alias = "effects";
-      description = "Invokes the package-owned terminal OpenZFS handler.";
-      accepted_interfaces = [terminalValue.identity];
-      inherit (interface) methods;
-      guarantees = [];
-      strength = "required";
-      fallback = null;
-    };
-    providerModule = {
-      artifact = moduleArtifact;
-      path = providerPath;
-    };
-    desiredType = terminalValue.realizationType;
-    requiredFeatures = [];
-  };
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      inherit consumerInstance key interface parameters;
-    };
-  pool = producer "pool" storage.pool {
-    name = "system-pool";
-    enabled = true;
-    pool = cfg.poolName;
-    import_policy = "force";
-    properties = lib.optionalAttrs (cfg.deduplicationTableQuota != null) {
-      dedup_table_quota = cfg.deduplicationTableQuota;
-    };
-    prerequisites = [(resultOf "zfs-memory-policy-lifecycle" "resource")];
-  };
-  datasetKey = name: "dataset-${lib.abilities.identityKeyFor "aos.zfs.dataset-request/v1" {
-    pool = cfg.poolName;
-    dataset = name;
-  }}";
+  datasetMap = lib.types.attrsOf datasetType;
+  program = mainProgram: package // {meta = (package.meta or {}) // {inherit mainProgram;};};
+  poolOperation = config.aos.abilities.zfsPool.operations.import;
+  datasetOperation = config.aos.abilities.zfsDataset.operations.mount;
   reservedDatasetName = builtins.unsafeDiscardStringContext cfg.reservedSpace.dataset;
   configuredDatasets =
     cfg.datasets
@@ -260,64 +66,29 @@
         then "true"
         else "false";
     }
-    // lib.optionalAttrs ((attributes.quota or null) != null) {quota = attributes.quota;}
-    // lib.optionalAttrs ((attributes.reservation or null) != null) {refreservation = attributes.reservation;}
+    // lib.optionalAttrs (attributes.quota != null) {quota = attributes.quota;}
+    // lib.optionalAttrs (attributes.reservation != null) {refreservation = attributes.reservation;}
     // attributes.extraProperties;
-  datasetEntries =
-    lib.mapAttrsToList (name: attributes: let
-      key = datasetKey name;
-      mountpoint = attributes.mountPoint or null;
-    in {
-      inherit key;
-      spec = {
-        inherit key;
-        parameters = {
-          name = key;
-          enabled = true;
-          pool = resultOf "pool" "pool-name";
-          dataset = name;
-          inherit mountpoint;
-          mount_options = attributes.mountOptions;
-          properties = propertiesOf attributes;
-          prerequisites = [(resultOf "pool" "resource")];
-        };
-      };
-      readiness = packageResultOf key "resource";
-    })
-    configuredDatasets;
-  datasets = serviceManagement.forProducers {
-    inherit consumerInstance;
-    interface = storage.dataset;
-    producers = builtins.map (entry: entry.spec) datasetEntries;
-  };
   readinessResources =
-    [(packageResultOf "pool" "resource")]
-    ++ builtins.map (entry: entry.readiness) datasetEntries;
-  largeRecordDatasets = builtins.filter (
-    name: !(builtins.elem cfg.datasets.${name}.recordSize safeRecordSizes)
-  ) (builtins.attrNames cfg.datasets);
-  deduplicatedDatasets = builtins.filter (
-    name: cfg.datasets.${name}.deduplicate
-  ) (builtins.attrNames cfg.datasets);
+    [poolOperation.effects.system.outputs.resource]
+    ++ lib.mapAttrsToList (name: _: datasetOperation.effects.${name}.outputs.resource) configuredDatasets;
+  largeRecordDatasets = builtins.filter (name: !(builtins.elem cfg.datasets.${name}.recordSize safeRecordSizes)) (builtins.attrNames cfg.datasets);
+  deduplicatedDatasets = builtins.filter (name: cfg.datasets.${name}.deduplicate) (builtins.attrNames cfg.datasets);
 in {
-  imports = [
-    ./maintenance.nix
-    ./policy.nix
-  ];
-
+  imports = [./maintenance.nix ./policy.nix];
   options.aos.filesystems.zfs = {
     enable = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = false;
       description = "Use native pool and dataset resources for persistent mutable state.";
     };
     poolName = lib.mkOption {
-      type = lib.abilities.interfaces.blockStorage.types.poolName;
+      type = lib.types.strMatching "[A-Za-z][A-Za-z0-9_.:-]*";
       default = "aos-pool";
       description = "Name of the storage pool for persistent data.";
     };
     systemState = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = true;
       description = "Place the system's mutable state below /var on the selected ZFS pool.";
     };
@@ -327,12 +98,12 @@ in {
       description = "Typed ZFS datasets and their exact desired properties.";
     };
     allowLargeRecords = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = false;
       description = "Permit dataset record sizes above 128 KiB.";
     };
     allowDeduplication = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = false;
       description = "Permit datasets to enable memory-intensive ZFS deduplication.";
     };
@@ -343,12 +114,12 @@ in {
     };
     reservedSpace = {
       enable = lib.mkOption {
-        type = abilityTypes.boolean;
+        type = lib.types.bool;
         default = true;
         description = "Reserve recoverable pool space in an otherwise empty dataset.";
       };
       dataset = lib.mkOption {
-        type = lib.abilities.interfaces.blockStorage.types.datasetName;
+        type = lib.types.strMatching "[A-Za-z0-9_.:/-]+";
         default = "reserved";
         description = "Dataset below the pool that carries the recovery reservation.";
       };
@@ -359,7 +130,7 @@ in {
       };
     };
     reportUndeclaredDatasets = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = true;
       description = "Report datasets outside the package-owned declared dataset set.";
     };
@@ -410,26 +181,81 @@ in {
         hardwareMonitoringRecommended = true;
       };
       aos.storage.readinessByProvider.${packageName} = lib.mkIf cfg.enable readinessResources;
-      aos.kernel.externalPackages.${packageName} = lib.mkIf cfg.enable [zfsSelector];
+      aos.kernel.externalPackages.${packageName} = lib.mkIf cfg.enable [dependencies.zfs];
       aos.kernel.commandLineParts.${packageName} = lib.mkIf cfg.enable cfg.moduleParameters;
     }
+
     {
-      aos.abilities = {
-        interfaces.${poolTerminal.alias} = poolTerminal.declaration;
-        interfaces.${datasetTerminal.alias} = datasetTerminal.declaration;
-        implementations.storage-pool = controller storage.pool poolTerminal "pool-provider.nix" "Converges storage pools through the OpenZFS controller.";
-        implementations.storage-dataset = controller storage.dataset datasetTerminal "dataset-provider.nix" "Converges storage datasets through the OpenZFS controller.";
-        implementations.${poolTerminal.alias} = poolTerminal.implementation;
-        implementations.${datasetTerminal.alias} = datasetTerminal.implementation;
+      aos.abilities.zfsPool.operations.import = {
+        input.options = {
+          pool = lib.mkOption {
+            type = lib.types.strMatching "[A-Za-z][A-Za-z0-9_.:-]*";
+            description = "Existing OpenZFS pool to import and configure.";
+          };
+          properties = option propertyMap {} "Exact pool properties, including deduplication table quota.";
+          zpool = option lib.types.str "${dependencies.zfs}/sbin/zpool" "Retained OpenZFS pool executable.";
+        };
+        result.options = {
+          pool = lib.mkOption {
+            type = lib.types.str;
+            description = "Imported pool name.";
+          };
+          resource = lib.mkOption {
+            type = lib.types.str;
+            description = "Logical identity of the pool import lease.";
+          };
+        };
+        handler.program = program "aos-zfs-pool-provider";
+        effects.system = lib.mkIf cfg.enable {
+          input = {
+            pool = cfg.poolName;
+            properties = lib.optionalAttrs (cfg.deduplicationTableQuota != null) {dedup_table_quota = cfg.deduplicationTableQuota;};
+          };
+          after = [config.aos.abilities.serviceManagement.operations.realize.effects."zfs-storage.zfs-memory-policy".outputs.resource];
+        };
+      };
+      aos.abilities.zfsDataset.operations.mount = {
+        input.options = {
+          pool = lib.mkOption {
+            type = lib.types.deferred lib.types.str;
+            description = "Pool name produced by its import lease.";
+          };
+          dataset = lib.mkOption {
+            type = lib.types.strMatching "[A-Za-z0-9_.:/-]+";
+            description = "Dataset path below the pool.";
+          };
+          mountpoint = option (lib.types.nullOr lib.types.str) null "Mount point, or null to retain an unmounted dataset.";
+          mountOptions = option (lib.types.listOf lib.types.str) [] "Canonical mount flags.";
+          properties = option propertyMap {} "Exact dataset property values.";
+          zfs = option lib.types.str "${dependencies.zfs}/sbin/zfs" "Retained OpenZFS dataset executable.";
+        };
+        result.options = {
+          path = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            description = "Realized mount point, or null for an unmounted dataset.";
+          };
+          dataset = lib.mkOption {
+            type = lib.types.str;
+            description = "Full dataset name retained after lease removal.";
+          };
+          resource = lib.mkOption {
+            type = lib.types.str;
+            description = "Logical identity of the dataset mount lease.";
+          };
+        };
+        handler.program = program "aos-zfs-dataset-provider";
+        effects = lib.mkIf cfg.enable (lib.mapAttrs (name: attributes: {
+            input = {
+              pool = poolOperation.effects.system.outputs.pool;
+              dataset = name;
+              mountpoint = attributes.mountPoint;
+              mountOptions = builtins.sort builtins.lessThan (lib.unique attributes.mountOptions);
+              properties = propertiesOf attributes;
+            };
+          })
+          configuredDatasets);
       };
     }
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [pool datasets];
-      enabled = cfg.enable;
-    })
-    (lib.mkIf cfg.enable {
-      aos.filesystems.zfs.maintenance.enable = lib.mkDefault true;
-    })
+    (lib.mkIf cfg.enable {aos.filesystems.zfs.maintenance.enable = lib.mkDefault true;})
   ];
 }

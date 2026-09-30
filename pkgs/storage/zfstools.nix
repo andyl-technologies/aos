@@ -8,6 +8,8 @@
   zfs,
   coreutils,
   grep,
+  service-management,
+  storage-interface,
 }: let
   version = "0.3.6";
   runtimePath = "${zfs}/bin:${zfs}/sbin:${coreutils}/bin";
@@ -92,7 +94,8 @@ in
     runtimeDeps = [ruby zfs coreutils];
     propagatedDeps = [];
 
-    abilities = ./_zfstools;
+    module = ./_zfstools;
+    moduleDeps = [service-management storage-interface];
 
     phases = [
       {

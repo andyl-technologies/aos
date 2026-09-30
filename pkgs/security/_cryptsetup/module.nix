@@ -1,96 +1,63 @@
-##! Package-owned encrypted swap resource composition.
+##! Composes ephemeral encrypted swap using native checked device outputs.
 {
   config,
   lib,
+  package,
   ...
 }: let
   cfg = config.aos.filesystems.encryptedSwap;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceInterfaces = serviceManagement.interfaces;
-  storageInterfaces = lib.abilities.interfaces.blockStorage.interfaces;
-  resultOf = lib.abilities.resultOf;
-  consumerInstance = "cryptswap";
-
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      inherit consumerInstance key interface parameters;
-    };
-  device = producer "swap-device" serviceInterfaces.devicePresence {
-    name = "swap-partition";
-    device = cfg.device;
-  };
-  mapping = producer "encrypted-swap-mapping" storageInterfaces.encryptedMapping {
-    name = cfg.mappingName;
-    enabled = true;
-    # The observed device node is attempt-scoped; the mapping retains the
-    # configured stable path and verifies it again when opening the device.
-    source = cfg.device;
-    cipher = cfg.cipher;
-    key_size_bits = cfg.keySizeBits;
-    key.kind = "ephemeral-random";
-    prerequisites = [];
-  };
-  format = producer "encrypted-swap-format" storageInterfaces.storageFormat {
-    name = "encrypted-swap";
-    enabled = true;
-    source = resultOf "encrypted-swap-mapping" "mapped-device";
-    format = "swap";
-    policy = "always";
-    prerequisites = [
-      (resultOf "encrypted-swap-mapping" "resource")
-    ];
-  };
-  swap = producer "encrypted-swap" serviceInterfaces.swapResource {
-    name = "encrypted-swap";
-    enabled = true;
-    source = resultOf "encrypted-swap-format" "formatted-path";
-  };
-  configured =
-    config.aos.abilities.environment
-    != null
-    && config.aos.abilities.environment.stage == "host";
+  abilities = config.aos.abilities;
+  device = abilities.device.operations.present.effects.cryptswap.outputs;
+  mapping = abilities.encryptedMapping.operations.open.effects.cryptswap.outputs;
+  format = abilities.storageFormat.operations.format.effects.cryptswap.outputs;
 in {
   options.aos.filesystems.encryptedSwap = {
     enable = lib.mkOption {
-      type = lib.abilities.types.boolean;
+      type = lib.types.bool;
       default = true;
       description = "Enable ephemeral plain dm-crypt swap on the swap partition.";
     };
-
     device = lib.mkOption {
-      type = lib.abilities.types.executionPath;
+      type = lib.types.str;
       default = "/dev/disk/by-partlabel/swap";
       description = "Stable device path for the encrypted swap partition.";
     };
-
     mappingName = lib.mkOption {
-      type = lib.abilities.types.localKey;
+      type = lib.types.strMatching "[A-Za-z0-9_.-]+";
       default = "cryptswap";
       description = "Kernel device-mapper name for encrypted swap.";
     };
-
     cipher = lib.mkOption {
-      type = lib.abilities.types.string {
-        maxLength = 128;
-        syntax = "local-key-v1";
-      };
+      type = lib.types.strMatching "[A-Za-z0-9_.-]+";
       default = "aes-xts-plain64";
       description = "Plain dm-crypt cipher used for ephemeral swap.";
     };
-
     keySizeBits = lib.mkOption {
-      type = lib.abilities.types.integer {
-        minimum = 128;
-        maximum = 512;
-      };
+      type = lib.types.ints.between 128 512;
       default = 256;
       description = "Ephemeral dm-crypt key size in bits.";
     };
   };
 
-  config = serviceManagement.producerModule {
-    inherit config lib;
-    producers = [device mapping format swap];
-    enabled = cfg.enable && configured;
+  config = lib.mkIf cfg.enable {
+    aos.abilities = {
+      device.operations.present.effects.cryptswap.input.path = cfg.device;
+      encryptedMapping.operations.open.effects.cryptswap.input = {
+        name = cfg.mappingName;
+        cryptsetup = "${package}/sbin/cryptsetup";
+        source = device.resource;
+        inherit (cfg) cipher keySizeBits;
+      };
+      storageFormat.operations.format.effects.cryptswap.input = {
+        name = "encrypted-swap";
+        source = mapping.path;
+        format = "swap";
+        policy = "always";
+      };
+      swap.operations.ensure.effects.cryptswap.input = {
+        name = "encrypted-swap";
+        source = format.path;
+      };
+    };
   };
 }

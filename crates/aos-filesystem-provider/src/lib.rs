@@ -2,7 +2,7 @@
 //!
 //! The crate validates exact mutable storage paths, rejects overlapping claims,
 //! and resolves child views without following symbolic links. The executable
-//! handler owns durable realization through the shared provider protocol.
+//! handler owns durable realization through native apply/remove/observe invocations.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};

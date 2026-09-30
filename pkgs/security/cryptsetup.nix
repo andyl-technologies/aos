@@ -10,19 +10,34 @@
   util-linux,
   json-c,
   openssl,
+  service-management,
+  aos-cryptsetup-provider,
+  aos-storage-format-provider,
 }: let
   version = "2.8.7";
   majorMinor = "2.8";
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
     pname = "cryptsetup";
-    abilities = ./_cryptsetup;
+    module = ./_cryptsetup;
+    moduleDeps = [service-management aos-cryptsetup-provider aos-storage-format-provider];
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];

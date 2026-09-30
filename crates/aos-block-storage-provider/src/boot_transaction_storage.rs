@@ -1,192 +1,145 @@
-//! ESP-backed transaction storage admission for boot stage executors.
+//! Native checked views of pre-mounted boot transaction storage.
+//!
+//! Mounting the ESP is a bootstrap prerequisite. This handler verifies its
+//! journal directory and exports the locator; removal retires only the view,
+//! preserving journals and their recovery receipts.
 
+use std::fs;
 use std::path::{Component, Path};
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_ability_model::{AbilityValue, ResourceReference, RevisionId};
-use aos_provider_protocol::ResourceContext;
-use serde::{Deserialize, Serialize};
+use aos_ability_runtime::activation::{Action, Invocation};
+use aos_contract::limits::JsonLimits;
+use serde::Deserialize;
 use serde_json::json;
 
-use crate::engine::{Backend, BackendObservation, ability_value};
+const LIMITS: JsonLimits = JsonLimits {
+    max_bytes: 256 * 1024,
+    max_depth: 64,
+    max_items: 65_536,
+    max_string_bytes: 128 * 1024,
+};
 
-const CONTEXT_SCHEMA: &str = "aos.boot.transaction-storage-context/v1";
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Desired {
-    name: String,
-    purpose: Purpose,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum Purpose {
-    InitrdStageJournal,
-    HostStageJournal,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Realization {
-    #[serde(rename = "schema")]
-    _schema: String,
     path: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Context {
-    schema: String,
-    path: String,
-}
+/// Verifies and exports a mounted journal directory for the boot runtime.
+///
+/// # Errors
+/// Returns an error for invalid invocation data, an unnormalized locator,
+/// missing storage, or a symbolic link substituted for the journal directory.
+pub fn handle(operation: &str, bytes: &[u8]) -> Result<Vec<u8>> {
+    let invocation: Invocation = LIMITS.decode(bytes, "boot storage invocation")?;
+    let desired: Desired =
+        serde_json::from_value(invocation.input).context("decoding boot storage input")?;
+    validate_path(&desired.path)?;
 
-/// Admits the exact package-owned ESP transaction-storage view.
-pub struct BootTransactionStorageBackend;
-
-impl Backend for BootTransactionStorageBackend {
-    fn action_method(&self) -> &'static str {
-        "materialize"
-    }
-
-    fn path_output(&self) -> &'static str {
-        "storage-path"
-    }
-
-    fn admit_context(
-        &self,
-        desired: &AbilityValue,
-        realization: &AbilityValue,
-        _target: &ResourceReference,
-        _revision: RevisionId,
-        _resources: &[ResourceContext],
-    ) -> Result<AbilityValue> {
-        validate_desired(&decode(desired)?)?;
-        let realization: Realization = decode(realization)?;
-        validate_path(&realization.path)?;
-
-        ability_value(serde_json::to_value(Context {
-            schema: CONTEXT_SCHEMA.into(),
-            path: realization.path,
-        })?)
-    }
-
-    fn observe(
-        &self,
-        observation_schema: &str,
-        desired: &AbilityValue,
-        _realization: &AbilityValue,
-        _target: &ResourceReference,
-        _revision: RevisionId,
-        context: &AbilityValue,
-    ) -> Result<BackendObservation> {
-        let desired: Desired = decode(desired)?;
-        let context: Context = decode(context)?;
-        validate_desired(&desired)?;
-        ensure!(
-            context.schema == CONTEXT_SCHEMA,
-            "unsupported boot transaction-storage context"
-        );
-        validate_path(&context.path)?;
-
-        let ready = Path::new(&context.path).is_dir();
-        Ok(BackendObservation {
-            evidence: ability_value(json!({
-                "schema": observation_schema,
-                "expected": desired,
-                "realized": ready.then_some(context.path.clone()),
-                "state": if ready { "ready" } else { "absent" },
-            }))?,
-            ready,
-            released: false,
-            path: ready.then_some(context.path),
-            unknown: false,
-        })
-    }
-
-    fn apply(
-        &self,
-        desired: &AbilityValue,
-        _realization: &AbilityValue,
-        _target: &ResourceReference,
-        _revision: RevisionId,
-        context: &AbilityValue,
-        _remaining_millis: u64,
-    ) -> Result<()> {
-        let desired: Desired = decode(desired)?;
-        let context: Context = decode(context)?;
-        validate_desired(&desired)?;
-        validate_path(&context.path)?;
-        ensure!(
-            Path::new(&context.path).is_dir(),
-            "boot transaction-storage view is not materialized"
-        );
-        Ok(())
-    }
-
-    fn release(
-        &self,
-        _desired: &AbilityValue,
-        _realization: &AbilityValue,
-        _target: &ResourceReference,
-        _context: &AbilityValue,
-        _remaining_millis: u64,
-    ) -> Result<()> {
-        bail!("boot transaction storage remains retained through stage execution")
-    }
-}
-
-fn validate_desired(desired: &Desired) -> Result<()> {
-    ensure!(
-        !desired.name.is_empty()
-            && desired.name.len() <= 128
-            && desired
-                .name
-                .bytes()
-                .all(|byte| { byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-') }),
-        "boot transaction-storage name is invalid"
-    );
-    Ok(())
+    let output = match operation {
+        "remove" => {
+            ensure!(
+                invocation.action == Action::Remove,
+                "remove action differs from invocation"
+            );
+            json!({})
+        }
+        "apply" | "observe" => {
+            let metadata = fs::symlink_metadata(&desired.path);
+            let ready = match metadata {
+                Ok(metadata) => metadata.is_dir() && !metadata.file_type().is_symlink(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) => return Err(error).context("inspecting boot storage directory"),
+            };
+            if operation == "observe" {
+                if invocation.action == Action::Remove {
+                    json!({"status": "absent"})
+                } else if ready {
+                    json!({"status": "current", "outputs": {"path": desired.path}})
+                } else {
+                    json!({"status": "indeterminate"})
+                }
+            } else {
+                ensure!(
+                    invocation.action == Action::Apply,
+                    "apply action differs from invocation"
+                );
+                ensure!(
+                    ready,
+                    "boot transaction storage has not been mounted by the bootstrap sequence"
+                );
+                json!({"path": desired.path})
+            }
+        }
+        _ => bail!("unsupported boot storage operation {operation:?}"),
+    };
+    serde_json::to_vec(&output).context("encoding boot storage response")
 }
 
 fn validate_path(value: &str) -> Result<()> {
     let path = Path::new(value);
     ensure!(
-        path.is_absolute(),
-        "transaction-storage path is not absolute"
-    );
-    ensure!(
-        path.components()
-            .all(|part| matches!(part, Component::RootDir | Component::Normal(_))),
-        "transaction-storage path is not normalized"
+        path.is_absolute()
+            && path
+                .components()
+                .all(|part| matches!(part, Component::RootDir | Component::Normal(_))),
+        "transaction storage path is not absolute and normalized"
     );
     Ok(())
-}
-
-fn decode<T: for<'de> Deserialize<'de>>(value: &AbilityValue) -> Result<T> {
-    serde_json::from_value(value.as_json().clone())
-        .context("decoding boot transaction-storage value")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn invocation(path: &Path, action: &str) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "id": "stage-storage", "revision": "first", "action": action, "previous": null,
+            "input": {"path": path},
+            "effect": {
+                "owner": "boot", "identity": ["initrd", "storage"], "input": {}, "inputs": {},
+                "input_type": {"kind": "submodule", "open": false, "fields": {}}, "after": [],
+                "results": {"path": {"kind": "string"}}, "dependencies": [], "revision": "first",
+                "lifetime": "instance", "timeout_ms": 1000,
+                "handler": {"kind": "process", "artifact": "/nix/store/00000000000000000000000000000000-handler", "executable": "/nix/store/00000000000000000000000000000000-handler/bin/handler"}
+            }
+        })).expect("native invocation")
+    }
+
+    #[test]
+    fn view_teardown_preserves_recovery_journals() {
+        let directory = tempfile::tempdir().expect("journal directory");
+        let journal = directory.path().join("generations.journal");
+        fs::write(&journal, b"retained generation").expect("journal receipt");
+        let apply = invocation(directory.path(), "apply");
+
+        let output: serde_json::Value =
+            serde_json::from_slice(&handle("apply", &apply).expect("verify storage"))
+                .expect("response");
+        assert_eq!(output["path"], directory.path().to_str().expect("path"));
+
+        handle("remove", &invocation(directory.path(), "remove")).expect("retire view");
+        assert_eq!(
+            fs::read(journal).expect("retained journal"),
+            b"retained generation"
+        );
+    }
+
+    #[test]
+    fn missing_or_substituted_storage_fails_before_execution() {
+        let directory = tempfile::tempdir().expect("journal directory");
+        let missing = directory.path().join("missing");
+        assert!(handle("apply", &invocation(&missing, "apply")).is_err());
+        let substituted = directory.path().join("substituted");
+        std::os::unix::fs::symlink(directory.path(), &substituted).expect("substituted directory");
+        assert!(handle("apply", &invocation(&substituted, "apply")).is_err());
+    }
+
     #[test]
     fn rejects_noncanonical_view_paths() {
         assert!(validate_path("/run/aos-boot-transaction-storage/journal").is_ok());
         assert!(validate_path("/run/../boot").is_err());
         assert!(validate_path("boot").is_err());
-    }
-
-    #[test]
-    fn accepts_both_stage_journal_purposes() {
-        for purpose in [Purpose::InitrdStageJournal, Purpose::HostStageJournal] {
-            validate_desired(&Desired {
-                name: "stage-journal".to_string(),
-                purpose,
-            })
-            .expect("supported stage journal");
-        }
     }
 }

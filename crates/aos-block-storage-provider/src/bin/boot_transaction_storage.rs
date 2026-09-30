@@ -1,13 +1,9 @@
-//! Command entry point for the ESP-backed initrd transaction-storage view.
+//! Process entry point for the boot transaction storage provider.
 
 use std::io::{self, Read as _, Write as _};
 
 use anyhow::{Context as _, Result, bail};
-use aos_ability_model::ABILITY_LIMITS_V1;
-use aos_block_storage_provider::boot_transaction_storage::BootTransactionStorageBackend;
-use aos_block_storage_provider::engine::Provider;
-use aos_block_storage_provider::root_observation::{BlockStorageRootRole, observe_root};
-use aos_provider_protocol::{HANDLER_ABI_ARGUMENT, MAX_HANDLER_RESULT_BYTES};
+use aos_block_storage_provider::boot_transaction_storage;
 
 fn main() {
     if let Err(error) = run() {
@@ -18,25 +14,24 @@ fn main() {
 
 fn run() -> Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if arguments.len() != 2 || arguments[0] != HANDLER_ABI_ARGUMENT {
-        bail!("expected the bounded provider ABI and one invocation purpose");
+    if arguments.len() != 1 || !matches!(arguments[0].as_str(), "apply" | "remove" | "observe") {
+        bail!("usage: aos-boot-transaction-storage-provider <apply|remove|observe>");
     }
+
     let mut input = Vec::new();
     io::stdin()
-        .take(ABILITY_LIMITS_V1.max_document_bytes + 1)
+        .take((256 * 1024) + 1)
         .read_to_end(&mut input)
         .context("reading bounded invocation")?;
-    if u64::try_from(input.len()).unwrap_or(u64::MAX) > ABILITY_LIMITS_V1.max_document_bytes {
-        bail!("invocation exceeds the canonical document bound");
+    if u64::try_from(input.len()).unwrap_or(u64::MAX) > (256 * 1024) {
+        bail!("invocation exceeds the canonical ability document bound");
     }
-    let output = if arguments[1] == "observe-root" {
-        let response = observe_root(BlockStorageRootRole::BootTransactionStorage, &input)?;
-        aos_contract::canonical::canonical_json(&serde_json::to_value(response)?)?
-    } else {
-        Provider::new(BootTransactionStorageBackend).handle(&arguments[1], &input)?
-    };
-    if output.len() > MAX_HANDLER_RESULT_BYTES {
-        bail!("response exceeds the handler result bound");
+
+    let output = boot_transaction_storage::handle(&arguments[0], &input)?;
+    if output.len() > 256 * 1024 {
+        bail!("response exceeds the command-handler result bound");
     }
-    io::stdout().write_all(&output).context("writing response")
+    io::stdout()
+        .write_all(&output)
+        .context("writing command-handler response")
 }
