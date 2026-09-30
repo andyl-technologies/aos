@@ -23,14 +23,14 @@
     then "arm64"
     else throw "containers.aos: unsupported AOS package-set target '${validatedSystem}'";
 
-  coreRoots = [pkgs.glibc pkgs.gcc-libs pkgs.ca-certificates];
+  coreRoots = [pkgs.glibc pkgs.glibc.bin pkgs.glibc-locales pkgs.gcc-libs pkgs.ca-certificates];
   shellRoots = [pkgs.bash pkgs.coreutils pkgs.findutils pkgs.grep pkgs.sed pkgs.gawk];
   # The CLI is intentionally split into independently portable outputs.  Keep
   # all three commands in the image closure and expose their canonical names
   # explicitly; the server golden profile is not the authority for the base
   # image's documented command surface.
   cliRoots = [pkgs.aos pkgs.aos.apm pkgs.aos.apr];
-  packageRoots = lib.unique (goldenRoots ++ cliRoots);
+  packageRoots = lib.unique (coreRoots ++ shellRoots ++ goldenRoots ++ cliRoots);
 in {
   config = {
     name = "aos";
@@ -128,6 +128,10 @@ in {
           path = "/tmp";
           mode = "1777";
         }
+        {
+          path = "/var/tmp";
+          mode = "1777";
+        }
         {path = "/work";}
         {
           path = "/var/cache/apm";
@@ -156,6 +160,8 @@ in {
         XDG_DATA_HOME = "/root/.local/share";
         XDG_STATE_HOME = "/root/.local/state";
         NIX_REMOTE = "local";
+        LANG = "C.UTF-8";
+        LOCPATH = "${pkgs.glibc-locales}/lib/locale";
         SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt";
         NIX_SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt";
         PATH = "/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin";
