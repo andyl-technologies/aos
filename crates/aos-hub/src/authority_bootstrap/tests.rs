@@ -21,6 +21,9 @@ use super::*;
 #[path = "custody_tests.rs"]
 mod credential_custody;
 
+#[path = "registration_tests.rs"]
+mod credential_registration;
+
 const AUTHORITY: &str = "00000000-0000-4000-8000-000000000041";
 const EXECUTOR: &str = "qualification-executor";
 const NAMESPACE: &str = "qualification-guard-namespace";

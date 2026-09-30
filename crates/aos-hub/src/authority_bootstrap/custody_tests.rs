@@ -12,7 +12,7 @@ mod cohorts;
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum CustodyFault {
+pub(super) enum CustodyFault {
     None,
     ProbeRotation,
     AdoptionRotation,
@@ -21,7 +21,7 @@ enum CustodyFault {
 }
 
 #[derive(Default)]
-struct Controls {
+pub(super) struct Controls {
     staged: Mutex<Option<StorageCredentialCustodyProbe>>,
     adopted: Mutex<std::collections::BTreeMap<i64, StorageBindingSnapshot>>,
     revoked: Mutex<std::collections::BTreeSet<String>>,
@@ -38,7 +38,7 @@ struct Controls {
     revokes: AtomicUsize,
 }
 
-async fn custody_client(
+pub(super) async fn custody_client(
     fixture: &Fixture,
     fault: CustodyFault,
 ) -> (
@@ -67,7 +67,7 @@ async fn custody_client(
                     let stage = verify_storage_credential_custody_stage(
                         &key, signature, &body, "qualification-deployment", now,
                     ).unwrap();
-                    assert_eq!(stage.material.selector.purpose, "read");
+                    assert!(["read", "presign", "write", "list", "delete"].contains(&stage.material.selector.purpose.as_str()));
                     *state.staged.lock().await = Some(stage.request.clone());
                     sign_storage_credential_custody_stage_reply(&key, &StorageCredentialCustodyStageReply {
                         request: stage.request,

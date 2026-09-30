@@ -494,7 +494,10 @@ async fn router_with_ports(
         }
     };
     if hybrid_delivery {
-        rpc_service = rpc_service.with_hybrid_delivery();
+        // This branch is reached only with the actual paired RemoteStorageWorkClient.
+        rpc_service = rpc_service
+            .with_hybrid_delivery()
+            .with_worker_credential_registration();
     }
     if let Some(provider) = &state.domain_probe_terminator {
         rpc_service = rpc_service.with_domain_probe_terminator(Arc::clone(provider));

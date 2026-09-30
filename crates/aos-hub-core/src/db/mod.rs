@@ -517,6 +517,7 @@ mod snapshot_insert_tests {
 
 mod cache_write_admission;
 mod credential_probe;
+mod credential_registration;
 mod direct_target;
 pub use cache_write_admission::*;
 mod delivery_identity;
@@ -18486,6 +18487,28 @@ impl Database {
         credential_fingerprint: &str,
         actor: &str,
     ) -> Result<BindingCredentialRevisionRecord> {
+        self.set_binding_credential_revision_inner(
+            binding_id,
+            purpose,
+            secret_version_ref,
+            expected_current_generation,
+            credential_fingerprint,
+            actor,
+            None,
+        )
+        .await
+    }
+
+    async fn set_binding_credential_revision_inner(
+        &self,
+        binding_id: i64,
+        purpose: &str,
+        secret_version_ref: &str,
+        expected_current_generation: i64,
+        credential_fingerprint: &str,
+        actor: &str,
+        binding: Option<&BindingRecord>,
+    ) -> Result<BindingCredentialRevisionRecord> {
         if !matches!(purpose, "read" | "write" | "delete" | "list" | "presign") {
             bail!("invalid storage credential purpose '{purpose}'");
         }
@@ -18516,6 +18539,22 @@ impl Database {
                 && current.as_ref().map(|head| head.generation) == Some(existing.generation)
                 && existing.generation == expected_current_generation + 1
             {
+                if let Some(binding) = binding {
+                    self.backend.checked_batch(&[
+                        credential_registration::binding_fence(binding),
+                        Statement::new(
+                            "UPDATE binding_credential_heads SET updated_at = updated_at
+                             WHERE binding_id = ?1 AND purpose = ?2 AND current_generation = ?3
+                               AND resource_version = ?4
+                               AND EXISTS (SELECT 1 FROM binding_credential_revisions r
+                                 WHERE r.binding_id = ?1 AND r.purpose = ?2 AND r.generation = ?3
+                                   AND r.secret_version_ref = ?5 AND r.credential_fingerprint = ?6)",
+                            vals![binding_id, purpose, existing.generation,
+                                existing.head_resource_version, secret_version_ref,
+                                credential_fingerprint].to_vec(),
+                        ).expecting(1),
+                    ]).await?;
+                }
                 return Ok(existing);
             }
             if existing.credential_fingerprint == credential_fingerprint {
@@ -18572,7 +18611,11 @@ impl Database {
             ]
             .to_vec()
         };
-        let mut statements = vec![Statement::new(insert_sql, insert_values).expecting(1)];
+        let mut statements = Vec::new();
+        if let Some(binding) = binding {
+            statements.push(credential_registration::binding_fence(binding));
+        }
+        statements.push(Statement::new(insert_sql, insert_values).expecting(1));
         if current_generation == 0 {
             statements.push(
                 Statement::new(

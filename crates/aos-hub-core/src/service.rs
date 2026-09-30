@@ -2535,6 +2535,14 @@ fn publication_nar_path_matches_sha256(path: &str, sha256: &str) -> bool {
     })
 }
 
+// Registration does not validate a credential or authorize provider work.
+// Only explicitly configured Hybrid custody can defer byte verification.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CredentialRegistrationPolicy {
+    ResolveProviderMaterial,
+    WorkerCustody,
+}
+
 /// The shared, transport-free implementation of the `aos.hub.v1` services.
 ///
 /// Holds only data the method bodies need — the [`Database`], the [`JwtKeys`]
@@ -2602,6 +2610,7 @@ pub struct RpcService {
     pub sealer: Option<Arc<dyn crate::auth::seal::SecretSealer>>,
     /// Runtime provider for immutable secret-version references.
     pub secret_versions: Option<Arc<dyn crate::secret_version::SecretVersionResolver>>,
+    credential_registration_policy: CredentialRegistrationPolicy,
     /// The authenticated-origin proxy-read fetcher
     /// ([`OriginFetch`](crate::fetch::OriginFetch)), used to stream a private
     /// external origin's bytes through the hub instead of `302`-redirecting the
@@ -10177,6 +10186,7 @@ impl RpcService {
             topology_probes,
             sealer,
             secret_versions: None,
+            credential_registration_policy: CredentialRegistrationPolicy::ResolveProviderMaterial,
             origin_fetch: None,
             kv: None,
             domain_probe_terminator: None,
@@ -10223,6 +10233,19 @@ impl RpcService {
         resolver: Arc<dyn crate::secret_version::SecretVersionResolver>,
     ) -> Self {
         self.secret_versions = Some(resolver);
+        self
+    }
+
+    /// Defers private credential byte verification to configured Worker custody.
+    ///
+    /// The paired Hybrid shell selects this policy explicitly. Registration
+    /// stores only an unvalidated immutable reference and digest; actual queued
+    /// staging and authenticated controller validation remain mandatory before
+    /// adopting a snapshot or authorizing provider work. Missing local resolvers
+    /// never select this policy automatically.
+    #[must_use]
+    pub fn with_worker_credential_registration(mut self) -> Self {
+        self.credential_registration_policy = CredentialRegistrationPolicy::WorkerCustody;
         self
     }
 
@@ -13560,20 +13583,33 @@ impl RpcService {
                 "credentialFingerprint is required and must be SHA-256 hex",
             ));
         }
-        let secrets = self.secret_versions.as_deref().ok_or_else(|| {
-            RpcError::FailedPrecondition("secret-version provider is not configured".to_string())
-        })?;
-        let resolved = secrets
-            .resolve(&req.secret_version_ref)
-            .await
-            .map_err(|error| {
-                RpcError::FailedPrecondition(format!(
-                    "secret version cannot be resolved: {error:#}"
-                ))
+        if self.credential_registration_policy
+            == CredentialRegistrationPolicy::ResolveProviderMaterial
+        {
+            let secrets = self.secret_versions.as_deref().ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "secret-version provider is not configured".to_string(),
+                )
             })?;
-        crate::secret_version::verify_secret_fingerprint(&resolved, &req.credential_fingerprint)
+            let resolved = secrets
+                .resolve(&req.secret_version_ref)
+                .await
+                .map_err(|error| {
+                    RpcError::FailedPrecondition(format!(
+                        "secret version cannot be resolved: {error:#}"
+                    ))
+                })?;
+            crate::secret_version::verify_secret_fingerprint(
+                &resolved,
+                &req.credential_fingerprint,
+            )
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-        drop(resolved);
+            drop(resolved);
+        }
+
+        // Persist the observed binding CAS even when the caller omitted it.
+        // Apply cannot replace this original with a newly current binding.
+        req.expected_resource_version = binding.resource_version.to_string();
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
         let credential_fingerprint = req.credential_fingerprint.clone();
         let input = BindingCredentialPlanInput {
@@ -13677,16 +13713,28 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("binding"))?;
-        if binding.id != input.binding_db_id {
+        let original_version = input
+            .request
+            .expected_resource_version
+            .parse::<i64>()
+            .map_err(|_| {
+                RpcError::FailedPrecondition(
+                    "credential plan lacks its original binding version".into(),
+                )
+            })?;
+        if binding.id != input.binding_db_id
+            || binding.resource_version != original_version
+            || binding.owner_scope_key != input.owner_scope_key
+        {
             return Err(RpcError::FailedPrecondition(
-                "binding identity changed after credential planning".to_string(),
+                "binding identity, owner or version changed after credential planning".to_string(),
             ));
         }
         let claims = self.require_claims(auth)?;
         let record = self
             .db
-            .set_binding_credential_revision(
-                binding.id,
+            .set_binding_credential_revision_checked(
+                &binding,
                 &input.request.purpose,
                 &input.request.secret_version_ref,
                 input.request.expected_current_generation,

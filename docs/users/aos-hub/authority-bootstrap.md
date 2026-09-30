@@ -14,6 +14,15 @@ selected binding must use private access.
 
 ## Validate queued credentials without Native provider material
 
+The configured Native Hybrid router registers only an unvalidated immutable
+reference and the SHA-256 digest of its exact provider value. It does not resolve
+provider material during `PlanSetBindingCredential` or rotation. The reviewed
+binding version, stable identity, owner and head generation fence Apply; a
+missing local resolver never selects this policy. Native-only and Workers-only
+registration retain their existing provider-byte verification. Metadata
+registration grants no work or lease admission: staging and the actual queued
+controller validation remain mandatory.
+
 Install the paired Worker and storage control key before validating external
 credentials. Create each immutable credential revision through the normal
 authenticated binding control API. Apply its reviewed
