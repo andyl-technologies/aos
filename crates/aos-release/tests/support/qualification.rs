@@ -61,11 +61,7 @@ pub fn capabilities(case: &QualificationCase) -> Result<Option<CapabilityEvidenc
 }
 
 pub fn environment(case: &QualificationCase) -> Result<Option<EnvironmentInventory>> {
-    let Some(scope) = case
-        .target
-        .as_ref()
-        .and_then(|target| target.environment.as_ref())
-    else {
+    let Some(scope) = case.target.as_ref().map(|target| &target.environment) else {
         return Ok(None);
     };
     let mut layers = Vec::new();
@@ -164,7 +160,7 @@ pub fn measurements() -> BTreeMap<String, u64> {
 pub fn assessment(case: &QualificationCase) -> Result<Option<CompatibilityAssessment>> {
     case.target
         .as_ref()
-        .and_then(|target| target.environment.as_ref())
+        .map(|target| &target.environment)
         .map(|scope| {
             Ok(CompatibilityAssessment {
                 scope_digest: Sha256Digest::of_canonical(

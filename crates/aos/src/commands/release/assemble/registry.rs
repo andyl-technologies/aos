@@ -3,20 +3,20 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_package::registry::release::{FinalizedRegistryRelease, RegistryStaticSurfaceFile};
 use aos_package::registry::static_upload::collect_static_origin_files;
 use aos_release::artifact::{ArtifactKind, BundlePath};
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
-use aos_release::plan::ReleasePlanV1;
+use aos_release::plan::ReleasePlan;
 
 use super::{ArtifactAttributes, PayloadBuilder};
 
 pub(super) fn assemble(
     registry: &Path,
     result_path: &Path,
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
     plan_digest: Sha256Digest,
     payload: &mut PayloadBuilder,
 ) -> Result<()> {

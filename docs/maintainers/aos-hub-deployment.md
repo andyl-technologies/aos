@@ -238,7 +238,7 @@ The initial contract is:
 | Ledger | Initial value | Subsequent changes |
 | --- | --- | --- |
 | SQL lineage | `aos-hub/production-baseline/1` | Preserve the lineage for compatible forward migrations. |
-| SQL version | `1`, `crates/aos-hub-core/src/db/schema.sql` | Append a new entry to `MIGRATIONS`; preserve all applied scripts. |
+| SQL version | `1`, `crates/aos-hub-core/src/db/schema.sql` | Append a new entry to `MIGRATIONS`; preserve all applied scripts. The current version is `2`. |
 | Durable Object classes | `production-base-v1` | Append a unique Wrangler migration tag; preserve prior tags. |
 
 The baseline contains the final tables, constraints, indexes, and seed data from
@@ -246,6 +246,17 @@ all pre-production migrations. The previous topology identities are rejected;
 there is no online adoption of development databases. A frozen-digest test guards
 the baseline against edits. Native and Worker startup reject negative or future
 versions and unsupported identities rather than serving an uncertain schema.
+
+Applied forward migrations:
+
+| Version | Script | Change |
+| --- | --- | --- |
+| `2` | `crates/aos-hub-core/src/db/release_channel_advances.sql` | Adds the `release_channel_advances` ledger, which admits per-train channel names such as `stable-2026.9` and staging-deployment channel advances. It copies every retained advance from the baseline ledger and leaves that ledger frozen and unused. Each statement is replay-safe. |
+
+A Hub binary opening a version 1 database applies migration 2 at startup. A
+Hub binary that predates migration 2 refuses a version 2 database as newer than
+it supports, so a rollback across this migration requires a reviewed restore
+rather than redeploying the older build.
 
 Every subsequent schema PR must describe compatibility with the running Worker,
 its predecessor, and queued work; include fresh-install and upgrade tests with

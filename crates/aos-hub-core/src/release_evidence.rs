@@ -8,9 +8,9 @@ use std::collections::BTreeMap;
 
 use anyhow::{bail, Context as _, Result};
 use aos_release::receipt::{
-    verify_signed_receipt_with_key, ChannelReceiptV1, PublicationReceiptV1, QualificationReceiptV1,
+    verify_signed_receipt_with_key, ChannelReceipt, PublicationReceipt, QualificationReceipt,
 };
-use aos_release::receipt::{SignedReceiptEnvelopeV1, RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT_V1};
+use aos_release::receipt::{SignedReceiptEnvelope, RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
 use serde::Deserialize;
@@ -34,7 +34,7 @@ pub trait ReleaseEvidenceAuthority: BackendBounds {
     /// Returns the immutable identity of the deployment using this authority.
     fn deployment_id(&self) -> &str;
 
-    /// Issues an environment publication receipt.
+    /// Issues a publication receipt for one destination of this deployment.
     ///
     /// # Errors
     ///
@@ -42,7 +42,7 @@ pub trait ReleaseEvidenceAuthority: BackendBounds {
     /// fails. Implementations must return canonical JSON and its exact digest.
     async fn issue_publication(
         &self,
-        receipt: &PublicationReceiptV1,
+        receipt: &PublicationReceipt,
     ) -> Result<SignedReleaseEvidence>;
 
     /// Verifies a publication receipt issued by a trusted Hub deployment.
@@ -53,7 +53,7 @@ pub trait ReleaseEvidenceAuthority: BackendBounds {
     /// an envelope that does not contain the exact receipt.
     async fn verify_publication(
         &self,
-        receipt: &PublicationReceiptV1,
+        receipt: &PublicationReceipt,
         envelope_json: &str,
     ) -> Result<()>;
 
@@ -65,7 +65,7 @@ pub trait ReleaseEvidenceAuthority: BackendBounds {
     /// envelope that does not contain the exact receipt.
     async fn verify_qualification(
         &self,
-        receipt: &QualificationReceiptV1,
+        receipt: &QualificationReceipt,
         envelope_json: &str,
     ) -> Result<()>;
 
@@ -75,7 +75,7 @@ pub trait ReleaseEvidenceAuthority: BackendBounds {
     ///
     /// Returns an error when provider policy rejects the operation or signing
     /// fails. Implementations must return canonical JSON and its exact digest.
-    async fn issue_channel(&self, receipt: &ChannelReceiptV1) -> Result<SignedReleaseEvidence>;
+    async fn issue_channel(&self, receipt: &ChannelReceipt) -> Result<SignedReleaseEvidence>;
 }
 
 /// In-process Ed25519 adapter over deployment-injected secret material.
@@ -182,8 +182,8 @@ impl Ed25519ReleaseEvidenceAuthority {
         let digest =
             aos_release::digest::Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, &payload_bytes);
         let signature = signing_key.sign(digest.as_bytes());
-        let envelope = SignedReceiptEnvelopeV1 {
-            schema_version: SIGNED_RECEIPT_V1.into(),
+        let envelope = SignedReceiptEnvelope {
+            schema_version: SIGNED_RECEIPT.into(),
             key_id: key_id.into(),
             payload: serde_json::from_slice(&payload_bytes)?,
             signature_base64: STANDARD.encode(signature.to_bytes()),
@@ -217,7 +217,7 @@ impl ReleaseEvidenceAuthority for Ed25519ReleaseEvidenceAuthority {
 
     async fn issue_publication(
         &self,
-        receipt: &PublicationReceiptV1,
+        receipt: &PublicationReceipt,
     ) -> Result<SignedReleaseEvidence> {
         receipt.validate()?;
         self.issue(
@@ -229,11 +229,11 @@ impl ReleaseEvidenceAuthority for Ed25519ReleaseEvidenceAuthority {
 
     async fn verify_publication(
         &self,
-        receipt: &PublicationReceiptV1,
+        receipt: &PublicationReceipt,
         envelope_json: &str,
     ) -> Result<()> {
         receipt.validate()?;
-        let (_, verified): (String, PublicationReceiptV1) =
+        let (_, verified): (String, PublicationReceipt) =
             verify_signed_receipt_with_key(envelope_json.as_bytes(), &self.publication_keys)?;
         if &verified != receipt {
             bail!("publication envelope has the wrong payload");
@@ -243,11 +243,11 @@ impl ReleaseEvidenceAuthority for Ed25519ReleaseEvidenceAuthority {
 
     async fn verify_qualification(
         &self,
-        receipt: &QualificationReceiptV1,
+        receipt: &QualificationReceipt,
         envelope_json: &str,
     ) -> Result<()> {
         receipt.validate()?;
-        let (key_id, verified): (String, QualificationReceiptV1) =
+        let (key_id, verified): (String, QualificationReceipt) =
             verify_signed_receipt_with_key(envelope_json.as_bytes(), &self.qualification_keys)?;
         if &verified != receipt {
             bail!("qualification envelope has the wrong payload");
@@ -258,7 +258,7 @@ impl ReleaseEvidenceAuthority for Ed25519ReleaseEvidenceAuthority {
         Ok(())
     }
 
-    async fn issue_channel(&self, receipt: &ChannelReceiptV1) -> Result<SignedReleaseEvidence> {
+    async fn issue_channel(&self, receipt: &ChannelReceipt) -> Result<SignedReleaseEvidence> {
         receipt.validate()?;
         self.issue(receipt, &self.channel_key_id, &self.channel_signing_key)
     }
@@ -295,6 +295,7 @@ mod tests {
     use super::*;
     use aos_release::digest::Sha256Digest;
     use aos_release::evidence::GateResult;
+    use aos_release::plan::{SurfaceKind, SurfaceRole};
 
     fn authority() -> Ed25519ReleaseEvidenceAuthority {
         let seed = [7_u8; 32];
@@ -312,8 +313,8 @@ mod tests {
         .unwrap()
     }
 
-    fn qualification() -> QualificationReceiptV1 {
-        QualificationReceiptV1 {
+    fn qualification() -> QualificationReceipt {
+        QualificationReceipt {
             schema_version: "aos.release.qualification-receipt/v1".into(),
             staging_receipt_digest: Sha256Digest::of_bytes(b"staging"),
             manifest_digest: Sha256Digest::of_bytes(b"manifest"),
@@ -327,17 +328,19 @@ mod tests {
         }
     }
 
-    fn publication() -> PublicationReceiptV1 {
-        PublicationReceiptV1 {
-            schema_version: aos_release::receipt::PUBLICATION_RECEIPT_V1.into(),
-            environment: aos_release::receipt::HubEnvironment::Staging,
-            deployment_id: "staging-deployment".into(),
+    fn publication() -> PublicationReceipt {
+        PublicationReceipt {
+            schema_version: aos_release::receipt::PUBLICATION_RECEIPT.into(),
+            destination: "staging/edge".into(),
+            surface_role: SurfaceRole::Staging,
+            surface_kind: SurfaceKind::Hub,
+            surface_identity: "staging-deployment".into(),
             registry: aos_release::registry::MAIN_REGISTRY.into(),
             release_id: "2026.03.0".into(),
             manifest_digest: Sha256Digest::of_bytes(b"manifest"),
             bundle_digest: Sha256Digest::of_bytes(b"bundle"),
             operation_id: "publication-operation".into(),
-            staging_receipt_digest: None,
+            predecessor_receipt_digest: None,
             committed_at: "2026-03-01T00:00:00Z".into(),
         }
     }
@@ -359,7 +362,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut role_confused: SignedReceiptEnvelopeV1 = serde_json::from_str(&envelope).unwrap();
+        let mut role_confused: SignedReceiptEnvelope = serde_json::from_str(&envelope).unwrap();
         role_confused.key_id = "qualifier".into();
         let payload = aos_release::canonical::to_vec(&receipt).unwrap();
         let digest = Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, payload);
@@ -380,20 +383,23 @@ mod tests {
     #[tokio::test]
     async fn channel_receipts_use_the_distinct_channel_key() {
         let authority = authority();
-        let receipt = ChannelReceiptV1 {
-            schema_version: "aos.release.channel-receipt/v1".into(),
+        let receipt = ChannelReceipt {
+            schema_version: aos_release::receipt::CHANNEL_RECEIPT.into(),
+            destination: "production/edge".into(),
             channel: "edge".into(),
+            ring: 1,
             first_partition: 0,
             last_partition: 31,
             prior_generation: 0,
             new_generation: 1,
             manifest_digest: Sha256Digest::of_bytes(b"manifest"),
-            production_receipt_digest: Sha256Digest::of_bytes(b"production"),
+            publication_receipt_digest: Sha256Digest::of_bytes(b"production"),
+            surface_kind: SurfaceKind::Hub,
+            surface_identity: "staging-deployment".into(),
             committed_at: "2026-03-01T00:00:00Z".into(),
         };
         let signed = authority.issue_channel(&receipt).await.unwrap();
-        let envelope: SignedReceiptEnvelopeV1 =
-            serde_json::from_str(&signed.envelope_json).unwrap();
+        let envelope: SignedReceiptEnvelope = serde_json::from_str(&signed.envelope_json).unwrap();
         assert_eq!(envelope.key_id, "channel-receipt");
         assert_ne!(envelope.key_id, authority.publication_key_id);
     }
@@ -440,7 +446,7 @@ mod tests {
     async fn qualification_envelope_is_canonical_and_signature_bound() {
         let authority = authority();
         let receipt = qualification();
-        let mut envelope: SignedReceiptEnvelopeV1 = serde_json::from_str(
+        let mut envelope: SignedReceiptEnvelope = serde_json::from_str(
             &authority
                 .issue(
                     &receipt,

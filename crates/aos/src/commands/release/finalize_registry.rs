@@ -22,10 +22,10 @@ use aos_package::{DSSE_SIGNATURE_NAMESPACE, ProvenanceSignature, ProvenanceSigne
 use aos_release::build::BuildReportV1;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
-use aos_release::plan::ReleasePlanV1;
+use aos_release::plan::ReleasePlan;
 use aos_release::signing::{
     SIGNING_REQUEST_DOMAIN, SignatureAlgorithm, SignerRequirement, SignerRole, SigningContext,
-    SigningOperation, SigningRequestV1,
+    SigningOperation, SigningRequest,
 };
 
 use crate::cli::{ReleaseFinalizeRegistryArgs, ReleasePrepareRegistryArgs};
@@ -181,10 +181,10 @@ pub(super) async fn finalize(
 fn load_release_inputs(
     plan_path: &Path,
     report_path: &Path,
-) -> Result<(ReleasePlanV1, BuildReportV1, Sha256Digest)> {
+) -> Result<(ReleasePlan, BuildReportV1, Sha256Digest)> {
     let plan_bytes = capture::control_file(plan_path, "release plan")?;
     canonical::require_canonical(&plan_bytes, "release plan")?;
-    let plan: ReleasePlanV1 = canonical::from_slice(&plan_bytes, "release plan")?;
+    let plan: ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
     plan.validate()?;
     let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
 
@@ -197,17 +197,12 @@ fn load_release_inputs(
 }
 
 fn registry_intent(
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
     report: &BuildReportV1,
     plan_digest: Sha256Digest,
 ) -> Result<RegistryReleaseIntent> {
-    let planned_support = plan
-        .qualification
-        .as_ref()
-        .and_then(|contract| contract.support.as_ref())
-        .map(|policy| SupportSectionWrite::from_policy(&plan.version, policy))
-        .transpose()?
-        .flatten();
+    let planned_support =
+        SupportSectionWrite::from_policy(&plan.version, &plan.qualification.support)?;
     let entries = super::registry_entries::from_build(&plan.packages, &report.outputs)?;
 
     Ok(RegistryReleaseIntent {
@@ -250,7 +245,7 @@ fn require_new_path(path: &Path, description: &str) -> Result<()> {
 
 fn validate_container_plan_binding(
     attachment: Option<&ContainerReleaseAttachment>,
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
 ) -> Result<()> {
     let Some(attachment) = attachment else {
         return Ok(());
@@ -289,7 +284,7 @@ fn validate_container_plan_binding(
 
 fn validate_transaction_binding(
     transaction: &RegistryReleaseTransaction,
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
     report: &BuildReportV1,
     plan_digest: Sha256Digest,
 ) -> Result<()> {
@@ -302,13 +297,8 @@ fn validate_transaction_binding(
     }
     // The support tables a release may write are fixed by its version and
     // its frozen contract; the transaction must state exactly those.
-    let planned_support = plan
-        .qualification
-        .as_ref()
-        .and_then(|contract| contract.support.as_ref())
-        .map(|policy| SupportSectionWrite::from_policy(&plan.version, policy))
-        .transpose()?
-        .flatten();
+    let planned_support =
+        SupportSectionWrite::from_policy(&plan.version, &plan.qualification.support)?;
     if transaction.support != planned_support {
         bail!("registry transaction support tables differ from the release plan's contract");
     }
@@ -319,7 +309,7 @@ fn validate_transaction_binding(
     Ok(())
 }
 
-fn publication_map(plan: &ReleasePlanV1) -> Result<BTreeMap<String, RegistryPackagePublication>> {
+fn publication_map(plan: &ReleasePlan) -> Result<BTreeMap<String, RegistryPackagePublication>> {
     Ok(plan
         .packages
         .iter()
@@ -340,7 +330,7 @@ fn publication_map(plan: &ReleasePlanV1) -> Result<BTreeMap<String, RegistryPack
 }
 
 fn signer_requirement<'a>(
-    plan: &'a ReleasePlanV1,
+    plan: &'a ReleasePlan,
     role: SignerRole,
     key_id: &str,
 ) -> Result<&'a SignerRequirement> {
@@ -376,7 +366,7 @@ fn read_key_spec(spec: &str, role: &str) -> Result<(String, String)> {
 
 struct ReleaseRegistrySigner<'a> {
     external: ExternalSigner,
-    plan: &'a ReleasePlanV1,
+    plan: &'a ReleasePlan,
     plan_digest: Sha256Digest,
     role: SignerRole,
     requirement: &'a SignerRequirement,
@@ -402,12 +392,12 @@ impl ReleaseRegistrySigner<'_> {
         payload: &[u8],
         operation: SigningOperation,
         context: SigningContext,
-    ) -> Result<SigningRequestV1> {
+    ) -> Result<SigningRequest> {
         if role != self.role || !matches!(role, SignerRole::Provenance | SignerRole::Registry) {
             bail!("registry operation requested an unavailable signer role");
         }
         let nonce = self.fresh_nonce()?;
-        Ok(SigningRequestV1 {
+        Ok(SigningRequest {
             schema_version: SIGNING_REQUEST_DOMAIN.to_string(),
             request_id: format!("registry-{}", &nonce[..24]),
             nonce,

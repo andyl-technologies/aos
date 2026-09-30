@@ -7,11 +7,11 @@
 use anyhow::{Context as _, Result, bail};
 use aos_core::nix::NixRunner;
 use aos_release::artifact_profile::ArtifactProfile;
-use aos_release::plan::ReleasePlanV1;
+use aos_release::plan::ReleasePlan;
 use aos_release::platform::MatrixCell;
 
 /// Checks every image-producing platform against the exact release destination.
-pub(super) fn require_plan(nix: &NixRunner, plan: &ReleasePlanV1) -> Result<()> {
+pub(super) fn require_plan(nix: &NixRunner, plan: &ReleasePlan) -> Result<()> {
     if !plan.images.iter().any(|image| {
         image
             .platforms
@@ -39,14 +39,12 @@ pub(super) fn require_plan(nix: &NixRunner, plan: &ReleasePlanV1) -> Result<()> 
             let value = nix.eval_json_for_target(&attribute, Some(cell.platform.as_str()))?;
             let profile: ArtifactProfile = serde_json::from_value(value)
                 .context("decoding the image's Nix release artifact profile")?;
-            profile
-                .require_release(&plan.registry, plan.release_class)
-                .with_context(|| {
-                    format!(
-                        "release profile mismatch for {} on {}",
-                        image.system_variant, cell.platform
-                    )
-                })?;
+            profile.require_release(&plan.registry).with_context(|| {
+                format!(
+                    "release profile mismatch for {} on {}",
+                    image.system_variant, cell.platform
+                )
+            })?;
         }
     }
     Ok(())

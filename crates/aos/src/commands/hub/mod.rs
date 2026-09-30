@@ -63,7 +63,7 @@ mod output;
 mod package;
 mod pins;
 mod placement;
-mod publication;
+pub(crate) mod publication;
 mod registry;
 mod route;
 mod signing_key;
