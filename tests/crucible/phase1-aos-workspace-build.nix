@@ -173,9 +173,9 @@ in
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
             grep -q '^qemu_plugin_header=${packages.qemu-crucible}/include/qemu-plugin.h$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
-            grep -q '^qemu_plugin_api_version=4$' \
+            grep -q '^qemu_plugin_api_version=7$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
-            grep -q '^qemu_plugin_abi=qemu-plugin-api-v4$' \
+            grep -q '^qemu_plugin_abi=qemu-plugin-api-v7$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
             grep -q '^shmem_abi_version=17$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
@@ -234,7 +234,7 @@ in
             plugin_library=lib/libcrucible_qemu_plugin.so
             plugin_search_path=lib/qemu/plugins/crucible-qemu-plugin.so
             qemu_discovery_hint=runtime-environment-wrapper
-            qemu_plugin_abi=qemu-plugin-api-v4
+            qemu_plugin_abi=qemu-plugin-api-v7
             shmem_abi=crucible-shmem-abi-v17
             guest_host_protocol_abi=crucible-guest-host-channel-v1
             rpc_abi=5.1.0+crucible-rpc-abi-v5

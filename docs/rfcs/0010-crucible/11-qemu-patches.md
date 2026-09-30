@@ -212,9 +212,9 @@ PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-plugin-wake-fd ....... main-loop wake-fd          F    SHM-26, INV-8
   crucible-plugin-tcg-exec-cb ... TCG-exec callback          F    coverage, INV-7
   crucible-plugin-vmstop ........ exact boundary to native pause D  DET-1, INV-10, QEMU-43
-  crucible-serialize-rr-cursor .. authoritative RR cursor VMState D  DET-1, DET-18, INV-10
-  crucible-fingerprint-state-domains guest-only state domains D  DET-18, DET-19, INV-10
-  crucible-stopped-state-control-progress bounded native-stop wake D  DET-1, INV-10, QEMU-43
+  crucible-serialized-rr-cursor authoritative multi-vCPU round-robin cursor accounting and VMState restoration across host scheduling ceilings D DET-29, QEMU-34, QEMU-43, QFP-STATE-2
+  crucible-fingerprint-guest-state-domains guest black-box fingerprints exclude separately authenticated process-local control state and target-declared transient CPU notifications D DET-29, QEMU-34, QFP-STATE-2
+  crucible-stopped-state-control-progress bounded native-stop wake D  DET-1, INV-10, QEMU-43, QFP-STATE-2
   crucible-inactive-retention-clock-guard active-rule-before-clock D  DET-1, QFP-STATE-2, FAULT-ORDER
   crucible-deferred-result-evidence-test typed deferred evidence coverage F  QEMU-44, FAULT-EVIDENCE
   crucible-deterministic-instruction-input-state stable instruction selector identity D  DET-1, QEMU-44, FAULT-EVIDENCE
@@ -259,10 +259,6 @@ SIGNAL-DRIVEN FAULT EXECUTION                          class  enforces
   crucible-hardware-error-inject architecture error/ECC delivery D QFP-HWERR-1, QFP-HWERR-2, FAULT-ORDER
   crucible-vcpu-service-control rational CPU service/stall/offline D QFP-VCPU-1, QFP-VCPU-2, FAULT-ORDER
   crucible-node-lifecycle-faults crash/hang/reset/power lifecycle D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
-  crucible-block-typed-errors closed guest-visible block errors F STOR-RESULT, IO-8, PATCH-26
-  crucible-block-discard .... deterministic discard transport F STOR-DISCARD, DET-16, PATCH-26
-  crucible-block-transport-reset transactional reset/recovery F STOR-RESET, STOR-RESULT, DET-16, PATCH-26
-  crucible-plugin-vmstop ... exact plugin-boundary native pause D DET-1, INV-10, QEMU-43
   crucible-terminal-lifecycle-completion staged terminal exit D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
   crucible-authenticated-terminal-lifecycle authenticated exit D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
   crucible-immutable-process-generation launch-bound process ID D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
@@ -272,10 +268,44 @@ SIGNAL-DRIVEN FAULT EXECUTION                          class  enforces
   crucible-fault-vmstate aggregate fault-state identity D QFP-STATE-1, QFP-STATE-2, QFP-STATE-3
   crucible-lifecycle-precondition atomic lifecycle VM-state precondition D QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
   crucible-typed-node-result-schema fixed typed result and occurrence evidence D QFP-RESULT-1, QFP-EVENT-1, FAULT-ORDER
-  crucible-device-wait-vmstop nonblocking exact control/device-completion pause D QFP-STATE-2, DET-1, INV-10
+  crucible-device-wait-vmstop nonblocking exact control/device-completion pause F QFP-STATE-2, DET-1, INV-10
   crucible-accelerator-result-opportunity exact one-shot accelerator result arming F QFP-ACCEL-3, QFP-RESULT-1, QFP-EVENT-1, FAULT-ORDER
   crucible-authenticated-event-request-envelope restored authenticated occurrence requests F QFP-STATE-2, QFP-ACCEL-3, QFP-EVENT-1, FAULT-ORDER
-  crucible-inert-clock-restore inactive clock VMState commits retain native device timers D DET-1, QFP-CLOCK-2, QFP-STATE-2
+
+RECENT PATCH COMPLETIONS                              class  enforces
+  crucible-exact-restore-network-announcement exact Crucible VMState restore suppresses migration-only virtio-net guest announcements while ordinary QEMU migration retains its upstream announcement behavior D DET-1, QFP-STATE-2, FAULT-ORDER
+  crucible-register-rejection-atomicity exact RR ownership gates canonical register observation; every realized CPU manifest is validated; rejected register commands preserve every canonical GDB register byte and all six mutation side-effect counters D DET-1, QFP-REG-1, QFP-REG-2, FAULT-EVIDENCE
+  crucible-genesis-observation-boundary the BQL-held prelaunch genesis boundary admits complete all-vCPU architectural observation only at exact raw icount zero D DET-1, QFP-REG-1, QFP-STATE-2
+  crucible-deterministic-rcu-quiescence sim mode reaches RCU quiescence at its bounded deterministic RR execution boundaries without host-timed translation-block exits D DET-1, DET-29, QEMU-43
+  crucible-deterministic-host-kick-boundary during an active bounded sim slice, state-free host latency hints cannot choose a guest boundary, while between-slice, zero-icount startup, admitted terminal pause, stop, unplug, halted, stopped, and interrupt-request kicks retain immediate exits D DET-1, DET-29, QEMU-43
+  crucible-exact-boundary-vcpu-introspection exact BQL-held main-loop boundaries read every quiescent vCPU register file and the committed RR cursor without a current vCPU, while arbitrary unowned contexts remain rejected D DET-1, QFP-REG-1, QFP-STATE-2
+  crucible-active-tcg-kick-boundary state-free sim kicks request exit at the next deterministic translation-block boundary while committed transitions preserve immediate liveness D DET-1, DET-29, QEMU-43
+  crucible-canonical-rr-genesis-cursor exact raw-zero observers read the unique next RR coordinate without mutating scheduler state while every later invalid cursor remains rejected D DET-1, QFP-REG-1, QFP-STATE-2
+  crucible-canonical-terminal-rr-cursor live observers at a quantum terminal project onto the next scheduler-owned vCPU at position zero without mutating serialized RR state D DET-1, DET-29, QFP-STATE-2
+  crucible-canonical-register-cursor after-instruction register evidence advances its callback-local prefix and projects an exact quantum terminal onto the canonical next RR coordinate D DET-1, DET-29, QFP-STATE-2
+  crucible-retention-virtual-time-origin memory-retention expiry originates in authoritative virtual nanoseconds instead of mixing raw instruction coordinates with clock-biased deadlines D DET-1, TIME-23, E14
+  crucible-raw-pte-update-identity x86 page-table translation consumes corrected transient PTE bytes while accessed/dirty cmpxchg preserves the canonical backing entry and cannot retry forever D QFP-MEMA-1, QFP-MEMA-2, FAULT-ORDER
+  crucible-physical-page-table-region-fixture live persistent page-table-region tests address descriptor storage by GPA while ordinary guest-memory region tests retain GVA targeting F QFP-MEMA-1, QFP-MEMA-2, FAULT-EVIDENCE
+  crucible-canonical-memory-retry-identity memory retry keys exclude TB-local instruction ordinals and serialize that compatibility field at canonical zero across fault-driven retranslation D DET-1, QFP-MEMA-1, QFP-STATE-2
+  crucible-inactive-nested-tsc-guard inactive guest-clock faults avoid TSC sampling inside SVM entry and exit so nested execution preserves upstream icount accounting D DET-1, QFP-CLOCK-2, PATCH-3
+  crucible-valid-aarch64-abort-fixture the live AArch64 poison-exception and retry fixtures submit the data-abort vector and a same-EL syndrome accepted by the production architecture validator F QFP-MEMA-1, FAULT-EVIDENCE, PATCH-3
+  crucible-aarch64-memory-exception-vectors AArch64 memory exception admission requires instruction-abort vector 2 for fetches and data-abort vector 3 for non-fetch accesses D QFP-MEMA-1, FAULT-EVIDENCE, PATCH-3
+  crucible-canonical-snapshot-rr-resume successful sim-mode snapshots arm the same one-shot serialized-owner selection used after load so source continuation preserves the RR owner and intra-turn position D DET-1, QFP-STATE-2, QEMU-43
+  crucible-bql-exact-register-capture BQL-held exact callbacks read quiescent vCPU registers while post-snapshot RR owner reselection is pending, and idle-time completion is explicitly scoped as exact D DET-1, QFP-STATE-2, QEMU-43
+  crucible-isolate-checkpoint-control-wake a pending exact VM-stop handoff wakes QEMU's main loop without resuming parked block coroutines or admitting post-pause completions D DET-1, QFP-STATE-2, PATCH-20
+  crucible-preserve-checkpoint-block-durability synthetic QEMU stop-time flushes preserve the checkpointed Apache durability continuation and cannot create post-quiescence Crucible block requests D DET-1, QFP-STATE-2, QFP-BLOCK-3
+  crucible-selector-control-plane-fixtures live instruction selector overlap and exclusivity fixtures use unreachable occurrences so admission checks remain isolated from data-plane fault delivery F FAULT-ORDER, PATCH-3, QFP-INST-3
+  crucible-defer-active-slice-host-wakes an atomic idle-active-pending handshake admits multi-vCPU state-free wakes only before TCG starts and never lets them select a translation-block endpoint, while single-vCPU soft exits and explicit terminal and committed lifecycle wakes remain live D DET-1, QFP-KICK-3, QEMU-43
+  crucible-anchor-rr-cursor-genesis fresh sim-mode execution establishes vCPU 0 position 0 before the first budget, and the serialized owner remains authoritative across partial turns and VMState restore D DET-1, QFP-STATE-2, QEMU-43
+  crucible-deterministic-network-kick sim-mode virtio-net queue kicks and serialized tx_waiting resumes drain every deferred TX bottom half synchronously, supply one committed raw transmit icount, preserve the virtqueue notification cursor in an optional sim VMState subsection, symmetrically flush pre-checkpoint translation history, and use bounded cache-independent TB shapes without direct chains on both continuations so VMState restore preserves packet and fault-decision continuation D DET-1, PLUG-23, PLUG-24, QEMU-43
+  crucible-control-boundary-node-faults a node-boundary command submitted while QEMU is halted at an exact drained control wake is dispatched at that same raw icount, so PREPARE and APPLY complete without requiring guest progress; terminal authorization hashes zero the raw evidence coordinate before the plugin maps it into scheduler-logical space F QFP-LIFE-1, QFP-LIFE-2, FAULT-ORDER
+  crucible-release-halted-rr-turn a vCPU that executes HLT before exhausting its serialized RR turn leaves the execution loop when no alternative vCPU is runnable; a helper-marked multi-vCPU guest PAUSE fences control-boundary acknowledgement until it commits a cursor-zero early handoff immediately after icount accounting and before callbacks or host-work exits, so a released spin lock cannot be reacquired before a waiting peer runs; and that exact completed-turn handoff admits safe register capture while other owner mismatches fail closed D DET-1, PLUG-24, QEMU-43
+  crucible-accelerator-service-schema typed accelerator service commands admit the ratio-valued capacity field used by the versioned node-fault payload before atomically installing compute, memory-rate, thermal, and power service policy F QFP-ACCEL-SERVICE, FAULT-ORDER
+  crucible-compile-affected-clock-sources a committed clock rule recompiles and rearms only sources selected by that exact rule, so an unrelated source that cannot project raw time at the stopped boundary cannot invalidate the authenticated transition F QFP-CLOCK-SOURCE, FAULT-ORDER
+  crucible-restore-accelerator-rule-indexes fresh-process VMState restore rebuilds each accelerator lifecycle, result, memory, and service rule index from the authenticated staged node-rule ledger before commit, preserving persistent accelerator behavior without duplicating rule ownership F QFP-ACCEL-SERVICE, FAULT-RESTORE
+  crucible-authenticate-fault-result-payloads every queued fault result authenticates the exact payload retained beside it, including prepare-time rejection evidence, so the host can classify a typed rejection without losing transaction ownership F QFP-RESULT, FAULT-ORDER
+  crucible-clock-impulse-read-error-policies impulse clock transforms retain their effective monotonicity and overdue-timer policies in versioned clock VMState, while an x86 TSC read-error transition raises a deterministic guest #GP and internal projections retain the last source value F QFP-CLOCK-TRANSFORM, QFP-CLOCK-SOURCE, FAULT-ORDER
+  crucible-qemu-11-api-port Crucible accelerator, fault, migration, timer, and plugin integrations use QEMU 11's public headers and current callback, atomic, TCG, and VMState APIs D DET-1, QEMU-43
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
@@ -304,7 +334,6 @@ not additional files:
   are applied only in a developer build and MUST be inert-by-construction
   (compiled out, or behind a `diag=` plugin arg) even there. *Gate:*
   `gate:qemu-inert`, forward-ref 26. *Spec:* §11.3; satisfies [INV-7], [INV-10].
-
 ## 11.4 Determinism patches (source elimination)
 
 These patches implement the **patch**-class eliminations of the entropy table
