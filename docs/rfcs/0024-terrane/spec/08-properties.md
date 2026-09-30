@@ -127,6 +127,12 @@ authoritative; this section defines the semantics each class carries.
   descendant root MAY narrow but MUST NOT widen the set of principals
   granted `commit` or `admin` unless the committing principal holds `admin`
   on the ancestor.
+  The comparison MUST use the actual governing ancestor's canonical policy,
+  not the namespace's bootstrap ACL. A fresh view root uses AUTH-28's trusted
+  original bootstrap baseline instead. Ancestor policy and delegated authority
+  MUST be independently validated; a candidate's newly asserted grants are
+  not authorization evidence. This requirement applies to the original
+  embedded token as well as the current operation's authority.
 - **[PROP-17]** `domain`, `store`, and `acl` are **boundary properties**. A
   `flatten` across roots with differing effective boundary properties MUST
   fail ([`07-tree-algebra.md`](07-tree-algebra.md)).

@@ -1251,6 +1251,29 @@ is added rather than editing history.
     valid historical root contexts remain verifiable. This clarification
     precedes T1's initial freeze and preserves ALG-32's copied-tree fork cost.
 
+- **[D-76] Preserve original ACL administration and bootstrap authority.**
+  - **Status:** Decided
+  - **Decision:** Verify original and current administrative authority
+    independently for ACL changes and descendant delegation. Existing roots
+    use prior canonical policies and actual ancestors. Initial view roots use
+    the trusted original bootstrap ACL, retained for the physical authoring
+    authority, canonical ref and writer epoch. Matching or narrowing bootstrap
+    grants remains valid with `commit` alone. Descendant comparisons use their
+    governing ancestor, and ordinary store changes retain placement and commit
+    checks without an invented administrative requirement.
+  - **Rationale:** Current administrative credentials cannot repair a signed
+    ACL edit made without original authority. Conversely, requiring `admin`
+    for every initial ACL denies legitimate initialization already permitted
+    by its bootstrap policy. Mutable current configuration and candidate
+    self-grants cannot prove the original baseline, and token issuers may span
+    multiple physical authorities. An explicit trusted original-context seam
+    preserves both verification and destination-only disclosure reopening.
+  - **Affects:** AUTH-25, AUTH-26, AUTH-28, PROP-5, PROP-16, PROV-4 and
+    PROV-31. Requirement IDs, gate names, signed fields, canonical bytes and
+    identities remain unchanged. Historical token verification remains
+    separate from current ACL intersection under D-58. This clarification
+    precedes T1's initial freeze.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

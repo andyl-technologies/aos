@@ -118,6 +118,15 @@ trusted one", and policy decides which it requires.
   root for grant and ACL checks; entry reachability is a separate check.
   These rules preserve AUTH-29's prohibition on per-entry permissions.
 
+  Original-context verification MUST also enforce the embedded token's
+  applicable `admin` requirements for ACL edits and delegation under AUTH-28
+  and PROP-16, using prior canonical authority and the trusted original
+  bootstrap baseline where required. Current-operation credentials MUST NOT
+  substitute for this original authority. Merely changing the `store` property
+  does not add an `admin` requirement: affected-root `commit` authorization
+  and PROP-5's effective storage placement still apply, and a backend MUST
+  refuse placement it cannot honor.
+
   Initial tree publication MUST authorize the view root and all affected
   root units. An unchanged-tree authored record MUST still carry a nonempty
   authorized actual-root context. ALG-32's constant-cost copied-tree fork

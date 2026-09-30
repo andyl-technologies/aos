@@ -263,7 +263,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   joint with T-PROV-1 and T-DOM-1; they remain unqualified until destination-only
   reopen, private erasure and current-authority race checks pass. Affected-root
   admission and historical context coverage under D-75 remain incomplete;
-  ordinary entry paths cannot become permission boundaries. — satisfies
+  ordinary entry paths cannot become permission boundaries. D-76's original
+  ACL administration, retained bootstrap evidence and actual-ancestor
+  delegation checks remain joint with these admission gates. — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,
   `checks.terrane.gates.prov-disclosure-boundary`,

@@ -198,6 +198,33 @@ the token must satisfy. Caveats are how a token is bound to a context.
   on that root or an ancestor and MUST be recorded as an ordinary commit,
   so that the reflog and commit graph are the audit trail
   ([`23-provenance-and-trust.md`](23-provenance-and-trust.md)).
+
+  Authority for an existing root's ACL change MUST come from its prior
+  canonical occurrence or an actual canonical ancestor, never from the ACL
+  being installed. Original-token verification and current-operation
+  authorization MUST independently enforce this requirement. Current `admin`
+  authority MUST NOT repair an originally under-authorized commit.
+
+  Initial view-root publication, including fresh materialization at a checked
+  audit-only first-parent boundary, MUST compare its proposed `commit` and
+  `admin` grants against the authority's trusted bootstrap ACL. Widening those
+  grants requires `admin` on the view root; retaining or narrowing them does
+  not itself require `admin`. Introduced descendant roots use their actual
+  governing ancestor policy and PROP-16's delegation check. Candidate ACL
+  grants MUST NOT establish the authority to install those same grants.
+
+  Historical verification of an initial comparison MUST use the exact trusted
+  original bootstrap ACL, bound to the original authoring authority, canonical
+  ref and writer epoch. The physical authoring authority MUST be established
+  by trusted configuration; a token issuer or store-expression name alone
+  does not identify it. The baseline MUST remain available independently of
+  mutable current policy, including after destination-only disclosure reopen.
+  Missing or mismatched original evidence MUST fail this comparison; an empty
+  candidate ACL MUST NOT be treated as evidence of an empty bootstrap ACL.
+  Pure verifiers MAY receive explicitly trusted original-context inputs;
+  native factories MUST bind them to protected authority configuration.
+  Historical token checks remain separate from current ACL intersections
+  under PROV-4. No bootstrap field is added to the signed commit encoding.
 - **[AUTH-29]** Because a root is the unit of authorization, an
   implementation MUST NOT offer per-entry permissions. A namespace that
   needs a permission boundary at a path MUST make that path a root with a
