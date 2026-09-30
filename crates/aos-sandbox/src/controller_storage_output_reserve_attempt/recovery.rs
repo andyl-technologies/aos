@@ -16,8 +16,8 @@ use aos_proto::aos::sandbox::local::v1::{
 };
 use aos_sandbox_core::format::decode_broker_authorization_plan;
 use aos_sandbox_core::{
-    BrokerAudience, DecodeLimits, ExecutionId, MediaType, ObjectDigest, OperationId, PortableMediaType,
-    ProtocolId, ProtocolVersion, descriptor_for_bytes,
+    BrokerAudience, DecodeLimits, ExecutionId, MediaType, ObjectDigest, OperationId,
+    PortableMediaType, ProtocolId, ProtocolVersion, descriptor_for_bytes,
 };
 use aos_sandbox_protocol::storage_output_reserve::authority_archive::{
     HistoricalStorageOutputArchiveErrorV1, HistoricalStorageOutputAuthorityArchiveV1,
@@ -200,10 +200,12 @@ fn decode_selected(
             validate_carrier_message(&loaded.attempt, &loaded.companion, carrier.message())?;
             let quartet = carrier.message().authorization.as_option()
                 .ok_or(HistoricalStorageOutputRetentionErrorV1::Invalid)?;
-            decoded_publication.require_expected_lease(
-                &quartet.ownership_lease,
-                &quartet.ownership_lease_signature,
-            ).map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
+            decoded_publication
+                .require_expected_lease(
+                    &quartet.ownership_lease,
+                    &quartet.ownership_lease_signature,
+                )
+                .map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
             Ok(HistoricalStorageOutputArchiveStateV1::CompleteHistoricalArchive(loaded))
         }
     }
@@ -295,6 +297,7 @@ fn reconstruct_publication(
     if encoded[count..].iter().any(Option::is_some) {
         return Err(HistoricalStorageOutputRetentionErrorV1::Invalid);
     }
+
     let mut publication = Vec::with_capacity(first.full_length);
     for (index, bytes) in encoded[..count].iter().enumerate() {
         let chunk = if index == 0 {
@@ -315,13 +318,16 @@ fn reconstruct_publication(
         }
         publication.extend_from_slice(chunk.payload());
     }
+
     if publication.len() != first.full_length {
         return Err(HistoricalStorageOutputRetentionErrorV1::Invalid);
     }
+
     // Unsupported carriers still require this complete structural decode. The
     // supported branch reuses its exact lease bytes, not another full decode.
     let decoded = decode_historical_output_publication_v1(&publication, publication_digest)
         .map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
+
     Ok((publication, decoded))
 }
 
@@ -342,7 +348,9 @@ mod tests {
             create_operation,
             digest,
             publication,
-        ).unwrap();
+        )
+        .unwrap();
+
         assert_eq!(chunks.len(), 1);
         chunks.pop().unwrap().into_record_parts().1
     }
@@ -364,7 +372,8 @@ mod tests {
             create_operation,
             prepared.digest(),
             &[Some(&encoded), None],
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(publication, prepared.canonical_bytes());
         assert!(matches!(
@@ -393,11 +402,21 @@ mod tests {
 
         for (execution, create_operation, digest) in foreign {
             assert!(matches!(
-                reconstruct_publication(execution, create_operation, digest, &[Some(&encoded), None]),
+                reconstruct_publication(
+                    execution,
+                    create_operation,
+                    digest,
+                    &[Some(&encoded), None],
+                ),
                 Err(HistoricalStorageOutputRetentionErrorV1::Invalid),
             ));
         }
-        for chunks in [[None, None], [None, Some(encoded.as_slice())], [Some(encoded.as_slice()); 2]] {
+
+        for chunks in [
+            [None, None],
+            [None, Some(encoded.as_slice())],
+            [Some(encoded.as_slice()); 2],
+        ] {
             assert!(matches!(
                 reconstruct_publication(execution, create_operation, digest, &chunks),
                 Err(HistoricalStorageOutputRetentionErrorV1::Invalid),
@@ -412,11 +431,21 @@ mod tests {
         let create_operation = OperationId::from_bytes([2; 16]);
         let mut malformed = prepared.canonical_bytes().to_vec();
         malformed[0] ^= 1;
-        let encoded = publication_chunk(execution, create_operation, prepared.digest(), &malformed);
+        let encoded = publication_chunk(
+            execution,
+            create_operation,
+            prepared.digest(),
+            &malformed,
+        );
         assert!(HistoricalOutputPublicationChunkViewV1::decode(&encoded).is_ok());
 
         assert!(matches!(
-            reconstruct_publication(execution, create_operation, prepared.digest(), &[Some(&encoded), None]),
+            reconstruct_publication(
+                execution,
+                create_operation,
+                prepared.digest(),
+                &[Some(&encoded), None],
+            ),
             Err(HistoricalStorageOutputRetentionErrorV1::Invalid),
         ));
     }
@@ -439,7 +468,12 @@ mod tests {
 
         for encoded in [changed, trailing] {
             assert!(matches!(
-                reconstruct_publication(execution, create_operation, prepared.digest(), &[Some(&encoded), None]),
+                reconstruct_publication(
+                    execution,
+                    create_operation,
+                    prepared.digest(),
+                    &[Some(&encoded), None],
+                ),
                 Err(HistoricalStorageOutputRetentionErrorV1::Invalid),
             ));
         }

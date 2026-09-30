@@ -1304,9 +1304,11 @@ pub(crate) fn validate_historical_output_publication_v1(
     expected_lease: Option<(&[u8], &[u8])>,
 ) -> Result<(), AuthorityPublicationError> {
     let decoded = decode_historical_output_publication_v1(bytes, expected_digest)?;
+
     if let Some((lease, signature)) = expected_lease {
         decoded.require_expected_lease(lease, signature)?;
     }
+
     Ok(())
 }
 
@@ -1334,6 +1336,7 @@ impl DecodedHistoricalOutputPublicationV1 {
         {
             return Err(AuthorityPublicationError::CorruptCurrent);
         }
+
         Ok(())
     }
 }
@@ -1351,6 +1354,7 @@ pub(crate) fn decode_historical_output_publication_v1(
     expected_digest: ObjectDigest,
 ) -> Result<DecodedHistoricalOutputPublicationV1, AuthorityPublicationError> {
     let (_, artifacts) = format::decode_prepared_with_artifacts(bytes, expected_digest)?;
+
     Ok(DecodedHistoricalOutputPublicationV1 {
         lease: artifacts.lease,
     })
@@ -1514,7 +1518,8 @@ mod historical_output_readback_tests {
     fn historical_readback_preserves_exact_lease_comparison_and_unit_validation() {
         let (_, prepared) = tests::activation_fixture(1);
         let bytes = prepared.canonical_bytes();
-        let (_, artifacts) = format::decode_prepared_with_artifacts(bytes, prepared.digest()).unwrap();
+        let (_, artifacts) =
+            format::decode_prepared_with_artifacts(bytes, prepared.digest()).unwrap();
         let lease = artifacts.lease.canonical_lease();
         let signature = artifacts.lease.canonical_signature();
 
@@ -1523,20 +1528,25 @@ mod historical_output_readback_tests {
         assert!(decoded.require_expected_lease(lease, signature).is_ok());
         assert!(decoded.require_expected_lease(lease, signature).is_ok());
         assert!(validate_historical_output_publication_v1(bytes, prepared.digest(), None).is_ok());
-        assert!(validate_historical_output_publication_v1(
-            bytes,
-            prepared.digest(),
-            Some((lease, signature)),
-        ).is_ok());
+        assert!(
+            validate_historical_output_publication_v1(
+                bytes,
+                prepared.digest(),
+                Some((lease, signature)),
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn historical_readback_and_unit_wrapper_reject_each_changed_lease_preimage() {
         let (_, prepared) = tests::activation_fixture(1);
         let bytes = prepared.canonical_bytes();
-        let (_, artifacts) = format::decode_prepared_with_artifacts(bytes, prepared.digest()).unwrap();
+        let (_, artifacts) =
+            format::decode_prepared_with_artifacts(bytes, prepared.digest()).unwrap();
         let lease = artifacts.lease.canonical_lease();
         let signature = artifacts.lease.canonical_signature();
+
         let mut changed_lease = lease.to_vec();
         changed_lease[0] ^= 1;
         let mut changed_signature = signature.to_vec();
@@ -1587,18 +1597,27 @@ mod historical_output_readback_tests {
             changed[offset] ^= 0xff;
             let digest = publication_digest(&changed);
 
-            assert!(matches!(
-                decode_historical_output_publication_v1(&changed, digest),
-                Err(AuthorityPublicationError::CorruptCurrent),
-            ), "decoded malformed artifact at {offset}");
-            assert!(matches!(
-                validate_historical_output_publication_v1(&changed, digest, None),
-                Err(AuthorityPublicationError::CorruptCurrent),
-            ), "unit wrapper accepted malformed artifact at {offset}");
-            assert!(matches!(
-                decode_prepared(&changed, digest),
-                Err(AuthorityPublicationError::CorruptCurrent),
-            ), "original decoder accepted malformed artifact at {offset}");
+            assert!(
+                matches!(
+                    decode_historical_output_publication_v1(&changed, digest),
+                    Err(AuthorityPublicationError::CorruptCurrent),
+                ),
+                "decoded malformed artifact at {offset}"
+            );
+            assert!(
+                matches!(
+                    validate_historical_output_publication_v1(&changed, digest, None),
+                    Err(AuthorityPublicationError::CorruptCurrent),
+                ),
+                "unit wrapper accepted malformed artifact at {offset}"
+            );
+            assert!(
+                matches!(
+                    decode_prepared(&changed, digest),
+                    Err(AuthorityPublicationError::CorruptCurrent),
+                ),
+                "original decoder accepted malformed artifact at {offset}"
+            );
         }
     }
 
