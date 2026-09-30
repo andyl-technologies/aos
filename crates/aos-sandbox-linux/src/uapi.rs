@@ -63,6 +63,208 @@ pub(crate) struct RawSeqpacketMessage {
     pub(crate) ancillary: Vec<RawAncillary>,
 }
 
+/// Selects only the existing consuming behavior or original retaining custody.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum ReceiveCustodyPolicyV1 {
+    Legacy,
+    Retaining,
+}
+
+#[derive(Debug)]
+pub(crate) struct RawReceiveFailureV1 {
+    pub(crate) source: Error,
+    pub(crate) nonconsuming_syscall: bool,
+}
+
+struct ReceivedDescriptorSlotV1 {
+    control_offset: usize,
+    ordinal: usize,
+    raw: RawFd,
+    screened: bool,
+}
+
+/// Every variant records missing original custody, never descriptor drain.
+enum MissingOriginalDescriptorCustodyV1 {
+    ForbiddenRing,
+    Unidentifiable,
+    Unscreened,
+}
+
+struct DisposedDescriptorDataV1 {
+    control_offset: usize,
+    ordinal: usize,
+    historical_raw: RawFd,
+    reason: MissingOriginalDescriptorCustodyV1,
+    // None with primary_cause=true refers to the owning receive error's exact
+    // primary typed cause. A failed pidfd candidate keeps its additional cause.
+    primary_cause: bool,
+    secondary_cause: Option<Error>,
+    target: Option<crate::no_setid::ReceivedDescriptorLinkDataV1>,
+}
+
+/// Owns initialized control storage and every adopted slot before any check.
+pub(crate) struct RawReceiveObservationV1 {
+    control: [usize; SEQPACKET_CONTROL_BYTES / size_of::<usize>()],
+    pub(crate) received: bool,
+    pub(crate) reported: isize,
+    pub(crate) flags: i32,
+    pub(crate) used: usize,
+    pub(crate) parser_offset: usize,
+    pub(crate) requested_flags: i32,
+    control_parsed: bool,
+    pub(crate) ancillary: Vec<Option<RawAncillary>>,
+    slots: Vec<ReceivedDescriptorSlotV1>,
+    disposed: Vec<DisposedDescriptorDataV1>,
+}
+
+impl RawReceiveObservationV1 {
+    pub(crate) fn empty() -> Self {
+        Self {
+            control: [0; SEQPACKET_CONTROL_BYTES / size_of::<usize>()],
+            received: false,
+            reported: 0,
+            flags: 0,
+            used: 0,
+            parser_offset: 0,
+            requested_flags: 0,
+            control_parsed: false,
+            ancillary: Vec::with_capacity(SEQPACKET_CONTROL_BYTES / size_of::<libc::cmsghdr>()),
+            slots: Vec::with_capacity(SEQPACKET_CONTROL_BYTES / size_of::<RawFd>()),
+            disposed: Vec::with_capacity(SEQPACKET_CONTROL_BYTES / size_of::<RawFd>()),
+        }
+    }
+
+    pub(crate) fn legacy_slots(ancillary: Vec<RawAncillary>) -> Self {
+        let mut observed = Self::empty();
+        observed.ancillary = ancillary.into_iter().map(Some).collect();
+        observed
+    }
+
+    pub(crate) fn captured_length(&self, ceiling: usize) -> usize {
+        usize::try_from(self.reported).unwrap_or(0).min(ceiling)
+    }
+
+    pub(crate) fn disposed_count(&self) -> usize { self.disposed.len() }
+
+    /// Reports an unparsed or kernel-discarded tail without guessing its slots.
+    pub(crate) fn control_custody(&self) -> ReceiveControlCustodyV1 {
+        if !self.received { ReceiveControlCustodyV1::NotReceived }
+        else if self.flags & libc::MSG_CTRUNC != 0 { ReceiveControlCustodyV1::KernelDiscardedTail }
+        else if !self.control_parsed { ReceiveControlCustodyV1::UnparsedTail }
+        else { ReceiveControlCustodyV1::ParsedCapturedControl }
+    }
+
+    pub(crate) fn control_data(&self) -> Vec<u8> {
+        self.control.iter().flat_map(|word| word.to_ne_bytes()).collect()
+    }
+
+    fn remember_slots(&mut self, offset: usize) {
+        let Some(Some(item)) = self.ancillary.last() else { return; };
+        match item {
+            RawAncillary::PidFd(fd) => self.slots.push(ReceivedDescriptorSlotV1 {
+                control_offset: offset, ordinal: 0, raw: fd.as_raw_fd(), screened: false,
+            }),
+            RawAncillary::Rights(fds) | RawAncillary::Malformed(fds) => {
+                for (ordinal, fd) in fds.iter().enumerate() {
+                    self.slots.push(ReceivedDescriptorSlotV1 {
+                        control_offset: offset, ordinal, raw: fd.as_raw_fd(), screened: false,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn mark_screened(&mut self, raw: RawFd) {
+        if let Some(slot) = self.slots.iter_mut().find(|slot| slot.raw == raw) {
+            slot.screened = true;
+        }
+    }
+
+    pub(crate) fn screen_failed_pidfd(&mut self, index: usize) {
+        let Some(Some(RawAncillary::PidFd(fd))) = self.ancillary.get(index) else { return; };
+        let raw = fd.as_raw_fd();
+        match crate::no_setid::inspect_received_descriptor_data_v1(fd.as_fd()) {
+            Ok(_) => self.mark_screened(raw),
+            Err(failure) => {
+                self.dispose_at(index, 0, Some(failure), false);
+            }
+        }
+    }
+
+    fn dispose_at(
+        &mut self,
+        item_index: usize,
+        fd_index: usize,
+        failure: Option<crate::no_setid::ReceivedDescriptorInspectionFailureV1>,
+        primary_cause: bool,
+    ) -> Option<Error> {
+        let item = self.ancillary.get_mut(item_index)?;
+        let descriptor = match item.as_mut()? {
+            RawAncillary::Rights(fds) | RawAncillary::Malformed(fds) => {
+                if fd_index >= fds.len() { return None; }
+                fds.remove(fd_index)
+            }
+            RawAncillary::PidFd(_) => match item.take() {
+                Some(RawAncillary::PidFd(fd)) => fd,
+                other => { *item = other; return None; }
+            },
+            _ => return None,
+        };
+        let raw = descriptor.as_raw_fd();
+        drop(descriptor);
+
+        // Only historical words and causes are installed AFTER actual disposal.
+        let slot = self.slots.iter().find(|slot| slot.raw == raw);
+        let (control_offset, ordinal) = slot.map(|slot| (slot.control_offset, slot.ordinal))
+            .unwrap_or((self.parser_offset, item_index));
+        let reason = match &failure {
+            Some(failure) if failure.target.is_some() => MissingOriginalDescriptorCustodyV1::ForbiddenRing,
+            Some(_) => MissingOriginalDescriptorCustodyV1::Unidentifiable,
+            None => MissingOriginalDescriptorCustodyV1::Unscreened,
+        };
+        let (cause, target) = match failure {
+            Some(failure) => (Some(failure.source), failure.target),
+            None => (None, None),
+        };
+        let (returned, secondary_cause) = if primary_cause { (cause, None) } else { (None, cause) };
+        self.disposed.push(DisposedDescriptorDataV1 {
+            control_offset, ordinal, historical_raw: raw, reason, primary_cause,
+            secondary_cause, target,
+        });
+        returned
+    }
+
+    pub(crate) fn dispose_unscreened(&mut self) {
+        for index in 0..self.ancillary.len() {
+            let mut offset = 0;
+            loop {
+                let raw = match self.ancillary[index].as_ref() {
+                    Some(RawAncillary::PidFd(fd)) if offset == 0 => Some(fd.as_raw_fd()),
+                    Some(RawAncillary::Rights(fds) | RawAncillary::Malformed(fds)) => {
+                        fds.get(offset).map(AsRawFd::as_raw_fd)
+                    }
+                    _ => None,
+                };
+                let Some(raw) = raw else { break; };
+                if self.slots.iter().any(|slot| slot.raw == raw && slot.screened) {
+                    offset += 1;
+                } else {
+                    self.dispose_at(index, offset, None, false);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReceiveControlCustodyV1 {
+    NotReceived,
+    UnparsedTail,
+    KernelDiscardedTail,
+    ParsedCapturedControl,
+}
+
 /// One bounded rtnetlink datagram and its kernel-address metadata.
 #[derive(Debug)]
 pub(crate) struct RawRtnetlinkResponse {
@@ -1936,6 +2138,25 @@ pub(crate) fn recv_seqpacket(
     payload: &mut [u8],
     flags: i32,
 ) -> Result<RawSeqpacketMessage> {
+    let mut observed = RawReceiveObservationV1::empty();
+    let bytes = recv_seqpacket_staged(fd, payload, flags, &mut observed, ReceiveCustodyPolicyV1::Legacy)
+        .map_err(|failure| failure.source)?;
+    Ok(RawSeqpacketMessage {
+        bytes,
+        flags: observed.flags,
+        ancillary: observed.ancillary.into_iter().flatten().collect(),
+    })
+}
+
+/// Receives into an already guarded owner using the sole audited syscall/parser.
+pub(crate) fn recv_seqpacket_staged(
+    fd: BorrowedFd<'_>,
+    payload: &mut [u8],
+    flags: i32,
+    observed: &mut RawReceiveObservationV1,
+    policy: ReceiveCustodyPolicyV1,
+) -> std::result::Result<usize, RawReceiveFailureV1> {
+    observed.requested_flags = flags;
     let mut byte = 0_u8;
     let (payload_pointer, payload_length) = if payload.is_empty() {
         (std::ptr::addr_of_mut!(byte).cast(), 0)
@@ -1946,14 +2167,13 @@ pub(crate) fn recv_seqpacket(
         iov_base: payload_pointer,
         iov_len: payload_length,
     };
-    let mut control = [0_usize; SEQPACKET_CONTROL_BYTES / size_of::<usize>()];
     // The all-zero bit pattern is the required initial state for `msghdr`.
     // SAFETY: `msghdr` contains only pointers and integer fields for which
     // null/zero is valid.
     let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
     message.msg_iov = std::ptr::addr_of_mut!(vector);
     message.msg_iovlen = 1;
-    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_control = observed.control.as_mut_ptr().cast();
     message.msg_controllen = SEQPACKET_CONTROL_BYTES;
 
     // SAFETY: every pointer in `message` targets live writable storage for
@@ -1967,45 +2187,90 @@ pub(crate) fn recv_seqpacket(
         )
     };
     if result < 0 {
-        return Err(Error::syscall("recvmsg(SOCK_SEQPACKET)"));
+        return Err(RawReceiveFailureV1 {
+            source: Error::syscall("recvmsg(SOCK_SEQPACKET)"),
+            nonconsuming_syscall: true,
+        });
     }
-    let bytes = usize::try_from(result).map_err(|_| Error::MalformedKernelResponse {
-        object: "SOCK_SEQPACKET receive",
-        message: "kernel returned a negative or oversized byte count".to_string(),
+
+    // These actual syscall facts and the initialized control/payload buffers
+    // belong to the attempt before conversion, parsing, or descriptor checks.
+    observed.received = true;
+    observed.reported = result;
+    observed.flags = message.msg_flags;
+    observed.used = message.msg_controllen;
+    let bytes = usize::try_from(result).map_err(|_| RawReceiveFailureV1 {
+        source: Error::MalformedKernelResponse {
+            object: "SOCK_SEQPACKET receive",
+            message: "kernel returned a negative or oversized byte count".to_string(),
+        },
+        nonconsuming_syscall: false,
     })?;
-    let ancillary = decode_control(&control, message.msg_controllen)?;
+    if let Err(source) = decode_control_policy(observed, policy) {
+        return Err(RawReceiveFailureV1 { source, nonconsuming_syscall: false });
+    }
 
     // A transferred SQPOLL ring can submit work without io_uring syscalls in
     // this process. Reject it here, including inside malformed ancillary data,
     // before any caller can assign a descriptor role.
-    for item in &ancillary {
-        if let RawAncillary::Rights(descriptors) | RawAncillary::Malformed(descriptors) = item {
-            for descriptor in descriptors {
-                crate::no_setid::reject_io_uring_descriptor(descriptor.as_fd())?;
+    // Complete parsing precedes the original ordered procfs checks. A later
+    // malformed cmsg therefore still wins over an earlier ring descriptor.
+    for index in 0..observed.ancillary.len() {
+        let count = match observed.ancillary[index].as_ref() {
+            Some(RawAncillary::Rights(fds) | RawAncillary::Malformed(fds)) => fds.len(),
+            _ => 0,
+        };
+        for position in 0..count {
+            let Some(RawAncillary::Rights(fds) | RawAncillary::Malformed(fds)) =
+                observed.ancillary[index].as_ref()
+            else { continue; };
+            let descriptor = &fds[position];
+            let raw = descriptor.as_raw_fd();
+            if policy == ReceiveCustodyPolicyV1::Legacy {
+                crate::no_setid::reject_io_uring_descriptor(descriptor.as_fd())
+                    .map_err(|source| RawReceiveFailureV1 { source, nonconsuming_syscall: false })?;
+            } else {
+                match crate::no_setid::inspect_received_descriptor_data_v1(descriptor.as_fd()) {
+                    Ok(_) => observed.mark_screened(raw),
+                    Err(failure) => {
+                        let source = observed.dispose_at(index, position, Some(failure), true);
+                        observed.dispose_unscreened();
+                        return Err(RawReceiveFailureV1 {
+                            source: source.unwrap_or_else(|| Error::invalid(
+                                "received descriptor", "descriptor disposal lost its denial cause",
+                            )),
+                            nonconsuming_syscall: false,
+                        });
+                    }
+                }
             }
         }
     }
-
-    Ok(RawSeqpacketMessage {
-        bytes,
-        flags: message.msg_flags,
-        ancillary,
-    })
+    Ok(bytes)
 }
 
-fn decode_control(control: &[usize], used: usize) -> Result<Vec<RawAncillary>> {
-    if used > std::mem::size_of_val(control) {
+fn decode_control_policy(observed: &mut RawReceiveObservationV1, policy: ReceiveCustodyPolicyV1) -> Result<()> {
+    let result = decode_control(observed);
+    if result.is_err() && policy == ReceiveCustodyPolicyV1::Retaining {
+        observed.dispose_unscreened();
+    }
+    result
+}
+
+fn decode_control(observed: &mut RawReceiveObservationV1) -> Result<()> {
+    let used = observed.used;
+    if used > std::mem::size_of_val(&observed.control) {
         return Err(Error::MalformedKernelResponse {
             object: "SOCK_SEQPACKET ancillary data",
             message: "kernel returned an oversized control length".to_string(),
         });
     }
-    let bytes = control.as_ptr().cast::<u8>();
+    let bytes = observed.control.as_ptr().cast::<u8>();
     let header_size = size_of::<libc::cmsghdr>();
     let data_offset = cmsg_align(header_size);
     let mut offset = 0;
-    let mut output = Vec::new();
     while offset + header_size <= used {
+        observed.parser_offset = offset;
         // SAFETY: bounds above cover a complete header. `read_unaligned`
         // avoids assuming stronger alignment for subsequent headers.
         let header = unsafe { std::ptr::read_unaligned(bytes.add(offset).cast::<libc::cmsghdr>()) };
@@ -2020,54 +2285,72 @@ fn decode_control(control: &[usize], used: usize) -> Result<Vec<RawAncillary>> {
         // SAFETY: the checked cmsg length covers the payload range.
         let payload =
             unsafe { std::slice::from_raw_parts(bytes.add(offset + data_offset), payload_length) };
-        output.push(decode_cmsg(header.cmsg_level, header.cmsg_type, payload));
+        // Install the owning slot before adopting any descriptor. The adopter
+        // pushes directly into this guarded slot, not an unguarded local table.
+        observed.ancillary.push(Some(RawAncillary::Malformed(Vec::new())));
+        if let Some(Some(slot)) = observed.ancillary.last_mut() {
+            decode_cmsg(header.cmsg_level, header.cmsg_type, payload, slot);
+        }
+        observed.remember_slots(offset);
         offset = offset.saturating_add(cmsg_align(length));
     }
-    Ok(output)
+    observed.parser_offset = offset;
+    observed.control_parsed = true;
+    Ok(())
 }
 
-fn decode_cmsg(level: i32, kind: i32, payload: &[u8]) -> RawAncillary {
+fn decode_cmsg(level: i32, kind: i32, payload: &[u8], slot: &mut RawAncillary) {
     if level != libc::SOL_SOCKET {
-        return RawAncillary::Unknown { level, kind };
+        *slot = RawAncillary::Unknown { level, kind };
+        return;
     }
     if kind == libc::SCM_CREDENTIALS && payload.len() == size_of::<libc::ucred>() {
         // SAFETY: the exact length was checked and unaligned reads are valid.
-        return RawAncillary::Credentials(unsafe {
+        *slot = RawAncillary::Credentials(unsafe {
             std::ptr::read_unaligned(payload.as_ptr().cast::<libc::ucred>())
         });
+        return;
     }
     if kind == SCM_SECURITY {
-        return RawAncillary::SecurityContext(payload.to_vec());
+        *slot = RawAncillary::SecurityContext(payload.to_vec());
+        return;
     }
     if kind == libc::SCM_RIGHTS || kind == SCM_PIDFD {
-        let descriptors = adopt_descriptors(payload);
-        if kind == SCM_PIDFD && payload.len() == size_of::<RawFd>() && descriptors.len() == 1 {
-            let mut descriptors = descriptors;
-            return match descriptors.pop() {
-                Some(fd) => RawAncillary::PidFd(fd),
-                None => RawAncillary::Malformed(descriptors),
-            };
+        // Reserve before adopting the first FD. Each subsequent push fits the
+        // exact bounded capacity, so no owning temporary crosses allocation.
+        *slot = RawAncillary::Malformed(Vec::with_capacity(payload.len() / size_of::<RawFd>()));
+        if let RawAncillary::Malformed(descriptors) = slot {
+            adopt_descriptors(payload, descriptors);
         }
-        return if kind == libc::SCM_RIGHTS && payload.len().is_multiple_of(size_of::<RawFd>()) {
-            RawAncillary::Rights(descriptors)
-        } else {
-            RawAncillary::Malformed(descriptors)
-        };
+        let promote_pidfd = matches!(slot, RawAncillary::Malformed(fds) if
+            kind == SCM_PIDFD && payload.len() == size_of::<RawFd>() && fds.len() == 1);
+        let promote_rights = kind == libc::SCM_RIGHTS && payload.len().is_multiple_of(size_of::<RawFd>());
+        if promote_pidfd || promote_rights {
+            let staged = std::mem::replace(slot, RawAncillary::Malformed(Vec::new()));
+            if let RawAncillary::Malformed(mut fds) = staged {
+                *slot = if promote_pidfd {
+                    match fds.pop() {
+                        Some(fd) => RawAncillary::PidFd(fd),
+                        None => RawAncillary::Malformed(fds),
+                    }
+                } else { RawAncillary::Rights(fds) };
+            } else {
+                *slot = staged;
+            }
+        }
+        return;
     }
-    RawAncillary::Unknown { level, kind }
+    *slot = RawAncillary::Unknown { level, kind };
 }
 
-fn adopt_descriptors(payload: &[u8]) -> Vec<OwnedFd> {
-    payload
-        .chunks_exact(size_of::<RawFd>())
-        .filter_map(|bytes| {
+fn adopt_descriptors(payload: &[u8], descriptors: &mut Vec<OwnedFd>) {
+    for bytes in payload.chunks_exact(size_of::<RawFd>()) {
             // SAFETY: a complete native fd integer is present. recvmsg
             // installed each non-negative descriptor into this process and
             // ownership has not otherwise been transferred.
             let raw = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<RawFd>()) };
-            (raw >= 0).then(|| unsafe { OwnedFd::from_raw_fd(raw) })
-        })
-        .collect()
+            if raw >= 0 { descriptors.push(unsafe { OwnedFd::from_raw_fd(raw) }); }
+    }
 }
 
 const fn cmsg_align(length: usize) -> usize {
@@ -2496,6 +2779,155 @@ fn unit_result(result: libc::c_long, operation: &'static str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn control_fixture(bytes: &[u8]) -> RawReceiveObservationV1 {
+        let mut observed = RawReceiveObservationV1::empty();
+        observed.received = true;
+        observed.used = bytes.len();
+        for (index, word) in observed.control.iter_mut().enumerate() {
+            let mut native = [0; size_of::<usize>()];
+            let start = index * native.len();
+            if start < bytes.len() {
+                let count = native.len().min(bytes.len() - start);
+                native[..count].copy_from_slice(&bytes[start..start + count]);
+            }
+            *word = usize::from_ne_bytes(native);
+        }
+        observed
+    }
+
+    fn append_control_fixture(output: &mut Vec<u8>, kind: i32, payload: &[u8]) {
+        let length = cmsg_align(size_of::<libc::cmsghdr>()) + payload.len();
+        output.extend_from_slice(&length.to_ne_bytes());
+        output.extend_from_slice(&libc::SOL_SOCKET.to_ne_bytes());
+        output.extend_from_slice(&kind.to_ne_bytes());
+        output.resize(output.len() + cmsg_align(size_of::<libc::cmsghdr>()) - size_of::<usize>() - 8, 0);
+        output.extend_from_slice(payload);
+        output.resize(cmsg_align(output.len()), 0);
+    }
+
+    #[test]
+    fn malformed_later_control_disposes_all_adopted_unscreened_prefix_slots() {
+        use std::os::fd::IntoRawFd as _;
+
+        for kind in [libc::SCM_RIGHTS, SCM_PIDFD] {
+            // This fixture transfers an actually owned ordinary FD into the
+            // sole adopter. It is not a claim that a kernel produced malformed
+            // control or that this ordinary FD was a valid SCM_PIDFD.
+            let raw = std::fs::File::open("/dev/null").unwrap().into_raw_fd();
+            let mut bytes = Vec::new();
+            append_control_fixture(&mut bytes, kind, &raw.to_ne_bytes());
+            bytes.extend_from_slice(&0_usize.to_ne_bytes());
+            bytes.extend_from_slice(&libc::SOL_SOCKET.to_ne_bytes());
+            bytes.extend_from_slice(&libc::SCM_RIGHTS.to_ne_bytes());
+            let mut observed = control_fixture(&bytes);
+            let error = decode_control_policy(&mut observed, ReceiveCustodyPolicyV1::Retaining).unwrap_err();
+
+            assert!(matches!(error, Error::MalformedKernelResponse { .. }));
+            assert!(!raw_fd_is_open(raw));
+            assert_eq!(observed.disposed.len(), 1);
+            let disposed = &observed.disposed[0];
+            assert_eq!(disposed.control_offset, 0);
+            assert_eq!(disposed.ordinal, 0);
+            assert_eq!(disposed.historical_raw, raw);
+            assert!(matches!(disposed.reason, MissingOriginalDescriptorCustodyV1::Unscreened));
+            assert_eq!(observed.control_custody(), ReceiveControlCustodyV1::UnparsedTail);
+            assert_eq!(&observed.control_data()[..bytes.len()], bytes.as_slice());
+            assert_eq!(observed.control_data().len(), 512);
+        }
+    }
+
+    #[test]
+    fn later_malformed_control_keeps_legacy_precedence_without_procfs_inspection() {
+        use std::os::fd::IntoRawFd as _;
+
+        let raw = std::fs::File::open("/dev/null").unwrap().into_raw_fd();
+        let mut bytes = Vec::new();
+        append_control_fixture(&mut bytes, libc::SCM_RIGHTS, &raw.to_ne_bytes());
+        bytes.extend_from_slice(&0_usize.to_ne_bytes());
+        bytes.extend_from_slice(&libc::SOL_SOCKET.to_ne_bytes());
+        bytes.extend_from_slice(&SCM_PIDFD.to_ne_bytes());
+        let mut observed = control_fixture(&bytes);
+        let error = decode_control_policy(&mut observed, ReceiveCustodyPolicyV1::Legacy).unwrap_err();
+
+        assert!(matches!(error, Error::MalformedKernelResponse { .. }));
+        assert!(raw_fd_is_open(raw));
+        assert!(observed.disposed.is_empty());
+        assert!(observed.slots.iter().all(|slot| !slot.screened));
+        drop(observed);
+        assert!(!raw_fd_is_open(raw));
+    }
+
+    #[test]
+    fn denial_disposal_keeps_only_bounded_historical_data_in_each_table_position() {
+        for denied in 0..3 {
+            let mut observed = RawReceiveObservationV1::empty();
+            observed.ancillary.push(Some(RawAncillary::Rights((0..3)
+                .map(|_| OwnedFd::from(std::fs::File::open("/dev/null").unwrap())).collect())));
+            observed.remember_slots(24);
+            let raw = match observed.ancillary[0].as_ref().unwrap() {
+                RawAncillary::Rights(fds) => fds[denied].as_raw_fd(),
+                _ => unreachable!(),
+            };
+            // Preclassified denial fixture exercises disposal ordering only;
+            // it does not pretend this ordinary FD is an actual io_uring ring.
+            let failure = crate::no_setid::ReceivedDescriptorInspectionFailureV1 {
+                source: Error::invalid("received descriptor", "io_uring ring descriptor is forbidden"),
+                target: Some(crate::no_setid::ReceivedDescriptorLinkDataV1::Exact(b"anon_inode:[io_uring]".to_vec().into_boxed_slice())),
+            };
+            let source = observed.dispose_at(0, denied, Some(failure), true).unwrap();
+
+            assert!(!raw_fd_is_open(raw));
+            assert!(matches!(source, Error::InvalidInput { .. }));
+            assert_eq!(observed.disposed[0].ordinal, denied);
+            assert_eq!(observed.disposed[0].control_offset, 24);
+            assert!(observed.disposed[0].primary_cause);
+            assert!(observed.disposed[0].secondary_cause.is_none());
+            assert!(matches!(observed.disposed[0].reason, MissingOriginalDescriptorCustodyV1::ForbiddenRing));
+            observed.dispose_unscreened();
+            assert_eq!(observed.disposed.len(), 3);
+        }
+    }
+
+    #[test]
+    fn captured_payload_count_and_control_tail_status_never_include_initialized_suffixes() {
+        let mut observed = RawReceiveObservationV1::empty();
+        assert_eq!(observed.control_custody(), ReceiveControlCustodyV1::NotReceived);
+        observed.received = true;
+        observed.reported = 3;
+        assert_eq!(observed.captured_length(12), 3);
+        observed.reported = 100;
+        assert_eq!(observed.captured_length(1), 1);
+        observed.flags = libc::MSG_CTRUNC;
+        assert_eq!(observed.control_custody(), ReceiveControlCustodyV1::KernelDiscardedTail);
+    }
+
+    #[test]
+    fn unidentifiable_disposal_preserves_the_additional_typed_procfs_cause() {
+        let mut observed = RawReceiveObservationV1::empty();
+        let fd = OwnedFd::from(std::fs::File::open("/dev/null").unwrap());
+        let raw = fd.as_raw_fd();
+        observed.ancillary.push(Some(RawAncillary::PidFd(fd)));
+        observed.remember_slots(40);
+        // The denied inspection is a private disposition fixture. An actual
+        // procfs-denied installed policy still requires its deferred harness.
+        let failure = crate::no_setid::ReceivedDescriptorInspectionFailureV1 {
+            source: Error::Syscall {
+                operation: "inspect received descriptor",
+                source: std::io::Error::from_raw_os_error(libc::EACCES),
+            },
+            target: None,
+        };
+        observed.dispose_at(0, 0, Some(failure), false);
+
+        assert!(!raw_fd_is_open(raw));
+        let disposed = &observed.disposed[0];
+        assert_eq!(disposed.historical_raw, raw);
+        assert!(matches!(disposed.reason, MissingOriginalDescriptorCustodyV1::Unidentifiable));
+        assert!(matches!(&disposed.secondary_cause, Some(Error::Syscall { source, .. })
+            if source.raw_os_error() == Some(libc::EACCES)));
+        assert!(disposed.target.is_none());
+    }
 
     #[test]
     fn vendored_uapi_layouts_match_linux_6_18() {

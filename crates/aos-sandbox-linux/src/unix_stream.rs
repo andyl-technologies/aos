@@ -27,6 +27,9 @@ mod subject;
 
 pub use subject::UnixStreamSubjectChunk;
 
+/// Owns a redacted failed strict stream receive and its lower partial custody.
+pub type RetainedUnixStreamSubjectReceiveErrorV1 = crate::seqpacket::RetainedSeqpacketReceiveErrorV1;
+
 /// Owns one connected Unix stream and its kernel-pinned connection peer.
 #[derive(Debug)]
 pub struct RetainedUnixStream {
