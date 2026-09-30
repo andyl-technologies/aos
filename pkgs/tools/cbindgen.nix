@@ -3,8 +3,8 @@
   mkCargoPackage,
   fetchurl,
   fetchCargoDeps,
+  buildPackages,
   rust,
-  cython,
 }: let
   version = "0.29.4";
   src = fetchurl {
@@ -20,7 +20,7 @@ in
   mkCargoPackage {
     pname = "cbindgen";
     inherit version src cargoDeps;
-    buildDeps = [cython];
+    buildDeps = [buildPackages.cython];
     runtimeDeps = [rust];
     doCheck = true;
 
