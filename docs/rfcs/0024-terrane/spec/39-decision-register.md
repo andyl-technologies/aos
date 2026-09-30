@@ -1098,6 +1098,19 @@ is added rather than editing history.
     absent-field bytes remain readable with explicitly unknown completeness.
     This correction precedes T1's encoding and store-trait freeze.
 
+- **[D-68] Match fork authorization to the unchanged-tree fork commit.**
+  - **Status:** Decided
+  - **Decision:** The fork verb table describes ALG-32's fresh commit with
+    the source's unchanged tree and the source commit as its parent. The
+    principal needs `fork` on the source and `commit` on the destination,
+    as AUTH-23 already requires. No tree node is read or rewritten by fork.
+  - **Rationale:** The previous verb table said the first commit was the
+    source commit itself, contradicting ALG-32's parent requirement and
+    losing the new branch's authoring context. AUTH-23 already supplies the
+    necessary destination write authority, without granting source writes.
+  - **Affects:** ALG-32 and AUTH-22 to AUTH-24. Encodings, verb bit values
+    and requirement IDs remain unchanged.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

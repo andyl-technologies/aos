@@ -158,7 +158,7 @@ the token must satisfy. Caveats are how a token is bound to a context.
 | Verb | Authorizes |
 | --- | --- |
 | `read` | Reading the ref, its reflog, and every object reachable from its commit within the matched roots; negotiating content; minting presigned reads for that content |
-| `fork` | Creating a new branch whose first commit is the matched ref's current commit |
+| `fork` | Creating a new branch whose fresh first commit has the matched ref's current tree and that source commit as its parent (ALG-32); destination `commit` authority is also required (AUTH-23) |
 | `commit` | Advancing the matched ref by conditional write, including merges into it, and writing packs, trees, and commits it will reference |
 | `tag` | Creating a tag pointing at a commit reachable from the matched ref |
 | `admin` | Changing `acl` and other authority-bearing properties on matched roots, deleting refs, and forcing a ref to an arbitrary commit |
