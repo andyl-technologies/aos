@@ -79,7 +79,9 @@ struct RulesetRequest {
     input_policy: Policy,
     forward_policy: Policy,
     trusted_interfaces: Vec<String>,
+    #[serde(rename = "allowedTCP")]
     allowed_tcp: Vec<u16>,
+    #[serde(rename = "allowedUDP")]
     allowed_udp: Vec<u16>,
     #[serde(default)]
     ingress: BTreeMap<String, IngressPolicy>,
@@ -514,6 +516,20 @@ mod tests {
             ingress: BTreeMap::new(),
             forwarding: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn native_module_fields_round_trip_and_render() {
+        let value = json!({
+            "defaultPolicy": "drop", "forwardPolicy": "accept",
+            "trustedInterfaces": ["lo"], "allowedTCP": [443], "allowedUDP": [53]
+        });
+        let request: RulesetRequest = serde_json::from_value(value).unwrap();
+        validate_request(&request).unwrap();
+        assert!(render_ruleset(&request).contains("tcp dport { 443 } accept"));
+        let encoded = serde_json::to_value(request).unwrap();
+        assert_eq!(encoded["allowedTCP"], json!([443]));
+        assert!(encoded.get("allowedTcp").is_none());
     }
 
     #[test]

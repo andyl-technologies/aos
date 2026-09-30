@@ -22,6 +22,8 @@
     fixtureConsumers = import ./fixture-consumers.nix;
     observerServices = import ./observer-services.nix;
     serviceManagement = import ./service-management.nix;
+    serviceFlights = import ./native-service-flights.nix;
+    filesystemFirewallFlights = import ../fleet/native-reference-filesystem-fixture-self-test.nix {inherit lib;};
     databaseConsumers = import ./database-consumers.nix;
     runtimeChecks = import ./runtime-checks.nix;
     referenceNginx = import ./reference-nginx.nix;
@@ -34,6 +36,8 @@
     measuredVar = import ./measured-var.nix;
     imageRetirement = import ./image-retirement.nix;
     provenanceProjection = import ./provenance-projection.nix;
+    selectedOutputContexts = builtins.isString (import ./selected-output-fixture.nix {inherit pkgs lib;}).drvPath;
+    selectedQualificationContexts = builtins.isString (import ./selected-qualification-fixture.nix {inherit pkgs lib;}).drvPath;
     configurationLower = import ./configuration-lower.nix {inherit lib pkgs;};
   };
   # Force truth as well as evaluation: false regression predicates must fail.
@@ -57,6 +61,9 @@ in
           script = ''
             export PYTHONDONTWRITEBYTECODE=1
             ${pkgs.python3}/bin/python3 ${../services/native-handler.py} ${../../pkgs/system/_systemd-abilities/service-handler.py}
+            ${pkgs.python3}/bin/python3 ${../services/native-flight-oracle.py} ${../fleet/native-reference-service-flights.py}
+            ${pkgs.python3}/bin/python3 ${../fleet/native-filesystem-firewall-oracles-self-test.py} ${../fleet/native-filesystem-firewall-oracles.py}
+            ${pkgs.python3}/bin/python3 ${../fleet/native-reference-filesystem-flights-self-test.py} ${../fleet/native-reference-filesystem-flights.py}
             ${pkgs.python3}/bin/python3 ${./managed-paths-test.py} ${../../pkgs/system/_aos-host-policy/managed-paths.py}
             ${pkgs.python3}/bin/python3 ${./network-handler-test.py} ${../../pkgs/system/_systemd-abilities/network-handler.py}
             ${pkgs.python3}/bin/python3 ${../abilities/reference-nginx}/test-binding-handler.py
