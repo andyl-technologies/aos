@@ -95,14 +95,19 @@ pub(in crate::registry_ops) fn write_direct_image_output(
         "sha256": &sha256,
         "logicalDiskSha256": &logical_sha256,
         "compatibleTargets": targets,
-        "providerContract": {
-            "schema": "aos.test-boot-artifacts/v1",
-            "opaqueEvidence": {"provider-owned": true},
-        },
     });
     fs::write(
-        root.join("image-info.json"),
+        root.join("image-delivery.json"),
         serde_json::to_vec(&info).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        root.join("image-info.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema": "aos.test-boot-artifacts/v1",
+            "opaqueEvidence": {"provider-owned": true},
+        }))
+        .unwrap(),
     )
     .unwrap();
     StorePathInfo {
@@ -120,7 +125,7 @@ pub(in crate::registry_ops) fn write_test_image_projections(
     let payload_path = Path::new(&payload.path);
     let container = payload_path.parent().unwrap();
     let producer: serde_json::Value =
-        serde_json::from_slice(&fs::read(payload_path.join("image-info.json"))?)?;
+        serde_json::from_slice(&fs::read(payload_path.join("image-delivery.json"))?)?;
     let filename = producer["filename"].as_str().unwrap();
     let disk_path = container.join("11111111111111111111111111111111-image-disk");
     let info_path = container.join("22222222222222222222222222222222-image-info");
@@ -162,7 +167,7 @@ pub(in crate::registry_ops) fn rewrite_test_image_parent(
     release: &str,
     platform: &str,
 ) {
-    let path = Path::new(&store.path).join("image-info.json");
+    let path = Path::new(&store.path).join("image-delivery.json");
     let mut info: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     info["version"] = serde_json::json!(release);
     info["platform"] = serde_json::json!(platform);

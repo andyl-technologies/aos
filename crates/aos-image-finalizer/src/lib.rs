@@ -18,6 +18,7 @@
 //! - [`formats`] derives download encodings and proves round-trip identity.
 //! - [`input`] revalidates captured files and tools at their point of use.
 //! - [`initrd_contract`] binds stage-1 inputs and the existing switch-root handoff.
+//! - [`metadata`] serializes shared canonical commitments to final image files.
 //! - [`module_signature`] verifies the kernel's appended PKCS#7 format.
 //! - [`pcr`] constructs and independently verifies signed PCR policy JSON.
 //! - [`pipeline`] produces the complete finalized image set in one operation.
@@ -41,6 +42,7 @@ pub mod finalize;
 pub mod formats;
 pub mod initrd_contract;
 pub mod input;
+pub mod metadata;
 pub mod module_signature;
 pub mod pcr;
 pub mod pipeline;

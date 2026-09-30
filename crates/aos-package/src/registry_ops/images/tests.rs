@@ -76,7 +76,7 @@ fn image_publisher_rejects_path_traversal_parent_drift_and_private_paths() {
     let traversal = TempDir::new().unwrap();
     let store =
         write_direct_image_output(traversal.path(), "raw", serde_json::json!(["bare-metal"]));
-    let info_path = Path::new(&store.path).join("image-info.json");
+    let info_path = Path::new(&store.path).join("image-delivery.json");
     let mut info: serde_json::Value =
         serde_json::from_slice(&fs::read(&info_path).unwrap()).unwrap();
     info["filename"] = serde_json::json!("../disk.img");
@@ -151,4 +151,63 @@ fn image_publisher_rejects_private_paths_inside_the_opaque_contract() {
     fs::write(&info_path, serde_json::to_vec(&info).unwrap()).unwrap();
 
     assert!(inspect_test_image("raw", store, "2026.08", "x86_64-linux").is_err());
+}
+
+#[test]
+fn delivery_replacement_cannot_change_a_pinned_publication() {
+    let temp = TempDir::new().unwrap();
+    let store = write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
+    let image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
+    let original = image.producer_delivery.path.clone();
+    fs::rename(&original, temp.path().join("original-delivery.json")).unwrap();
+    fs::write(&original, b"replacement envelope").unwrap();
+
+    assert!(image.recheck_for_commit().is_err());
+}
+
+#[test]
+fn provider_document_is_not_accepted_as_a_delivery_envelope() {
+    let temp = TempDir::new().unwrap();
+    let store = write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
+    let (disk, info) =
+        crate::registry_ops::test_support::write_test_image_projections(&store).unwrap();
+    let root = Path::new(&store.path);
+    fs::copy(
+        root.join("image-info.json"),
+        root.join("image-delivery.json"),
+    )
+    .unwrap();
+
+    let result = super::inspect_published_image(
+        "raw",
+        store,
+        disk,
+        info,
+        "aos.test-boot-artifacts/v1",
+        "test",
+        "2026.08",
+        "x86_64-linux",
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn explicit_provider_document_must_match_the_pinned_artifact_set() {
+    let temp = TempDir::new().unwrap();
+    let store = write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
+    let (disk, info) =
+        crate::registry_ops::test_support::write_test_image_projections(&store).unwrap();
+    fs::write(&info.path, b"different opaque provider document").unwrap();
+
+    let result = super::inspect_published_image(
+        "raw",
+        store,
+        disk,
+        info,
+        "aos.test-boot-artifacts/v1",
+        "test",
+        "2026.08",
+        "x86_64-linux",
+    );
+    assert!(result.is_err());
 }

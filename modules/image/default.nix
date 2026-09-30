@@ -51,10 +51,11 @@
     else throw "selected image plan finalization must match the configured finalization mode";
   rawImage = plan.rawImage;
   convertedMetadataFilename = "image-info.json";
+  convertedDeliveryFilename = "image-delivery.json";
 
   # Convert a raw image to another format via qemu-img and emit a per-format
-  # manifest. The manifest retains the canonical boot/partition facts from
-  # the raw image while binding the converted bytes and delivery contract.
+  # delivery envelope. The provider contract remains byte-for-byte identical
+  # across encodings; only delivery facts describe the converted bytes.
   convertImage = {
     format,
     formatFlag,
@@ -92,7 +93,7 @@
             sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
             virtual_size=$(${pkgs.qemu}/bin/qemu-img info --output=json "$out/$filename" \
               | ${pkgs.jq}/bin/jq -er '.["virtual-size"]')
-            expected_virtual_size=$(${pkgs.jq}/bin/jq -er '.virtualSizeBytes' ${rawImage}/${plan.rawMetadataFilename})
+            expected_virtual_size=$(${pkgs.jq}/bin/jq -er '.virtualSizeBytes' ${rawImage}/${plan.rawDeliveryFilename})
             if [ "$virtual_size" -ne "$expected_virtual_size" ]; then
               echo "converted image virtual size does not match the raw logical disk" >&2
               exit 1
@@ -116,7 +117,8 @@
                | .sha256 = $sha256
                | .compatibleTargets = $compatibleTargets
                | .virtualSizeBytes = $expectedVirtualSize' \
-              ${rawImage}/${plan.rawMetadataFilename} > $out/${convertedMetadataFilename}
+              ${rawImage}/${plan.rawDeliveryFilename} > $out/${convertedDeliveryFilename}
+            cp ${rawImage}/${plan.rawMetadataFilename} $out/${convertedMetadataFilename}
 
           '';
         }
@@ -190,6 +192,15 @@
       name = "aos-image-${config.aos.system.name}-${format}-info";
       source = "${bundle}/${metadataFilename}";
       description = "AOS ${config.aos.system.name} ${format} image metadata";
+    };
+    delivery = projectFile {
+      name = "aos-image-${config.aos.system.name}-${format}-delivery";
+      source = "${bundle}/${
+        if format == "raw"
+        then plan.rawDeliveryFilename
+        else convertedDeliveryFilename
+      }";
+      description = "AOS ${config.aos.system.name} ${format} delivery metadata";
     };
   };
 in {

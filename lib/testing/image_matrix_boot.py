@@ -86,8 +86,9 @@ def pe_command_line(path: Path) -> str:
 def root_hash_from_uki(system: dict[str, Any], metadata: dict[str, Any]) -> str | None:
     """Binds the observed dm-verity root to the exact image's UKI."""
 
-    uki = Path(system["images"]["raw"]) / "uki-a.efi"
-    require(hash_file(uki) == metadata["uki"]["sha256"], "sidecar UKI differs from image metadata")
+    fact = metadata["efi"]["normal_a"]["artifact"]
+    uki = Path(system["images"]["raw"]) / fact["path"]
+    require("sha256:" + hash_file(uki) == fact["sha256"], "sidecar UKI differs from image metadata")
     matches = re.findall(r"(?:^| )roothash=([0-9a-f]{64})(?= |$)", pe_command_line(uki))
     if system["expected"]["security"]["verity"]:
         require(len(matches) == 1, "verity image lacks one UKI root hash")
@@ -366,7 +367,7 @@ def boot_system(
         persistent_state(machine, configured)
         observations.append(observe(machine, system, "cold", root_hash))
         return {
-            "logicalDiskSha256": metadata["logicalDiskSha256"],
+            "logicalDiskSha256": metadata["disk"]["logical"]["sha256"].removeprefix("sha256:"),
             "formatBinding": "decoded-logical-disk",
             "warmBoots": counts.reboot_cycles,
             "coldBoots": counts.cold_boot_cycles,

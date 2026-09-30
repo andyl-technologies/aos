@@ -1,4 +1,4 @@
-##! Adds package-owned recovery artifacts to one converted disk image.
+##! Retains canonical provider artifacts beside one converted delivery encoding.
 {
   baseImage,
   config,
@@ -8,29 +8,48 @@
   rawImage,
   targetPlatform,
 }:
-if !config.aos.boot.recovery.enable
-then baseImage
-else
-  pkgs.mkDerivation {
-    pname = "aos-image-${config.aos.system.name}-${baseImage.IMAGE_FORMAT or "converted"}-systemd-artifacts";
-    version = config.aos.system.version;
-    src = null;
-    buildDeps = [pkgs.coreutils pkgs.jq pkgs.openssl];
-    phases = [
-      {
-        name = "install";
-        script = ''
-          mkdir -p "$out"
-          cp -a ${baseImage}/. "$out/"
+pkgs.mkDerivation {
+  pname = "aos-image-${config.aos.system.name}-${baseImage.IMAGE_FORMAT or "converted"}-systemd-artifacts";
+  version = config.aos.system.version;
+  src = null;
+  buildDeps = [pkgs.coreutils pkgs.jq pkgs.openssl];
+  phases = [
+    {
+      name = "install";
+      script = ''
+        mkdir -p "$out"
+        cp -a ${baseImage}/. "$out/"
 
+        # Copy exact paths authored by the canonical provider serializer.
+        # Delivery conversion never rewrites these authenticated facts.
+        jq -er '[.efi.normal_a, .efi.normal_b] | .[]
+          | (.artifact.path, .measurement.path?, .measurement_signature.path?)
+          | select(. != null)' "$out/${metadataFilename}" > normal-artifacts
+        jq -er '.efi.bootloader.path' "$out/${metadataFilename}" >> normal-artifacts
+        while IFS= read -r component; do
+          case "$component" in
+            ""|.|..|*/*) echo "unsafe canonical provider artifact path" >&2; exit 1 ;;
+          esac
+          cp "${rawImage}/$component" "$out/$component"
+        done < normal-artifacts
+
+        for component in root.img uki-a.efi uki-b.efi; do
+          cp "${rawImage}/$component" "$out/$component"
+        done
+        ${lib.optionalString config.aos.security.verity.enable ''
+          for component in root.verity root.roothash root.roothash.p7s; do
+            cp "${rawImage}/$component" "$out/$component"
+          done
+        ''}
+
+        ${lib.optionalString config.aos.boot.recovery.enable ''
           for component in \
-            root.img root.verity root.roothash root.roothash.p7s \
-            uki-a.efi uki-b.efi \
             recovery-a.efi recovery-b.efi \
             recovery-a.conf recovery-b.conf; do
             cp "${rawImage}/$component" "$out/$component"
-          done
+          done''}
 
+        ${lib.optionalString config.aos.boot.recovery.enable ''
           component() {
             id=$1
             path=$2
@@ -46,8 +65,8 @@ else
               component root-image root.img
               component root-verity root.verity
               component root-hash root.roothash
-              component normal-uki-a uki-a.efi
-              component normal-uki-b uki-b.efi
+              component normal-uki-a "$(jq -er '.efi.normal_a.artifact.path' "$out/${metadataFilename}")"
+              component normal-uki-b "$(jq -er '.efi.normal_b.artifact.path' "$out/${metadataFilename}")"
               component recovery-uki-a recovery-a.efi
               component recovery-uki-b recovery-b.efi
               component recovery-entry-a recovery-a.conf
@@ -70,8 +89,9 @@ else
             -sign ${config.aos.boot.secureBoot.dbKey} \
             -out "$out/recovery-bundle.json.sig" \
             "$out/recovery-bundle.json"
-        '';
-      }
-    ];
-    meta = baseImage.meta or {};
-  }
+        ''}
+      '';
+    }
+  ];
+  meta = baseImage.meta or {};
+}

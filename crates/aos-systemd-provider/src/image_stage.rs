@@ -13,6 +13,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, ensure};
 use aos_boot_identity::{BootSlot, parse_normal};
+use aos_release::artifact::BundlePath;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -260,7 +261,6 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
     } else {
         request.artifacts.clone()
     };
-    let uki_path = artifacts.join(format!("aos-{target}.efi"));
     let efi = metadata
         .get("efi")
         .context("metadata has no EFI identity")?;
@@ -270,6 +270,7 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
     let fact = normal
         .get("artifact")
         .context("target UKI has no artifact identity")?;
+    let uki_path = artifact_path(&artifacts, fact)?;
     verify_path(
         &uki_path,
         integer(fact, "size_bytes")?,
@@ -289,8 +290,18 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
         identity.slot != active.slot && identity.root_hash == string(root, "root_hash")?,
         "target UKI does not bind the opposite slot and authenticated root"
     );
-    let measurement = artifacts.join(format!("uki-{target}.efi.measurement"));
-    let signature = artifacts.join(format!("uki-{target}.efi.measurement.sig"));
+    let measurement = artifact_path(
+        &artifacts,
+        normal
+            .get("measurement")
+            .context("target UKI lacks measurement evidence")?,
+    )?;
+    let signature = artifact_path(
+        &artifacts,
+        normal
+            .get("measurement_signature")
+            .context("target UKI lacks measurement signature")?,
+    )?;
     for (path, key) in [
         (&measurement, "measurement"),
         (&signature, "measurement_signature"),
@@ -653,6 +664,34 @@ fn publish_hidden(
     Ok(())
 }
 
+/// Resolves a canonical component beneath the authenticated immutable artifact tree.
+fn artifact_path(root: &Path, fact: &Value) -> Result<PathBuf> {
+    let relative = BundlePath::parse(string(fact, "path")?)?;
+    let mut path = root.to_path_buf();
+    ensure!(
+        fs::symlink_metadata(&path)?.is_dir(),
+        "artifact root is not a real directory"
+    );
+    let components = relative.as_str().split('/').collect::<Vec<_>>();
+    for (index, component) in components.iter().enumerate() {
+        path.push(component);
+        let metadata = fs::symlink_metadata(&path)?;
+        ensure!(
+            !metadata.file_type().is_symlink(),
+            "artifact path traverses a symlink"
+        );
+        if index + 1 == components.len() {
+            ensure!(
+                metadata.is_file(),
+                "artifact component is not a regular file"
+            );
+        } else {
+            ensure!(metadata.is_dir(), "artifact path parent is not a directory");
+        }
+    }
+    Ok(path)
+}
+
 fn verify_path(path: &Path, size: u64, digest: &str) -> Result<()> {
     let mut file = OpenOptions::new()
         .read(true)
@@ -733,6 +772,36 @@ fn successful(command: &mut Command) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_artifact_paths_select_exact_payloads_and_reject_escapes() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("efi")).unwrap();
+        let expected = temp.path().join("efi/uki-b.efi");
+        fs::write(&expected, b"signed target slot UKI").unwrap();
+
+        assert_eq!(
+            artifact_path(temp.path(), &json!({"path":"efi/uki-b.efi"})).unwrap(),
+            expected
+        );
+        for path in [
+            "../outside",
+            "/outside",
+            "efi//uki-b.efi",
+            "efi/./uki-b.efi",
+            "efi/../uki-b.efi",
+        ] {
+            assert!(artifact_path(temp.path(), &json!({"path":path})).is_err());
+        }
+        assert!(artifact_path(temp.path(), &json!({})).is_err());
+
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("uki.efi"), b"foreign payload").unwrap();
+        std::os::unix::fs::symlink(outside.path(), temp.path().join("alias")).unwrap();
+        assert!(artifact_path(temp.path(), &json!({"path":"alias/uki.efi"})).is_err());
+        std::os::unix::fs::symlink(&expected, temp.path().join("alias.efi")).unwrap();
+        assert!(artifact_path(temp.path(), &json!({"path":"alias.efi"})).is_err());
+    }
 
     #[test]
     fn staging_rejects_retained_slot_before_writing() {
