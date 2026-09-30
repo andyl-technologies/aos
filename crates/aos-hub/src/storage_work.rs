@@ -48,6 +48,7 @@ use tokio::sync::{Mutex, Semaphore};
 use zeroize::Zeroizing;
 
 mod authority;
+mod binding_cohorts;
 mod binding_custody;
 
 pub use authority::StorageAuthorityControlSynchronization;
@@ -104,6 +105,7 @@ pub struct RemoteStorageWorkClient {
     semantic_observation_http: reqwest::Client,
     in_flight: Semaphore,
     binding_publication_gate: Mutex<()>,
+    binding_custody_cohorts: binding_cohorts::BindingCustodyCohorts,
     published_bindings: RwLock<BTreeMap<i64, StorageBindingSnapshot>>,
 }
 
@@ -161,6 +163,7 @@ impl RemoteStorageWorkClient {
             semantic_observation_http: external_observation::http_client()?,
             in_flight: Semaphore::new(MAX_IN_FLIGHT_STORAGE_PLANS),
             binding_publication_gate: Mutex::new(()),
+            binding_custody_cohorts: binding_cohorts::BindingCustodyCohorts::default(),
             published_bindings: RwLock::new(BTreeMap::new()),
         })
     }
@@ -228,6 +231,20 @@ impl RemoteStorageWorkClient {
         resolver: &dyn SecretVersionResolver,
         now: i64,
     ) -> Result<StorageBindingSnapshot> {
+        let gate = self.binding_custody_cohorts.gate(binding.id)?;
+        let mut custody = gate.lock().await;
+        custody.verified = None;
+        self.publish_binding_snapshot_locked(binding, credentials, resolver, now)
+            .await
+    }
+
+    async fn publish_binding_snapshot_locked(
+        &self,
+        binding: &BindingRecord,
+        credentials: &[BindingCredentialRevisionRecord],
+        resolver: &dyn SecretVersionResolver,
+        now: i64,
+    ) -> Result<StorageBindingSnapshot> {
         let snapshot = StorageBindingSnapshot::from_binding(
             self.deployment_id.clone(),
             binding,
@@ -281,6 +298,9 @@ impl RemoteStorageWorkClient {
         resolver: &dyn SecretVersionResolver,
     ) -> Result<()> {
         let _gate = self.binding_publication_gate.lock().await;
+        let gate = self.binding_custody_cohorts.gate(binding.id)?;
+        let mut custody = gate.lock().await;
+        custody.verified = None;
         let current_binding = db
             .binding(binding.id)
             .await?
@@ -324,7 +344,7 @@ impl RemoteStorageWorkClient {
         let now = aos_hub_core::clock::now_unix_secs();
 
         let snapshot = self
-            .publish_binding_snapshot(&current_binding, &credentials, resolver, now)
+            .publish_binding_snapshot_locked(&current_binding, &credentials, resolver, now)
             .await?;
         let latest = async {
             let binding = db
@@ -346,7 +366,7 @@ impl RemoteStorageWorkClient {
             let revoke_at =
                 aos_hub_core::clock::now_unix_secs().max(snapshot.issued_at.saturating_add(1));
             let revoke = self
-                .revoke_binding_snapshot(binding.id, &revision, revoke_at)
+                .revoke_binding_snapshot_locked(binding.id, &revision, revoke_at)
                 .await;
             self.published_bindings
                 .write()
@@ -431,6 +451,21 @@ impl RemoteStorageWorkClient {
     /// Returns an error when the signed revocation is stale, the Worker does
     /// not acknowledge the exact revision, or the control channel fails.
     pub async fn revoke_binding_snapshot(
+        &self,
+        binding_id: i64,
+        revision: &str,
+        now: i64,
+    ) -> Result<()> {
+        let gate = self.binding_custody_cohorts.gate(binding_id)?;
+        let mut custody = gate.lock().await;
+        custody.verified = None;
+        custody.retry_after = None;
+        self.revoke_binding_snapshot_locked(binding_id, revision, now)
+            .await
+    }
+
+    // Callers hold the binding custody gate, including adoption race recovery.
+    async fn revoke_binding_snapshot_locked(
         &self,
         binding_id: i64,
         revision: &str,

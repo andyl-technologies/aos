@@ -134,13 +134,25 @@ independent acceptance review. Each of those steps retains its own trust checks.
 
 ## Native restart and retained cleanup
 
-Native placement reads adopt the Worker-held snapshot through a fresh signed
+Cold Native placement reads adopt the Worker-held snapshot through a fresh signed
 metadata challenge and reply. This compares full current SQL binding coordinates,
 credential purposes, generations, references and fingerprints before and after
 the exchange. An existing live acknowledgement retains its exact snapshot hash;
 expiry can renew only under the same current validated pins. Native does not load
 the provider manifest or trust an old hydration receipt. Changes during adoption
 trigger exact remote revocation and refuse the local plan.
+
+Each Native client coalesces concurrent adoption within the same binding. It
+reuses only independently authenticated acknowledgements for at most ten seconds,
+checks full current SQL pins on every reuse, and refreshes when the snapshot has
+at most sixty seconds remaining. Reuse never extends expiry or grants execution
+permission. The process-local renewal map holds at most 1,024 cohorts, evicts only
+idle entries, and refuses a new cohort if all entries are busy. Different bindings
+renew independently; cold clients and evicted entries require a fresh challenge.
+Explicit revocation invalidates the local proof under the same binding gate.
+A failed refresh refuses the read rather than falling back to stale custody.
+Queued callers share a one-second failure backoff; no automatic renewal retries
+extend the request or the acknowledgement.
 
 Initial material custody is bounded to twenty-four hours. Fresh adoption for an
 active, currently validated binding renews separate bounded custody; active

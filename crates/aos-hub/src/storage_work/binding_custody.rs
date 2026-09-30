@@ -1,4 +1,4 @@
-//! Fresh controls over Worker-held credentials, without Native secret resolution.
+//! Authenticated controls and bounded custody renewal without Native secrets.
 
 use aos_hub_core::storage_work::binding_custody::*;
 
@@ -194,11 +194,12 @@ impl RemoteStorageWorkClient {
         .evidence)
     }
 
-    /// Adopts current Worker material under a fresh full SQL metadata challenge.
+    /// Adopts Worker material with bounded per-binding authenticated renewal.
     ///
-    /// This path loads no secret resolver and trusts no previous local receipt.
-    /// Every invocation authenticates fresh Worker custody and rechecks SQL
-    /// after the await before naming its exact acknowledged snapshot in a plan.
+    /// Every call rechecks full current SQL pins. An independently authenticated
+    /// acknowledgement may be reused for ten seconds, without extending its
+    /// expiry. Cold clients always challenge Worker; operator receipts alone
+    /// cannot seed this cache. This grants no execution or mutation permission.
     ///
     /// # Errors
     /// Rejects missing material, changed or unvalidated SQL pins, bad replies,
@@ -208,26 +209,77 @@ impl RemoteStorageWorkClient {
         db: &Database,
         binding: &BindingRecord,
     ) -> Result<()> {
-        let _gate = self.binding_publication_gate.lock().await;
-        let current = db
-            .binding(binding.id)
-            .await?
-            .context("external binding absent")?;
-        anyhow::ensure!(
-            current.stable_id == binding.stable_id
-                && current.resource_version == binding.resource_version,
-            "external binding changed before custody challenge"
-        );
+        let gate = self.binding_custody_cohorts.gate(binding.id)?;
+        let mut custody = gate.lock().await;
         let now = aos_hub_core::clock::now_unix_secs();
-        let credentials = db.list_current_binding_credentials(binding.id).await?;
-        let mut expected = StorageBindingSnapshot::from_binding(
-            self.deployment_id.clone(),
-            &current,
-            &credentials,
-            now,
-            now.checked_add(3600)
-                .context("snapshot deadline overflowed")?,
-        )?;
+        let current = self
+            .current_custody_snapshot(
+                db,
+                binding,
+                now,
+                now.checked_add(3600)
+                    .context("snapshot deadline overflowed")?,
+            )
+            .await;
+
+        if let Some(previous) = custody.verified.as_ref() {
+            let mut pinned = previous.snapshot.clone();
+            pinned.issued_at = now;
+            pinned.expires_at = now.saturating_add(3600);
+            if !matches!(&current, Ok(snapshot) if snapshot == &pinned) {
+                let revision = previous.snapshot.revision()?;
+                let revoke_at = now.max(previous.snapshot.issued_at.saturating_add(1));
+                custody.verified = None;
+                self.revoke_binding_snapshot_locked(binding.id, &revision, revoke_at)
+                    .await
+                    .context("revoking changed cached custody pins")?;
+                anyhow::bail!("external SQL pins changed since custody acknowledgement");
+            }
+            if previous.fresh(aos_hub_core::clock::now_unix_secs())
+                && self.acknowledged_binding_snapshot(binding.id)? == previous.snapshot
+            {
+                return Ok(());
+            }
+        }
+        // Failed refresh must never fall back to the prior acknowledgement.
+        custody.verified = None;
+        anyhow::ensure!(
+            !custody
+                .retry_after
+                .is_some_and(|deadline| Instant::now() < deadline),
+            "binding custody refresh is temporarily unavailable"
+        );
+        let mut expected = current?;
+        let now = aos_hub_core::clock::now_unix_secs();
+        expected.issued_at = now;
+        expected.expires_at = now
+            .checked_add(3600)
+            .context("snapshot deadline overflowed")?;
+        match self
+            .refresh_custody_snapshot(db, binding, expected, now)
+            .await
+        {
+            Ok(acknowledgement) => {
+                custody.verified = Some(acknowledgement);
+                custody.retry_after = None;
+                Ok(())
+            }
+            Err(error) => {
+                // Coalesce failed flights too. Queued callers refuse locally;
+                // later requests may retry, without using stale custody.
+                custody.retry_after = Some(Instant::now() + Duration::from_secs(1));
+                Err(error)
+            }
+        }
+    }
+
+    async fn refresh_custody_snapshot(
+        &self,
+        db: &Database,
+        binding: &BindingRecord,
+        mut expected: StorageBindingSnapshot,
+        now: i64,
+    ) -> Result<super::binding_cohorts::VerifiedCustody> {
         let cached = self
             .published_bindings
             .read()
@@ -257,31 +309,21 @@ impl RemoteStorageWorkClient {
         let (signature, body) = self
             .custody_exchange(STORAGE_BINDING_ADOPTION_PATH, signed)
             .await?;
+        let observed_at = aos_hub_core::clock::now_unix_secs();
+        let verified_at = Instant::now();
         let acknowledged = verify_storage_binding_adoption_reply(
             &self.key,
             &signature,
             &body,
             &request,
-            aos_hub_core::clock::now_unix_secs(),
+            observed_at,
         )?
         .acknowledged;
-        let latest = async {
-            let binding = db
-                .binding(binding.id)
-                .await?
-                .context("external binding disappeared after adoption")?;
-            let credentials = db.list_current_binding_credentials(binding.id).await?;
-            StorageBindingSnapshot::from_binding(
-                self.deployment_id.clone(),
-                &binding,
-                &credentials,
-                acknowledged.issued_at,
-                acknowledged.expires_at,
-            )
-        }
-        .await;
+        let latest = self
+            .current_custody_snapshot(db, binding, acknowledged.issued_at, acknowledged.expires_at)
+            .await;
         if !matches!(&latest, Ok(snapshot) if snapshot == &acknowledged) {
-            self.revoke_binding_snapshot(
+            self.revoke_binding_snapshot_locked(
                 binding.id,
                 &acknowledged.revision()?,
                 aos_hub_core::clock::now_unix_secs().max(acknowledged.issued_at.saturating_add(1)),
@@ -290,10 +332,49 @@ impl RemoteStorageWorkClient {
             .context("revoking binding changed during custody adoption")?;
             anyhow::bail!("external SQL pins changed during custody adoption");
         }
+        // A slow SQL read cannot move the authentication window forward.
+        verify_storage_binding_adoption_reply(
+            &self.key,
+            &signature,
+            &body,
+            &request,
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
         self.published_bindings
             .write()
             .map_err(|_| anyhow::anyhow!("published binding state poisoned"))?
-            .insert(binding.id, acknowledged);
-        Ok(())
+            .insert(binding.id, acknowledged.clone());
+        Ok(super::binding_cohorts::VerifiedCustody {
+            snapshot: acknowledged,
+            verified_at,
+            observed_at,
+        })
+    }
+
+    async fn current_custody_snapshot(
+        &self,
+        db: &Database,
+        binding: &BindingRecord,
+        issued_at: i64,
+        expires_at: i64,
+    ) -> Result<StorageBindingSnapshot> {
+        let current = db
+            .binding(binding.id)
+            .await?
+            .context("external binding absent")?;
+        anyhow::ensure!(
+            current.stable_id == binding.stable_id
+                && current.resource_version == binding.resource_version,
+            "external binding changed before custody challenge"
+        );
+        let credentials = db.list_current_binding_credentials(binding.id).await?;
+        StorageBindingSnapshot::from_binding(
+            self.deployment_id.clone(),
+            &current,
+            &credentials,
+            issued_at,
+            expires_at,
+        )
+        .map_err(Into::into)
     }
 }

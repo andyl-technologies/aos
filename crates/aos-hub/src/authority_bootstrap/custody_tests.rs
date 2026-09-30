@@ -6,6 +6,9 @@ use aos_hub_core::topology_probe::{DomainProbeController, DomainTlsProbeVerifier
 use axum::http::{StatusCode, Uri};
 use tokio::sync::Mutex;
 
+#[path = "custody_cohort_tests.rs"]
+mod cohorts;
+
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -20,7 +23,16 @@ enum CustodyFault {
 #[derive(Default)]
 struct Controls {
     staged: Mutex<Option<StorageCredentialCustodyProbe>>,
-    adopted: Mutex<Option<StorageBindingSnapshot>>,
+    adopted: Mutex<std::collections::BTreeMap<i64, StorageBindingSnapshot>>,
+    revoked: Mutex<std::collections::BTreeSet<String>>,
+    active_adoptions: AtomicUsize,
+    peak_adoptions: AtomicUsize,
+    refuse_adoption: std::sync::atomic::AtomicBool,
+    short_lifetime: std::sync::atomic::AtomicBool,
+    pause_adoption: std::sync::atomic::AtomicBool,
+    adoption_entered: tokio::sync::Notify,
+    pending_snapshot: Mutex<Option<StorageBindingSnapshot>>,
+    release_adoption: tokio::sync::Notify,
     probes: AtomicUsize,
     adoptions: AtomicUsize,
     revokes: AtomicUsize,
@@ -99,8 +111,33 @@ async fn custody_client(
                         &key, signature, &body, "qualification-deployment", now,
                     ).unwrap();
                     state.adoptions.fetch_add(1, Ordering::SeqCst);
+                    let active = state.active_adoptions.fetch_add(1, Ordering::SeqCst) + 1;
+                    state.peak_adoptions.fetch_max(active, Ordering::SeqCst);
+                    *state.pending_snapshot.lock().await = Some(request.expected.clone());
+                    state.adoption_entered.notify_one();
+                    if state.pause_adoption.load(Ordering::SeqCst) {
+                        state.release_adoption.notified().await;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    state.active_adoptions.fetch_sub(1, Ordering::SeqCst);
+                    if state.refuse_adoption.load(Ordering::SeqCst)
+                        || state.revoked.lock().await.contains(&request.expected.revision().unwrap()) {
+                        return (StatusCode::SERVICE_UNAVAILABLE,
+                            [(STORAGE_WORK_SIGNATURE_HEADER, String::new())], b"{}".to_vec());
+                    }
                     let mut adopted = state.adopted.lock().await;
-                    let acknowledged = adopted.get_or_insert_with(|| request.expected.clone()).clone();
+                    let acknowledged = adopted.entry(request.expected.binding_id)
+                        .or_insert_with(|| {
+                            let mut snapshot = request.expected.clone();
+                            if state.short_lifetime.load(Ordering::SeqCst) {
+                                snapshot.expires_at = now + 59;
+                            }
+                            snapshot
+                        }).clone();
+                    if state.revoked.lock().await.contains(&acknowledged.revision().unwrap()) {
+                        return (StatusCode::SERVICE_UNAVAILABLE,
+                            [(STORAGE_WORK_SIGNATURE_HEADER, String::new())], b"{}".to_vec());
+                    }
                     if fault == CustodyFault::AdoptionRotation {
                         let head = db.current_binding_credential(binding, "read").await.unwrap().unwrap();
                         db.set_binding_credential_revision(binding, "read", "secret://bootstrap/read/v2",
@@ -113,6 +150,7 @@ async fn custody_client(
                     let control: StorageBindingControl = serde_json::from_slice(&body).unwrap();
                     let StorageBindingControl::Revoke { revision, .. } = control else { panic!("unexpected publish") };
                     state.revokes.fetch_add(1, Ordering::SeqCst);
+                    state.revoked.lock().await.insert(revision.clone());
                     return (StatusCode::OK, [(STORAGE_WORK_SIGNATURE_HEADER, String::new())], serde_json::to_vec(&StorageBindingAcknowledgement { revision }).unwrap());
                 }
                 _ => panic!("unexpected custody path"),
