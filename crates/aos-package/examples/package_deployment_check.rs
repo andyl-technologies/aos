@@ -19,6 +19,7 @@ use aos_package::deployment::evaluation::{Evaluation, PackageResolver, resolve_p
 use aos_package::deployment::model::{Deployment, Envelope, ModuleSource};
 use aos_package::deployment::retention::{ArtifactAdmission, NixStore};
 use aos_package::deployment::transaction::{DeploymentStore as _, Transactions};
+use aos_package::native_deployment::{EvaluationInput, evaluate_input};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -180,6 +181,56 @@ fn main() -> Result<()> {
     if evaluate_only {
         use std::io::Write;
 
+        let library_root = evaluation
+            .library
+            .ancestors()
+            .find(|ancestor| ancestor.parent() == Some(Path::new("/nix/store")))
+            .context("fixture library has no immutable store root")?;
+        let store_command = aos_core::nix::identity::store_nar_command(
+            &nix_store,
+            library_root
+                .to_str()
+                .context("fixture library is not UTF-8")?,
+        )?;
+        let (library_nar_hash, _) = aos_core::nix::identity::hash_nar_command(
+            store_command,
+            std::time::Duration::from_secs(60),
+        )?;
+        let descriptor = EvaluationInput {
+            schema: "aos.package.evaluation-input".into(),
+            library: evaluation.library.clone(),
+            library_nar_hash,
+            scope: evaluation.scope.clone(),
+            packages: evaluation.packages.clone(),
+            configuration: evaluation.configuration.clone(),
+            runtime_configuration: Vec::new(),
+            supplemental_inputs: Vec::new(),
+        };
+        let imported = descriptor.import(&nix_store, directory.path(), &cancellation)?;
+        ensure!(
+            EvaluationInput::read_in(&imported.path, &nix_store, &cancellation)? == descriptor,
+            "immutable evaluation descriptor changed during import"
+        );
+        let replay = evaluate_input(
+            &imported.path,
+            directory.path(),
+            &nix_store,
+            60_000,
+            &cancellation,
+        )?;
+        let repeated = evaluate_input(
+            &imported.path,
+            directory.path(),
+            &nix_store,
+            60_000,
+            &cancellation,
+        )?;
+        ensure!(
+            replay.graph().canonical_bytes()? == deployment.graph().canonical_bytes()?
+                && replay.canonical_bytes()? == repeated.canonical_bytes()?,
+            "public descriptor replay changed the native deployment"
+        );
+
         ensure!(
             !directory.path().join("generations.journal").exists()
                 && !directory.path().join("effects.journal").exists()
@@ -188,7 +239,7 @@ fn main() -> Result<()> {
         );
         std::io::stdout()
             .lock()
-            .write_all(&deployment.canonical_bytes()?)?;
+            .write_all(&replay.canonical_bytes()?)?;
         return Ok(());
     }
 
