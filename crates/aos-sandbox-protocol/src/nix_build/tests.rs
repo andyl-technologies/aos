@@ -1,6 +1,7 @@
 //! UNRUN pure-schema vectors; none manufactures protected production custody.
 
-use aos_sandbox_core::{Directory, FilesystemMetadata, MediaType, Tree, descriptor_for_bytes};
+use aos_sandbox_core::{MediaType, descriptor_for_bytes};
+use aos_sandbox_core::model::{Directory, FilesystemMetadata, Tree};
 use ed25519_dalek::{Signer as _, SigningKey};
 
 use super::*;
