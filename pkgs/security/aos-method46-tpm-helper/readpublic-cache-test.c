@@ -6,9 +6,11 @@
  * The renamed entry point is never called: only the in-memory TCTI below is
  * supplied to ESYS. No device, session, provisioning or hierarchy command runs.
  */
+#define _GNU_SOURCE
 #define main unused_method46_helper_entry_point
 #include "helper.c"
 #undef main
+#include "nv_esys.c"
 
 #include <stdio.h>
 
@@ -40,21 +42,27 @@ static void public_hello_rejects_secrets_and_old_framing(void)
 {
     uint8_t hello[HELLO_BYTES];
     public_hello_fixture(hello);
-    REQUIRE(validate_hello(hello) == 0);
+    REQUIRE(validate_hello(hello, &method46_profile) == 0);
     for (size_t offset = 86; offset < 120; ++offset) {
         hello[offset] = 1;
-        REQUIRE(validate_hello(hello) != 0);
+        REQUIRE(validate_hello(hello, &method46_profile) != 0);
         hello[offset] = 0;
     }
     memcpy(hello, "AOSBTH01", 8);
     hello[9] = 1;
-    REQUIRE(validate_hello(hello) != 0);
+    REQUIRE(validate_hello(hello, &method46_profile) != 0);
     public_hello_fixture(hello);
     put_u32(hello + 48, UINT32_C(0x8100a047));
-    REQUIRE(validate_hello(hello) != 0);
+    REQUIRE(validate_hello(hello, &method46_profile) != 0);
     public_hello_fixture(hello);
     memset(hello + 12, 0, 32);
-    REQUIRE(validate_hello(hello) != 0);
+    REQUIRE(validate_hello(hello, &method46_profile) != 0);
+
+    /* The shared mechanics do not widen this fixed image's endpoint policy. */
+    public_hello_fixture(hello);
+    put_u32(hello + 44, UINT32_C(0x0180a055));
+    put_u32(hello + 48, UINT32_C(0x8100a055));
+    REQUIRE(validate_hello(hello, &method46_profile) != 0);
 }
 
 static void authentication_is_exact_nonce_role_and_nonzero_secret(void)

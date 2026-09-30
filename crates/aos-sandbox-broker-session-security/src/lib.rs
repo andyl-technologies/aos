@@ -76,6 +76,7 @@ mod endpoint;
 mod entropy;
 mod error;
 mod fixed_role_credential;
+mod tpm_nv_custody;
 mod handoff;
 mod handshake;
 mod host_consumer_cgroup_transfer;
