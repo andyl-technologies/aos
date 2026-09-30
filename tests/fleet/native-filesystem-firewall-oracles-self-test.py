@@ -93,6 +93,42 @@ class DomainOracleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ORACLE.ruleset_projection({"nftables": []}, [{"id": "first"}, {"id": "second"}])
 
+    def test_configuration_identity_exposes_same_bytes_replacement(self):
+        path = self.root / "file"
+        path.write_bytes(b"owned\n")
+        claim = {"id": "configuration-owner", "path": str(path), "digest": hashlib.sha256(b"owned\n").hexdigest()}
+        original = ORACLE.resource(path, [claim], configuration=True, identity=True)
+        path.rename(self.root / "original-file")
+        path.write_bytes(b"owned\n")
+        replacement = ORACLE.resource(path, [claim], configuration=True, identity=True)
+        self.assertTrue(original["claimMatches"])
+        self.assertTrue(replacement["claimMatches"])
+        self.assertEqual(original["digest"], replacement["digest"])
+        self.assertNotEqual(original["inode"], replacement["inode"])
+
+    def test_exact_kernel_identity_detects_non_port_rule_mutation(self):
+        kernel = {"nftables": [{"rule": {"expr": [{"accept": None}], "handle": 4}}]}
+        original = ORACLE.ruleset_projection(kernel, [], identity=True)
+        kernel["nftables"][0]["rule"]["handle"] = 5
+        changed = ORACLE.ruleset_projection(kernel, [], identity=True)
+        self.assertEqual(original["tcp"], changed["tcp"])
+        self.assertEqual(original["policies"], changed["policies"])
+        self.assertNotEqual(original["kernelDigest"], changed["kernelDigest"])
+
+    def test_dependency_claim_reads_original_backend_identity(self):
+        claim = ORACLE.dependency_claim(b'{"effect":"actual-native-owner","revision":"resolved-original"}')
+        self.assertEqual(claim, {"effect": "actual-native-owner", "revision": "resolved-original"})
+
+    def test_dependency_claim_rejects_extra_missing_or_unbounded_fields(self):
+        for contents in (b'{}', b'[]', b'{"effect":"owner","revision":"rev","desired":"fake"}', b'{"effect":"","revision":"rev"}', b' ' * 16385):
+            with self.assertRaises(ValueError):
+                ORACLE.dependency_claim(contents)
+
+    def test_dependency_marker_never_reads_paths_outside_owned_root(self):
+        for path in (self.root / "file", Path("/var/lib/aos/native-dependency-barrier/../other")):
+            with self.assertRaises(ValueError):
+                ORACLE.dependency_marker(path)
+
     def test_protected_inventory_rejects_writable_directory(self):
         self.root.chmod(0o777)
         with self.assertRaises(ValueError):
