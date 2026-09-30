@@ -15,7 +15,7 @@ pub struct MergedRecord {
     pub pack: [u8; 16],
     /// The content location, kind, and codec.
     pub record: Record,
-    /// The live/tombstone marker, zero or one respectively.
+    /// The state: zero live, one GC tombstone, or two identity quarantine.
     pub state: u8,
 }
 
@@ -49,7 +49,7 @@ pub fn decode_shard(bytes: &[u8], shard: u8) -> Result<Vec<MergedRecord>, Error>
     let count = index_count(bytes, 72)?;
     let mut records: Vec<MergedRecord> = Vec::with_capacity(count);
     for body in bytes[PREAMBLE_SIZE..].as_chunks::<72>().0 {
-        if array::<5>(body, 67)? != [0; 5] || body[66] > 1 {
+        if array::<5>(body, 67)? != [0; 5] || body[66] > 2 {
             return Err(Error::Reserved);
         }
         let record = Record {
