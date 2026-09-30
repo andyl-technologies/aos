@@ -63,6 +63,9 @@ in
     buildDeps = [];
     runtimeDeps = [bash zfstools mariadb postgresql];
     propagatedDeps = [];
+    # These generated wrappers are authored here; retain that exact source
+    # alongside their release evidence without adding it to runtime closures.
+    passthru.evidenceSources = [./zfstools-db.nix];
 
     phases = [
       {

@@ -55,11 +55,10 @@
     kernel = targetKernel;
     systemdSystemPresets = empty;
   };
-  buildSystemdTestRootfs = import ../../pkgs/system/_systemd-abilities/testing/rootfs.nix {
+  rootfs = import ../../pkgs/system/_systemd-abilities/platform/_rootfs-builder.nix {
     pkgs = cross.buildPackages;
     lib = cross.lib;
-  };
-  rootfs = buildSystemdTestRootfs {
+    closureInfoFor = cross.lib.build.closureInfo {pkgs = cross.buildPackages;};
     system = fakeSystem;
     kernel = {
       package = targetKernel;

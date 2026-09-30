@@ -17,10 +17,12 @@
     name = "linux-workerd-probes";
     destination = "/specs.json";
     text = builtins.toJSON (builtins.listToAttrs (map (name: {
-      inherit name;
+        inherit name;
         value = packageProbeSpec {
           packageName = name;
-          packageProbe = target.${name}.contract.value.qualification.package_probe;
+          packageProbe = assert target.${name} ? qualificationArtifact;
+          assert target.${name}.qualificationDocument.schema == "aos.package.qualification";
+            target.${name}.qualificationDocument.probe;
         };
       })
       packageNames));
@@ -96,11 +98,10 @@
     kernel = target.linux;
     systemdSystemPresets = empty;
   };
-  buildSystemdTestRootfs = import ../../pkgs/system/_systemd-abilities/testing/rootfs.nix {
+  rootfs = import ../../pkgs/system/_systemd-abilities/platform/_rootfs-builder.nix {
     pkgs = cross.buildPackages;
     lib = cross.lib;
-  };
-  rootfs = buildSystemdTestRootfs {
+    closureInfoFor = cross.lib.build.closureInfo {pkgs = cross.buildPackages;};
     inherit system;
     kernel = {
       package = target.linux;
