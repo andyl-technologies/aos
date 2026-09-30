@@ -2,6 +2,7 @@
   pkgs,
   lib,
 }: let
+  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   requiredAttrs = [
     "crucible"
     "crucible-controller"
@@ -50,7 +51,7 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase1-aos-workspace-build";
       version = "0";
-      src = null;
+      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
@@ -62,14 +63,29 @@ in
 
       phases = [
         {
+          name = "unpack";
+          script = ''
+            cp -R "$src" source
+            chmod -R u+w source
+            cd source
+          '';
+        }
+        {
           name = "check";
           script = ''
             set -eu
 
             stale_shmem_label="crucible-shmem-abi-v$((10 - 1))"
-            if grep -R "$stale_shmem_label" crates pkgs tests docs; then
+            # Match the complete identity so deliberate invalid-version
+            # fixtures such as v999 do not masquerade as the retired v9 ABI.
+            if grep -RE "$stale_shmem_label([^[:alnum:]_-]|$)" crates pkgs tests docs; then
               echo "stale shared-memory ABI identity: $stale_shmem_label" >&2
               exit 1
+            else
+              case "$?" in
+                1) ;;
+                *) echo "shared-memory ABI source scan failed" >&2; exit 1 ;;
+              esac
             fi
 
             test -x ${packages.crucible}/bin/crucible
@@ -114,7 +130,7 @@ in
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^gdb_package=gdb$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^gdb_path=${packages.gdb}/bin/gdb$' \
+            grep -q '^gdb_path=${pkgs.gdb}/bin/gdb$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^gdb_license=GPL-3.0-or-later$' \
               ${packages.crucible}/nix-support/crucible-build-info
