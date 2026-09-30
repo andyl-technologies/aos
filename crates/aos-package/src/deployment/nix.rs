@@ -5,32 +5,13 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
 use base64::Engine as _;
 
-/// Keeps one canonical store identity separate from its selected readable path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EvaluatorInput {
-    /// Canonical package-store identity used by Nix store operations.
-    pub identity: PathBuf,
-    /// Physical immutable path used only for direct byte reads.
-    pub read_path: PathBuf,
-}
-
-impl EvaluatorInput {
-    /// Uses the canonical immutable store path as its readable location.
-    pub fn canonical(path: PathBuf) -> Self {
-        Self {
-            read_path: path.clone(),
-            identity: path,
-        }
-    }
-}
-
 /// Resolves an AOS-built executable before constructing a scrubbed command.
-fn command_from_path(name: &str) -> Result<Command> {
+pub(crate) fn command_from_path(name: &str) -> Result<Command> {
     let path = std::env::var_os("PATH").context("PATH is unavailable while resolving evaluator")?;
     for directory in std::env::split_paths(&path) {
         let candidate = directory.join(name);
@@ -91,28 +72,26 @@ pub(crate) fn configure_pure_eval_command(
         .args(["--extra-experimental-features", "nix-command flakes"])
         .args(["--eval", "--strict", "--json", "--pure-eval"])
         .args(["--option", "restrict-eval", "true"])
+        // Inputs are exported from the selected store before evaluation. A
+        // fetchTree cache miss must use those inputs, never a global cache.
+        .args(["--option", "substituters", ""])
         .args(["--option", "allow-import-from-derivation", "false"])
         .args(["--option", "allowed-uris", &allowed_uris]);
 
     Ok(())
 }
 
-pub(crate) fn locked_evaluator_input_in(
-    input: &EvaluatorInput,
-    expected_nar_hash: Option<&str>,
-    eval_store: Option<&OsStr>,
+pub(crate) fn locked_evaluator_input(
+    identity: &Path,
+    read_path: &Path,
+    nar_hash: &str,
 ) -> Result<String> {
-    let (identity_root, suffix) = store_root_and_suffix(&input.identity)?;
-    let read_root = input
-        .read_path
+    let (_, suffix) = store_root_and_suffix(identity)?;
+    let read_root = read_path
         .ancestors()
         .nth(suffix.components().count())
         .context("evaluator read path is shorter than its canonical suffix")?;
-    let nar_hash = expected_nar_hash.map_or_else(
-        || retained_store_path_nar_hash_in(&identity_root, eval_store),
-        |hash| Ok(hash.to_string()),
-    )?;
-    let nar_hash = sha256_sri(&nar_hash)?;
+    let nar_hash = sha256_sri(nar_hash)?;
     let root = read_root
         .to_str()
         .context("evaluator store input path is not UTF-8")?;
@@ -193,45 +172,4 @@ pub(crate) fn nix_string(value: &str) -> String {
             .replace('"', "\\\"")
             .replace("${", "\\${")
     )
-}
-
-/// Recomputes a store path's NAR hash through one exact evaluator store.
-pub(crate) fn retained_store_path_nar_hash_in(
-    path: &Path,
-    eval_store: Option<&std::ffi::OsStr>,
-) -> Result<String> {
-    let mut command = std::process::Command::new("nix");
-    command
-        .args(["--extra-experimental-features", "nix-command"])
-        .env_remove("LD_LIBRARY_PATH")
-        .env_remove("NIX_REMOTE")
-        .env_remove("NIX_STORE_DIR")
-        .env_remove("NIX_STATE_DIR")
-        .env_remove("NIX_LOG_DIR");
-    if let Some(eval_store) = eval_store {
-        command.arg("--store").arg(eval_store);
-    }
-    let mut child = command
-        .args(["store", "dump-path"])
-        .arg(path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("running nix store dump-path {}", path.display()))?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("nix store dump-path did not provide stdout")?;
-    let hash = crate::verify::sha256_stream(stdout);
-    let output = child
-        .wait_with_output()
-        .with_context(|| format!("waiting for nix store dump-path {}", path.display()))?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "nix store dump-path failed for {}: {}",
-            path.display(),
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    hash
 }
