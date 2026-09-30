@@ -9,6 +9,46 @@ use aos_sandbox::journal::native_held::{NativeHeldCapacityPurposeV3, NativeHeldC
 
 mod fixtures;
 
+#[test]
+fn shared_union_admission_refuses_floor_only_data_and_preserves_borrowed_transaction() {
+    let before = fixtures::floor_only_union_state();
+    let floor = fixtures::floor().to_journal_record().unwrap();
+    let transaction = JournalTransaction::new([199; 16], vec![floor]).unwrap();
+    let retained = transaction.clone();
+
+    assert!(aos_sandbox::journal::compare_source_original_admission_data_v5(
+        aos_sandbox::journal::SourceOriginalAdmissionInputV5 {
+            original_before: &before, original_applying: &transaction,
+        },
+        aos_sandbox::JournalLimits::default(),
+    ).is_err());
+    assert!(aos_sandbox::journal::compare_source_capacity_union_data_v5(
+        &before, None, &[], &[], aos_sandbox::JournalLimits::default(),
+    ).is_err());
+    assert_eq!(transaction, retained);
+}
+
+// Not #[test]: this needs genuine retained ProtectedConfig/current graph inputs.
+// Existing five full-comparator harnesses remain noncoverage too.
+#[allow(dead_code)]
+fn authenticated_all_prefix_union_fixture_harness(
+    before: &State,
+    transaction: &JournalTransaction,
+    origins: &[aos_sandbox::journal::SourceOriginalAdmissionDataV5],
+    challenges: &[aos_sandbox_source_provider_ledger::ledger::source_capacity::OriginalSourceChallengeDataV5<'_>],
+    configuration: &ProtectedProviderConfigurationV1,
+) {
+    let result = compare_authenticated_source_capacity_union_data_v5(
+        before, Some(transaction), origins, challenges, configuration,
+        aos_sandbox::JournalLimits::default(),
+    ).unwrap();
+    assert!(result.comparison.requires_physical_owner_proofs());
+    assert_eq!(result.configuration_origin, UnresolvedNativeProofV1::Unresolved);
+    assert_eq!(result.original_physical_membership, UnresolvedNativeProofV1::Unresolved);
+    assert_eq!(result.archive_eligibility, UnresolvedNativeProofV1::Unresolved);
+    assert_eq!(result.whole_journal_funding, UnresolvedNativeProofV1::Unresolved);
+}
+
 fn digest(byte: u8) -> ObjectDigest {
     ObjectDigest::from_bytes([byte; 32])
 }

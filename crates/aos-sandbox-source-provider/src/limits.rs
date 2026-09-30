@@ -13,7 +13,8 @@ pub use aos_sandbox_source_provider_ledger::limits::{
     MAXIMUM_TRANSACTION_RECORDS,
 };
 /// Conservative journal capacity required before an Acquire backend effect.
-pub(crate) const MAXIMUM_ACQUIRE_COMPLETION_BYTES: usize = 3 * 1024 * 1024;
+pub(crate) const MAXIMUM_ACQUIRE_COMPLETION_BYTES: usize =
+    aos_sandbox::journal::SOURCE_NATIVE_NO_DISPATCH_TERMINAL_BYTES_V1;
 /// Conservative journal capacity required before a Release backend effect.
 pub(crate) const MAXIMUM_RELEASE_COMPLETION_BYTES: usize = 3 * 1024 * 1024;
 /// Conservative journal capacity required before signing an Inventory result.

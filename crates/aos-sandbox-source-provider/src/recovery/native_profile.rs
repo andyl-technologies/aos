@@ -18,8 +18,7 @@ use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_ledger::{
     collect_bounded_records,
     ledger::native_held_completion::{
-        SourceNativeHeldCompletionRecordV1, native_held_release_status_binding_v1,
-        validate_native_held_records_v1,
+        SourceNativeHeldCompletionRecordV1, validate_native_held_records_v1,
     },
 };
 use aos_sandbox_source_provider_protocol::native_held_completion::NativeHeldControlKindV1;
@@ -87,33 +86,17 @@ pub(crate) fn recover(
     )?;
     let floors = Floors::collect(journal.capacity_records()?)?;
     let mut floor_ids = BTreeSet::new();
-    crate::native_no_dispatch_capacity::add_expected(
-        &owners,
-        owners
-            .acquisitions
-            .values()
-            .filter(|row| !held.contains_key(&row.acquisition_id)),
-        &mut floor_ids,
-        |request| floors.exact_legacy(request),
-    )?;
-    crate::native_release_capacity::add_expected_with(
-        &owners,
-        &mut floor_ids,
-        |acquisition| {
-            if held.contains_key(&acquisition) {
-                native_held_release_status_binding_v1(
-                    records
-                        .iter()
-                        .map(|(key, value)| (key.as_slice(), value.as_slice())),
-                    acquisition,
-                )
-                .map_err(crate::transaction::map_pure_ledger_error)
-            } else {
-                crate::native_release_capacity::binding(&owners, acquisition)
-            }
-        },
-        |request| floors.exact_legacy(request),
-    )?;
+    let obligations = aos_sandbox_source_provider_ledger::ledger::source_capacity::derive_source_capacity_owner_data_v1(
+        records.iter().map(|(key, value)| (key.as_slice(), value.as_slice())),
+        &[],
+    )
+    .map_err(crate::transaction::map_pure_ledger_error)?;
+    for binding in obligations.ordinary_bindings() {
+        let request = aos_sandbox::journal::source_native_ordinary_capacity_request_v1(binding);
+        if !floor_ids.insert(floors.exact_legacy(request)?) {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+    }
     for record in held.values() {
         let identifier = floors.exact_held(record, &owners)?;
         if !floor_ids.insert(identifier) {

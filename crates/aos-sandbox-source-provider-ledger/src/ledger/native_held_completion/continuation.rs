@@ -402,7 +402,59 @@ pub fn derive_original_source_continuations_v5<'record>(
     })
 }
 
-fn validate_comparison(
+/// Checks an actual original cut without demanding a prospective continuation.
+///
+/// Retired final-edge DATA still needs every canonical graph and immutable
+/// admission join. This helper establishes neither custody nor floor membership.
+///
+/// # Errors
+///
+/// Rejects a noncanonical complete graph, substituted admission/provenance or
+/// an actual Applying/held/cold carrier that does not join that immutable origin.
+pub(crate) fn validate_current_origin<'record>(
+    complete_rows: impl IntoIterator<Item = (&'record [u8], &'record [u8])>,
+    comparison: &OriginalSourceAdmissionComparisonV5,
+    provenance: &OriginalSourceProvenanceV5,
+    configuration: ObjectDigest,
+) -> Result<(), LedgerFormatErrorV1> {
+    let records = crate::collect_bounded_records(complete_rows)?;
+    crate::validate_current_records(&records)?;
+    validate_comparison(comparison, provenance, configuration)?;
+    if provenance.claims().configuration != configuration {
+        return Err(corrupt("original Source current origin configuration"));
+    }
+    let native_key =
+        native_completion::native_completion_key_v2(comparison.original().acquisition_id);
+    let Some(bytes) = records.get(&native_key) else {
+        let actual = classify_original_source_owner_v5(views(&records), provenance, configuration)?;
+        if &actual != comparison.original()
+            || comparison.quartet().iter().any(|mutation| {
+                records.get(mutation.key()).map(Vec::as_slice) != Some(mutation.after())
+            })
+        {
+            return Err(corrupt("original Source current Applying origin changed"));
+        }
+        return Ok(());
+    };
+    if native_completion::pre_requested_cold::is_cold(bytes) {
+        let archive = classify_original_source_pre_requested_cold_v1(
+            views(&records),
+            comparison.original().acquisition_id,
+        )?;
+        return validate_cold_provenance(&archive, provenance);
+    }
+    let held = Record::from_canonical_bytes(&native_key, bytes)?;
+    let rows = graph::Companions::read(&records, &held)?;
+    validate_held_origin(&held, &rows, comparison, provenance)
+}
+
+/// Joins an accepted historical Applying quartet to its immutable provenance.
+///
+/// # Errors
+///
+/// Rejects the original phase/configuration/Root-preparation mismatch or any
+/// substituted quartet key/value witness. It establishes no physical membership.
+pub(crate) fn validate_comparison(
     comparison: &OriginalSourceAdmissionComparisonV5,
     provenance: &OriginalSourceProvenanceV5,
     configuration: ObjectDigest,

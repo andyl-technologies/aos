@@ -6,6 +6,71 @@
 use super::*;
 use super::super::{measure_appends, reservation_key};
 
+#[test]
+fn measurement_owner_view_borrows_existing_payload_without_a_second_graph_copy() {
+    let owners = BTreeMap::from([(vec![1; 40], vec![2; 4096])]);
+    let view = owners
+        .iter()
+        .map(|(key, value)| (key.as_slice(), value.as_slice()))
+        .collect::<OwnerView<'_>>();
+    let actual = view.get(owners.keys().next().unwrap().as_slice()).copied().unwrap();
+
+    assert!(std::ptr::eq(actual, owners.values().next().unwrap().as_slice()));
+    assert_eq!(actual.len(), 4096);
+}
+
+#[test]
+fn shared_usage_adapter_checks_existing_fold_and_next_without_remeasuring() {
+    let measured = measure(&cold_appends(1000), 1000);
+    let (coupled, bytes, records) = coupled_prefixes(
+        &measured,
+        reservation_key([1; 32]).len(),
+        1000,
+        true,
+    )
+    .unwrap();
+    let owner = measured.geometry;
+    let alternative = OriginalSourceMeasuredAlternativeV5 {
+        owner,
+        coupled,
+        maximum_coupled_growth_bytes: bytes,
+        maximum_coupled_growth_records: records,
+        maximum_key_bytes: measured.maximum_key_bytes,
+        maximum_record_payload_bytes: measured.maximum_record_payload_bytes,
+        frames: transaction_frames(owner.records as u64, owner.transactions as u64).unwrap(),
+        poison: false,
+        independent_cut_required: false,
+        original_custody_required: false,
+    };
+    let data = OriginalSourceGeometryDataV5 {
+        alternatives: vec![alternative],
+        normal: owner,
+        poison: owner,
+        remaining: None,
+        staged_peak_bytes: bytes,
+        staged_peak_records: records,
+        other_frames: 0,
+        ordinary_association_required: true,
+        original_membership_required: true,
+    };
+    let usage = NativeHeldCapacityUsageV3 {
+        journal_bytes: 7,
+        transactions: 1,
+        materialized_bytes: 11,
+        materialized_records: 2,
+        reserved_bytes: 13,
+        reserved_records: 3,
+        reserved_transactions: 1,
+    };
+
+    assert!(data.require_usage_headroom(JournalLimits::default(), usage, u64::MAX - 24, 6).is_ok());
+    assert!(data.require_usage_headroom(JournalLimits::default(), usage, u64::MAX - 23, 6).is_err());
+    assert!(data.require_usage_headroom(JournalLimits {
+        maximum_journal_bytes: 7 + 13 + owner.append_bytes - 1,
+        ..JournalLimits::default()
+    }, usage, 1, 6).is_err());
+}
+
 fn original_append(
     index: usize,
     changes: Vec<NativeHeldCapacityChangeV3>,

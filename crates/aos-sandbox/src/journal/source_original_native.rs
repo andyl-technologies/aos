@@ -32,6 +32,17 @@ use super::{
 
 type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
 
+mod union;
+pub use union::{
+    SOURCE_NATIVE_DISPATCH_TERMINAL_BYTES_V1, SOURCE_NATIVE_DISPATCH_TERMINAL_RECORDS_V1,
+    SOURCE_NATIVE_NO_DISPATCH_TERMINAL_BYTES_V1,
+    SourceCapacityStateV5, SourceOriginalAdmissionInputV5, SourceOriginalAdmissionDataV5,
+    SourceCapacityUnionComparisonDataV5, compare_source_original_admission_data_v5,
+    compare_source_capacity_union_data_v5,
+    source_native_ordinary_capacity_request_v1,
+    source_native_release_status_capacity_request_v1,
+};
+
 /// Retains exact attempted bytes and complete before/after comparison DATA.
 ///
 /// This owned container deliberately has no authority, clock, nonce, preflight
