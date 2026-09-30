@@ -175,18 +175,7 @@ pub fn propose_native_held_transition_v1<'before, 'after>(
         let previous = previous
             .as_ref()
             .ok_or(corrupt("held transition missing original"))?;
-        if previous.original.state == Outer::CleanupRequired
-            && !matches!(
-                step,
-                SourceNativeHeldStepV1::RootRecoveryRecorded
-                    | SourceNativeHeldStepV1::StorageRecoveryPrepared
-                    | SourceNativeHeldStepV1::StorageRecoveryQueryStored
-                    | SourceNativeHeldStepV1::StorageRecoveryRecorded
-                    | SourceNativeHeldStepV1::ProviderRecoveryPrepared
-                    | SourceNativeHeldStepV1::ProviderRecoveryStored
-                    | SourceNativeHeldStepV1::RootTerminalRecorded
-            )
-        {
+        if !permits_hot_checkpoint(previous.original.state, step) {
             return Err(corrupt(
                 "held closed original custody cannot resume hot work",
             ));
@@ -212,27 +201,18 @@ pub fn propose_native_held_transition_v1<'before, 'after>(
     let keys = graph::companion_keys(&next)?;
     let pending_retirement = step == SourceNativeHeldStepV1::RootTerminalRecorded
         && matches!(next.original.state, Outer::Requested | Outer::Prepared);
-    let expected: BTreeSet<_> = if step == SourceNativeHeldStepV1::CompletionCommitted {
-        keys.iter().cloned().collect()
-    } else if pending_retirement {
+    if pending_retirement {
         graph::validate_pending_retirement(
             &before,
             &after,
             previous.as_ref().ok_or(corrupt("held retirement before"))?,
             &next,
         )?;
-        [
-            keys[1].clone(),
-            keys[2].clone(),
-            keys[3].clone(),
-            keys[4].clone(),
-            keys[5].clone(),
-        ]
-        .into_iter()
-        .collect()
-    } else {
-        BTreeSet::from([key])
-    };
+    }
+    let expected: BTreeSet<_> = checkpoint_owner_indices(step, next.original.state)
+        .iter()
+        .map(|index| keys[*index].clone())
+        .collect();
     let mutations = exact_mutations(&before, &after, &expected)?;
     if step == SourceNativeHeldStepV1::CompletionCommitted {
         completion::validate_native_held_complete(&before, &after, &keys)?;
@@ -247,6 +227,22 @@ pub fn propose_native_held_transition_v1<'before, 'after>(
         mutations,
         admission,
     })
+}
+
+/// Shares mutation families without replacing exact graph/materializer checks.
+pub(super) fn checkpoint_owner_indices(
+    step: SourceNativeHeldStepV1,
+    outer: Outer,
+) -> &'static [usize] {
+    if step == SourceNativeHeldStepV1::CompletionCommitted {
+        &[0, 1, 2, 3, 4, 5]
+    } else if step == SourceNativeHeldStepV1::RootTerminalRecorded
+        && matches!(outer, Outer::Requested | Outer::Prepared)
+    {
+        &[1, 2, 3, 4, 5]
+    } else {
+        &[5]
+    }
 }
 
 fn validate_requested(before: &Records, next: &Record) -> Result<(), LedgerFormatErrorV1> {
@@ -320,29 +316,7 @@ pub(crate) fn validate_step(
     }
     let before = before.ok_or(corrupt("held original absent"))?;
     let phases = (before.suffix.phase(), after.suffix.phase());
-    let legal = match step {
-        Step::ChallengeIssued => phases == (0, 1),
-        Step::StoragePrepared => phases == (1, 2),
-        Step::ChallengeSpent => phases == (2, 3),
-        Step::CompletionCommitted => phases == (3, 4),
-        Step::HeldPrepared => phases == (4, 5),
-        Step::HeldStored => phases == (5, 6),
-        Step::RootDispositionPrepared => matches!(phases, (0..=6, 7)),
-        Step::RootRecoveryRecorded => matches!(phases, (0..=6, 7) | (7, 7) | (8, 8) | (9, 9)),
-        Step::RelayStored => phases == (7, 7),
-        Step::StorageSettlementRecorded => phases == (7, 8),
-        Step::ProviderSettledPrepared => phases == (8, 8),
-        Step::ProviderSettledStored => phases == (8, 9),
-        Step::StorageRecoveryPrepared | Step::StorageRecoveryQueryStored => {
-            matches!(phases, (7, 7) | (8, 8) | (9, 9))
-        }
-        Step::StorageRecoveryRecorded => matches!(phases, (7, 8) | (8, 8) | (9, 9)),
-        Step::ProviderRecoveryPrepared => matches!(phases, (8, 8) | (9, 9)),
-        Step::ProviderRecoveryStored => matches!(phases, (8, 9) | (9, 9)),
-        Step::RootTerminalRecorded => phases == (9, 10),
-        Step::Requested => false,
-    };
-    if !legal || before.suffix.flight() != after.suffix.flight() {
+    if !permits_checkpoint_phases(step, phases) || before.suffix.flight() != after.suffix.flight() {
         return Err(corrupt("held named checkpoint phases"));
     }
     if before.suffix.control(Kind::RootRecoveryQuery).is_some()
@@ -369,20 +343,9 @@ pub(crate) fn validate_step(
         | Step::ProviderSettledPrepared
         | Step::StorageRecoveryPrepared
         | Step::ProviderRecoveryPrepared => {
-            let kind = match step {
-                Step::HeldPrepared => Kind::ProviderHeld,
-                Step::ProviderSettledPrepared => Kind::ProviderSettled,
-                Step::StorageRecoveryPrepared => Kind::ProviderStorageRecoveryQuery,
-                _ => Kind::ProviderRecoveryState,
-            };
+            let kind = preparation_kind(step).ok_or(corrupt("held preparation kind"))?;
             let replaces_preparation =
-                match (step, before.suffix.prepared().map(|value| value.kind())) {
-                    (Step::ProviderRecoveryPrepared, Some(Kind::ProviderSettled)) => true,
-                    (Step::StorageRecoveryPrepared, Some(Kind::ProviderRelay)) => {
-                        permits_unescaped_relay_rotation(before, phases)
-                    }
-                    _ => false,
-                };
+                permits_preparation_rotation(&CheckpointFacts::read(before)?, step, phases);
             if !added.is_empty()
                 || after
                     .suffix
@@ -416,13 +379,8 @@ pub(crate) fn validate_step(
         | Step::ProviderSettledStored
         | Step::StorageRecoveryQueryStored
         | Step::ProviderRecoveryStored => {
-            let kind = match step {
-                Step::HeldStored => Kind::ProviderHeld,
-                Step::RelayStored => Kind::ProviderRelay,
-                Step::ProviderSettledStored => Kind::ProviderSettled,
-                Step::StorageRecoveryQueryStored => Kind::ProviderStorageRecoveryQuery,
-                _ => Kind::ProviderRecoveryState,
-            };
+            let kind =
+                stored_preparation_kind(step).ok_or(corrupt("held stored preparation kind"))?;
             require_added(added, |actual| actual == kind)?;
             if before.suffix.prepared() != Some(added[0].prepared())
                 || after.suffix.prepared().is_some()
@@ -430,11 +388,13 @@ pub(crate) fn validate_step(
                 return Err(corrupt("held exact signed successor clears preparation"));
             }
         }
-        Step::RootRecoveryRecorded
+        Step::StoragePrepared
+        | Step::RootRecoveryRecorded
         | Step::StorageSettlementRecorded
         | Step::StorageRecoveryRecorded
         | Step::RootTerminalRecorded => {
             require_added(added, |kind| match step {
+                Step::StoragePrepared => kind == Kind::StorageHeld,
                 Step::RootRecoveryRecorded => kind == Kind::RootRecoveryQuery,
                 Step::StorageSettlementRecorded => kind == Kind::StorageSettled,
                 Step::StorageRecoveryRecorded => kind == Kind::StorageRecoveryState,
@@ -458,22 +418,403 @@ pub(crate) fn validate_step(
         }
         Step::Requested => return Err(corrupt("held initial step reused")),
     }
+    let before_facts = CheckpointFacts::read(before)?;
+    let after_facts = CheckpointFacts::read(after)?;
+    if !checkpoint_successors(before_facts)
+        .iter()
+        .any(|(candidate, facts)| *candidate == step && *facts == after_facts)
+    {
+        return Err(corrupt("held checkpoint artifact/predecessor shape"));
+    }
     Ok(())
 }
 
-// Case A changes only the unescaped5 preparation after the first durable9.
-fn permits_unescaped_relay_rotation(before: &Record, phases: (u8, u8)) -> bool {
-    phases == (7, 7)
-        && before.suffix.control(Kind::ProviderRelay).is_none()
-        && (before.suffix.control(Kind::RootAccepted).is_some()
-            || before.suffix.control(Kind::RootClosed).is_some())
-        && before
-            .suffix
-            .control(Kind::RootRecoveryQuery)
-            .is_some_and(|value| {
-                evidence::query(value.prepared())
-                    .is_ok_and(|query| query.mode == Mode::SettleRecordedDisposition)
-            })
+/// Projects bounded schema facts; it contains no synthetic signed control.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CheckpointFacts {
+    pub(super) phase: u8,
+    pub(super) outer: Outer,
+    pub(super) prepared: Option<Kind>,
+    pub(super) stored: u16,
+    pub(super) first_recovery: bool,
+    pub(super) terminal_recovery: bool,
+    pub(super) disposition: Option<DispositionShape>,
+    pub(super) settlement: bool,
+    pub(super) reply: bool,
+    pub(super) completed: bool,
+    pub(super) artifact_claim: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DispositionShape {
+    Accepted,
+    FullClosed,
+    RootOnlyPreparedClosed,
+}
+
+impl CheckpointFacts {
+    pub(super) fn read(record: &Record) -> Result<Self, LedgerFormatErrorV1> {
+        let mut stored = 0;
+        let mut first_recovery = false;
+        let mut terminal_recovery = false;
+        for control in record.suffix.controls() {
+            stored |= 1 << control.kind() as u8;
+            if control.kind() == Kind::RootRecoveryQuery {
+                match evidence::query(control.prepared())?.mode {
+                    Mode::SettleRecordedDisposition => first_recovery = true,
+                    Mode::RecordRootTerminal => terminal_recovery = true,
+                    Mode::Observe => {
+                        return Err(corrupt("held Source recovery requires recorded disposition"));
+                    }
+                }
+            }
+        }
+        let disposition = evidence::root_disposition(record)?.map(|root| {
+            if root.disposition == NativeHeldDispositionV1::Accepted {
+                DispositionShape::Accepted
+            } else if root.scope.is_root_only()
+                && root.observation == RootNativeObservationV1::PreparedOnly
+            {
+                DispositionShape::RootOnlyPreparedClosed
+            } else {
+                DispositionShape::FullClosed
+            }
+        });
+
+        Ok(Self {
+            phase: record.suffix.phase(),
+            outer: record.original.state,
+            prepared: record.suffix.prepared().map(|value| value.kind()),
+            stored,
+            first_recovery,
+            terminal_recovery,
+            disposition,
+            settlement: evidence::storage_assertion(record)?.is_some(),
+            reply: record.original.accepted_reply.is_some(),
+            // CleanupRequired can also be the retired unleased cold original.
+            // That shape is terminal10 with zero A; in-flight cleanup markers
+            // and hot terminal archives retain genuine Complete scheduling.
+            completed: record.original.state == Outer::Active
+                || (record.original.state == Outer::CleanupRequired
+                    && (record.suffix.phase() < 10
+                        || evidence::artifact(record)?.as_bytes() != &[0; 32])),
+            artifact_claim: evidence::has_artifact_claim(record),
+        })
+    }
+
+    pub(super) fn has(self, kind: Kind) -> bool {
+        self.stored & (1 << kind as u8) != 0
+    }
+}
+
+pub(super) fn permits_checkpoint_phases(
+    step: SourceNativeHeldStepV1,
+    phases: (u8, u8),
+) -> bool {
+    use SourceNativeHeldStepV1 as Step;
+    match step {
+        Step::ChallengeIssued => phases == (0, 1),
+        Step::StoragePrepared => phases == (1, 2),
+        Step::ChallengeSpent => phases == (2, 3),
+        Step::CompletionCommitted => phases == (3, 4),
+        Step::HeldPrepared => phases == (4, 5),
+        Step::HeldStored => phases == (5, 6),
+        Step::RootDispositionPrepared => matches!(phases, (0..=6, 7)),
+        Step::RootRecoveryRecorded => matches!(phases, (0..=6, 7) | (7, 7) | (8, 8) | (9, 9)),
+        Step::RelayStored => phases == (7, 7),
+        Step::StorageSettlementRecorded => phases == (7, 8),
+        Step::ProviderSettledPrepared => phases == (8, 8),
+        Step::ProviderSettledStored => phases == (8, 9),
+        Step::StorageRecoveryPrepared | Step::StorageRecoveryQueryStored => {
+            matches!(phases, (7, 7) | (8, 8) | (9, 9))
+        }
+        Step::StorageRecoveryRecorded => matches!(phases, (7, 8) | (8, 8) | (9, 9)),
+        Step::ProviderRecoveryPrepared => matches!(phases, (8, 8) | (9, 9)),
+        Step::ProviderRecoveryStored => matches!(phases, (8, 9) | (9, 9)),
+        Step::RootTerminalRecorded => phases == (9, 10),
+        Step::Requested => false,
+    }
+}
+
+pub(super) fn permits_hot_checkpoint(outer: Outer, step: SourceNativeHeldStepV1) -> bool {
+    outer != Outer::CleanupRequired
+        || matches!(
+            step,
+            SourceNativeHeldStepV1::RootRecoveryRecorded
+                | SourceNativeHeldStepV1::StorageRecoveryPrepared
+                | SourceNativeHeldStepV1::StorageRecoveryQueryStored
+                | SourceNativeHeldStepV1::StorageRecoveryRecorded
+                | SourceNativeHeldStepV1::ProviderRecoveryPrepared
+                | SourceNativeHeldStepV1::ProviderRecoveryStored
+                | SourceNativeHeldStepV1::RootTerminalRecorded
+        )
+}
+
+pub(super) fn permits_preparation_rotation(
+    before: &CheckpointFacts,
+    step: SourceNativeHeldStepV1,
+    phases: (u8, u8),
+) -> bool {
+    match (step, before.prepared) {
+        (SourceNativeHeldStepV1::ProviderRecoveryPrepared, Some(Kind::ProviderSettled)) => true,
+        (SourceNativeHeldStepV1::StorageRecoveryPrepared, Some(Kind::ProviderRelay)) => {
+            // Case A preserves unescaped5 at first9 and rotates only after it.
+            phases == (7, 7)
+                && !before.has(Kind::ProviderRelay)
+                && (before.has(Kind::RootAccepted) || before.has(Kind::RootClosed))
+                && before.first_recovery
+        }
+        _ => false,
+    }
+}
+
+pub(super) fn permits_unescaped_held_clear_shape(
+    before: &CheckpointFacts,
+    phases: (u8, u8),
+) -> bool {
+    phases == (5, 7)
+        && matches!(before.outer, Outer::Active | Outer::CleanupRequired)
+        && before.prepared == Some(Kind::ProviderHeld)
+        && !before.has(Kind::ProviderHeld)
+        && before.disposition.is_none()
+}
+
+pub(super) fn preparation_kind(step: SourceNativeHeldStepV1) -> Option<Kind> {
+    use SourceNativeHeldStepV1 as Step;
+    match step {
+        Step::HeldPrepared => Some(Kind::ProviderHeld),
+        Step::ProviderSettledPrepared => Some(Kind::ProviderSettled),
+        Step::StorageRecoveryPrepared => Some(Kind::ProviderStorageRecoveryQuery),
+        Step::ProviderRecoveryPrepared => Some(Kind::ProviderRecoveryState),
+        _ => None,
+    }
+}
+
+pub(super) fn stored_preparation_kind(step: SourceNativeHeldStepV1) -> Option<Kind> {
+    use SourceNativeHeldStepV1 as Step;
+    match step {
+        Step::HeldStored => Some(Kind::ProviderHeld),
+        Step::RelayStored => Some(Kind::ProviderRelay),
+        Step::ProviderSettledStored => Some(Kind::ProviderSettled),
+        Step::StorageRecoveryQueryStored => Some(Kind::ProviderStorageRecoveryQuery),
+        Step::ProviderRecoveryStored => Some(Kind::ProviderRecoveryState),
+        _ => None,
+    }
+}
+
+/// Enumerates schema shapes using the same phase/preparation predicates as validation.
+///
+/// Unknown first signed proofs are possibilities, never received artifacts. The
+/// concrete proposal path still checks their complete assertions and witnesses.
+pub(super) fn checkpoint_successors(
+    before: CheckpointFacts,
+) -> Vec<(SourceNativeHeldStepV1, CheckpointFacts)> {
+    use SourceNativeHeldStepV1 as Step;
+    const STEPS: [Step; 18] = [
+        Step::ChallengeIssued,
+        Step::StoragePrepared,
+        Step::ChallengeSpent,
+        Step::CompletionCommitted,
+        Step::HeldPrepared,
+        Step::HeldStored,
+        Step::RootDispositionPrepared,
+        Step::RelayStored,
+        Step::StorageSettlementRecorded,
+        Step::ProviderSettledPrepared,
+        Step::ProviderSettledStored,
+        Step::RootRecoveryRecorded,
+        Step::StorageRecoveryPrepared,
+        Step::StorageRecoveryQueryStored,
+        Step::StorageRecoveryRecorded,
+        Step::ProviderRecoveryPrepared,
+        Step::ProviderRecoveryStored,
+        Step::RootTerminalRecorded,
+    ];
+    let mut successors = Vec::new();
+    for step in STEPS {
+        if !permits_hot_checkpoint(before.outer, step) {
+            continue;
+        }
+        if before.first_recovery
+            && matches!(
+                step,
+                Step::RelayStored | Step::ProviderSettledPrepared | Step::ProviderSettledStored
+            )
+        {
+            continue;
+        }
+        let mut next = before;
+        next.phase = match step {
+            Step::ChallengeIssued => 1,
+            Step::StoragePrepared => 2,
+            Step::ChallengeSpent => 3,
+            Step::CompletionCommitted => 4,
+            Step::HeldPrepared => 5,
+            Step::HeldStored => 6,
+            Step::RootDispositionPrepared => 7,
+            Step::RootRecoveryRecorded => before.phase.max(7),
+            Step::StorageSettlementRecorded | Step::StorageRecoveryRecorded => before.phase.max(8),
+            Step::ProviderSettledStored | Step::ProviderRecoveryStored => 9,
+            Step::RootTerminalRecorded => 10,
+            _ => before.phase,
+        };
+        let phases = (before.phase, next.phase);
+        if !permits_checkpoint_phases(step, phases) {
+            continue;
+        }
+
+        if let Some(kind) = preparation_kind(step) {
+            let has_predecessor = match step {
+                Step::HeldPrepared => before.has(Kind::StorageHeld),
+                Step::ProviderSettledPrepared => before.settlement,
+                Step::StorageRecoveryPrepared => before.first_recovery,
+                Step::ProviderRecoveryPrepared => {
+                    before.first_recovery
+                        && before.settlement
+                        && !(before.completed
+                            && before.has(Kind::ProviderSettled)
+                            && !before.artifact_claim)
+                }
+                _ => false,
+            };
+            if !has_predecessor
+                || before.has(kind)
+                || (before.prepared.is_some() && !permits_preparation_rotation(&before, step, phases))
+            {
+                continue;
+            }
+            next.prepared = Some(kind);
+            if matches!(kind, Kind::ProviderHeld | Kind::ProviderRecoveryState) {
+                next.artifact_claim = true;
+            }
+        } else if let Some(kind) = stored_preparation_kind(step) {
+            if before.prepared != Some(kind) || before.has(kind) {
+                continue;
+            }
+            next.prepared = None;
+            next.stored |= 1 << kind as u8;
+        } else {
+            match step {
+                Step::StoragePrepared => {
+                    if before.has(Kind::StorageHeld) || before.prepared.is_some() {
+                        continue;
+                    }
+                    next.stored |= 1 << Kind::StorageHeld as u8;
+                    next.reply = true;
+                    next.outer = Outer::Prepared;
+                }
+                Step::CompletionCommitted => {
+                    next.outer = Outer::Active;
+                    next.completed = true;
+                }
+                Step::RootDispositionPrepared => {
+                    if before.disposition.is_some()
+                        || before.prepared.is_some_and(|kind| kind != Kind::ProviderHeld)
+                    {
+                        continue;
+                    }
+                    // Full disposition needs actual hot3; an earlier Closed
+                    // possibility is the separate Root-only PreparedOnly shape.
+                    let choices: &[DispositionShape] = if before.has(Kind::ProviderHeld) {
+                        &[
+                            DispositionShape::Accepted,
+                            DispositionShape::FullClosed,
+                            DispositionShape::RootOnlyPreparedClosed,
+                        ]
+                    } else {
+                        &[DispositionShape::RootOnlyPreparedClosed]
+                    };
+                    for disposition in choices {
+                        let mut chosen = next;
+                        chosen.disposition = Some(*disposition);
+                        chosen.prepared = Some(Kind::ProviderRelay);
+                        chosen.artifact_claim =
+                            before.has(Kind::ProviderHeld) || before.has(Kind::ProviderRecoveryState);
+                        chosen.stored |= 1 << if *disposition == DispositionShape::Accepted {
+                            Kind::RootAccepted as u8
+                        } else {
+                            Kind::RootClosed as u8
+                        };
+                        successors.push((step, chosen));
+                    }
+                    continue;
+                }
+                Step::RootRecoveryRecorded => {
+                    if before.first_recovery {
+                        continue;
+                    }
+                    if before.prepared == Some(Kind::ProviderHeld) {
+                        if !permits_unescaped_held_clear_shape(&before, phases) {
+                            continue;
+                        }
+                        next.prepared = None;
+                        next.artifact_claim =
+                            before.has(Kind::ProviderHeld) || before.has(Kind::ProviderRecoveryState);
+                    }
+                    next.first_recovery = true;
+                    next.stored |= 1 << Kind::RootRecoveryQuery as u8;
+                    if before.disposition.is_none() && before.has(Kind::ProviderHeld) {
+                        for disposition in [
+                            DispositionShape::Accepted,
+                            DispositionShape::FullClosed,
+                            DispositionShape::RootOnlyPreparedClosed,
+                        ] {
+                            let mut chosen = next;
+                            chosen.disposition = Some(disposition);
+                            successors.push((step, chosen));
+                        }
+                        continue;
+                    }
+                    next.disposition = before
+                        .disposition
+                        .or(Some(DispositionShape::RootOnlyPreparedClosed));
+                }
+                Step::StorageSettlementRecorded => {
+                    if !before.has(Kind::ProviderRelay)
+                        || !before.reply
+                        || before.has(Kind::StorageSettled)
+                    {
+                        continue;
+                    }
+                    next.stored |= 1 << Kind::StorageSettled as u8;
+                    next.settlement = true;
+                }
+                Step::StorageRecoveryRecorded => {
+                    if !before.has(Kind::ProviderStorageRecoveryQuery)
+                        || before.has(Kind::StorageRecoveryState)
+                    {
+                        continue;
+                    }
+                    next.stored |= 1 << Kind::StorageRecoveryState as u8;
+                    // Phase8+ requires an exact child assertion. The eventual
+                    // real reducer must join it to the immutable settlement.
+                    next.settlement = true;
+                }
+                Step::RootTerminalRecorded => {
+                    if before.prepared.is_some()
+                        || !before.settlement
+                        || (!before.has(Kind::ProviderSettled)
+                            && !before.has(Kind::ProviderRecoveryState))
+                        || (before.completed && !before.artifact_claim)
+                    {
+                        continue;
+                    }
+                    let mut ack = next;
+                    ack.stored |= 1 << Kind::RootTerminalRecorded as u8;
+                    successors.push((step, ack));
+                    if !before.terminal_recovery {
+                        next.terminal_recovery = true;
+                        next.stored |= 1 << Kind::RootRecoveryQuery as u8;
+                    } else {
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+        }
+        successors.push((step, next));
+    }
+    successors
 }
 
 // Case B discards unescaped3 only for a first Root PreparedOnly Closed9. The
@@ -483,17 +824,7 @@ fn permits_unescaped_held_clear(
     after: &Record,
     phases: (u8, u8),
 ) -> Result<bool, LedgerFormatErrorV1> {
-    if phases != (5, 7)
-        || !matches!(
-            before.original.state,
-            Outer::Active | Outer::CleanupRequired
-        )
-        || before
-            .suffix
-            .prepared()
-            .is_none_or(|value| value.kind() != Kind::ProviderHeld)
-        || before.suffix.control(Kind::ProviderHeld).is_some()
-        || evidence::root_disposition(before)?.is_some()
+    if !permits_unescaped_held_clear_shape(&CheckpointFacts::read(before)?, phases)
         || after.suffix.prepared().is_some()
     {
         return Ok(false);
@@ -554,9 +885,16 @@ pub(super) fn validate_recovery_before(
     {
         return Err(corrupt("held recovery actual before fields"));
     }
-    graph::require_witness(state.fields.witness.as_ref().ok_or(corrupt("held recovery before witness missing"))?,
+    graph::require_witness(
+        state
+            .fields
+            .witness
+            .as_ref()
+            .ok_or(corrupt("held recovery before witness missing"))?,
         aos_sandbox_source_provider_protocol::native_held_completion::witness::NativeHeldRecordFamilyV1::ProviderNative,
-        &key, Some(bytes))
+        &key,
+        Some(bytes),
+    )
 }
 
 pub(crate) fn exact_mutations(

@@ -147,6 +147,12 @@ const RELEASE_RECORD_MAXIMUM_BYTES: usize = ENVELOPE_BYTES
     + 120
     + MAXIMUM_SIGNED_RELEASE_RECEIPT_BYTES;
 
+// Capacity projections borrow the codec's bound; they do not maintain a second
+// Release length policy or confuse its95-byte key with legacy capacity syntax.
+pub(crate) const fn maximum_release_value_bytes() -> usize {
+    RELEASE_RECORD_MAXIMUM_BYTES
+}
+
 /// Bounds all six owner records in an atomic native Acquire completion.
 ///
 /// This adds the format maxima for attempt, acquisition, current and historical
