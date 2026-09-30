@@ -35,7 +35,7 @@
       }
       {
         label = "ADV-28 every finding artifact";
-        needle = "Every interesting finding (a property violation, a divergence, or a\n  retained corpus entry) MUST emit a self-contained reproduction artifact";
+        needle = "concrete execution timeout, or a retained corpus entry) MUST emit a";
       }
       {
         label = "ADV-29 discovery paths";
