@@ -1,4 +1,5 @@
 {
+  service-management,
   lib,
   mkDerivation,
   writeTextFile,
@@ -8,7 +9,8 @@
   systemd,
 }: let
   agentBin = writeTextFile {
-    name = "aos-test-agent";
+    name = "aos-test-agent-script";
+    meta.mainProgram = "aos-test-agent";
     executable = true;
     destination = "/bin/aos-test-agent";
     text =
@@ -108,7 +110,8 @@ in
       }
     ];
 
-    abilities = ./_aos-test-agent;
+    moduleDeps = [service-management];
+    module = ./_aos-test-agent;
 
     meta = {
       description = "AOS package for the VM test guest agent";
