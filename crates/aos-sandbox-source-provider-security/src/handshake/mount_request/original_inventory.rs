@@ -1,7 +1,9 @@
 //! Retained ordinary Query custody borrowing three genuine original owners.
 //!
 //! Query progress never recreates original authorization or renews its clock.
-//! Every returned error revokes both actual Session and retained progress.
+//! Armed boundaries revoke actual Session and retained progress on returned
+//! error or unwind. They start from genuine phase11 originals, not their older
+//! construction paths; panic-abort and process loss do not run these guards.
 
 use std::cell::Cell;
 
@@ -15,8 +17,11 @@ use super::*;
 use crate::carrier::RetainedSourceProviderRecordV5;
 
 mod binding;
+mod custody;
 mod exchange;
 mod request;
+
+use custody::QueryBoundaryV6;
 
 // A call-local grouping of existing borrows, never a public endpoint owner.
 type Original<'a> = (
@@ -51,6 +56,7 @@ pub struct OriginalInventorySendV6 {
     recovery: Option<MountProviderRequestSendRecoveryV2>,
     sent: Option<SentMountProviderRequestV2>,
     attempted: bool,
+    observed_boundary: Option<ProviderSendBoundaryV6>,
     carrier_accepted: bool,
     failed: Cell<bool>,
 }
@@ -60,7 +66,7 @@ pub struct OriginalInventorySendV6 {
 pub struct OriginalInventoryReceivedOutcomeV6 {
     root: [u8; 32],
     query: [u8; 32],
-    received: RetainedSourceProviderRecordV5,
+    received: Option<RetainedSourceProviderRecordV5>,
     verified: Option<VerifiedMountProviderOutcomeV2>,
     failed: Cell<bool>,
 }
@@ -81,7 +87,11 @@ impl OriginalInventoryPreparationV6 {
 impl OriginalInventoryReceivedOutcomeV6 {
     /// Borrows verified zero-FD Inventory DATA without releasing packet custody.
     pub fn verified_inventory(&self) -> Option<&VerifiedMountProviderOutcomeV2> {
-        if self.failed.get() {
+        if self.failed.get()
+            || self.received.as_ref()
+                .and_then(|record| record.bound())
+                .is_none()
+        {
             None
         } else {
             self.verified.as_ref()
@@ -100,7 +110,9 @@ impl CurrentRootMountSourceProviderSessionV1 {
         writer: &Writer<'_>,
         original: Original<'_>,
     ) -> Result<(), SourceProviderSecurityError> {
-        self.require_original_root_closed_for_inventory_v6(writer, original)
+        QueryBoundaryV6::new(self, original, ()).run(|session, _| {
+            session.require_original_root_closed_for_inventory_v6(writer, original)
+        })
     }
 
     /// Irreversibly revokes Query progress without releasing any owned bytes.

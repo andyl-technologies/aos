@@ -74,12 +74,20 @@ impl CurrentRootMountSourceProviderSessionV1 {
         send: &OriginalInventorySendV6,
         token: &OriginalInventoryReceivedOutcomeV6,
     ) -> Result<(), SourceProviderSecurityError> {
-        let result = (|| {
-            self.revalidate_original_inventory_continuation_v6(writer, original)?;
+        let mut boundary = QueryBoundaryV6::new(self, original, (send, token));
+        boundary.run(|session, progress| {
+            let (send, token) = progress;
+            let send = &**send;
+            let token = &**token;
+
+            session.revalidate_original_inventory_continuation_v6(writer, original)?;
             let snapshot = writer.snapshot().map_err(|_| invalid())?;
-            let sent = self.require_query_sent_v6(writer, original, send)?;
+            let sent = session.require_query_sent_v6(writer, original, send)?;
             let verified = token.verified_inventory().ok_or_else(invalid)?;
-            let record = token.received.bound().ok_or_else(invalid)?;
+            let record = token.received
+                .as_ref()
+                .and_then(|record| record.bound())
+                .ok_or_else(invalid)?;
             let anchor = verified.verification_anchor;
             let response_digest = aos_sandbox_source_provider_protocol::provider_response_artifact_digest_v1(
                 SourceProviderMethod::Inventory,
@@ -88,7 +96,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             if token.root != send.root
                 || token.query != send.query
                 || !record.descriptors.is_empty()
-                || !record.execution.has_same_execution(&self.provider_execution)
+                || !record.execution.has_same_execution(&session.provider_execution)
                 || verified.method != SourceProviderMethod::Inventory
                 || verified.native_outcome.is_some()
                 || verified.canonical_response != record.payload
@@ -111,16 +119,10 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 return Err(invalid());
             }
 
-            record.execution.revalidate(self.carrier.socket().peer())?;
+            record.execution.revalidate(session.carrier.socket().peer())?;
             writer.validate_snapshot(&snapshot).map_err(|_| invalid())?;
-            self.revalidate_original_inventory_continuation_v6(writer, original)
-        })();
-        if result.is_err() {
-            token.failed.set(true);
-            send.failed.set(true);
-            self.fail_query_v6(original);
-        }
-        result
+            session.revalidate_original_inventory_continuation_v6(writer, original)
+        })
     }
 
     /// Binds prospective ordinary Q2/H bytes to the first actual verified packet.
@@ -136,8 +138,13 @@ impl CurrentRootMountSourceProviderSessionV1 {
         token: &OriginalInventoryReceivedOutcomeV6,
         owners: &JournalTransaction,
     ) -> Result<(), SourceProviderSecurityError> {
-        let result = (|| {
-            self.revalidate_original_inventory_received_v6(writer, original, send, token)?;
+        let mut boundary = QueryBoundaryV6::new(self, original, (send, token));
+        boundary.run(|session, progress| {
+            let (send, token) = progress;
+            let send = &**send;
+            let token = &**token;
+
+            session.revalidate_original_inventory_received_v6(writer, original, send, token)?;
             let snapshot = writer.snapshot().map_err(|_| invalid())?;
             let before = writer.current_graph().map_err(|_| invalid())?;
             let mut rows = before.canonical_records().clone();
@@ -169,14 +176,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
             .map_err(|_| invalid())?;
             require_consumed_packet(&after, send.query, token)?;
             writer.validate_snapshot(&snapshot).map_err(|_| invalid())?;
-            self.revalidate_original_inventory_received_v6(writer, original, send, token)
-        })();
-        if result.is_err() {
-            token.failed.set(true);
-            send.failed.set(true);
-            self.fail_query_v6(original);
-        }
-        result
+            session.revalidate_original_inventory_received_v6(writer, original, send, token)
+        })
     }
 
     /// Binds actual current Q2 readback to retained packet and first verifier anchor.
@@ -192,22 +193,21 @@ impl CurrentRootMountSourceProviderSessionV1 {
         token: &OriginalInventoryReceivedOutcomeV6,
         actual: &OriginalInventoryProtectedReadbackV6,
     ) -> Result<(), SourceProviderSecurityError> {
-        let result = (|| {
-            self.revalidate_original_inventory_received_v6(writer, original, send, token)?;
+        let mut boundary = QueryBoundaryV6::new(self, original, (send, token));
+        boundary.run(|session, progress| {
+            let (send, token) = progress;
+            let send = &**send;
+            let token = &**token;
+
+            session.revalidate_original_inventory_received_v6(writer, original, send, token)?;
             writer.validate_readback(actual).map_err(|_| invalid())?;
             if actual.root_attempt() != send.root || actual.query_attempt() != send.query {
                 return Err(invalid());
             }
             require_consumed_packet(actual.graph().map_err(|_| invalid())?, send.query, token)?;
             writer.validate_readback(actual).map_err(|_| invalid())?;
-            self.revalidate_original_inventory_received_v6(writer, original, send, token)
-        })();
-        if result.is_err() {
-            token.failed.set(true);
-            send.failed.set(true);
-            self.fail_query_v6(original);
-        }
-        result
+            session.revalidate_original_inventory_received_v6(writer, original, send, token)
+        })
     }
 }
 

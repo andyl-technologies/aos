@@ -1,11 +1,12 @@
 //! Same-instance named Query preparation, attempted append and actual readback.
 //!
 //! Preparation parks owner input before fallible checks and the complete coupled
-//! candidate before preflight. Commit latches before I/O. Actual physical rows
-//! are parked before decoding or installation checks. Preparation and commit
-//! failures permanently disable that candidate while retaining its bytes and
-//! any readback. Immutable read checkers do not change captured DATA or latches;
-//! their caller must fail the enclosing install/send boundary on any error.
+//! candidate before preflight. Commit latches before I/O. Actual cut/TX metadata
+//! is parked before row cloning; rows precede decoding and installation checks.
+//! Preparation and commit failures permanently disable that candidate while
+//! retaining its bytes and any readback. Immutable read checkers do not change
+//! captured DATA or latches; their caller must fail the enclosing install/send
+//! boundary on any error.
 
 use std::path::Path;
 
@@ -41,13 +42,48 @@ pub struct PreparedOriginalInventoryAppendV6 {
 #[must_use]
 pub struct OriginalInventoryProtectedReadbackV6 {
     snapshot: ProtectedJournalSnapshot,
-    rows: State,
+    rows: Option<State>,
     graph: Option<RootNativeHeldGraphV2>,
     root: [u8; 32],
     query: [u8; 32],
     transaction: JournalTransaction,
     kind: Kind,
     validated: bool,
+}
+
+/// Latches failed preparation without removing its retained candidate.
+struct PreparationBoundaryV6<'candidate> {
+    candidate: &'candidate mut PreparedOriginalInventoryAppendV6,
+    succeeded: bool,
+}
+
+impl Drop for PreparationBoundaryV6<'_> {
+    fn drop(&mut self) {
+        if !self.succeeded {
+            self.candidate.failed = true;
+        }
+    }
+}
+
+/// Retains actual append ambiguity until its complete readback is validated.
+struct CommitBoundaryV6<'writer, 'journal, 'candidate> {
+    writer: &'writer mut MountOriginalInventoryJournalAuthorityV6<'journal>,
+    candidate: &'candidate mut PreparedOriginalInventoryAppendV6,
+    // Only ambiguity entered in this invocation poisons the Journal. Rejecting
+    // reuse of an already successful candidate is not a new physical attempt.
+    append_entered: bool,
+    succeeded: bool,
+}
+
+impl Drop for CommitBoundaryV6<'_, '_, '_> {
+    fn drop(&mut self) {
+        if !self.succeeded {
+            self.candidate.failed = true;
+            if self.append_entered {
+                self.writer.authority.journal.poisoned = true;
+            }
+        }
+    }
 }
 
 impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
@@ -214,7 +250,11 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
             failed: false,
         });
 
-        let candidate = slot.as_mut().ok_or_else(invalid)?;
+        let mut boundary = PreparationBoundaryV6 {
+            candidate: slot.as_mut().ok_or_else(invalid)?,
+            succeeded: false,
+        };
+        let candidate = &mut *boundary.candidate;
         let result = (|| {
             self.validate_snapshot(&candidate.snapshot)?;
             let query = changed_query(&candidate.owners)?;
@@ -249,9 +289,7 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
             candidate.preflight_complete = true;
             Ok(())
         })();
-        if result.is_err() {
-            candidate.failed = true;
-        }
+        boundary.succeeded = result.is_ok();
 
         result
     }
@@ -290,6 +328,15 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
         prepared: &mut PreparedOriginalInventoryAppendV6,
         readback: &mut Option<OriginalInventoryProtectedReadbackV6>,
     ) -> Result<(), JournalError> {
+        let mut boundary = CommitBoundaryV6 {
+            writer: self,
+            candidate: prepared,
+            append_entered: false,
+            succeeded: false,
+        };
+        let writer = &mut *boundary.writer;
+        let prepared = &mut *boundary.candidate;
+        let append_entered = &mut boundary.append_entered;
         if prepared.failed
             || prepared.attempted
             || !prepared.preflight_complete
@@ -300,16 +347,21 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
         }
 
         let result = (|| {
-            self.validate_snapshot(&prepared.snapshot)?;
+            writer.validate_snapshot(&prepared.snapshot)?;
             let derived = prepared.derived.as_ref().ok_or_else(invalid)?;
             let digest = authority_preflight_digest(std::slice::from_ref(&derived.transaction));
             if prepared.digest != Some(digest) {
                 return Err(invalid());
             }
-            self.preflight(derived)?;
+            writer.preflight(derived)?;
+
+            // This clone is DATA only and precedes I/O. The original exact TX
+            // remains in the candidate even if cloning unwinds.
+            let transaction = derived.transaction.clone();
 
             prepared.attempted = true;
-            self.authority.journal.commit_with_cache_gate(
+            *append_entered = true;
+            writer.authority.journal.commit_with_cache_gate(
                 &derived.transaction,
                 None,
                 true,
@@ -326,27 +378,25 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
             )?;
 
             *readback = Some(OriginalInventoryProtectedReadbackV6 {
-                snapshot: self.authority.current_snapshot(),
-                rows: self.authority.journal.state.clone(),
+                snapshot: writer.authority.current_snapshot(),
+                rows: None,
                 graph: None,
                 root: derived.root,
                 query: derived.query,
-                transaction: derived.transaction.clone(),
+                transaction,
                 kind: derived.kind,
                 validated: false,
             });
 
             let actual = readback.as_mut().ok_or_else(invalid)?;
-            actual.graph = Some(self.validate_actual_rows(actual)?);
+            // Actual cut/TX metadata is already retained. A failed row clone
+            // leaves this partial readback and the real Journal post-state.
+            actual.rows = Some(writer.authority.journal.state.clone());
+            actual.graph = Some(writer.validate_actual_rows(actual)?);
             actual.validated = true;
             Ok(())
         })();
-        if result.is_err() {
-            prepared.failed = true;
-            if prepared.attempted {
-                self.authority.journal.poisoned = true;
-            }
-        }
+        boundary.succeeded = result.is_ok();
 
         result
     }
@@ -357,7 +407,8 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
     ) -> Result<RootNativeHeldGraphV2, JournalError> {
         self.validate_snapshot(&actual.snapshot)?;
         let journal = &self.authority.journal;
-        if journal.state != actual.rows
+        let rows = actual.rows.as_ref().ok_or_else(invalid)?;
+        if &journal.state != rows
             || !journal.transaction_ids.contains(actual.transaction.id())
             || actual.transaction.records().iter().any(|record| {
                 journal.get(record.namespace(), record.key()) != record.value()
@@ -366,8 +417,8 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
 
-        let checked = graph(&actual.rows)?;
-        root_floor(&actual.rows, &checked, actual.root)?.validate_graph(&checked, journal.limits)?;
+        let checked = graph(rows)?;
+        root_floor(rows, &checked, actual.root)?.validate_graph(&checked, journal.limits)?;
         let query = checked.legacy().provider_attempts.get(&actual.query)
             .ok_or_else(invalid)?;
         match (actual.kind, &query.state) {
@@ -386,7 +437,7 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
                 if query.revision == 2 => {}
             _ => return Err(invalid()),
         }
-        let floor = pending(&actual.rows, journal.limits)?.into_iter()
+        let floor = pending(rows, journal.limits)?.into_iter()
             .find(|(floor, _)| floor.data().owner_id == actual.query);
         match (actual.kind, floor) {
             (Kind::CompleteConsumed, None) => {}
@@ -407,6 +458,10 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
         &self,
         actual: &OriginalInventoryProtectedReadbackV6,
     ) -> Result<(), JournalError> {
+        if !actual.validated {
+            return Err(invalid());
+        }
+
         let checked = self.validate_actual_rows(actual)?;
         let retained = actual.graph.as_ref().ok_or_else(invalid)?;
         if retained.canonical_records() != checked.canonical_records() {

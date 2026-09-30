@@ -14,28 +14,32 @@ impl CurrentRootMountSourceProviderSessionV1 {
         original: Original<'_>,
         slot: &mut Option<OriginalInventoryPreparationV6>,
     ) -> Result<(), SourceProviderSecurityError> {
-        if let Some(existing) = slot.as_ref() {
-            existing.failed.set(true);
-            self.fail_query_v6(original);
-            return Err(invalid());
-        }
+        let mut boundary = QueryBoundaryV6::new(self, original, slot);
+        boundary.run(|session, progress| {
+            let slot = &mut **progress;
 
-        *slot = Some(OriginalInventoryPreparationV6 {
-            root: original.2.attempt(),
-            plan: None,
-            request: None,
-            draft: None,
-            correlations: None,
-            historical: Vec::new(),
-            attempted_sign: false,
-            signed: None,
-            prepared: None,
-            confirmed: false,
-            failed: Cell::new(false),
-        });
-        let preparation = slot.as_mut().ok_or_else(invalid)?;
-        let result = (|| {
-            self.revalidate_original_inventory_continuation_v6(writer, original)?;
+            if let Some(existing) = slot.as_ref() {
+                existing.failed.set(true);
+                session.fail_query_v6(original);
+                return Err(invalid());
+            }
+
+            *slot = Some(OriginalInventoryPreparationV6 {
+                root: original.2.attempt(),
+                plan: None,
+                request: None,
+                draft: None,
+                correlations: None,
+                historical: Vec::new(),
+                attempted_sign: false,
+                signed: None,
+                prepared: None,
+                confirmed: false,
+                failed: Cell::new(false),
+            });
+            let preparation = slot.as_mut().ok_or_else(invalid)?;
+
+            session.revalidate_original_inventory_continuation_v6(writer, original)?;
             let graph = writer.current_graph().map_err(|_| invalid())?;
             let root = graph
                 .legacy()
@@ -58,7 +62,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 .provider_sessions
                 .get(&head.current_session_id)
                 .ok_or_else(invalid)?;
-            preparation.plan = Some(self.current_mount_provider_session_plan_with_view_v2(
+            preparation.plan = Some(session.current_mount_provider_session_plan_with_view_v2(
                 writer,
                 writer.snapshot().map_err(|_| invalid())?,
                 key,
@@ -117,7 +121,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                     .get(&acquisition_key).ok_or_else(invalid)?.clone();
                 let session_bytes = graph.canonical_records()
                     .get(&session_key).ok_or_else(invalid)?.clone();
-                let lineage = self.authorize_historical_mount_acquisition_v2(
+                let lineage = session.authorize_historical_mount_acquisition_v2(
                     writer,
                     writer.snapshot().map_err(|_| invalid())?,
                     acquisition_key,
@@ -139,13 +143,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 preparation.historical.push(HistoricalMountInventoryAuthorizationV2 { lineage });
             }
 
-            self.revalidate_original_inventory_continuation_v6(writer, original)
-        })();
-        if result.is_err() {
-            preparation.failed.set(true);
-            self.fail_query_v6(original);
-        }
-        result
+            session.revalidate_original_inventory_continuation_v6(writer, original)
+        })
     }
 
     /// Signs the retained Query once and parks the signature before postchecks.
@@ -159,8 +158,11 @@ impl CurrentRootMountSourceProviderSessionV1 {
         original: Original<'_>,
         preparation: &mut OriginalInventoryPreparationV6,
     ) -> Result<bool, SourceProviderSecurityError> {
-        let result = (|| {
-            self.revalidate_original_inventory_continuation_v6(writer, original)?;
+        let mut boundary = QueryBoundaryV6::new(self, original, preparation);
+        boundary.run(|session, progress| {
+            let preparation = &mut **progress;
+
+            session.revalidate_original_inventory_continuation_v6(writer, original)?;
             if preparation.failed.get()
                 || preparation.attempted_sign
                 || preparation.root != original.2.attempt()
@@ -168,9 +170,9 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 return Err(invalid());
             }
             let plan = preparation.plan.as_ref().ok_or_else(invalid)?;
-            self.validate_current_mount_plan(writer, plan)?;
+            session.validate_current_mount_plan(writer, plan)?;
             let snapshot = writer.snapshot().map_err(|_| invalid())?;
-            let expected = self.historical_inventory_correlations_with_view_v6(
+            let expected = session.historical_inventory_correlations_with_view_v6(
                 writer,
                 &preparation.historical,
             )?;
@@ -182,12 +184,12 @@ impl CurrentRootMountSourceProviderSessionV1 {
             let request = preparation.request.as_ref().ok_or_else(invalid)?;
             // Authentication-time DATA stays frozen; real currentness is checked
             // independently by Session and the unchanged original clock guard.
-            self.revalidate()?;
+            session.revalidate()?;
             let authentication_time = query_authentication_time_v6(
                 plan.session.authenticated_at_seconds,
                 super::super::current_unix_seconds()?,
             )?;
-            let projection = capture_session_projection(self, authentication_time)?;
+            let projection = capture_session_projection(session, authentication_time)?;
             let graph = writer.current_graph().map_err(|_| invalid())?;
             let draft = preparation.draft.as_ref().ok_or_else(invalid)?;
             let stored = graph
@@ -202,7 +204,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             }
 
             preparation.attempted_sign = true;
-            let mut prepared = self.authorize_non_acquire_retaining_v6(
+            session.authorize_non_acquire_retaining_v6(
                 SourceProviderMethod::Inventory,
                 encode_inventory_request(request),
                 request.session_binding(),
@@ -217,20 +219,19 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 None,
                 digest_inventory_request(request),
                 projection,
-                Some(&mut preparation.signed),
+                &mut preparation.signed,
+                &mut preparation.prepared,
             )?;
+
+            // The original prepared owner is parked before correlation clones
+            // or any writer/Session postcheck can fail or unwind.
+            let prepared = preparation.prepared.as_mut().ok_or_else(invalid)?;
             prepared.projection.inventory_correlations = Some(correlations.clone());
             prepared.outcome.inventory_correlations = Some(correlations.clone());
-            preparation.prepared = Some(prepared);
             writer.validate_snapshot(&snapshot).map_err(|_| invalid())?;
-            self.revalidate_original_inventory_continuation_v6(writer, original)?;
+            session.revalidate_original_inventory_continuation_v6(writer, original)?;
             Ok(true)
-        })();
-        if result.is_err() {
-            preparation.failed.set(true);
-            self.fail_query_v6(original);
-        }
-        result
+        })
     }
 }
 
