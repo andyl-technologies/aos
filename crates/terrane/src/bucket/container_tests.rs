@@ -157,16 +157,10 @@ async fn quarantine_survives_reopen_and_container_or_body_republication() {
     let plaintext = b"quarantined immutable body";
     let identity = chunk_identity(plaintext);
     let encoded = raw(plaintext);
-    bucket
-        .put(upload(
-            &encoded,
-            &identity,
-            plaintext.len(),
-            &bucket.inner.config.chunk_profile,
-            ChunkPosition::Final,
-        ))
-        .await
-        .unwrap();
+    let other = b"independent live body";
+    let other_id = chunk_identity(other);
+    let shared_pack = super::readmission_tests::publish_members(&bucket, &[plaintext, other]).await;
+    assert_eq!(bucket.get(&other_id, None).await.unwrap(), raw(other));
     let inventory = bucket.catalog().await.unwrap().inventory.unwrap();
     let retained = bucket.verified_container(&inventory[0]).await.unwrap().0;
 
@@ -196,18 +190,28 @@ async fn quarantine_survives_reopen_and_container_or_body_republication() {
         ))
         .await
         .unwrap();
-    let other = b"independent live body";
-    let other_id = chunk_identity(other);
+    assert_eq!(bucket.get(&other_id, None).await.unwrap(), raw(other));
+    let later = b"fresh independent publication";
+    let later_id = chunk_identity(later);
     bucket
         .put(upload(
-            &raw(other),
-            &other_id,
-            other.len(),
+            &raw(later),
+            &later_id,
+            later.len(),
             &bucket.inner.config.chunk_profile,
             ChunkPosition::Final,
         ))
         .await
         .unwrap();
+    let catalog = bucket.catalog().await.unwrap();
+    let quarantined = catalog
+        .shards
+        .iter()
+        .flat_map(|shard| shard.entries())
+        .find(|entry| entry.entry().hash() == &identity.terrane_v1_digest().unwrap())
+        .unwrap();
+    assert_eq!(quarantined.state(), crate::pack::RecordState::Quarantine);
+    assert_eq!(quarantined.pack(), shared_pack);
 
     let reopened = FileBucket::open(
         config(bucket.root().to_owned()),
@@ -218,8 +222,26 @@ async fn quarantine_survives_reopen_and_container_or_body_republication() {
     .await
     .unwrap();
     assert_eq!(
-        reopened.has(&[identity, other_id]).await.unwrap(),
+        reopened
+            .has(&[identity.clone(), other_id.clone()])
+            .await
+            .unwrap(),
         vec![false, true]
     );
+    assert_eq!(reopened.get(&other_id, None).await.unwrap(), raw(other));
+    assert!(matches!(
+        reopened
+            .put(upload(
+                &encoded,
+                &identity,
+                plaintext.len(),
+                &reopened.inner.config.chunk_profile,
+                ChunkPosition::Final
+            ))
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Corrupt(_)
+    ));
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
 }

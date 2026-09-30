@@ -13,6 +13,9 @@ mod quarantine;
 mod refs;
 
 #[cfg(all(test, feature = "tokio"))]
+mod readmission_tests;
+
+#[cfg(all(test, feature = "tokio"))]
 mod selection_tests;
 
 #[cfg(all(test, feature = "tokio"))]
@@ -91,8 +94,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
 {
     /// Opens and probes a bucket, atomically creating its absent root.
     ///
-    /// Only the successful root creator initializes a complete empty ref
-    /// inventory. An existing root must already carry its durable capability
+    /// The configured root's parent must exist. Only the successful root creator
+    /// initializes a complete empty ref inventory. An existing root must already carry its durable capability
     /// record; a legacy record retains unknown inventory completeness.
     ///
     /// # Errors

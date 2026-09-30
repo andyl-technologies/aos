@@ -61,7 +61,8 @@ impl Selected for RefRecord {
 }
 
 // Fixtures prepare durable proposals explicitly before exercising the real CAS.
-#[async_trait::async_trait]
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
 pub(super) trait PreparedCas {
     async fn prepared_cas(
         &self,
@@ -71,7 +72,8 @@ pub(super) trait PreparedCas {
     ) -> Result<RefCasOutcome, StoreFailure>;
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
     PreparedCas for FileBucket<F, C, V>
 {

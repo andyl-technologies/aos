@@ -208,9 +208,20 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             for record in terrane_core::pack_format::decode_shard(&delta.encode(), prefix)
                 .map_err(|_| files::layout_corrupt())?
             {
-                // Ordinary admission cannot restore a quarantined identity or
-                // retire other entries sharing that pack's retained bytes.
-                records.entry(record.record.hash).or_insert(record);
+                // Fresh verified admission replaces only a GC-retired placement.
+                // Quarantine and other live entries remain authoritative; the old
+                // physical pack's durable trash evidence is retained separately.
+                match records.entry(record.record.hash) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(record);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry)
+                        if entry.get().state == RecordState::Tombstone as u8 =>
+                    {
+                        entry.insert(record);
+                    }
+                    std::collections::btree_map::Entry::Occupied(_) => {}
+                }
             }
             let bytes =
                 terrane_core::pack_format::encode_shard(&records.into_values().collect::<Vec<_>>());

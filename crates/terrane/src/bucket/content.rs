@@ -407,10 +407,12 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         {
             return self.import_pack(catalog, meta.bytes(), identity).await;
         }
-        if self.is_excluded(&catalog, &identity)? {
+        if self.is_quarantined(&catalog, &identity)? {
             return Err(corrupt(&identity));
         }
-        if self.container(&catalog, &identity).await?.is_some() {
+        if !self.is_excluded(&catalog, &identity)?
+            && self.container(&catalog, &identity).await?.is_some()
+        {
             return Ok(identity);
         }
 

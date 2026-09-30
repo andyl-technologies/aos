@@ -24,7 +24,7 @@
       printf 'PASS: ${name} native file bucket conformance\n' > "$out/result"
     '';
 in {
-  store-idempotent-put = gate "store-idempotent-put" ["content_tests::repeated_put_preserves_first_encoding_and_survives_reopen"];
+  store-idempotent-put = gate "store-idempotent-put" ["content_tests::repeated_put_preserves_first_encoding_and_survives_reopen" "readmission_tests::verified_reupload_replaces_gc_retired_placement_without_restoring_old_pack"];
   store-verify-on-put = gate "store-verify-on-put" ["content_tests::admission_validates_identity_length_profile_and_independent_dedup_context"];
   store-verify-on-get = gate "store-verify-on-get" ["content_tests::corrupt_bytes_outside_requested_range_are_never_returned"];
   store-ranged-get = gate "store-ranged-get" ["content_tests::ranges_address_verified_encoded_bytes_and_check_overflow"];

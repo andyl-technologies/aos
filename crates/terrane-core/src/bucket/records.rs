@@ -2,8 +2,9 @@
 //!
 //! ```text
 //! CAPABILITIES = {1: 1, 2: true, 3: true, 4: true, 5: false,
-//!                 6: 1, 7: timestamp, 8: store-profile}
-//! MANIFEST = {1: generation, 2: [shard-entry], 3: timestamp, 4: cycle}
+//!                 6: 1, 7: timestamp, 8: store-profile, 10: []}
+//! MANIFEST = {1: generation, 2: [shard-entry], 3: timestamp, 4: cycle,
+//!             5: [pack-inventory-entry]}
 //! Tombstone = {1: pack-id, 2: cycle, 3: timestamp, 4: removed-entries, 5: epoch}
 //! ```
 

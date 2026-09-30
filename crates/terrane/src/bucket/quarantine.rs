@@ -9,15 +9,15 @@ use terrane_core::identity::{Identity, TERRANE_V1};
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
     FileBucket<F, C, V>
 {
-    /// Tests an exact identity's tombstone independently of container inventory.
+    /// Returns an exact identity's selected state independently of container inventory.
     ///
     /// # Errors
     /// Rejects identities outside the configured initial identity profile.
-    pub(super) fn is_excluded(
+    fn selected_state(
         &self,
         catalog: &Catalog,
         identity: &Identity,
-    ) -> Result<bool, StoreFailure> {
+    ) -> Result<Option<RecordState>, StoreFailure> {
         if identity.profile() != TERRANE_V1.name() {
             return Err(files::malformed());
         }
@@ -35,13 +35,39 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                     .ok()
                     .map(|position| &shard.entries()[position])
             });
-        Ok(record.is_some_and(|record| {
-            record.entry().kind().identity_kind() == identity.kind()
-                && record.state() == RecordState::Tombstone
-        }))
+        Ok(record
+            .filter(|record| record.entry().kind().identity_kind() == identity.kind())
+            .map(|record| record.state()))
     }
 
-    /// Excludes an individual published body through a durable catalog tombstone.
+    /// Tests selected GC retirement or identity quarantine before serving content.
+    ///
+    /// # Errors
+    /// Rejects identities outside the configured initial identity profile.
+    pub(super) fn is_excluded(
+        &self,
+        catalog: &Catalog,
+        identity: &Identity,
+    ) -> Result<bool, StoreFailure> {
+        Ok(matches!(
+            self.selected_state(catalog, identity)?,
+            Some(RecordState::Tombstone | RecordState::Quarantine)
+        ))
+    }
+
+    /// Tests the sticky identity quarantine that ordinary admission cannot clear.
+    ///
+    /// # Errors
+    /// Rejects identities outside the configured initial identity profile.
+    pub(super) fn is_quarantined(
+        &self,
+        catalog: &Catalog,
+        identity: &Identity,
+    ) -> Result<bool, StoreFailure> {
+        Ok(self.selected_state(catalog, identity)? == Some(RecordState::Quarantine))
+    }
+
+    /// Excludes an individual published body through durable identity quarantine.
     ///
     /// Other bodies in the same retained pack and its container inventory remain
     /// unchanged. Repeated exclusion succeeds. Ordinary `put` never restores an
@@ -53,7 +79,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     pub async fn exclude(&self, identity: &Identity) -> Result<(), StoreFailure> {
         let _guard = self.exclusive().await?;
         let catalog = self.catalog().await?;
-        if self.is_excluded(&catalog, identity)? {
+        if self.is_quarantined(&catalog, identity)? {
             return Ok(());
         }
         let hash = identity
@@ -73,7 +99,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                             && entry.entry().kind().identity_kind() == identity.kind()
                     })
                 {
-                    record.state = RecordState::Tombstone as u8;
+                    record.state = RecordState::Quarantine as u8;
                     found = true;
                 }
             }
