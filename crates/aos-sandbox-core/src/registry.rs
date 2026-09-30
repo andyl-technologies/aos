@@ -378,10 +378,16 @@ pub const HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE: &str = "aos.sandbox.host.f
 /// Exact feature name for the separate Mount FUSE presentation contract 1.0.
 pub const MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE: &str = "aos.sandbox.mount.fuse-presentation";
 
+/// Exact feature name for the fixed-domain narrowed Nix build contract 1.0.
+pub const NIX_NARROWING_PROXY_FEATURE_NAMESPACE: &str = "aos.sandbox.nix.narrowing-proxy";
+
+/// Maximum application body admitted by the descriptor-free Nix proxy.
+pub const NIX_PROXY_MAXIMUM_REQUEST_BODY_BYTES_V2: u32 = 262_144;
+
 /// Maximum body size for the descriptor-free FUSE intent reservation purpose.
 pub const MOUNT_FUSE_RESERVE_INTENT_MAXIMUM_REQUEST_BYTES_V1: u32 = 1024 * 1024;
 
-const BASE_FEATURES: [FeatureDefinition; 21] = [
+const BASE_FEATURES: [FeatureDefinition; 22] = [
     feature("aos.sandbox.runtime.linux-systemd"),
     feature("aos.sandbox.identity.posix32"),
     feature("aos.sandbox.metadata.posix-acl"),
@@ -394,6 +400,7 @@ const BASE_FEATURES: [FeatureDefinition; 21] = [
     feature(HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE),
     feature(HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE),
     feature(MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE),
+    feature(NIX_NARROWING_PROXY_FEATURE_NAMESPACE),
     feature("aos.sandbox.host.consumer-cgroup-readback"),
     feature("aos.sandbox.mount.source-acquisition"),
     feature("aos.sandbox.enforcement.zfs-quota"),
@@ -428,6 +435,8 @@ pub enum ProtocolId {
     MountBroker,
     /// Separate, closed root Mount FUSE-reservation protocol.
     MountFuseBroker,
+    /// Fixed-domain narrowed Nix realization and original readback broker.
+    NixBuildBroker,
     /// Node-local root network broker.
     NetworkBroker,
     /// Transport-neutral exclusive ownership authority.
@@ -490,6 +499,7 @@ pub fn negotiate_protocol(
         ProtocolId::HostBroker
             | ProtocolId::MountBroker
             | ProtocolId::MountFuseBroker
+            | ProtocolId::NixBuildBroker
             | ProtocolId::StorageBroker
             | ProtocolId::NetworkBroker
             | ProtocolId::OwnershipAuthority
@@ -519,6 +529,7 @@ pub const fn supported_protocol_version(protocol: ProtocolId) -> ProtocolVersion
         ProtocolId::HostBroker => ProtocolVersion::new(1, 0),
         ProtocolId::MountBroker => ProtocolVersion::new(2, 0),
         ProtocolId::MountFuseBroker => ProtocolVersion::new(3, 0),
+        ProtocolId::NixBuildBroker => ProtocolVersion::new(1, 0),
         ProtocolId::StorageBroker => ProtocolVersion::new(1, 0),
         ProtocolId::NetworkBroker => ProtocolVersion::new(1, 0),
         ProtocolId::OwnershipAuthority => ProtocolVersion::new(1, 0),

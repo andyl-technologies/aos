@@ -32,6 +32,9 @@ use crate::{
 };
 
 pub mod history;
+mod traffic_replay;
+
+pub use traffic_replay::{HistoricalTrafficReplayErrorV1, verify_historical_traffic_records_v1};
 
 const MAGIC: &[u8; 8] = b"AOSBSD01";
 const VERSION: u16 = 1;
@@ -1001,14 +1004,9 @@ fn validate_outcome_packet(
 fn decode_protocol(
     value: Option<u8>,
 ) -> Result<BrokerSessionProtocolV1, BrokerSessionDurableError> {
-    match value {
-        Some(1) => Ok(BrokerSessionProtocolV1::Host),
-        Some(2) => Ok(BrokerSessionProtocolV1::Storage),
-        Some(3) => Ok(BrokerSessionProtocolV1::Mount),
-        Some(4) => Ok(BrokerSessionProtocolV1::Network),
-        Some(5) => Ok(BrokerSessionProtocolV1::MountFuse),
-        _ => Err(BrokerSessionDurableError::InvalidClosedValue),
-    }
+    let code = value.ok_or(BrokerSessionDurableError::InvalidClosedValue)?;
+    BrokerSessionProtocolV1::from_code(code)
+        .map_err(|_| BrokerSessionDurableError::InvalidClosedValue)
 }
 
 fn decode_method(value: Option<u8>) -> Result<BrokerMethod, BrokerSessionDurableError> {
@@ -1154,6 +1152,25 @@ fn profile_binding(method: BrokerMethod) -> Result<[u8; 32], BrokerSessionDurabl
 #[cfg(test)]
 mod profile_binding_tests {
     use super::*;
+
+    #[test]
+    fn protocol_adapter_preserves_missing_and_unknown_closed_value_errors() {
+        assert_eq!(
+            decode_protocol(Some(6)).unwrap(),
+            BrokerSessionProtocolV1::Nix
+        );
+        assert!(matches!(
+            decode_protocol(None),
+            Err(BrokerSessionDurableError::InvalidClosedValue)
+        ));
+
+        for code in std::iter::once(0).chain(7..=u8::MAX) {
+            assert!(matches!(
+                decode_protocol(Some(code)),
+                Err(BrokerSessionDurableError::InvalidClosedValue)
+            ));
+        }
+    }
 
     #[test]
     fn existing_root_mount_profile_fingerprint_is_unchanged() {

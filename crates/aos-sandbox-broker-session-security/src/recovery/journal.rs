@@ -50,6 +50,11 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     admit_client_received_authenticated_broker_method_outcome_v1,
     authenticated_semantic_bindings_from_envelope_v1,
 };
+use aos_sandbox_protocol::authenticated_session::stored_history::{
+    KEY_MAGIC, VALUE_FIXED_BYTES_V3, VALUE_VERSION_V2, VALUE_VERSION_V3,
+    StoredBrokerSessionHistoryV1 as CanonicalStoredHistoryV1,
+    StoredBrokerSessionHistoryViewV1 as CanonicalStoredHistoryViewV1, canonical_protocol_key_v1,
+};
 use aos_sandbox_protocol::host_execution_no_apply::{
     HostExecutionNoApplyRecordFieldsV1, HostExecutionNoApplyRecordV1,
 };
@@ -77,18 +82,11 @@ use super::{
     request_direction_for_endpoint, request_matches_head,
 };
 
-const KEY_MAGIC: &[u8; 8] = b"AOSBSJ01";
 const STORAGE_GROUP_KEY_MAGIC: &[u8; 8] = b"AOSBSG01";
 const STORAGE_INVENTORY_KEY_MAGIC: &[u8; 8] = b"AOSBSI01";
 const STORAGE_ABANDONMENT_KEY_MAGIC: &[u8; 8] = b"AOSBSA01";
 const HOST_ORIGINAL_SESSION_KEY_MAGIC: &[u8; 8] = b"AOSBSH01";
 const HOST_TERMINAL_SESSION_KEY_MAGIC: &[u8; 8] = b"AOSBST01";
-const VALUE_MAGIC: &[u8; 8] = b"AOSBSJ01";
-const VALUE_VERSION_V2: u16 = 2;
-const VALUE_VERSION_V3: u16 = 3;
-const VALUE_FIXED_BYTES_V2: usize = 184;
-const VALUE_FIXED_BYTES_V3: usize = 188;
-const VALUE_DIGEST_BYTES: usize = 32;
 const VALUE_DOMAIN_V2: &[u8] = b"aos.sandbox.broker-session.protected-history.v2\0";
 const VALUE_DOMAIN_V3: &[u8] = b"aos.sandbox.broker-session.protected-history.v3\0";
 const ENDPOINT_PUBLICATION_DOMAIN: &[u8] = b"aos.sandbox.broker-session.endpoint-publication.v1\0";
@@ -4251,6 +4249,7 @@ impl ProtectedBrokerSessionJournalV1 {
             BrokerSessionProtocolV1::Mount,
             BrokerSessionProtocolV1::Network,
             BrokerSessionProtocolV1::MountFuse,
+            BrokerSessionProtocolV1::Nix,
         ] {
             let _ = self.read_optional_schema(protocol)?;
         }
@@ -4484,168 +4483,48 @@ impl StoredProtocolHistoryV1 {
     }
 
     fn encode(&self) -> Result<Vec<u8>, BrokerSessionSecurityError> {
-        let model = self.history_model()?;
-        let head = model
-            .head()
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        if let Some(checkpoint) = &self.checkpoint {
-            let transcript = checkpoint.verify()?;
-            if transcript.protocol() != self.protocol
-                || model.records().iter().any(|record| {
-                    record.session_binding() != transcript.session_binding()
-                        || record.protected_bindings().protected_context()
-                            != checkpoint.context().protected_context_digest()
-                        || record.protected_bindings().endpoint_publication()
-                            != self.endpoint_publication
-                })
-            {
-                return Err(BrokerSessionSecurityError::Currentness);
-            }
+        // The lower carrier is historical DATA. This wrapper retains the
+        // protected producers and snapshot admission in their original owner.
+        CanonicalStoredHistoryViewV1 {
+            protocol: self.protocol,
+            endpoint: self.endpoint,
+            generation: self.generation,
+            stable_endpoint_identity: self.stable_endpoint_identity,
+            endpoint_publication: self.endpoint_publication,
+            current_catalog: self.current_catalog,
+            current_head: self.current_head,
+            history: &self.history,
+            checkpoint: self
+                .checkpoint
+                .as_ref()
+                .map(HistoricalSessionCheckpointV1::as_canonical),
         }
-        if self.generation == 0
-            || self.endpoint_publication.iter().all(|byte| *byte == 0)
-            || self.stable_endpoint_identity.iter().all(|byte| *byte == 0)
-            || self.current_catalog.iter().all(|byte| *byte == 0)
-            || model.head_commitment() != self.current_head
-            || head.protocol() != self.protocol
-            || head.endpoint() != self.endpoint
-        {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        let history_length = u32::try_from(self.history.len())
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        let checkpoint = self
-            .checkpoint
-            .as_ref()
-            .map(HistoricalSessionCheckpointV1::encode)
-            .transpose()?;
-        let checkpoint_length = checkpoint.as_ref().map_or(0, Vec::len);
-        let version = if checkpoint.is_some() {
-            VALUE_VERSION_V3
-        } else {
-            VALUE_VERSION_V2
-        };
-        let capacity = VALUE_FIXED_BYTES_V3
-            .checked_add(self.history.len())
-            .and_then(|size| size.checked_add(checkpoint_length))
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        if self.history.len() > BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES
-            || checkpoint_length > historical_checkpoint::MAXIMUM_BYTES
-        {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        let mut value = Vec::with_capacity(capacity);
-        value.extend_from_slice(VALUE_MAGIC);
-        value.extend_from_slice(&version.to_be_bytes());
-        value.push(protocol_code(self.protocol));
-        value.push(endpoint_code(self.endpoint));
-        value.extend_from_slice(&self.generation.to_be_bytes());
-        value.extend_from_slice(&self.stable_endpoint_identity);
-        value.extend_from_slice(&self.endpoint_publication);
-        value.extend_from_slice(&self.current_catalog);
-        value.extend_from_slice(&self.current_head);
-        value.extend_from_slice(&history_length.to_be_bytes());
-        value.extend_from_slice(&self.history);
-        if let Some(checkpoint) = checkpoint {
-            let length = u32::try_from(checkpoint.len())
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            value.extend_from_slice(&length.to_be_bytes());
-            value.extend_from_slice(&checkpoint);
-        }
-        let digest = value_digest(&value, version);
-        value.extend_from_slice(&digest);
-        Ok(value)
+        .encode()
+        .map_err(|_| BrokerSessionSecurityError::Currentness)
     }
 
     fn decode(key: &[u8], value: &[u8]) -> Result<Self, BrokerSessionSecurityError> {
-        if value.len() < VALUE_FIXED_BYTES_V2
-            || value.len()
-                > VALUE_FIXED_BYTES_V3
-                    .checked_add(BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES)
-                    .and_then(|size| size.checked_add(historical_checkpoint::MAXIMUM_BYTES))
-                    .ok_or(BrokerSessionSecurityError::Currentness)?
-            || value.get(..8) != Some(VALUE_MAGIC.as_slice())
-        {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        let version = read_u16(value, 8)?;
-        if !matches!(version, VALUE_VERSION_V2 | VALUE_VERSION_V3) {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        let protocol = decode_protocol(read_u8(value, 10)?)?;
-        let endpoint = decode_endpoint(read_u8(value, 11)?)?;
-        if key != protocol_key(protocol) {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        let generation = read_u64(value, 12)?;
-        let stable_endpoint_identity = read_array(value, 20)?;
-        let endpoint_publication = read_array(value, 52)?;
-        let current_catalog = read_array(value, 84)?;
-        let current_head = read_array(value, 116)?;
-        let history_length = usize::try_from(read_u32(value, 148)?)
+        let stored = CanonicalStoredHistoryV1::decode(key, value)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        let history_end = 152usize
-            .checked_add(history_length)
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let (checkpoint, digest_start) = if version == VALUE_VERSION_V3 {
-            let length = usize::try_from(read_u32(value, history_end)?)
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            if length == 0 || length > historical_checkpoint::MAXIMUM_BYTES {
-                return Err(BrokerSessionSecurityError::Currentness);
-            }
-            let start = history_end
-                .checked_add(4)
-                .ok_or(BrokerSessionSecurityError::Currentness)?;
-            let end = start
-                .checked_add(length)
-                .ok_or(BrokerSessionSecurityError::Currentness)?;
-            let checkpoint = HistoricalSessionCheckpointV1::decode(
-                value
-                    .get(start..end)
-                    .ok_or(BrokerSessionSecurityError::Currentness)?,
-            )?;
-            (Some(checkpoint), end)
-        } else {
-            (None, history_end)
-        };
-        let digest_end = digest_start
-            .checked_add(VALUE_DIGEST_BYTES)
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        if history_length == 0
-            || history_length > BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES
-            || digest_end != value.len()
-            || read_array::<32>(value, digest_start)?
-                != value_digest(&value[..digest_start], version)
-        {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        let history = value
-            .get(152..history_end)
-            .ok_or(BrokerSessionSecurityError::Currentness)?
-            .to_vec();
-        let stored = Self {
-            protocol,
-            endpoint,
-            generation,
-            stable_endpoint_identity,
-            endpoint_publication,
-            current_catalog,
-            current_head,
-            history,
-            checkpoint,
-        };
-        if stored.encode()? != value {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        Ok(stored)
+
+        Ok(Self {
+            protocol: stored.protocol,
+            endpoint: stored.endpoint,
+            generation: stored.generation,
+            stable_endpoint_identity: stored.stable_endpoint_identity,
+            endpoint_publication: stored.endpoint_publication,
+            current_catalog: stored.current_catalog,
+            current_head: stored.current_head,
+            history: stored.history,
+            checkpoint: stored
+                .checkpoint
+                .map(HistoricalSessionCheckpointV1::from_canonical),
+        })
     }
 }
 
 fn protocol_key(protocol: BrokerSessionProtocolV1) -> Vec<u8> {
-    let mut key = Vec::with_capacity(9);
-    key.extend_from_slice(KEY_MAGIC);
-    key.push(protocol_code(protocol));
-    key
+    canonical_protocol_key_v1(protocol)
 }
 
 fn storage_archive_key(
@@ -4721,24 +4600,12 @@ fn host_terminal_archive_key(original_request_id: [u8; 16]) -> Vec<u8> {
 }
 
 fn protocol_code(protocol: BrokerSessionProtocolV1) -> u8 {
-    match protocol {
-        BrokerSessionProtocolV1::Host => 1,
-        BrokerSessionProtocolV1::Storage => 2,
-        BrokerSessionProtocolV1::Mount => 3,
-        BrokerSessionProtocolV1::Network => 4,
-        BrokerSessionProtocolV1::MountFuse => 5,
-    }
+    protocol.code()
 }
 
 fn decode_protocol(code: u8) -> Result<BrokerSessionProtocolV1, BrokerSessionSecurityError> {
-    match code {
-        1 => Ok(BrokerSessionProtocolV1::Host),
-        2 => Ok(BrokerSessionProtocolV1::Storage),
-        3 => Ok(BrokerSessionProtocolV1::Mount),
-        4 => Ok(BrokerSessionProtocolV1::Network),
-        5 => Ok(BrokerSessionProtocolV1::MountFuse),
-        _ => Err(BrokerSessionSecurityError::Currentness),
-    }
+    BrokerSessionProtocolV1::from_code(code)
+        .map_err(|_| BrokerSessionSecurityError::Currentness)
 }
 
 fn endpoint_code(endpoint: BrokerSessionDurableEndpointV1) -> u8 {
@@ -4911,6 +4778,24 @@ fn read_u8(bytes: &[u8], offset: usize) -> Result<u8, BrokerSessionSecurityError
         .get(offset)
         .copied()
         .ok_or(BrokerSessionSecurityError::Currentness)
+}
+
+#[cfg(test)]
+mod protocol_code_tests {
+    use super::*;
+
+    #[test]
+    fn protocol_adapter_preserves_currentness_errors_for_unknown_codes() {
+        assert_eq!(protocol_code(BrokerSessionProtocolV1::Nix), 6);
+        assert_eq!(decode_protocol(6).unwrap(), BrokerSessionProtocolV1::Nix);
+
+        for code in std::iter::once(0).chain(7..=u8::MAX) {
+            assert!(matches!(
+                decode_protocol(code),
+                Err(BrokerSessionSecurityError::Currentness)
+            ));
+        }
+    }
 }
 
 #[cfg(test)]

@@ -200,16 +200,18 @@ const fn audience_code(audience: BrokerAudience) -> u64 {
         BrokerAudience::Storage => 2,
         BrokerAudience::Network => 3,
         BrokerAudience::Guardian => 4,
+        BrokerAudience::Nix => 5,
     }
 }
 
 fn decode_audience(decoder: &mut Decoder<'_>) -> Result<BrokerAudience, CanonicalCborError> {
-    match decoder.closed("broker audience", 4)? {
+    match decoder.closed("broker audience", 5)? {
         0 => Ok(BrokerAudience::Host),
         1 => Ok(BrokerAudience::Mount),
         2 => Ok(BrokerAudience::Storage),
         3 => Ok(BrokerAudience::Network),
         4 => Ok(BrokerAudience::Guardian),
+        5 => Ok(BrokerAudience::Nix),
         value => Err(CanonicalCborError::UnknownRegistryValue {
             registry: "broker audience",
             value,
@@ -226,6 +228,7 @@ fn protocol_code(protocol: ProtocolId) -> u64 {
         ProtocolId::NetworkBroker => 3,
         ProtocolId::Guardian => 4,
         ProtocolId::MountFuseBroker => 5,
+        ProtocolId::NixBuildBroker => 6,
         ProtocolId::PublicApi
         | ProtocolId::PublisherAuthority
         | ProtocolId::CoordinatorNode
@@ -236,13 +239,14 @@ fn protocol_code(protocol: ProtocolId) -> u64 {
 }
 
 fn decode_protocol(decoder: &mut Decoder<'_>) -> Result<ProtocolId, CanonicalCborError> {
-    match decoder.closed("broker protocol", 5)? {
+    match decoder.closed("broker protocol", 6)? {
         0 => Ok(ProtocolId::HostBroker),
         1 => Ok(ProtocolId::MountBroker),
         2 => Ok(ProtocolId::StorageBroker),
         3 => Ok(ProtocolId::NetworkBroker),
         4 => Ok(ProtocolId::Guardian),
         5 => Ok(ProtocolId::MountFuseBroker),
+        6 => Ok(ProtocolId::NixBuildBroker),
         value => Err(CanonicalCborError::UnknownRegistryValue {
             registry: "broker protocol",
             value,
@@ -281,6 +285,13 @@ mod tests {
     #[test]
     fn publisher_registration_does_not_expand_broker_protocol_wire_codes() {
         let mut decoder = Decoder::new(&[6], DecodeLimits::default())
+            .unwrap_or_else(|error| panic!("test Nix protocol decoder failed: {error}"));
+        assert_eq!(
+            decode_protocol(&mut decoder).unwrap(),
+            ProtocolId::NixBuildBroker
+        );
+
+        let mut decoder = Decoder::new(&[7], DecodeLimits::default())
             .unwrap_or_else(|error| panic!("test broker protocol decoder failed: {error}"));
         assert!(matches!(
             decode_protocol(&mut decoder),
@@ -647,12 +658,12 @@ mod tests {
         ));
 
         let mut unknown_protocol = encode_broker_authorization_plan(&plan());
-        unknown_protocol[3] = 6;
+        unknown_protocol[3] = 7;
         assert!(matches!(
             decode_broker_authorization_plan(&unknown_protocol, DecodeLimits::default()),
             Err(CanonicalCborError::UnknownRegistryValue {
                 registry: "broker protocol",
-                value: 6,
+                value: 7,
                 ..
             })
         ));

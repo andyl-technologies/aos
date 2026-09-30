@@ -343,3 +343,27 @@ string worker_cgroup = 5;
 bytes preparation_plan_digest = 6;
 bytes mount_reservation_commitment = 7;
 bytes launch_request_commitment = 8;
+
+# Fixed-domain Nix comparison carriers; no public RPC or service activation.
+BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2 = 50;
+BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2 = 51;
+BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2 = 52;
+message NixBuildRequestV2 {
+RequestHeader header = 1;
+AssignmentFence fence = 2;
+bytes operation_id = 3;
+bytes recipe_digest = 4;
+bytes domain_digest = 5;
+bytes disclosure_digest = 6;
+bytes environment_digest = 7;
+bytes parent_admission_digest = 8;
+bytes build_transaction_digest = 9;
+bytes input_presentation_digest = 10;
+bytes expected_output_map_digest = 11;
+bytes original_realization_digest = 12;
+message NixBuildResponseV2 {
+bytes request_id = 1;
+bytes recipe_digest = 2;
+bytes domain_digest = 3;
+bytes recipe_admission = 4;
+bytes observation = 5;

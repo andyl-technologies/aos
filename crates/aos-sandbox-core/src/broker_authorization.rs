@@ -76,6 +76,8 @@ pub enum BrokerAudience {
     Network,
     /// Unprivileged per-assignment lease guardian.
     Guardian,
+    /// Fixed-domain narrowed Nix store owner.
+    Nix,
 }
 
 impl BrokerAudience {
@@ -91,6 +93,7 @@ impl BrokerAudience {
             Self::Storage => ProtocolId::StorageBroker,
             Self::Network => ProtocolId::NetworkBroker,
             Self::Guardian => ProtocolId::Guardian,
+            Self::Nix => ProtocolId::NixBuildBroker,
         }
     }
 }
@@ -218,6 +221,12 @@ pub enum BrokerVerb {
     NetworkInventory,
     /// Arms one assignment guardian for an exact boot and ownership lease.
     GuardianArm,
+    /// Resolves one independently admitted recipe under original disclosure authority.
+    NixResolveProtectedRecipe,
+    /// Realizes the exact admitted derivation and output set under a current lease.
+    NixRealizeAuthorizedDerivation,
+    /// Reads only the exact authorized recipe's original path information.
+    NixQueryAuthorizedPathInfo,
 }
 
 impl BrokerVerb {
@@ -286,6 +295,9 @@ impl BrokerVerb {
             55 => Ok(Self::HostObserveStorageOutput),
             56 => Ok(Self::HostPrepareFuseWorkerSession),
             57 => Ok(Self::MountReserveFuseWorkerIntent),
+            58 => Ok(Self::NixResolveProtectedRecipe),
+            59 => Ok(Self::NixRealizeAuthorizedDerivation),
+            60 => Ok(Self::NixQueryAuthorizedPathInfo),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -351,6 +363,9 @@ impl BrokerVerb {
             Self::HostObserveStorageOutput => 55,
             Self::HostPrepareFuseWorkerSession => 56,
             Self::MountReserveFuseWorkerIntent => 57,
+            Self::NixResolveProtectedRecipe => 58,
+            Self::NixRealizeAuthorizedDerivation => 59,
+            Self::NixQueryAuthorizedPathInfo => 60,
         }
     }
 
@@ -416,6 +431,9 @@ impl BrokerVerb {
             | Self::NetworkDestroy
             | Self::NetworkInventory => BrokerAudience::Network,
             Self::GuardianArm => BrokerAudience::Guardian,
+            Self::NixResolveProtectedRecipe
+            | Self::NixRealizeAuthorizedDerivation
+            | Self::NixQueryAuthorizedPathInfo => BrokerAudience::Nix,
         }
     }
 
@@ -459,6 +477,9 @@ impl BrokerVerb {
             | Self::HostKill
             | Self::HostObserve
             | Self::HostPrepareFuseWorkerSession
+            | Self::NixResolveProtectedRecipe
+            | Self::NixRealizeAuthorizedDerivation
+            | Self::NixQueryAuthorizedPathInfo
             | Self::MountReserveFuseWorkerIntent
             | Self::MountInstall
             | Self::MountDetach
@@ -579,6 +600,9 @@ impl BrokerGrant {
                 && (maximum_request_bytes > 4096 || maximum_descriptors != 4))
             || (verb == BrokerVerb::MountReserveFuseWorkerIntent
                 && (maximum_request_bytes > crate::MOUNT_FUSE_RESERVE_INTENT_MAXIMUM_REQUEST_BYTES_V1
+                    || maximum_descriptors != 0))
+            || (verb.audience() == BrokerAudience::Nix
+                && (maximum_request_bytes > crate::NIX_PROXY_MAXIMUM_REQUEST_BODY_BYTES_V2
                     || maximum_descriptors != 0))
         {
             return Err(InvalidBrokerAuthorizationPlan::InvalidRequestBound);
@@ -843,6 +867,22 @@ impl BrokerAuthorizationPlan {
             return Err(InvalidBrokerAuthorizationPlan::FuseIntentProfileMismatch);
         }
         if !fuse_protocol && protocol != audience.protocol() {
+            return Err(InvalidBrokerAuthorizationPlan::ProtocolAudienceMismatch);
+        }
+        if audience == BrokerAudience::Nix
+            && (protocol_version != ProtocolVersion::new(1, 0)
+                || grants.len() != 1
+                || !required_features.iter().any(|feature| {
+                    feature.namespace() == crate::NIX_NARROWING_PROXY_FEATURE_NAMESPACE
+                        && feature.major() == 1
+                        && feature.minor() == 0
+                })
+                || !required_features.iter().any(|feature| {
+                    feature.namespace() == "aos.sandbox.authorization.signed-plan-lease"
+                        && feature.major() == 1
+                        && feature.minor() == 0
+                }))
+        {
             return Err(InvalidBrokerAuthorizationPlan::ProtocolAudienceMismatch);
         }
         if crate::negotiate_protocol(protocol, protocol_version).is_err() {
@@ -1844,6 +1884,9 @@ mod tests {
             (55, BrokerVerb::HostObserveStorageOutput),
             (56, BrokerVerb::HostPrepareFuseWorkerSession),
             (57, BrokerVerb::MountReserveFuseWorkerIntent),
+            (58, BrokerVerb::NixResolveProtectedRecipe),
+            (59, BrokerVerb::NixRealizeAuthorizedDerivation),
+            (60, BrokerVerb::NixQueryAuthorizedPathInfo),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1852,7 +1895,7 @@ mod tests {
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(58),
+            BrokerVerb::from_code(61),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(

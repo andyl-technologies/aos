@@ -117,6 +117,7 @@ pub use registry::{
     BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE, DescriptorRole,
     HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE, HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE,
     MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE, MOUNT_FUSE_RESERVE_INTENT_MAXIMUM_REQUEST_BYTES_V1,
+    NIX_NARROWING_PROXY_FEATURE_NAMESPACE, NIX_PROXY_MAXIMUM_REQUEST_BODY_BYTES_V2,
     PortableMediaType, ProtocolId, ProtocolVersion, RegistryError, negotiate_protocol,
     supported_protocol_version, validate_descriptor_role, validate_required_features,
     validate_signature_subject,

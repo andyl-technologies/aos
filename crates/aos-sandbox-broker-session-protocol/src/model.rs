@@ -82,16 +82,24 @@ pub enum BrokerSessionProtocolV1 {
     Network = 4,
     /// Closed, separately versioned Mount FUSE protocol.
     MountFuse = 5,
+    /// Fixed-domain narrowed Nix realization protocol.
+    Nix = 6,
 }
 
 impl BrokerSessionProtocolV1 {
-    pub(crate) const fn code(self) -> u8 {
+    /// Returns the protocol's distinct signed one-byte code.
+    ///
+    /// This pure DATA conversion does not establish session authority. Signed
+    /// protocol codes are separate from Core protocol, audience and method IDs.
+    #[must_use]
+    pub const fn code(self) -> u8 {
         match self {
             Self::Host => 1,
             Self::Storage => 2,
             Self::Mount => 3,
             Self::Network => 4,
             Self::MountFuse => 5,
+            Self::Nix => 6,
         }
     }
 
@@ -107,17 +115,28 @@ impl BrokerSessionProtocolV1 {
             ProtocolId::MountBroker => Ok(Self::Mount),
             ProtocolId::MountFuseBroker => Ok(Self::MountFuse),
             ProtocolId::NetworkBroker => Ok(Self::Network),
+            ProtocolId::NixBuildBroker => Ok(Self::Nix),
             _ => Err(BrokerSessionValidationError::InvalidClosedValue("protocol")),
         }
     }
 
-    pub(crate) const fn from_code(code: u8) -> Result<Self, BrokerSessionValidationError> {
+    /// Decodes one of the six occupied signed protocol codes without authority.
+    ///
+    /// This pure DATA conversion does not admit a session or establish
+    /// currentness. It does not interpret Core protocol, audience or method IDs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerSessionValidationError::InvalidClosedValue`] with the
+    /// field `"protocol"` for every code outside the occupied range `1..=6`.
+    pub const fn from_code(code: u8) -> Result<Self, BrokerSessionValidationError> {
         match code {
             1 => Ok(Self::Host),
             2 => Ok(Self::Storage),
             3 => Ok(Self::Mount),
             4 => Ok(Self::Network),
             5 => Ok(Self::MountFuse),
+            6 => Ok(Self::Nix),
             _ => Err(BrokerSessionValidationError::InvalidClosedValue("protocol")),
         }
     }
@@ -714,6 +733,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn signed_protocol_conversion_preserves_all_occupied_and_unknown_codes() {
+        const NIX_CODE: u8 = BrokerSessionProtocolV1::Nix.code();
+        const NIX_PROTOCOL: Result<BrokerSessionProtocolV1, BrokerSessionValidationError> =
+            BrokerSessionProtocolV1::from_code(NIX_CODE);
+        let protocols = [
+            BrokerSessionProtocolV1::Host,
+            BrokerSessionProtocolV1::Storage,
+            BrokerSessionProtocolV1::Mount,
+            BrokerSessionProtocolV1::Network,
+            BrokerSessionProtocolV1::MountFuse,
+            BrokerSessionProtocolV1::Nix,
+        ];
+
+        assert_eq!(NIX_CODE, 6);
+        assert_eq!(NIX_PROTOCOL, Ok(BrokerSessionProtocolV1::Nix));
+        for (index, protocol) in protocols.into_iter().enumerate() {
+            let code = u8::try_from(index + 1).unwrap();
+            assert_eq!(protocol.code(), code);
+            assert_eq!(BrokerSessionProtocolV1::from_code(code), Ok(protocol));
+        }
+
+        for code in std::iter::once(0).chain(7..=u8::MAX) {
+            assert_eq!(
+                BrokerSessionProtocolV1::from_code(code),
+                Err(BrokerSessionValidationError::InvalidClosedValue("protocol"))
+            );
+        }
+    }
+
+    #[test]
     fn mount_fuse_has_a_distinct_signed_protocol_code() {
         let legacy = BrokerSessionProtocolV1::from_protocol_id(ProtocolId::MountBroker).unwrap();
         let fuse = BrokerSessionProtocolV1::from_protocol_id(ProtocolId::MountFuseBroker).unwrap();
@@ -722,6 +771,26 @@ mod tests {
         assert_eq!(fuse, BrokerSessionProtocolV1::MountFuse);
         assert_ne!(legacy.code(), fuse.code());
         assert_eq!(BrokerSessionProtocolV1::from_code(fuse.code()), Ok(fuse));
-        assert!(BrokerSessionProtocolV1::from_code(6).is_err());
+        assert!(BrokerSessionProtocolV1::from_code(7).is_err());
+    }
+
+    #[test]
+    fn nix_has_a_distinct_signed_protocol_code_and_exact_roundtrip() {
+        let nix = BrokerSessionProtocolV1::from_protocol_id(ProtocolId::NixBuildBroker).unwrap();
+        assert_eq!(nix, BrokerSessionProtocolV1::Nix);
+        assert_eq!(nix.code(), 6);
+        assert_eq!(BrokerSessionProtocolV1::from_code(nix.code()), Ok(nix));
+
+        for original in [
+            BrokerSessionProtocolV1::Host,
+            BrokerSessionProtocolV1::Storage,
+            BrokerSessionProtocolV1::Mount,
+            BrokerSessionProtocolV1::Network,
+            BrokerSessionProtocolV1::MountFuse,
+        ] {
+            assert_ne!(original.code(), nix.code());
+        }
+
+        assert!(BrokerSessionProtocolV1::from_code(7).is_err());
     }
 }

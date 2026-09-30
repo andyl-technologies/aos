@@ -30,6 +30,7 @@ pub mod checkpoint;
 pub mod context;
 pub mod durable;
 pub mod endpoint_publication;
+pub mod manifest;
 pub mod model;
 pub mod profile;
 pub mod projection;
@@ -63,6 +64,7 @@ pub use durable::{
     BrokerSessionDurableEndpointV1, BrokerSessionDurableError, BrokerSessionDurablePhaseV1,
     BrokerSessionDurableRecordV1, BrokerSessionPeerBindingV1, BrokerSessionProtectedBindingsV1,
     BrokerSessionRecoveredSequenceV1,
+    HistoricalTrafficReplayErrorV1, verify_historical_traffic_records_v1,
 };
 pub use endpoint_publication::{
     BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES, BrokerSessionEndpointPublicationError,
