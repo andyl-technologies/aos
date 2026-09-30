@@ -149,6 +149,12 @@ pub(super) fn successor(original: &OriginalSourceCapacityRecordV5, count: u32) -
     ).unwrap()
 }
 
+/// Returns floor-only canonical DATA, explicitly not a complete owner fixture.
+pub(super) fn floor_only_union_state() -> State {
+    let row = floor().to_journal_record().unwrap();
+    State::from([((row.namespace(), row.key().to_vec()), row.value().unwrap().to_vec())])
+}
+
 /// Encodes independent canonical legacy DATA, without a protected producer.
 pub(super) fn legacy_row(admission: u8) -> (aos_sandbox::GlobalCapacityReservationRequestV1, JournalRecord) {
     use aos_sandbox::{GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1};

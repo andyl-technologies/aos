@@ -652,11 +652,11 @@ pub(super) fn require_witness(
     Ok(())
 }
 
-pub(super) fn challenge_key(record: &Record) -> Vec<u8> {
+pub(crate) fn challenge_key(record: &Record) -> Vec<u8> {
     [b"AOSZHK01".as_slice(), &record.original.challenge].concat()
 }
 
-pub(super) fn validate_challenge(
+pub(crate) fn validate_challenge(
     record: &Record,
     bytes: Option<&[u8]>,
     spent: bool,

@@ -11,17 +11,16 @@
 use std::collections::BTreeSet;
 
 use aos_sandbox::{
-    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
+    GlobalCapacityReservationRecoveryBindingV1,
     GlobalCapacityReservationRequestV1, JournalTransaction, ProtectedJournalAuthority,
     RecordNamespace,
 };
 use aos_sandbox_core::ObjectDigest;
+#[cfg(test)]
 use sha2::{Digest as _, Sha256};
 
 use crate::ProviderLedgerError;
 use crate::acquire::is_native_no_dispatch_acquisition;
-use crate::format::{encode_acquisition, record_digest};
-use crate::limits::MAXIMUM_ACQUIRE_COMPLETION_BYTES;
 use crate::model::{
     AcquisitionRecordV1, AttemptRecordV1, HolderSessionHeadRecordV1, ProviderAcquisitionStateV1,
     ProviderAttemptStateV1, RecoveredProviderLedgerV1,
@@ -30,23 +29,16 @@ use crate::native_completion::is_native_dispatch_acquisition;
 use crate::state::ProviderLedgerV1;
 use crate::transaction::prepare_mutations_validated;
 
-const PURPOSE: GlobalCapacityReservationPurposeV1 =
-    GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal;
-const TERMINAL_RECORDS: u32 = 5;
-const TERMINAL_BYTES: u64 = MAXIMUM_ACQUIRE_COMPLETION_BYTES as u64;
-const OWNER_DOMAIN: &[u8] = b"aos.sandbox.source-provider.native-capacity-owner.v1\0";
-const DISPATCH_OWNER_DOMAIN: &[u8] =
-    b"aos.sandbox.source-provider.native-dispatch-capacity-owner.v2\0";
-const DISPATCH_TERMINAL_RECORDS: u32 = 7;
-// Six namespace-41 owner rows and the exact namespace-46 deletion. Journal
-// framing is 72 bytes per record plus Begin/Commit frames and 40 payload bytes.
-// The shared carrier bound includes mandatory body-7 clock bytes. An older,
-// smaller private dispatch floor fails exact recovery; it is never upgraded.
-const DISPATCH_TERMINAL_BYTES: u64 =
-    aos_sandbox_source_provider_ledger::ledger::format::MAXIMUM_NATIVE_ACQUIRE_COMPLETION_OWNER_BYTES_V2
-        as u64
-        + 7 + 72
-        + 72 * (DISPATCH_TERMINAL_RECORDS as u64 + 2) + 40;
+// Preserve unchanged private test fixture names through the shared policy.
+#[cfg(test)]
+const PURPOSE: aos_sandbox::GlobalCapacityReservationPurposeV1 =
+    aos_sandbox::GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal;
+#[cfg(test)]
+const TERMINAL_BYTES: u64 = aos_sandbox::journal::SOURCE_NATIVE_NO_DISPATCH_TERMINAL_BYTES_V1 as u64;
+#[cfg(test)]
+const DISPATCH_TERMINAL_RECORDS: u32 = aos_sandbox::journal::SOURCE_NATIVE_DISPATCH_TERMINAL_RECORDS_V1;
+#[cfg(test)]
+const DISPATCH_TERMINAL_BYTES: u64 = aos_sandbox::journal::SOURCE_NATIVE_DISPATCH_TERMINAL_BYTES_V1;
 
 fn request(
     acquisition: &AcquisitionRecordV1,
@@ -54,70 +46,16 @@ fn request(
     session: &HolderSessionHeadRecordV1,
     native: Option<&crate::ledger::native_completion::NativeAcquireCompletionRecordV2>,
 ) -> Result<GlobalCapacityReservationRequestV1, ProviderLedgerError> {
-    let dispatch = is_native_dispatch_acquisition(acquisition);
-    let phase_matches = if dispatch && native.is_some() {
-        native.is_some_and(|record| {
-            record.canonical_request.is_some()
-                && record.validate_provider_graph(attempt, acquisition).is_ok()
-        })
-    } else {
-        acquisition.state == ProviderAcquisitionStateV1::Applying
-            && attempt.state == ProviderAttemptStateV1::Reserved
-            && session.pending_attempt_digest == Some(attempt.attempt_digest)
-    };
-    if !phase_matches
-        || (!is_native_no_dispatch_acquisition(acquisition) && !dispatch)
-        || ((!dispatch || native.is_none())
-            && acquisition.current_attempt_digest != attempt.attempt_digest)
-        || acquisition.effect_attempt_digest != attempt.attempt_digest
-        || session.session_binding != attempt.session_binding
-        || acquisition.provider != attempt.provider
-        || acquisition.holder != attempt.holder
-        || session.provider != attempt.provider
-        || session.holder != attempt.holder
-    {
-        return Err(ProviderLedgerError::Equivocation);
-    }
-    let mut owner = Sha256::new();
-    owner.update(if dispatch {
-        DISPATCH_OWNER_DOMAIN
-    } else {
-        OWNER_DOMAIN
-    });
-    owner.update(acquisition.provider.authority_id());
-    owner.update(acquisition.holder.authority_id());
-    owner.update(acquisition.acquisition_id.as_bytes());
-
-    let owner_digest = match native {
-        Some(record) if dispatch => {
-            record
-                .reservation_acquisition_digest
-                .ok_or(ProviderLedgerError::Corrupt(
-                    "native original capacity digest",
-                ))?
+    let binding = aos_sandbox_source_provider_ledger::ledger::source_capacity::derive_native_acquire_ordinary_binding_v1(
+        acquisition, attempt, session, native,
+    )
+    .map_err(|error| match error {
+        crate::ledger::LedgerFormatErrorV1::Corrupt("native original capacity digest") => {
+            ProviderLedgerError::Corrupt("native original capacity digest")
         }
-        _ => record_digest(&encode_acquisition(acquisition))?,
-    };
-    let (terminal_records, terminal_bytes) = if dispatch {
-        (DISPATCH_TERMINAL_RECORDS, DISPATCH_TERMINAL_BYTES)
-    } else {
-        (TERMINAL_RECORDS, TERMINAL_BYTES)
-    };
-    Ok(GlobalCapacityReservationRequestV1 {
-        purpose: PURPOSE,
-        owner_namespace: RecordNamespace::SourceProviderAuthority,
-        owner_id: owner.finalize().into(),
-        owner_digest: *owner_digest.as_bytes(),
-        operation_id: acquisition.effect_id,
-        artifact_digest: *attempt.attempt_digest.as_bytes(),
-        checkpoint_digest: *attempt.signed_request_digest.as_bytes(),
-        chain_head_digest: *session.session_binding.as_bytes(),
-        future_transactions: 1,
-        terminal_records,
-        terminal_bytes,
-        poison_records: terminal_records,
-        poison_bytes: terminal_bytes,
-    })
+        _ => ProviderLedgerError::Equivocation,
+    })?;
+    Ok(aos_sandbox::journal::source_native_ordinary_capacity_request_v1(&binding))
 }
 
 fn binding(
@@ -258,40 +196,25 @@ fn dispatch_terminal_in_validated_graph(
     if acquisition.state != ProviderAcquisitionStateV1::Released {
         return Ok(false);
     }
+
     let native = recovered
         .native_completions
-        .get(&acquisition.acquisition_id)
-        .ok_or(ProviderLedgerError::Corrupt(
-            "native terminal completion missing",
-        ))?;
+        .get(&acquisition.acquisition_id);
     let release = recovered
         .releases
         .get(&crate::model::ReleaseKeyV1 {
             provider_id: acquisition.provider.authority_id(),
             holder_id: acquisition.holder.authority_id(),
             acquisition_id: acquisition.acquisition_id,
-        })
-        .ok_or(ProviderLedgerError::Corrupt(
-            "native terminal release missing",
-        ))?;
+        });
     let attempt = recovered
         .attempts
         .values()
-        .find(|attempt| attempt.attempt_digest == acquisition.current_attempt_digest)
-        .ok_or(ProviderLedgerError::Corrupt(
-            "native terminal release attempt missing",
-        ))?;
-    if native.state
-        != crate::ledger::native_completion::NativeAcquireCompletionStateV2::CleanupRequired
-        || release.state != crate::model::ProviderReleaseStateV1::Tombstone
-    {
-        return Err(ProviderLedgerError::Corrupt(
-            "native terminal phase contradiction",
-        ));
-    }
-    crate::ledger::reducer::validate_release_join(acquisition, release, attempt)
-        .map_err(crate::transaction::map_pure_ledger_error)?;
-    Ok(true)
+        .find(|attempt| attempt.attempt_digest == acquisition.current_attempt_digest);
+    aos_sandbox_source_provider_ledger::ledger::source_capacity::legacy_dispatch_capacity_is_retired_v1(
+        acquisition, native, release, attempt,
+    )
+    .map_err(crate::transaction::map_pure_ledger_error)
 }
 
 /// Atomically commits a native Applying row and its one-use terminal headroom.

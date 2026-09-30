@@ -49,6 +49,15 @@ pub use root_original_native::{
 };
 mod source_provider_readonly;
 mod source_original_native;
+pub use source_original_native::{
+    SOURCE_NATIVE_DISPATCH_TERMINAL_BYTES_V1, SOURCE_NATIVE_DISPATCH_TERMINAL_RECORDS_V1,
+    SourceCapacityStateV5, SourceOriginalAdmissionInputV5, SourceOriginalAdmissionDataV5,
+    SourceCapacityUnionComparisonDataV5, compare_source_original_admission_data_v5,
+    compare_source_capacity_union_data_v5,
+    SOURCE_NATIVE_NO_DISPATCH_TERMINAL_BYTES_V1,
+    source_native_ordinary_capacity_request_v1,
+    source_native_release_status_capacity_request_v1,
+};
 pub use mount_manager_startup::MountManagerStartupPolicyReceiptV1;
 pub(crate) use mount_manager_startup::{
     MountManagerStartupCapturePreflightV1, MountManagerStartupCaptureReceiptV1,
@@ -1889,6 +1898,94 @@ impl Journal {
         } else {
             Ok(())
         }
+    }
+
+    /// Compares Stage A Source DATA against this actual handle's opened ceilings.
+    ///
+    /// This advisory does not mint preflight, grant, writer or physical origin
+    /// evidence. A future protected adapter must revalidate currentness/custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a poisoned handle, repeated transaction, incomplete Source union,
+    /// insufficient full-transaction/current debt headroom or sequence exhaustion.
+    pub(crate) fn compare_source_capacity_advisory_v5(
+        &self,
+        transaction: Option<&JournalTransaction>,
+        origins: &[SourceOriginalAdmissionDataV5],
+        challenges: &[aos_sandbox_source_provider_ledger::ledger::source_capacity::OriginalSourceChallengeDataV5<'_>],
+    ) -> Result<SourceCapacityUnionComparisonDataV5, JournalError> {
+        self.ensure_healthy()?;
+        if transaction.is_some_and(|transaction| self.transaction_ids.contains(transaction.id())) {
+            return Err(JournalError::DuplicateTransaction);
+        }
+        let comparison = compare_source_capacity_union_data_v5(
+            &self.state,
+            transaction,
+            origins,
+            challenges,
+            self.limits,
+        )?;
+        let (append_bytes, added_transactions, added_frames) = match transaction {
+            Some(transaction) => (
+                encoded_transaction_append_bytes(transaction)?,
+                1_usize,
+                (transaction.records().len() as u64)
+                    .checked_add(2)
+                    .ok_or(JournalError::SequenceExhausted)?,
+            ),
+            None => (0, 0, 0),
+        };
+        let journal_bytes = self
+            .file
+            .metadata()?
+            .len()
+            .checked_add(append_bytes)
+            .ok_or(JournalError::JournalTooLarge)?;
+        let transactions = self
+            .committed_transactions
+            .checked_add(added_transactions)
+            .ok_or(JournalError::LimitExceeded("transaction count"))?;
+        let next_sequence = self
+            .next_sequence
+            .checked_add(added_frames)
+            .ok_or(JournalError::SequenceExhausted)?;
+        let materialized_bytes = comparison.after().iter().try_fold(
+            0_usize,
+            |total, ((_, key), value)| {
+                total
+                    .checked_add(key.len())
+                    .and_then(|bytes| bytes.checked_add(value.len()))
+                    .ok_or(JournalError::LimitExceeded("materialized state bytes"))
+            },
+        )?;
+
+        // The complete union already checked every exact changed floor. Reuse
+        // the shared all-family fold on the after cut, with no pretend generic
+        // settlement identifier or weaker legacy decoder.
+        validate_reserved_capacity(
+            comparison.after(),
+            materialized_bytes,
+            &[],
+            None,
+            journal_bytes,
+            transactions,
+            self.limits,
+            None,
+        )?;
+        root_original_inventory::require_sequence_headroom(comparison.after(), next_sequence)?;
+        comparison.require_geometry_headroom(
+            self.limits,
+            native_held::NativeHeldCapacityUsageV3 {
+                journal_bytes,
+                transactions: transactions as u64,
+                materialized_bytes: materialized_bytes as u64,
+                materialized_records: comparison.after().len() as u64,
+                ..native_held::NativeHeldCapacityUsageV3::default()
+            },
+            next_sequence,
+        )?;
+        Ok(comparison)
     }
 
     /// Claims this protected journal for one closed authority namespace.

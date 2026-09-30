@@ -2,9 +2,10 @@
 //!
 //! Ledger owns branch eligibility. This adapter measures every derived branch
 //! through the existing engine with the actual immutable Source5 value width.
-//! Ordinary association/co-settlement, original admission membership, challenge
-//! debt and live custody remain unresolved independent owner obligations. There
-//! is no conversion from these measurements to a writer, receipt or live owner.
+//! The Source union adapter reuses this fold for complete ordinary association
+//! and transaction DATA. Original admission membership, challenge debt, physical
+//! funding and live custody remain independent unresolved obligations. There is
+//! no conversion from these measurements to a writer, receipt or live owner.
 
 use std::collections::BTreeMap;
 
@@ -28,8 +29,10 @@ use super::{
     measure_appends_with_prefixes, validate_transaction,
 };
 use super::super::{
-    NativeHeldCapacityRequestV3, OriginalSourceCapacityRecordV5, check_transfer, invalid,
+    NativeHeldCapacityRequestV3, OriginalSourceCapacityRecordV5, invalid,
 };
+#[cfg(test)]
+use super::super::check_transfer;
 use crate::journal::{
     Journal, capacity_reservation::family::accounting_reservations,
     projected_materialized_record_count, validate_materialized_change,
@@ -40,6 +43,8 @@ struct CoupledPrefix {
     bytes: i128,
     records: i64,
 }
+
+type OwnerView<'a> = BTreeMap<&'a [u8], &'a [u8]>;
 
 /// Borrows one measured branch without providing a physical funding token.
 pub(in crate::journal) struct OriginalSourceMeasuredAlternativeV5 {
@@ -69,6 +74,61 @@ pub(in crate::journal) struct OriginalSourceGeometryDataV5 {
 }
 
 impl OriginalSourceGeometryDataV5 {
+    /// Measures every reducer-derived branch without Journal usage or authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed origin/bindings/capsules, incomplete geometry, insufficient
+    /// supplied debt, codec/measurement limits or bounded arithmetic exhaustion.
+    pub(in crate::journal) fn measure_remaining(
+        floor: &OriginalSourceCapacityRecordV5,
+        continuation: &OriginalSourceContinuationDataV5,
+        limits: JournalLimits,
+    ) -> Result<Self, JournalError> {
+        let owners = continuation.current_records().collect::<OwnerView<'_>>();
+        let floor_present = !continuation
+            .alternatives()
+            .iter()
+            .all(|alternative| alternative.edges().is_empty());
+        measure_remaining(floor, continuation, &owners, limits, floor_present)
+    }
+
+    /// Checks immutable original/cold capsule DATA without measuring retired debt.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed provenance, immutable bindings or copied initial floor.
+    pub(in crate::journal) fn validate_origin_data(
+        floor: &OriginalSourceCapacityRecordV5,
+        continuation: &OriginalSourceContinuationDataV5,
+    ) -> Result<(), JournalError> {
+        if floor.original_provenance() != continuation.provenance() {
+            return Err(invalid("original Source geometry provenance changed"));
+        }
+        validate_original_bindings(floor, continuation)?;
+        validate_cold_capsule(floor, continuation)
+    }
+
+    /// Checks measured complete branches against actual usage and sequence DATA.
+    ///
+    /// # Errors
+    ///
+    /// Rejects any opened ceiling, coupled retained peak or sequence exhaustion.
+    pub(in crate::journal) fn require_usage_headroom(
+        &self,
+        limits: JournalLimits,
+        usage: NativeHeldCapacityUsageV3,
+        next_sequence: u64,
+        other_frames: u64,
+    ) -> Result<(), JournalError> {
+        for alternative in &self.alternatives {
+            alternative.owner.require_headroom(limits, usage)?;
+            require_coupled_headroom(limits, usage, alternative)?;
+            require_sequence_headroom(next_sequence, alternative.frames, other_frames)?;
+        }
+        Ok(())
+    }
+
     /// Borrows every measured branch, including the independently funded ones.
     pub(in crate::journal) fn alternatives(&self) -> &[OriginalSourceMeasuredAlternativeV5] {
         &self.alternatives
@@ -325,19 +385,62 @@ pub(in crate::journal) fn derive_original_source_geometry_v5(
         )?;
     }
 
+    let owner_view = owners
+        .iter()
+        .map(|(key, value)| (key.as_slice(), value.as_slice()))
+        .collect::<OwnerView<'_>>();
+    let mut result = measure_remaining(
+        typed_own_source,
+        continuation,
+        &owner_view,
+        journal.limits,
+        !cold_retired,
+    )?;
+    let mut staged_peak_bytes = positive_bytes(admission_growth.bytes)?;
+    let mut staged_peak_records = positive_records(admission_growth.records)?;
+    for measured in &result.alternatives {
+        measured.owner.require_headroom(journal.limits, usage)?;
+        require_coupled_headroom(journal.limits, usage, measured)?;
+        require_sequence_headroom(sequence, measured.frames, other_frames)?;
+        staged_peak_bytes = staged_peak_bytes.max(positive_bytes(
+            admission_growth.bytes + i128::from(measured.maximum_coupled_growth_bytes),
+        )?);
+        staged_peak_records = staged_peak_records.max(positive_records(
+            admission_growth.records + measured.maximum_coupled_growth_records as i64,
+        )?);
+    }
+    result.staged_peak_bytes = staged_peak_bytes;
+    result.staged_peak_records = staged_peak_records;
+    result.other_frames = other_frames;
+    Ok(result)
+}
+
+fn measure_remaining(
+    typed_own_source: &OriginalSourceCapacityRecordV5,
+    continuation: &OriginalSourceContinuationDataV5,
+    owners: &OwnerView<'_>,
+    limits: JournalLimits,
+    floor_present: bool,
+) -> Result<OriginalSourceGeometryDataV5, JournalError> {
+    if typed_own_source.original_provenance() != continuation.provenance() {
+        return Err(invalid("original Source geometry provenance changed"));
+    }
+    validate_original_bindings(typed_own_source, continuation)?;
+    validate_cold_capsule(typed_own_source, continuation)?;
+    let floor = typed_own_source.to_journal_record()?;
     let floor_width = floor.value().ok_or(JournalError::InvalidTransaction)?.len();
-    let floor_present = !cold_retired;
     let mut alternatives = Vec::new();
     let mut normal = NativeHeldCapacityGeometryV3::default();
     let mut poison = NativeHeldCapacityGeometryV3::default();
-    let mut staged_peak_bytes = positive_bytes(admission_growth.bytes)?;
-    let mut staged_peak_records = positive_records(admission_growth.records)?;
+    let mut staged_peak_bytes = 0;
+    let mut staged_peak_records = 0;
+
     for alternative in continuation.alternatives() {
-        let appends = materialize_templates(alternative, &owners, floor_width)?;
+        let appends = materialize_templates(alternative, owners, floor_width)?;
         let measured = measure_appends_with_prefixes(
             NativeHeldCapacityPurposeV3::Provider,
             appends.iter().map(SourceMeasurementAppend::measurement),
-            journal.limits,
+            limits,
             floor_width,
         )?;
         let measured = coupled_measurement(
@@ -347,14 +450,11 @@ pub(in crate::journal) fn derive_original_source_geometry_v5(
             floor_width,
             floor_present,
         )?;
-        measured.owner.require_headroom(journal.limits, usage)?;
-        require_coupled_headroom(journal.limits, usage, &measured)?;
-        require_sequence_headroom(sequence, measured.frames, other_frames)?;
         staged_peak_bytes = staged_peak_bytes.max(positive_bytes(
-            admission_growth.bytes + i128::from(measured.maximum_coupled_growth_bytes),
+            i128::from(measured.maximum_coupled_growth_bytes),
         )?);
         staged_peak_records = staged_peak_records.max(positive_records(
-            admission_growth.records + measured.maximum_coupled_growth_records as i64,
+            measured.maximum_coupled_growth_records as i64,
         )?);
 
         if measured.poison {
@@ -404,7 +504,7 @@ pub(in crate::journal) fn derive_original_source_geometry_v5(
         remaining,
         staged_peak_bytes,
         staged_peak_records,
-        other_frames,
+        other_frames: 0,
         ordinary_association_required: true,
         original_membership_required: true,
     })
@@ -464,7 +564,7 @@ fn validate_cold_capsule(
 
 fn materialize_templates(
     alternative: &OriginalSourceContinuationAlternativeV5,
-    owners: &BTreeMap<Vec<u8>, Vec<u8>>,
+    owners: &OwnerView<'_>,
     floor_width: usize,
 ) -> Result<Vec<SourceMeasurementAppend>, JournalError> {
     let mut states = BTreeMap::<Vec<u8>, (usize, Vec<u8>)>::new();
@@ -478,7 +578,7 @@ fn materialize_templates(
                     if previous.is_some() {
                         return Err(invalid("original Source repeated first before dependency"));
                     }
-                    owners.get(value.key()).cloned()
+                    owners.get(value.key()).copied().map(<[u8]>::to_vec)
                 }
                 OriginalSourceBeforeDependencyV5::PreviousOutput(predecessor) => {
                     let (actual, bytes) = previous
@@ -494,7 +594,7 @@ fn materialize_templates(
                     // concrete funding must reacquire the full current cut.
                     previous
                         .map(|(_, bytes)| bytes.clone())
-                        .or_else(|| owners.get(value.key()).cloned())
+                        .or_else(|| owners.get(value.key()).copied().map(<[u8]>::to_vec))
                 }
             };
             let width = value
@@ -744,81 +844,20 @@ fn capacity_step(step: SourceStep) -> Result<NativeHeldCapacityStepV3, JournalEr
     })
 }
 
-/// Checks full actual Source5 spend without granting ordinary co-settlement.
+/// Delegates actual Source candidate spend to the complete union advisory.
 ///
 /// # Errors
 ///
-/// Rejects noncanonical floor records, increased/rebound origin, incorrect own
-/// DEL/PUT, an enlarged count or any full transaction spend beyond old debt.
-/// Additional floor settlement remains unsupported until Source association is
-/// implemented; its rows are never stripped before the complete spend check.
+/// Rejects any complete owner/floor association, ordered transaction,
+/// aggregate conservation or actual opened-headroom/sequence contradiction.
+/// The result remains DATA, not a protected reservation or append permission.
 pub(in crate::journal) fn check_original_source_candidate_spend_v5(
     journal: &Journal,
     transaction: &JournalTransaction,
-    old: &OriginalSourceCapacityRecordV5,
-    next: Option<&OriginalSourceCapacityRecordV5>,
-) -> Result<(), JournalError> {
-    accounting_reservations(&journal.state)?;
-    if let Some(next) = next {
-        if next.admission_transaction_id() != old.admission_transaction_id()
-            || next.origin_budgets() != old.origin_budgets()
-            || next.original_provenance() != old.original_provenance()
-            || next.request().future_transactions >= old.request().future_transactions
-            || next.origin_reservation_id()? != old.origin_reservation_id()?
-        {
-            return Err(invalid("original Source candidate immutable origin/count"));
-        }
-    }
-    check_transfer(
-        transaction,
-        old.request(),
-        next.map(OriginalSourceCapacityRecordV5::request),
-        journal.limits,
-        (
-            "original Source full candidate records",
-            "original Source full candidate spend",
-        ),
-    )?;
-    let old_record = old.to_journal_record()?;
-    let next_record = next
-        .map(OriginalSourceCapacityRecordV5::to_journal_record)
-        .transpose()?;
-    let before = journal.state.get(&(
-        RecordNamespace::GlobalCapacityReservation,
-        old_record.key().to_vec(),
-    ));
-    if before.map(Vec::as_slice) != old_record.value() {
-        return Err(invalid("original Source candidate own before floor"));
-    }
-    let mut deleted = false;
-    let mut put = false;
-    let mut additional_floor = false;
-    for record in transaction
-        .records()
-        .iter()
-        .filter(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation)
-    {
-        if record.key() == old_record.key() && record.value().is_none() {
-            deleted = true;
-        } else if next_record.as_ref().is_some_and(|next| next == record) {
-            put = true;
-        } else {
-            if let Some(value) = record.value() {
-                crate::journal::capacity_reservation::family::accounting_reservation(record.key(), value)?;
-            } else {
-                let value = journal
-                    .state
-                    .get(&(record.namespace(), record.key().to_vec()))
-                    .ok_or(JournalError::ProtectedBoundary)?;
-                crate::journal::capacity_reservation::family::accounting_reservation(record.key(), value)?;
-            }
-            additional_floor = true;
-        }
-    }
-    if !deleted || put != next.is_some() || additional_floor {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    origins: &[crate::journal::SourceOriginalAdmissionDataV5],
+    challenges: &[aos_sandbox_source_provider_ledger::ledger::source_capacity::OriginalSourceChallengeDataV5<'_>],
+) -> Result<crate::journal::SourceCapacityUnionComparisonDataV5, JournalError> {
+    journal.compare_source_capacity_advisory_v5(Some(transaction), origins, challenges)
 }
 
 #[cfg(test)]

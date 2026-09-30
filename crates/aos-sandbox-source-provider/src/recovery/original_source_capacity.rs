@@ -3,7 +3,8 @@
 //! Complete inventories and borrowed transactions are checked before retention.
 //! No result establishes physical admission membership, configuration origin,
 //! archive eligibility or whole-journal funding, or enters a Ready ledger.
-//! Unsupported foreign families and later original Source prefixes fail closed.
+//! The shared Sandbox union covers reducer-derived later prefixes. Foreign
+//! families and unsupported Native3 intermediates remain explicit refusals.
 //!
 //! ```text
 //! Applying: Attempt | Acquisition | Holder | History | Source5 PUT
@@ -26,21 +27,32 @@ use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_ledger::{
     collect_bounded_records,
     ledger::native_completion::{
-        OriginalSourceOwnerDataV5, OriginalSourceOwnerPrefixV5, SourcePreRequestedColdArchiveV1,
-        SourcePreRequestedColdPhaseV1,
-        classify_original_source_owner_v5, classify_original_source_pre_requested_cold_v1,
+        SourcePreRequestedColdArchiveV1, SourcePreRequestedColdPhaseV1,
+        classify_original_source_pre_requested_cold_v1,
+    },
+    ledger::native_held_completion::SourceNativeHeldCompletionRecordV1,
+    ledger::source_capacity::{
+        OriginalSourceChallengeDataV5, SourceCapacityOwnerEdgeKindV5 as OwnerEdgeKind,
+    },
+    limits::{MAXIMUM_LEDGER_GRAPH_BYTES, MAXIMUM_LEDGER_RECORDS, MAXIMUM_TRANSACTION_BYTES},
+};
+#[cfg(test)]
+use aos_sandbox_source_provider_ledger::ledger::{
+    native_completion::{
+        OriginalSourceOwnerDataV5, OriginalSourceOwnerPrefixV5,
+        classify_original_source_owner_v5,
         native_completion_key_v2, propose_original_source_applying_v5,
         propose_original_source_pre_requested_closed_v1,
         propose_original_source_pre_requested_closure_stored_v1,
         propose_original_source_pre_requested_root_acknowledged_v1,
         propose_original_source_requested_v5,
     },
-    ledger::native_held_completion::{
-        SourceNativeHeldCompletionRecordV1, SourceNativeHeldMutationV1,
+    native_held_completion::{
+        SourceNativeHeldMutationV1,
         native_held_release_status_binding_v1, validate_native_held_records_v1,
     },
-    limits::{MAXIMUM_LEDGER_GRAPH_BYTES, MAXIMUM_LEDGER_RECORDS, MAXIMUM_TRANSACTION_BYTES},
 };
+#[cfg(test)]
 use sha2::{Digest as _, Sha256};
 
 use super::{
@@ -50,6 +62,82 @@ use super::{
 use crate::{ProviderLedgerError, state::ProtectedProviderConfigurationV1};
 
 type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
+
+/// Retains current protected authentication alongside still-unresolved DATA.
+///
+/// Authentication under today's configuration is not evidence of the archived
+/// original deployment, original floor custody or physical transaction history.
+pub(super) struct AuthenticatedSourceCapacityUnionDataV5 {
+    /// Retains canonical comparison DATA with no Ready/writer conversion.
+    pub(super) comparison: aos_sandbox::journal::SourceCapacityUnionComparisonDataV5,
+    configuration_origin: UnresolvedNativeProofV1,
+    original_physical_membership: UnresolvedNativeProofV1,
+    archive_eligibility: UnresolvedNativeProofV1,
+    whole_journal_funding: UnresolvedNativeProofV1,
+}
+
+/// Authenticates complete current/historical cuts without promoting DATA to Ready.
+///
+/// The pure Sandbox comparator derives all owner/floor eligibility below Source.
+/// Source alone checks real protected current configuration, retained histories
+/// and signatures. There is no callback into Source from Sandbox or new writer.
+///
+/// # Errors
+///
+/// Rejects incomplete union/edge DATA, foreign current deployment configuration,
+/// or current/historical owner authentication and retained-signature failures.
+pub(super) fn compare_authenticated_source_capacity_union_data_v5(
+    before: &aos_sandbox::journal::SourceCapacityStateV5,
+    transaction: Option<&JournalTransaction>,
+    origins: &[aos_sandbox::journal::SourceOriginalAdmissionDataV5],
+    challenges: &[OriginalSourceChallengeDataV5<'_>],
+    configuration: &ProtectedProviderConfigurationV1,
+    limits: aos_sandbox::JournalLimits,
+) -> Result<AuthenticatedSourceCapacityUnionDataV5, ProviderLedgerError> {
+    let comparison = aos_sandbox::journal::compare_source_capacity_union_data_v5(
+        before,
+        transaction,
+        origins,
+        challenges,
+        limits,
+    )?;
+
+    authenticate_complete_cut(comparison.before(), configuration)?;
+    authenticate_complete_cut(comparison.after(), configuration)?;
+    for origin in origins {
+        if origin.admission_comparison().original().configuration_digest
+            != configuration.deployment_digest()
+        {
+            return Err(ProviderLedgerError::ConfigurationMismatch);
+        }
+        authenticate_complete_cut(origin.original_before(), configuration)?;
+        authenticate_complete_cut(origin.applying_after(), configuration)?;
+    }
+
+    Ok(AuthenticatedSourceCapacityUnionDataV5 {
+        comparison,
+        configuration_origin: UnresolvedNativeProofV1::Unresolved,
+        original_physical_membership: UnresolvedNativeProofV1::Unresolved,
+        archive_eligibility: UnresolvedNativeProofV1::Unresolved,
+        whole_journal_funding: UnresolvedNativeProofV1::Unresolved,
+    })
+}
+
+fn authenticate_complete_cut(
+    state: &State,
+    configuration: &ProtectedProviderConfigurationV1,
+) -> Result<(), ProviderLedgerError> {
+    let records = collect_bounded_records(owner_views(state))
+        .map_err(crate::transaction::map_pure_ledger_error)?;
+    let profiles = typed_profiles(&records)?;
+
+    super::recover_records_with_profiles(
+        records.iter().map(|(key, value)| (key.as_slice(), value.as_slice())),
+        configuration,
+        &profiles,
+    )?;
+    Ok(())
+}
 
 /// Borrows real retained comparison inputs; matching DATA is not a receipt.
 struct OriginalAdmissionComparisonV5<'a> {
@@ -93,13 +181,14 @@ struct OriginalSourceFloorDeltaDataV5 {
     whole_journal_funding: UnresolvedNativeProofV1,
 }
 
+#[cfg(test)]
 struct ValidatedAdmission {
     after: State,
     initial_floor: OriginalSourceCapacityRecordV5,
     owner: OriginalSourceOwnerDataV5,
 }
 
-/// Checks five closed edges against every actual ordinary capacity obligation.
+/// Delegates the five legacy comparison shapes to the complete all-prefix union.
 ///
 /// Both the current TX and original Applying TX remain caller-owned on error.
 /// Cold replay without genuine retained original-before/TX inputs is unsupported;
@@ -120,39 +209,47 @@ fn compare_original_source_floor_union_transaction_v5(
     validate_capacity_snapshot_data_v2(before)?;
     validate_capacity_snapshot_data_v2(after)?;
 
-    let admission =
-        validate_original_admission(original.original_before, original.applying_transaction)?;
-
-    // Validate the original complete union too: replayed five-record DATA must
-    // not hide any already-outstanding ordinary obligation at admission.
-    associate_cut(original.original_before, &admission, configuration)?;
-    associate_cut(&admission.after, &admission, configuration)?;
-    let before_floors = associate_cut(before, &admission, configuration)?;
-    let after_floors = associate_cut(after, &admission, configuration)?;
-
-    let reapplied = apply_transaction(before, transaction)?;
-    if &reapplied != after {
+    let limits = aos_sandbox::JournalLimits::default();
+    let admission = aos_sandbox::journal::compare_source_original_admission_data_v5(
+        aos_sandbox::journal::SourceOriginalAdmissionInputV5 {
+            original_before: original.original_before,
+            original_applying: original.applying_transaction,
+        },
+        limits,
+    )?;
+    let compared = compare_authenticated_source_capacity_union_data_v5(
+        before,
+        Some(transaction),
+        &[admission],
+        &[],
+        configuration,
+        limits,
+    )?;
+    if compared.comparison.after() != after {
         return Err(corrupt("original Source full after differs from ordered TX"));
     }
-    validate_edge(
-        before,
-        transaction,
-        &before_floors,
-        &after_floors,
-        &admission,
-        edge,
-    )?;
-    preserve_other_floors(&before_floors, &after_floors, &admission)?;
-    if edge == OriginalSourceFloorEdgeV5::Applying
-        && (before != original.original_before || transaction != original.applying_transaction)
-    {
-        return Err(corrupt("Applying differs from retained original transaction"));
+    let expected = match edge {
+        OriginalSourceFloorEdgeV5::Applying => OwnerEdgeKind::Applying,
+        OriginalSourceFloorEdgeV5::FirstRequested => OwnerEdgeKind::Held(
+            aos_sandbox_source_provider_ledger::ledger::native_held_completion::SourceNativeHeldStepV1::Requested,
+        ),
+        OriginalSourceFloorEdgeV5::ColdClosedPrepared => {
+            OwnerEdgeKind::PreRequestedCold(SourcePreRequestedColdPhaseV1::ClosedPrepared)
+        }
+        OriginalSourceFloorEdgeV5::ColdClosureStored => {
+            OwnerEdgeKind::PreRequestedCold(SourcePreRequestedColdPhaseV1::ClosureStored)
+        }
+        OriginalSourceFloorEdgeV5::ColdRootAcknowledged => {
+            OwnerEdgeKind::PreRequestedCold(SourcePreRequestedColdPhaseV1::RootAcknowledged)
+        }
+    };
+    if compared.comparison.owner_edge().map(|edge| edge.kind()) != Some(expected) {
+        return Err(corrupt("original Source compatibility edge differs from actual reducer"));
     }
-    if edge != OriginalSourceFloorEdgeV5::Applying
-        && transaction.id() == original.applying_transaction.id()
-    {
-        return Err(corrupt("original Source repeated admission transaction identity"));
-    }
+    drop(compared);
+
+    let before_floors = Floors::collect_original_source_comparison(capacity_rows(before))?;
+    let after_floors = Floors::collect_original_source_comparison(capacity_rows(after))?;
 
     Ok(OriginalSourceFloorDeltaDataV5 {
         before: before.clone(),
@@ -169,6 +266,7 @@ fn compare_original_source_floor_union_transaction_v5(
     })
 }
 
+#[cfg(test)]
 fn validate_original_admission(
     before: &State,
     transaction: &JournalTransaction,
@@ -204,6 +302,7 @@ fn validate_original_admission(
     })
 }
 
+#[cfg(test)]
 fn validate_edge(
     before: &State,
     transaction: &JournalTransaction,
@@ -310,6 +409,7 @@ fn validate_edge(
     require_mutations(before, &records[..owner_count], &mutations)
 }
 
+#[cfg(test)]
 fn associate_cut(
     state: &State,
     admission: &ValidatedAdmission,
@@ -461,6 +561,7 @@ fn typed_profiles(
     Ok(profiles)
 }
 
+#[cfg(test)]
 fn require_cold_origin(
     archive: &SourcePreRequestedColdArchiveV1,
     admission: &ValidatedAdmission,
@@ -498,6 +599,7 @@ fn require_cold_origin(
     Ok(())
 }
 
+#[cfg(test)]
 fn require_retained_floor(
     current: &OriginalSourceCapacityRecordV5,
     original: &OriginalSourceCapacityRecordV5,
@@ -520,6 +622,7 @@ fn require_retained_floor(
     Ok(())
 }
 
+#[cfg(test)]
 fn require_no_budget_growth(
     old: &OriginalSourceCapacityRecordV5,
     next: &OriginalSourceCapacityRecordV5,
@@ -536,6 +639,7 @@ fn require_no_budget_growth(
     Ok(())
 }
 
+#[cfg(test)]
 fn require_owner_binding(
     floor: &OriginalSourceCapacityRecordV5,
     owner: &OriginalSourceOwnerDataV5,
@@ -554,6 +658,7 @@ fn require_owner_binding(
 
 // The comparison passes inventories already checked for complete families,
 // owner/configuration and the exact union. Selection never reconstructs a cut.
+#[cfg(test)]
 fn selected_floor<'floor>(
     floors: &'floor Floors,
     admission: &ValidatedAdmission,
@@ -573,6 +678,7 @@ fn selected_floor<'floor>(
     Ok(selected)
 }
 
+#[cfg(test)]
 fn preserve_other_floors(
     before: &Floors,
     after: &Floors,
@@ -594,6 +700,7 @@ fn preserve_other_floors(
     Ok(())
 }
 
+#[cfg(test)]
 fn original_owner_order(
     records: &[JournalRecord],
     floor: &OriginalSourceCapacityRecordV5,
@@ -609,6 +716,7 @@ fn original_owner_order(
     Ok(())
 }
 
+#[cfg(test)]
 fn require_native_put(row: &JournalRecord, acquisition: ObjectDigest) -> Result<(), ProviderLedgerError> {
     if row.namespace() != RecordNamespace::SourceProviderAuthority
         || row.key() != native_completion_key_v2(acquisition)
@@ -619,6 +727,7 @@ fn require_native_put(row: &JournalRecord, acquisition: ObjectDigest) -> Result<
     Ok(())
 }
 
+#[cfg(test)]
 fn require_mutations(
     before: &State,
     records: &[JournalRecord],
@@ -652,6 +761,7 @@ fn capacity_rows(state: &State) -> Vec<JournalRecord> {
         .collect()
 }
 
+#[cfg(test)]
 fn changes(records: &[JournalRecord]) -> impl Iterator<Item = (&[u8], Option<&[u8]>)> {
     records.iter().map(|row| (row.key(), row.value()))
 }
@@ -724,6 +834,7 @@ fn bound_transaction(transaction: &JournalTransaction, count: usize) -> Result<(
     Ok(())
 }
 
+#[cfg(test)]
 fn apply_transaction(
     before: &State,
     transaction: &JournalTransaction,

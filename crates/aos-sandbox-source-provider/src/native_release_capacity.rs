@@ -8,13 +8,12 @@
 use std::collections::BTreeSet;
 
 use aos_sandbox::{
-    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
+    GlobalCapacityReservationRecoveryBindingV1,
     GlobalCapacityReservationRequestV1, GlobalCapacityReservationV1, JournalTransaction,
     ProtectedJournalAuthority, RecordNamespace,
 };
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_ledger::ledger::native_completion::release_fence::{
-    NATIVE_RELEASE_STATUS_TERMINAL_BYTES_V1, NATIVE_RELEASE_STATUS_TERMINAL_RECORDS_V1,
     NativeReleaseStatusCapacityBindingV1, native_release_status_capacity_binding_v1,
     native_release_status_is_completed_v1,
 };
@@ -24,21 +23,7 @@ use crate::model::{ProviderAcquisitionStateV1, ProviderAttemptStateV1, Recovered
 use crate::state::ProviderLedgerV1;
 
 fn request(binding: NativeReleaseStatusCapacityBindingV1) -> GlobalCapacityReservationRequestV1 {
-    GlobalCapacityReservationRequestV1 {
-        purpose: GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal,
-        owner_namespace: RecordNamespace::SourceProviderAuthority,
-        owner_id: binding.owner_id,
-        owner_digest: *binding.owner_digest.as_bytes(),
-        operation_id: binding.operation_id,
-        artifact_digest: *binding.artifact_digest.as_bytes(),
-        checkpoint_digest: *binding.checkpoint_digest.as_bytes(),
-        chain_head_digest: *binding.chain_head_digest.as_bytes(),
-        future_transactions: 1,
-        terminal_records: NATIVE_RELEASE_STATUS_TERMINAL_RECORDS_V1,
-        terminal_bytes: NATIVE_RELEASE_STATUS_TERMINAL_BYTES_V1,
-        poison_records: NATIVE_RELEASE_STATUS_TERMINAL_RECORDS_V1,
-        poison_bytes: NATIVE_RELEASE_STATUS_TERMINAL_BYTES_V1,
-    }
+    aos_sandbox::journal::source_native_release_status_capacity_request_v1(binding)
 }
 
 pub(crate) fn binding(
