@@ -14,12 +14,14 @@ registry. The shared `aos.release` profile supplies the registry URL
 alias, root epoch, channel, and testing notice. Planning, building, and image
 finalization check this profile from the clean source commit frozen in the
 plan, on every selected platform. A testing profile fails a main plan and vice
-versa. When the plan's staging surface is a Hub deployment, every image's
-baked `hubUrl` must also equal that surface's origin, because the staging
-deployment is the first to receive and serve the signed artifacts; build the
-`aos-testing-staging` variant for the canonical staging Hub, as described in
+versa. Every image's baked `hubUrl` must equal the origin of the Hub surface
+consumers will install from: the production surface when the plan has any
+production destination (the same signed bytes reach production, and staging
+exercises them with an explicit cache override), or the staging surface for a
+staging-only plan. Build the `aos-testing-staging` variant for staging-only
+plans on the canonical staging Hub, as described in
 [the Hub deployment guide](aos-hub-deployment.md#build-artifacts-for-the-staging-destination).
-A static staging surface has no Hub origin to bind. Package
+A static surface has no Hub origin to bind. Package
 transactions, manifests, evidence, and channel receipts bind the same registry;
 packages inherit their client's configured registry when installed. Inspect the
 destinations and their obligations with

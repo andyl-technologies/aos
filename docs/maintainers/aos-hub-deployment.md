@@ -337,10 +337,12 @@ images and containers. The `aos-testing` variant targets the production delivery
 origin. Published artifacts cannot change their baked destination after signing.
 For another Hub deployment, set `aos.release.registryOrigin` and
 `aos.release.hubUrl` before building, and publish to that same deployment.
-When a release plan's staging surface is a Hub, planning and image finalization
-require every planned image's `hubUrl` to equal that surface's origin, so a
-release bound for this deployment must plan the `aos-testing-staging` variant
-(or an equivalent profile).
+Planning and image finalization require every planned image's `hubUrl` to
+equal the origin of the Hub surface consumers will install from: production
+when the plan has a production destination, otherwise staging. A staging-only
+release bound for this deployment must therefore plan the `aos-testing-staging`
+variant (or an equivalent profile), while a release bound for production keeps
+the `aos-testing` variant and is exercised on staging through a cache override.
 
 ```sh
 bash ./aos-dev --release build container aos-testing-staging:oci --no-out-link
