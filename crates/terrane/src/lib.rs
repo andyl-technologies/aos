@@ -23,5 +23,7 @@ pub mod ref_advance;
 #[cfg(feature = "std")]
 pub mod repository;
 pub mod role;
+#[cfg(feature = "std")]
+pub(crate) mod selected_bridge;
 pub mod store;
 pub mod surface;
