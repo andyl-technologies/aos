@@ -471,10 +471,19 @@ async fn held_buckets_identity_matches_independently_opened_physical_namespace()
     let pair = HeldBuckets::acquire(&independent_source, &independent_destination)
         .await
         .unwrap();
+    let source_adapter = pair.source();
+    let destination_adapter = pair.destination();
+    let source_proof = source_adapter.identity_proof();
+    let destination_proof = destination_adapter.identity_proof();
+    assert!(!source_proof.writable());
+    assert!(destination_proof.writable());
+    assert_eq!(source_proof.root(), source.root());
+    assert_eq!(destination_proof.root(), destination.root());
+
     let key = BucketKey::parse("CAPABILITIES").unwrap();
     for (bucket, actual) in [
-        (&source, pair.source().physical_identity()),
-        (&destination, pair.destination().physical_identity()),
+        (&source, source_proof.physical_identity()),
+        (&destination, destination_proof.physical_identity()),
     ] {
         let root = TokioLocalFs.symlink_metadata(bucket.root()).await.unwrap();
         let lock = TokioLocalFs
