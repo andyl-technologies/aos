@@ -53,7 +53,7 @@ use aos_oci_types::{
     RepositoryName, Sha256Digest, CONTAINER_DSSE_SIGNATURE_NAMESPACE,
 };
 use aos_registry_surface::manifest::{ImageVerificationState, RegistryRootConfig};
-use aos_registry_surface::object::{Commit, ObjectKind};
+use aos_registry_surface::object::{Commit, ObjectKind, Oid};
 use aos_registry_surface::refs::{parse_head, parse_info_refs, Refs};
 use aos_registry_surface::sshsig;
 use aos_registry_surface::tag::{parse_signed_tag, verify_signed_tag, SignedTag};
@@ -535,10 +535,6 @@ async fn index_registry_inner(
         .as_ref()
         .is_some_and(|status| status.state == "fresh")
         && indexed_roster_matches(db, registry.id, &roster_rows).await?
-        // Signed container roots bind exact placement evidence. The reusable
-        // artifact projection does not rehydrate that evidence, so force the
-        // normal signed-release validation path for container registries.
-        && !db.has_container_release_catalog(registry.id).await?
     {
         reusable_release_snapshots(db, registry.id).await?
     } else {
@@ -576,10 +572,28 @@ async fn index_registry_inner(
             let refs_digest = refs_digest.as_str();
             let browse_projection_gate = &browse_projection_gate;
             async move {
-                if let Some(reusable) = reusable.filter(|reusable| {
-                    reusable.release.tag_oid == tag_oid.to_hex()
-                        && (reusable.image.is_none() || publication.is_some())
+                let reusable = match reusable.filter(|snapshot| {
+                    snapshot.release.tag_oid == tag_oid.to_hex()
+                        && (snapshot.image.is_none() || publication.is_some())
                 }) {
+                    Some(snapshot) => {
+                        // Container evidence binds an exact placement. Reuse
+                        // package-only releases; container-bearing releases
+                        // still take the complete signed validation path.
+                        let commit_oid = Oid::from_hex(&snapshot.release.commit_oid)?;
+                        if reader
+                            .retained_container_release(commit_oid)
+                            .await?
+                            .is_none()
+                        {
+                            Some(snapshot)
+                        } else {
+                            None
+                        }
+                    }
+                    None => None,
+                };
+                if let Some(reusable) = reusable {
                     tracing::debug!(release = %tag_name, "revalidating reusable release snapshot");
                     let mut release_leases = Vec::new();
                     let (release_image, release_presence, image_tag_oid) = match reusable.image {
@@ -2630,19 +2644,11 @@ async fn verify_documentation_selection(
     entry: &aos_registry_surface::manifest::PlatformEntry,
     artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
 ) -> Result<IndexedPackageDocumentation> {
-    let document = fetch_package_documentation(
-        fetch,
-        package_name,
-        package_version,
-        platform,
-        artifact,
-    )
-    .await?;
+    let document =
+        fetch_package_documentation(fetch, package_name, package_version, platform, artifact)
+            .await?;
     anyhow::ensure!(
-        documentation_digest_matches(
-            &document.identity.runtime_nar_hash,
-            &entry.nar_hash,
-        )?,
+        documentation_digest_matches(&document.identity.runtime_nar_hash, &entry.nar_hash,)?,
         "package documentation runtime identity mismatch"
     );
     if let Some(config) = &entry.config_module {
@@ -2651,10 +2657,7 @@ async fn verify_documentation_selection(
                 .identity
                 .config_module_nar_hash
                 .as_deref()
-                .map(|digest| documentation_digest_matches(
-                    digest,
-                    &config.config_output.nar_hash,
-                ))
+                .map(|digest| documentation_digest_matches(digest, &config.config_output.nar_hash,))
                 .transpose()?
                 == Some(true),
             "package documentation config-module identity mismatch"
@@ -3748,7 +3751,9 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
         let artifacts = release_snapshot_artifacts(&[package]);
 
         assert_eq!(artifacts.len(), 3);
-        assert!(artifacts.iter().all(|entry| entry.artifact_kind == "output"));
+        assert!(artifacts
+            .iter()
+            .all(|entry| entry.artifact_kind == "output"));
         assert_eq!(
             artifacts
                 .iter()
