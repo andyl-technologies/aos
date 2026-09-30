@@ -9,11 +9,20 @@ in {
         default = [];
         description = "Ordered immutable operator module files replayed with this stage's package modules.";
       };
+      options.supplementalInputs = mkOption {
+        type = types.listOf types.pathInStore;
+        default = [];
+        description = "Immutable store roots retained and admitted with this stage without importing them as configuration.";
+      };
       options.configurationBuilders = mkOption {
         type = types.listOf (types.functionTo (types.submodule {
           options = {
             packages = mkOption {type = types.listOf types.package;};
             configuration = mkOption {type = types.listOf types.pathInStore;};
+            supplementalInputs = mkOption {
+              type = types.listOf types.pathInStore;
+              default = [];
+            };
           };
         }));
         default = [];
