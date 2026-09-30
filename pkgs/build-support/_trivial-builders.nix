@@ -113,6 +113,9 @@
                 mkdir -p "$(dirname "$target")"
               ''
               else ''
+                # stdenv creates an empty output directory before phases run.
+                # A standalone text output must replace it, not copy into it.
+                if [ -d "$out" ]; then rmdir "$out"; fi
                 target="$out"
               ''
             )

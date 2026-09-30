@@ -6,40 +6,23 @@
 {
   config,
   lib,
+  package,
   ...
 }: let
-  cfg = config.aos.services.getty.autologin;
-  isInitrd = cfg.stage == "initrd";
-  anyConsoleEnabled =
-    config.aos.services."getty.virtual-console".enable
-    || config.aos.services."getty.serial-console".enable;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  interfaces = serviceManagement.interfaces;
-  resultOf = lib.abilities.resultOf;
-  consumerInstance = "getty";
-
+  cfg = config.aos.getty.autologin;
+  isInitrd = (config.aos.boot.stage or cfg.stage) == "initrd";
   command = arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "libexec/aos-autologin-getty";
+      path = "${package}/libexec/aos-autologin-getty";
       inherit arguments;
     };
     ignore_failure = false;
   };
-  milestone = key: name:
-    serviceManagement.forProducer {
-      inherit consumerInstance key;
-      interface = interfaces.activationMilestone;
-      parameters.milestone = name;
-    };
-  startupMilestone = milestone "startup-milestone" (
+  startupReadiness =
     if isInitrd
-    then "early-system"
-    else "interactive-console"
-  );
-  userSessionsMilestone = milestone "user-sessions-milestone" "user-sessions-ready";
-  startupReadiness = resultOf "startup-milestone" "resource";
-  userSessionsReadiness = resultOf "user-sessions-milestone" "resource";
+    then "initrd-fs.target"
+    else "getty.target";
+  userSessionsReadiness = "systemd-user-sessions.service";
 
   consoleService = {
     service,
@@ -49,7 +32,6 @@
     deallocate,
     sessionIdentifier ? null,
   }: {
-    inherit consumerInstance service;
     lifecycle = {
       inherit description;
       execution_model = "foreground";
@@ -130,44 +112,21 @@
     deallocate = false;
   };
 in {
-  options.aos.services = lib.mkOption {
-    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
-      options = lib.optionalAttrs (name == "getty") {
-        autologin = {
-          enable = lib.mkOption {
-            type = lib.abilities.types.boolean;
-            default = false;
-            description = "Run passwordless root gettys on the primary virtual and serial consoles.";
-          };
-
-          stage = lib.mkOption {
-            type = lib.abilities.types.enum ["host" "initrd"];
-            default = "host";
-            description = "Select the host or initrd console and activation contract.";
-          };
-        };
-      };
-    }));
-    default = {};
+  options.aos.getty.autologin = {
+    enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Run passwordless root gettys on the primary virtual and serial consoles.";
+    };
+    stage = lib.mkOption {
+      type = lib.types.enum ["host" "initrd"];
+      default = "host";
+      description = "Select the host or initrd console and activation contract.";
+    };
   };
 
-  config = lib.mkMerge [
-    {
-      aos.services = {
-        getty = {};
-        "getty.virtual-console" = virtualConsole // {enable = cfg.enable;};
-        "getty.serial-console" = serialConsole // {enable = cfg.enable;};
-      };
-    }
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [startupMilestone];
-      enabled = anyConsoleEnabled;
-    })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [userSessionsMilestone];
-      enabled = anyConsoleEnabled && !isInitrd;
-    })
-  ];
+  config.aos.services = {
+    "getty.virtual-console" = virtualConsole // {enable = cfg.enable;};
+    "getty.serial-console" = serialConsole // {enable = cfg.enable;};
+  };
 }

@@ -1,6 +1,8 @@
 ##! systemd — System and service manager
 {
   lib,
+  service-management,
+  aos-host-policy,
   mkDerivation,
   stdenv,
   fetchurl,
@@ -70,6 +72,7 @@
 
   systemdRuntimeDeps = [
     bash
+    python3
     coreutils
     cpio
     dosfstools
@@ -183,7 +186,8 @@ in
     };
 
     inherit version;
-    abilities = ./_systemd-abilities;
+    module = ./_systemd-abilities;
+    moduleDeps = [service-management aos-host-policy linux-pam];
 
     # Keep UKI construction and kernel installation in `tools`, including
     # kernel-install's Python hook. PID 1 and boot-time generators do not need
@@ -649,28 +653,101 @@ in
         '';
       }
       {
-        name = "install-ability-provider-launcher";
+        name = "install-native-platform-tools";
         script = ''
-          mkdir -p "$out/libexec"
-          cat > "$out/libexec/aos-systemd-provider" << EOF
+          mkdir -p "$out/bin"
+          cat > "$out/bin/aos-systemd-credential-encrypt" << EOF
           #!${bash}/bin/bash
-          if [ "\''${1-}" = credential-encrypt ]; then
-            shift
-            exec "${aos-systemd-provider}/bin/aos-systemd-provider" \\
-              credential-encrypt \\
-              --systemd-creds "$out/bin/systemd-creds" \\
-              "\$@"
-          fi
+          exec "${aos-systemd-provider}/bin/aos-systemd-credential-encrypt" \\
+            --systemd-creds "$out/bin/systemd-creds" \\
+            "\$@"
+          EOF
+          chmod +x "$out/bin/aos-systemd-credential-encrypt"
 
-          exec "${aos-systemd-provider}/bin/aos-systemd-provider" \\
+          cat > "$out/bin/aos-systemd-boot-platform" << EOF
+          #!${bash}/bin/bash
+          exec "${aos-systemd-provider}/bin/aos-systemd-boot-platform" \\
             --bootctl "$out/bin/bootctl" \\
             --bless-boot "$out/lib/systemd/systemd-bless-boot" \\
             --mount "${util-linux}/bin/mount" \\
             --systemctl "$out/bin/systemctl" \\
             "\$@"
           EOF
-          chmod +x "$out/libexec/aos-systemd-provider"
+          chmod +x "$out/bin/aos-systemd-boot-platform"
 
+          cat > "$out/bin/aos-systemd-image-evidence" << EOF
+          #!${bash}/bin/bash
+          exec "${aos-systemd-provider}/bin/aos-systemd-image-evidence" \\
+            --openssl "${openssl}/bin/openssl" \\
+            --objcopy "${binutils}/bin/objcopy" \\
+            "\$@"
+          EOF
+          chmod +x "$out/bin/aos-systemd-image-evidence"
+
+        '';
+      }
+      {
+        name = "install-native-image-stage";
+        script = ''
+          mkdir -p "$out/bin"
+          cat > "$out/bin/aos-systemd-image-stage" << EOF
+          #!${bash}/bin/bash
+          exec "${aos-systemd-provider}/bin/aos-systemd-image-stage" \\
+            --mount "${util-linux}/bin/mount" \\
+            --umount "${util-linux}/bin/umount" \\
+            --blkid "${util-linux}/bin/blkid" \\
+            --objcopy "${binutils}/bin/objcopy" \\
+            --veritysetup "${cryptsetup}/bin/veritysetup" \\
+            "\$@"
+          EOF
+          chmod +x "$out/bin/aos-systemd-image-stage"
+        '';
+      }
+      {
+        name = "install-native-network-handler";
+        script = ''
+          mkdir -p "$out/libexec" "$out/bin"
+          cp ${./_systemd-abilities/network-handler.py} "$out/libexec/aos-network-handler.py"
+          cat > "$out/bin/aos-network-handler" << EOF
+          #!${bash}/bin/bash
+          exec "${python3}/bin/python3" "$out/libexec/aos-network-handler.py" \\
+            --systemctl "$out/bin/systemctl" \\
+            --wait-online "$out/lib/systemd/systemd-networkd-wait-online" \\
+            --unit-directory "$out/lib/systemd/system" \\
+            "\$@"
+          EOF
+          chmod +x "$out/bin/aos-network-handler"
+        '';
+      }
+      {
+        name = "install-native-service-handler";
+        script = ''
+          mkdir -p "$out/libexec" "$out/bin"
+          cp ${./_systemd-abilities/service-handler.py} "$out/libexec/aos-service-handler.py"
+          cat > "$out/bin/aos-service-handler" << EOF
+          #!${bash}/bin/bash
+          exec "${python3}/bin/python3" "$out/libexec/aos-service-handler.py" \\
+            --systemctl "$out/bin/systemctl" \\
+            --true-executable "${coreutils}/bin/true" \\
+            --flock-executable "${util-linux}/bin/flock" \\
+            --mac-condition-executable "$out/bin/aos-service-handler" \\
+            "\$@"
+          EOF
+          chmod +x "$out/bin/aos-service-handler"
+        '';
+      }
+      {
+        name = "install-native-resource-handler";
+        script = ''
+          cat > "$out/bin/aos-systemd-native-resources" << EOF
+          #!${bash}/bin/bash
+          exec "${aos-systemd-provider}/bin/aos-systemd-native-resource-provider" \\
+            --systemd-creds "$out/bin/systemd-creds" \\
+            --login-shell "${bash}/bin/bash" \\
+            --nologin-shell "${util-linux}/sbin/nologin" \\
+            "\$@"
+          EOF
+          chmod +x "$out/bin/aos-systemd-native-resources"
         '';
       }
       {
