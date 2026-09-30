@@ -207,7 +207,7 @@ impl NixLocalInputCutV2<'_, '_> {
     ///
     /// # Errors
     ///
-    /// Rejects invalid index/offset/chunk bounds, short or failed reads, a closed
+    /// Rejects invalid index/offset/chunk bounds, premature EOF or failed reads, a closed
     /// cut and any current/physical change. Failure permanently closes the cut.
     pub(super) fn read_input_chunk(
         &mut self,
