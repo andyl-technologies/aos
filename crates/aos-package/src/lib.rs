@@ -41,6 +41,9 @@
 //!   admission before configuration, profile, or host-service access.
 
 pub mod attestation;
+pub mod boot_configuration;
+mod cancellation;
+pub use cancellation::AbilityCancellationGuard;
 pub mod clean;
 pub mod config;
 pub mod config_eval;
@@ -62,10 +65,11 @@ pub(crate) mod gitcmd;
 pub mod hold;
 pub mod images;
 pub mod install;
+pub mod native_artifact;
+pub mod native_deployment;
+mod native_registry;
 pub(crate) mod package_attestation;
 pub use package_attestation::PackageQuoteArtifacts;
-pub mod package_contract;
-mod terminal_root;
 
 /// Reports whether the configured local attestation terminal can address a TPM.
 ///
@@ -162,6 +166,7 @@ pub mod remove;
 pub mod resolve;
 pub mod rollback;
 mod runtime_boundary;
+pub(crate) mod runtime_modules;
 pub mod security;
 pub mod source;
 pub mod sshkey;
@@ -176,13 +181,10 @@ pub mod verify;
 #[cfg(test)]
 pub(crate) mod testutil;
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use aos_ability_model::VersionedDocument;
 use clap::{Args, Subcommand, ValueEnum};
 
 use aos_core::error::AosError;
@@ -220,6 +222,62 @@ pub const ENVIRONMENT_HELP: &str = "Environment:
 /// Package-consumer operations implemented for `apm`.
 #[derive(Subcommand)]
 pub enum PackageCommand {
+    /// Prepare authenticated system images without selecting the next boot
+    Image {
+        /// Select the image operation
+        #[command(subcommand)]
+        command: ImageCommand,
+    },
+    /// Apply the complete operator configuration worktree
+    Switch {
+        /// Preview changes without activating them
+        #[arg(long)]
+        dry_run: bool,
+        /// Read operator modules from this directory
+        #[arg(long, default_value = "/var/lib/aos/config/modules.d")]
+        worktree: PathBuf,
+        /// Stage immutable evaluation inputs in this directory
+        #[arg(long, default_value = "/var/lib/aos/evaluation")]
+        eval_root: PathBuf,
+    },
+    /// Manage runtime configuration modules
+    Config {
+        /// Select the configuration operation
+        #[command(subcommand)]
+        command: RuntimeConfigCommand,
+    },
+    /// Hidden: inspect the authoritative committed profile publication.
+    #[command(name = "deployment-current", hide = true)]
+    DeploymentCurrent {
+        /// Read the native profile at this path
+        #[arg(long)]
+        profile: PathBuf,
+        /// Inspect committed state while later work is pending
+        #[arg(long)]
+        committed_during_recovery: bool,
+    },
+    /// Hidden: apply an image-authenticated native deployment.
+    #[command(name = "apply-deployment", hide = true)]
+    ApplyDeployment(native_deployment::NativeDeploymentArgs),
+    /// Hidden: verify durable completion of a native deployment.
+    #[command(name = "verify-deployment", hide = true)]
+    VerifyDeployment(native_deployment::NativeDeploymentArgs),
+    /// Hidden: read an explicitly selected committed native profile result.
+    #[command(name = "deployment-result", hide = true)]
+    DeploymentResult {
+        /// Read this package profile's native journals.
+        #[arg(long)]
+        profile: PathBuf,
+        /// Select the committed package profile generation.
+        #[arg(long)]
+        generation: u32,
+        /// Select this exact effect identity.
+        #[arg(long)]
+        effect: String,
+        /// Read prior committed state while a later activation is pending.
+        #[arg(long)]
+        committed_during_recovery: bool,
+    },
     /// Install one or more packages
     Install {
         /// Package names to install
@@ -544,287 +602,20 @@ pub enum PackageCommand {
         #[command(subcommand)]
         command: ApmRegistryCommand,
     },
-    /// Hidden: drive the on-host resolve/evaluate configuration fixpoint.
-    ///
-    /// Called only by `aos-eval.service`. Renders the working set into
-    /// `entry.nix`, runs the sandboxed stock-Nix evaluator, fetches missing
-    /// providers' config outputs, and — only on convergence — writes the
-    /// manifest. Failure-safe: a terminal error writes no manifest, so the
-    /// install step is a no-op and the active configuration remains unchanged.
-    #[command(name = "__eval", hide = true)]
-    Eval {
-        /// Canonical typed locator for the selected package-store read view.
-        #[arg(long = "store-view")]
-        store_view: String,
-        /// The delivered leaf host.nix path
-        #[arg(long = "host-nix")]
-        host_nix: PathBuf,
-        /// Ordered generation-pinned runtime module entrypoint; repeatable.
-        #[arg(long = "runtime-module")]
-        runtime_module: Vec<PathBuf>,
-        /// Immutable runtime source root; required to represent an empty set.
-        #[arg(long = "runtime-module-root")]
-        runtime_module_root: Option<PathBuf>,
-        /// Active config generation sampled before this evaluation began.
-        #[arg(long = "expected-current-generation")]
-        expected_current_generation: Option<u32>,
-        /// The in-image module library store path
-        #[arg(long = "base-lib")]
-        base_lib: PathBuf,
-        /// Normalized metadata facts consumed as declared host inputs
-        #[arg(long = "facts")]
-        facts_json: PathBuf,
-        /// A desired.toml whose `packages` seed the working set
+}
+
+#[derive(Subcommand)]
+pub enum ImageCommand {
+    /// Authenticate and physically stage a candidate without changing boot selection
+    Prepare {
+        /// Resolve this sysroot package from signed registry metadata
+        package: String,
+        /// Select this configured registry
         #[arg(long)]
-        desired: Option<PathBuf>,
-        /// The running image's base-lib module_abi
-        #[arg(long = "module-abi")]
-        module_abi: u32,
-        /// Where to write the converged manifest (only on success)
-        #[arg(long, default_value = config_eval::stock::DEFAULT_MANIFEST_PATH)]
-        out: PathBuf,
-        /// The eval root holding entry.nix
-        #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
-        eval_root: PathBuf,
-        /// Operator trust-anchor dir (trusted-config-keys.d); repeatable.
-        #[arg(long = "trusted-config-keys-dir")]
-        trusted_config_keys_dir: Vec<PathBuf>,
-        /// Require a detached host.nix signature from a trusted config key.
-        #[arg(long = "require-signed-host-nix")]
-        require_signed_host_nix: bool,
-        /// Mark host.nix as the image-authored empty no-input fallback.
-        #[arg(long = "image-default-host")]
-        image_default_host: bool,
-    },
-    /// Hidden: re-evaluate the active config on a newly booted image.
-    #[command(name = "__eval-retained", hide = true)]
-    EvalRetained {
-        /// Where to write the converged manifest (only on success)
-        #[arg(long, default_value = config_eval::stock::DEFAULT_MANIFEST_PATH)]
-        out: PathBuf,
-        /// The eval root holding generated evaluator inputs
-        #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
-        eval_root: PathBuf,
-    },
-    /// Hidden: run the complete boot-time configuration evaluation service.
-    #[command(name = "__eval-service", hide = true)]
-    EvalService {
-        /// Canonical typed locator for the selected package-store read view.
-        #[arg(long = "store-view")]
-        store_view: String,
-        /// Image-owned base module library.
-        #[arg(long = "base-lib", default_value = "/aos-toplevel/base-lib")]
-        base_lib: PathBuf,
-        /// Fallback module ABI when the running image omits it.
-        #[arg(long = "module-abi", default_value_t = 1)]
-        module_abi: u32,
-        /// Optional desired package selection file.
-        #[arg(long, default_value = "/etc/aos/packages.d/desired.toml")]
-        desired: PathBuf,
-        /// Destination for the converged manifest.
-        #[arg(long, default_value = config_eval::stock::DEFAULT_MANIFEST_PATH)]
-        out: PathBuf,
-        /// Private evaluator scratch directory.
-        #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
-        eval_root: PathBuf,
-    },
-    /// Apply a converged config manifest into a per-generation `/etc` lower.
-    ///
-    /// Reads `--manifest` (an `aos.config-manifest/v1` document), writes its
-    /// `--generation-dir` atomically publishes and validates the retained
-    /// EROFS artifact used by activation. `--etc-root` is the unmounted-tree
-    /// test seam; `--overlay-root` applies declared image-path removals to a
-    /// mounted candidate overlay. Exactly one mode must be selected.
-    #[command(name = "__materialize", hide = true)]
-    Materialize {
-        /// The converged manifest (`aos.config-manifest/v1` JSON).
+        registry: Option<String>,
+        /// Require candidate health admission for a later qualified rollout
         #[arg(long)]
-        manifest: PathBuf,
-        /// An unmounted `/etc` tree to write directly (test/compatibility mode).
-        #[arg(long = "etc-root")]
-        etc_root: Option<PathBuf>,
-        /// Mounted candidate `/etc` overlay where image removals become whiteouts.
-        #[arg(long = "overlay-root")]
-        overlay_root: Option<PathBuf>,
-        /// The durable config-generation directory that owns `config-lower/`.
-        #[arg(long = "generation-dir")]
-        generation_dir: Option<PathBuf>,
-        /// Absolute path to the running image's AOS-built mkfs.erofs.
-        #[arg(long = "mkfs-erofs")]
-        mkfs_erofs: Option<PathBuf>,
-        /// Absolute path to the running image's AOS-built fsck.erofs.
-        #[arg(long = "fsck-erofs")]
-        fsck_erofs: Option<PathBuf>,
-        /// Runtime directory job scripts resolve to once the lower is `/etc`.
-        #[arg(
-            long = "job-scripts-runtime-dir",
-            default_value = config_eval::materialize::DEFAULT_JOB_SCRIPTS_RUNTIME_DIR
-        )]
-        job_scripts_runtime_dir: String,
-    },
-    /// Hidden: authenticate and preflight a checked ability activation plan.
-    #[command(name = "__ability-activation-preflight", hide = true)]
-    AbilityActivationPreflight {
-        /// The evaluator-produced source manifest
-        #[arg(long, default_value = "/run/aos/manifest.json")]
-        manifest: PathBuf,
-        /// System-generation profile directory
-        #[arg(long, default_value = "/var/lib/profiles/system")]
-        profile: PathBuf,
-    },
-    /// Hidden: execute a checked ability activation plan.
-    #[command(name = "__ability-activate", hide = true)]
-    AbilityActivate {
-        /// The evaluator-produced source manifest
-        #[arg(long, default_value = "/run/aos/manifest.json")]
-        manifest: PathBuf,
-        /// Root containing durable activation evidence
-        #[arg(long = "marker-root", default_value = "/run/aos")]
-        marker_root: PathBuf,
-        /// System-generation profile directory
-        #[arg(long, default_value = "/var/lib/profiles/system")]
-        profile: PathBuf,
-        /// Running image's base-lib ABI
-        #[arg(long = "module-abi")]
-        module_abi: u32,
-        /// Fail closed unless a TPM-backed generation quote is persisted.
-        #[arg(long = "require-attestation-quote")]
-        require_attestation_quote: bool,
-    },
-    /// Evaluate the configuration and diff it against the live generation.
-    ///
-    /// `--dry-run` runs the evaluator, loads the current generation's
-    /// `gen-N/manifest.json`, prints a structural diff (etc entries, unit
-    /// actions, closure delta), and stops before any generation or `/etc` swap
-    /// — a clean no-op on the live system. The same codepath backs the CI
-    /// `checks.config-eval` gate, so green CI predicts on-box behavior.
-    Switch {
-        /// Evaluate and diff only; never create a generation or touch /etc
-        #[arg(long = "dry-run")]
-        dry_run: bool,
-        /// The operator host.nix to evaluate (defaults to the staged stash leaf)
-        #[arg(long = "from")]
-        from: Option<PathBuf>,
-        /// Ordered generation-pinned runtime module entrypoint; repeatable.
-        #[arg(long = "runtime-module")]
-        runtime_module: Vec<PathBuf>,
-        /// Base manifest selector: `current`, `gen-N`, or an explicit path
-        #[arg(long = "diff-against")]
-        diff_against: Option<String>,
-        /// Label for the base side of the diff
-        #[arg(long = "base-label", default_value = "current")]
-        base_label: String,
-        /// The in-image module library store path
-        #[arg(long = "base-lib")]
-        base_lib: Option<PathBuf>,
-        /// Normalized metadata facts consumed by the same eval transaction
-        #[arg(long = "facts")]
-        facts_json: Option<PathBuf>,
-        /// A desired.toml whose `packages` seed the working set
-        #[arg(long)]
-        desired: Option<PathBuf>,
-        /// The running image's base-lib module_abi
-        #[arg(long = "module-abi")]
-        module_abi: Option<u32>,
-        /// The eval root holding entry.nix
-        #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
-        eval_root: PathBuf,
-        /// Operator trust-anchor dir (trusted-config-keys.d); repeatable.
-        #[arg(long = "trusted-config-keys-dir")]
-        trusted_config_keys_dir: Vec<PathBuf>,
-        /// Require a detached host.nix signature from a trusted config key.
-        #[arg(long = "require-signed-host-nix")]
-        require_signed_host_nix: bool,
-        /// Where a real (non-dry-run) switch publishes the committed manifest
-        #[arg(long = "live-manifest", default_value = "/run/aos/manifest.json")]
-        live_manifest: PathBuf,
-    },
-    /// Manage the persistent runtime configuration-module worktree.
-    Config {
-        #[command(subcommand)]
-        command: RuntimeConfigCommand,
-    },
-    /// Hidden: materialize one source-composed stage from its completed fixed point.
-    #[command(name = "__ability-materialize-source-stage", hide = true)]
-    AbilityMaterializeSourceStage {
-        /// Canonical materialization specification carrying the checked inputs.
-        #[arg(long)]
-        spec: PathBuf,
-        /// Exported Nix graph authenticating the selected package outputs.
-        #[arg(long = "exported-graph")]
-        exported_graph: PathBuf,
-        /// Canonical source-stage bundle to write.
-        #[arg(long)]
-        out: PathBuf,
-    },
-    /// Hidden: execute a sealed boot-stage source plan.
-    #[command(name = "__ability-stage-run", hide = true)]
-    AbilityStageRun {
-        /// Execution stage owned by this controller.
-        #[arg(long)]
-        stage: String,
-        /// Mounted host root for initrd, or `/` for host execution.
-        #[arg(long)]
-        root: PathBuf,
-        /// Durable image profile used to authenticate host execution.
-        #[arg(long = "image-profile")]
-        image_profile: Option<PathBuf>,
-        /// Received initrd source bundle required before host execution.
-        #[arg(long = "received-source-stage-bundle")]
-        received_source_stage_bundle: Option<PathBuf>,
-        /// Store identity file of the received initrd static contract.
-        #[arg(long = "received-static-contract-identity-file")]
-        received_static_contract_identity_file: Option<PathBuf>,
-        /// Image copy of the received initrd static contract.
-        #[arg(long = "received-static-contract")]
-        received_static_contract: Option<PathBuf>,
-        /// Checked source bundle carrying the exact executable plan.
-        #[arg(long = "source-stage-bundle")]
-        source_stage_bundle: PathBuf,
-        /// Read-only file containing the bound static contract's store identity.
-        #[arg(long = "static-contract-identity-file")]
-        static_contract_identity_file: PathBuf,
-        /// Stage-visible read path for the exact static contract.
-        #[arg(long = "static-contract")]
-        static_contract: PathBuf,
-    },
-    /// Hidden: validate initrd ownership release before switch-root.
-    #[command(name = "__ability-stage-validate", hide = true)]
-    AbilityStageValidate {
-        /// Earlier execution stage releasing ownership.
-        #[arg(long = "from-stage")]
-        from_stage: String,
-        /// Mounted root that will become the host root.
-        #[arg(long)]
-        root: PathBuf,
-        /// Checked source bundle carrying the exact executable plan.
-        #[arg(long = "source-stage-bundle")]
-        source_stage_bundle: PathBuf,
-        /// Read-only file containing the bound static contract's store identity.
-        #[arg(long = "static-contract-identity-file")]
-        static_contract_identity_file: PathBuf,
-        /// Stage-visible read path for the exact static contract.
-        #[arg(long = "static-contract")]
-        static_contract: PathBuf,
-    },
-    /// Hidden: revalidate and receive an initrd ability journal.
-    #[command(name = "__ability-stage-receive", hide = true)]
-    AbilityStageReceive {
-        /// Earlier execution stage releasing ownership.
-        #[arg(long = "from-stage")]
-        from_stage: String,
-        /// Durable image profile for the running image.
-        #[arg(long = "image-profile")]
-        image_profile: PathBuf,
-        /// Checked source bundle retained by the running image.
-        #[arg(long = "source-stage-bundle")]
-        source_stage_bundle: PathBuf,
-        /// Read-only file containing the bound static contract's store identity.
-        #[arg(long = "static-contract-identity-file")]
-        static_contract_identity_file: PathBuf,
-        /// Image-visible read path for the exact static contract.
-        #[arg(long = "static-contract")]
-        static_contract: PathBuf,
+        qualified: bool,
     },
 }
 
@@ -836,7 +627,7 @@ pub enum DocumentationCommand {
         /// Terms to search for; omit to browse documented packages
         #[arg(default_value = "")]
         query: String,
-        /// Restrict results to package, option, or capability
+        /// Restrict results to package, option, or operation
         #[arg(long)]
         kind: Option<String>,
         /// Maximum number of results
@@ -1081,9 +872,7 @@ pub enum RuntimeConfigCommand {
         dry_run: bool,
         #[arg(long, default_value = "/var/lib/aos/config/modules.d")]
         worktree: PathBuf,
-        #[arg(long = "base-lib", default_value = DEFAULT_SWITCH_BASE_LIB)]
-        base_lib: PathBuf,
-        #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
+        #[arg(long = "eval-root", default_value = "/var/lib/aos/evaluation")]
         eval_root: PathBuf,
         #[arg(long = "allow-unprivileged-worktree", hide = true)]
         allow_unprivileged_worktree: bool,
@@ -1092,9 +881,7 @@ pub enum RuntimeConfigCommand {
     Diff {
         #[arg(long, default_value = "/var/lib/aos/config/modules.d")]
         worktree: PathBuf,
-        #[arg(long = "base-lib", default_value = DEFAULT_SWITCH_BASE_LIB)]
-        base_lib: PathBuf,
-        #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
+        #[arg(long = "eval-root", default_value = "/var/lib/aos/evaluation")]
         eval_root: PathBuf,
         #[arg(long = "allow-unprivileged-worktree", hide = true)]
         allow_unprivileged_worktree: bool,
@@ -1129,36 +916,27 @@ impl PackageCommand {
     pub fn is_runtime_internal(&self) -> bool {
         matches!(
             self,
-            PackageCommand::Eval { .. }
-                | PackageCommand::EvalRetained { .. }
-                | PackageCommand::EvalService { .. }
-                | PackageCommand::Materialize { .. }
-                | PackageCommand::AbilityActivationPreflight { .. }
-                | PackageCommand::AbilityActivate { .. }
-                | PackageCommand::AbilityMaterializeSourceStage { .. }
-                | PackageCommand::AbilityStageRun { .. }
-                | PackageCommand::AbilityStageValidate { .. }
-                | PackageCommand::AbilityStageReceive { .. }
+            PackageCommand::ApplyDeployment(..)
+                | PackageCommand::VerifyDeployment(..)
+                | PackageCommand::DeploymentCurrent { .. }
+                | PackageCommand::DeploymentResult { .. }
         )
     }
 
     /// Returns the runtime environment the command must establish before I/O.
     pub fn runtime_requirement(&self) -> environment::RuntimeRequirement {
-        use environment::RuntimeRequirement::{AosRoot, LiveAos, Portable};
+        use environment::RuntimeRequirement::{AosRoot, Portable};
 
-        if self.is_system() {
+        if self.is_system() && !matches!(self, PackageCommand::Image { .. }) {
             return AosRoot;
         }
 
         match self {
-            PackageCommand::EvalRetained { .. }
-            | PackageCommand::EvalService { .. }
-            | PackageCommand::AbilityActivationPreflight { .. }
-            | PackageCommand::AbilityActivate { .. } => LiveAos,
-            PackageCommand::AbilityStageRun { .. }
-            | PackageCommand::AbilityMaterializeSourceStage { .. }
-            | PackageCommand::AbilityStageValidate { .. }
-            | PackageCommand::AbilityStageReceive { .. } => Portable,
+            PackageCommand::Image { .. } => environment::RuntimeRequirement::LiveAos,
+            PackageCommand::ApplyDeployment(..)
+            | PackageCommand::VerifyDeployment(..)
+            | PackageCommand::DeploymentCurrent { .. }
+            | PackageCommand::DeploymentResult { .. } => Portable,
             PackageCommand::Switch { .. } => AosRoot,
             PackageCommand::Install { .. }
             | PackageCommand::Remove { .. }
@@ -1190,14 +968,11 @@ impl PackageCommand {
             | PackageCommand::Rollback { .. }
             | PackageCommand::Credential(..)
             | PackageCommand::Registry { .. }
-            | PackageCommand::Eval { .. }
-            | PackageCommand::Materialize { .. }
             | PackageCommand::Config { .. } => Portable,
         }
     }
 
-    /// Returns `true` when the user passed `--system` on a subcommand that
-    /// supports it.
+    /// Returns whether the command selects system scope.
     ///
     /// Mutating and sysroot commands (`install`, `upgrade`, `rollback`,
     /// `update`, `registry`) select the system scope to act on it; the
@@ -1206,6 +981,7 @@ impl PackageCommand {
     /// read the system registry cache and profile instead of the per-user ones.
     pub fn is_system(&self) -> bool {
         match self {
+            PackageCommand::Image { .. } => true,
             PackageCommand::Install { system, .. } => *system,
             PackageCommand::Upgrade { system, .. } => *system,
             PackageCommand::Rollback { system, .. } => *system,
@@ -1302,9 +1078,6 @@ pub enum AttestCommand {
         /// Verifier-owned boot and host-trust policy for generation evidence
         #[arg(long, requires = "generation_attestation")]
         generation_policy_file: Option<PathBuf>,
-        /// Independently re-derived manifest JSON for the optional step-10 gate
-        #[arg(long, requires = "generation_attestation")]
-        rederived_manifest: Option<PathBuf>,
     },
     /// Print the package golden measurement catalog
     Catalog {
@@ -2852,29 +2625,22 @@ async fn run_runtime_config_command(
 ) -> Result<()> {
     match command {
         RuntimeConfigCommand::Status { worktree } => {
-            let manifest_path =
-                Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE).join("current/manifest.json");
-            if manifest_path.is_file() {
-                let manifest: config_eval::materialize::ConfigManifest = serde_json::from_slice(
-                    &std::fs::read(&manifest_path)
-                        .with_context(|| format!("reading {}", manifest_path.display()))?,
-                )?;
-                if let Some(runtime) = manifest.inputs.runtime_modules {
-                    printer.plain(&format!(
-                        "active runtime modules: {} ({} entrypoints, {}, {})",
-                        runtime.store_path,
-                        runtime.entrypoints.len(),
-                        runtime.nar_hash,
-                        runtime.trust_mode
-                    ));
-                } else {
-                    printer.plain("active runtime modules: empty");
+            let descriptor =
+                Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE).join("current/evaluation.json");
+            if descriptor.is_file() {
+                let inputs = native_deployment::EvaluationInputs::read(&descriptor)?;
+                printer.plain(&format!(
+                    "active runtime modules: {} entrypoints",
+                    inputs.runtime_configuration.len()
+                ));
+                for module in &inputs.runtime_configuration {
+                    printer.plain(&module.display().to_string());
                 }
             } else {
-                printer.plain("active runtime modules: unavailable (no active generation)");
+                printer.plain("active runtime modules: unavailable (no active native generation)");
             }
             let entries = if worktree.is_dir() {
-                config_eval::runtime_modules::list_entrypoints(worktree)?
+                runtime_modules::list_entrypoints(worktree)?
             } else {
                 Vec::new()
             };
@@ -2887,7 +2653,7 @@ async fn run_runtime_config_command(
         }
         RuntimeConfigCommand::List { worktree } => {
             if worktree.is_dir() {
-                for entry in config_eval::runtime_modules::list_entrypoints(worktree)? {
+                for entry in runtime_modules::list_entrypoints(worktree)? {
                     printer.plain(&entry.display().to_string());
                 }
             }
@@ -2958,19 +2724,23 @@ async fn run_runtime_config_command(
         }
         RuntimeConfigCommand::Discard { worktree } => {
             let _lock = acquire_runtime_config_lock(worktree)?;
-            let _switch_lock = config_eval::activation::acquire_switch_lock_pub(
-                &config_eval::activation::default_switch_lock_path(),
+            let profile = profile::Profile::open_readonly(types::ProfileScope::System);
+            let generation = profile
+                .current_generation()?
+                .context("no active native profile generation")?;
+            profile::deployment::committed_generation(&profile.path, generation.number)?;
+            let inputs = native_deployment::EvaluationInputs::read(
+                &generation.path.join("evaluation.json"),
             )?;
-            let manifest_path =
-                Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE).join("current/manifest.json");
-            let manifest: config_eval::materialize::ConfigManifest =
-                serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
             let parent = worktree
                 .parent()
                 .context("runtime worktree has no parent")?;
             let staged = parent.join(format!(".modules.restore.{}", std::process::id()));
-            match manifest.inputs.runtime_modules {
-                Some(runtime) => copy_runtime_tree(Path::new(&runtime.store_path), &staged)?,
+            match inputs.runtime_configuration.first() {
+                Some(module) => {
+                    let (root, _) = deployment::nix::store_root_and_suffix(module)?;
+                    copy_runtime_tree(&root, &staged)?;
+                }
                 None => {
                     std::fs::create_dir(&staged)?;
                     std::fs::File::open(&staged)?.sync_all()?;
@@ -2999,13 +2769,11 @@ async fn run_runtime_config_command(
         RuntimeConfigCommand::Apply {
             dry_run,
             worktree,
-            base_lib,
             eval_root,
             allow_unprivileged_worktree,
         } => {
             apply_runtime_worktree(
                 worktree,
-                base_lib,
                 eval_root,
                 *allow_unprivileged_worktree,
                 *dry_run,
@@ -3015,13 +2783,11 @@ async fn run_runtime_config_command(
         }
         RuntimeConfigCommand::Diff {
             worktree,
-            base_lib,
             eval_root,
             allow_unprivileged_worktree,
         } => {
             apply_runtime_worktree(
                 worktree,
-                base_lib,
                 eval_root,
                 *allow_unprivileged_worktree,
                 true,
@@ -3034,138 +2800,26 @@ async fn run_runtime_config_command(
 
 async fn apply_runtime_worktree(
     worktree: &Path,
-    base_lib: &Path,
     eval_root: &Path,
     allow_unprivileged_worktree: bool,
     dry_run: bool,
     printer: &Printer,
 ) -> Result<()> {
     let _lock = acquire_runtime_config_lock(worktree)?;
-    ensure_runtime_config_input_compatibility(allow_unprivileged_worktree)?;
-    let profile = Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE);
-    let expected_current_generation =
-        config_eval::current_config_generation_number(&profile.join("state.json"))?;
-    anyhow::ensure!(
-        expected_current_generation > 0,
-        "runtime configuration requires an active configuration generation"
-    );
-    let base_manifest = profile.join(format!("gen-{expected_current_generation}/manifest.json"));
-    let current: config_eval::materialize::ConfigManifest =
-        serde_json::from_slice(&std::fs::read(&base_manifest)?)?;
-    current.validate()?;
+    let config = config::ApmConfig::load(types::ProfileScope::System)?;
+    let profile = profile::Profile::open_readonly(config.scope);
+    if !dry_run {
+        install::native::recover(&profile)?;
+    }
     if !worktree.exists() {
         std::fs::create_dir(worktree)?;
         std::fs::set_permissions(
             worktree,
             std::os::unix::fs::PermissionsExt::from_mode(0o700),
         )?;
-        std::fs::File::open(
-            worktree
-                .parent()
-                .context("runtime worktree has no parent")?,
-        )?
-        .sync_all()?;
     }
-    let snapshot =
-        config_eval::runtime_modules::snapshot(worktree, eval_root, !allow_unprivileged_worktree)?;
-    let host_nix = PathBuf::from(&current.inputs.host_nix.store_path);
-    let image_default_host = current.inputs.host_nix.trust_mode == "image";
-    let facts_json = PathBuf::from(&current.inputs.instance_facts.store_path);
-    let base_lib = std::fs::canonicalize(base_lib)
-        .with_context(|| format!("resolving base library {}", base_lib.display()))?;
-    let module_abi = running_module_abi(Path::new(DEFAULT_SWITCH_OS_RELEASE))?;
-    let candidate = eval_root.join(format!("runtime-candidate-{}.json", std::process::id()));
-    config_eval::dry_run::run_switch(&config_eval::dry_run::SwitchParams {
-        eval: config_eval::EvalCommand {
-            store_view: current.inputs.store_view.clone(),
-            host_nix,
-            runtime_modules: snapshot
-                .entrypoints
-                .into_iter()
-                .map(config_eval::EvaluatorInput::canonical)
-                .collect(),
-            runtime_module_root: Some(snapshot.store_path),
-            expected_current_generation: Some(expected_current_generation),
-            base_lib,
-            facts_json: Some(facts_json),
-            desired: None,
-            module_abi,
-            out: candidate,
-            eval_root: eval_root.to_path_buf(),
-            verbose: u8::from(printer.mode() == OutputMode::Verbose),
-            trusted_config_keys_dirs: Vec::new(),
-            retained_host_inputs: Some(config_eval::RetainedHostInputs {
-                host_nix: current.inputs.host_nix.clone(),
-                instance_facts: current.inputs.instance_facts.clone(),
-            }),
-            require_signed_host_nix: false,
-            image_default_host,
-            registry_snapshot: None,
-        },
-        base_manifest,
-        base_label: "current".to_string(),
-        dry_run,
-        live_manifest: PathBuf::from("/run/aos/manifest.json"),
-        json_out: printer.mode() == OutputMode::Json,
-    })
-    .await?;
-    Ok(())
-}
-
-fn ensure_runtime_config_input_compatibility(development_bypass: bool) -> Result<()> {
-    if development_bypass {
-        return Ok(());
-    }
-    let running = std::fs::read_to_string(DEFAULT_SWITCH_OS_RELEASE)?;
-    let running_abi = running
-        .lines()
-        .find_map(|line| line.strip_prefix("AOS_CONFIG_INPUT_ABI="))
-        .and_then(|value| value.trim_matches('"').parse::<u32>().ok())
-        .context("running image does not advertise AOS_CONFIG_INPUT_ABI")?;
-    if running_abi < 2 {
-        bail!("running image does not support generation-pinned runtime modules");
-    }
-
-    let image_profile = Path::new("/var/lib/profiles/image");
-    let state = sysroot::load_image_generation_state_pub(image_profile)
-        .context("loading bootable image generations for runtime-module compatibility gate")?;
-    for generation in &state.generations {
-        let path = Path::new(&generation.toplevel).join("meta/config-input-abi");
-        let abi = std::fs::read_to_string(&path)
-            .with_context(|| {
-                format!(
-                    "image generation {} lacks runtime-module compatibility metadata",
-                    generation.number
-                )
-            })?
-            .trim()
-            .parse::<u32>()
-            .with_context(|| {
-                format!(
-                    "image generation {} has invalid config-input ABI",
-                    generation.number
-                )
-            })?;
-        if abi < 2 {
-            bail!(
-                "image generation {} uses config-input ABI {abi}; retire it before applying runtime modules",
-                generation.number
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Exits with the evaluator's stable class when an error crossed a CLI boundary.
-fn exit_for_eval_failure(error: &anyhow::Error, verbose: u8) {
-    let Some(failure) = error.downcast_ref::<config_eval::diagnostics::EvalCommandFailure>() else {
-        return;
-    };
-    eprintln!("config-eval.class={} {}", failure.class_tag(), failure);
-    if verbose > 0 {
-        eprintln!("{}", failure.detail());
-    }
-    std::process::exit(failure.exit_code());
+    let snapshot = runtime_modules::snapshot(worktree, eval_root, !allow_unprivileged_worktree)?;
+    install::native::reconfigure(&config, &snapshot, dry_run, printer)
 }
 
 /// Main entry point for package-consumer and private runtime operations.
@@ -3194,6 +2848,47 @@ pub async fn run(
 ) -> Result<()> {
     runtime_boundary::validate(command)?;
     command.runtime_requirement().validate()?;
+
+    if let PackageCommand::ApplyDeployment(arguments) = command {
+        let cancellation = cancellation::AbilityCancellationGuard::install()?;
+        return native_deployment::apply(&arguments.command()?, cancellation.token());
+    }
+    if let PackageCommand::VerifyDeployment(arguments) = command {
+        return native_deployment::verify(&arguments.command()?);
+    }
+    if let PackageCommand::DeploymentCurrent {
+        profile,
+        committed_during_recovery,
+    } = command
+    {
+        let generation = profile::deployment::current_committed_generation(profile)?;
+        if !*committed_during_recovery {
+            if let Some(generation) = generation {
+                profile::deployment::committed_generation(profile, generation)?;
+            }
+        }
+        println!("{}", serde_json::json!({"generation": generation}));
+        return Ok(());
+    }
+    if let PackageCommand::DeploymentResult {
+        profile,
+        generation,
+        effect,
+        committed_during_recovery,
+    } = command
+    {
+        let result = if *committed_during_recovery {
+            profile::deployment::committed_generation_during_recovery(profile, *generation)?
+                .outputs
+                .get(effect)
+                .cloned()
+                .context("selected effect has no committed result")?
+        } else {
+            profile::deployment::committed_result(profile, *generation, effect)?
+        };
+        println!("{}", serde_json::to_string(&result)?);
+        return Ok(());
+    }
 
     if let PackageCommand::Config { command } = command {
         return run_runtime_config_command(command, printer).await;
@@ -3229,454 +2924,6 @@ pub async fn run(
         .await;
     }
 
-    // The on-host config-eval driver needs no apm config or profile: it reads
-    // the registry index and host.nix from disk and shells out to stock nix.
-    // Dispatch it before `ApmConfig::load`.
-    if let PackageCommand::Eval {
-        store_view,
-        host_nix,
-        runtime_module,
-        runtime_module_root,
-        expected_current_generation,
-        base_lib,
-        facts_json,
-        desired,
-        module_abi,
-        out,
-        eval_root,
-        trusted_config_keys_dir,
-        require_signed_host_nix,
-        image_default_host,
-    } = command
-    {
-        let verbose = u8::from(printer.mode() == OutputMode::Verbose);
-        let store_view =
-            config_eval::store_view::StoreViewLocator::from_canonical_json(store_view)?;
-        let result = config_eval::run_eval_command(&config_eval::EvalCommand {
-            store_view,
-            host_nix: host_nix.clone(),
-            runtime_modules: runtime_module
-                .iter()
-                .cloned()
-                .map(config_eval::EvaluatorInput::canonical)
-                .collect(),
-            runtime_module_root: runtime_module_root.clone(),
-            expected_current_generation: *expected_current_generation,
-            base_lib: base_lib.clone(),
-            facts_json: Some(facts_json.clone()),
-            desired: desired.clone(),
-            module_abi: *module_abi,
-            out: out.clone(),
-            eval_root: eval_root.clone(),
-            verbose,
-            trusted_config_keys_dirs: trusted_config_keys_dir.clone(),
-            retained_host_inputs: None,
-            require_signed_host_nix: *require_signed_host_nix,
-            image_default_host: *image_default_host,
-            registry_snapshot: None,
-        });
-        if let Err(error) = &result {
-            exit_for_eval_failure(error, verbose);
-        }
-        return result;
-    }
-
-    if let PackageCommand::EvalRetained { out, eval_root } = command {
-        let verbose = u8::from(printer.mode() == OutputMode::Verbose);
-        let result = sysroot::reeval_active_config_for_boot(
-            &ProfileScope::System.profile_path(),
-            eval_root.clone(),
-            out.clone(),
-            verbose,
-        );
-        if let Err(error) = &result {
-            exit_for_eval_failure(error, verbose);
-        }
-        return result;
-    }
-
-    if let PackageCommand::EvalService {
-        store_view,
-        base_lib,
-        module_abi,
-        desired,
-        out,
-        eval_root,
-    } = command
-    {
-        let verbose = u8::from(printer.mode() == OutputMode::Verbose);
-        let store_view =
-            config_eval::store_view::StoreViewLocator::from_canonical_json(store_view)?;
-        let result = config_eval::service::run(&config_eval::service::ServiceCommand {
-            store_view,
-            base_lib: base_lib.clone(),
-            module_abi: *module_abi,
-            desired: desired.clone(),
-            out: out.clone(),
-            eval_root: eval_root.clone(),
-            verbose,
-        });
-        if let Err(error) = &result {
-            exit_for_eval_failure(error, verbose);
-        }
-        return result;
-    }
-
-    // Materialize a converged manifest through the private package runtime.
-    if let PackageCommand::Materialize {
-        manifest,
-        etc_root,
-        overlay_root,
-        generation_dir,
-        mkfs_erofs,
-        fsck_erofs,
-        job_scripts_runtime_dir,
-    } = command
-    {
-        return match (
-            etc_root,
-            overlay_root,
-            generation_dir,
-            mkfs_erofs,
-            fsck_erofs,
-        ) {
-            (Some(etc_root), None, None, None, None) => {
-                config_eval::materialize::materialize_manifest(
-                    manifest,
-                    etc_root,
-                    job_scripts_runtime_dir,
-                )
-            }
-            (None, Some(overlay_root), None, None, None) => {
-                config_eval::materialize::apply_manifest_removals(&manifest, &overlay_root)
-            }
-            (None, None, Some(generation_dir), Some(mkfs_erofs), Some(fsck_erofs)) => {
-                config_eval::materialize::materialize_generation_lower(
-                    manifest,
-                    generation_dir,
-                    job_scripts_runtime_dir,
-                    mkfs_erofs,
-                    fsck_erofs,
-                )
-                .map(|_| ())
-            }
-            _ => bail!(
-                "__materialize requires --etc-root alone, --overlay-root alone, or --generation-dir with --mkfs-erofs and --fsck-erofs"
-            ),
-        };
-    }
-
-    if let PackageCommand::AbilityActivationPreflight { manifest, profile } = command {
-        let manifest_path = manifest.clone();
-        let manifest = config_eval::activation::load_config_manifest(&manifest_path)?;
-        return config_eval::preflight_retained_manifest(
-            &config_eval::activation::ActivateConfigParams {
-                manifest: manifest_path,
-                profile: profile.clone(),
-                ..Default::default()
-            },
-            &manifest,
-        )
-        .map_err(anyhow::Error::new);
-    }
-
-    // Checked activation owns generation metadata and dispatches only through
-    // the providers selected by the authenticated ability plan.
-    if let PackageCommand::AbilityActivate {
-        manifest,
-        marker_root,
-        profile,
-        module_abi,
-        require_attestation_quote,
-    } = command
-    {
-        return match config_eval::activation::activate_config(
-            &config_eval::activation::ActivateConfigParams {
-                manifest: manifest.clone(),
-                marker_root: marker_root.clone(),
-                profile: profile.clone(),
-                module_abi: *module_abi,
-                switch_lock: config_eval::activation::default_switch_lock_path(),
-                running_image: None,
-                image_profile: PathBuf::from("/var/lib/profiles/image"),
-                switch_lock_held: false,
-                require_attestation_quote: *require_attestation_quote,
-            },
-        ) {
-            Ok(_) => Ok(()),
-            Err(error) => {
-                if let Some(failure) =
-                    error.downcast_ref::<config_eval::activation::ActivationFailure>()
-                {
-                    eprintln!("config activation: {failure}");
-                    std::process::exit(failure.exit_code());
-                }
-                Err(error)
-            }
-        };
-    }
-
-    // `apm switch [--dry-run]`: evaluate and diff against
-    // the live generation; the eval is a pure function of its inputs, so the
-    // same codepath runs off-host (CI) and on-host.
-    if let PackageCommand::Switch {
-        dry_run: switch_dry_run,
-        from,
-        runtime_module,
-        diff_against,
-        base_label,
-        base_lib,
-        facts_json,
-        desired,
-        module_abi,
-        eval_root,
-        trusted_config_keys_dir,
-        require_signed_host_nix,
-        live_manifest,
-    } = command
-    {
-        let verbose = u8::from(printer.mode() == OutputMode::Verbose);
-        let json_out = printer.mode() == OutputMode::Json;
-        let profile = Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE);
-        let expected_current_generation =
-            config_eval::current_config_generation_number(&profile.join("state.json"))?;
-        let active_manifest_path =
-            profile.join(format!("gen-{expected_current_generation}/manifest.json"));
-        let active_manifest: config_eval::materialize::ConfigManifest = serde_json::from_slice(
-            &std::fs::read(&active_manifest_path)
-                .with_context(|| format!("reading {}", active_manifest_path.display()))?,
-        )?;
-        active_manifest.validate()?;
-        let (base_manifest, selected_label) =
-            resolve_switch_manifest(diff_against.as_deref(), profile)?;
-        let (host_nix, image_default_host) = match from {
-            Some(path) => (path.clone(), false),
-            None => resolve_default_switch_host(&active_manifest_path)?,
-        };
-        let facts_json = facts_json
-            .clone()
-            .unwrap_or_else(|| PathBuf::from(&active_manifest.inputs.instance_facts.store_path));
-        if !facts_json.is_file() {
-            bail!(
-                "retained instance facts are unavailable: {}",
-                facts_json.display()
-            );
-        }
-        let (runtime_modules, runtime_module_root) = if runtime_module.is_empty() {
-            (
-                config_eval::retained_runtime_modules(&active_manifest)?,
-                active_manifest
-                    .inputs
-                    .runtime_modules
-                    .as_ref()
-                    .map(|runtime| PathBuf::from(&runtime.store_path)),
-            )
-        } else {
-            (
-                runtime_module
-                    .iter()
-                    .cloned()
-                    .map(config_eval::EvaluatorInput::canonical)
-                    .collect(),
-                None,
-            )
-        };
-        let base_lib = match base_lib {
-            Some(path) => path.clone(),
-            None => std::fs::canonicalize(DEFAULT_SWITCH_BASE_LIB).with_context(|| {
-                format!("resolving the running image base library {DEFAULT_SWITCH_BASE_LIB}")
-            })?,
-        };
-        let module_abi = match module_abi {
-            Some(value) => *value,
-            None => running_module_abi(Path::new(DEFAULT_SWITCH_OS_RELEASE))?,
-        };
-        let base_label = if base_label == "current" {
-            selected_label
-        } else {
-            base_label.clone()
-        };
-        // The candidate manifest is evaluated to a temp file; the diff reads it.
-        let candidate =
-            std::env::temp_dir().join(format!("aos-switch-candidate-{}.json", std::process::id()));
-        let params = config_eval::dry_run::SwitchParams {
-            eval: config_eval::EvalCommand {
-                store_view: active_manifest.inputs.store_view.clone(),
-                host_nix,
-                runtime_modules,
-                runtime_module_root: runtime_module_root.clone(),
-                expected_current_generation: Some(expected_current_generation),
-                base_lib,
-                facts_json: Some(facts_json),
-                desired: desired.clone(),
-                module_abi,
-                out: candidate,
-                eval_root: eval_root.clone(),
-                verbose,
-                trusted_config_keys_dirs: trusted_config_keys_dir.clone(),
-                retained_host_inputs: None,
-                require_signed_host_nix: *require_signed_host_nix,
-                image_default_host,
-                registry_snapshot: None,
-            },
-            base_manifest,
-            base_label,
-            dry_run: *switch_dry_run,
-            live_manifest: live_manifest.clone(),
-            json_out,
-        };
-        let result = config_eval::dry_run::run_switch(&params).await.map(|_| ());
-        if let Err(error) = &result {
-            exit_for_eval_failure(error, verbose);
-        }
-        return result;
-    }
-
-    if let PackageCommand::Attest {
-        command:
-            AttestCommand::Quote {
-                nonce,
-                nonce_file,
-                output_dir,
-            },
-    } = command
-    {
-        let nonce = read_attestation_nonce(nonce, nonce_file)?;
-        return run_produce_package_attestation_quote(&nonce, output_dir, printer);
-    }
-
-    if let PackageCommand::Attest {
-        command:
-            AttestCommand::Enroll {
-                quote_dir,
-                label,
-                method,
-                evidence_file,
-                catalog_file,
-            },
-    } = command
-    {
-        return run_enroll_package_attestation_quote(
-            quote_dir,
-            catalog_file,
-            label,
-            *method,
-            evidence_file,
-            printer,
-        );
-    }
-
-    if let PackageCommand::AbilityMaterializeSourceStage {
-        spec,
-        exported_graph,
-        out,
-    } = command
-    {
-        return config_eval::source_stage::materialize_source_stage(spec, exported_graph, out);
-    }
-    if let PackageCommand::AbilityStageRun {
-        stage,
-        root,
-        image_profile,
-        received_source_stage_bundle,
-        received_static_contract_identity_file,
-        received_static_contract,
-        source_stage_bundle,
-        static_contract_identity_file,
-        static_contract,
-    } = command
-    {
-        let static_contract_identity = config_eval::stage_handoff::read_static_contract_identity(
-            &static_contract_identity_file,
-        )?;
-        return match stage.as_str() {
-            "initrd" => {
-                if image_profile.is_some()
-                    || received_source_stage_bundle.is_some()
-                    || received_static_contract_identity_file.is_some()
-                    || received_static_contract.is_some()
-                {
-                    bail!("initrd stage runner received host-only inputs")
-                }
-                config_eval::stage_handoff::run_initrd_stage(
-                    stage,
-                    root,
-                    source_stage_bundle,
-                    &static_contract_identity,
-                    static_contract,
-                )
-            }
-            "host" => {
-                if root != Path::new("/") {
-                    bail!("host stage runner requires the running root")
-                }
-                let image_profile = image_profile
-                    .as_deref()
-                    .context("host stage requires an image profile")?;
-                let initrd_bundle = received_source_stage_bundle
-                    .as_deref()
-                    .context("host stage requires the received initrd source bundle")?;
-                let initrd_identity_file = received_static_contract_identity_file
-                    .as_deref()
-                    .context("host stage requires the received initrd contract identity")?;
-                let initrd_contract = received_static_contract
-                    .as_deref()
-                    .context("host stage requires the received initrd static contract")?;
-                let initrd_identity = config_eval::stage_handoff::read_static_contract_identity(
-                    &initrd_identity_file,
-                )?;
-                config_eval::stage_handoff::run_host_stage(
-                    &image_profile,
-                    &initrd_bundle,
-                    &initrd_identity,
-                    &initrd_contract,
-                    &source_stage_bundle,
-                    &static_contract_identity,
-                    &static_contract,
-                )
-            }
-            _ => bail!("ability stage runner supports only initrd or host"),
-        };
-    }
-    if let PackageCommand::AbilityStageValidate {
-        from_stage,
-        root,
-        source_stage_bundle,
-        static_contract_identity_file,
-        static_contract,
-    } = command
-    {
-        let static_contract_identity = config_eval::stage_handoff::read_static_contract_identity(
-            &static_contract_identity_file,
-        )?;
-        return config_eval::stage_handoff::validate_initrd_stage(
-            from_stage,
-            root,
-            source_stage_bundle,
-            &static_contract_identity,
-            static_contract,
-        );
-    }
-    if let PackageCommand::AbilityStageReceive {
-        from_stage,
-        image_profile,
-        source_stage_bundle,
-        static_contract_identity_file,
-        static_contract,
-    } = command
-    {
-        let static_contract_identity = config_eval::stage_handoff::read_static_contract_identity(
-            &static_contract_identity_file,
-        )?;
-        return config_eval::stage_handoff::receive_initrd_stage(
-            from_stage,
-            image_profile,
-            source_stage_bundle,
-            &static_contract_identity,
-            static_contract,
-        );
-    }
-
     validate_system_transition_options(command)?;
 
     let system = command.is_system();
@@ -3689,6 +2936,30 @@ pub async fn run(
     let config = config::ApmConfig::load(scope)?;
 
     match command {
+        PackageCommand::Image {
+            command:
+                ImageCommand::Prepare {
+                    package,
+                    registry,
+                    qualified,
+                },
+        } => {
+            let options = sysroot::ImagePrepareOptions {
+                package: package.clone(),
+                registry: registry.clone(),
+                purpose: if *qualified {
+                    sysroot::ImagePreparationPurpose::Qualified
+                } else {
+                    sysroot::ImagePreparationPurpose::Ordinary
+                },
+                dry_run,
+                yes,
+            };
+            if let Some(candidate) = sysroot::prepare_image(&config, &options, printer).await? {
+                printer.json(&serde_json::to_value(candidate)?);
+            }
+            Ok(())
+        }
         PackageCommand::Install {
             packages,
             from,
@@ -3868,7 +3139,6 @@ pub async fn run(
                     result_file,
                     generation_attestation,
                     generation_policy_file,
-                    rederived_manifest,
                     ..
                 },
         } => {
@@ -3898,7 +3168,6 @@ pub async fn run(
                 &pcr15_baseline,
                 generation_attestation.as_deref(),
                 generation_policy_file.as_deref(),
-                rederived_manifest.as_deref(),
                 result_file.as_deref(),
                 printer,
             )
@@ -3940,6 +3209,7 @@ pub async fn run(
             if *rollback_system && *image {
                 let transition_mode = parse_system_transition_mode(*reboot);
                 sysroot::rollback_image_generation(
+                    &config,
                     *generation,
                     *rollback_list,
                     dry_run,
@@ -3960,24 +3230,14 @@ pub async fn run(
         PackageCommand::Registry { command, .. } => {
             run_apm_registry(&config, command, printer).await
         }
-        PackageCommand::Eval { .. } => {
-            unreachable!("Eval is handled before ApmConfig::load")
+
+        PackageCommand::ApplyDeployment(..)
+        | PackageCommand::VerifyDeployment(..)
+        | PackageCommand::DeploymentCurrent { .. }
+        | PackageCommand::DeploymentResult { .. } => {
+            unreachable!("Native deployment is handled before ApmConfig::load")
         }
-        PackageCommand::EvalRetained { .. } => {
-            unreachable!("EvalRetained is handled before ApmConfig::load")
-        }
-        PackageCommand::EvalService { .. } => {
-            unreachable!("EvalService is handled before ApmConfig::load")
-        }
-        PackageCommand::Materialize { .. } => {
-            unreachable!("Materialize is handled before ApmConfig::load")
-        }
-        PackageCommand::AbilityActivationPreflight { .. } => {
-            unreachable!("AbilityActivationPreflight is handled before ApmConfig::load")
-        }
-        PackageCommand::AbilityActivate { .. } => {
-            unreachable!("AbilityActivate is handled before ApmConfig::load")
-        }
+
         PackageCommand::Switch { .. } => {
             unreachable!("Switch is handled before ApmConfig::load")
         }
@@ -3992,18 +3252,6 @@ pub async fn run(
         }
         PackageCommand::Schema { .. } => {
             unreachable!("Schema is handled before ApmConfig::load")
-        }
-        PackageCommand::AbilityMaterializeSourceStage { .. } => {
-            unreachable!("AbilityMaterializeSourceStage is handled before ApmConfig::load")
-        }
-        PackageCommand::AbilityStageRun { .. } => {
-            unreachable!("AbilityStageRun is handled before ApmConfig::load")
-        }
-        PackageCommand::AbilityStageValidate { .. } => {
-            unreachable!("AbilityStageValidate is handled before ApmConfig::load")
-        }
-        PackageCommand::AbilityStageReceive { .. } => {
-            unreachable!("AbilityStageReceive is handled before ApmConfig::load")
         }
     }
 }
@@ -4025,37 +3273,12 @@ enum AttestationQuoteTrust {
     IdentityPinned { anchor: String, ak_ek_trusted: bool },
 }
 
-const GENERATION_VERIFIER_POLICY_SCHEMA: &str = "aos.gen-attestation-policy/v2";
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GenerationVerifierPolicyFile {
-    schema: String,
-    expected_pcr7: String,
-    expected_pcr11: String,
-    expected_pcr12: String,
-    expected_root_roothash: String,
-    #[serde(default)]
-    expected_facts_hash: Option<String>,
-    #[serde(default)]
-    trusted_config_keys: Vec<String>,
-    #[serde(default)]
-    trusted_platforms: Vec<String>,
-    #[serde(default)]
-    allow_local_root_runtime_modules: bool,
-    #[serde(default)]
-    image_package_modules: Vec<attestation::VerifiedPackageModule>,
-}
-
 #[derive(Debug, serde::Serialize)]
 struct GenerationVerificationSummary {
     activation_id: String,
     generation_id: String,
-    manifest_hash: String,
-    registry: Option<String>,
-    release_tag: Option<String>,
-    tag_signer_key: Option<String>,
-    realization: Option<String>,
+    sequence: u64,
+    content: String,
     rederived: bool,
 }
 
@@ -4131,7 +3354,6 @@ fn run_verify_package_attestation(
     pcr15_baseline: &Option<String>,
     generation_attestation: Option<&Path>,
     generation_policy_file: Option<&Path>,
-    rederived_manifest: Option<&Path>,
     result_file: Option<&Path>,
     printer: &Printer,
 ) -> Result<()> {
@@ -4188,7 +3410,6 @@ fn run_verify_package_attestation(
             generation_policy_file.context(
                 "--generation-attestation requires --generation-policy-file",
             )?,
-            rederived_manifest,
             quoted_generation_quote.as_ref().context(
                 "--generation-attestation requires --quote-dir; a bare PCR 15 value does not authenticate PCR 7/11/12 or the AK",
             )?,
@@ -4196,9 +3417,9 @@ fn run_verify_package_attestation(
             &verified,
         )?),
         None => {
-            if generation_policy_file.is_some() || rederived_manifest.is_some() {
+            if generation_policy_file.is_some() {
                 bail!(
-                    "--generation-policy-file and --rederived-manifest require --generation-attestation"
+                    "--generation-policy-file requires --generation-attestation"
                 );
             }
             None
@@ -4371,486 +3592,65 @@ fn verify_generation_attestation_cli(
     config: &config::ApmConfig,
     record_path: &Path,
     policy_path: &Path,
-    rederived_manifest: Option<&Path>,
     checker: &PreverifiedGenerationQuote,
     quote_trust: &AttestationQuoteTrust,
     cel: &package_attestation::PackageEventLogVerification,
 ) -> Result<GenerationVerificationSummary> {
-    verify_generation_attestation_cli_with(
-        record_path,
-        policy_path,
-        rederived_manifest,
-        checker,
-        quote_trust,
-        cel,
-        |modules| verified_generation_release(config, modules),
-    )
-}
-
-fn verify_generation_attestation_cli_with<F>(
-    record_path: &Path,
-    policy_path: &Path,
-    rederived_manifest: Option<&Path>,
-    checker: &PreverifiedGenerationQuote,
-    quote_trust: &AttestationQuoteTrust,
-    cel: &package_attestation::PackageEventLogVerification,
-    verify_release: F,
-) -> Result<GenerationVerificationSummary>
-where
-    F: FnOnce(
-        &config_eval::materialize::PackageModulesInput,
-    ) -> Result<(
-        Vec<String>,
-        Vec<String>,
-        Option<attestation::VerifiedPackageModuleRelease>,
-    )>,
-{
     if !matches!(quote_trust, AttestationQuoteTrust::IdentityPinned { .. }) {
-        bail!(
-            "generation attestation verification requires an enrolled --quote-identity-file; a self-consistent AK is not a trust anchor"
-        );
+        bail!("native generation verification requires an enrolled quote identity");
     }
-    let record: attestation::GenAttestation = serde_json::from_slice(
-        &fs::read(record_path).with_context(|| format!("reading {}", record_path.display()))?,
-    )
-    .with_context(|| format!("parsing {}", record_path.display()))?;
-    let policy_file: GenerationVerifierPolicyFile = serde_json::from_slice(
-        &fs::read(policy_path).with_context(|| format!("reading {}", policy_path.display()))?,
-    )
-    .with_context(|| format!("parsing {}", policy_path.display()))?;
-    if policy_file.schema != GENERATION_VERIFIER_POLICY_SCHEMA {
-        bail!(
-            "unsupported generation verifier policy schema {:?}",
-            policy_file.schema
-        );
-    }
-
-    let measured_hash = cel
-        .generation_attestations
-        .get(&record.activation_id)
-        .with_context(|| {
-            format!(
-                "CEL has no generation event for activation {}",
-                record.activation_id
-            )
-        })?;
-    let expected_hash = format!("sha256:{}", hex::encode(attestation::record_hash(&record)?));
-    if !measured_hash.eq_ignore_ascii_case(&expected_hash) {
-        bail!("generation record does not match its activation event in the CEL");
-    }
+    let record: attestation::native::GenerationEvidence =
+        serde_json::from_slice(&native_deployment::read_regular_document(record_path)?)?;
+    let policy: attestation::native_cli::Policy =
+        serde_json::from_slice(&native_deployment::read_regular_document(policy_path)?)?;
+    anyhow::ensure!(
+        policy.schema == "aos.package.generation-attestation-policy",
+        "unsupported native generation verifier policy"
+    );
+    let activation_id = record.activation_id.to_string();
+    let digest = attestation::native::record_hash(&record)?;
+    anyhow::ensure!(
+        cel.generation_attestations.get(&activation_id) == Some(&digest.to_string()),
+        "native generation evidence differs from its authenticated CEL event"
+    );
     let prior = cel
         .generation_attestation_prefix_digests
-        .get(&record.activation_id)
-        .with_context(|| {
-            format!(
-                "CEL has no unambiguous prefix for activation {}",
-                record.activation_id
-            )
-        })?
+        .get(&activation_id)
+        .context("native generation has no unambiguous CEL prefix")?
         .clone();
-
-    let (roster, revoked, release) = verify_release(&record.inputs.package_modules)?;
-    let rederived_hash = rederived_manifest
-        .map(hash_rederived_manifest)
-        .transpose()?;
-    let rederive = rederived_hash
-        .as_ref()
-        .map(|hash| move |_record: &attestation::GenAttestation| hash.clone());
-    let verifier_policy = attestation::VerifierPolicy {
-        expected_pcr7: policy_file.expected_pcr7,
-        expected_pcr11: policy_file.expected_pcr11,
-        expected_pcr12: policy_file.expected_pcr12,
-        expected_root_roothash: policy_file.expected_root_roothash,
-        expected_facts_hash: policy_file.expected_facts_hash,
-        pcr15_baseline: cel.pcr15_baseline.clone(),
-        prior_pcr15_event_digests: prior,
-        trusted_config_keys: policy_file.trusted_config_keys,
-        trusted_platforms: policy_file.trusted_platforms,
-        allow_local_root_runtime_modules: policy_file.allow_local_root_runtime_modules,
-        roster_fingerprints: roster,
-        revoked_roster_fingerprints: revoked,
-        valid_release_tags: release.into_iter().collect(),
-        image_package_modules: policy_file.image_package_modules,
-    };
-    attestation::verify_gen_attestation(
-        &record,
-        checker,
-        &verifier_policy,
-        &attestation::record_hash(&record)?,
-        rederive
-            .as_ref()
-            .map(|callback| callback as &dyn Fn(&attestation::GenAttestation) -> String),
-    )
-    .map_err(|failure| anyhow::anyhow!("generation attestation failed: {failure}"))?;
-
-    Ok(GenerationVerificationSummary {
-        activation_id: record.activation_id,
-        generation_id: record.generation_id,
-        manifest_hash: record.manifest_hash,
-        registry: record.inputs.package_modules.registry,
-        release_tag: record.inputs.package_modules.release_tag,
-        tag_signer_key: record.inputs.package_modules.tag_signer_key,
-        realization: record.inputs.package_modules.realization,
-        rederived: rederived_hash.is_some(),
-    })
-}
-
-fn hash_rederived_manifest(path: &Path) -> Result<String> {
-    let value: serde_json::Value = serde_json::from_slice(
-        &fs::read(path).with_context(|| format!("reading {}", path.display()))?,
-    )
-    .with_context(|| format!("parsing {}", path.display()))?;
-    canonical_json_digest(&value)
-}
-
-pub(crate) fn verify_local_boot_commit(
-    record_path: &Path,
-    quote_dir: &Path,
-    catalog_expected_pcr11: Option<&str>,
-) -> Result<()> {
-    let record: attestation::GenAttestation = serde_json::from_slice(
-        &fs::read(record_path).with_context(|| format!("reading {}", record_path.display()))?,
-    )
-    .with_context(|| format!("parsing {}", record_path.display()))?;
-    if record.schema != attestation::GEN_ATTESTATION_SCHEMA
-        || record.quote_status != attestation::QUOTE_STATUS_QUOTED
-        || record.quote.is_empty()
-    {
-        bail!("generation attestation is not a complete quoted record");
-    }
-    let embedded: EmbeddedGenerationQuote = serde_json::from_slice(
-        &hex::decode(&record.quote).context("decoding embedded generation quote")?,
-    )
-    .context("parsing embedded generation quote")?;
-    let nonce = hex::encode(attestation::record_hash(&record)?);
-    if embedded.schema != "aos.gen-attestation-quote/v1"
-        || embedded.nonce != nonce
-        || embedded.pcr_selection != "sha256:7,11,12,15"
-    {
-        bail!("embedded generation quote does not bind the activation record and PCR policy");
-    }
-    let verified = package_attestation::verify_attestation_quote_bundle(quote_dir, &nonce, &[])?;
-    if embedded.ak_public != verified.bundle.ak_public
-        || embedded.quote_message != verified.bundle.quote_message
-        || embedded.quote_signature != verified.bundle.quote_signature
-        || embedded.quote_pcrs != verified.bundle.quote_pcrs
-        || !embedded
-            .quoted_pcr15
-            .eq_ignore_ascii_case(&verified.quoted_pcr15)
-    {
-        bail!("embedded generation quote differs from the signature-verified bundle");
-    }
-    let record_expected = record
-        .inputs
-        .base_lib
-        .pcr11_expected
-        .as_deref()
-        .context("generation attestation has no expected PCR 11")?
-        .trim_start_matches("sha256:");
-    if !verified.quoted_pcr11.eq_ignore_ascii_case(record_expected)
-        || catalog_expected_pcr11.is_some_and(|expected| {
-            !verified
-                .quoted_pcr11
-                .eq_ignore_ascii_case(expected.trim_start_matches("sha256:"))
-        })
-    {
-        bail!("generation quote PCR 11 does not match the published image expectation");
-    }
-    let live_pcr7 = package_attestation::current_pcr7()?;
-    let live_pcr11 = package_attestation::current_pcr11()?;
-    let live_pcr12 = package_attestation::current_pcr12()?;
-    if !verified
-        .quoted_pcr7
-        .eq_ignore_ascii_case(live_pcr7.trim_start_matches("sha256:"))
-        || !verified
-            .quoted_pcr11
-            .eq_ignore_ascii_case(live_pcr11.trim_start_matches("sha256:"))
-        || !verified
-            .quoted_pcr12
-            .eq_ignore_ascii_case(live_pcr12.trim_start_matches("sha256:"))
-    {
-        bail!("generation quote does not bind the live PCR 7/11/12 state");
-    }
-    Ok(())
-}
-
-fn verified_generation_release(
-    config: &config::ApmConfig,
-    modules: &config_eval::materialize::PackageModulesInput,
-) -> Result<(
-    Vec<String>,
-    Vec<String>,
-    Option<attestation::VerifiedPackageModuleRelease>,
-)> {
-    verified_generation_release_from_paths(
+    let (active, revoked, releases) = attestation::native_cli::authenticate_releases(
         &config.cache_path(),
         config.scope.trusted_keys_dirs(),
-        modules,
-    )
-}
-
-fn verified_generation_release_from_paths(
-    cache_path: &Path,
-    trusted_keys_dirs: Vec<PathBuf>,
-    modules: &config_eval::materialize::PackageModulesInput,
-) -> Result<(
-    Vec<String>,
-    Vec<String>,
-    Option<attestation::VerifiedPackageModuleRelease>,
-)> {
-    let Some(registry_modules) = registry_package_module_subset(modules)? else {
-        return Ok((Vec::new(), Vec::new(), None));
+        &record,
+    )?;
+    let policy = attestation::native::VerifierPolicy {
+        image: policy.image,
+        expected_pcr7: policy.expected_pcr7,
+        expected_pcr12: policy.expected_pcr12,
+        library_nar_hash: policy.library_nar_hash,
+        pcr15_baseline: cel.pcr15_baseline.clone(),
+        prior_pcr15_event_digests: prior,
+        roster_fingerprints: active,
+        revoked_roster_fingerprints: revoked,
+        releases,
+        image_roots: policy.image_roots,
+        allow_local_root_runtime_modules: policy.allow_local_root_runtime_modules,
+        source_authorities: policy.source_authorities,
     };
-    let registry_name = registry_modules
-        .registry
-        .as_deref()
-        .context("generation package modules have no registry")?;
-    let repo = cache_path.join(registry_name).join("repo.git");
-    if !repo.is_dir() {
-        bail!(
-            "verified registry repository for '{}' is unavailable at {}",
-            registry_name,
-            repo.display()
-        );
-    }
-    let key_store = security::KeyStore::new(trusted_keys_dirs);
-    let keys = key_store.lookup_all(registry_name);
-    let revoked = key_store.revoked_fingerprints(registry_name);
-    let receipt =
-        registry::load_release_trust_receipt(&cache_path.join(registry_name), registry_name)?
-            .with_context(|| {
-                format!("registry '{registry_name}' has no signed-release trust receipt")
-            })?;
-    verify_generation_release_snapshot(&repo, &keys, revoked, &receipt, &registry_modules)
-}
-
-/// Selects the registry-authenticated portion of mixed package-module evidence.
-///
-/// Image-origin modules are authenticated by the generation's verified-boot
-/// binding, so the public verifier must not demand a registry release for
-/// them. Registry-origin modules remain subject to the full signed-tag and
-/// store-graph verification below. Records that predate explicit `origins`
-/// are interpreted as registry-only for compatibility.
-fn registry_package_module_subset(
-    modules: &config_eval::materialize::PackageModulesInput,
-) -> Result<Option<config_eval::materialize::PackageModulesInput>> {
-    let registry_modules = modules
-        .modules
-        .iter()
-        .filter(|module| module.origin == types::PackageModuleOrigin::Registry)
-        .cloned()
-        .collect::<Vec<_>>();
-    if registry_modules.is_empty() {
-        return Ok(None);
-    }
-
-    let mut subset = modules.clone();
-    subset.modules = registry_modules;
-    Ok(Some(subset))
-}
-
-fn verify_generation_release_snapshot(
-    repo: &Path,
-    keys: &[security::TrustedKey],
-    revoked: Vec<String>,
-    receipt: &registry::ReleaseTrustReceipt,
-    modules: &config_eval::materialize::PackageModulesInput,
-) -> Result<(
-    Vec<String>,
-    Vec<String>,
-    Option<attestation::VerifiedPackageModuleRelease>,
-)> {
-    if modules.modules.is_empty() {
-        bail!("generation package-module membership is empty");
-    }
-    let registry_name = modules
-        .registry
-        .as_deref()
-        .context("generation package modules have no registry")?;
-    let release_tag = modules
-        .release_tag
-        .as_deref()
-        .context("generation package modules have no release tag")?;
-    let signer = modules
-        .tag_signer_key
-        .as_deref()
-        .context("generation package modules have no tag signer")?;
-    if revoked
-        .iter()
-        .any(|fingerprint| fingerprint.eq_ignore_ascii_case(signer))
-    {
-        bail!("release tag signer {signer} is revoked in registry '{registry_name}'");
-    }
-    let roster = keys
-        .iter()
-        .map(|key| key.fingerprint.clone())
-        .collect::<Vec<_>>();
-    let signing_key = keys
-        .iter()
-        .find(|key| key.fingerprint == signer)
-        .with_context(|| {
-            format!("release tag signer {signer} is not active in registry '{registry_name}'")
-        })?
-        .key_line();
-    let tag_object = registry::repo::rev_parse_blocking(&repo, &format!("{release_tag}^{{tag}}"))
-        .with_context(|| format!("resolving release tag object '{release_tag}'"))?;
-    if !security::verify_tag_signature(&repo, &tag_object, &[signing_key])? {
-        bail!("release tag '{release_tag}' is not signed by roster key {signer}");
-    }
-    let tag = registry::verify::read_tag_object(&repo, &tag_object)?;
-    registry::verify::verify_name_binding(&tag, release_tag)?;
-    if tag.target_type != registry::verify::TagTarget::Commit {
-        bail!("release tag '{release_tag}' does not target a commit");
-    }
-    semver::Version::parse(release_tag)
-        .with_context(|| format!("release tag '{release_tag}' is not semver"))?;
-    ensure_release_receipt_matches(receipt, registry_name, release_tag, &tag.object, signer)?;
-
-    let mut members = Vec::with_capacity(modules.modules.len());
-    let mut realization_members = Vec::with_capacity(modules.modules.len());
-    for module in &modules.modules {
-        verify_signed_package_module_member(&repo, &tag.object, module)?;
-        let root = registry::store_path_hash(&module.store_path);
-        let subset = signed_store_subset_hash(&repo, &tag.object, root)?;
-        realization_members.push(serde_json::json!([module.store_path, subset]));
-        members.push(attestation::VerifiedPackageModule {
-            package_name: module.package.clone(),
-            document_digest: module.document_digest.clone(),
-            store_path: module.store_path.clone(),
-            nar_hash: module.nar_hash.clone(),
-            entrypoint: module.entrypoint.clone(),
-        });
-    }
-    realization_members.sort_by(|left, right| {
-        left[0]
-            .as_str()
-            .unwrap_or_default()
-            .cmp(right[0].as_str().unwrap_or_default())
-    });
-    let realization = canonical_json_digest(&serde_json::Value::Array(realization_members))?;
-    Ok((
-        roster,
-        revoked,
-        Some(attestation::VerifiedPackageModuleRelease {
-            registry: registry_name.to_string(),
-            release_tag: release_tag.to_string(),
-            signer_fingerprints: vec![signer.to_string()],
-            realization,
-            package_modules: members,
-        }),
-    ))
-}
-
-fn ensure_release_receipt_matches(
-    receipt: &registry::ReleaseTrustReceipt,
-    registry_name: &str,
-    release_tag: &str,
-    commit: &str,
-    signer: &str,
-) -> Result<()> {
-    if receipt.registry != registry_name
-        || receipt.release_tag != release_tag
-        || receipt.commit != commit
-        || receipt.tag_signer_key != signer
-    {
-        bail!("signed-release trust receipt does not match the reverified release tag and signer");
-    }
-    Ok(())
-}
-
-fn verify_signed_package_module_member(
-    repo: &Path,
-    commit: &str,
-    module: &types::PackageModule,
-) -> Result<()> {
-    types::validate_package_name(&module.package)?;
-    let path = format!(
-        "packages/{}/{}.toml",
-        types::package_name_bucket(&module.package),
-        module.package
-    );
-    let bytes = registry::repo::read_blob_at_blocking(repo, commit, &path)?
-        .with_context(|| format!("signed release has no package catalog entry {path}"))?;
-    let text = std::str::from_utf8(&bytes)
-        .with_context(|| format!("signed package catalog entry {path} is not UTF-8"))?;
-    let package = registry::parse::parse_package_file(text)?;
-    if package.package.name != module.package {
-        bail!("signed package catalog entry {path} has the wrong package identity");
-    }
-    let mut matching = Vec::new();
-    for version in &package.versions {
-        for (platform_name, platform) in &version.platforms {
-            let Some(contract) = &platform.contract else {
-                continue;
-            };
-            let coordinate = package_contract::PackageContractCoordinate {
-                name: &module.package,
-                version: &version.version,
-                platform: platform_name,
-                store_path: &platform.store_path,
-                nar_hash: &platform.nar_hash,
-            };
-            let (document, _) =
-                package_contract::resolve_pinned_package_document(coordinate, contract)?;
-            let Some(locator) = document.package_module.as_ref() else {
-                continue;
-            };
-            if document.content_digest()?.to_string() == module.document_digest
-                && locator.artifact.store_path == module.store_path
-                && locator.artifact.nar_hash.to_string() == module.nar_hash
-                && locator.path.as_str() == module.entrypoint
-            {
-                matching.push(document);
-            }
-        }
-    }
-    let [document] = matching.as_slice() else {
-        bail!(
-            "signed release catalog must authenticate package module {} exactly once for package {}",
-            module.store_path,
-            module.package
-        );
-    };
-    let locator = document
-        .package_module
-        .as_ref()
-        .context("authenticated package document has no module locator")?;
-    anyhow::ensure!(
-        document.content_digest()?.to_string() == module.document_digest
-            && locator.artifact.store_path == module.store_path
-            && locator.artifact.nar_hash.to_string() == module.nar_hash
-            && locator.path.as_str() == module.entrypoint,
-        "signed package document disagrees with the attested module locator"
-    );
-    Ok(())
-}
-
-fn signed_store_subset_hash(repo: &Path, commit: &str, root: &str) -> Result<String> {
-    let mut pending = vec![root.to_string()];
-    let mut seen = BTreeSet::new();
-    let mut members = BTreeMap::new();
-    while let Some(ia) = pending.pop() {
-        if !seen.insert(ia.clone()) {
-            continue;
-        }
-        let shard = ia
-            .get(..2)
-            .with_context(|| format!("invalid store hash {ia:?}"))?;
-        let path = format!("store/{shard}/{ia}");
-        let bytes = registry::repo::read_blob_at_blocking(repo, commit, &path)?
-            .with_context(|| format!("signed release has no store record {path}"))?;
-        let text = std::str::from_utf8(&bytes)
-            .with_context(|| format!("signed store record {path} is not UTF-8"))?;
-        let entry = registry::store::parse_entry(text)?;
-        if entry.realisations.is_empty() {
-            bail!("signed release has an empty store record {path}");
-        }
-        pending.extend(entry.dep_ias());
-        members.insert(ia, registry::store::serialize_entry(&entry));
-    }
-    canonical_json_digest(
-        &serde_json::to_value(members).context("serializing signed store subset")?,
-    )
+    attestation::native::verify(
+        &record,
+        checker,
+        &policy,
+        digest.as_bytes(),
+        &attestation::native::rederive,
+    )?;
+    Ok(GenerationVerificationSummary {
+        activation_id,
+        generation_id: record.profile_generation.to_string(),
+        sequence: record.sequence,
+        content: record.content,
+        rederived: true,
+    })
 }
 
 fn run_package_attestation_catalog(
@@ -4906,30 +3706,40 @@ fn package_attestation_catalog_from_sources(
 
 fn embedded_package_attestation_catalog()
 -> Result<Vec<package_attestation::PackageMeasurementCatalogEntry>> {
-    let manifest_path = Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE).join("current/manifest.json");
-    let manifest_bytes = match std::fs::read(&manifest_path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => {
-            return Err(error).with_context(|| format!("reading {}", manifest_path.display()));
-        }
+    let profile = profile::Profile::open_readonly(ProfileScope::System);
+    let Some(generation) = profile.current_generation()? else {
+        return Ok(Vec::new());
     };
-    let manifest: config_eval::materialize::ConfigManifest =
-        serde_json::from_slice(&manifest_bytes)
-            .with_context(|| format!("parsing {}", manifest_path.display()))?;
-    manifest.validate()?;
-
-    match config_eval::static_packages::measurement_catalog(&manifest.inputs.store_view) {
-        Ok(entries) => Ok(entries),
-        Err(err)
-            if err
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|err| err.kind() == ErrorKind::NotFound) =>
-        {
-            Ok(Vec::new())
-        }
-        Err(err) => Err(err),
+    if !generation.path.join("native-deployment.json").is_file() {
+        return Ok(Vec::new());
     }
+    let committed = profile::deployment::committed_generation(&profile.path, generation.number)?;
+    let mut catalog = Vec::new();
+    for installed in profile::meta::list_meta(&profile)? {
+        let Some(package) = installed.apm else {
+            continue;
+        };
+        anyhow::ensure!(
+            committed
+                .deployment
+                .artifacts()
+                .iter()
+                .any(|artifact| artifact.path == installed.store_path),
+            "installed measurement metadata differs from its committed native payloads"
+        );
+        if let (Some(root_digest), Some(measurement)) = (
+            package.attestation.root_digest,
+            package.attestation.measurement,
+        ) {
+            catalog.push(package_attestation::PackageMeasurementCatalogEntry {
+                name: package.name,
+                version: package.version,
+                root_digest,
+                measurement,
+            });
+        }
+    }
+    package_attestation::canonical_package_measurement_catalog(&catalog)
 }
 
 fn append_package_attestation_catalog(
@@ -6690,14 +5500,16 @@ mod tests {
             references: Vec::new(),
             source_drv: String::new(),
             source_nar_hash: String::new(),
+            named_outputs: std::collections::BTreeMap::new(),
             closure_size: 0,
             sysroot: false,
             previous: None,
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: vec!["attestation-v1".into()],
-            documentation: None,
-            contract: None,
+            deployment: None,
+            module_documentation: None,
+            qualification: None,
             attestation: AttestationMeta {
                 root_digest: Some(root_digest.into()),
                 root_hash: Some(root_digest.into()),
@@ -6730,103 +5542,6 @@ mod tests {
         assert_eq!(
             derive_registry_name("https://registry.aos.dev/core"),
             "core"
-        );
-    }
-
-    #[test]
-    fn generation_release_receipt_must_match_reverified_release() {
-        let receipt = registry::ReleaseTrustReceipt {
-            schema: "aos.registry-release-trust/v1".to_string(),
-            registry: "aos-core".to_string(),
-            release_tag: "1.4.0".to_string(),
-            commit: "a".repeat(40),
-            tag_signer_key: "deadbeef".to_string(),
-        };
-        assert!(
-            ensure_release_receipt_matches(
-                &receipt,
-                "aos-core",
-                "1.4.0",
-                &"a".repeat(40),
-                "deadbeef",
-            )
-            .is_ok()
-        );
-
-        let mut tampered = receipt.clone();
-        tampered.commit = "b".repeat(40);
-        assert!(
-            ensure_release_receipt_matches(
-                &tampered,
-                "aos-core",
-                "1.4.0",
-                &"a".repeat(40),
-                "deadbeef",
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn generation_release_receipt_rejects_unrelated_signer_and_registry() {
-        let receipt = registry::ReleaseTrustReceipt {
-            schema: "aos.registry-release-trust/v1".to_string(),
-            registry: "aos-extra".to_string(),
-            release_tag: "1.4.0".to_string(),
-            commit: "a".repeat(40),
-            tag_signer_key: "feedface".to_string(),
-        };
-        assert!(
-            ensure_release_receipt_matches(
-                &receipt,
-                "aos-core",
-                "1.4.0",
-                &"a".repeat(40),
-                "deadbeef",
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn generation_release_selection_filters_image_origin_package_modules() {
-        use types::PackageModuleOrigin;
-
-        let package_module = |package: &str, origin| types::PackageModule {
-            package: package.to_string(),
-            document_digest: format!("sha256:{}", "1".repeat(64)),
-            store_path: format!("/nix/store/{}-{package}-module", "a".repeat(32)),
-            nar_hash: format!("sha256:{}", "2".repeat(64)),
-            entrypoint: "module.nix".to_string(),
-            origin,
-        };
-        let mut modules = config_eval::materialize::PackageModulesInput {
-            registry: Some("aos-core".to_string()),
-            release_tag: Some("1.0.0".to_string()),
-            tag_signer_key: Some("1234abcd".to_string()),
-            realization: Some(format!("sha256:{}", "3".repeat(64))),
-            modules: vec![
-                package_module("image-package", PackageModuleOrigin::Image),
-                package_module("registry-package", PackageModuleOrigin::Registry),
-            ],
-        };
-
-        let subset = registry_package_module_subset(&modules)
-            .expect("select registry subset")
-            .expect("mixed evidence has a registry subset");
-        assert_eq!(subset.modules.len(), 1);
-        assert_eq!(subset.modules[0].package, "registry-package");
-        assert_eq!(subset.modules[0], modules.modules[1]);
-
-        modules.registry = None;
-        modules.release_tag = None;
-        modules.tag_signer_key = None;
-        modules.realization = None;
-        modules.modules[1].origin = PackageModuleOrigin::Image;
-        assert!(
-            registry_package_module_subset(&modules)
-                .expect("accept image-only package modules")
-                .is_none()
         );
     }
 
@@ -6894,7 +5609,6 @@ mod tests {
                     result_file: None,
                     generation_attestation: None,
                     generation_policy_file: None,
-                    rederived_manifest: None,
                 },
             }
             .is_system()

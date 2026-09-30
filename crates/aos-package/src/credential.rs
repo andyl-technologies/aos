@@ -108,12 +108,7 @@ fn encrypt_with_selected_provider(
     let provider = std::env::var_os("AOS_CREDENTIAL_ENCRYPT_PROVIDER")
         .context("the selected credential encryption provider is unavailable")?;
     let mut command = Command::new(provider);
-    command
-        .arg("credential-encrypt")
-        .arg("--name")
-        .arg(name)
-        .arg("--input")
-        .arg(input);
+    command.arg("--name").arg(name).arg("--input").arg(input);
     if let Some(public_key) = public_key {
         command.arg("--pcr-public-key").arg(public_key);
     }
