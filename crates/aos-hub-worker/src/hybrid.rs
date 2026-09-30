@@ -1012,6 +1012,7 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
             "inspect_sha256".into(),
             "inspect_git_object".into(),
             "inspect_git_objects".into(),
+            "filter_git_tree_entries_v1".into(),
             "inspect_metadata".into(),
             "inspect_metadata_objects".into(),
             "inspect_documentation".into(),

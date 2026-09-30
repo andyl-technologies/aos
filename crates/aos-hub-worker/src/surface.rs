@@ -89,6 +89,7 @@ pub(crate) async fn execute_external_storage_work(
         | StorageWorkOperation::InspectMetadataObjects { .. }
         | StorageWorkOperation::InspectGitObject { .. }
         | StorageWorkOperation::InspectGitObjects { .. }
+        | StorageWorkOperation::FilterGitTreeEntries { .. }
         | StorageWorkOperation::InspectDocumentation { .. }
         | StorageWorkOperation::InspectDocumentationContent { .. }
         | StorageWorkOperation::InspectOciRange { .. }
@@ -381,6 +382,9 @@ pub(crate) async fn execute_external_storage_work(
             let (outcome, source_bytes) = inspect_git_objects(&fetcher, plan, oids).await?;
             (outcome, source_bytes)
         }
+        StorageWorkOperation::FilterGitTreeEntries { oid, names, cursor } => {
+            crate::tree_projection::inspect(&fetcher, plan, oid, names, cursor.as_ref()).await?
+        }
         StorageWorkOperation::InspectDocumentation {
             package_name,
             package_version,
@@ -575,6 +579,9 @@ pub(crate) async fn execute_r2_storage_work(
         }
         StorageWorkOperation::InspectGitObjects { oids } => {
             inspect_git_objects(&fetcher, plan, oids).await?
+        }
+        StorageWorkOperation::FilterGitTreeEntries { oid, names, cursor } => {
+            crate::tree_projection::inspect(&fetcher, plan, oid, names, cursor.as_ref()).await?
         }
         StorageWorkOperation::InspectMetadata { path } => {
             let Some((bytes, source)) =

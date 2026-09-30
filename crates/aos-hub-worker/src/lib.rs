@@ -165,6 +165,9 @@ mod hybrid;
 mod digest;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod documentation_projection;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod tree_projection;
 #[cfg(target_arch = "wasm32")]
 pub mod hybrid_authority;
 #[cfg(target_arch = "wasm32")]

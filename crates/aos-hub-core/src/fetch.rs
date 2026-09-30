@@ -404,6 +404,52 @@ pub trait SurfaceFetch: BackendBounds {
         false
     }
 
+    /// Whether exact tree predicates return verified rows rather than source bodies.
+    fn storage_local_tree_projection(&self) -> bool {
+        false
+    }
+
+    /// Selects exact named entries from a verified tree in bounded ordered pages.
+    ///
+    /// Local adapters verify canonical loose bytes through the same projector.
+    /// Hybrid adapters execute the predicate beside storage and never fetch a
+    /// raw tree as a fallback. Absence is distinct from an empty matching page.
+    ///
+    /// # Errors
+    /// Returns an error for invalid predicates, changed source identity,
+    /// malformed trees, source/result limits or transport failures.
+    async fn inspect_git_tree_entries(
+        &self,
+        oid: aos_registry_surface::object::Oid,
+        names: &[String],
+        cursor: Option<&crate::tree_projection::GitTreeCursor>,
+    ) -> Result<Option<crate::tree_projection::GitTreeEntriesPage>> {
+        use aos_registry_surface::object::{self, ObjectKind};
+
+        crate::tree_projection::validate_request(&oid.to_hex(), names, cursor)?;
+        let Some(loose) = self
+            .fetch_bounded(
+                &oid.loose_path(),
+                object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES as usize,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let (kind, content) = object::decode_loose_with_limit(
+            &loose,
+            Some(oid),
+            crate::tree_projection::MAX_TREE_INFLATED_BYTES,
+        )?;
+        anyhow::ensure!(
+            kind == ObjectKind::Tree,
+            "selected Git object is not a tree"
+        );
+        let source = hex::encode(Sha256::digest(&loose));
+        crate::tree_projection::project_tree(&oid.to_hex(), &content, names, cursor, &source)
+            .map(Some)
+    }
+
     /// Whether bounded SHA-256 verification runs beside object storage.
     ///
     /// The image indexer uses this to avoid transferring signed image bodies

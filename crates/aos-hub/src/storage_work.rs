@@ -57,6 +57,7 @@ mod external_observation;
 mod frozen;
 mod frozen_head;
 mod telemetry;
+mod tree_projection;
 
 // Limit each index walk's simultaneous cross-cloud inspection requests.
 const MAX_PARALLEL_GIT_INSPECTION_BATCHES: usize = 8;
@@ -74,6 +75,7 @@ fn retryable_read_operation(operation: &StorageWorkOperation) -> bool {
             | StorageWorkOperation::InspectSha256 { .. }
             | StorageWorkOperation::InspectGitObject { .. }
             | StorageWorkOperation::InspectGitObjects { .. }
+            | StorageWorkOperation::FilterGitTreeEntries { .. }
             | StorageWorkOperation::InspectMetadata { .. }
             | StorageWorkOperation::InspectMetadataObjects { .. }
             | StorageWorkOperation::InspectDocumentation { .. }
@@ -876,6 +878,7 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "inspect_sha256",
                 "inspect_git_object",
                 "inspect_git_objects",
+                "filter_git_tree_entries_v1",
                 "inspect_metadata",
                 "inspect_metadata_objects",
                 "inspect_documentation",
@@ -941,6 +944,12 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
             anyhow::ensure!(
                 result.source_bytes <= object_bundle::MAX_BUNDLE_BYTES as u64,
                 "missing Git object reported excessive source bytes"
+            );
+        }
+        (StorageWorkOperation::FilterGitTreeEntries { .. }, StorageWorkOutcome::NotFound) => {
+            anyhow::ensure!(
+                result.source_bytes <= object_bundle::MAX_BUNDLE_BYTES as u64,
+                "missing tree reported excessive source bytes"
             );
         }
         (StorageWorkOperation::InspectGitObjects { oids }, StorageWorkOutcome::NotFound) => {
@@ -1142,6 +1151,18 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
             StorageWorkOperation::InspectMetadataObjects { .. },
             StorageWorkOutcome::MetadataObjects { page },
         ) => page.validate(plan, result.source_bytes)?,
+        (
+            StorageWorkOperation::FilterGitTreeEntries { oid, names, cursor },
+            StorageWorkOutcome::GitTreeEntries { source, page },
+        ) => tree_projection::validate(
+            plan,
+            oid,
+            names,
+            cursor.as_ref(),
+            source,
+            page,
+            result.source_bytes,
+        )?,
         (
             StorageWorkOperation::InspectMetadata { path },
             StorageWorkOutcome::Metadata {
@@ -1544,6 +1565,19 @@ impl HybridSurfaceFetch {
 
 #[async_trait]
 impl SurfaceFetch for HybridSurfaceFetch {
+    fn storage_local_tree_projection(&self) -> bool {
+        true
+    }
+
+    async fn inspect_git_tree_entries(
+        &self,
+        oid: object::Oid,
+        names: &[String],
+        cursor: Option<&aos_hub_core::tree_projection::GitTreeCursor>,
+    ) -> Result<Option<aos_hub_core::tree_projection::GitTreeEntriesPage>> {
+        tree_projection::inspect(self, oid, names, cursor).await
+    }
+
     fn describe(&self) -> String {
         format!("hybrid Worker placement {}", self.placement.id)
     }
@@ -2919,6 +2953,7 @@ mod tests {
                 "inspect_sha256".into(),
                 "inspect_git_object".into(),
                 "inspect_git_objects".into(),
+                "filter_git_tree_entries_v1".into(),
                 "inspect_metadata".into(),
                 "inspect_metadata_objects".into(),
                 "inspect_documentation".into(),
@@ -2970,6 +3005,11 @@ mod tests {
             .operations
             .retain(|operation| operation != "stage_oci_manifest");
         assert!(validate_capabilities("deployment-1", &without_manifest_staging).is_err());
+        let mut without_tree_projection = capabilities.clone();
+        without_tree_projection
+            .operations
+            .retain(|operation| operation != "filter_git_tree_entries_v1");
+        assert!(validate_capabilities("deployment-1", &without_tree_projection).is_err());
         capabilities.operations.pop();
         assert!(validate_capabilities("deployment-1", &capabilities).is_err());
     }

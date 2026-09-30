@@ -149,6 +149,15 @@ pub enum StorageWorkOperation {
         /// Strictly increasing canonical SHA-256 Git object identifiers.
         oids: Vec<String>,
     },
+    /// Selects exact named entries from one verified tree without returning its bytes.
+    FilterGitTreeEntries {
+        /// Canonical SHA-256 identity of the source tree.
+        oid: String,
+        /// Strictly ordered exact component names, including explicit absent selections.
+        names: Vec<String>,
+        /// Continuation bound to the original predicate and observed source.
+        cursor: Option<crate::tree_projection::GitTreeCursor>,
+    },
     /// Reads one bounded signed registry metadata document beside storage.
     InspectMetadata {
         /// Surface-relative metadata path from the closed admitted set.
@@ -323,6 +332,7 @@ impl StorageWorkOperation {
             | Self::InspectSha256 { .. }
             | Self::InspectGitObject { .. }
             | Self::InspectGitObjects { .. }
+            | Self::FilterGitTreeEntries { .. }
             | Self::InspectMetadata { .. }
             | Self::InspectMetadataObjects { .. }
             | Self::InspectDocumentation { .. }
@@ -351,6 +361,7 @@ impl StorageWorkOperation {
             Self::InspectSha256 { .. } => "inspect_sha256",
             Self::InspectGitObject { .. } => "inspect_git_object",
             Self::InspectGitObjects { .. } => "inspect_git_objects",
+            Self::FilterGitTreeEntries { .. } => "filter_git_tree_entries_v1",
             Self::InspectMetadata { .. } => "inspect_metadata",
             Self::InspectMetadataObjects { .. } => "inspect_metadata_objects",
             Self::InspectDocumentation { .. } => "inspect_documentation",
@@ -551,6 +562,13 @@ pub enum StorageWorkOutcome {
     GitObjects {
         /// One result for every requested OID, in request order.
         objects: Vec<StorageGitObjectProjection>,
+    },
+    /// Matching tree entry fields observed after source hash verification.
+    GitTreeEntries {
+        /// Exact provider snapshot of the selected loose object or bundle shard.
+        source: StorageObjectIdentity,
+        /// Bounded matching rows with predicate and source-bound continuation.
+        page: crate::tree_projection::GitTreeEntriesPage,
     },
     /// One bounded registry metadata document observed on an exact R2 snapshot.
     Metadata {
@@ -876,6 +894,10 @@ impl StorageWorkPlan {
                 if !valid_relative_path(path, false) || !admitted_metadata_path(path) {
                     return Err(StorageWorkError::InvalidPlan);
                 }
+            }
+            StorageWorkOperation::FilterGitTreeEntries { oid, names, cursor } => {
+                crate::tree_projection::validate_request(oid, names, cursor.as_ref())
+                    .map_err(|_| StorageWorkError::InvalidPlan)?;
             }
             StorageWorkOperation::InspectMetadataObjects { paths, cursor } => {
                 if paths.is_empty()

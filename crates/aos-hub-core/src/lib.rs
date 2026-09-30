@@ -124,6 +124,7 @@ pub mod sigv4;
 pub mod storage_authority;
 pub mod storage_credential;
 pub mod storage_work;
+pub mod tree_projection;
 /// Re-export of the cache-stack node model from `aos-registry-surface`.
 ///
 /// The model lives in the shared wasm-clean surface crate so the `apm`/`apr`

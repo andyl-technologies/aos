@@ -67,6 +67,8 @@ const OBJECT_FETCH_CONCURRENCY: usize = 32;
 /// Maximum bundle shards hydrated concurrently before an index walk.
 const BUNDLE_FETCH_CONCURRENCY: usize = 32;
 
+type SelectedTreeEntries = BTreeMap<String, object::TreeEntry>;
+
 /// Reads loose objects through a [`SurfaceFetch`], verifying each object's
 /// content hash against the oid it was requested by.
 pub struct ObjectReader<'a> {
@@ -81,6 +83,9 @@ pub struct ObjectReader<'a> {
     // verified head parse can safely serve historical walks in this index pass.
     package_cache: Mutex<BTreeMap<Oid, PackageToml>>,
     store_entry_cache: Mutex<BTreeMap<Oid, StoreEntry>>,
+    // A verified immutable tree and exact predicate can be reused within this
+    // index pass without retaining the source tree or widening the selection.
+    tree_projection_cache: Mutex<BTreeMap<(Oid, Vec<String>), SelectedTreeEntries>>,
     // Bundle framing is cheap to validate, but inflating and hash-checking every
     // entry eagerly makes preload CPU scale with all published objects rather
     // than the objects reached by this generation. Retain canonical loose bytes
@@ -101,6 +106,7 @@ impl<'a> ObjectReader<'a> {
             cache: Mutex::new(BTreeMap::new()),
             package_cache: Mutex::new(BTreeMap::new()),
             store_entry_cache: Mutex::new(BTreeMap::new()),
+            tree_projection_cache: Mutex::new(BTreeMap::new()),
             bundled_loose: Mutex::new(BTreeMap::new()),
             attempted_bundles: Mutex::new(BTreeSet::new()),
             bundle_gates: Mutex::new(BTreeMap::new()),
@@ -443,6 +449,76 @@ impl<'a> ObjectReader<'a> {
         let content = self.read_kind(oid, ObjectKind::Commit).await?;
         object::parse_commit(&content)
     }
+
+    /// Reads only exact selected fields from a verified tree.
+    ///
+    /// Hybrid never transfers the source tree through this path. Local modes
+    /// retain bundle/object memoization and apply the same bounded projector.
+    async fn read_selected_tree(&self, oid: Oid, names: &[String]) -> Result<SelectedTreeEntries> {
+        use crate::tree_projection::{self, MAX_TREE_SELECTION_NAMES};
+
+        tree_projection::validate_request(&oid.to_hex(), names, None)?;
+        let key = (oid, names.to_vec());
+        if let Some(entries) = self
+            .tree_projection_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry tree projection cache lock is poisoned"))?
+            .get(&key)
+            .cloned()
+        {
+            return Ok(entries);
+        }
+        let local = if self.fetch.storage_local_tree_projection() {
+            None
+        } else {
+            let content = self.read_kind(oid, ObjectKind::Tree).await?;
+            let source = hex::encode(sha2::Sha256::digest(&content));
+            Some((content, source))
+        };
+        let mut cursor = None;
+        let mut entries = BTreeMap::new();
+        for _ in 0..MAX_TREE_SELECTION_NAMES {
+            let page = match &local {
+                Some((content, source)) => tree_projection::project_tree(
+                    &oid.to_hex(),
+                    content,
+                    names,
+                    cursor.as_ref(),
+                    source,
+                )?,
+                None => self
+                    .fetch
+                    .inspect_git_tree_entries(oid, names, cursor.as_ref())
+                    .await?
+                    .context("selected registry tree is absent")?,
+            };
+            page.validate(
+                &oid.to_hex(),
+                names,
+                cursor.as_ref(),
+                &page.source_commitment,
+            )?;
+            for entry in &page.entries {
+                anyhow::ensure!(
+                    entries
+                        .insert(entry.name.clone(), entry.tree_entry()?)
+                        .is_none(),
+                    "tree projection repeated an entry across pages"
+                );
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                self.tree_projection_cache
+                    .lock()
+                    .map_err(|_| {
+                        anyhow::anyhow!("registry tree projection cache lock is poisoned")
+                    })?
+                    .insert(key, entries.clone());
+                return Ok(entries);
+            }
+        }
+        bail!("tree projection exceeded its bounded page count")
+    }
 }
 
 /// The committed registry files loaded from one verified commit.
@@ -520,7 +596,13 @@ async fn load_registry_tree_inner(
     include_governance: bool,
 ) -> Result<LoadedTree> {
     let commit = reader.read_commit(commit_oid).await?;
-    let root_tree = object::tree_map(&reader.read_kind(commit.tree, ObjectKind::Tree).await?)?;
+    let mut names = vec!["containers", "packages", "registry.toml", store::STORE_DIR];
+    if include_governance {
+        names.extend(["closures", "keys.toml"]);
+    }
+    names.sort_unstable();
+    let names = names.into_iter().map(str::to_string).collect::<Vec<_>>();
+    let root_tree = reader.read_selected_tree(commit.tree, &names).await?;
 
     let root_toml = match root_tree.get("registry.toml") {
         Some(entry) => read_utf8_blob(&reader, entry.oid, "registry.toml").await?,
@@ -644,11 +726,9 @@ async fn load_container_release(
         containers_entry.is_tree(),
         "committed containers entry is not a tree"
     );
-    let containers = object::tree_map(
-        &reader
-            .read_kind(containers_entry.oid, ObjectKind::Tree)
-            .await?,
-    )?;
+    let containers = reader
+        .read_selected_tree(containers_entry.oid, &["v1".into()])
+        .await?;
     let Some(version_entry) = containers.get("v1") else {
         return Ok(None);
     };
@@ -656,11 +736,9 @@ async fn load_container_release(
         version_entry.is_tree(),
         "committed containers/v1 entry is not a tree"
     );
-    let version = object::tree_map(
-        &reader
-            .read_kind(version_entry.oid, ObjectKind::Tree)
-            .await?,
-    )?;
+    let version = reader
+        .read_selected_tree(version_entry.oid, &["index.json".into()])
+        .await?;
     let Some(index_entry) = version.get("index.json") else {
         return Ok(None);
     };
