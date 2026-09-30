@@ -64,6 +64,7 @@ use crate::worker::{
 use crate::{MountError, Result};
 
 mod fuse_intent;
+mod source_custody;
 
 pub use fuse_intent::{
     HeldMountFuseIntentPreparationV1, PreparedMountFuseWorkerHandoffV1,
@@ -234,11 +235,14 @@ impl<W: MountWorker> MountBroker<W> {
         encode_mount_inventory_response(response).map_err(Into::into)
     }
 
-    /// Lends Query's retained owner and revokes actual Session on every returned error.
+    /// Lends Query custody and revokes actual Session on returned error or unwind.
     ///
     /// This dormant crate-private boundary includes errors before the generic
-    /// owner closure. The inherited generic closure-unwind custody limitation
-    /// remains unsupported; it is not repaired by a failure flag or restart.
+    /// owner closure. On unwind the inner loan restores runtime custody before
+    /// this boundary revokes the actual Session and every retained Query owner.
+    /// This guarantee starts from the genuine phase11 original tuple; older
+    /// original/catalog construction and consuming legacy locals are separate.
+    /// Panic-abort and process loss do not execute these restoration guards.
     ///
     /// # Errors
     /// Revokes Session and all available runtime owners on any returned broker,
@@ -251,16 +255,11 @@ impl<W: MountWorker> MountBroker<W> {
             &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
         ) -> Result<R>,
     ) -> Result<R> {
-        let result = self.with_fixed_source_acquisition_owner(|owner| operation(owner, session));
-        if result.is_err() {
-            if let Some(runtime) = self.source_runtime.as_mut() {
-                runtime.invalidate_original_inventory_v6(session);
-            } else {
-                session.invalidate_original_inventory_continuation_v6(None);
-            }
-        }
-
-        result
+        let mut boundary = source_custody::QueryEntryBoundaryV6::new(self, session);
+        let broker = &mut *boundary.broker;
+        let session = &mut *boundary.session;
+        let result = broker.with_fixed_source_acquisition_owner(|owner| operation(owner, session));
+        boundary.finish(result)
     }
 
     /// Lends the sole protected Mount journal to the source-acquisition owner.
@@ -270,6 +269,8 @@ impl<W: MountWorker> MountBroker<W> {
     /// move-only descriptor custody survives between operations without a
     /// second journal lock or a separate source service. An operation error
     /// requires process restart before another source borrow.
+    /// The loan restores owners still parked in the runtime on unwind; it does
+    /// not recover unrelated consuming locals inside legacy operations.
     ///
     /// # Errors
     ///
@@ -283,37 +284,21 @@ impl<W: MountWorker> MountBroker<W> {
             &mut crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2<'journal>,
         ) -> Result<R>,
     ) -> Result<R> {
-        self.ensure_authority_healthy()?;
         if self.source_runtime_failed {
             return Err(MountError::State(
                 "source runtime failed; protected restart is required".to_owned(),
             ));
         }
-        let mut owner = match self.source_runtime.take() {
-            Some(runtime) => match crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2::attach_runtime(
-                &mut self.journal,
-                runtime,
-            ) {
-                Ok(owner) => owner,
-                Err((error, runtime)) => {
-                    self.source_runtime = Some(runtime);
-                    self.source_runtime_failed = true;
-                    return Err(error);
-                }
-            },
-            None => crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2::borrow_existing_kind2_fixed_journal(
-                &mut self.journal,
-            )?,
-        };
-        // A panic also loses move-only custody while unwinding. Mark failure
-        // before calling out, then clear it only after a successful return.
+        // Health checks run with the existing runtime still in its broker slot.
         self.source_runtime_failed = true;
-        let result = operation(&mut owner);
-        self.source_runtime = Some(owner.into_runtime());
-        if result.is_ok() {
-            self.source_runtime_failed = false;
-        }
-        result
+        self.ensure_authority_healthy()?;
+
+        let mut loan = source_custody::SourceRuntimeLoanV6::new(
+            &mut self.source_runtime,
+            &mut self.source_runtime_failed,
+        );
+        loan.attach(&mut self.journal)?;
+        loan.operate(operation)
     }
 
     /// Establishes a provider successor only before runtime construction.

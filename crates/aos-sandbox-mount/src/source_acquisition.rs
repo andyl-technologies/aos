@@ -747,6 +747,20 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     /// Rejects invalid fixed custody, graph/floors, startup policy or readback.
     #[doc(hidden)]
     pub fn borrow_existing_kind2_fixed_journal(journal: &'journal mut Journal) -> Result<Self> {
+        let mut slot = None;
+        Self::borrow_kind2_parked_v6(journal, &mut slot)?;
+        slot.ok_or_else(|| state_error("kind2 recovered owner is absent"))
+    }
+
+    /// Parks genuine cold recovery before its existing local retirement effects.
+    pub(crate) fn borrow_kind2_parked_v6(
+        journal: &'journal mut Journal,
+        slot: &mut Option<Self>,
+    ) -> Result<()> {
+        if slot.is_some() {
+            return Err(state_error("kind2 owner output is occupied"));
+        }
+
         let mut protected =
             aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed_root_local_recovery_v4(
                 journal,
@@ -758,9 +772,10 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 .map_err(|error| crate::MountError::State(error.to_string()))?;
             SourceAcquisitionTableV2::from_state(writer.current_source_state()?)
         };
-        let mut owner = Self::recover_with_table(protected, table)?;
-        owner.install_and_retire_kind2_v4()?;
-        Ok(owner)
+        *slot = Some(Self::recover_with_table(protected, table)?);
+        slot.as_mut()
+            .ok_or_else(|| state_error("kind2 parked owner is absent"))?
+            .install_and_retire_kind2_v4()
     }
 
     /// Constructs only the broker's genuinely fresh cold kind5 owner.
@@ -779,25 +794,31 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         Ok(owner)
     }
 
-    /// Reattaches retained move-only custody to the same protected Mount journal.
-    ///
-    /// On failure, the runtime is returned unchanged so its descriptors are
-    /// never dropped by a failed journal borrow. The broker's sole journal
-    /// lock excludes another namespace-40 writer, and the broker refuses to
-    /// reattach after any source-operation error rather than using stale state.
-    pub(crate) fn attach_runtime(
+    /// Borrows retained runtime through checks, then parks the attached owner.
+    pub(crate) fn attach_parked_runtime_v6(
         journal: &'journal mut Journal,
-        runtime: SourceAcquisitionRuntimeV2,
-    ) -> std::result::Result<Self, (crate::MountError, SourceAcquisitionRuntimeV2)> {
+        runtime_slot: &mut Option<SourceAcquisitionRuntimeV2>,
+        owner_slot: &mut Option<Self>,
+    ) -> Result<()> {
+        if owner_slot.is_some() {
+            return Err(state_error("attached source owner output is occupied"));
+        }
+        let runtime = runtime_slot
+            .as_ref()
+            .ok_or_else(|| state_error("detached source runtime is absent"))?;
+
         // Only an already retained original flight may select the named native
         // reborrow. A replayed row alone cannot reconstruct original custody.
         let has_query = runtime.pending_original_inventory.is_some()
             || !runtime.retained_original_inventory.is_empty();
         if has_query && runtime.pending_original_native.is_none() {
-            return Err((state_error("Query reattach lost actual original owner"), runtime));
+            return Err(state_error("Query reattach lost actual original owner"));
         }
+
         let protected = if has_query {
-            aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed_root_original_inventory_v6(journal)
+            aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed_root_original_inventory_v6(
+                journal,
+            )
         } else if runtime.pending_original_native.is_some() {
             aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed_root_original_native_v5(
                 journal,
@@ -805,10 +826,14 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         } else {
             aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed(journal)
         };
-        match protected {
-            Ok(protected) => Ok(Self { protected, runtime }),
-            Err(error) => Err((crate::MountError::State(error.to_string()), runtime)),
+        let protected = protected.map_err(|error| state_error(error.to_string()))?;
+
+        // No fallible work remains between this move and parking the owner.
+        if let Some(runtime) = runtime_slot.take() {
+            *owner_slot = Some(Self { protected, runtime });
         }
+
+        Ok(())
     }
 
     /// Returns every retained capability after the protected journal borrow ends.

@@ -449,8 +449,7 @@ impl DescriptorSubjectSocket {
         ConnectionBoundReceivedDescriptorRecord<'socket>,
         (super::RecordBindingError, ReceivedDescriptorRecord),
     > {
-        if let Err(error) = self.require_record_origin(&record) {
-            self.fd.take();
+        if let Err(error) = self.validate_received_origin(&record) {
             return Err((error, record));
         }
 
@@ -458,6 +457,28 @@ impl DescriptorSubjectSocket {
             record,
             peer: &self.peer,
         })
+    }
+
+    /// Checks a borrowed typed packet against this socket's current origin.
+    ///
+    /// This retains all packet and descriptor custody in the caller's slot.
+    /// It establishes carrier continuity only, not application authority or
+    /// equivalence between the nominated subject and the connection peer.
+    ///
+    /// # Errors
+    ///
+    /// Closes the socket for the same invalid origin or current-binding
+    /// conditions as [`Self::bind_received_retaining`].
+    pub fn validate_received_origin(
+        &mut self,
+        record: &ReceivedDescriptorRecord,
+    ) -> Result<(), super::RecordBindingError> {
+        if let Err(error) = self.require_record_origin(record) {
+            self.fd.take();
+            return Err(error);
+        }
+
+        Ok(())
     }
 
     /// Receives a response with either no descriptors or exactly two descriptors.

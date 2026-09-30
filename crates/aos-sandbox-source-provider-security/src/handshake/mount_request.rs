@@ -815,26 +815,55 @@ impl CurrentRootMountSourceProviderSessionV1 {
             ProviderSendBoundaryV6,
         ) -> Result<(), SourceProviderSecurityError>,
     ) -> Result<SentMountProviderRequestV2, MountProviderRequestSendRecoveryV2> {
-        if self.revalidate().is_err() {
-            return Err(MountProviderRequestSendRecoveryV2 { reservation });
-        }
-        let prepared_signed_request = match SignedSourceProviderRequestV1::from_canonical_bytes(
-            &reservation.prepared.signed_request,
+        let prepared_signed_request = match self.send_borrowed_mount_request_v6(
+            journal,
+            &reservation,
+            after_send,
         ) {
             Ok(request) => request,
-            Err(_) => {
-                self.poison(SourceProviderSecurityError::SessionContinuity);
-                return Err(MountProviderRequestSendRecoveryV2 { reservation });
-            }
+            Err(_) => return Err(MountProviderRequestSendRecoveryV2 { reservation }),
         };
+
+        // Public consuming wrappers preserve their original native conversion.
+        // Query uses the borrowed core and parks its reservation across I/O.
+        let ReservedMountProviderRequestV2 { mut prepared, .. } = reservation;
+        prepared.outcome.native_outcome = prepared.native_currentness.map(|guard| {
+            std::sync::Arc::new(
+                native_catalog::NativeAcquireOutcomeCustodyV3::retain_original(
+                    guard,
+                    prepared_signed_request,
+                ),
+            )
+        });
+        Ok(SentMountProviderRequestV2 {
+            projection: prepared.projection,
+            outcome: prepared.outcome,
+        })
+    }
+
+    /// Preserves the exact send policy while borrowing all reservation custody.
+    fn send_borrowed_mount_request_v6(
+        &mut self,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
+        reservation: &ReservedMountProviderRequestV2,
+        after_send: impl FnOnce(
+            &mut Self,
+            &ReservedMountProviderRequestV2,
+            ProviderSendBoundaryV6,
+        ) -> Result<(), SourceProviderSecurityError>,
+    ) -> Result<SignedSourceProviderRequestV1, SourceProviderSecurityError> {
+        self.revalidate()?;
+        let prepared_signed_request = SignedSourceProviderRequestV1::from_canonical_bytes(
+            &reservation.prepared.signed_request,
+        )
+        .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
         if reservation.prepared.projection.session_binding != self.session.binding()
             || reservation.prepared.outcome.session_binding != self.session.binding()
             || reservation.prepared.projection.signed_request_digest
                 != digest_signed_request(&prepared_signed_request)
             || self.carrier.socket().peer().credentials().pid().get() == 0
         {
-            self.poison(SourceProviderSecurityError::SessionContinuity);
-            return Err(MountProviderRequestSendRecoveryV2 { reservation });
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
         // The opaque protected snapshot and exact records are retained until
         // the final pre-send currentness check, so no reservation witness can
@@ -854,49 +883,30 @@ impl CurrentRootMountSourceProviderSessionV1 {
             && journal.current_value(&reservation.head_key).ok().flatten()
                 == Some(reservation.head_record.as_slice());
         if !journal_current {
-            self.poison(SourceProviderSecurityError::SessionContinuity);
-            return Err(MountProviderRequestSendRecoveryV2 { reservation });
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
         if let Some(currentness) = &reservation.prepared.native_currentness {
-            if self
-                .require_native_acquire_currentness_v3(currentness)
-                .is_err()
-            {
-                return Err(MountProviderRequestSendRecoveryV2 { reservation });
-            }
+            self.require_native_acquire_currentness_v3(currentness)?;
         }
         if let Err(failure) = self.carrier.send(&reservation.prepared.signed_request) {
             if let CarrierFailureV1::Fatal(error) = failure {
-                self.poison(error);
+                return Err(self.poison(error));
             } else if let Err(error) =
-                after_send(self, &reservation, ProviderSendBoundaryV6::Retryable)
+                after_send(self, reservation, ProviderSendBoundaryV6::Retryable)
             {
                 // A retryable carrier result still crosses an I/O boundary.
                 // Native callers must retain and recheck the SAME custody.
-                self.poison(error);
+                return Err(self.poison(error));
             }
-            return Err(MountProviderRequestSendRecoveryV2 { reservation });
+            return Err(SourceProviderSecurityError::SessionContinuity);
         }
-        if let Err(error) = after_send(self, &reservation, ProviderSendBoundaryV6::Accepted) {
-            self.poison(error);
-            return Err(MountProviderRequestSendRecoveryV2 { reservation });
+        if let Err(error) = after_send(self, reservation, ProviderSendBoundaryV6::Accepted) {
+            return Err(self.poison(error));
         }
         // A successful sequenced-packet send is atomic. Outcome receive checks
         // currentness again; bytes accepted by the kernel never recreate send
         // authority.
-        let ReservedMountProviderRequestV2 { mut prepared, .. } = reservation;
-        prepared.outcome.native_outcome = prepared.native_currentness.map(|guard| {
-            std::sync::Arc::new(
-                native_catalog::NativeAcquireOutcomeCustodyV3::retain_original(
-                    guard,
-                    prepared_signed_request,
-                ),
-            )
-        });
-        Ok(SentMountProviderRequestV2 {
-            projection: prepared.projection,
-            outcome: prepared.outcome,
-        })
+        Ok(prepared_signed_request)
     }
 
     /// Retries one exact retained send reservation without rebuilding its request.
@@ -1556,6 +1566,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
         typed_request_digest: ObjectDigest,
         session_projection: MountProviderSessionProjectionV2,
     ) -> Result<PreparedMountProviderRequestV2, SourceProviderSecurityError> {
+        let mut signed = None;
+        let mut prepared = None;
         self.authorize_non_acquire_retaining_v6(
             method,
             subject,
@@ -1571,10 +1583,14 @@ impl CurrentRootMountSourceProviderSessionV1 {
             lease,
             typed_request_digest,
             session_projection,
-            None,
-        )
+            &mut signed,
+            &mut prepared,
+        )?;
+
+        prepared.ok_or(SourceProviderSecurityError::SessionContinuity)
     }
 
+    /// Parks original signed and prepared outputs using the shared signing policy.
     #[allow(clippy::too_many_arguments)]
     fn authorize_non_acquire_retaining_v6(
         &mut self,
@@ -1592,8 +1608,13 @@ impl CurrentRootMountSourceProviderSessionV1 {
         lease: Option<([u8; 16], ObjectDigest)>,
         typed_request_digest: ObjectDigest,
         session_projection: MountProviderSessionProjectionV2,
-        signed: Option<&mut Option<SignedSourceProviderRequestV1>>,
-    ) -> Result<PreparedMountProviderRequestV2, SourceProviderSecurityError> {
+        signed: &mut Option<SignedSourceProviderRequestV1>,
+        prepared: &mut Option<PreparedMountProviderRequestV2>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        if signed.is_some() || prepared.is_some() {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+
         self.revalidate()?;
         let now = super::current_unix_seconds()?;
         let current_session_binding = self.session.binding();
@@ -1634,9 +1655,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
             )
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
             // Retain exact signature before custody/key postchecks can fail.
-            if let Some(signed) = signed {
-                *signed = Some(signed_request.clone());
-            }
+            *signed = Some(signed_request);
+
             inner.revalidate_at(super::current_unix_seconds()?)?;
             let provider_key = inner
                 .trust()
@@ -1655,7 +1675,6 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 trust_digest,
                 revocation_generation,
                 revocation_digest,
-                signed_request,
                 *provider_key.public_key(),
                 provider_key.signer().clone(),
             ))
@@ -1667,14 +1686,17 @@ impl CurrentRootMountSourceProviderSessionV1 {
             trust_digest,
             revocation_generation,
             revocation_digest,
-            signed_request,
             provider_outcome_public_key,
             provider_outcome_signer,
         ) = material.map_err(|error| self.poison(error))?;
-        let signed_request_digest = digest_signed_request(&signed_request);
+        let signed_request = signed
+            .as_ref()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let signed_request_digest = digest_signed_request(signed_request);
         let (acquisition_id, acquisition_sequence) = acquisition.unzip();
         let (lease_id, lease_digest) = lease.unzip();
-        Ok(PreparedMountProviderRequestV2 {
+
+        *prepared = Some(PreparedMountProviderRequestV2 {
             projection: MountProviderRequestProjectionV2 {
                 method,
                 session: session_projection,
@@ -1738,7 +1760,9 @@ impl CurrentRootMountSourceProviderSessionV1 {
             },
             signed_request: signed_request.to_canonical_bytes(),
             native_currentness: None,
-        })
+        });
+
+        Ok(())
     }
 }
 
