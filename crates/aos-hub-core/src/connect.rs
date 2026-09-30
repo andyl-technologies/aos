@@ -3926,8 +3926,20 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         // First-party static assets (`/_assets/*`) the browse pages + console
         // link. Served from the shared router so the Worker exposes them too
         // (otherwise its CSS/JS/fonts 404).
-        use crate::web::assets;
+        use crate::web::{assets, runtime_documentation};
         r = r
+            .route(
+                "/-/runtime-abilities",
+                get(runtime_documentation::viewer).post(runtime_documentation::preview),
+            )
+            .route(
+                "/-/api/runtime-documentation",
+                post(runtime_documentation::inspect),
+            )
+            .route(
+                "/_assets/runtime-documentation.js",
+                get(runtime_documentation::script),
+            )
             .route("/_assets/style.css", get(assets::stylesheet))
             .route("/_assets/app.js", get(assets::app_js))
             .route("/_assets/theme.js", get(assets::theme_js))

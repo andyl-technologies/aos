@@ -24,6 +24,8 @@
   sqlite,
   zlib,
   aos-hub-console-dist,
+  service-management,
+  aos-filesystem-provider,
   stdenv,
   buildPackages,
 }: let
@@ -172,7 +174,8 @@ in
     # libgit2 still links zlib for compressed Git objects.
     runtimeDeps = [openssl sqlite zlib];
 
-    abilities = ./_aos-hub;
+    module = ./_aos-hub;
+    moduleDeps = [service-management aos-filesystem-provider];
 
     # The workspace test suite is exercised by the `aos` package's
     # `cargoTestFlags = "--workspace"`; this derivation only needs to compile

@@ -255,7 +255,7 @@ pub enum HubCmd {
 
 #[derive(Subcommand)]
 pub enum HubDocumentationCmd {
-    /// Browse package providers and consumers across one release
+    /// Browse native operation declarations across one release
     Abilities {
         #[command(flatten)]
         access: HubAccessArgs,
@@ -266,16 +266,19 @@ pub enum HubDocumentationCmd {
         #[arg(long)]
         platform: Option<String>,
     },
-    /// Report planned package ability selections from a checked effect plan
+    /// Submit a checked desired graph and optional reporter result assertions
     Report {
         #[command(flatten)]
         access: HubAccessArgs,
-        /// Canonical ability inspection bundle
+        /// Native desired package transaction
         #[arg(long)]
-        bundle: PathBuf,
-        /// Independent expected digest of the inspection bundle
+        transaction: PathBuf,
+        /// Independent expected digest of the native transaction
         #[arg(long)]
         expected_digest: Option<String>,
+        /// Optional reporter assertions of named native effect results
+        #[arg(long)]
+        outputs: Option<PathBuf>,
         /// Registry containing the authenticated package reference
         #[arg(long)]
         registry: String,

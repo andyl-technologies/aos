@@ -2,16 +2,25 @@
 {
   config,
   lib,
+  package,
   packageName,
   packageVersion,
   ...
 }: let
   cfg = config.aos.registry-hub;
-  serviceEnabled = config.aos.services."service.hub".enable;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  abilityTypes = lib.abilities.types;
-  resultOf = lib.abilities.resultOf;
+  serviceEnabled = config.aos.services.hub.enable;
+  types = lib.types;
+  operations = config.aos.abilities;
+  resultOf = key: field:
+    if key == "service-group"
+    then operations.identity.operations.group.effects.hub.outputs.${field}
+    else if key == "service-principal"
+    then operations.identity.operations.principal.effects.hub.outputs.${field}
+    else if key == "state-storage"
+    then operations.filesystem.operations.persistentAllocate.effects.hub-state.outputs.${field}
+    else if key == "network-readiness"
+    then operations.network.operations.ready.effects.hub.outputs.${field}
+    else throw "Unknown native Hub prerequisite '${key}'";
   principalName = "aos-hub";
   credentialFields = {
     jwtSecret = {
@@ -81,76 +90,21 @@
   releaseEvidenceConfigured = builtins.any (value: value != null) releaseEvidenceValues;
   releaseEvidenceComplete = builtins.all (value: value != null) releaseEvidenceValues;
   usesTls = cfg.credentials.tlsCertificate != null;
-  boundedString = abilityTypes.string {
-    maxLength = abilityTypes.limits.maxStringLength;
-    syntax = null;
-  };
-  endpoint = abilityTypes.refined {
-    name = "HTTPS DNS endpoint";
-    description = "an HTTPS URL without whitespace";
-    type = boundedString;
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "https://[^[:space:]]+";
-      }
-    ];
-  };
-  optionalString = abilityTypes.optional boundedString;
-  optionalCredential = abilityTypes.optional abilityTypes.localKey;
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "service";
-      inherit key interface parameters;
-    };
+  boundedString = types.str;
+  endpoint = types.strMatching "https://[^[:space:]]+";
+  optionalString = types.nullOr types.str;
+  optionalCredential = types.nullOr (types.strMatching "[A-Za-z0-9][A-Za-z0-9._-]*");
   command = arguments: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "bin/aos-hub";
+      path = "${package}/bin/aos-hub";
       inherit arguments;
     };
     ignore_failure = false;
   };
-  group = producer "service-group" serviceManagement.interfaces.groupResolution {
-    name = principalName;
-    allocation = "managed";
-  };
-  principal = producer "service-principal" serviceManagement.interfaces.principalResolution {
-    name = principalName;
-    allocation = "managed";
-    description = "AOS registry hub";
-    home_directory = cfg.root;
-    login_access = "disabled";
-    primary_group = resultOf "service-group" "group-name";
-    supplementary_groups = [];
-  };
-  storage = producer "state-storage" serviceManagement.interfaces.persistentStorageAllocation {
-    name = "state";
-    purpose = "state";
-    mode = "0750";
-    requested_path = cfg.root;
-    owner = resultOf "service-principal" "principal-name";
-    group = resultOf "service-group" "group-name";
-  };
-  network = producer "network-readiness" serviceManagement.interfaces.networkReadiness {
-    scope = "configured-connectivity";
-    address_families = ["ipv4" "ipv6"];
-  };
-  credentialResolution = name:
-    producer "credential-${name}-source" serviceManagement.interfaces.namedCredential {
-      name = cfg.credentials.${name};
-      scope = "system";
-    };
-  credentialDelivery = name:
-    producer "credential-${name}" serviceManagement.interfaces.credentialDelivery {
-      name = credentialFields.${name}.handle;
-      source = resultOf "credential-${name}-source" "resource";
-      encrypted = false;
-    };
   credentialViews =
     builtins.map (name: {
       name = credentialFields.${name}.handle;
-      reference = resultOf "credential-${name}" "credential-path";
+      reference = operations.credential.operations.deliver.effects."hub-${name}".outputs.path;
       encrypted = false;
       optional = false;
       environment_variable = credentialFields.${name}.environment;
@@ -201,7 +155,6 @@
       operation_profile = "privileged";
       isolated_identity_mapping = "none";
     };
-    consumerInstance = "service";
     service = "hub";
     lifecycle = {
       description = "AOS registry management hub (${packageName} ${packageVersion})";
@@ -232,6 +185,10 @@
       start_timeout_millis = 90000;
       stop_timeout_millis = 90000;
     };
+    activationAfter = [
+      (resultOf "network-readiness" "resource")
+      (resultOf "state-storage" "resource")
+    ];
     dependencies = {
       after = [
         (resultOf "network-readiness" "resource")
@@ -260,7 +217,7 @@
     storage.mounts = [
       {
         name = "state";
-        source = resultOf "state-storage" "planned-path";
+        source = resultOf "state-storage" "path";
         access = "read-write";
       }
     ];
@@ -275,8 +232,8 @@
       directory_mode = "0750";
     };
     identity = {
-      principal = resultOf "service-principal" "principal-name";
-      primary_group = resultOf "service-group" "group-name";
+      principal = resultOf "service-principal" "name";
+      primary_group = resultOf "service-group" "name";
       supplementary_groups = [];
       ephemeral = false;
       file_creation_mask = "0022";
@@ -298,11 +255,10 @@
     views = credentialViews;
     tls = usesTls;
   };
-  producers = [group principal storage network];
 in {
   options.aos.registry-hub = {
     enable = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = types.bool;
       default = false;
       description = "Enable the AOS registry management hub.";
     };
@@ -312,7 +268,7 @@ in {
       description = "Address and port on which the registry hub accepts requests.";
     };
     root = lib.mkOption {
-      type = serviceTypes.executionPath;
+      type = types.strMatching "/[^\n\r]*";
       default = "/var/lib/aos-hub";
       description = "Persistent directory containing the hub database and local storage bindings.";
     };
@@ -322,10 +278,7 @@ in {
       description = "Externally reachable base URL used in generated setup instructions.";
     };
     reindexInterval = lib.mkOption {
-      type = abilityTypes.integer {
-        minimum = 0;
-        maximum = abilityTypes.limits.maxSafeInteger;
-      };
+      type = types.ints.between 0 9007199254740991;
       default = 60;
       description = "Seconds between background re-index runs; zero disables them.";
     };
@@ -363,52 +316,73 @@ in {
     credentialFields;
   };
 
-  config = lib.mkMerge ([
-      {
-        aos.services."service.hub" = service // {enable = cfg.enable;};
+  config = lib.mkMerge [
+    {
+      aos.services.hub = lib.mkDefault (service // {enable = cfg.enable;});
 
-        assertions = [
-          {
-            assertion = !serviceEnabled || cfg.credentials.routeReservationKeys != null;
-            message = "aos.registry-hub.credentials.routeReservationKeys is required";
-          }
-          {
-            assertion = !serviceEnabled || cfg.credentials.domainProbeSignerManifest != null;
-            message = "aos.registry-hub.credentials.domainProbeSignerManifest is required";
-          }
-          {
-            assertion = !serviceEnabled || (cfg.credentials.routePublicationManifest == null) == (cfg.routePublicationPublicKey == null);
-            message = "routePublicationManifest and routePublicationPublicKey must be configured together";
-          }
-          {
-            assertion = !serviceEnabled || !releaseEvidenceConfigured || releaseEvidenceComplete;
-            message = "native Hub release evidence requires deploymentId, both receipt key ids, both receipt key credentials, releasePublicationKeys, and qualificationKeys together";
-          }
-          {
-            assertion = !serviceEnabled || (cfg.credentials.tlsCertificate == null) == (cfg.credentials.tlsPrivateKey == null);
-            message = "native Hub TLS certificate and private-key credentials must be configured together";
-          }
-          {
-            assertion = !serviceEnabled || cfg.credentials.tlsCertificate == null || (cfg.externalUrl != null && lib.hasPrefix "https://" cfg.externalUrl);
-            message = "native Hub TLS requires an HTTPS externalUrl";
-          }
-          {
-            assertion = !serviceEnabled || cfg.releaseReceiptKeyId == null || cfg.channelReceiptKeyId == null || cfg.releaseReceiptKeyId != cfg.channelReceiptKeyId;
-            message = "releaseReceiptKeyId and channelReceiptKeyId must be distinct";
-          }
-        ];
-      }
-      (serviceManagement.producerModule {
-        inherit config lib producers;
-        enabled = serviceEnabled;
-      })
-    ]
-    ++ builtins.map
-    (name:
-      serviceManagement.producerModule {
-        inherit config lib;
-        producers = [(credentialResolution name) (credentialDelivery name)];
-        enabled = serviceEnabled && cfg.credentials.${name} != null;
-      })
-    credentialNames);
+      assertions = [
+        {
+          assertion = !serviceEnabled || cfg.credentials.routeReservationKeys != null;
+          message = "aos.registry-hub.credentials.routeReservationKeys is required";
+        }
+        {
+          assertion = !serviceEnabled || cfg.credentials.domainProbeSignerManifest != null;
+          message = "aos.registry-hub.credentials.domainProbeSignerManifest is required";
+        }
+        {
+          assertion = !serviceEnabled || (cfg.credentials.routePublicationManifest == null) == (cfg.routePublicationPublicKey == null);
+          message = "routePublicationManifest and routePublicationPublicKey must be configured together";
+        }
+        {
+          assertion = !serviceEnabled || !releaseEvidenceConfigured || releaseEvidenceComplete;
+          message = "native Hub release evidence requires deploymentId, both receipt key ids, both receipt key credentials, releasePublicationKeys, and qualificationKeys together";
+        }
+        {
+          assertion = !serviceEnabled || (cfg.credentials.tlsCertificate == null) == (cfg.credentials.tlsPrivateKey == null);
+          message = "native Hub TLS certificate and private-key credentials must be configured together";
+        }
+        {
+          assertion = !serviceEnabled || cfg.credentials.tlsCertificate == null || (cfg.externalUrl != null && lib.hasPrefix "https://" cfg.externalUrl);
+          message = "native Hub TLS requires an HTTPS externalUrl";
+        }
+        {
+          assertion = !serviceEnabled || cfg.releaseReceiptKeyId == null || cfg.channelReceiptKeyId == null || cfg.releaseReceiptKeyId != cfg.channelReceiptKeyId;
+          message = "releaseReceiptKeyId and channelReceiptKeyId must be distinct";
+        }
+      ];
+    }
+    (lib.mkIf serviceEnabled {
+      aos.abilities = {
+        identity.operations.group.effects.hub.input.name = principalName;
+        identity.operations.principal.effects.hub.input = {
+          name = principalName;
+          description = "AOS registry hub";
+          home_directory = cfg.root;
+          login_access = "disabled";
+          primary_group = resultOf "service-group" "name";
+          supplementary_groups = [];
+        };
+        filesystem.operations.persistentAllocate.effects.hub-state.lifetime = "persistent";
+        filesystem.operations.persistentAllocate.effects.hub-state.input = {
+          path = cfg.root;
+          mode = "0750";
+          owner = resultOf "service-principal" "name";
+          group = resultOf "service-group" "name";
+        };
+        network.operations.ready.effects.hub.input = {
+          scope = "address-configured";
+          families = ["ipv4" "ipv6"];
+        };
+        credential.operations.deliver.effects = builtins.listToAttrs (builtins.map (name: {
+            name = "hub-${name}";
+            value.input = {
+              name = cfg.credentials.${name};
+              scope = "system";
+              encrypted = false;
+            };
+          })
+          configuredCredentialNames);
+      };
+    })
+  ];
 }

@@ -1,6 +1,6 @@
-//! Fail-closed enrollment and live package deployment overlay storage.
+//! Fail-closed enrollment and native deployment assertion storage.
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 
 use super::Database;
 
@@ -145,7 +145,7 @@ impl Database {
                      SET principal_kind = ?3, principal_id = ?4, principal_ref = ?5,
                          active = ?6, resource_version = ?7, current_sequence = 0,
                          registry_commit = NULL, package_name = NULL, package_version = NULL,
-                         platform = NULL, manifest_sha256 = NULL, package_digest = NULL,
+                         platform = NULL, document_sha256 = NULL, transaction_sha256 = NULL,
                          canonical_json = NULL, reported_at = NULL, received_at = NULL,
                          expires_at = NULL, last_mutation_plan_id = ?9
                      WHERE registry_id = ?1 AND deployment = ?2 AND resource_version = ?8",
@@ -236,8 +236,8 @@ impl Database {
         package_name: &str,
         package_version: &str,
         platform: &str,
-        manifest_sha256: &str,
-        package_digest: &str,
+        document_sha256: &str,
+        transaction_sha256: &str,
         canonical_json: &[u8],
         reported_at: u64,
         received_at: i64,
@@ -248,8 +248,8 @@ impl Database {
             .execute(
                 "UPDATE ability_deployment_reporters
                  SET current_sequence = ?6, registry_commit = ?7, package_name = ?8,
-                     package_version = ?9, platform = ?10, manifest_sha256 = ?11,
-                     package_digest = ?12, canonical_json = ?13, reported_at = ?14,
+                     package_version = ?9, platform = ?10, document_sha256 = ?11,
+                     transaction_sha256 = ?12, canonical_json = ?13, reported_at = ?14,
                      received_at = ?15, expires_at = ?16
                  WHERE registry_id = ?1 AND deployment = ?2 AND principal_kind = ?3
                    AND principal_id = ?4 AND resource_version = ?5 AND active = 1
@@ -265,8 +265,8 @@ impl Database {
                     package_name,
                     package_version,
                     platform,
-                    manifest_sha256,
-                    package_digest,
+                    document_sha256,
+                    transaction_sha256,
                     canonical_json,
                     i64::try_from(reported_at)?,
                     received_at,
@@ -394,6 +394,29 @@ mod tests {
         (db, registry_id, user_id)
     }
 
+    #[test]
+    fn native_report_migration_preserves_enrollment_and_replay_fence() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        for migration in super::super::MIGRATIONS.iter().take(3) {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection.execute("INSERT INTO ability_deployment_reporters(
+            registry_id,deployment,principal_kind,principal_id,principal_ref,active,resource_version,current_sequence,last_mutation_plan_id,
+            registry_commit,package_name,package_version,platform,manifest_sha256,package_digest,canonical_json,reported_at,received_at,expires_at)
+            VALUES(42,'production','user',1,'reporter',1,7,99,'enrolled','old','sample','1','x86_64-linux','old','old',X'7B7D',100,100,160)",[]).unwrap();
+
+        connection
+            .execute_batch(super::super::MIGRATIONS[3])
+            .unwrap();
+        let (version,sequence,report):(i64,i64,Option<Vec<u8>>)=connection.query_row(
+            "SELECT resource_version,current_sequence,canonical_json FROM ability_deployment_reporters",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+
+        assert_eq!(version, 7);
+        assert_eq!(sequence, 99);
+        assert!(report.is_none());
+        connection.execute("UPDATE ability_deployment_reporters SET document_sha256=NULL,transaction_sha256=NULL",[]).unwrap();
+    }
+
     #[tokio::test]
     async fn enrollment_sequence_replay_expiry_and_revocation_fail_closed() {
         let (db, registry_id, user_id) = fixture().await;
@@ -412,8 +435,8 @@ mod tests {
             .unwrap();
         assert_eq!(reporter.resource_version, 1);
         assert!(reporter.active);
-        assert!(db
-            .ability_deployment_reporter_matches_plan(
+        assert!(
+            db.ability_deployment_reporter_matches_plan(
                 registry_id,
                 "production",
                 "user",
@@ -424,7 +447,8 @@ mod tests {
                 "plan-enable-1",
             )
             .await
-            .unwrap());
+            .unwrap()
+        );
 
         db.accept_package_ability_deployment_overlay(
             registry_id,
@@ -447,8 +471,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(db
-            .ability_deployment_reporter_matches_plan(
+        assert!(
+            db.ability_deployment_reporter_matches_plan(
                 registry_id,
                 "production",
                 "user",
@@ -459,7 +483,8 @@ mod tests {
                 "plan-enable-1",
             )
             .await
-            .unwrap());
+            .unwrap()
+        );
 
         let fresh = db
             .package_ability_deployment_overlay(
@@ -501,8 +526,8 @@ mod tests {
             .unwrap_err();
         assert!(replay.to_string().contains("replayed sequence"));
 
-        assert!(db
-            .package_ability_deployment_overlay(
+        assert!(
+            db.package_ability_deployment_overlay(
                 registry_id,
                 "production",
                 &"a".repeat(64),
@@ -513,7 +538,8 @@ mod tests {
             )
             .await
             .unwrap()
-            .is_none());
+            .is_none()
+        );
 
         let revoked = db
             .configure_ability_deployment_reporter(
@@ -531,8 +557,8 @@ mod tests {
         assert_eq!(revoked.resource_version, 2);
         assert!(!revoked.active);
         assert_eq!(revoked.current_sequence, 0);
-        assert!(db
-            .package_ability_deployment_overlay(
+        assert!(
+            db.package_ability_deployment_overlay(
                 registry_id,
                 "production",
                 &"a".repeat(64),
@@ -543,7 +569,8 @@ mod tests {
             )
             .await
             .unwrap()
-            .is_none());
+            .is_none()
+        );
 
         let stale_version = db
             .configure_ability_deployment_reporter(
@@ -558,8 +585,10 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(stale_version
-            .to_string()
-            .contains("resource version is stale"));
+        assert!(
+            stale_version
+                .to_string()
+                .contains("resource version is stale")
+        );
     }
 }

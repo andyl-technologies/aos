@@ -1,50 +1,22 @@
-##! tests/packages/documentation.nix — package documentation authority gate.
-{
-  lib,
-  pkgs,
-  ...
-}: let
-  legacyPassthruFields = [
-    "abilities"
-    "abilityModule"
-    "abilityModuleSource"
-    "configModule"
-  ];
-  abilityPackages = lib.filterAttrs (_: value: let
-    evaluated = builtins.tryEval value;
+##! Checks declaration-derived package documentation and public library imports.
+{lib, pkgs, ...}: let
+  nativeChecks = (import ../effects/packages.nix).checks;
+  serviceChecks = import ../effects/service-management.nix;
+  documentedPackages = {
+    service-management = pkgs.service-management;
+    systemd = pkgs.systemd;
+    dbus = pkgs.dbus;
+  };
+  validDocumentation = name: package: let
+    document = package.documentation;
+    encoded = builtins.toJSON document;
   in
-    evaluated.success
-    && builtins.isAttrs evaluated.value
-    && lib.isDerivation evaluated.value
-    && evaluated.value ? abilities)
-  pkgs;
-  packageNames = builtins.attrNames abilityPackages;
-  projectionPaths =
-    builtins.map
-    (name: abilityPackages.${name}.contract.document)
-    packageNames;
-  countRefinedSchemas = value:
-    if builtins.isList value
-    then builtins.foldl' (count: item: count + countRefinedSchemas item) 0 value
-    else if builtins.isAttrs value
-    then
-      (
-        if (value.kind or null) == "refined"
-        then 1
-        else 0
-      )
-      + builtins.foldl' (
-        count: name: count + countRefinedSchemas value.${name}
-      )
-      0 (builtins.attrNames value)
-    else 0;
-  productionRefinedSchemaCount =
-    builtins.foldl' (
-      count: name:
-        count + countRefinedSchemas abilityPackages.${name}.contract.value
-    )
-    0
-    packageNames;
+    document.schema == "aos.module.documentation"
+    && document.scope == ["package" name]
+    && document.options != []
+    && builtins.any (entry: entry.name == name) document.packages
+    && !(package ? abilities)
+    && !lib.hasInfix "\"_type\"" encoded;
 
   discoverNixSources = directory: prefix:
     lib.concatMap (
@@ -78,71 +50,23 @@
     (entry: entry.relative)
     (builtins.filter (entry: importsPrivateLibrary entry.source) packageSources);
 
-  invalidAuthenticatedOutputs = builtins.filter (name:
-    !(
-      builtins.tryEval (
-        builtins.deepSeq
-        (lib.abilities.authenticatedPackageOutputsFor abilityPackages.${name})
-        true
-      )
-    ).success)
-  packageNames;
-
-  invalidPackages = builtins.filter (name: let
-    package = abilityPackages.${name};
-    evaluatedAbilities = builtins.tryEval (builtins.toJSON {
-      interfaceAliases = builtins.attrNames package.abilities.interfaces;
-      implementationAliases = builtins.attrNames package.abilities.implementations;
-      requirementAliases = builtins.attrNames package.abilities.requirementTemplates;
-      guaranteeAliases = builtins.attrNames package.abilities.guarantees;
-    });
-    abilities =
-      if evaluatedAbilities.success
-      then builtins.fromJSON evaluatedAbilities.value
-      else {};
-  in
-    !evaluatedAbilities.success
-    || !(abilities ? interfaceAliases)
-    || !(abilities ? implementationAliases)
-    || !(abilities ? requirementAliases)
-    || !(abilities ? guaranteeAliases)
-    || !(builtins.isList abilities.interfaceAliases)
-    || !(builtins.isList abilities.implementationAliases)
-    || !(builtins.isList abilities.requirementAliases)
-    || !(builtins.isList abilities.guaranteeAliases)
-    || package.abilities
-    != lib.abilities.packageAbilitiesFromProjection package.contract.value
-    || lib.hasInfix "\"_type\"" (builtins.toJSON package.contract.value)
-    || builtins.any (field: builtins.hasAttr field (package.passthru or {})) legacyPassthruFields
-    || !(package ? module)
-    || !(package ? contract))
-  packageNames;
 in
-  if !builtins.isFunction lib.mkArtifactConsumptionAudit
-  then throw "lib.mkArtifactConsumptionAudit must expose the package-safe artifact audit constructor"
-  else if privateLibraryImports != []
+  assert builtins.all (value: value) (builtins.attrValues nativeChecks);
+  assert builtins.all (value: value) (builtins.attrValues serviceChecks);
+  assert builtins.all (name: validDocumentation name documentedPackages.${name})
+    (builtins.attrNames documentedPackages);
+  if privateLibraryImports != []
   then throw "package definitions import private library paths: ${builtins.concatStringsSep ", " privateLibraryImports}"
-  else if invalidAuthenticatedOutputs != []
-  then throw "package ability contracts contain unresolved authenticated artifact selectors: ${builtins.concatStringsSep ", " invalidAuthenticatedOutputs}"
-  else if invalidPackages != []
-  then throw "package ability documentation projections are invalid: ${builtins.concatStringsSep ", " invalidPackages}"
-  else if productionRefinedSchemaCount == 0
-  then throw "package ability documentation projections contain no refined schemas"
-  else
-    pkgs.mkDerivation {
-      pname = "package-documentation-policy-check";
-      version = "0";
-      src = null;
-      buildDeps = [pkgs.aos-ability-contract-validator];
-      outputChecks = {};
-      phases = [
-        {
-          name = "check";
-          script = ''
-            ${builtins.concatStringsSep "\n" (builtins.map (path: "aos-ability-contract-validator package-projection ${lib.escapeShellArg path}") projectionPaths)}
-            mkdir -p "$out"
-            printf 'PASS\n' > "$out/result"
-          '';
-        }
-      ];
-    }
+  else pkgs.mkDerivation {
+    pname = "package-documentation-policy-check";
+    version = "0";
+    src = null;
+    outputChecks = {};
+    phases = [{
+      name = "check";
+      script = ''
+        mkdir -p "$out"
+        printf 'PASS\n' > "$out/result"
+      '';
+    }];
+  }
