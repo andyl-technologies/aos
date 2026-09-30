@@ -89,6 +89,15 @@ pub(crate) async fn hash_response(
 /// Returns a value-free error for unavailable BYOB interfaces, stream failures,
 /// oversized metadata or malformed native stream results.
 pub(crate) async fn read_bounded_native(response: Response, cap: usize) -> Result<Vec<u8>> {
+    read_bounded_native_observed(response, cap, &|_| {}).await
+}
+
+/// Observes only byte views actually returned by the bounded native reader.
+pub(crate) async fn read_bounded_native_observed(
+    response: Response,
+    cap: usize,
+    consumed: &dyn Fn(u64),
+) -> Result<Vec<u8>> {
     ensure!(
         cap > 0 && cap <= 512 * 1024,
         "native metadata bound invalid"
@@ -103,6 +112,7 @@ pub(crate) async fn read_bounded_native(response: Response, cap: usize) -> Resul
     loop {
         let (view, done) = reader.read().await?;
         let length = view.length() as usize;
+        consumed(length as u64);
         ensure!(
             length <= CHUNK_BYTES as usize
                 && bytes
@@ -135,6 +145,16 @@ pub(crate) async fn verify_response(
     response: Response,
     intent: &DirectUploadIntent,
     parts: &[DirectManifestPart],
+) -> Result<VerifiedStreamDigest> {
+    verify_response_observed(response, intent, parts, &|_| {}).await
+}
+
+/// Observes each actual native read before integrity checks accept its bytes.
+pub(crate) async fn verify_response_observed(
+    response: Response,
+    intent: &DirectUploadIntent,
+    parts: &[DirectManifestPart],
+    consumed: &dyn Fn(u64),
 ) -> Result<VerifiedStreamDigest> {
     intent.validate()?;
     ensure!(
@@ -169,6 +189,7 @@ pub(crate) async fn verify_response(
         loop {
             let (value, done) = reader.read().await?;
             let length = value.length();
+            consumed(u64::from(length));
             ensure!(length <= CHUNK_BYTES, "stage runtime chunk exceeds bound");
             counted = counted
                 .checked_add(u64::from(length))

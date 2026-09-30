@@ -275,21 +275,44 @@ pub(crate) async fn verify_class(
     parts: &[DirectManifestPart],
     class: super::provider_capacity::Class,
 ) -> Result<()> {
+    verify_class_observed(env, key, closed, intent, parts, class, None).await
+}
+
+/// Measures actual source consumption without changing immutable verification.
+pub(crate) async fn verify_class_observed(
+    env: &Env,
+    key: &str,
+    closed: &ObjectReceipt,
+    intent: &DirectUploadIntent,
+    parts: &[DirectManifestPart],
+    class: super::provider_capacity::Class,
+    original: Option<super::observation::Object>,
+) -> Result<()> {
     let (snapshot, stream, _capacity) = get_class(env, key, None, class).await?;
     ensure!(
         &snapshot == closed && snapshot.byte_size == intent.byte_size,
         "direct SDK source incarnation changed"
     );
-    let verified = crate::direct_digest::verify_response(
+    let mut observation = original.map(super::observation::Read::new);
+    let consumed = |bytes| {
+        if let Some(observation) = &observation {
+            observation.consumed(bytes);
+        }
+    };
+    let verified = crate::direct_digest::verify_response_observed(
         Response::from_body(ResponseBody::Stream(stream))?,
         intent,
         parts,
+        &consumed,
     )
     .await?;
     ensure!(
         verified.sha256 == intent.expected_sha256 && verified.byte_size == intent.byte_size.get(),
         "direct SDK verification differs"
     );
+    if let Some(observation) = &mut observation {
+        observation.positive();
+    }
     Ok(())
 }
 
@@ -395,6 +418,18 @@ pub(crate) async fn read_metadata_class(
     maximum: usize,
     class: super::provider_capacity::Class,
 ) -> Result<Vec<u8>> {
+    read_metadata_class_observed(env, key, closed, maximum, class, None).await
+}
+
+/// Measures bounded semantic rereads independently of the full-source read.
+pub(crate) async fn read_metadata_class_observed(
+    env: &Env,
+    key: &str,
+    closed: &ObjectReceipt,
+    maximum: usize,
+    class: super::provider_capacity::Class,
+    original: Option<super::observation::Object>,
+) -> Result<Vec<u8>> {
     ensure!(
         closed.byte_size.get() <= maximum as u64,
         "direct semantic source exceeds bound"
@@ -404,11 +439,22 @@ pub(crate) async fn read_metadata_class(
         &identity == closed,
         "direct semantic source incarnation changed"
     );
-    crate::direct_digest::read_bounded_native(
+    let mut observation = original.map(super::observation::Read::metadata);
+    let consumed = |bytes| {
+        if let Some(observation) = &observation {
+            observation.consumed(bytes);
+        }
+    };
+    let bytes = crate::direct_digest::read_bounded_native_observed(
         Response::from_body(ResponseBody::Stream(stream))?,
         maximum,
+        &consumed,
     )
-    .await
+    .await?;
+    if let Some(observation) = &mut observation {
+        observation.positive();
+    }
+    Ok(bytes)
 }
 
 pub(crate) async fn upload_probe_part(

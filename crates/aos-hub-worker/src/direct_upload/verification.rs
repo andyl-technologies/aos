@@ -18,7 +18,7 @@ use worker::{Env, MessageExt as _};
 
 use super::{
     config::QualifiedConfig,
-    journal, managed,
+    journal, managed, observation,
     storage::{self, Operation, Reply},
 };
 
@@ -64,6 +64,26 @@ pub(crate) struct VerificationJob {
     pub(crate) complete: DirectCompleteRequest,
     pub(crate) placement_id: WireInteger,
     pub(crate) closed: ClosedStage,
+}
+
+fn observation_object(job: &VerificationJob) -> observation::Object {
+    let operation = step_id(
+        &job.admission,
+        job.placement_id,
+        &job.complete.operation_id,
+        "verify-stage",
+    )
+    .ok();
+    let mut observed = observation::Object::new(
+        &job.admission.session_id,
+        &job.admission.logical_fingerprint,
+        &job.admission.intent,
+        job.placement_id,
+        &job.complete.operation_id,
+    );
+    observed.operation_digest = operation.as_deref().map(observation::digest);
+    observed.complete_operation_digest = Some(observation::digest(&job.complete.operation_id));
+    observed
 }
 
 pub(crate) fn step_id(
@@ -277,7 +297,22 @@ pub(crate) async fn enqueue(env: &Env, job: &VerificationJob) -> Result<()> {
     } else {
         METADATA_QUEUE
     };
-    env.queue(binding)?.send(job.clone()).await?;
+    let queue = env.queue(binding)?;
+    let mut event = observation::Event::new(
+        observation::Kind::QueueEnqueue,
+        Some(observation_object(job)),
+        &uuid::Uuid::new_v4().to_string(),
+    );
+    event.bytes = Some(WireInteger::new(encode_direct_control(job)?.len() as u64));
+    observation::emit(&event);
+    let queued = queue.send(job.clone()).await;
+    event.outcome = if queued.is_ok() {
+        observation::Outcome::Positive
+    } else {
+        observation::Outcome::Unknown
+    };
+    observation::emit(&event);
+    queued?;
     Ok(())
 }
 
@@ -368,14 +403,17 @@ pub(crate) fn object_observation() -> ObjectObservation {
 
 pub(crate) async fn run(env: &Env, job: &VerificationJob) -> Result<VerifiedPlacement> {
     let qualified = QualifiedConfig::load(env).await?;
-    run_qualified(env, job, &qualified).await
+    run_qualified(env, job, &qualified, None)
+        .await
+        .map(|(proof, _)| proof)
 }
 
 async fn run_qualified(
     env: &Env,
     job: &VerificationJob,
     qualified: &QualifiedConfig,
-) -> Result<VerifiedPlacement> {
+    observed: Option<&observation::Event>,
+) -> Result<(VerifiedPlacement, bool)> {
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     ensure!(
         job.version == 1,
@@ -392,16 +430,27 @@ async fn run_qualified(
         job.admission.intent.dependency_phase,
         qualified.runtime.maximum_parallel_objects.get() as u32,
     )?;
+    if let Some(observed) = observed {
+        let mut event = observed.clone();
+        let active = object_observation();
+        event.aggregate_active = active.aggregate_active;
+        event.bulk_active = active.bulk_active;
+        event.metadata_active = active.metadata_active;
+        observation::emit(&event);
+    }
     let operation_id = step_id(
         &job.admission,
         job.placement_id,
         &job.complete.operation_id,
         "verify-stage",
     )?;
-    storage::effect(env, &job.admission, operation_id.clone(), job, true, || {
-        verify(env, job, &operation_id)
+    let replayed = Cell::new(true);
+    let source_dispatch = || replayed.set(false);
+    let proof = storage::effect(env, &job.admission, operation_id.clone(), job, true, || {
+        verify_observed(env, job, &operation_id, &source_dispatch)
     })
-    .await
+    .await?;
+    Ok((proof, replayed.get()))
 }
 
 async fn verify(env: &Env, job: &VerificationJob, operation_id: &str) -> Result<VerifiedPlacement> {
@@ -433,20 +482,27 @@ async fn verify_observed(
             // This helper has no provider-terminal replay: a positive return
             // requires the actual complete source stream and integrity checks.
             source_dispatch();
-            managed::verify_class(
+            managed::verify_class_observed(
                 env,
                 &stage_key,
                 object,
                 &job.admission.intent,
                 &parts,
                 class,
+                Some(observation_object(job)),
             )
             .await?;
             let projection = if matches!(&job.admission.intent.target, DirectUploadTarget::CacheObject { path, .. } if path.ends_with(".narinfo"))
             {
-                let bytes =
-                    managed::read_metadata_class(env, &stage_key, object, 512 * 1024, class)
-                        .await?;
+                let bytes = managed::read_metadata_class_observed(
+                    env,
+                    &stage_key,
+                    object,
+                    512 * 1024,
+                    class,
+                    Some(observation_object(job)),
+                )
+                .await?;
                 let projection =
                     aos_hub_core::hybrid_ingress::projection::HybridNarinfoProjection::from_bytes(
                         &bytes,
@@ -686,11 +742,33 @@ pub(crate) async fn consume(
                 message.retry();
                 return Ok(());
             }
-            if run_qualified(env, &job, qualified).await.is_ok() {
+            let mut observed = observation::Event::new(
+                observation::Kind::QueueStart,
+                Some(observation_object(&job)),
+                &uuid::Uuid::new_v4().to_string(),
+            );
+            observed.delivery_digest = Some(observation::digest(&message.id()));
+            let result = run_qualified(env, &job, qualified, Some(&observed)).await;
+            observed.kind = observation::Kind::QueueFinish;
+            let active = object_observation();
+            observed.aggregate_active = active.aggregate_active;
+            observed.bulk_active = active.bulk_active;
+            observed.metadata_active = active.metadata_active;
+            observed.outcome = if result.is_ok() {
+                observation::Outcome::Positive
+            } else {
+                observation::Outcome::Refused
+            };
+            observed.replayed = result.as_ref().ok().map(|(_, replayed)| *replayed);
+            observation::emit(&observed);
+            if result.is_ok() {
                 message.ack();
+                observed.kind = observation::Kind::QueueAck;
             } else {
                 message.retry();
+                observed.kind = observation::Kind::QueueRetry;
             }
+            observation::emit(&observed);
             Ok(())
         })
         .buffer_unordered(parallel)

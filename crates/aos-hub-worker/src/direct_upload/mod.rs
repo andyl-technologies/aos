@@ -8,6 +8,9 @@
 mod batches;
 pub(crate) mod journal;
 
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) mod observation;
+
 #[cfg(any(target_arch = "wasm32", test))]
 mod complete;
 

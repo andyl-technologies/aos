@@ -546,9 +546,22 @@ async fn dispatch(
             close_receipt_digest,
             ..
         } => {
-            let verified =
-                crate::direct_digest::verify_response(response, &work.context.intent, parts)
-                    .await?;
+            let original = crate::direct_upload::observation::Object::new(
+                &work.context.session_id,
+                &work.context.logical_fingerprint,
+                &work.context.intent,
+                work.context.placement.placement_id,
+                &work.operation_id,
+            );
+            let mut observed = crate::direct_upload::observation::Read::new(original);
+            let verified = crate::direct_digest::verify_response_observed(
+                response,
+                &work.context.intent,
+                parts,
+                &|bytes| observed.consumed(bytes),
+            )
+            .await?;
+            observed.positive();
             Ok(Outcome::Verified {
                 sha256: verified.sha256,
                 byte_size: aos_hub_core::direct_upload::WireInteger::new(verified.byte_size),

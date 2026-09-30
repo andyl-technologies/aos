@@ -557,6 +557,7 @@ async fn lost_http_commit_reply_holds_guards_and_replays_exact_old_complete() {
 
 #[tokio::test]
 async fn full_metadata_batch_keeps_four_bounded_http_calls() {
+    let _ = crate::direct_upload::observation::take_events();
     let fixtures = (0..MAX_DIRECT_BATCH_ITEMS).map(fixture).collect::<Vec<_>>();
     let (context, public_bytes) = public(&fixtures);
     let server = http::Server::start(fixtures.clone(), None, false).await;
@@ -595,6 +596,50 @@ async fn full_metadata_batch_keeps_four_bounded_http_calls() {
         .bodies
         .iter()
         .all(|bytes| bytes.len() <= MAX_DIRECT_CONTROL_BYTES));
+    assert!(capture
+        .bodies
+        .iter()
+        .all(|bytes| !bytes.windows(BULK.len()).any(|window| window == BULK)));
     output.validate().unwrap();
+    use crate::direct_upload::observation::{Direction, Kind, Outcome, Scope, Step};
+    let events = crate::direct_upload::observation::take_events();
+    let requests = events
+        .iter()
+        .filter(|event| event.kind == Kind::ControlRequest)
+        .collect::<Vec<_>>();
+    let replies = events
+        .iter()
+        .filter(|event| event.kind == Kind::ControlReply)
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(replies.len(), 4);
+    let steps = [Step::Freeze, Step::Baseline, Step::Promote, Step::Commit];
+    for (index, (request, reply)) in requests.iter().zip(&replies).enumerate() {
+        assert_eq!(request.scope, Scope::NativeControl);
+        assert_eq!(request.direction, Some(Direction::WorkerToNative));
+        assert_eq!(reply.direction, Some(Direction::NativeToWorker));
+        assert_eq!(reply.outcome, Outcome::Positive);
+        assert_eq!(
+            request.bytes,
+            Some(WireInteger::new(capture.bodies[index].len() as u64))
+        );
+        assert_eq!(
+            reply.bytes,
+            Some(WireInteger::new(capture.reply_bytes[index] as u64))
+        );
+        assert_eq!(request.control.as_ref().unwrap().step, steps[index]);
+        assert_eq!(
+            request.control.as_ref().unwrap().sessions.len(),
+            MAX_DIRECT_BATCH_ITEMS
+        );
+        assert_eq!(request.attempt_digest, reply.attempt_digest);
+        assert!(reply.control.as_ref().unwrap().reply_body_digest.is_some());
+        assert!(
+            request.encoded().unwrap().len() <= crate::direct_upload::observation::MAX_EVENT_BYTES
+        );
+    }
+    assert!(!events
+        .iter()
+        .any(|event| event.direction == Some(Direction::ProviderToWorker)));
     server.stop().await;
 }

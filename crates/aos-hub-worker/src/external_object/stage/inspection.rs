@@ -221,11 +221,23 @@ pub(crate) async fn read_stage_metadata(
             == aos_hub_core::surface_write::strong_if_match_etag(etag)?,
         "external metadata returned incarnation changed"
     );
-    let bytes = crate::direct_digest::read_bounded_native(response, maximum).await?;
+    let original = crate::direct_upload::observation::Object::new(
+        &admission.session_id,
+        &admission.logical_fingerprint,
+        &admission.intent,
+        placement_id,
+        &verified.receipt_digest,
+    );
+    let mut observed = crate::direct_upload::observation::Read::metadata(original);
+    let bytes = crate::direct_digest::read_bounded_native_observed(response, maximum, &|bytes| {
+        observed.consumed(bytes)
+    })
+    .await?;
     ensure!(
         bytes.len() as u64 == admission.intent.byte_size.get()
             && hex::encode(Sha256::digest(&bytes)) == admission.intent.expected_sha256,
         "external metadata original full SHA or size changed"
     );
+    observed.positive();
     Ok(bytes)
 }
