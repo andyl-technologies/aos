@@ -162,6 +162,9 @@ Its Ed25519 signature covers the canonical domain-separated identity produced by
 `signing_bytes()`, including the complete evidence digest, reviewer identity,
 deployment, public origin, source and hosted version. The operator installer
 does not create this signature or turn an arbitrary digest into qualification.
+The separate [independent review tool](direct-upload-review.md) prepares a
+candidate from actual retained reports and signs only an explicitly reviewed
+candidate hash under the separately installed reviewer key.
 
 For external-only deployments, select a closed transport clock file with
 `--direct-upload-clock-file` instead of the managed profile and omit the managed

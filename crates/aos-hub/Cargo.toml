@@ -98,3 +98,7 @@ path = "src/bin/aos-hub-authority.rs"
 [[bin]]
 name = "aos-hub-authority-bootstrap"
 path = "src/bin/aos-hub-authority-bootstrap.rs"
+
+[[bin]]
+name = "aos-hub-direct-review"
+path = "src/bin/aos-hub-direct-review.rs"
