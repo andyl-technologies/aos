@@ -351,6 +351,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         expect: Option<&RefRecord>,
         new: &RefRecord,
     ) -> Result<RefCasOutcome, StoreFailure> {
+        ref_key(name)?;
         let _guard = self.exclusive().await?;
         self.ref_cas_locked(name, expect, new).await
     }
@@ -361,6 +362,12 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         seq: u64,
         record: &RefLogRecord,
     ) -> Result<RefLogAppendOutcome, StoreFailure> {
+        log_key(name, &record.record)?;
+        if record.record.seq != seq {
+            return Err(files::malformed());
+        }
+        record.encode().map_err(|_| files::malformed())?;
+
         let _guard = self.exclusive().await?;
         self.ref_log_append_locked(name, seq, record).await
     }
@@ -370,6 +377,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         name: &str,
         from_seq: u64,
     ) -> Result<Vec<RefLogRecord>, StoreFailure> {
+        ref_key(name)?;
+        if !branch(name)? {
+            return Err(files::malformed());
+        }
+
         let _guard = self.exclusive().await?;
         self.ref_log_read_locked(name, from_seq).await
     }

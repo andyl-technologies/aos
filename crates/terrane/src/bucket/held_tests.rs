@@ -397,3 +397,32 @@ async fn held_buckets_cancellation_while_waiting_second_releases_first() {
     tokio::fs::remove_dir_all(left.root()).await.unwrap();
     tokio::fs::remove_dir_all(right.root()).await.unwrap();
 }
+
+#[tokio::test]
+async fn held_buckets_ordinary_invalid_refs_reject_before_locking() {
+    let bucket = fixture().await;
+    let fs = ObservedFs::new();
+    let independent = observed_handle(&bucket, fs.clone()).await;
+    fs.arm();
+    let first = RefRecord::first([1; 32], 1, Locality::default()).selected();
+    assert!(
+        independent
+            .ref_cas("unregistered", None, &first)
+            .await
+            .is_err()
+    );
+    assert!(
+        independent
+            .ref_log_append("refs/heads/_/main", 2, &log(first, None))
+            .await
+            .is_err()
+    );
+    assert!(
+        independent
+            .ref_log_read("refs/tags/_/release", 1)
+            .await
+            .is_err()
+    );
+    assert_eq!(fs.attempts.available_permits(), 0);
+    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+}
