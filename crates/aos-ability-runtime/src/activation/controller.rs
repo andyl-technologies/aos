@@ -10,12 +10,15 @@ use crate::adapter::CancellationToken;
 use crate::journal::{FileJournal, JournalLimits};
 
 use super::journal::{Event, State};
-use super::{Action, ActivationAdapter, ActivationResults, Invocation, Observation};
+use super::{
+    Action, ActivationAdapter, ActivationResults, Boundary, BoundaryEvent, Invocation, Observation,
+};
 
 /// Owns the exclusive activation journal and its recovered resource state.
 pub struct Activation {
     journal: FileJournal<Event>,
     state: State,
+    pending_sequence: Option<u64>,
 }
 
 impl Activation {
@@ -27,12 +30,19 @@ impl Activation {
     pub fn open(path: impl AsRef<Path>, limits: JournalLimits) -> Result<Self> {
         let opened = FileJournal::<Event>::open(path, limits)?;
         let mut state = State::default();
+        let mut pending_sequence = None;
         for record in opened.recovery.records() {
             state.apply(record.body())?;
+            match record.body() {
+                Event::Started { .. } => pending_sequence = Some(record.sequence()),
+                Event::Finished { .. } => pending_sequence = None,
+                _ => {}
+            }
         }
         Ok(Self {
             journal: opened.journal,
             state,
+            pending_sequence,
         })
     }
 
@@ -165,10 +175,88 @@ impl Activation {
         Ok(())
     }
 
-    fn record(&mut self, event: Event) -> Result<()> {
+    fn record(&mut self, event: Event) -> Result<u64> {
         self.state.check(&event)?;
-        self.journal.append(&event)?;
-        self.state.apply(&event)
+        let sequence = self.journal.append(&event)?.sequence();
+        self.state.apply(&event)?;
+        match event {
+            Event::Started { .. } => self.pending_sequence = Some(sequence),
+            Event::Finished { .. } => self.pending_sequence = None,
+            _ => {}
+        }
+        Ok(sequence)
+    }
+
+    fn boundary(
+        &self,
+        invocation: &Invocation,
+        sequence: u64,
+        boundary: Boundary,
+        adapter: &mut impl ActivationAdapter,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        let event = BoundaryEvent {
+            schema: "aos.activation.boundary".into(),
+            transaction: self
+                .state
+                .transaction
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("boundary outside activation transaction"))?,
+            effect: invocation.id.clone(),
+            revision: invocation.revision.clone(),
+            action: invocation.action,
+            journal_sequence: sequence,
+            boundary,
+        };
+        adapter.boundary(&event, cancellation)?;
+        ensure!(
+            !cancellation.is_cancelled(),
+            "activation cancelled at execution boundary"
+        );
+        Ok(())
+    }
+
+    fn observe(
+        &self,
+        invocation: &Invocation,
+        sequence: u64,
+        adapter: &mut impl ActivationAdapter,
+        cancellation: &CancellationToken,
+    ) -> Result<Observation> {
+        self.boundary(
+            invocation,
+            sequence,
+            Boundary::ObservationStarted,
+            adapter,
+            cancellation,
+        )?;
+        let observation = adapter.observe(invocation, cancellation)?;
+        self.boundary(
+            invocation,
+            sequence,
+            Boundary::ObservationReturned,
+            adapter,
+            cancellation,
+        )?;
+        Ok(observation)
+    }
+
+    fn invoke(
+        &self,
+        invocation: &Invocation,
+        sequence: u64,
+        adapter: &mut impl ActivationAdapter,
+        cancellation: &CancellationToken,
+    ) -> Result<serde_json::Value> {
+        let outputs = adapter.invoke(invocation, cancellation)?;
+        self.boundary(
+            invocation,
+            sequence,
+            Boundary::DispatchReturned,
+            adapter,
+            cancellation,
+        )?;
+        Ok(outputs)
     }
 
     fn run(
@@ -217,9 +305,16 @@ impl Activation {
             let invocation = self.state.application(id)?;
 
             self.journal.ensure_capacity(3)?;
-            self.record(Event::Started {
+            let sequence = self.record(Event::Started {
                 invocation: Box::new(invocation.clone()),
             })?;
+            self.boundary(
+                &invocation,
+                sequence,
+                Boundary::IntentDurable,
+                adapter,
+                cancellation,
+            )?;
             let outputs = match &effect.handler {
                 Handler::Composition { exports, .. } => {
                     resolve(&serde_json::to_value(exports)?, &results)?
@@ -229,23 +324,30 @@ impl Activation {
                     if previous
                         .is_some_and(|state| state.invocation.revision == invocation.revision)
                     {
-                        match adapter.observe(&invocation, cancellation)? {
+                        match self.observe(&invocation, sequence, adapter, cancellation)? {
                             Observation::Current(outputs) => outputs,
                             Observation::RetrySafe | Observation::Absent => {
-                                adapter.invoke(&invocation, cancellation)?
+                                self.invoke(&invocation, sequence, adapter, cancellation)?
                             }
                             Observation::Indeterminate => {
                                 anyhow::bail!("retained effect cannot be observed safely")
                             }
                         }
                     } else {
-                        adapter.invoke(&invocation, cancellation)?
+                        self.invoke(&invocation, sequence, adapter, cancellation)?
                     }
                 }
             };
             self.record(Event::Finished {
                 outputs: outputs.clone(),
             })?;
+            self.boundary(
+                &invocation,
+                sequence,
+                Boundary::OutcomeDurable,
+                adapter,
+                cancellation,
+            )?;
             self.drain_releases(adapter)?;
             results.insert(id.clone(), outputs);
         }
@@ -290,14 +392,28 @@ impl Activation {
         invocation.action = Action::Remove;
         invocation.previous = None;
         self.journal.ensure_capacity(3)?;
-        self.record(Event::Started {
+        let sequence = self.record(Event::Started {
             invocation: Box::new(invocation.clone()),
         })?;
+        self.boundary(
+            &invocation,
+            sequence,
+            Boundary::IntentDurable,
+            adapter,
+            cancellation,
+        )?;
         let outputs = match invocation.effect.handler {
             Handler::Composition { .. } => serde_json::json!({}),
-            Handler::Process { .. } => adapter.invoke(&invocation, cancellation)?,
+            Handler::Process { .. } => self.invoke(&invocation, sequence, adapter, cancellation)?,
         };
         self.record(Event::Finished { outputs })?;
+        self.boundary(
+            &invocation,
+            sequence,
+            Boundary::OutcomeDurable,
+            adapter,
+            cancellation,
+        )?;
         self.drain_releases(adapter)
     }
 
@@ -311,21 +427,44 @@ impl Activation {
             !cancellation.is_cancelled(),
             "activation recovery cancelled"
         );
+        let sequence = self
+            .pending_sequence
+            .ok_or_else(|| anyhow::anyhow!("pending invocation has no durable intent"))?;
+        self.boundary(
+            invocation,
+            sequence,
+            Boundary::IntentDurable,
+            adapter,
+            cancellation,
+        )?;
         let outputs = match &invocation.effect.handler {
             Handler::Composition { exports, .. } if invocation.action == Action::Apply => {
                 resolve(&serde_json::to_value(exports)?, &self.retained())?
             }
             Handler::Composition { .. } => serde_json::json!({}),
-            Handler::Process { .. } => match adapter.observe(invocation, cancellation)? {
-                Observation::Current(outputs) if invocation.action == Action::Apply => outputs,
-                Observation::Absent if invocation.action == Action::Remove => serde_json::json!({}),
-                Observation::RetrySafe => adapter.invoke(invocation, cancellation)?,
-                _ => anyhow::bail!(
-                    "interrupted effect requires an authoritative recovery observation"
-                ),
-            },
+            Handler::Process { .. } => {
+                match self.observe(invocation, sequence, adapter, cancellation)? {
+                    Observation::Current(outputs) if invocation.action == Action::Apply => outputs,
+                    Observation::Absent if invocation.action == Action::Remove => {
+                        serde_json::json!({})
+                    }
+                    Observation::RetrySafe => {
+                        self.invoke(invocation, sequence, adapter, cancellation)?
+                    }
+                    _ => anyhow::bail!(
+                        "interrupted effect requires an authoritative recovery observation"
+                    ),
+                }
+            }
         };
         self.record(Event::Finished { outputs })?;
+        self.boundary(
+            invocation,
+            sequence,
+            Boundary::OutcomeDurable,
+            adapter,
+            cancellation,
+        )?;
         self.drain_releases(adapter)
     }
 
