@@ -430,6 +430,40 @@ impl RemoteStorageWorkClient {
         Ok(())
     }
 
+    /// Returns the exact metadata snapshot acknowledged by this client instance.
+    ///
+    /// This local receipt establishes no provider readiness or mutation permission.
+    /// Callers must recheck current SQL and obtain fresh remote authority before
+    /// using it to configure or qualify an external executor.
+    ///
+    /// # Errors
+    /// Returns an error if the snapshot has not been acknowledged or local state
+    /// is poisoned.
+    pub fn acknowledged_binding_snapshot(&self, binding_id: i64) -> Result<StorageBindingSnapshot> {
+        self.published_bindings
+            .read()
+            .map_err(|_| anyhow::anyhow!("published binding state is poisoned"))?
+            .get(&binding_id)
+            .cloned()
+            .context("external binding snapshot has not been acknowledged")
+    }
+
+    /// Returns this client's immutable paired deployment audience.
+    #[must_use]
+    pub fn deployment_id(&self) -> &str {
+        &self.deployment_id
+    }
+
+    /// Returns the configured protected executor origin for an operator receipt.
+    ///
+    /// # Errors
+    /// Rejects an invalid endpoint or a non-HTTPS executor.
+    pub fn executor_origin(&self) -> Result<String> {
+        let endpoint = url::Url::parse(&self.endpoint)?;
+        anyhow::ensure!(endpoint.scheme() == "https", "operator executor must use HTTPS");
+        Ok(endpoint.origin().ascii_serialization())
+    }
+
     fn validate_published_binding_snapshot(
         &self,
         binding: &BindingRecord,

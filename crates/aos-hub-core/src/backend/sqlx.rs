@@ -139,6 +139,33 @@ impl SqlxBackend {
         Ok(Self::Sqlite(pool))
     }
 
+    /// Opens an existing SQLite file without schema or journal-mode changes.
+    ///
+    /// Missing files are rejected. This read-only adapter is intended for
+    /// operator metadata readers; callers must independently validate schema
+    /// identity and must not invoke the migrating database initializer.
+    ///
+    /// # Errors
+    /// Returns an error when the existing file cannot be opened read-only.
+    pub async fn connect_sqlite_read_only(path: &str) -> Result<Self> {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        anyhow::ensure!(
+            !path.is_empty() && path != ":memory:",
+            "existing SQLite file is required"
+        );
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(false)
+            .read_only(true)
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .connect_with(options)
+            .await
+            .context("opening existing SQLite metadata read-only")?;
+        Ok(Self::Sqlite(pool))
+    }
+
     /// Connects to a postgres server at `url` (e.g.
     /// `postgresql://user:pass@host:port/db`).
     ///
