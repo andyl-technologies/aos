@@ -107,6 +107,35 @@ pub struct AvailablePair {
     pub missing_oids: Vec<Oid>,
 }
 
+/// A storage-local projection derived from a fully verified decoded tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedTree<T> {
+    /// Requested whole-tree SHA-256 Git identity.
+    pub oid: Oid,
+    /// Complete decoded tree size before the callback's projection.
+    pub object_size: u64,
+    /// Local callback output; the caller enforces its transport format and bound.
+    pub projection: T,
+}
+
+/// Complete pair commitments and an optional storage-local tree projection.
+///
+/// An absent tree is reported only after the whole pair passes validation.
+/// `pair.objects` is empty; decoded tree bytes are borrowed by the callback and
+/// are never included in this result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedTreeProjection<T> {
+    /// Exact encoded pair identities and decoded memory measurements.
+    pub pair: VerifiedPair,
+    /// The selected projection, or `None` when the OID is absent from the pair.
+    pub tree: Option<ProjectedTree<T>>,
+}
+
+struct VerifiedGraph {
+    pair: VerifiedPair,
+    objects: Vec<(super::IndexEntry, super::ResolvedEntry)>,
+}
+
 /// Incrementally verifies a pack and its bounded companion index.
 ///
 /// A failed feed invalidates the whole reader, even if previously fed bytes
@@ -212,21 +241,11 @@ impl PairReader {
     /// disagreement, delta violations, unordered/duplicate selections, invalid
     /// ranges or present output above the aggregate 128 KiB bound.
     pub fn finish_available(self, selections: &[Selection]) -> Result<AvailablePair> {
-        ensure!(!self.failed, "pack pair reader previously failed");
         validate_selections(selections)?;
-        let expected = parse_index(&self.index_path, &self.index)?;
-        let parsed = self.pack.finish()?;
-        ensure!(
-            parsed.entries.len() == expected.len(),
-            "pack index object count does not match its companion pack"
-        );
-        let (mut resolved, peak_decoded_graph_bytes) =
-            resolve_pack_entries_measured(parsed.entries, &expected)?;
-        resolved.sort_by_key(|(entry, _)| entry.oid);
-        ensure!(
-            resolved.iter().map(|(entry, _)| entry).eq(expected.iter()),
-            "pack index does not describe its companion pack"
-        );
+        let VerifiedGraph {
+            mut pair,
+            objects: mut resolved,
+        } = self.verify()?;
 
         let mut objects = Vec::with_capacity(selections.len());
         let mut missing_oids = Vec::new();
@@ -271,6 +290,65 @@ impl PairReader {
                 content,
             });
         }
+        pair.objects = objects;
+        Ok(AvailablePair { pair, missing_oids })
+    }
+
+    /// Projects one decoded tree beside storage after complete pair validation.
+    ///
+    /// The callback borrows the verified whole tree within the existing 4 MiB
+    /// object and 12 MiB graph limits. This permits bounded names or cursor
+    /// projections from trees larger than the normal 128 KiB content result.
+    /// The caller must enforce its projection's transport bound; this method
+    /// does not enlarge [`Self::finish`] or [`Self::finish_available`] results.
+    /// Missing OIDs return `tree: None` without invoking the callback.
+    ///
+    /// # Errors
+    /// Returns an error for incomplete or corrupt input, index/pack disagreement,
+    /// delta violations, a present non-tree object or the callback's failure.
+    /// Pair validation always completes before the callback runs.
+    pub fn finish_tree_projection<T>(
+        self,
+        oid: Oid,
+        project: impl FnOnce(&[u8]) -> Result<T>,
+    ) -> Result<VerifiedTreeProjection<T>> {
+        let VerifiedGraph { pair, objects } = self.verify()?;
+        let Ok(position) = objects.binary_search_by(|(entry, _)| entry.oid.cmp(oid.as_bytes()))
+        else {
+            return Ok(VerifiedTreeProjection { pair, tree: None });
+        };
+        let object = &objects[position].1;
+        ensure!(
+            object.kind == ObjectKind::Tree,
+            "selected object is not a Git tree"
+        );
+        let tree = ProjectedTree {
+            oid,
+            object_size: object.data.len() as u64,
+            projection: project(&object.data)?,
+        };
+        Ok(VerifiedTreeProjection {
+            pair,
+            tree: Some(tree),
+        })
+    }
+
+    fn verify(self) -> Result<VerifiedGraph> {
+        ensure!(!self.failed, "pack pair reader previously failed");
+        let expected = parse_index(&self.index_path, &self.index)?;
+        let parsed = self.pack.finish()?;
+        ensure!(
+            parsed.entries.len() == expected.len(),
+            "pack index object count does not match its companion pack"
+        );
+        let (mut resolved, peak_decoded_graph_bytes) =
+            resolve_pack_entries_measured(parsed.entries, &expected)?;
+        resolved.sort_by_key(|(entry, _)| entry.oid);
+        ensure!(
+            resolved.iter().map(|(entry, _)| entry).eq(expected.iter()),
+            "pack index does not describe its companion pack"
+        );
+
         let pair = VerifiedPair {
             index_path: self.index_path,
             pack_path: self.pack_path,
@@ -283,11 +361,14 @@ impl PairReader {
                 sha256: Sha256::digest(&self.index).into(),
                 size: self.index.len() as u64,
             },
-            objects,
+            objects: Vec::new(),
             inflated_entry_bytes: parsed.decoded_bytes as u64,
             peak_decoded_graph_bytes: peak_decoded_graph_bytes as u64,
         };
-        Ok(AvailablePair { pair, missing_oids })
+        Ok(VerifiedGraph {
+            pair,
+            objects: resolved,
+        })
     }
 }
 
@@ -322,3 +403,7 @@ fn validate_selections(selections: &[Selection]) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tree_projection_tests.rs"]
+mod tree_projection_tests;
