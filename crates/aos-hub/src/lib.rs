@@ -110,6 +110,7 @@ pub mod mirror;
 pub mod nar_verification;
 pub mod narlist;
 pub mod native_tls;
+pub mod provider_conformance;
 pub mod ratelimit;
 pub mod seed;
 pub mod server;

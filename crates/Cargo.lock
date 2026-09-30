@@ -337,6 +337,7 @@ dependencies = [
  "http-body-util",
  "jsonwebtoken",
  "lzma-rs",
+ "md-5 0.11.0",
  "p256",
  "rand 0.9.4",
  "reqwest",

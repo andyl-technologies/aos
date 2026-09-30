@@ -66,6 +66,7 @@ mkDerivation {
         EOF
         chmod +x "$out/bin/aos-hub"
         ln -s ${aos-hub}/bin/aos-hub-direct-review "$out/bin/aos-hub-direct-review"
+        ln -s ${aos-hub}/bin/aos-hub-provider-conformance "$out/bin/aos-hub-provider-conformance"
 
         cat > "$out/bin/aos-hub-direct-sdk-conformance" <<EOF
         #!${bash}/bin/bash
