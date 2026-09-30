@@ -215,11 +215,28 @@ pub(crate) fn dump_store_path_identity_in(
     store_path: &str,
     executable: Option<&Path>,
 ) -> anyhow::Result<(Sha256Digest, u64)> {
-    aos_core::nix::identity::dump_identity(
-        live_store_command(executable)?,
-        store_path,
-        STORE_VERIFY_TIMEOUT,
-    )
+    let selected = live_store_command(executable)?;
+    let tool = Path::new(selected.get_program());
+    let tool = if tool.is_absolute() {
+        tool.to_owned()
+    } else {
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|directory| directory.join(tool))
+            .find(|candidate| candidate.is_file())
+            .ok_or_else(|| anyhow::anyhow!("selected Nix store executable is unavailable"))?
+    };
+    let mut command = aos_core::nix::identity::store_nar_command(&tool, store_path)?;
+    for (key, value) in selected.get_envs() {
+        match value {
+            Some(value) => {
+                command.env(key, value);
+            }
+            None => {
+                command.env_remove(key);
+            }
+        }
+    }
+    aos_core::nix::identity::hash_nar_command(command, STORE_VERIFY_TIMEOUT)
 }
 
 pub(crate) fn live_store_command(executable: Option<&Path>) -> anyhow::Result<Command> {

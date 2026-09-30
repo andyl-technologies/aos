@@ -9,12 +9,14 @@
 //! - [`store`] -- [`NixCli`], a thinner per-path wrapper around
 //!   `nix-store` queries, realisation, dump/export/import, plus the
 //!   [`PathInfo`] metadata record.
+//! - [`identity`] -- bounded streaming NAR identities for admitted store tools.
 //! - [`drv`] -- a hand-rolled parser for `.drv` files (ATerm format)
 //!   that extracts fixed-output derivation metadata.
 //! - [`env`](mod@env) -- [`aos_nix_env`] and [`configure_aos_nix_store`],
 //!   which point Nix subprocesses at the selected AOS store.
 pub mod drv;
 pub mod env;
+pub mod identity;
 pub mod runner;
 pub mod store;
 
