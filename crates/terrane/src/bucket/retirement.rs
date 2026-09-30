@@ -34,6 +34,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         expected_index: [u8; 32],
         marked: &BTreeSet<[u8; 32]>,
     ) -> Result<(), StoreFailure> {
+        self.write_layout_locked().await?;
         let exclusions = catalog.exclusions.as_mut().ok_or_else(unsupported)?;
         match exclusions.binary_search_by_key(&exclusion.pack_id, |entry| entry.pack_id) {
             Ok(position) if exclusions[position] == exclusion => return Ok(()),
@@ -77,6 +78,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         mut catalog: Catalog,
         exclusion: &PackExclusion,
     ) -> Result<bool, StoreFailure> {
+        self.write_layout_locked().await?;
         let exclusions = catalog.exclusions.as_mut().ok_or_else(unsupported)?;
         let Ok(position) =
             exclusions.binary_search_by_key(&exclusion.pack_id, |entry| entry.pack_id)
@@ -109,6 +111,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         exclusion: &PackExclusion,
         restore: bool,
     ) -> Result<(), StoreFailure> {
+        self.write_layout_locked().await?;
         let generation = self.next_generation(&catalog).await?;
         let mut shards = Vec::new();
         for previous in &catalog.shards {

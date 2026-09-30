@@ -395,6 +395,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         &self,
         upload: ContentUpload<'_>,
     ) -> Result<Identity, StoreFailure> {
+        self.write_layout_locked().await?;
         let catalog = self.catalog().await?;
         let mut dictionaries = BTreeMap::new();
         let identity = match upload {
@@ -591,17 +592,23 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         identity: &Identity,
         range: Option<ByteRange>,
     ) -> Result<Vec<u8>, StoreFailure> {
-        let _guard = self.exclusive().await?;
-        self.get_locked(identity, range).await
+        let _guard = self.read_exclusion().await?;
+        let value = self.get_locked(identity, range).await?;
+        self.ensure_layout().await?;
+        Ok(value)
     }
 
     async fn has(&self, identities: &[Identity]) -> Result<Vec<bool>, StoreFailure> {
-        let _guard = self.exclusive().await?;
-        self.has_locked(identities).await
+        let _guard = self.read_exclusion().await?;
+        let value = self.has_locked(identities).await?;
+        self.ensure_layout().await?;
+        Ok(value)
     }
 
     async fn list(&self, prefix: &IdentityPrefix) -> Result<Vec<Identity>, StoreFailure> {
-        let _guard = self.exclusive().await?;
-        self.list_locked(prefix).await
+        let _guard = self.read_exclusion().await?;
+        let value = self.list_locked(prefix).await?;
+        self.ensure_layout().await?;
+        Ok(value)
     }
 }

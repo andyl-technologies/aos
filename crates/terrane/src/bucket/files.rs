@@ -84,6 +84,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// Rejects unsafe coordination paths and propagates unavailable lock or
     /// synchronization primitives. The inode is never unlinked or replaced.
     pub(super) async fn exclusive(&self) -> Result<F::Lock, StoreFailure> {
+        if self.inner.access.read_only() {
+            return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
+        }
         let locks = self.inner.config.root.join(".terrane-locks");
         self.inner
             .fs

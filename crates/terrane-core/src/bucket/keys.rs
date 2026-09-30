@@ -2,8 +2,8 @@
 //!
 //! ```text
 //! objects/pack/ab/abcdef0123456789abcdef0123456789.pack
-//! refs/heads/_/main
-//! logs/refs/heads/_/main/00000000000000000001
+//! refs/heads/_/main:record
+//! logs/refs/heads/_/main/00000000000000000001:legacy
 //! ```
 
 use crate::refs::{RefClass, RefName, RefWriteMode};
@@ -41,7 +41,10 @@ pub struct BucketKey {
 }
 
 impl BucketKey {
-    /// Parses a key under the registered layout.
+    /// Parses a key under the registered current and read-only legacy layouts.
+    ///
+    /// Unsuffixed refs and numbered logs are registered for version-1 access;
+    /// callers must enforce the selected layout before reading or writing them.
     ///
     /// # Errors
     /// Returns [`KeyError`] for unsafe components or an unregistered shape.
@@ -81,39 +84,20 @@ impl BucketKey {
                 }
                 Mutability::Immutable
             }
-            ["refs", ..] => {
-                let name = RefName::parse(key).map_err(|_| KeyError)?;
-                let minimum = match name.class() {
-                    RefClass::Notes => 5,
-                    RefClass::Conflicts => 5,
-                    _ => 4,
-                };
-                if parts.len() < minimum {
-                    return Err(KeyError);
-                }
-                if name.class() == RefClass::Notes
-                    && !matches!(parts[2], "profiles" | "completeness" | "memos")
-                {
-                    return Err(KeyError);
-                }
-                if name.class() == RefClass::Conflicts && !sequence(parts[parts.len() - 1]) {
-                    return Err(KeyError);
-                }
-                match name.class().write_mode() {
-                    RefWriteMode::PutIfAbsent => Mutability::CreateOnce,
-                    RefWriteMode::CompareAndSwap => Mutability::CompareAndSwap,
-                }
-            }
+            ["refs", ..] => ref_class(key.strip_suffix(":record").unwrap_or(key))?,
             ["logs", "refs", ..] => {
                 let (ref_key, suffix) = key
                     .strip_prefix("logs/")
                     .ok_or(KeyError)?
                     .rsplit_once('/')
                     .ok_or(KeyError)?;
-                Self::parse(ref_key)?;
+                ref_class(ref_key)?;
                 let name = RefName::parse(ref_key).map_err(|_| KeyError)?;
                 if let Some((seq, candidate)) = suffix.split_once(':') {
-                    if !branch(name.class()) || !sequence(seq) || !hex(candidate, 64) {
+                    if !sequence(seq)
+                        || (candidate == "legacy" && name.class() != RefClass::Heads)
+                        || (candidate != "legacy" && (!branch(name.class()) || !hex(candidate, 64)))
+                    {
                         return Err(KeyError);
                     }
                 } else if name.class() != RefClass::Heads || !sequence(suffix) {
@@ -163,13 +147,34 @@ impl BucketKey {
         )
     }
 
-    /// Formats the registered, zero-padded reflog key for a tenant branch.
+    /// Formats a version-2 migrated numbered-log key for a tenant branch.
     ///
     /// # Errors
     /// Returns [`KeyError`] for a nonbranch, unsafe name, or zero sequence.
     pub fn reflog(name: &str, seq: u64) -> Result<Self, KeyError> {
         let name_key = Self::parse(name)?;
         if !name_key.as_str().starts_with("refs/heads/") || seq == 0 {
+            return Err(KeyError);
+        }
+        Self::parse(&alloc::format!("logs/{name}/{seq:020}:legacy"))
+    }
+
+    /// Formats a version-2 ref or advisory-sidecar record leaf.
+    ///
+    /// # Errors
+    /// Rejects unsafe names and unregistered ref classes or namespace shapes.
+    pub fn ref_record(name: &str) -> Result<Self, KeyError> {
+        ref_class(name)?;
+        Self::parse(&alloc::format!("{name}:record"))
+    }
+
+    /// Formats a version-1 numbered log for explicit legacy read-only access.
+    ///
+    /// # Errors
+    /// Rejects unsafe names, non-head classes, and zero sequences.
+    pub fn legacy_reflog(name: &str, seq: u64) -> Result<Self, KeyError> {
+        ref_class(name)?;
+        if RefName::parse(name).map_err(|_| KeyError)?.class() != RefClass::Heads || seq == 0 {
             return Err(KeyError);
         }
         Self::parse(&alloc::format!("logs/{name}/{seq:020}"))
@@ -186,6 +191,26 @@ impl BucketKey {
             .collect();
         Self::parse(&alloc::format!("logs/{name}/{seq:020}:{candidate}"))
     }
+}
+
+fn ref_class(key: &str) -> Result<Mutability, KeyError> {
+    let name = RefName::parse(key).map_err(|_| KeyError)?;
+    let parts: alloc::vec::Vec<_> = key.split('/').collect();
+    let minimum = match name.class() {
+        RefClass::Notes | RefClass::Conflicts => 5,
+        _ => 4,
+    };
+    if parts.len() < minimum
+        || (name.class() == RefClass::Notes
+            && !matches!(parts[2], "profiles" | "completeness" | "memos"))
+        || (name.class() == RefClass::Conflicts && !sequence(parts[parts.len() - 1]))
+    {
+        return Err(KeyError);
+    }
+    Ok(match name.class().write_mode() {
+        RefWriteMode::PutIfAbsent => Mutability::CreateOnce,
+        RefWriteMode::CompareAndSwap => Mutability::CompareAndSwap,
+    })
 }
 
 fn branch(class: RefClass) -> bool {
@@ -260,7 +285,7 @@ mod tests {
         }
         assert_eq!(
             BucketKey::reflog("refs/heads/_/main", 1).unwrap().as_str(),
-            "logs/refs/heads/_/main/00000000000000000001"
+            "logs/refs/heads/_/main/00000000000000000001:legacy"
         );
         assert_eq!(
             BucketKey::parse("refs/tags/_/release")
@@ -322,6 +347,34 @@ mod tests {
             "gc/1/mark/256/0",
             "gc/1/mark/1/00",
             "gc/1/marks/00",
+        ] {
+            assert!(BucketKey::parse(key).is_err(), "{key}");
+        }
+    }
+
+    #[test]
+    fn v2_suffixes_preserve_ref_grammar_and_disjoint_legacy_logs() {
+        for name in ["refs/heads/_/a", "refs/heads/_/a/b"] {
+            let key = BucketKey::ref_record(name).unwrap();
+            assert_eq!(key.as_str(), alloc::format!("{name}:record"));
+            assert_eq!(key.mutability(), Mutability::CompareAndSwap);
+            assert!(BucketKey::parse(name).is_ok());
+        }
+        assert_eq!(
+            BucketKey::reflog("refs/heads/_/a", 1).unwrap().as_str(),
+            "logs/refs/heads/_/a/00000000000000000001:legacy"
+        );
+        assert_eq!(
+            BucketKey::legacy_reflog("refs/heads/_/a", 1)
+                .unwrap()
+                .as_str(),
+            "logs/refs/heads/_/a/00000000000000000001"
+        );
+        for key in [
+            "refs/heads/_/a:record:record",
+            "refs/heads/_/a:legacy",
+            "logs/refs/jobs/_/a/00000000000000000001:legacy",
+            "logs/refs/heads/_/a/00000000000000000000:legacy",
         ] {
             assert!(BucketKey::parse(key).is_err(), "{key}");
         }

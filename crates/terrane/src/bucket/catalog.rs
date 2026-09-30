@@ -40,9 +40,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .ok_or_else(files::layout_corrupt)?;
         let capabilities =
             BucketCapabilities::decode(&capability_bytes).map_err(|_| files::layout_corrupt())?;
-        if capabilities.profile != self.profile() {
-            return Err(files::layout_corrupt());
-        }
+        self.validate_layout(&capabilities)?;
         let mut shards = Vec::new();
         let mut inventory = None;
         let mut exclusions = None;
@@ -153,6 +151,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         key: &BucketKey,
         bytes: &[u8],
     ) -> Result<(), StoreFailure> {
+        self.write_layout_locked().await?;
         if key.mutability() != Mutability::Immutable {
             return Err(files::malformed());
         }
@@ -207,6 +206,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         new: PackIndexSnapshot,
         inventory: PackInventoryEntry,
     ) -> Result<(), StoreFailure> {
+        self.write_layout_locked().await?;
         if self.physically_excluded(&catalog, new.header().id().as_bytes()) {
             // Even an exact artifact collision cannot re-admit an excluded
             // physical incarnation as the supposedly fresh placement.
@@ -306,6 +306,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         generation: u64,
         shards: &[MergedShard],
     ) -> Result<(), StoreFailure> {
+        self.write_layout_locked().await?;
         let mut entries = Vec::new();
         for shard in shards {
             let bytes = shard.encode();
@@ -381,9 +382,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         &self,
         kind: IdentityKind,
     ) -> Result<Vec<Identity>, StoreFailure> {
-        let _guard = self.exclusive().await?;
+        let _guard = self.read_exclusion().await?;
         let catalog = self.catalog().await?;
-        self.catalog_identities(&catalog, kind)
+        let identities = self.catalog_identities(&catalog, kind)?;
+        self.ensure_layout().await?;
+        Ok(identities)
     }
 
     fn catalog_identities(
@@ -439,7 +442,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// Returns corruption or unavailable I/O if the catalog or a live body cannot
     /// be verified. Directory listing never selects authoritative content.
     pub async fn live_identities(&self, kind: IdentityKind) -> Result<Vec<Identity>, StoreFailure> {
-        let _guard = self.exclusive().await?;
+        let _guard = self.read_exclusion().await?;
         self.live_identities_locked(kind).await
     }
 
@@ -456,6 +459,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         for identity in &identities {
             self.verified_body(&catalog, identity).await?;
         }
+        self.ensure_layout().await?;
         Ok(identities)
     }
 }

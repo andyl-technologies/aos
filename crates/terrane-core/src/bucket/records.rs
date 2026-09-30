@@ -55,7 +55,7 @@ pub struct StoreProfile {
 /// Records the capabilities established by an opening backend's probes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BucketCapabilities {
-    /// The supported durable layout version.
+    /// The durable layout version: one is legacy read-only, two is writable.
     pub layout_version: u64,
     /// Whether a colliding create-if-absent failed as required.
     pub create_if_absent: bool,
@@ -85,7 +85,7 @@ impl BucketCapabilities {
     /// Returns [`RecordError::Schema`] for an unsupported layout version or an
     /// unsorted, duplicate, or unregistered ref inventory.
     pub fn encode(&self) -> Result<Vec<u8>, RecordError> {
-        if self.layout_version != 1 {
+        if !matches!(self.layout_version, 1 | 2) {
             return Err(RecordError::Schema);
         }
 
@@ -147,7 +147,7 @@ impl BucketCapabilities {
         }
         key(&mut decoder, 1)?;
         let layout_version = decoder.uint()?;
-        if layout_version != 1 {
+        if !matches!(layout_version, 1 | 2) {
             return Err(RecordError::Schema);
         }
         key(&mut decoder, 2)?;
@@ -232,7 +232,9 @@ fn validate_ref_names(names: &[String]) -> Result<(), RecordError> {
         return Err(RecordError::Schema);
     }
     for name in names {
-        if !name.starts_with("refs/") || super::keys::BucketKey::parse(name).is_err() {
+        if crate::refs::RefName::parse(name).is_err()
+            || super::keys::BucketKey::parse(name).is_err()
+        {
             return Err(RecordError::Schema);
         }
     }
@@ -616,6 +618,14 @@ mod tests {
         };
         let encoded = record.encode().unwrap();
         assert_eq!(BucketCapabilities::decode(&encoded).unwrap(), record);
+        let mut writable = record.clone();
+        writable.layout_version = 2;
+        assert_eq!(
+            BucketCapabilities::decode(&writable.encode().unwrap()).unwrap(),
+            writable
+        );
+        writable.layout_version = 3;
+        assert!(writable.encode().is_err());
 
         let mut noncanonical = encoded.clone();
         noncanonical.splice(2..3, [0x18, 1]);
@@ -664,6 +674,7 @@ mod tests {
             alloc::vec!["refs/heads/_/a".into(), "refs/heads/_/a".into()],
             alloc::vec!["CAPABILITIES".into()],
             alloc::vec!["refs/unknown/_/a".into()],
+            alloc::vec!["refs/heads/_/a:record".into()],
         ] {
             record.ref_names = Some(names);
             assert!(record.encode().is_err());

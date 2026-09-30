@@ -413,7 +413,7 @@ async fn unknown_keys_are_not_refs_and_symlinks_fail_closed() {
 async fn missing_reflog_with_committed_horizon_is_corruption() {
     let bucket = fixture().await;
     let first = RefRecord::first([1; 32], 1, Locality::default()).selected();
-    let key = BucketKey::parse("refs/heads/_/main").unwrap();
+    let key = BucketKey::ref_record("refs/heads/_/main").unwrap();
     let _guard = bucket.exclusive().await.unwrap();
     bucket
         .install(&key, &first.encode().unwrap(), false)
@@ -452,7 +452,7 @@ async fn committed_reflog_must_match_the_complete_ref_record() {
     // Author a damaged endpoint whose selected proposal contains other bytes.
     let mut committed = committed;
     committed.candidate_id = pending.candidate_id;
-    let key = BucketKey::parse("refs/heads/_/main").unwrap();
+    let key = BucketKey::ref_record("refs/heads/_/main").unwrap();
     let _guard = bucket.exclusive().await.unwrap();
     bucket
         .install(&key, &committed.encode().unwrap(), false)
@@ -499,7 +499,7 @@ async fn missing_capabilities_never_reinitializes_existing_portable_state() {
             .is_err()
     );
     assert_eq!(
-        tokio::fs::read(root.join("refs/heads/_/main"))
+        tokio::fs::read(root.join("refs/heads/_/main:record"))
             .await
             .unwrap(),
         record.encode().unwrap()

@@ -136,6 +136,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// for another profile, or a specified failure if durable publication fails.
     pub async fn exclude(&self, identity: &Identity) -> Result<(), StoreFailure> {
         let _guard = self.exclusive().await?;
+        self.write_layout_locked().await?;
         let catalog = self.catalog().await?;
         if self.is_quarantined(&catalog, identity)? {
             return Ok(());

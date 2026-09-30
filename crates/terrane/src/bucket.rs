@@ -5,6 +5,9 @@
 //! guard is retained through directory synchronization. Content is opaque to
 //! the backend and format validation is delegated to the configured validator.
 
+mod access;
+use access::Access;
+
 mod catalog;
 mod containers;
 mod content;
@@ -24,6 +27,9 @@ mod readmission_tests;
 
 #[cfg(all(test, feature = "tokio"))]
 mod selection_tests;
+
+#[cfg(all(test, feature = "tokio"))]
+mod version_tests;
 
 #[cfg(all(test, feature = "tokio"))]
 mod tests;
@@ -86,6 +92,7 @@ struct Inner<F, C, V> {
     clock: C,
     validator: V,
     capabilities: Capabilities,
+    access: Access,
 }
 
 impl<F, C, V> Clone for FileBucket<F, C, V> {
@@ -99,11 +106,13 @@ impl<F, C, V> Clone for FileBucket<F, C, V> {
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
     FileBucket<F, C, V>
 {
-    /// Opens and probes a bucket, atomically creating its absent root.
+    /// Opens writable layout two, atomically creating its absent root.
     ///
     /// The configured root's parent must exist. Only the successful root creator
-    /// initializes a complete empty ref inventory. An existing root must already carry its durable capability
-    /// record; a legacy record retains unknown inventory completeness.
+    /// initializes a complete empty ref inventory. An existing root must already
+    /// carry its durable capability
+    /// record. Version one requires explicit read-only access; built-in migration
+    /// is unsupported without whole-namespace completeness and external writer fencing.
     ///
     /// # Errors
     /// Refuses malformed or incompatible layout/profile records, failed probes,
@@ -137,6 +146,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 clock,
                 validator,
                 capabilities,
+                access: Access::Writable,
             }),
         };
 
@@ -176,11 +186,84 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             Err(error) => return Err(files::io_failure(error)),
         };
         bucket.check_directory(&bucket.inner.config.root).await?;
+        if !freshly_created {
+            // Refuse v1 before write probes or coordination-file creation.
+            bucket.ensure_layout().await?;
+        }
         bucket.probe(freshly_created).await?;
         {
             let _guard = bucket.exclusive().await?;
             bucket.catalog().await?;
         }
+        Ok(bucket)
+    }
+
+    /// Opens existing layout one without any writes or startup mutation probes.
+    ///
+    /// Ref and numbered-log reads use their original locations. Every effect is
+    /// refused, and a layout transition requires reopening. This constructor
+    /// neither creates the root nor upgrades unknown inventory completeness.
+    ///
+    /// # Errors
+    /// Refuses absent, unsafe, corrupt, unsupported or incompatible namespaces,
+    /// failed read-range verification, changed layouts, and unavailable reads.
+    pub async fn open_legacy_read_only(
+        config: FileBucketConfig,
+        fs: F,
+        clock: C,
+        validator: V,
+    ) -> Result<Self, StoreFailure> {
+        if !config.root.is_absolute()
+            || config.chunk_profile_name != "cdc-1m"
+            || config.chunk_profile != ChunkProfile::cdc_1m(config.chunk_profile.seed())
+        {
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+        }
+
+        let capabilities = Capabilities {
+            refs: RefCapability::None,
+            ranges: RangeCapability::Ranges,
+            presign: false,
+            locality: config.locality.clone(),
+            durability: Durability::Local,
+            sealed: false,
+        };
+
+        let bucket = Self {
+            inner: Arc::new(Inner {
+                config,
+                fs,
+                clock,
+                validator,
+                capabilities,
+                access: Access::LegacyReadOnly,
+            }),
+        };
+
+        bucket.check_directory(bucket.root()).await?;
+        bucket.ensure_layout().await?;
+        let key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
+        let current = bucket
+            .read_optional(&key)
+            .await?
+            .ok_or_else(files::layout_corrupt)?;
+        let ranged = bucket
+            .inner
+            .fs
+            .read_range(
+                &bucket.path(&key),
+                crate::store::ByteRange {
+                    start: 0,
+                    length: 1,
+                },
+            )
+            .await
+            .map_err(files::io_failure)?;
+        if ranged != current[..1] {
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+        }
+        bucket.catalog().await?;
+        bucket.ensure_layout().await?;
         Ok(bucket)
     }
 
@@ -201,11 +284,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let mut ref_names = freshly_created.then(Vec::new);
         if let Some(bytes) = &old {
             let record = BucketCapabilities::decode(bytes).map_err(|_| files::layout_corrupt())?;
+            self.validate_layout(&record)?;
             generation = record.generation;
             ref_names = record.ref_names;
-            if record.profile != self.profile() {
-                return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-            }
         } else if !freshly_created {
             // An existing root is never proof of an empty authoritative prefix.
             return Err(files::layout_corrupt());
@@ -219,7 +300,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .map_err(|_| files::malformed())?
             .as_secs();
         let record = BucketCapabilities {
-            layout_version: 1,
+            layout_version: 2,
             create_if_absent: true,
             compare_and_swap: true,
             ranges: true,

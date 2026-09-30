@@ -8,11 +8,16 @@ use crate::store::{
 use terrane_core::bucket::{BucketCapabilities, BucketKey, Mutability};
 use terrane_core::refs::{RefClass, RefLogRecord, RefName, RefRecord};
 
-fn ref_key(name: &str) -> Result<BucketKey, StoreFailure> {
+fn ref_key(name: &str, version: u64) -> Result<BucketKey, StoreFailure> {
     if !name.starts_with("refs/") {
         return Err(files::malformed());
     }
-    BucketKey::parse(name).map_err(|_| files::malformed())
+    let key = if version == 1 {
+        BucketKey::parse(name)
+    } else {
+        BucketKey::ref_record(name)
+    };
+    key.map_err(|_| files::malformed())
 }
 
 fn corrupt(name: &str) -> StoreFailure {
@@ -29,9 +34,10 @@ fn branch(name: &str) -> Result<bool, StoreFailure> {
     ))
 }
 
-fn log_key(name: &str, record: &RefRecord) -> Result<BucketKey, StoreFailure> {
+fn log_key(name: &str, record: &RefRecord, version: u64) -> Result<BucketKey, StoreFailure> {
     match &record.candidate_id {
         Some(candidate) => BucketKey::reflog_candidate(name, record.seq, candidate),
+        None if version == 1 => BucketKey::legacy_reflog(name, record.seq),
         None => BucketKey::reflog(name, record.seq),
     }
     .map_err(|_| files::malformed())
@@ -49,7 +55,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// Returns `Unsupported` for an unmigrated legacy inventory, corruption for
     /// invalid capability bytes, and the configured binding's storage failures.
     pub async fn ref_names(&self) -> Result<Vec<String>, StoreFailure> {
-        let _guard = self.exclusive().await?;
+        let _guard = self.read_exclusion().await?;
         let key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
         let bytes = self
             .read_optional(&key)
@@ -57,9 +63,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .ok_or_else(files::layout_corrupt)?;
         let capabilities =
             BucketCapabilities::decode(&bytes).map_err(|_| files::layout_corrupt())?;
-        if capabilities.profile != self.profile() {
-            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-        }
+        self.validate_layout(&capabilities)?;
+        self.ensure_layout().await?;
         capabilities
             .ref_names
             .ok_or_else(|| StoreFailure::new(StoreErrorKind::Unsupported))
@@ -79,9 +84,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .ok_or_else(files::layout_corrupt)?;
         let mut capabilities =
             BucketCapabilities::decode(&bytes).map_err(|_| files::layout_corrupt())?;
-        if capabilities.profile != self.profile() {
-            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-        }
+        self.validate_layout(&capabilities)?;
         let Some(names) = capabilities.ref_names.as_mut() else {
             return if already_exists {
                 Ok(())
@@ -109,6 +112,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     }
 
     async fn read_ref(&self, key: &BucketKey) -> Result<Option<RefRecord>, StoreFailure> {
+        self.ensure_layout().await?;
+        let public_name = key.as_str().strip_suffix(":record").unwrap_or(key.as_str());
         let record = self
             .read_optional(key)
             .await?
@@ -125,17 +130,16 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 .ok_or_else(files::layout_corrupt)?;
             let capabilities =
                 BucketCapabilities::decode(&bytes).map_err(|_| files::layout_corrupt())?;
-            if capabilities.profile != self.profile() {
-                return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-            }
+            self.validate_layout(&capabilities)?;
             if capabilities.ref_names.as_ref().is_some_and(|names| {
                 names
-                    .binary_search_by(|name| name.as_bytes().cmp(key.as_str().as_bytes()))
+                    .binary_search_by(|name| name.as_bytes().cmp(public_name.as_bytes()))
                     .is_err()
             }) {
                 return Err(corrupt(key.as_str()));
             }
         }
+        self.ensure_layout().await?;
         Ok(record)
     }
 
@@ -144,7 +148,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         name: &str,
         selected: &RefRecord,
     ) -> Result<RefLogRecord, StoreFailure> {
-        let key = log_key(name, selected)?;
+        let key = log_key(name, selected, self.inner.access.version())?;
         let bytes = self
             .read_optional(&key)
             .await?
@@ -212,7 +216,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         &self,
         name: &str,
     ) -> Result<Option<RefRecord>, StoreFailure> {
-        let key = ref_key(name)?;
+        let key = ref_key(name, self.inner.access.version())?;
         self.read_ref(&key).await
     }
 
@@ -226,7 +230,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         expect: Option<&RefRecord>,
         new: &RefRecord,
     ) -> Result<RefCasOutcome, StoreFailure> {
-        let key = ref_key(name)?;
+        self.write_layout_locked().await?;
+        let key = ref_key(name, self.inner.access.version())?;
         let current = self.read_ref(&key).await?;
         if current.as_ref() != expect
             || (key.mutability() == Mutability::CreateOnce && current.is_some())
@@ -238,7 +243,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             if new.candidate_id.is_none() {
                 return Err(files::malformed());
             }
-            let proposal_key = log_key(name, new)?;
+            let proposal_key = log_key(name, new, self.inner.access.version())?;
             let proposal_bytes = self
                 .read_optional(&proposal_key)
                 .await?
@@ -268,7 +273,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         seq: u64,
         record: &RefLogRecord,
     ) -> Result<RefLogAppendOutcome, StoreFailure> {
-        let key = log_key(name, &record.record)?;
+        self.write_layout_locked().await?;
+        let key = log_key(name, &record.record, self.inner.access.version())?;
         if record.record.seq != seq {
             return Err(files::malformed());
         }
@@ -315,7 +321,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         name: &str,
         from_seq: u64,
     ) -> Result<Vec<RefLogRecord>, StoreFailure> {
-        let key = ref_key(name)?;
+        let key = ref_key(name, self.inner.access.version())?;
         if !branch(name)? {
             return Err(files::malformed());
         }
@@ -327,6 +333,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             return Ok(Vec::new());
         }
         let records = self.committed_logs(name, current).await?;
+        self.ensure_layout().await?;
         Ok(records
             .into_iter()
             .filter(|log| log.record.seq >= from_seq)
@@ -351,7 +358,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         expect: Option<&RefRecord>,
         new: &RefRecord,
     ) -> Result<RefCasOutcome, StoreFailure> {
-        ref_key(name)?;
+        ref_key(name, self.inner.access.version())?;
         let _guard = self.exclusive().await?;
         self.ref_cas_locked(name, expect, new).await
     }
@@ -362,7 +369,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         seq: u64,
         record: &RefLogRecord,
     ) -> Result<RefLogAppendOutcome, StoreFailure> {
-        log_key(name, &record.record)?;
+        log_key(name, &record.record, self.inner.access.version())?;
         if record.record.seq != seq {
             return Err(files::malformed());
         }
@@ -377,17 +384,17 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         name: &str,
         from_seq: u64,
     ) -> Result<Vec<RefLogRecord>, StoreFailure> {
-        ref_key(name)?;
+        ref_key(name, self.inner.access.version())?;
         if !branch(name)? {
             return Err(files::malformed());
         }
 
-        let _guard = self.exclusive().await?;
+        let _guard = self.read_exclusion().await?;
         self.ref_log_read_locked(name, from_seq).await
     }
 
     async fn ref_watch(&self, name: &str, from_seq: u64) -> Result<Self::Watch, StoreFailure> {
-        ref_key(name)?;
+        ref_key(name, self.inner.access.version())?;
         if !branch(name)? {
             return Err(files::malformed());
         }

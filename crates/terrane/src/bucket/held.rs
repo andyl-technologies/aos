@@ -90,6 +90,9 @@ impl<
         source: &'a FileBucket<F, C, V>,
         destination: &'a FileBucket<G, D, W>,
     ) -> Result<Self, StoreFailure> {
+        if source.inner.access.read_only() || destination.inner.access.read_only() {
+            return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
+        }
         let source_id = identity(source).await?;
         let destination_id = identity(destination).await?;
         if source_id.root == destination_id.root || source_id.lock == destination_id.lock {
@@ -108,6 +111,8 @@ impl<
             (source.exclusive().await?, first)
         };
         recheck(source, destination, source_id, destination_id).await?;
+        source.write_layout_locked().await?;
+        destination.write_layout_locked().await?;
         Ok(Self {
             source,
             destination,

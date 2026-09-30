@@ -169,7 +169,7 @@ async fn selected_candidates_coexist_with_legacy_numbered_files() {
     let mut first_log = log(first.clone(), None);
     first_log.expected_previous = None;
     bucket.ref_log_append(name, 1, &first_log).await.unwrap();
-    let key = BucketKey::parse(name).unwrap();
+    let key = BucketKey::ref_record(name).unwrap();
     let guard = bucket.exclusive().await.unwrap();
     bucket
         .install(&key, &first.encode().unwrap(), false)
@@ -269,9 +269,13 @@ async fn complete_ref_inventory_survives_reopen_index_publication_and_ref_remova
         ))
         .await
         .unwrap();
-    tokio::fs::remove_file(bucket.root().join(name))
-        .await
-        .unwrap();
+    tokio::fs::remove_file(
+        bucket
+            .root()
+            .join(BucketKey::ref_record(name).unwrap().as_str()),
+    )
+    .await
+    .unwrap();
     let reopened = FileBucket::open(
         config(bucket.root().to_owned()),
         TokioLocalFs,
@@ -305,7 +309,7 @@ async fn legacy_unknown_inventory_allows_existing_advances_but_rejects_new_names
     let mut first_log = log(first.clone(), None);
     first_log.expected_previous = None;
     bucket.ref_log_append(name, 1, &first_log).await.unwrap();
-    let key = BucketKey::parse(name).unwrap();
+    let key = BucketKey::ref_record(name).unwrap();
     let guard = bucket.exclusive().await.unwrap();
     bucket
         .install(&key, &first.encode().unwrap(), false)
@@ -385,7 +389,7 @@ async fn a_head_missing_from_a_complete_inventory_is_corruption() {
         .ref_log_append(name, 1, &log(record.clone(), None))
         .await
         .unwrap();
-    let key = BucketKey::parse(name).unwrap();
+    let key = BucketKey::ref_record(name).unwrap();
     let guard = bucket.exclusive().await.unwrap();
     bucket
         .install(&key, &record.encode().unwrap(), false)
@@ -406,7 +410,13 @@ async fn a_head_missing_from_a_complete_inventory_is_corruption() {
         StoreErrorKind::Corrupt(_)
     ));
     assert_eq!(
-        tokio::fs::read(bucket.root().join(name)).await.unwrap(),
+        tokio::fs::read(
+            bucket
+                .root()
+                .join(BucketKey::ref_record(name).unwrap().as_str())
+        )
+        .await
+        .unwrap(),
         record.encode().unwrap()
     );
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
