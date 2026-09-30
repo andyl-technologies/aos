@@ -28,6 +28,46 @@ can declare operations for filesystem paths, kernel settings, networking,
 sandboxing, or another domain. Domain definitions belong to packages and system
 modules. The generic library supplies module types and graph construction.
 
+## Read an ability declaration
+
+An ability groups named operations. Each operation declares its inputs and
+results, selects a handler, and contains named effects. This schematic example
+omits the interface and handler bodies; the complete service example follows.
+
+```nix
+aos.abilities.filesystem.operations.directory = {
+  input = { /* Module declaring path, owner, mode, etc. */ };
+  result = { /* Module declaring the returned path, etc. */ };
+  handler = { /* Selected implementation module. */ };
+
+  effects.database = {
+    input.path = "/var/lib/database";
+    input.mode = "0700";
+    lifetime = "persistent";
+  };
+
+  effects.cache = {
+    input.path = "/var/cache/example";
+    input.mode = "0755";
+  };
+};
+```
+
+Here `filesystem` is the ability, `directory` is the operation, and `database`
+and `cache` are two deferred invocations of that operation. Their arguments are
+checked against the same input module and interpreted by the selected handler.
+
+During Nix evaluation, effects are typed configuration values. They declare work;
+they do not perform it. The generated graph gives each invocation an identity,
+dependencies, and a lifetime. The runtime executes the handler later and checks
+its returned values against the result module. An effect's `outputs` contains
+typed references to those future results, not values already produced by Nix.
+
+The database invocation explicitly retains its state until retirement. The cache
+invocation uses the default `instance` lifetime: its handler is asked to remove
+the managed state when the effect disappears from desired configuration. The
+handler defines the actual removal behavior.
+
 ## Define an interface with ordinary modules
 
 An ability groups operations. Each operation owns an input module, a result
