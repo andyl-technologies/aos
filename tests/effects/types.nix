@@ -165,6 +165,19 @@ in {
   assert rejects bounded ["0999"]; true;
   portablePattern = assert (project bounded).kind == "refined";
   assert (project bounded).value.max_length == 4; true;
+  primitiveStringConstraints = let
+    constraints = import ../../lib/types/constraints.nix;
+    nonempty = (project lib.types.nonEmptyStr).constraints;
+    singleLine = (project lib.types.singleLineStr).constraints;
+  in
+    assert evaluate lib.types.nonEmptyStr ["text"] == "text";
+    assert rejects lib.types.nonEmptyStr [""];
+    assert constraints.check nonempty "text" && !(constraints.check nonempty "");
+    assert builtins.all (value:
+      evaluate lib.types.singleLineStr [value] == value && constraints.check singleLine value)
+    ["" "ordinary description" "tab\there" "carriage\rreturn"];
+    assert rejects lib.types.singleLineStr ["two\nlines"];
+    assert !(constraints.check singleLine "two\nlines"); true;
   unsupportedPattern = assert !(builtins.tryEval (builtins.deepSeq (project (lib.types.strMatching "(?=a)a")) true)).success; true;
   listMergeAndLimits = assert evaluate list [["a"] ["b"]] == ["a" "b"];
   assert rejects list [["a"] ["a"]];

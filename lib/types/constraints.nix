@@ -60,6 +60,8 @@ let
         then builtins.match "[^[:space:]]*" value != null
         else if class == "line-break"
         then builtins.match "[^\n\r]*" value != null
+        else if class == "line-feed"
+        then builtins.match "[^\n]*" value != null
         else throw "Unknown excluded character class '${class}'.")
       constraint.classes
     else if constraint.kind == "at-most-one-non-null"

@@ -285,6 +285,12 @@ in rec {
       then throw "The option '${showLoc loc}' must be a non-empty string, but is empty."
       else val;
     _aosDocType = str._aosDocType;
+    _refinementConstraints = [
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+    ];
   };
 
   ## Single-line string: any string that does not contain an embedded
@@ -299,11 +305,13 @@ in rec {
       if builtins.match ".*\n.*" val != null
       then throw "The option '${showLoc loc}' must be a single-line string (no embedded newlines)."
       else val;
-    _aosDocType = {
-      kind = "string";
-      pattern = "single-line";
-      max_length = null;
-    };
+    _aosDocType = str._aosDocType;
+    _refinementConstraints = [
+      {
+        kind = "string-excludes";
+        classes = ["line-feed"];
+      }
+    ];
   };
 
   path = {

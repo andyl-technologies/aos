@@ -34,6 +34,8 @@ pub enum ExcludedCharacterClass {
     AsciiWhitespace,
     /// Excludes carriage returns and line feeds.
     LineBreak,
+    /// Excludes line feeds while preserving carriage returns and other whitespace.
+    LineFeed,
 }
 
 /// Defines a closed, portable predicate applied after a value's base schema.
@@ -151,6 +153,7 @@ impl ValueConstraint {
                         ExcludedCharacterClass::AsciiSpace => character != ' ',
                         ExcludedCharacterClass::AsciiWhitespace => !character.is_ascii_whitespace(),
                         ExcludedCharacterClass::LineBreak => character != '\n' && character != '\r',
+                        ExcludedCharacterClass::LineFeed => character != '\n',
                     })
                 })
             }),
@@ -1214,6 +1217,25 @@ mod tests {
         assert!(constraint.admits(&serde_json::json!("single-line")));
         assert!(!constraint.admits(&serde_json::json!("two words")));
         assert!(!constraint.admits(&serde_json::json!("two\nlines")));
+    }
+
+    #[test]
+    fn primitive_string_constraints_preserve_nix_semantics() {
+        let nonempty: ValueConstraint = serde_json::from_value(serde_json::json!({
+            "kind": "minimum-size", "minimum": 1,
+        }))
+        .unwrap();
+        let single_line: ValueConstraint = serde_json::from_value(serde_json::json!({
+            "kind": "string-excludes", "classes": ["line-feed"],
+        }))
+        .unwrap();
+
+        assert!(nonempty.admits(&serde_json::json!("a")));
+        assert!(!nonempty.admits(&serde_json::json!("")));
+        for value in ["", "ordinary description", "tab\there", "carriage\rreturn"] {
+            assert!(single_line.admits(&serde_json::json!(value)));
+        }
+        assert!(!single_line.admits(&serde_json::json!("two\nlines")));
     }
 
     #[test]
