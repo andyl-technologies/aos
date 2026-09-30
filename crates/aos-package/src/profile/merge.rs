@@ -6,17 +6,16 @@
 //! pointing back into the store. The profile's `current` symlink then makes
 //! e.g. `current/bin` a stable PATH entry across generation switches.
 //!
-//! Merging is shallow per `MERGE_DIRS` entry: each immediate child of a
-//! merge directory becomes one symlink (a file or a whole subdirectory).
-//! Man section directories are merged at `share/man/manN` granularity so
-//! pages from different packages coexist; the `share/man` child itself is
-//! skipped during the `share` scan to avoid double handling.
+//! Real directories are merged recursively so documentation, locale data,
+//! completion scripts, and development metadata from different packages coexist.
+//! Package symlinks remain leaves and are never traversed during the merge.
 //!
-//! When two packages provide the same relative path, the later entry in the
-//! ordered store-path slice wins; every collision is reported as a
+//! When packages provide conflicting leaves or incompatible entries at the
+//! same relative path, the later entry in the ordered store-path slice wins;
+//! every such collision is reported as a
 //! [`FileConflict`] and a printed warning.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -25,32 +24,20 @@ use super::Generation;
 use super::meta::read_generation_meta;
 use aos_core::output::Printer;
 
-/// FHS directories to merge from store paths.
-///
-/// Order matters: more specific paths (e.g. `share/man/man1`) must come after
-/// their parent (`share`) so we can skip subdirectories that are handled by
-/// a more specific entry.
-const MERGE_DIRS: &[&str] = &[
-    "bin",
-    "sbin",
-    "lib",
-    "lib64",
-    "include",
-    "share",
-    "etc",
-    "share/man/man1",
-    "share/man/man2",
-    "share/man/man3",
-    "share/man/man4",
-    "share/man/man5",
-    "share/man/man6",
-    "share/man/man7",
-    "share/man/man8",
-];
+/// Top-level FHS directories merged from store paths.
+const MERGE_DIRS: &[&str] = &["bin", "sbin", "lib", "lib64", "include", "share", "etc"];
 
-/// Subdirectories of `share/` that are handled by more specific MERGE_DIRS
-/// entries.  When scanning `share/`, we skip these to avoid double-processing.
-const SHARE_SKIP_SUBDIRS: &[&str] = &["man"];
+/// One scanned directory or leaf within a package's FHS tree.
+struct StoreEntry {
+    source: PathBuf,
+    directory: bool,
+}
+
+/// One selected provider for a relative profile path.
+struct MergedEntry {
+    package: String,
+    entry: StoreEntry,
+}
 
 /// Directories in the generation root that belong to the profile bookkeeping
 /// rather than the FHS merge tree.  `clear_fhs_tree` preserves these.
@@ -100,7 +87,7 @@ pub fn build_generation_fhs_tree(
 /// Build the merged FHS tree for a generation.
 ///
 /// For each store path rooted in `gen-N/usr/`:
-///   1. Scan the store path for files under each `MERGE_DIR`
+///   1. Recursively scan real directories under each `MERGE_DIR`
 ///   2. Create symlinks in `gen-N/{dir}/{filename}` -> `store_path/{dir}/{filename}`
 ///
 /// File conflicts (same relative path from multiple packages): last-in-list
@@ -117,43 +104,60 @@ pub fn build_fhs_tree(
     store_paths: &[(String, PathBuf)],
     printer: &Printer,
 ) -> Result<MergeResult> {
-    // Phase 1: collect the merged file map across all packages.
-    // Key: relative path (e.g. "bin/curl"), Value: (package_name, absolute target).
-    let mut merged: HashMap<String, (String, PathBuf)> = HashMap::new();
-    let mut conflicts: Vec<FileConflict> = Vec::new();
+    let mut merged: BTreeMap<String, MergedEntry> = BTreeMap::new();
+    let mut conflicts = Vec::new();
 
-    for (pkg_name, store_path) in store_paths {
-        let files = scan_store_path(store_path)
+    for (package, store_path) in store_paths {
+        let entries = scan_store_path(store_path)
             .with_context(|| format!("scanning store path {}", store_path.display()))?;
 
-        for (rel_path, abs_target) in files {
-            if let Some((prev_pkg, _prev_target)) = merged.get(&rel_path) {
-                conflicts.push(FileConflict {
-                    path: rel_path.clone(),
-                    loser: prev_pkg.clone(),
-                    winner: pkg_name.clone(),
-                });
-                printer.warning(&format!(
-                    "conflict: {rel_path} provided by both {} and {} (using {})",
-                    prev_pkg, pkg_name, pkg_name,
-                ));
+        // Parent directories precede children. A directory replacing a leaf
+        // removes that obstruction before any descendants are considered.
+        for (relative_path, entry) in entries {
+            if let Some(previous) = merged.get(&relative_path) {
+                if !(previous.entry.directory && entry.directory) {
+                    conflicts.push(FileConflict {
+                        path: relative_path.clone(),
+                        loser: previous.package.clone(),
+                        winner: package.clone(),
+                    });
+                    printer.warning(&format!(
+                        "conflict: {relative_path} provided by both {} and {package} (using {package})",
+                        previous.package,
+                    ));
+                }
             }
-            merged.insert(rel_path, (pkg_name.clone(), abs_target));
+
+            if !entry.directory {
+                // A later leaf replaces the complete earlier subtree. This
+                // also prevents writing through a selected directory symlink.
+                let prefix = format!("{relative_path}/");
+                merged.retain(|path, _| !path.starts_with(&prefix));
+            }
+            merged.insert(
+                relative_path,
+                MergedEntry {
+                    package: package.clone(),
+                    entry,
+                },
+            );
         }
     }
 
-    // Phase 2: create the actual symlinks.
-    let mut symlinks_created: usize = 0;
+    // Rebuild only after all package trees have been read successfully. An
+    // existing shallow-directory link must not redirect writes into the store.
+    clear_fhs_tree(generation)?;
+    let mut symlinks_created = 0;
 
-    for (rel_path, (_pkg_name, abs_target)) in &merged {
-        create_fhs_symlink(&generation.path, rel_path, abs_target).with_context(|| {
-            format!(
-                "creating FHS symlink {}/{}",
-                generation.path.display(),
-                rel_path,
-            )
-        })?;
-        symlinks_created += 1;
+    for (relative_path, selected) in merged {
+        if selected.entry.directory {
+            let directory = generation.path.join(&relative_path);
+            std::fs::create_dir_all(&directory)
+                .with_context(|| format!("creating profile directory {}", directory.display()))?;
+        } else {
+            create_fhs_symlink(&generation.path, &relative_path, &selected.entry.source)?;
+            symlinks_created += 1;
+        }
     }
 
     Ok(MergeResult {
@@ -232,45 +236,54 @@ pub fn clear_fhs_tree(generation: &Generation) -> Result<()> {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Scan a store path for files under FHS directories.
-///
-/// Returns a map of `relative_path` -> `absolute_file_path`.
-/// For example: `"bin/curl"` -> `"/var/lib/store/h7j3-curl-8.5.0/bin/curl"`.
-fn scan_store_path(store_path: &Path) -> Result<HashMap<String, PathBuf>> {
-    let mut result: HashMap<String, PathBuf> = HashMap::new();
+/// Scans package trees without following child symlinks.
+fn scan_store_path(store_path: &Path) -> Result<BTreeMap<String, StoreEntry>> {
+    let mut entries = BTreeMap::new();
 
-    for &merge_dir in MERGE_DIRS {
-        let dir_path = store_path.join(merge_dir);
-        if !dir_path.is_dir() {
-            continue;
-        }
-
-        let entries = std::fs::read_dir(&dir_path)
-            .with_context(|| format!("reading directory {}", dir_path.display()))?;
-
-        for entry in entries {
-            let entry = entry?;
-            let child_name = entry.file_name();
-            let child_name_str = child_name.to_string_lossy();
-
-            // When scanning `share/`, skip subdirectories that are handled by
-            // more specific MERGE_DIRS entries (e.g. skip `man` because
-            // `share/man/manN` entries will pick up individual man pages).
-            if merge_dir == "share" {
-                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
-                    && SHARE_SKIP_SUBDIRS.contains(&child_name_str.as_ref())
-                {
-                    continue;
-                }
-            }
-
-            let rel_path = format!("{merge_dir}/{child_name_str}");
-            let abs_path = entry.path();
-            result.insert(rel_path, abs_path);
+    for &merge_directory in MERGE_DIRS {
+        let source = store_path.join(merge_directory);
+        if source.is_dir() {
+            scan_directory(&source, merge_directory, &mut entries)?;
         }
     }
 
-    Ok(result)
+    Ok(entries)
+}
+
+/// Records real directory children and recurses only into those directories.
+fn scan_directory(
+    source: &Path,
+    relative_directory: &str,
+    entries: &mut BTreeMap<String, StoreEntry>,
+) -> Result<()> {
+    for child in std::fs::read_dir(source)
+        .with_context(|| format!("reading directory {}", source.display()))?
+    {
+        let child = child?;
+        let name = child.file_name();
+        let name = name.to_str().with_context(|| {
+            format!(
+                "package profile path is not UTF-8: {}",
+                child.path().display()
+            )
+        })?;
+        let relative_path = format!("{relative_directory}/{name}");
+        let directory = child.file_type()?.is_dir();
+        let source = child.path();
+        entries.insert(
+            relative_path.clone(),
+            StoreEntry {
+                source: source.clone(),
+                directory,
+            },
+        );
+
+        if directory {
+            scan_directory(&source, &relative_path, entries)?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Create a single FHS symlink atomically.
@@ -404,8 +417,7 @@ mod tests {
         assert!(files.contains_key("bin/curl"));
         assert!(files.contains_key("lib/libcurl.so"));
         assert!(files.contains_key("share/man/man1/curl.1"));
-        // share/doc is a directory child of share/, so it appears as share/doc
-        assert!(files.contains_key("share/doc"));
+        assert!(files.contains_key("share/doc/curl/README"));
     }
 
     // 2. build_fhs_tree with a single package creates correct symlinks.
@@ -525,6 +537,125 @@ mod tests {
             fs::read_link(gn.path.join("bin/priority-tool")).unwrap(),
             explicit.join("bin/priority-tool"),
         );
+    }
+
+    #[test]
+    fn shared_package_data_directories_coexist() {
+        let tmp = TempDir::new().unwrap();
+        let generation = make_generation(&tmp, 1);
+        let first = make_store_path(
+            &tmp,
+            "first",
+            &[
+                "share/doc/first/README",
+                "share/info/first.info",
+                "share/locale/en/LC_MESSAGES/first.mo",
+                "lib/pkgconfig/first.pc",
+                "share/bash-completion/completions/first",
+            ],
+        );
+        let second = make_store_path(
+            &tmp,
+            "second",
+            &[
+                "share/doc/second/README",
+                "share/info/second.info",
+                "share/locale/en/LC_MESSAGES/second.mo",
+                "lib/pkgconfig/second.pc",
+                "share/bash-completion/completions/second",
+            ],
+        );
+
+        let result = build_fhs_tree(
+            &generation,
+            &[
+                ("first".into(), first.clone()),
+                ("second".into(), second.clone()),
+            ],
+            &test_printer(),
+        )
+        .unwrap();
+
+        assert!(result.conflicts.is_empty());
+        assert_eq!(result.symlinks_created, 10);
+        for (package, source) in [("first", first), ("second", second)] {
+            for path in [
+                format!("share/doc/{package}/README"),
+                format!("share/info/{package}.info"),
+                format!("share/locale/en/LC_MESSAGES/{package}.mo"),
+                format!("lib/pkgconfig/{package}.pc"),
+                format!("share/bash-completion/completions/{package}"),
+            ] {
+                assert_eq!(
+                    fs::read_link(generation.path.join(&path)).unwrap(),
+                    source.join(path)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn directory_symlink_and_real_directory_conflicts_follow_package_order() {
+        let tmp = TempDir::new().unwrap();
+        let generation = make_generation(&tmp, 1);
+        let linked = make_store_path(&tmp, "linked", &["share/target/original"]);
+        std::os::unix::fs::symlink("target", linked.join("share/data")).unwrap();
+        let real = make_store_path(&tmp, "real", &["share/data/new"]);
+
+        let result = build_fhs_tree(
+            &generation,
+            &[
+                ("linked".into(), linked.clone()),
+                ("real".into(), real.clone()),
+            ],
+            &test_printer(),
+        )
+        .unwrap();
+
+        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(result.conflicts[0].path, "share/data");
+        assert!(!generation.path.join("share/data").is_symlink());
+        assert_eq!(
+            fs::read_link(generation.path.join("share/data/new")).unwrap(),
+            real.join("share/data/new")
+        );
+        assert!(!linked.join("share/target/new").exists());
+
+        let result = build_fhs_tree(
+            &generation,
+            &[("real".into(), real), ("linked".into(), linked.clone())],
+            &test_printer(),
+        )
+        .unwrap();
+
+        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(
+            fs::read_link(generation.path.join("share/data")).unwrap(),
+            linked.join("share/data")
+        );
+        assert!(!generation.path.join("share/data/new").exists());
+    }
+
+    #[test]
+    fn rebuilding_a_shallow_profile_does_not_modify_the_store() {
+        let tmp = TempDir::new().unwrap();
+        let generation = make_generation(&tmp, 1);
+        let first = make_store_path(&tmp, "first", &["share/doc/first/README"]);
+        let second = make_store_path(&tmp, "second", &["share/doc/second/README"]);
+        fs::create_dir_all(generation.path.join("share")).unwrap();
+        std::os::unix::fs::symlink(first.join("share/doc"), generation.path.join("share/doc"))
+            .unwrap();
+
+        build_fhs_tree(
+            &generation,
+            &[("first".into(), first.clone()), ("second".into(), second)],
+            &test_printer(),
+        )
+        .unwrap();
+
+        assert!(generation.path.join("share/doc/first/README").exists());
+        assert!(generation.path.join("share/doc/second/README").exists());
+        assert!(!first.join("share/doc/second").exists());
     }
 
     // 5. clear_fhs_tree removes FHS dirs but preserves bookkeeping.
@@ -660,9 +791,9 @@ mod tests {
         clear_fhs_tree(&gn).unwrap();
     }
 
-    // 11. Symlinks from share/ scanning skip the man subdirectory.
+    // Completion scripts and man pages are both recursive leaf entries.
     #[test]
-    fn share_skips_man_subdir() {
+    fn share_recurses_through_man_and_completions() {
         let tmp = TempDir::new().unwrap();
         let sp = make_store_path(
             &tmp,
@@ -675,12 +806,11 @@ mod tests {
 
         let files = scan_store_path(&sp).unwrap();
 
-        // bash-completion directory is found under share/ scanning.
-        assert!(files.contains_key("share/bash-completion"));
-        // man pages are found via share/man/man1 scanning, not share/.
+        // Both shared directories retain their individual files.
+        assert!(files.contains_key("share/bash-completion/completions/bash"));
         assert!(files.contains_key("share/man/man1/bash.1"));
-        // The `man` directory itself should NOT appear as share/man.
-        assert!(!files.contains_key("share/man"));
+        // Directories are materialized in the profile instead of linked wholesale.
+        assert!(files.get("share/man").unwrap().directory);
     }
 
     // 12. build_fhs_tree then clear_fhs_tree round-trips cleanly.
@@ -736,23 +866,18 @@ mod tests {
 
         assert_eq!(result.symlinks_created, 2);
 
-        // etc/ scanning: the child is the `ssl` directory.
         let etc_ssl = gn.path.join("etc/ssl");
-        assert!(etc_ssl.symlink_metadata().unwrap().file_type().is_symlink());
-        assert_eq!(fs::read_link(&etc_ssl).unwrap(), sp.join("etc/ssl"));
-
-        // include/ scanning: the child is the `openssl` directory.
-        let inc_openssl = gn.path.join("include/openssl");
-        assert!(
-            inc_openssl
-                .symlink_metadata()
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
+        assert!(etc_ssl.symlink_metadata().unwrap().file_type().is_dir());
         assert_eq!(
-            fs::read_link(&inc_openssl).unwrap(),
-            sp.join("include/openssl"),
+            fs::read_link(etc_ssl.join("openssl.cnf")).unwrap(),
+            sp.join("etc/ssl/openssl.cnf"),
+        );
+
+        let inc_openssl = gn.path.join("include/openssl");
+        assert!(inc_openssl.symlink_metadata().unwrap().file_type().is_dir());
+        assert_eq!(
+            fs::read_link(inc_openssl.join("ssl.h")).unwrap(),
+            sp.join("include/openssl/ssl.h"),
         );
     }
 }
