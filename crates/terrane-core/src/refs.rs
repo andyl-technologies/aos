@@ -581,8 +581,13 @@ pub struct RefLogRecord {
     pub reason: RefLogReason,
     /// Advisory seconds since the Unix epoch.
     pub timestamp: u64,
-    /// Complete predecessor: absent for legacy logs, explicit null for a first write.
+    /// Actual CAS expectation: absent for legacy logs, explicitly null for absence.
     pub expected_previous: Option<Option<RefRecord>>,
+    /// Exact retained committed predecessor when recreating an absent current ref.
+    ///
+    /// This untrusted claim requires independent backend-selected evidence. It is
+    /// permitted only with an explicitly null CAS expectation and selected new ref.
+    pub committed_previous: Option<RefRecord>,
 }
 
 /// One immutable commit's ordered parent edges.
@@ -865,6 +870,7 @@ mod tests {
             reason: RefLogReason::Commit,
             timestamp: 1,
             expected_previous: None,
+            committed_previous: None,
         };
 
         let encoded = record.encode().unwrap();

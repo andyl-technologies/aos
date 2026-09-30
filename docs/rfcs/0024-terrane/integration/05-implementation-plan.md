@@ -299,6 +299,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The shared CAPABILITIES key-11 codec and explicit protected-operator
   configuration are present. Legacy handles refuse registered markers;
   checked activation, selected reads and transitions remain joint work.
+  Canonical reflogs distinguish an absent current CAS expectation from a
+  retained committed predecessor without resetting its sequence or epoch;
+  native selection of that retained history remains joint work.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,

@@ -18,6 +18,7 @@ fn selected_first() -> RefLogRecord {
         reason: RefLogReason::Commit,
         timestamp: 10,
         expected_previous: Some(None),
+        committed_previous: None,
     }
 }
 
@@ -33,24 +34,29 @@ fn selected_next() -> RefLogRecord {
         reason: RefLogReason::Commit,
         timestamp: 9,
         expected_previous: Some(Some(previous)),
+        committed_previous: None,
     }
 }
 
 fn unchecked_log(log: &RefLogRecord) -> Vec<u8> {
     let mut bytes = Vec::new();
-    cbor::write_map(&mut bytes, 5 + usize::from(log.expected_previous.is_some()));
-    cbor::write_uint(&mut bytes, 1);
+    crate::cbor::write_map(
+        &mut bytes,
+        5 + usize::from(log.expected_previous.is_some())
+            + usize::from(log.committed_previous.is_some()),
+    );
+    crate::cbor::write_uint(&mut bytes, 1);
     bytes.extend(log.record.encode().unwrap());
-    cbor::write_uint(&mut bytes, 2);
+    crate::cbor::write_uint(&mut bytes, 2);
     if let Some(commit) = log.previous_commit {
-        cbor::write_bytes(&mut bytes, &commit);
+        crate::cbor::write_bytes(&mut bytes, &commit);
     } else {
         bytes.push(0xf6);
     }
-    cbor::write_uint(&mut bytes, 3);
-    cbor::write_text(&mut bytes, &log.principal);
-    cbor::write_uint(&mut bytes, 4);
-    cbor::write_text(
+    crate::cbor::write_uint(&mut bytes, 3);
+    crate::cbor::write_text(&mut bytes, &log.principal);
+    crate::cbor::write_uint(&mut bytes, 4);
+    crate::cbor::write_text(
         &mut bytes,
         if log.reason == RefLogReason::Migrate {
             "migrate"
@@ -58,15 +64,19 @@ fn unchecked_log(log: &RefLogRecord) -> Vec<u8> {
             "commit"
         },
     );
-    cbor::write_uint(&mut bytes, 5);
-    cbor::write_uint(&mut bytes, log.timestamp);
+    crate::cbor::write_uint(&mut bytes, 5);
+    crate::cbor::write_uint(&mut bytes, log.timestamp);
     if let Some(previous) = &log.expected_previous {
-        cbor::write_uint(&mut bytes, 6);
+        crate::cbor::write_uint(&mut bytes, 6);
         if let Some(previous) = previous {
             bytes.extend(previous.encode().unwrap());
         } else {
             bytes.push(0xf6);
         }
+    }
+    if let Some(previous) = &log.committed_previous {
+        crate::cbor::write_uint(&mut bytes, 7);
+        bytes.extend(previous.encode().unwrap());
     }
     bytes
 }
@@ -193,4 +203,144 @@ fn ref_candidate_codec_checks_selector_width_and_migration_structure() {
     );
     migration.record.writer_epoch = 2;
     assert!(migration.encode().is_err());
+}
+
+// The registered canonical gate filters this cohesive fixture module by name.
+mod cbor {
+    //! Selects canonical reflog history fixtures through the registered gate.
+
+    mod tests {
+        //! Checks retained history independently of native backend authority.
+        use super::super::*;
+
+        fn digest(bytes: &mut Vec<u8>, value: u8) {
+            bytes.extend_from_slice(&[0x58, 0x20]);
+            bytes.extend_from_slice(&[value; 32]);
+        }
+
+        fn ref_fixture(seq: u8, commit: u8, candidate: u8) -> Vec<u8> {
+            let mut bytes = vec![0xa5, 1];
+            digest(&mut bytes, commit);
+            bytes.extend_from_slice(&[2, seq, 3, 3, 4, 0xa0, 6]);
+            digest(&mut bytes, candidate);
+            bytes
+        }
+
+        fn recreated() -> RefLogRecord {
+            let mut log = selected_next();
+            log.committed_previous = log.expected_previous.take().unwrap();
+            log.expected_previous = Some(None);
+            log
+        }
+
+        #[test]
+        fn recreation_preserves_actual_absence_and_retained_history() {
+            let mut fixture = vec![0xa7, 1];
+            fixture.extend_from_slice(&ref_fixture(2, 2, 8));
+            fixture.push(2);
+            digest(&mut fixture, 1);
+            fixture.extend_from_slice(&[
+                3, 0x66, b'w', b'r', b'i', b't', b'e', b'r', 4, 0x66, b'c', b'o', b'm', b'm', b'i',
+                b't', 5, 9, 6, 0xf6, 7,
+            ]);
+            fixture.extend_from_slice(&ref_fixture(1, 1, 7));
+
+            let log = RefLogRecord::decode(&fixture).unwrap();
+            assert_eq!(log, recreated());
+            assert_eq!(log.encode().unwrap(), fixture);
+            assert_eq!(log.cas_expected_previous().unwrap(), None);
+            assert_eq!(
+                log.selected_previous().unwrap(),
+                log.committed_previous.as_ref()
+            );
+            assert!(log.validate_candidate(None, &log.record).is_ok());
+            assert!(
+                log.validate_candidate(log.committed_previous.as_ref(), &log.record)
+                    .is_err()
+            );
+        }
+
+        #[test]
+        fn retained_history_rejects_contradictions_and_checked_overflow() {
+            let mut cases = vec![];
+            let mut log = recreated();
+            log.expected_previous = Some(log.committed_previous.clone());
+            cases.push(log);
+            let mut log = recreated();
+            log.expected_previous = None;
+            cases.push(log);
+            let mut log = recreated();
+            log.record.candidate_id = None;
+            cases.push(log);
+            let mut log = recreated();
+            log.previous_commit = None;
+            cases.push(log);
+            let mut log = recreated();
+            log.record.seq = 1;
+            cases.push(log);
+            let mut log = recreated();
+            log.record.writer_epoch = 2;
+            cases.push(log);
+            let mut log = recreated();
+            log.record.home.region = Some("other".to_string());
+            cases.push(log);
+            let mut log = recreated();
+            log.committed_previous.as_mut().unwrap().seq = u64::MAX;
+            log.record.seq = 1;
+            cases.push(log);
+
+            for log in cases {
+                assert!(log.encode().is_err());
+                assert!(RefLogRecord::decode(&unchecked_log(&log)).is_err());
+            }
+
+            let mut migration = recreated();
+            migration.reason = RefLogReason::Migrate;
+            migration.record.home.region = Some("other".to_string());
+            assert_eq!(
+                RefLogRecord::decode(&migration.encode().unwrap()).unwrap(),
+                migration
+            );
+        }
+
+        #[test]
+        fn legacy_and_first_write_bytes_keep_their_interpretation() {
+            let mut fixture = vec![0xa6, 1];
+            fixture.extend_from_slice(&ref_fixture(1, 1, 7));
+            fixture.extend_from_slice(&[
+                2, 0xf6, 3, 0x66, b'w', b'r', b'i', b't', b'e', b'r', 4, 0x66, b'c', b'o', b'm',
+                b'm', b'i', b't', 5, 10, 6, 0xf6,
+            ]);
+            assert_eq!(selected_first().encode().unwrap(), fixture);
+            let decoded = RefLogRecord::decode(&fixture).unwrap();
+            assert_eq!(decoded.committed_previous, None);
+            assert_eq!(decoded.selected_previous().unwrap(), None);
+
+            let mut legacy_ref = ref_fixture(1, 1, 7);
+            legacy_ref[0] = 0xa4;
+            legacy_ref.truncate(legacy_ref.len() - 35);
+            let mut legacy_fixture = vec![0xa5, 1];
+            legacy_fixture.extend_from_slice(&legacy_ref);
+            legacy_fixture.extend_from_slice(&[
+                2, 0xf6, 3, 0x66, b'w', b'r', b'i', b't', b'e', b'r', 4, 0x66, b'c', b'o', b'm',
+                b'm', b'i', b't', 5, 10,
+            ]);
+            let mut legacy = selected_first();
+            legacy.record.candidate_id = None;
+            legacy.expected_previous = None;
+            assert_eq!(legacy.encode().unwrap(), legacy_fixture);
+            let decoded = RefLogRecord::decode(&legacy_fixture).unwrap();
+            assert_eq!(decoded, legacy);
+            assert!(decoded.cas_expected_previous().is_err());
+            assert!(decoded.selected_previous().is_err());
+
+            let mut noncanonical = fixture.clone();
+            noncanonical.splice(1..2, [0x18, 1]);
+            assert!(RefLogRecord::decode(&noncanonical).is_err());
+            let mut null_retained = fixture;
+            null_retained[0] = 0xa7;
+            null_retained.extend_from_slice(&[7, 0xf6]);
+            assert!(RefLogRecord::decode(&null_retained).is_err());
+        }
+    }
 }

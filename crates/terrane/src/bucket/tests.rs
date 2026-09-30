@@ -89,6 +89,7 @@ pub(super) fn log(record: RefRecord, previous: Option<RefRecord>) -> RefLogRecor
         record,
         previous_commit: previous.as_ref().map(|record| record.commit),
         expected_previous: Some(previous),
+        committed_previous: None,
         principal: "writer".into(),
         reason: RefLogReason::Commit,
         timestamp: 1,
