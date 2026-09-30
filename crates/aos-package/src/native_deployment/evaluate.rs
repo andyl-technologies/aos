@@ -64,7 +64,11 @@ pub fn evaluate_input(
         scope: descriptor.scope,
         packages: descriptor.packages,
         configuration,
-        retained_inputs: descriptor.supplemental_inputs,
+        retained_inputs: descriptor
+            .supplemental_inputs
+            .into_iter()
+            .chain(descriptor.module_envelopes.into_values())
+            .collect(),
         evaluation_input: Some(input.to_path_buf()),
     };
     evaluation.evaluate(staging, timeout_ms, cancellation)
@@ -83,6 +87,7 @@ fn source_roots(descriptor: &EvaluationInput) -> Result<BTreeSet<String>> {
         .chain(descriptor.configuration.iter().cloned())
         .chain(descriptor.runtime_configuration.iter().cloned())
         .chain(descriptor.supplemental_inputs.iter().cloned())
+        .chain(descriptor.module_envelopes.values().cloned())
         .chain(
             descriptor
                 .packages

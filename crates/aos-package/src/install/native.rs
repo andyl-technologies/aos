@@ -499,6 +499,7 @@ fn prepare_with_inputs(
         &profile.path.join("deployment/registry-admissions"),
     )?;
     let mut retained_modules = BTreeSet::new();
+    let mut retained_context = None;
     let mut evaluation_inputs = match profile.current_generation()? {
         Some(generation) if generation.path.join("native-deployment.json").is_file() => {
             let committed =
@@ -513,9 +514,10 @@ fn prepare_with_inputs(
                 descriptor
                     .packages
                     .modules
-                    .into_iter()
-                    .map(|module| module.name),
+                    .iter()
+                    .map(|module| module.name.clone()),
             );
+            retained_context = Some((descriptor.clone(), committed.deployment));
             let inputs = EvaluationInputs {
                 library: descriptor.library,
                 configuration: descriptor.configuration,
@@ -554,6 +556,9 @@ fn prepare_with_inputs(
         evaluation_inputs.runtime_configuration = runtime.entrypoints.clone();
     }
     let mut resolver = NativeRegistry::new(registries, admission);
+    if let Some((descriptor, desired)) = &retained_context {
+        resolver.retain_modules(descriptor, desired)?;
+    }
     let mut roots = Vec::new();
     let mut payloads = Vec::new();
     let mut selected = BTreeSet::new();
@@ -614,6 +619,7 @@ fn prepare_with_inputs(
         .chain(evaluation_inputs.supplemental_inputs.iter().cloned())
         .chain(runtime.map(|snapshot| snapshot.store_path.clone()))
         .collect();
+    let module_envelopes = resolver.module_envelopes(&packages)?;
     let mut admission = resolver.into_admission();
     let (library_root, _) =
         crate::deployment::nix::store_root_and_suffix(&evaluation_inputs.library)?;
@@ -629,6 +635,7 @@ fn prepare_with_inputs(
         library_nar_hash,
         scope: scope.clone(),
         packages: packages.clone(),
+        module_envelopes,
         configuration: evaluation_inputs.configuration.clone(),
         runtime_configuration: evaluation_inputs.runtime_configuration.clone(),
         supplemental_inputs: evaluation_inputs.supplemental_inputs.clone(),

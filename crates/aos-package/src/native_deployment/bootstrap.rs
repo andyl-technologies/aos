@@ -179,6 +179,7 @@ mod tests {
                 artifacts: Vec::new(),
                 modules: Vec::new(),
             },
+            module_envelopes: Default::default(),
             configuration: vec![
                 root("baseline").join("first.nix"),
                 root("facts").join("second.nix"),
@@ -195,6 +196,43 @@ mod tests {
             vec![root("runtime").join("host.nix")]
         );
         assert_eq!(decoded.supplemental_inputs, vec![root("proof.json")]);
+
+        let envelope = crate::deployment::model::Envelope::decode(&serde_json::to_vec(&serde_json::json!({
+            "schema":"aos.package.deployment", "system":"x86_64-linux",
+            "package":{"name":"schema-only","version":"1", "path":root("payload"), "outputs":{"out":root("payload")}},
+            "module":{"name":"schema-only","version":"1", "source":root("module"),"entrypoint":"module.nix"},
+            "runtimeDependencies":{},"moduleDependencies":[]
+        })).unwrap()).unwrap();
+        input
+            .packages
+            .modules
+            .push(envelope.module_record().unwrap());
+        assert!(
+            super::super::EvaluationInput::decode(&serde_json::to_vec(&input).unwrap()).is_err()
+        );
+        input
+            .module_envelopes
+            .insert("schema-only".into(), root("deployment"));
+        let decoded =
+            super::super::EvaluationInput::decode(&serde_json::to_vec(&input).unwrap()).unwrap();
+        assert!(decoded.packages.artifacts.is_empty());
+        assert_eq!(decoded.module_envelopes["schema-only"], root("deployment"));
+
+        input
+            .module_envelopes
+            .insert("foreign".into(), root("foreign"));
+        assert!(
+            super::super::EvaluationInput::decode(&serde_json::to_vec(&input).unwrap()).is_err()
+        );
+        input.module_envelopes.remove("foreign");
+        input
+            .packages
+            .modules
+            .push(input.packages.modules[0].clone());
+        assert!(
+            super::super::EvaluationInput::decode(&serde_json::to_vec(&input).unwrap()).is_err()
+        );
+        input.packages.modules.pop();
 
         input.supplemental_inputs = vec![root("proof").join("member.json")];
         assert!(

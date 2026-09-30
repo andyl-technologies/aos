@@ -304,6 +304,7 @@ pub(crate) struct NativeRegistry<'a> {
     admission: RegistryAdmission,
     envelopes: BTreeMap<(String, String, String), Envelope>,
     retained_inputs: BTreeSet<PathBuf>,
+    module_envelopes: BTreeMap<(String, String, String), PathBuf>,
 }
 
 impl<'a> NativeRegistry<'a> {
@@ -313,6 +314,7 @@ impl<'a> NativeRegistry<'a> {
             admission,
             envelopes: BTreeMap::new(),
             retained_inputs: BTreeSet::new(),
+            module_envelopes: BTreeMap::new(),
         }
     }
 
@@ -374,6 +376,12 @@ impl<'a> NativeRegistry<'a> {
         self.admission
             .capture_available(registry, envelope.package.outputs.values().cloned())?;
         self.cache_envelope(envelope.clone())?;
+        if envelope.module.is_some() {
+            self.module_envelopes.insert(
+                envelope_key(&envelope),
+                PathBuf::from(&deployment.store_path),
+            );
+        }
         Ok(envelope)
     }
 
@@ -381,11 +389,7 @@ impl<'a> NativeRegistry<'a> {
     // Only exact artifact catalogs share a cache entry; module lookup separately
     // requires one unambiguous package context for the pinned module source.
     fn cache_envelope(&mut self, envelope: Envelope) -> Result<()> {
-        let key = (
-            envelope.package.name.clone(),
-            envelope.package.version.clone(),
-            envelope.package.canonical_catalog().path,
-        );
+        let key = envelope_key(&envelope);
         if let Some(previous) = self.envelopes.get(&key) {
             ensure!(
                 same_package_context(previous, &envelope),
@@ -421,6 +425,77 @@ impl<'a> NativeRegistry<'a> {
             .cloned()
             .chain(self.admission.image.receipt_roots())
             .collect()
+    }
+
+    pub(crate) fn module_envelopes(
+        &self,
+        packages: &crate::deployment::model::ResolvedPackages,
+    ) -> Result<BTreeMap<String, PathBuf>> {
+        packages
+            .modules
+            .iter()
+            .map(|module| {
+                let envelope = self
+                    .envelopes
+                    .values()
+                    .find(|envelope| envelope.module_record().as_ref() == Some(module))
+                    .context("resolved module lacks its exact authenticated package context")?;
+                let path = self
+                    .module_envelopes
+                    .get(&envelope_key(envelope))
+                    .context("resolved module lacks its original deployment envelope")?;
+                Ok((module.name.clone(), path.clone()))
+            })
+            .collect()
+    }
+
+    pub(crate) fn retain_modules(
+        &mut self,
+        descriptor: &crate::native_deployment::EvaluationInput,
+        desired: &crate::deployment::model::Deployment,
+    ) -> Result<()> {
+        for module in &descriptor.packages.modules {
+            let path = descriptor
+                .module_envelopes
+                .get(&module.name)
+                .context("retained module lacks its original deployment envelope")?;
+            let root = path.to_str().context("module envelope root is not UTF-8")?;
+            ensure!(
+                desired.inputs().iter().any(|input| input == root),
+                "committed deployment does not retain its module envelope"
+            );
+            self.admission.admit(root)?;
+            let bytes = crate::native_deployment::read_regular_store_document_in(
+                &path.join("deployment.json"),
+                &self.admission.executable,
+                &aos_ability_runtime::adapter::CancellationToken::default(),
+            )?;
+            let envelope = Envelope::decode(&bytes)?;
+            ensure!(
+                envelope.system == descriptor.packages.system
+                    && envelope.module_record().as_ref() == Some(module),
+                "retained module envelope differs from its admitted module catalog"
+            );
+            for dependency in &envelope.module_dependencies {
+                ensure!(
+                    descriptor
+                        .packages
+                        .modules
+                        .iter()
+                        .any(|record| record.name == dependency.name
+                            && record.version == dependency.version
+                            && record.config_root == dependency.source
+                            && record.module
+                                == format!("{}/{}", dependency.source, dependency.entrypoint)),
+                    "retained module envelope has an unresolved dependency"
+                );
+            }
+            let key = envelope_key(&envelope);
+            self.cache_envelope(envelope)?;
+            self.module_envelopes.insert(key, path.clone());
+            self.retained_inputs.insert(path.clone());
+        }
+        Ok(())
     }
 
     pub(crate) fn metadata(&self, path: &str) -> Result<(String, PackageMeta)> {
@@ -535,6 +610,10 @@ impl<'a> NativeRegistry<'a> {
             "retained native envelope differs from installed payload"
         );
         self.cache_envelope(envelope.clone())?;
+        if envelope.module.is_some() {
+            self.module_envelopes
+                .insert(envelope_key(&envelope), PathBuf::from(&artifact.store_path));
+        }
         Ok(envelope)
     }
 }
@@ -550,6 +629,14 @@ pub(crate) fn same_package_context(left: &Envelope, right: &Envelope) -> bool {
         && left.module == right.module
         && left.runtime_dependencies == right.runtime_dependencies
         && left.module_dependencies == right.module_dependencies
+}
+
+fn envelope_key(envelope: &Envelope) -> (String, String, String) {
+    (
+        envelope.package.name.clone(),
+        envelope.package.version.clone(),
+        envelope.package.canonical_catalog().path,
+    )
 }
 
 impl PackageResolver for NativeRegistry<'_> {
@@ -651,6 +738,48 @@ mod authority_tests {
                 .unwrap_err()
                 .to_string()
                 .contains("ambiguous")
+        );
+    }
+
+    #[test]
+    fn companion_catalog_preserves_the_exact_selected_module_source() {
+        let registries = RegistrySet::new(Vec::new());
+        let mut resolver = NativeRegistry::new(&registries, empty_admission());
+        let source = ModuleSource {
+            name: "system-image".into(),
+            version: "1".into(),
+            source: format!("/nix/store/{}-first-module", "b".repeat(32)),
+            entrypoint: "module.nix".into(),
+        };
+        let first = envelope("first", Some(source.clone()));
+        let mut other_source = source.clone();
+        other_source.source = format!("/nix/store/{}-second-module", "c".repeat(32));
+        let second = envelope("second", Some(other_source));
+        let first_companion =
+            PathBuf::from(format!("/nix/store/{}-first-envelope", "d".repeat(32)));
+        let second_companion =
+            PathBuf::from(format!("/nix/store/{}-second-envelope", "f".repeat(32)));
+        resolver
+            .module_envelopes
+            .insert(envelope_key(&first), first_companion.clone());
+        resolver
+            .module_envelopes
+            .insert(envelope_key(&second), second_companion);
+        resolver.cache_envelope(first.clone()).unwrap();
+        resolver.cache_envelope(second).unwrap();
+
+        let resolved = crate::deployment::evaluation::resolve_packages(
+            "x86_64-linux",
+            vec![first],
+            &mut resolver,
+        )
+        .unwrap();
+        let companions = resolver.module_envelopes(&resolved).unwrap();
+
+        assert_eq!(companions["system-image"], first_companion);
+        assert_eq!(
+            resolver.resolve(&source).unwrap().module.as_ref(),
+            Some(&source)
         );
     }
 
