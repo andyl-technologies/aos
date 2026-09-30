@@ -4,6 +4,7 @@
 //! framing and exact complete-union accounting; no request DATA grants custody.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_ledger::ledger::{
@@ -62,8 +63,8 @@ pub struct SourceOriginalAdmissionInputV5<'a> {
 /// Retains an exact Applying comparison, never a physical admission receipt.
 #[derive(Clone)]
 pub struct SourceOriginalAdmissionDataV5 {
-    original_before: State,
-    applying_after: State,
+    original_before: Arc<State>,
+    applying_after: Arc<State>,
     applying: JournalTransaction,
     initial_floor: OriginalSourceCapacityRecordV5,
     comparison: OriginalSourceAdmissionComparisonV5,
@@ -71,6 +72,18 @@ pub struct SourceOriginalAdmissionDataV5 {
 }
 
 impl SourceOriginalAdmissionDataV5 {
+    pub(super) fn retained_cut_rows(&self) -> (Arc<State>, Arc<State>) {
+        (Arc::clone(&self.original_before), Arc::clone(&self.applying_after))
+    }
+
+    pub(super) fn reuse_retained_before(&mut self, before: &Arc<State>) -> Result<(), JournalError> {
+        if before.as_ref() != self.original_before.as_ref() {
+            return Err(invalid("Source adjacent original cut changed"));
+        }
+        self.original_before = Arc::clone(before);
+        Ok(())
+    }
+
     /// Borrows the complete compared historical before cut.
     pub fn original_before(&self) -> &SourceCapacityStateV5 {
         &self.original_before
@@ -114,13 +127,42 @@ impl SourceOriginalAdmissionDataV5 {
         Ok(result)
     }
 
-    fn origin(&self) -> OriginalSourceOwnerOriginInputV5<'_> {
+    pub(super) fn origin(&self) -> OriginalSourceOwnerOriginInputV5<'_> {
         OriginalSourceOwnerOriginInputV5 {
             comparison: &self.comparison,
             provenance: self.initial_floor.original_provenance(),
             retirement: self.retirement.as_ref(),
         }
     }
+
+    pub(super) fn retained_retirement(
+        &self,
+    ) -> Option<&OriginalSourceRetirementComparisonV5> {
+        self.retirement.as_ref()
+    }
+
+    pub(super) fn retain_compared_retirement(
+        &mut self,
+        retirement: &OriginalSourceRetirementComparisonV5,
+    ) -> Result<(), JournalError> {
+        if retirement.acquisition() != self.comparison.original().acquisition_id {
+            return Err(invalid("Source physical retirement acquisition changed"));
+        }
+        self.retirement = Some(retirement.clone());
+        Ok(())
+    }
+}
+
+/// Retains the final carrier that was real at one exact original historical cut.
+///
+/// Only the physical parser constructs this input. A later current carrier is
+/// not interchangeable with either cut of a newly admitted original.
+#[derive(Clone)]
+pub(super) struct SourceHistoricalRetirementReferenceV5 {
+    pub(super) admission: [u8; 16],
+    pub(super) applying_after: bool,
+    pub(super) acquisition: ObjectDigest,
+    pub(super) retirement: Arc<OriginalSourceRetirementComparisonV5>,
 }
 
 /// Retains complete compared unions and unresolved physical proof obligations.
@@ -264,8 +306,8 @@ pub fn compare_source_original_admission_data_v5(
         .admission_comparison()
         .map_err(|_| invalid("original Source Applying comparison"))?;
     Ok(SourceOriginalAdmissionDataV5 {
-        original_before: candidate.before,
-        applying_after: candidate.after,
+        original_before: Arc::new(candidate.before),
+        applying_after: Arc::new(candidate.after),
         applying: candidate.transaction,
         initial_floor: candidate.floor,
         comparison,
@@ -289,6 +331,19 @@ pub fn compare_source_capacity_union_data_v5(
     transaction: Option<&JournalTransaction>,
     origins: &[SourceOriginalAdmissionDataV5],
     challenges: &[OriginalSourceChallengeDataV5<'_>],
+    limits: JournalLimits,
+) -> Result<SourceCapacityUnionComparisonDataV5, JournalError> {
+    compare_source_capacity_union_at_physical_cuts_v5(
+        before, transaction, origins, challenges, &[], limits,
+    )
+}
+
+pub(super) fn compare_source_capacity_union_at_physical_cuts_v5(
+    before: &SourceCapacityStateV5,
+    transaction: Option<&JournalTransaction>,
+    origins: &[SourceOriginalAdmissionDataV5],
+    challenges: &[OriginalSourceChallengeDataV5<'_>],
+    historical: &[SourceHistoricalRetirementReferenceV5],
     limits: JournalLimits,
 ) -> Result<SourceCapacityUnionComparisonDataV5, JournalError> {
     validate_original_source_challenge_data_bounds_v5(challenges)
@@ -342,8 +397,8 @@ pub fn compare_source_capacity_union_data_v5(
         if !before.contains_key(&key) {
             if edge.as_ref().map(|edge| (edge.acquisition(), edge.kind()))
                 != Some((original.acquisition_id, SourceCapacityOwnerEdgeKindV5::Applying))
-                || before != &origin.original_before
-                || after != origin.applying_after
+                || before != origin.original_before()
+                || &after != origin.applying_after()
                 || transaction != Some(&origin.applying)
             {
                 return Err(invalid("Source initial Applying differs from retained actual admission"));
@@ -353,7 +408,7 @@ pub fn compare_source_capacity_union_data_v5(
         }
     }
 
-    require_historical_unions(origins, limits)?;
+    require_historical_unions(origins, historical, limits)?;
     let old = associate(before, origins, None, OriginCut::Current, limits)?;
     let next = associate(&after, origins, edge.as_ref(), OriginCut::Current, limits)?;
     let removed_ids = old.ids.difference(&next.ids).copied().collect();
@@ -402,20 +457,37 @@ struct Associated {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum OriginCut {
     Current,
-    RetainedHistorical,
+    RetainedHistorical {
+        admission: [u8; 16],
+        applying_after: bool,
+    },
 }
 
 fn require_historical_unions(
     origins: &[SourceOriginalAdmissionDataV5],
+    historical: &[SourceHistoricalRetirementReferenceV5],
     limits: JournalLimits,
 ) -> Result<(), JournalError> {
     for origin in origins {
-        for state in [&origin.original_before, &origin.applying_after] {
+        for (state, applying_after) in [
+            (&origin.original_before, false),
+            (&origin.applying_after, true),
+        ] {
             // Origin/state bytes were bounded before this loop. The shared
             // Ledger derivation additionally bounds graph bytes times the
             // selected origin count before retaining any continuation graphs.
             // Discard each historical projection before deriving the next one.
-            associate(state, origins, None, OriginCut::RetainedHistorical, limits)?;
+            associate_with_historical_references(
+                state,
+                origins,
+                None,
+                OriginCut::RetainedHistorical {
+                    admission: *origin.applying.id(),
+                    applying_after,
+                },
+                historical,
+                limits,
+            )?;
         }
     }
     Ok(())
@@ -426,6 +498,17 @@ fn associate(
     origins: &[SourceOriginalAdmissionDataV5],
     edge: Option<&SourceCapacityOwnerEdgeDataV5>,
     cut: OriginCut,
+    limits: JournalLimits,
+) -> Result<Associated, JournalError> {
+    associate_with_historical_references(state, origins, edge, cut, &[], limits)
+}
+
+fn associate_with_historical_references(
+    state: &State,
+    origins: &[SourceOriginalAdmissionDataV5],
+    edge: Option<&SourceCapacityOwnerEdgeDataV5>,
+    cut: OriginCut,
+    historical: &[SourceHistoricalRetirementReferenceV5],
     limits: JournalLimits,
 ) -> Result<Associated, JournalError> {
     let families = canonical_reservations(state)?;
@@ -457,7 +540,7 @@ fn associate(
         .map(SourceOriginalAdmissionDataV5::origin)
         .collect::<Vec<_>>();
 
-    if cut == OriginCut::RetainedHistorical {
+    if let OriginCut::RetainedHistorical { admission, applying_after } = cut {
         for input in &mut inputs {
             let origin = origins
                 .iter()
@@ -483,6 +566,19 @@ fn associate(
                 // origin and full geometry checks below. A later retirement
                 // reference cannot turn this earlier live cut into retired DATA.
                 input.retirement = None;
+            } else {
+                let references = historical.iter().filter(|reference| {
+                    reference.admission == admission
+                        && reference.applying_after == applying_after
+                        && reference.acquisition
+                            == input.comparison.original().acquisition_id
+                }).collect::<Vec<_>>();
+                match references.as_slice() {
+                    [reference] => input.retirement = Some(reference.retirement.as_ref()),
+                    [] if historical.is_empty() => {}
+                    [] => input.retirement = None,
+                    _ => return Err(invalid("Source ambiguous physical historical retirement")),
+                }
             }
         }
     }

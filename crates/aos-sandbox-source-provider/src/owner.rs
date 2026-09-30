@@ -36,6 +36,7 @@ const CANONICAL_CATALOG_PUBLICATION_BYTES: usize = 520;
 mod held_readonly;
 pub use held_readonly::FixedProviderHeldReadOnlyObservationV1;
 mod original_ingress;
+mod original_journal;
 
 enum FixedProviderOwnerStateV1 {
     Handshake {
@@ -287,6 +288,9 @@ pub struct FixedProviderOwnerV1 {
     pending_recovery_terminal_digests: Option<NativeRecoveryTerminalDigestsV1>,
     pending_inventory_readback_digest: Option<ObjectDigest>,
     original_ingress: original_ingress::OriginalIngressV1,
+    // The first-birth lane keeps the entire detached runtime after moving its
+    // one genuine Session into held metadata custody. It never reenters Ready.
+    original_runtime: Option<DetachedProviderLedgerV1>,
 }
 
 impl core::fmt::Debug for FixedProviderOwnerV1 {
@@ -350,6 +354,7 @@ impl FixedProviderOwnerV1 {
                 pending_recovery_terminal_digests: None,
                 pending_inventory_readback_digest: None,
                 original_ingress: original_ingress::OriginalIngressV1::default(),
+                original_runtime: None,
             },
             FixedProviderOpenReportV1 { journal: recovery },
         ))

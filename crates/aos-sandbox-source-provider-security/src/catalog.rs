@@ -28,7 +28,7 @@ use crate::{RevalidatedProviderConfigurationV1, SourceProviderSecurityError};
 
 const MAGIC: &[u8; 8] = b"AOSPCP01";
 const VERSION: u16 = 2;
-const SIGNED_BYTES: usize = 520;
+pub(crate) const SIGNED_BYTES: usize = 520;
 const SIGNATURE_OFFSET: usize = 456;
 const SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.source-provider.catalog-publication.v1\0";
 const RECEIPT_DOMAIN: &[u8] = b"aos.sandbox.source-provider.catalog-publication-receipt.v1\0";

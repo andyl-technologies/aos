@@ -6,6 +6,9 @@
 //! keys only; possession grants no signing, request, effect, or send authority.
 
 use aos_sandbox_core::ObjectDigest;
+use sha2::Digest as _;
+
+pub mod original_archive;
 use aos_sandbox_source_provider_protocol::{
     SourceProviderAuthorityTrustStateV1, SourceProviderAuthorityV1, SourceProviderKeyTrustStateV1,
     SourceProviderSigningKeyV1,
@@ -17,6 +20,17 @@ use crate::{ProtectedProviderCustodyV1, ProtectedRootMountCustodyV1, SourceProvi
 
 /// Carries one current nonauthorizing projection of protected provider custody.
 pub struct RevalidatedProviderConfigurationV1 {
+    data: ProviderConfigurationDataV5,
+    public_capture: crate::protected_files::PublicConfigurationCaptureV5,
+}
+
+/// Carries public configuration facts without custody or currentness authority.
+///
+/// Only genuine current capture or protected immutable archive readback creates
+/// this value. It cannot construct a current Session or provide signing authority.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct ProviderConfigurationDataV5 {
     provider: SourceProviderAuthorityV1,
     trust_generation: u64,
     trust_digest: ObjectDigest,
@@ -28,6 +42,7 @@ pub struct RevalidatedProviderConfigurationV1 {
     resource_namespace_digest: ObjectDigest,
     provider_hello_signer: SourceProviderSigningKeyV1,
     provider_outcome_signer: SourceProviderSigningKeyV1,
+    root_mount_record_signer: SourceProviderSigningKeyV1,
     valid_from_seconds: i64,
     valid_until_seconds: i64,
     proof_class_capabilities: u8,
@@ -69,7 +84,153 @@ impl core::fmt::Debug for RevalidatedProviderConfigurationV1 {
     }
 }
 
+fn project_public_capture(
+    capture: &crate::protected_files::PublicConfigurationCaptureV5,
+) -> Result<ProviderConfigurationDataV5, SourceProviderSecurityError> {
+    let manifest = crate::manifest::SourceProviderSecurityManifestV1::decode(&capture.manifest)?;
+    let trust_file = crate::trust_file::SourceProviderTrustFileV1::decode(&capture.trust)?;
+    let route_file = crate::route_file::SourceProviderRouteFileV1::decode(&capture.route)?;
+    crate::protected_files::validate_manifest_projections(&manifest, &trust_file, &route_file)?;
+    if sha2::Sha256::digest(&capture.trust).as_slice() != manifest.trust_file_sha256()
+        || sha2::Sha256::digest(&capture.route).as_slice() != manifest.route_file_sha256()
+    {
+        return Err(SourceProviderSecurityError::Currentness);
+    }
+
+    let trust = trust_file.trust_set();
+    let route = route_file.route();
+    let hello_signer = &manifest.signers()[1];
+    let outcome_signer = &manifest.signers()[3];
+    let provider = SourceProviderAuthorityV1::new(
+        hello_signer.authority_id(),
+        hello_signer.authority_generation(),
+        hello_signer.authority_digest(),
+    )
+    .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+    let authority_trust = trust
+        .authorities()
+        .iter()
+        .find(|entry| {
+            entry.authority() == &provider
+                && entry.state() == SourceProviderAuthorityTrustStateV1::Trusted
+        })
+        .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+    let hello = trust
+        .keys()
+        .iter()
+        .find(|entry| entry.signer() == hello_signer)
+        .filter(|entry| entry.state() == SourceProviderKeyTrustStateV1::Eligible)
+        .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+    let outcome = trust
+        .keys()
+        .iter()
+        .find(|entry| entry.signer() == outcome_signer)
+        .filter(|entry| entry.state() == SourceProviderKeyTrustStateV1::Eligible)
+        .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+    let valid_from_seconds = authority_trust
+        .valid_from_seconds()
+        .max(hello.valid_from_seconds())
+        .max(outcome.valid_from_seconds());
+    let valid_until_seconds = authority_trust
+        .valid_until_seconds()
+        .min(hello.valid_until_seconds())
+        .min(outcome.valid_until_seconds());
+    if valid_from_seconds >= valid_until_seconds {
+        return Err(SourceProviderSecurityError::SessionContinuity);
+    }
+    let mut historical_public_keys = Vec::with_capacity(trust.keys().len());
+    for entry in trust.keys() {
+        let (
+            issuance_trust_generation,
+            issuance_trust_digest,
+            issuance_revocation_generation,
+            issuance_revocation_digest,
+        ) = trust_file
+            .key_history(entry.signer())
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?
+            .0;
+        let (
+            state_effective_trust_generation,
+            state_effective_trust_digest,
+            state_effective_revocation_generation,
+            state_effective_revocation_digest,
+        ) = trust_file
+            .key_history(entry.signer())
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?
+            .1;
+        let key_authority = trust
+            .authorities()
+            .iter()
+            .find(|authority| {
+                authority.authority().authority_id() == entry.signer().authority_id()
+                    && authority.authority().authority_generation()
+                        == entry.signer().authority_generation()
+                    && authority.authority().authority_digest()
+                        == entry.signer().authority_digest()
+            })
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let (
+            authority_state_effective_trust_generation,
+            authority_state_effective_trust_digest,
+            authority_state_effective_revocation_generation,
+            authority_state_effective_revocation_digest,
+        ) = trust_file
+            .authority_state_head(key_authority.authority())
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        historical_public_keys.push(HistoricalProviderVerificationKeyV1 {
+            signer: entry.signer().clone(),
+            public_key: *entry.public_key(),
+            trust_generation: issuance_trust_generation,
+            trust_digest: issuance_trust_digest,
+            revocation_generation: issuance_revocation_generation,
+            revocation_digest: issuance_revocation_digest,
+            state_effective_trust_generation,
+            state_effective_trust_digest,
+            state_effective_revocation_generation,
+            state_effective_revocation_digest,
+            valid_from_seconds: entry.valid_from_seconds(),
+            valid_until_seconds: entry.valid_until_seconds(),
+            state: entry.state(),
+            superseded_by_key_generation: entry.superseded_by_key_generation(),
+            authority_valid_from_seconds: key_authority.valid_from_seconds(),
+            authority_valid_until_seconds: key_authority.valid_until_seconds(),
+            authority_state: key_authority.state(),
+            authority_state_effective_trust_generation,
+            authority_state_effective_trust_digest,
+            authority_state_effective_revocation_generation,
+            authority_state_effective_revocation_digest,
+        });
+    }
+    Ok(ProviderConfigurationDataV5 {
+        provider,
+        trust_generation: trust.trust_generation(),
+        trust_digest: trust.trust_digest(),
+        revocation_generation: trust.revocation_generation(),
+        revocation_digest: trust.revocation_digest(),
+        route_id: route.route_id(),
+        route_generation: route.route_generation(),
+        route_digest: route.route_digest(),
+        resource_namespace_digest: route.resource_namespace_digest(),
+        provider_hello_signer: hello_signer.clone(),
+        provider_outcome_signer: outcome_signer.clone(),
+        root_mount_record_signer: manifest.signers()[2].clone(),
+        valid_from_seconds,
+        valid_until_seconds,
+        proof_class_capabilities: manifest.proof_capabilities(),
+        supports_recursive: manifest.allow_recursive(),
+        supports_kernel_coupled: manifest.allow_kernel_coupled(),
+        trust_history: trust_file.history().to_vec(),
+        historical_public_keys,
+    })
+}
+
 impl RevalidatedProviderConfigurationV1 {
+    /// Borrows public facts without exporting currentness or custody authority.
+    #[doc(hidden)]
+    pub const fn public_configuration_data_v5(&self) -> &ProviderConfigurationDataV5 {
+        &self.data
+    }
+
     /// Returns the exact non-secret configuration commitment used by migration custody.
     ///
     /// The commitment binds provider, trust, revocation, route, namespace,
@@ -98,125 +259,20 @@ impl RevalidatedProviderConfigurationV1 {
         inner: &mut ProtectedCustodyV1,
         now_seconds: i64,
     ) -> Result<Self, SourceProviderSecurityError> {
-        inner.revalidate_at(now_seconds)?;
+        let public_capture = inner.public_archive_capture(now_seconds)?;
+        let data = project_public_capture(&public_capture)?;
         let current = inner.provider_authority();
-        let trust = inner.trust();
-        let route = inner.route();
-        let provider = current.authority().clone();
-        let authority_trust = trust
-            .authorities()
-            .iter()
-            .find(|entry| {
-                entry.authority() == &provider
-                    && entry.state() == SourceProviderAuthorityTrustStateV1::Trusted
-            })
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let hello = trust
-            .keys()
-            .iter()
-            .find(|entry| entry.signer() == current.hello_signer())
-            .filter(|entry| entry.state() == SourceProviderKeyTrustStateV1::Eligible)
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let outcome = trust
-            .keys()
-            .iter()
-            .find(|entry| entry.signer() == current.traffic_signer())
-            .filter(|entry| entry.state() == SourceProviderKeyTrustStateV1::Eligible)
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let valid_from_seconds = authority_trust
-            .valid_from_seconds()
-            .max(hello.valid_from_seconds())
-            .max(outcome.valid_from_seconds());
-        let valid_until_seconds = authority_trust
-            .valid_until_seconds()
-            .min(hello.valid_until_seconds())
-            .min(outcome.valid_until_seconds());
-        if now_seconds < valid_from_seconds || now_seconds >= valid_until_seconds {
+        if data.provider != *current.authority()
+            || data.provider_hello_signer != *current.hello_signer()
+            || data.provider_outcome_signer != *current.traffic_signer()
+            || now_seconds < data.valid_from_seconds
+            || now_seconds >= data.valid_until_seconds
+        {
             return Err(SourceProviderSecurityError::SessionContinuity);
         }
-        let mut historical_public_keys = Vec::with_capacity(trust.keys().len());
-        for entry in trust.keys() {
-            let (
-                issuance_trust_generation,
-                issuance_trust_digest,
-                issuance_revocation_generation,
-                issuance_revocation_digest,
-            ) = inner
-                .trust_key_issuance(entry.signer())
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?
-                .0;
-            let (
-                state_effective_trust_generation,
-                state_effective_trust_digest,
-                state_effective_revocation_generation,
-                state_effective_revocation_digest,
-            ) = inner
-                .trust_key_issuance(entry.signer())
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?
-                .1;
-            let key_authority = trust
-                .authorities()
-                .iter()
-                .find(|authority| {
-                    authority.authority().authority_id() == entry.signer().authority_id()
-                        && authority.authority().authority_generation()
-                            == entry.signer().authority_generation()
-                        && authority.authority().authority_digest()
-                            == entry.signer().authority_digest()
-                })
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-            let (
-                authority_state_effective_trust_generation,
-                authority_state_effective_trust_digest,
-                authority_state_effective_revocation_generation,
-                authority_state_effective_revocation_digest,
-            ) = inner
-                .trust_authority_state_head(key_authority.authority())
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-            historical_public_keys.push(HistoricalProviderVerificationKeyV1 {
-                signer: entry.signer().clone(),
-                public_key: *entry.public_key(),
-                trust_generation: issuance_trust_generation,
-                trust_digest: issuance_trust_digest,
-                revocation_generation: issuance_revocation_generation,
-                revocation_digest: issuance_revocation_digest,
-                state_effective_trust_generation,
-                state_effective_trust_digest,
-                state_effective_revocation_generation,
-                state_effective_revocation_digest,
-                valid_from_seconds: entry.valid_from_seconds(),
-                valid_until_seconds: entry.valid_until_seconds(),
-                state: entry.state(),
-                superseded_by_key_generation: entry.superseded_by_key_generation(),
-                authority_valid_from_seconds: key_authority.valid_from_seconds(),
-                authority_valid_until_seconds: key_authority.valid_until_seconds(),
-                authority_state: key_authority.state(),
-                authority_state_effective_trust_generation,
-                authority_state_effective_trust_digest,
-                authority_state_effective_revocation_generation,
-                authority_state_effective_revocation_digest,
-            });
-        }
-        Ok(Self {
-            provider,
-            trust_generation: trust.trust_generation(),
-            trust_digest: trust.trust_digest(),
-            revocation_generation: trust.revocation_generation(),
-            revocation_digest: trust.revocation_digest(),
-            route_id: route.route_id(),
-            route_generation: route.route_generation(),
-            route_digest: route.route_digest(),
-            resource_namespace_digest: route.resource_namespace_digest(),
-            provider_hello_signer: current.hello_signer().clone(),
-            provider_outcome_signer: current.traffic_signer().clone(),
-            valid_from_seconds,
-            valid_until_seconds,
-            proof_class_capabilities: inner.manifest().proof_capabilities(),
-            supports_recursive: inner.manifest().allow_recursive(),
-            supports_kernel_coupled: inner.manifest().allow_kernel_coupled(),
-            trust_history: inner.trust_history().to_vec(),
-            historical_public_keys,
-        })
+
+        inner.revalidate_at(now_seconds)?;
+        Ok(Self { data, public_capture })
     }
 
     /// Preserves immutable per-key issuance epochs across protected head advancement.
@@ -229,7 +285,7 @@ impl RevalidatedProviderConfigurationV1 {
         self,
         previous: &[HistoricalProviderVerificationKeyV1],
     ) -> Result<Self, SourceProviderSecurityError> {
-        for entry in &self.historical_public_keys {
+        for entry in &self.data.historical_public_keys {
             if let Some(prior) = previous.iter().find(|prior| prior.signer == entry.signer) {
                 if prior.public_key != entry.public_key
                     || prior.trust_generation != entry.trust_generation
@@ -240,7 +296,7 @@ impl RevalidatedProviderConfigurationV1 {
                     || prior.valid_until_seconds != entry.valid_until_seconds
                     || prior.authority_valid_from_seconds != entry.authority_valid_from_seconds
                     || prior.authority_valid_until_seconds != entry.authority_valid_until_seconds
-                    || !authenticated_state_transition(prior, entry, &self.trust_history)
+                    || !authenticated_state_transition(prior, entry, &self.data.trust_history)
                 {
                     return Err(SourceProviderSecurityError::SessionContinuity);
                 }
@@ -261,12 +317,182 @@ impl RevalidatedProviderConfigurationV1 {
         self,
         previous: &[ProtectedTrustHeadLinkV2],
     ) -> Result<Self, SourceProviderSecurityError> {
-        if previous.len() > self.trust_history.len()
-            || self.trust_history[..previous.len()] != *previous
+        if previous.len() > self.data.trust_history.len()
+            || self.data.trust_history[..previous.len()] != *previous
         {
             return Err(SourceProviderSecurityError::SessionContinuity);
         }
         Ok(self)
+    }
+
+    /// Returns the protected current provider authority.
+    #[must_use]
+    pub const fn provider(&self) -> &SourceProviderAuthorityV1 {
+        &self.data.provider
+    }
+
+    /// Returns the protected trust generation and digest.
+    #[must_use]
+    pub const fn trust_head(&self) -> (u64, ObjectDigest) {
+        (self.data.trust_generation, self.data.trust_digest)
+    }
+
+    /// Returns the protected revocation generation and digest.
+    #[must_use]
+    pub const fn revocation_head(&self) -> (u64, ObjectDigest) {
+        (self.data.revocation_generation, self.data.revocation_digest)
+    }
+
+    /// Returns the protected route identity, generation, and digest.
+    #[must_use]
+    pub const fn route_head(&self) -> ([u8; 16], u64, ObjectDigest) {
+        (self.data.route_id, self.data.route_generation, self.data.route_digest)
+    }
+
+    /// Returns the protected resource-namespace digest.
+    #[must_use]
+    pub const fn resource_namespace_digest(&self) -> ObjectDigest {
+        self.data.resource_namespace_digest
+    }
+
+    /// Returns the current provider hello signer reference.
+    #[must_use]
+    pub const fn provider_hello_signer(&self) -> &SourceProviderSigningKeyV1 {
+        &self.data.provider_hello_signer
+    }
+
+    /// Returns the current provider outcome signer reference.
+    #[must_use]
+    pub const fn provider_outcome_signer(&self) -> &SourceProviderSigningKeyV1 {
+        &self.data.provider_outcome_signer
+    }
+
+    /// Returns the common protected validity interval.
+    #[must_use]
+    pub const fn validity(&self) -> (i64, i64) {
+        (self.data.valid_from_seconds, self.data.valid_until_seconds)
+    }
+
+    /// Returns the closed proof-class capability mask.
+    #[must_use]
+    pub const fn proof_class_capabilities(&self) -> u8 {
+        self.data.proof_class_capabilities
+    }
+
+    /// Reports whether recursive source use is protected policy.
+    #[must_use]
+    pub const fn supports_recursive(&self) -> bool {
+        self.data.supports_recursive
+    }
+
+    /// Reports whether kernel-coupled source use is protected policy.
+    #[must_use]
+    pub const fn supports_kernel_coupled(&self) -> bool {
+        self.data.supports_kernel_coupled
+    }
+
+    /// Returns retained historical public verification keys, including tombstoned keys.
+    ///
+    /// Retention preserves equivocation evidence. Ordinary verification rejects
+    /// every revoked key; the separate already-consumed cleanup verifier may
+    /// authenticate an artifact only before its independently retained earliest
+    /// deactivation head. A superseded key likewise verifies only artifacts
+    /// before that authenticated head.
+    #[must_use]
+    pub fn historical_public_keys(&self) -> &[HistoricalProviderVerificationKeyV1] {
+        &self.data.historical_public_keys
+    }
+
+    /// Returns the manifest-authenticated oldest-to-newest trust-head chain.
+    #[must_use]
+    pub fn trust_history(&self) -> &[ProtectedTrustHeadLinkV2] {
+        &self.data.trust_history
+    }
+
+    /// Reports whether one exact historical head is authenticated by the protected chain.
+    #[must_use]
+    pub fn authenticates_head(
+        &self,
+        trust_generation: u64,
+        trust_digest: ObjectDigest,
+        revocation_generation: u64,
+        revocation_digest: ObjectDigest,
+    ) -> bool {
+        self.data.trust_history.iter().any(|entry| {
+            entry.head()
+                == (
+                    trust_generation,
+                    trust_digest,
+                    revocation_generation,
+                    revocation_digest,
+                )
+        })
+    }
+
+    /// Reports whether one retained key was active at an authenticated historical head.
+    ///
+    /// The check is cryptographic-policy input only and grants no current
+    /// request, signing, journal, effect, descriptor, or send authority.
+    #[must_use]
+    pub fn authenticates_historical_key_at(
+        &self,
+        trusted: &HistoricalProviderVerificationKeyV1,
+        issued_seconds: i64,
+        trust_generation: u64,
+        trust_digest: ObjectDigest,
+        revocation_generation: u64,
+        revocation_digest: ObjectDigest,
+    ) -> bool {
+        if !self.data.historical_public_keys.contains(trusted) {
+            return false;
+        }
+        historical_key_active_at(
+            &self.data.trust_history,
+            trusted,
+            issued_seconds,
+            trust_generation,
+            trust_digest,
+            revocation_generation,
+            revocation_digest,
+        )
+    }
+
+    /// Reports whether a now-revoked key was valid at one durable verification anchor.
+    ///
+    /// This narrow exception is only an input to already-consumed cleanup
+    /// recovery. It never grants current request, use, activation, or signing
+    /// authority, and requires the artifact head to precede every applicable
+    /// authenticated earliest-deactivation head.
+    #[must_use]
+    pub(crate) fn authenticates_revoked_cleanup_key_at(
+        &self,
+        trusted: &HistoricalProviderVerificationKeyV1,
+        verified_at_seconds: i64,
+        trust_generation: u64,
+        trust_digest: ObjectDigest,
+        revocation_generation: u64,
+        revocation_digest: ObjectDigest,
+    ) -> bool {
+        if !self.data.historical_public_keys.contains(trusted) {
+            return false;
+        }
+        historical_cleanup_key_active_at(
+            &self.data.trust_history,
+            trusted,
+            verified_at_seconds,
+            trust_generation,
+            trust_digest,
+            revocation_generation,
+            revocation_digest,
+        )
+    }
+}
+
+impl ProviderConfigurationDataV5 {
+    /// Returns the independent protected RootMountRecord pin captured in the manifest.
+    #[must_use]
+    pub const fn root_mount_record_signer(&self) -> &SourceProviderSigningKeyV1 {
+        &self.root_mount_record_signer
     }
 
     /// Returns the protected current provider authority.
@@ -373,63 +599,6 @@ impl RevalidatedProviderConfigurationV1 {
         })
     }
 
-    /// Reports whether one retained key was active at an authenticated historical head.
-    ///
-    /// The check is cryptographic-policy input only and grants no current
-    /// request, signing, journal, effect, descriptor, or send authority.
-    #[must_use]
-    pub fn authenticates_historical_key_at(
-        &self,
-        trusted: &HistoricalProviderVerificationKeyV1,
-        issued_seconds: i64,
-        trust_generation: u64,
-        trust_digest: ObjectDigest,
-        revocation_generation: u64,
-        revocation_digest: ObjectDigest,
-    ) -> bool {
-        if !self.historical_public_keys.contains(trusted) {
-            return false;
-        }
-        historical_key_active_at(
-            &self.trust_history,
-            trusted,
-            issued_seconds,
-            trust_generation,
-            trust_digest,
-            revocation_generation,
-            revocation_digest,
-        )
-    }
-
-    /// Reports whether a now-revoked key was valid at one durable verification anchor.
-    ///
-    /// This narrow exception is only an input to already-consumed cleanup
-    /// recovery. It never grants current request, use, activation, or signing
-    /// authority, and requires the artifact head to precede every applicable
-    /// authenticated earliest-deactivation head.
-    #[must_use]
-    pub(crate) fn authenticates_revoked_cleanup_key_at(
-        &self,
-        trusted: &HistoricalProviderVerificationKeyV1,
-        verified_at_seconds: i64,
-        trust_generation: u64,
-        trust_digest: ObjectDigest,
-        revocation_generation: u64,
-        revocation_digest: ObjectDigest,
-    ) -> bool {
-        if !self.historical_public_keys.contains(trusted) {
-            return false;
-        }
-        historical_cleanup_key_active_at(
-            &self.trust_history,
-            trusted,
-            verified_at_seconds,
-            trust_generation,
-            trust_digest,
-            revocation_generation,
-            revocation_digest,
-        )
-    }
 }
 
 #[allow(clippy::too_many_arguments)]

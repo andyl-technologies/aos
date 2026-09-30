@@ -557,6 +557,34 @@ impl StorageZfsHoldVerifierV1 {
         (self.signer, self.public_key)
     }
 
+    /// Checks retained signature equality under an independently protected Storage pin.
+    ///
+    /// This supplies no expected current tuple, head, time, FD, hold or rotation
+    /// authority. Archive owners must establish those separate obligations.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign signer/head, invalid key or invalid strict signature.
+    pub fn verify_retained_signature_claim(
+        self,
+        signed: &SignedStorageZfsHoldReceiptV1,
+    ) -> Result<(), StorageZfsHoldReceiptErrorV1> {
+        if signed.signer != self.signer
+            || signed.signer.authority_generation != signed.receipt.head.authority_generation
+            || signed.signer.authority_digest != signed.receipt.head.authority_digest
+        {
+            return Err(StorageZfsHoldReceiptErrorV1::Signature);
+        }
+        let key = VerifyingKey::from_bytes(&self.public_key)
+            .map_err(|_| StorageZfsHoldReceiptErrorV1::Signature)?;
+        key.verify_strict(
+            &signed.signing_message(),
+            &Signature::from_bytes(&signed.signature),
+        )
+        .map_err(|_| StorageZfsHoldReceiptErrorV1::Signature)?;
+        Ok(())
+    }
+
     /// Verifies a signature, bounded time, and the entire independently expected tuple.
     ///
     /// The caller must obtain `expected` from protected current state and a
@@ -572,19 +600,7 @@ impl StorageZfsHoldVerifierV1 {
         expected: &StorageZfsHoldReceiptV1,
         now_seconds: i64,
     ) -> Result<(), StorageZfsHoldReceiptErrorV1> {
-        if signed.signer != self.signer
-            || signed.signer.authority_generation != signed.receipt.head.authority_generation
-            || signed.signer.authority_digest != signed.receipt.head.authority_digest
-        {
-            return Err(StorageZfsHoldReceiptErrorV1::Signature);
-        }
-        let key = VerifyingKey::from_bytes(&self.public_key)
-            .map_err(|_| StorageZfsHoldReceiptErrorV1::Signature)?;
-        key.verify_strict(
-            &signed.signing_message(),
-            &Signature::from_bytes(&signed.signature),
-        )
-        .map_err(|_| StorageZfsHoldReceiptErrorV1::Signature)?;
+        self.verify_retained_signature_claim(signed)?;
         if now_seconds < signed.receipt.issued_seconds
             || now_seconds >= signed.receipt.valid_until_seconds
         {
