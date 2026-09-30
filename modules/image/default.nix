@@ -37,7 +37,18 @@
   };
 
   platform = cfg.platform;
-  plan = cfg.plan;
+  # Output validation must not force the image plan from toplevel assertions:
+  # constructing that plan itself retains the checked toplevel derivation.
+  plan =
+    if
+      cfg.plan.finalization
+      == (
+        if externalFinalization
+        then "external"
+        else "self-contained"
+      )
+    then cfg.plan
+    else throw "selected image plan finalization must match the configured finalization mode";
   rawImage = plan.rawImage;
   convertedMetadataFilename = "image-info.json";
 
@@ -352,18 +363,6 @@ in {
         {
           assertion = cfg.extraFirmwareFreeMiB >= 0;
           message = "aos.image.extraFirmwareFreeMiB must not be negative";
-        }
-        {
-          assertion =
-            !buildingImage
-            || platform == null
-            || plan.finalization
-            == (
-              if externalFinalization
-              then "external"
-              else "self-contained"
-            );
-          message = "selected image plan finalization must match the configured finalization mode";
         }
       ];
     }

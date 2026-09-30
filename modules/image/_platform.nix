@@ -24,21 +24,9 @@
     };
   };
   kernelIdentityType = strictSubmodule {
-    binding = lib.mkOption {
-      type = lib.types.nonEmptyStr;
-      description = "Checked binding that selected the kernel provider.";
-    };
-    implementation = lib.mkOption {
-      type = lib.types.nonEmptyStr;
-      description = "Qualified selected kernel implementation.";
-    };
     package = lib.mkOption {
       type = packageIdentityType;
       description = "Authenticated package identity owning the kernel implementation.";
-    };
-    providerInstance = lib.mkOption {
-      type = lib.abilities.types.instanceId;
-      description = "Canonical selected kernel provider instance.";
     };
   };
   imageIdentityType =
@@ -50,7 +38,7 @@
       builder = lib.mkOption {
         type = strictSubmodule {
           artifact = lib.mkOption {
-            type = lib.abilities.types.artifactSelector;
+            type = lib.types.pathInStore;
             description = "Symbolic output selector for the authenticated image-builder package.";
           };
           name = lib.mkOption {
@@ -87,14 +75,6 @@
             type = lib.types.nonEmptyStr;
             description = "Persistent state migration version.";
           };
-          "module-abi" = lib.mkOption {
-            type = lib.types.addCheck lib.types.int (value: value > 0);
-            description = "Shared module schema ABI.";
-          };
-          "config-input-abi" = lib.mkOption {
-            type = lib.types.addCheck lib.types.int (value: value > 0);
-            description = "Persistent evaluator input ABI.";
-          };
         };
         description = "Immutable release identity.";
       };
@@ -127,7 +107,7 @@
           description = "Selected image-builder record discriminator.";
         };
         artifact = lib.mkOption {
-          type = lib.abilities.types.artifactSelector;
+          type = lib.types.pathInStore;
           description = "Checked symbolic output selector for the selected package.";
         };
         build = lib.mkOption {
