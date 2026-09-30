@@ -28,8 +28,12 @@ requirements it enforces. A gate MAY enforce requirements from several files.
 - **[TEST-1]** The golden vectors in
   [`reference/golden-vectors.md`](reference/golden-vectors.md) MUST be
   executed byte-for-byte by every implementation claiming **Core**: for each
-  vector the implementation encodes the described input and compares the
-  bytes and the identity, and decodes the bytes and compares the model.
+  positive vector the implementation encodes the described input and compares
+  the bytes and the identity, and decodes the bytes and compares the model.
+  For an explicitly negative vector, the suite reproduces its wire input
+  independently of the rejecting format encoder, compares those bytes and
+  requires the format decoder to reject them. Negative vectors do not
+  acquire an immutable-content identity or authority by being canonical CBOR.
   *Gate:* `gate:golden-vectors`.
 - **[TEST-2]** A golden vector MUST exist for at least: one chunk boundary
   sequence per registered chunk profile, one manifest, one leaf node and one

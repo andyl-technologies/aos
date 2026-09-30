@@ -1324,6 +1324,26 @@ is added rather than editing history.
     current-root/publication fencing remain required before physical gates
     can qualify.
 
+- **[D-80] Distinguish record byte witnesses from authority.**
+  - **Status:** Decided
+  - **Decision:** Retain every existing golden byte unchanged; document
+    the legacy commit's encoding and primitive-signature scope. Add
+    independently encoded layout-version-2, generation-exclusion,
+    CreationJournal and DeleteOperation witnesses with explicit positive
+    and negative outcomes. Bind deletion decoding to an independently fixed
+    canonical operation key and retain distinct physical and lease epochs.
+  - **Rationale:** TEST-2 requires vectors for newly implemented formats,
+    while the reference lacked D-77 and D-78 record witnesses. A structurally
+    valid Invalidated journal is not deletion authority, and a canonical
+    record with an invalid identity length or null required field must be
+    rejected. Legacy signed bytes without D-75/D-76 context cannot prove
+    authoring authority. Explicit claim scopes avoid conflating byte
+    reproduction with current-root, descriptor or elapsed-time checks.
+  - **Affects:** TEST-1 to TEST-3 and the golden-vector reference. Existing
+    encodings, identities, requirement IDs and gate names remain unchanged.
+    Physical deletion and current-authority qualification are still governed
+    by their original requirements.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
