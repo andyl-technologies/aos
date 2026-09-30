@@ -1210,10 +1210,9 @@
       defaultDependencyOwners = lists.unique (builtins.map
         (decl: ownerForProvenance decl.provenance)
         (builtins.filter
-          (decl:
-            (decl.provenance or "@base")
-            != "@base"
-            && !(isNoDefault decl.option.default))
+          # Owner discovery must inspect declaration metadata only. A default
+          # may read another option in this same recursive fixed point.
+          (decl: (decl.provenance or "@base") != "@base")
           allOptionDecls));
       # Nix does not expose general config-read tracing. Preserve the one
       # dependency edge phase 4 can identify exactly: a value supplied by an
@@ -1864,24 +1863,24 @@
             );
 
           findUndeclaredInModule = file: config: let
-            go = path: val: let
+            go = path: conditions: val: let
               key = builtins.concatStringsSep "." path;
-              descend = builtins.concatLists (
-                builtins.map (name: go (path ++ [name]) val.${name})
-                (builtins.attrNames val)
-              );
+              descend = builtins.concatMap (name: go (path ++ [name]) conditions val.${name}) (builtins.attrNames val);
             in
-              if path == []
-              then
-                if builtins.isAttrs val
-                then descend
-                else []
-              else if key == "_module"
+              # Declared leaves own their own type checking. Do not force their
+              # values or guards while checking the surrounding module's keys.
+              if key == "_module" || declaredLeafSet ? ${key}
               then []
-              else if declaredLeafSet ? ${key}
-              then []
-              else if builtins.isAttrs val && declaredPrefixSet ? ${key}
+              else if isMkIf val
+              then go path (conditions ++ [val._condition]) val._value
+              else if isMkMerge val
+              then builtins.concatMap (value: go path conditions value) val._values
+              else if isOverride val || isOrder val
+              then go path conditions val._value
+              else if builtins.isAttrs val && (path == [] || declaredPrefixSet ? ${key})
               then descend
+              else if path == [] || !(builtins.all (condition: condition) conditions)
+              then []
               else [
                 {
                   inherit path file;
@@ -1889,11 +1888,11 @@
                 }
               ];
           in
-            go [] config;
+            go [] [] config;
 
           undeclaredDefs = builtins.concatLists (
             builtins.map (
-              m: findUndeclaredInModule m._file (resolveIfs m.config)
+              m: findUndeclaredInModule m._file m.config
             )
             evaluatedModules
           );
@@ -2011,11 +2010,11 @@
           pathStr = key;
           typeSig = option.type.description;
           type =
-            option.type._aosDocType
-            or {
-              kind = "opaque";
-              signature = option.type.description;
-            };
+            (import ./type-schema.nix {
+              inherit lib;
+              allowOpaque = true;
+            })
+            option.type;
           description =
             if builtins.isString option.description && !builtins.hasContext option.description
             then option.description

@@ -68,7 +68,35 @@ let
       }
     ];
   };
+  documented = lib.evalModules {
+    inherit lib;
+    modules = [
+      {
+        options.entries = lib.mkOption {
+          type = lib.types.attrsOf (lib.types.submodule {
+            options.command = lib.mkOption {type = lib.types.str;};
+          });
+          default = {};
+        };
+      }
+      {
+        options.entries = lib.mkOption {
+          type = lib.types.attrsOf (lib.types.submodule {
+            options.after = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [];
+            };
+          });
+          default = {};
+        };
+      }
+    ];
+  };
+  documentedEntries = builtins.head (builtins.filter (entry: entry.pathStr == "entries") documented._optionDecls);
 in {
+  mergedNestedDocumentation = assert builtins.attrNames documentedEntries.type.value.fields == ["after" "command"];
+  assert documentedEntries.type.value.fields.after.element.kind == "string";
+  assert !documentedEntries.type.value.open; true;
   constraintsAfterMerging = assert evaluate boundedPolicy [{allow = ["read"];} {deny = ["write"];}]
   == {
     allow = ["read"];

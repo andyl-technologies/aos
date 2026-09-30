@@ -1,5 +1,8 @@
 ##! Projects native module option types into the shared portable type algebra.
-{lib}: let
+{
+  lib,
+  allowOpaque ? false,
+}: let
   optionTree = options:
     builtins.mapAttrs (_: option:
       if option ? type
@@ -12,10 +15,20 @@
     (builtins.removeAttrs options ["_module"]);
 
   project = type: let
-    schema = type._aosDocType or (throw "Option type '${type.description}' has no portable schema.");
+    schema =
+      type._aosDocType or {
+        kind = "opaque";
+        signature = type.description;
+      };
   in
     if !(type._portable or true)
-    then throw "Option type '${type.description}' uses a Nix predicate that cannot validate deferred runtime values."
+    then
+      if allowOpaque
+      then {
+        kind = "opaque";
+        signature = type.description;
+      }
+      else throw "Option type '${type.description}' uses a Nix predicate that cannot validate deferred runtime values."
     else if type ? _refinementConstraints
     then {
       kind = "refined";
@@ -60,7 +73,7 @@
         }
       ];
     }
-    else if schema.kind == "opaque"
+    else if schema.kind == "opaque" && !allowOpaque
     then throw "Option type '${type.description}' cannot cross the activation boundary."
     else schema;
 in
