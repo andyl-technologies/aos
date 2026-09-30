@@ -228,6 +228,23 @@ in {
             };
           };
           aos.filesystems.volumes.sealed.mountPoint = "/srv/sealed";
+
+          # Persistent homes on their own TPM-sealed root-disk partition: the
+          # volume mounts at aos.homes.directory and the /home bind follows it.
+          aos.provisioning.storage.partitions.home = {
+            sizeMin = "512M";
+            sizeMax = "512M";
+            encryption = "tpm2";
+          };
+          aos.filesystems.volumes.home.mountPoint = "/var/home";
+          aos.homes.enable = true;
+          aos.users.groups.alice = { gid = 1000; members = []; };
+          aos.users.users.alice = {
+            uid = 1000;
+            group = "alice";
+            shell = "''${pkgs.bash}/bin/bash";
+            description = "Sealed-home user";
+          };
           systemd.services.aos-test-agent = {
             description = "AOS VM Test Guest Agent";
             wantedBy = [ "multi-user.target" ];
@@ -1254,6 +1271,22 @@ in {
           "sealed data volume not mounted from its mapper"
       )
       target.succeed("echo sealed-probe > /srv/sealed/probe && sync")
+
+      # The home volume sealed in the same pass; /home is bound over it and
+      # the declared account's home was created on the sealed filesystem.
+      target.succeed(f"{CS} isLuks /dev/disk/by-partlabel/home")
+      target.succeed("test -s /run/aos-volume-recovery/home.key")
+      assert mount_source("/var/home") == "/dev/mapper/home", (
+          "sealed home volume not mounted from its mapper"
+      )
+      assert " /home " in target.succeed("cat /proc/mounts"), "/home is not bound"
+      home_owner = target.succeed("stat -c '%U:%G %a' /home/alice").strip()
+      assert home_owner == "alice:alice 700", home_owner
+      target.succeed(
+          "systemd-run --wait --quiet --uid=alice --gid=alice "
+          "bash -c 'echo home-probe > \"$HOME/probe\"' && sync"
+      )
+      target.succeed("test \"$(cat /var/home/alice/probe)\" = home-probe")
       seal_log = target.succeed(
           "journalctl -b -k --no-pager 2>&1"
       )
@@ -1324,6 +1357,13 @@ in {
       )
       target.succeed("test \"$(cat /srv/sealed/probe)\" = sealed-probe")
       assert "unlocking sealed from /dev/md/sealed via TPM2" in unlock_log, unlock_log
+
+      # So did the home volume, and the account's home came back with it.
+      assert mount_source("/var/home") == "/dev/mapper/home", (
+          "sealed home volume did not unlock via TPM2 on reboot"
+      )
+      assert "unlocking home from /dev/disk/by-partlabel/home via TPM2" in unlock_log, unlock_log
+      target.succeed("test \"$(cat /home/alice/probe)\" = home-probe")
 
       # ════ 5. A/B and counted-candidate PCR-12 qualification ════════
       # Populate the initially empty B data/hash partitions from the verified
