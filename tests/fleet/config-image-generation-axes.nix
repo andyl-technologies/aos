@@ -8,30 +8,28 @@
   pkgs,
   systems,
 }: let
-  abi2 = mkSystem [
+  candidate = mkSystem [
     ../../systems/server-verity.nix
     ../../systems/_fleet-transition-test.nix
     {
-      aos.system.version = "9999.0.0-generation-axes-abi2";
-      aos.system.moduleAbi = 2;
+      aos.system.version = "9999.0.0-generation-axes-candidate";
       # The transition fixture exercises evaluator and image compatibility;
       # its retained configuration already supplies every selected package.
       # Keep the candidate image focused on that contract instead of baking
       # unused optional host-policy closures into the OTA payload.
       aos.image.hostConfigClosures = lib.mkForce [];
-      # Both targets must reach the authenticated registry before their
-      # retained configuration can be rebound to the new image ABI.
+      # Both targets must reach the authenticated registry before installing
+      # the candidate's retained native image artifacts.
       aos.networking.interfaces.fleet-target = {
         matchMACAddress = "52:54:00:12:00:03";
         address = "192.168.50.12/24";
       };
     }
   ];
-  abi2Top = abi2.config.system.build.toplevel;
-  abi2Image = abi2.config.system.build.image.raw;
-  abi2ImageDisk = abi2.config.system.build.imageArtifacts.raw.disk;
-  abi2ImageInfo = abi2.config.system.build.imageArtifacts.raw.info;
-  abi2Uki = abi2.config.system.build.initialBootExecutable;
+  candidateTop = candidate.config.system.build.toplevel;
+  candidateImage = candidate.config.system.build.image.raw;
+  candidateImageDisk = candidate.config.system.build.imageArtifacts.raw.disk;
+  candidateImageInfo = candidate.config.system.build.imageArtifacts.raw.info;
 
   # Image-mode machines do not consume fleet `extraClosures`. The test driver
   # clones the authenticated registry in each guest, so make the AOS-built Git
@@ -56,8 +54,7 @@
       # This acceptance test runs three guests while generating and serving a
       # full closure. Give evaluation enough wall time on shared CI builders;
       # production systems retain the normal service limit.
-      systemd.services.aos-eval.serviceConfig.RuntimeMaxSec =
-        lib.mkForce "600s";
+      aos.services."control-plane.aos-activate".lifecycle.start_timeout_millis = lib.mkForce 600000;
       # A resolver blocked in the synthetic multicast network can remain in
       # uninterruptible I/O while systemd tears the guest down. Do not spend
       # the production-wide stop timeout on that unrelated test transport
@@ -102,11 +99,10 @@ in {
       '';
       extraClosures = [
         pkgs.aos.apr
-        abi2Top
-        abi2Image
-        abi2ImageDisk
-        abi2ImageInfo
-        abi2Uki
+        candidateTop
+        candidateImage
+        candidateImageDisk
+        candidateImageInfo
         pkgs.secure-boot-test-keys
         pkgs.sbsigntools
         pkgs.binutils
@@ -139,14 +135,13 @@ in {
       # services while the test immediately exercises a real reboot.
       memoryMiB = 8192;
       tpm = true;
-      metadata."host.nix" = ''
-        {
-          aos.provisioning.storage.partitions.var.sizeMin = "8G";
-          aos.networking.hostName = "axis-one";
-          aos.apm.desiredPackages = [ "aos-test-agent" ];
-          environment.etc."config-generation-axis".text = "one\n";
-        }
-      '';
+      metadata."host.nix" = import ./_native-runtime-source.nix {
+        inherit pkgs;
+        hostname = "axis-one";
+        value = "one";
+        filePath = "config-generation-axis";
+        fileContent = "one\n";
+      };
     };
   };
 
@@ -161,39 +156,39 @@ in {
       APM = "${pkgs.aos.apm}/bin/apm"
       APR = "${pkgs.aos.apr}/bin/apr"
       JQ = "${pkgs.jq}/bin/jq"
-      CONFIG_STATE = "/var/lib/profiles/system/state.json"
+      RUNTIME = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime"
+      PROFILE = "/var/lib/profiles/system"
       IMAGE_STATE = "/var/lib/profiles/image/state.json"
-
-
-      def config_state(machine):
-          return json.loads(machine.succeed(f"cat {CONFIG_STATE}"))
 
 
       def image_state(machine):
           return json.loads(machine.succeed(f"cat {IMAGE_STATE}"))
 
 
-      def config_generation(state, number):
-          matches = [g for g in state["generations"] if g["number"] == number]
-          assert len(matches) == 1, (number, state)
-          return matches[0]
-
-
       def current_config(machine):
-          state = config_state(machine)
-          return state, config_generation(state, state["current"])
+          number = json.loads(machine.succeed(
+              f"{RUNTIME} deployment-current --profile {PROFILE} --committed-during-recovery"
+          ))["generation"]
+          assert isinstance(number, int) and number > 0, number
+          marker = json.loads(machine.succeed(f"cat {PROFILE}/gen-{number}/native-deployment.json"))
+          descriptor = json.loads(machine.succeed(f"cat {PROFILE}/gen-{number}/evaluation.json"))
+          assert marker["profile_generation"] == number, marker
+          assert descriptor["schema"] == "aos.package.evaluation-input", descriptor
+          return {"current": number, "marker": marker, "descriptor": descriptor}, {"number": number, **marker, **descriptor}
 
 
       def generation_attestation(machine, number):
-          return json.loads(machine.succeed(
-              f"cat /var/lib/profiles/system/gen-{number}/gen-attestation.json"
+          machine.succeed("systemctl restart aos-image-boot-commit.service", timeout=300)
+          record = json.loads(machine.succeed(
+              f"cat {PROFILE}/gen-{number}/gen-attestation.json"
           ))
-
-
-      def generation_activation_inode(machine, number):
-          return machine.succeed(
-              f"stat -c %i /var/lib/profiles/system/gen-{number}/activation.json"
-          ).strip()
+          marker = json.loads(machine.succeed(f"cat {PROFILE}/gen-{number}/native-deployment.json"))
+          assert record["schema"] == "aos.package.generation-attestation", record
+          assert record["profile_generation"] == number, record
+          assert record["sequence"] == marker["sequence"] and record["content"] == marker["content"], record
+          assert record["quote_status"] == "quoted", record
+          assert record["quote"], record
+          return record
 
 
       def assert_live(machine, hostname, value):
@@ -215,114 +210,78 @@ in {
           """), timeout=180)
 
 
-      def stage_abi2(machine):
-          before_config = config_state(machine)
+      def stage_candidate(machine):
+          _, before = current_config(machine)
           before_boot = machine.succeed("cat /proc/sys/kernel/random/boot_id").strip()
-          output = machine.succeed(
+          machine.succeed(
               "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
-              f"{APM} upgrade --system --yes 2>&1",
-              timeout=1800,
+              f"{APM} upgrade --system --yes", timeout=1800
           )
-          assert "Staging inactive A/B image slot" in output, output
           staged = image_state(machine)
           assert staged["running"] == 1, staged
-          candidate_number = staged["pending"]
-          assert candidate_number is not None, staged
-          assert staged["default"] == candidate_number, staged
-          candidate = config_generation(
-              {"generations": staged["generations"]}, candidate_number
-          )
-          assert candidate["module_abi"] == 2, candidate
-          assert config_state(machine) == before_config
-          assert machine.succeed(
-              "cat /proc/sys/kernel/random/boot_id"
-          ).strip() == before_boot
-          return before_config, candidate_number
+          number = staged["pending"]
+          assert number is not None, staged
+          candidates = [record for record in staged["generations"] if record["number"] == number]
+          assert len(candidates) == 1, staged
+          candidate = candidates[0]
+          assert candidate["module_library"]["store_path"].startswith("/nix/store/"), candidate
+          assert candidate["module_library"]["nar_size"] > 0, candidate
+          assert candidate["evaluation_descriptor"].startswith("/nix/store/"), candidate
+          # Native submission may publish rollout policy; it preserves the
+          # operator role and the selected evaluator library during staging.
+          _, after = current_config(machine)
+          assert after["library"] == before["library"], (before, after)
+          assert machine.succeed("cat /proc/sys/kernel/random/boot_id").strip() == before_boot
+          return before, number
 
 
-      # Establish both ABI-1 hosts through the real boot evaluator and graph.
-      target.wait_until_succeeds(
-          "systemctl is-active --quiet aos-graph-compile.service", timeout=300
-      )
-      target.succeed("systemctl is-active --quiet aos-config.target")
+      target.wait_until_succeeds("systemctl is-active --quiet aos-activate.service", timeout=300)
       assert_live(target, "axis-one", "one")
-
       initial_state, initial = current_config(target)
-      assert initial["module_abi_pinned"] == 1, initial
-      assert initial["image_gen_parent"] == 1, initial
       initial_attestation = generation_attestation(target, initial["number"])
-      initial_activation_inode = generation_activation_inode(target, initial["number"])
-      # Config-only activation changes the overlay without selecting an image
-      # or rebooting. Preserve this generation for the later cross-ABI replay.
-      second_host = """{
-        aos.provisioning.storage.partitions.var.sizeMin = \"8G\";
-        aos.networking.hostName = \"axis-two\";
-        aos.apm.desiredPackages = [ \"aos-test-agent\" ];
-        environment.etc.\"config-generation-axis\".text = \"two\\n\";
-      }
-      """
-      encoded = base64.b64encode(second_host.encode()).decode()
-      target.succeed(
-          f"printf '%s' {encoded} | base64 -d > /run/config-generation-axis-two.nix"
-      )
+      running_initial = next(record for record in image_state(target)["generations"] if record["number"] == 1)
+      assert initial["library"].startswith(running_initial["module_library"]["store_path"] + "/"), (initial, running_initial)
+
+      second_source = ${builtins.toJSON (import ./_native-runtime-source.nix {
+        inherit pkgs;
+        hostname = "axis-two";
+        value = "two";
+        filePath = "config-generation-axis";
+        fileContent = "two\n";
+      })}
+      encoded = base64.b64encode(second_source.encode()).decode()
+      target.succeed("mkdir -p /run/config-axis-two")
+      target.succeed(f"printf '%s' {encoded} | base64 -d > /run/config-axis-two/host.nix")
       image_before_switch = image_state(target)
-      boot_before_switch = target.succeed(
-          "cat /proc/sys/kernel/random/boot_id"
-      ).strip()
-      target.succeed(f"""
-          {APM} switch \
-            --from /run/config-generation-axis-two.nix \
-            --eval-root /run/config-generation-axis-two-eval
-      """, timeout=300)
+      boot_before_switch = target.succeed("cat /proc/sys/kernel/random/boot_id").strip()
+      target.succeed(
+          f"{APM} switch --worktree /run/config-axis-two --eval-root /run/config-axis-two-eval", timeout=300
+      )
       second_state, second = current_config(target)
       assert second["number"] != initial["number"], (initial, second)
-      assert second["module_abi_pinned"] == 1, second
-      assert second["image_gen_parent"] == 1, second
+      assert second["library"] == initial["library"], (initial, second)
+      assert second["runtimeConfiguration"] != initial["runtimeConfiguration"], (initial, second)
       assert image_state(target) == image_before_switch
-      assert target.succeed(
-          "cat /proc/sys/kernel/random/boot_id"
-      ).strip() == boot_before_switch
+      assert target.succeed("cat /proc/sys/kernel/random/boot_id").strip() == boot_before_switch
       assert_live(target, "axis-two", "two")
       second_attestation = generation_attestation(target, second["number"])
-      assert second_attestation["generation_id"] == second["manifest_hash"]
       assert second_attestation["activation_id"] != initial_attestation["activation_id"]
 
-      # Same-ABI rollback is direct reactivation: it changes only `current`,
-      # creates no generation, and never changes the image or boot identity.
-      generation_count = len(second_state["generations"])
-      target.succeed(
-          f"{APM} rollback --system --generation {initial['number']}", timeout=300
-      )
+      # Rollback creates a new checked publication of the exact retained source.
+      target.succeed(f"{APM} rollback --system --generation {initial['number']}", timeout=300)
       direct_state, direct = current_config(target)
-      assert direct["number"] == initial["number"], direct_state
-      assert len(direct_state["generations"]) == generation_count, direct_state
+      assert direct["number"] not in (initial["number"], second["number"]), direct
+      assert direct["content"] == initial["content"], (direct, initial)
+      assert direct_state["descriptor"] == initial_state["descriptor"], (direct_state, initial_state)
       assert image_state(target) == image_before_switch
-      assert target.succeed(
-          "cat /proc/sys/kernel/random/boot_id"
-      ).strip() == boot_before_switch
+      assert target.succeed("cat /proc/sys/kernel/random/boot_id").strip() == boot_before_switch
       assert_live(target, "axis-one", "one")
-      refreshed_attestation = generation_attestation(target, initial["number"])
-      assert refreshed_attestation["generation_id"] == initial_attestation["generation_id"]
-      assert refreshed_attestation["manifest_hash"] == initial_attestation["manifest_hash"]
+      refreshed_attestation = generation_attestation(target, direct["number"])
+      assert refreshed_attestation["content"] == initial_attestation["content"]
       assert refreshed_attestation["activation_id"] != initial_attestation["activation_id"]
-      assert refreshed_attestation["quote"] != initial_attestation["quote"]
-      assert generation_activation_inode(target, initial["number"]) != initial_activation_inode
-      initial_events = [
-          json.loads(line)
-          for line in target.succeed("cat /run/log/aos-packages.cel").splitlines()
-          if line.strip()
-      ]
-      initial_activation_ids = [
-          event["activation_id"]
-          for event in initial_events
-          if event["event_type"] == "aos-generation-attestation"
-          and event["generation_id"] == initial_attestation["generation_id"]
-      ]
-      assert initial_attestation["activation_id"] in initial_activation_ids
-      assert refreshed_attestation["activation_id"] in initial_activation_ids
-      assert len(set(initial_activation_ids)) >= 2, initial_activation_ids
+      assert refreshed_attestation["sequence"] > initial_attestation["sequence"]
 
-      # Publish one real ABI-2 dm-verity image and its authenticated UKI facts.
+      # Publish one real candidate dm-verity image and its authenticated UKI facts.
       registry.wait_for_unit("aos-registry-server-gitd.service", timeout=180)
       registry.wait_until_succeeds(
           "systemctl is-active --quiet aos-pkg-test-static-cache-server.target",
@@ -343,8 +302,8 @@ in {
           printf 'experimental-features = nix-command\nsandbox = false\nbuild-users-group =\n' \
             > "$NIX_CONF_DIR/nix.conf"
 
-          ${pkgs.nix}/bin/nix-store --check-validity '${abi2Top}'
-          ${pkgs.nix}/bin/nix-store --check-validity '${abi2Image}'
+          ${pkgs.nix}/bin/nix-store --check-validity '${candidateTop}'
+          ${pkgs.nix}/bin/nix-store --check-validity '${candidateImage}'
           KEYGEN=$(${pkgs.aos.apr}/bin/apr keys generate release --registry sysreg 2>&1)
           printf '%s\n' "$KEYGEN"
           PUBKEY=$(printf '%s\n' "$KEYGEN" | awk '/Public key:/ {print $NF; exit}')
@@ -355,9 +314,6 @@ in {
             --trust-key-id release \
             --key "$KEY"
           REG_DIR=$HOME/.local/share/apm/registries/sysreg
-          # Verify the signed recovery bundle against the image's test key.
-          mkdir -p "$REG_DIR/sb-certs"
-          cp ${pkgs.secure-boot-test-keys}/db.crt "$REG_DIR/sb-certs/db.pem"
           DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
           ORIGIN=/var/lib/aos-registry-server/registries/sysreg
           git init --bare --object-format=sha256 "$ORIGIN"
@@ -371,21 +327,17 @@ in {
             printf 'release = "%s"\n' "$KEY"
           } > "$HOME/.config/apm/registries.d/sysreg.toml"
 
-          set -- '${abi2Uki}'/*.efi
-          test "$#" -eq 1
-          ABI2_UKI="$1"
-
-          if ! ${pkgs.aos.apr}/bin/apr --json publish '${abi2Top}' \
+          if ! ${pkgs.aos.apr}/bin/apr --json publish '${candidateTop}' \
             --name aos \
-            --version 9999.0.0-generation-axes-abi2 \
-            --description 'Two-axis ABI fixture' \
+            --version 9999.0.0-generation-axes-candidate \
+            --description 'Two-axis native image fixture' \
             --license MIT \
             --maintainer test \
             --sysroot \
-            --image-payload '${abi2Image}' \
-            --image-disk '${abi2ImageDisk}' \
-            --image-info '${abi2ImageInfo}' --image-format raw \
-            --image-uki "$ABI2_UKI" \
+            --image-payload '${candidateImage}' \
+            --image-disk '${candidateImageDisk}' \
+            --image-info '${candidateImageInfo}' --image-format raw \
+            --image-contract-schema aos.image.metadata/v1 \
             --no-ca \
             --registry sysreg \
             --key-id release \
@@ -400,15 +352,19 @@ in {
       publication = json.loads(registry.succeed("cat /tmp/publish.json"))
       images = publication.get("images", [])
       assert len(images) == 1, images
-      ukis = images[0].get("ukis", [])
-      assert {u.get("slot") for u in ukis} == {"a", "b"}, ukis
-      signers = sorted({u["sb_signer_cert_sha256"] for u in ukis})
-      assert all(re.fullmatch(r"[0-9a-f]{64}", signer) for signer in signers)
-      catalog_commands = "\n".join(
-          f"{APR} sb-certs add aos-db-{index} --cert-sha256 {signer} "
-          "--registry sysreg --no-commit"
-          for index, signer in enumerate(signers)
-      )
+      contract = images[0]["delivery"]["artifact_contract"]
+      assert contract["schema"] == "aos.image.metadata/v1", contract
+      assert contract["document"]["store_path"] == '${candidateImageInfo}', contract
+      assert contract["artifacts"]["store_path"] == '${candidateImage}', contract
+      metadata_bytes = registry.succeed("cat '${candidateImageInfo}'")
+      metadata = json.loads(metadata_bytes)
+      assert metadata["schema_version"] == contract["schema"], metadata
+      digest = registry.succeed("${pkgs.coreutils}/bin/sha256sum '${candidateImageInfo}'").split()[0]
+      assert digest == contract["document"]["sha256"], contract
+      for slot in ("a", "b"):
+          normal = metadata["efi"]["normal_" + slot]
+          assert re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", normal["expected_ready_pcr11"]), normal
+          assert normal["artifact"]["size_bytes"] > 0, normal
       registry.succeed(textwrap.dedent(f"""
           set -eu
           export HOME=/tmp
@@ -421,14 +377,13 @@ in {
           DEFAULT_BRANCH=$(cat /tmp/sysreg-branch)
           ORIGIN=/var/lib/aos-registry-server/registries/sysreg
           KEY=$HOME/.config/apm/keys/sysreg-release.key
-          {catalog_commands}
           {APR} verify --registry sysreg
           git -C "$REG_DIR" add -A
           git -C "$REG_DIR" \
             -c gpg.format=ssh \
             -c gpg.ssh.program='${pkgs.openssh}/bin/ssh-keygen' \
             -c user.signingkey="$KEY" \
-            commit -S -m 'publish: configuration ABI fixtures'
+            commit -S -m 'publish: configuration native image fixtures'
           # The cache server has a private mount namespace. Stop it before
           # mounting the publication disk so the restarted service sees the
           # mounted tree rather than the directory it replaced.
@@ -458,77 +413,38 @@ in {
       """), timeout=1800)
       public_key = registry.succeed("cat /tmp/sysreg-pubkey").strip()
       configure_registry(target, public_key)
-      # Image staging is image-only: neither host has re-evaluated before the
-      # ABI-2 substrate is actually running.
-      staged_target_config, target_candidate = stage_abi2(target)
-
-      # The positive host boots the staged image, then first-boot production
-      # units re-evaluate and activate against the ABI-2 base library.
+      # Publish and physically stage a distinct authenticated image. This
+      # fixture uses the same repository library; library-change replay is
+      # exercised separately by native immutable-source integration tests.
+      staged_target_config, target_candidate = stage_candidate(target)
       target.reboot(timeout=600)
-      target.wait_until_succeeds(
-          "systemctl is-active --quiet multi-user.target", timeout=600
-      )
-      target.succeed(
-          "systemctl is-active --quiet aos-image-boot-commit.service || { "
-          "systemctl status --no-pager aos-firstboot-reeval.service "
-          "aos-eval.service aos-graph-compile.service aos-activate.service "
-          "aos-image-boot-commit.service; "
-          "journalctl -b --no-pager -u aos-firstboot-reeval.service "
-          "-u aos-eval.service -u aos-graph-compile.service "
-          "-u aos-activate.service -u aos-image-boot-commit.service; "
-          "exit 1; }"
-      )
-      target.succeed("systemctl is-active --quiet aos-config.target")
+      target.wait_until_succeeds("systemctl is-active --quiet multi-user.target", timeout=600)
+      target.wait_until_succeeds("systemctl is-active --quiet aos-image-boot-commit.service", timeout=300)
       booted_images = image_state(target)
       assert booted_images["running"] == target_candidate, booted_images
-      assert booted_images["default"] == target_candidate, booted_images
       assert booted_images.get("pending") is None, booted_images
       rebound_state, rebound = current_config(target)
-      assert rebound["number"] != staged_target_config["current"], rebound_state
-      assert rebound["image_gen_parent"] == target_candidate, rebound
-      assert rebound["module_abi_pinned"] == 2, rebound
+      running_image = next(record for record in booted_images["generations"] if record["number"] == target_candidate)
+      assert running_image["toplevel"] != running_initial["toplevel"], (running_image, running_initial)
+      assert running_image["module_library"] == running_initial["module_library"], (running_image, running_initial)
+      assert rebound["library"] == staged_target_config["library"], rebound
       assert_live(target, "axis-one", "one")
+      for source in second["configuration"] + second["runtimeConfiguration"] + [second["library"]]:
+          target.succeed(f"test -e {source}")
 
-      # Both the source generation's ABI-1 base library and its exact source
-      # inputs remain locally rooted after the A/B substrate switch.
-      target.succeed(f"test -e {second['base_lib_ref']}")
-      target.succeed(f"test -e {second['host_nix_ref']}")
-      target.succeed(f"test -e {second['facts_ref']}")
-      for module_path in second["package_module_paths"]:
-          target.succeed(f"test -e {module_path}")
-
-      # Rolling an ABI-1 generation forward while ABI 2 runs must evaluate the
-      # exact retained host/facts/module inputs and create an ABI-2 child. It is
-      # not legal to replay the old manifest or move the pointer to the old gen.
-      boot_before_cross = target.succeed(
-          "cat /proc/sys/kernel/random/boot_id"
-      ).strip()
-      cross_output = target.succeed(
-          f"{APM} rollback --system --generation {second['number']} 2>&1",
-          timeout=300,
-      )
-      assert "Re-evaluated generation" in cross_output, cross_output
+      # A physical image transition leaves historical evaluator/source identity
+      # intact. Rollback replays the retained descriptor into a new publication.
+      boot_before_cross = target.succeed("cat /proc/sys/kernel/random/boot_id").strip()
+      target.succeed(f"{APM} rollback --system --generation {second['number']}", timeout=300)
       cross_state, cross = current_config(target)
-      assert cross["number"] not in (initial["number"], second["number"]), cross_state
-      assert cross["image_gen_parent"] == target_candidate, cross
-      assert cross["module_abi_pinned"] == 2, cross
-      assert cross["host_nix_ref"] == second["host_nix_ref"], (cross, second)
-      assert cross["facts_ref"] == second["facts_ref"], (cross, second)
-      assert cross["package_module_paths"] == second["package_module_paths"], (cross, second)
-      running_image = next(
-          generation for generation in booted_images["generations"]
-          if generation["number"] == booted_images["running"]
-      )
-      assert cross["base_lib_ref"] == running_image["evaluator_ref"], (
-          cross,
-          running_image,
-      )
-      assert cross["base_lib_ref"] != second["base_lib_ref"], (cross, second)
-      assert target.succeed(
-          "cat /proc/sys/kernel/random/boot_id"
-      ).strip() == boot_before_cross
+      assert cross["number"] not in (initial["number"], second["number"]), cross
+      assert cross["content"] == second["content"], (cross, second)
+      assert cross_state["descriptor"] == second_state["descriptor"], (cross_state, second_state)
+      assert target.succeed("cat /proc/sys/kernel/random/boot_id").strip() == boot_before_cross
       assert image_state(target) == booted_images
       assert_live(target, "axis-two", "two")
-
+      cross_attestation = generation_attestation(target, cross["number"])
+      assert cross_attestation["image"]["toplevel"] == running_image["toplevel"], cross_attestation
+      assert cross_attestation["evaluation"] == second_state["descriptor"], cross_attestation
     '';
 }
