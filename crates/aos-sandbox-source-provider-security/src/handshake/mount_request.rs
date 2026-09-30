@@ -47,6 +47,7 @@ mod recovery;
 
 #[path = "mount_request/native_catalog.rs"]
 mod native_catalog;
+pub(super) use native_catalog::custody::OriginalBoundaryV5;
 #[path = "mount_request/native_root_prepared.rs"]
 mod native_root_prepared;
 #[path = "mount_request/native_pending.rs"]
@@ -808,7 +809,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     fn send_reserved_mount_request_with_boundary_v6(
         &mut self,
         journal: &impl MountSourceAcquisitionJournalViewV2,
-        reservation: ReservedMountProviderRequestV2,
+        mut reservation: ReservedMountProviderRequestV2,
         after_send: impl FnOnce(
             &mut Self,
             &ReservedMountProviderRequestV2,
@@ -824,17 +825,17 @@ impl CurrentRootMountSourceProviderSessionV1 {
             Err(_) => return Err(MountProviderRequestSendRecoveryV2 { reservation }),
         };
 
-        // Public consuming wrappers preserve their original native conversion.
-        // Query uses the borrowed core and parks its reservation across I/O.
-        let ReservedMountProviderRequestV2 { mut prepared, .. } = reservation;
-        prepared.outcome.native_outcome = prepared.native_currentness.map(|guard| {
-            std::sync::Arc::new(
-                native_catalog::NativeAcquireOutcomeCustodyV3::retain_original(
-                    guard,
-                    prepared_signed_request,
-                ),
-            )
-        });
+        // Allocate and complete the private shell before consuming Reserved.
+        if native_catalog::custody::park_native_outcome_v5(
+            &mut reservation.prepared,
+            &prepared_signed_request,
+        )
+        .is_err()
+        {
+            self.poison(SourceProviderSecurityError::SessionContinuity);
+            return Err(MountProviderRequestSendRecoveryV2 { reservation });
+        }
+        let ReservedMountProviderRequestV2 { prepared, .. } = reservation;
         Ok(SentMountProviderRequestV2 {
             projection: prepared.projection,
             outcome: prepared.outcome,
@@ -846,6 +847,25 @@ impl CurrentRootMountSourceProviderSessionV1 {
         &mut self,
         journal: &impl MountSourceAcquisitionJournalViewV2,
         reservation: &ReservedMountProviderRequestV2,
+        after_send: impl FnOnce(
+            &mut Self,
+            &ReservedMountProviderRequestV2,
+            ProviderSendBoundaryV6,
+        ) -> Result<(), SourceProviderSecurityError>,
+    ) -> Result<SignedSourceProviderRequestV1, SourceProviderSecurityError> {
+        self.send_borrowed_mount_request_with_attempt_v5(
+            journal,
+            reservation,
+            || {},
+            after_send,
+        )
+    }
+
+    fn send_borrowed_mount_request_with_attempt_v5(
+        &mut self,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
+        reservation: &ReservedMountProviderRequestV2,
+        before_send: impl FnOnce(),
         after_send: impl FnOnce(
             &mut Self,
             &ReservedMountProviderRequestV2,
@@ -888,6 +908,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         if let Some(currentness) = &reservation.prepared.native_currentness {
             self.require_native_acquire_currentness_v3(currentness)?;
         }
+        before_send();
         if let Err(failure) = self.carrier.send(&reservation.prepared.signed_request) {
             if let CarrierFailureV1::Fatal(error) = failure {
                 return Err(self.poison(error));
@@ -1079,6 +1100,9 @@ impl CurrentRootMountSourceProviderSessionV1 {
         current_catalog_head_commitment: ObjectDigest,
     ) -> Result<PreparedMountProviderRequestV2, SourceProviderSecurityError> {
         let mut signed_request = None;
+        let mut signed = None;
+        let mut signature_attempted = false;
+        let mut prepared = None;
         self.prepare_acquire_from_catalog_retaining(
             session_projection,
             expected_request_sequence,
@@ -1089,7 +1113,11 @@ impl CurrentRootMountSourceProviderSessionV1 {
             selection_floor,
             current_catalog_head_commitment,
             &mut signed_request,
-        )
+            &mut signed,
+            &mut signature_attempted,
+            &mut prepared,
+        )?;
+        prepared.ok_or(SourceProviderSecurityError::SessionContinuity)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1104,7 +1132,17 @@ impl CurrentRootMountSourceProviderSessionV1 {
         selection_floor: Option<SourceSelectionFloorV1>,
         current_catalog_head_commitment: ObjectDigest,
         signed_request_custody: &mut Option<Vec<u8>>,
-    ) -> Result<PreparedMountProviderRequestV2, SourceProviderSecurityError> {
+        signed_custody: &mut Option<SignedSourceProviderRequestV1>,
+        signature_attempted: &mut bool,
+        prepared_custody: &mut Option<PreparedMountProviderRequestV2>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        if *signature_attempted
+            || signed_custody.is_some()
+            || signed_request_custody.is_some()
+            || prepared_custody.is_some()
+        {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
         let now = super::current_unix_seconds()?;
         let session_binding = self.session.binding();
         let signer_set_commitment = self.session.signer_set_commitment();
@@ -1153,6 +1191,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 return Err(SourceProviderSecurityError::SessionContinuity);
             }
             let signer = inner.root_authority().traffic_signer().clone();
+            *signature_attempted = true;
             let signed_request = sign_request(
                 SourceProviderMethod::Acquire,
                 encode_acquire_request(&request),
@@ -1160,6 +1199,9 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 inner.outcome_key().signing_key(),
             )
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            *signed_custody = Some(signed_request);
+            let signed_request = signed_custody.as_ref()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
             *signed_request_custody = Some(signed_request.to_canonical_bytes());
             inner.revalidate_at(super::current_unix_seconds()?)?;
             let provider_key = inner
@@ -1179,7 +1221,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 trust_digest,
                 revocation_generation,
                 revocation_digest,
-                signed_request,
+                signed_request.clone(),
                 *provider_key.public_key(),
                 provider_key.signer().clone(),
             ))
@@ -1259,12 +1301,13 @@ impl CurrentRootMountSourceProviderSessionV1 {
             recovered_inventory_terminal_rows: None,
             historical_session: None,
         };
-        Ok(PreparedMountProviderRequestV2 {
+        *prepared_custody = Some(PreparedMountProviderRequestV2 {
             signed_request: signed_request.to_canonical_bytes(),
             projection,
             outcome,
             native_currentness: None,
-        })
+        });
+        Ok(())
     }
 
     /// Authorizes and signs one exact Release request for a retained v2 acquisition.

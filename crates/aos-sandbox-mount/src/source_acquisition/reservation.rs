@@ -239,6 +239,47 @@ impl SourceAcquisitionTableV2 {
         SourceProviderSessionV2,
         AcquireSourceRequestV1,
     )> {
+        let mut plan_slot = None;
+        let mut draft_slot = None;
+        let projected_session = self.plan_acquire_draft_retaining_v5(
+            journal,
+            session,
+            holder_authority_id,
+            provider_authority_id,
+            live_request,
+            mount_request,
+            mount_plan_digest,
+            ownership_lease_digest,
+            provider_deadline_seconds,
+            &mut plan_slot,
+            &mut draft_slot,
+        )?;
+        match (plan_slot, draft_slot) {
+            (Some(plan), Some(draft)) => Ok((plan, projected_session, draft)),
+            _ => Err(state_error("original draft planning is incomplete")),
+        }
+    }
+
+    /// Parks the actual Current Plan before deriving or allocating request DATA.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn plan_acquire_draft_retaining_v5(
+        &self,
+        journal: &ProtectedJournalAuthority<'_>,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        holder_authority_id: [u8; 16],
+        provider_authority_id: [u8; 16],
+        live_request: &LiveValidatedAcquireMountSourceRequest,
+        mount_request: &[u8],
+        mount_plan_digest: [u8; 32],
+        ownership_lease_digest: [u8; 32],
+        provider_deadline_seconds: i64,
+        plan_slot: &mut Option<CurrentMountProviderSessionPlanV2>,
+        draft_slot: &mut Option<AcquireSourceRequestV1>,
+    ) -> Result<SourceProviderSessionV2> {
+        if plan_slot.is_some() || draft_slot.is_some() {
+            return Err(state_error("original draft planning slots are occupied"));
+        }
+
         let identity = (holder_authority_id, provider_authority_id);
         let current_head = self.provider_heads.get(&identity).cloned();
         if current_head.as_ref().is_some_and(|head| {
@@ -250,7 +291,7 @@ impl SourceAcquisitionTableV2 {
         }
         let head_key = provider_head_key(holder_authority_id, provider_authority_id);
         let snapshot = journal.snapshot()?;
-        let plan = match current_head.as_ref() {
+        *plan_slot = Some(match current_head.as_ref() {
             Some(head) => {
                 let head_record = put_record(&StoredRecordV2::ProviderHead {
                     value: head.clone(),
@@ -272,7 +313,9 @@ impl SourceAcquisitionTableV2 {
             None => session
                 .initial_mount_provider_session_plan_v2(journal, snapshot, head_key)
                 .map_err(|_| state_error("initial protected provider session planning failed"))?,
-        };
+        });
+        let plan = plan_slot.as_ref()
+            .ok_or_else(|| state_error("original Current Plan absent"))?;
         let predecessor_session_id = current_head
             .as_ref()
             .and_then(|head| self.provider_sessions.get(&head.current_session_id))
@@ -322,7 +365,7 @@ impl SourceAcquisitionTableV2 {
             request_sequence,
         );
         let source_binding = mount.source_binding().canonical_bytes();
-        let request = AcquireSourceRequestV1::new_v2(
+        *draft_slot = Some(AcquireSourceRequestV1::new_v2(
             ObjectDigest::from_bytes(projected_session.session_binding),
             request_sequence,
             request_id(planned_attempt_id),
@@ -344,8 +387,8 @@ impl SourceAcquisitionTableV2 {
             mount.requested_maximum_submounts(),
             mount.kernel_coupled(),
         )
-        .map_err(|_| state_error("table-derived provider Acquire request is invalid"))?;
-        Ok((plan, projected_session, request))
+        .map_err(|_| state_error("table-derived provider Acquire request is invalid"))?);
+        Ok(projected_session)
     }
 
     /// Commits a fresh Acquire intent and exact prepared provider request.

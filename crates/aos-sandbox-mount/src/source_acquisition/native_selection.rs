@@ -200,6 +200,8 @@ impl SourceAcquisitionTableV2 {
         canonical_catalog: &[u8],
         selection_key: Option<Vec<u8>>,
         provider_deadline_seconds: i64,
+        plan_slot: &mut Option<aos_sandbox_source_provider_security::CurrentMountProviderSessionPlanV2>,
+        draft_slot: &mut Option<aos_sandbox_source_provider_protocol::AcquireSourceRequestV1>,
         retained: &mut Option<PendingNativeMountAcquireV3>,
     ) -> Result<()> {
         if live_request.request().kernel_coupled() {
@@ -210,7 +212,7 @@ impl SourceAcquisitionTableV2 {
         let (holder, provider, _) = session
             .current_authority_scope_v2()
             .map_err(|_| state_error("native provider authority cut is not current"))?;
-        let (plan, _, request) = self.plan_acquire_draft_v2(
+        self.plan_acquire_draft_retaining_v5(
             journal,
             session,
             holder,
@@ -220,12 +222,14 @@ impl SourceAcquisitionTableV2 {
             mount_plan_digest,
             ownership_lease_digest,
             provider_deadline_seconds,
+            plan_slot,
+            draft_slot,
         )?;
         session
-            .begin_original_native_acquire_retaining_v5(
+            .begin_original_native_acquire_from_parked_v5(
                 journal,
-                plan,
-                request,
+                plan_slot,
+                draft_slot,
                 live_request,
                 canonical_publication,
                 canonical_catalog,
@@ -260,6 +264,8 @@ impl SourceAcquisitionTableV2 {
         provider_deadline_seconds: i64,
     ) -> Result<PendingNativeProviderAcquireV3<'flight, 'journal>> {
         let mut pending = None;
+        let mut plan = None;
+        let mut draft = None;
         self.begin_original_native_provider_acquire_retaining_v5(
             journal,
             session,
@@ -271,6 +277,8 @@ impl SourceAcquisitionTableV2 {
             canonical_catalog,
             selection_key,
             provider_deadline_seconds,
+            &mut plan,
+            &mut draft,
             &mut pending,
         )?;
         let pending = pending.ok_or_else(|| state_error("original catalog owner absent"))?;

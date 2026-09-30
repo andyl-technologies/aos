@@ -27,50 +27,55 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
         signed: &SignedNativeHeldControlV1,
         slot: &mut Option<PreparedOriginalRootAppendV5>,
     ) -> Result<(), JournalError> {
-        if slot.is_some() {
-            return Err(invalid());
-        }
+        custody::PreparationBoundaryV5::new(slot).run(|slot| {
+            if slot.is_some() {
+                return Err(invalid());
+            }
 
-        self.validate_readback(phase10)?;
-        let floor = phase10.floor().ok_or_else(invalid)?;
-        if floor.request().future_transactions != 3 {
-            return Err(invalid());
-        }
-        let owners = root_closed_owners(phase10.graph(), phase10.attempt(), floor, signed)?;
-        let (transaction, next, old) = derive_continuation(
-            &self.authority.journal.state,
-            &owners,
-            phase10.attempt(),
-            self.authority.journal.limits,
-        )?;
-        let digest = authority_preflight_digest(std::slice::from_ref(&transaction));
-        *slot = Some(PreparedOriginalRootAppendV5 {
-            transaction,
-            snapshot: phase10.snapshot.clone(),
-            attempt: phase10.attempt(),
-            digest,
-            floor: next,
-            preflight_complete: false,
-        });
+            self.validate_readback(phase10)?;
+            let floor = phase10.floor().ok_or_else(invalid)?;
+            if floor.request().future_transactions != 3 {
+                return Err(invalid());
+            }
+            let owners = root_closed_owners(phase10.graph(), phase10.attempt(), floor, signed)?;
+            let (transaction, next, old) = derive_continuation(
+                &self.authority.journal.state,
+                &owners,
+                phase10.attempt(),
+                self.authority.journal.limits,
+            )?;
+            *slot = Some(PreparedOriginalRootAppendV5 {
+                transaction,
+                snapshot: phase10.snapshot.clone(),
+                attempt: phase10.attempt(),
+                digest: [0; 32],
+                floor: next,
+                preflight_complete: false,
+                failed: core::cell::Cell::new(false),
+                attempted: core::cell::Cell::new(false),
+                actual: None,
+            });
 
-        let candidate = slot.as_mut().ok_or_else(invalid)?;
-        require_store_transfer(candidate, &old)?;
-        validate_transfer(
-            &candidate.transaction,
-            &old,
-            candidate.floor.as_ref(),
-            self.authority.journal.limits,
-        )?;
-        // Begin/three records/Commit consume five physical sequence positions.
-        phase10
-            .sequence()
-            .checked_add(5)
-            .ok_or(JournalError::SequenceExhausted)?;
-        self.preflight(&candidate.transaction, candidate.attempt)?;
-        self.validate_readback(phase10)?;
-        candidate.preflight_complete = true;
+            let candidate = slot.as_mut().ok_or_else(invalid)?;
+            candidate.digest = authority_preflight_digest(std::slice::from_ref(&candidate.transaction));
+            require_store_transfer(candidate, &old)?;
+            validate_transfer(
+                &candidate.transaction,
+                &old,
+                candidate.floor.as_ref(),
+                self.authority.journal.limits,
+            )?;
+            // Begin/three records/Commit consume five physical sequence positions.
+            phase10
+                .sequence()
+                .checked_add(5)
+                .ok_or(JournalError::SequenceExhausted)?;
+            self.preflight(&candidate.transaction, candidate.attempt)?;
+            self.validate_readback(phase10)?;
+            candidate.preflight_complete = true;
 
-        Ok(())
+            Ok(())
+        })
     }
 }
 

@@ -266,13 +266,31 @@ impl InertSourceProviderCarrierV1 {
         &mut self,
         slot: &mut Option<RetainedSourceProviderRecordV5>,
     ) -> Result<bool, CarrierFailureV1> {
+        self.receive_retaining(true, MAXIMUM_FRAME_BYTES, slot)
+    }
+
+    /// Keeps the exact zero-descriptor profile while retaining typed packets.
+    pub(crate) fn receive_zero_descriptors_retaining_v5(
+        &mut self,
+        maximum_bytes: usize,
+        slot: &mut Option<RetainedSourceProviderRecordV5>,
+    ) -> Result<bool, CarrierFailureV1> {
+        self.receive_retaining(false, maximum_bytes, slot)
+    }
+
+    fn receive_retaining(
+        &mut self,
+        optional_source_root: bool,
+        maximum_bytes: usize,
+        slot: &mut Option<RetainedSourceProviderRecordV5>,
+    ) -> Result<bool, CarrierFailureV1> {
         if slot.is_some() {
             return Err(CarrierFailureV1::Fatal(
                 SourceProviderSecurityError::SessionContinuity,
             ));
         }
 
-        let received = self.receive_raw(true, MAXIMUM_FRAME_BYTES)?;
+        let received = self.receive_raw(optional_source_root, maximum_bytes)?;
         *slot = Some(RetainedSourceProviderRecordV5::Received(received));
         let Some(RetainedSourceProviderRecordV5::Received(received)) = slot.as_ref() else {
             return Err(CarrierFailureV1::Fatal(

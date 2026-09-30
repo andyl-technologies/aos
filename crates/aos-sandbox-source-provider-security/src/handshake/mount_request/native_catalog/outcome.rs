@@ -32,7 +32,7 @@ pub(in crate::handshake::mount_request) fn require_native_completion_barrier(
 
 /// Keeps the same opaque guard and exact request after successful carrier send.
 pub(in crate::handshake::mount_request) struct NativeAcquireOutcomeCustodyV3 {
-    guard: NativeAcquireCurrentnessGuardV3,
+    guard: Option<NativeAcquireCurrentnessGuardV3>,
     signed_request: SignedSourceProviderRequestV1,
 }
 
@@ -41,28 +41,47 @@ impl NativeAcquireOutcomeCustodyV3 {
         &self,
         records: [NativeHeldByteWitnessV1; 4],
         sequence: u64,
-    ) -> RootNativeHeldWitnessV1 {
-        self.guard.original_root_witness(records, sequence)
+    ) -> Result<RootNativeHeldWitnessV1, SourceProviderSecurityError> {
+        self.guard()?.original_root_witness(records, sequence)
     }
 
-    pub(in crate::handshake::mount_request) fn retain_original(
-        guard: NativeAcquireCurrentnessGuardV3,
+    /// Allocates no authority: the actual Guard must subsequently be moved in.
+    pub(in crate::handshake::mount_request) fn empty_shell(
         signed_request: SignedSourceProviderRequestV1,
     ) -> Self {
         Self {
-            guard,
+            guard: None,
             signed_request,
         }
     }
 
+    pub(in crate::handshake::mount_request) fn guard(
+        &self,
+    ) -> Result<&NativeAcquireCurrentnessGuardV3, SourceProviderSecurityError> {
+        self.guard
+            .as_ref()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)
+    }
+
+    /// Moves only an already borrowed actual guard slot into the unique shell.
+    pub(in crate::handshake::mount_request) fn park_guard(
+        &mut self,
+        guard: &mut Option<NativeAcquireCurrentnessGuardV3>,
+    ) {
+        self.guard = guard.take();
+    }
+
     fn validate_request(&self) -> Result<AcquireSourceRequestV1, SourceProviderSecurityError> {
+        let guard = self.guard()?;
+        let preparation = &guard.preparation;
+        let proof = guard.proof()?;
         let request = decode_acquire_request(self.signed_request.subject())
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
         let catalog = join_current_catalog_claims(
-            &self.guard.proof.signed,
-            &self.guard.proof.query,
-            &self.guard.publication,
-            self.guard.mount_head_minimum,
+            &proof.signed,
+            &proof.query,
+            &preparation.publication,
+            preparation.mount_head_minimum,
         )?;
         if self.signed_request.method() != SourceProviderMethod::Acquire {
             return Err(SourceProviderSecurityError::SessionContinuity);
@@ -70,10 +89,10 @@ impl NativeAcquireOutcomeCustodyV3 {
         require_native_request_selection(
             &request,
             &catalog,
-            self.guard.binding_digest,
-            self.guard.proof.query.session_binding(),
-            self.guard.deadline.initial.paired.host_boot_id(),
-            self.guard.deadline.expires_seconds,
+            guard.binding_digest,
+            proof.query.session_binding(),
+            preparation.deadline.initial.paired.host_boot_id(),
+            preparation.deadline.expires_seconds,
         )?;
         Ok(request)
     }
@@ -82,6 +101,7 @@ impl NativeAcquireOutcomeCustodyV3 {
         &self,
         canonical_response: &[u8],
     ) -> Result<Option<i64>, SourceProviderSecurityError> {
+        let guard = self.guard()?;
         let request = self.validate_request()?;
         let response = decode_acquire_response(canonical_response)
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
@@ -108,8 +128,8 @@ impl NativeAcquireOutcomeCustodyV3 {
             return Err(SourceProviderSecurityError::SessionContinuity);
         }
         require_exact_native_selection(
-            &self.guard.resource,
-            &self.guard.snapshot,
+            &guard.resource,
+            &guard.snapshot,
             lease.subject().resource(),
             lease.subject().proof(),
         )?;
@@ -125,27 +145,30 @@ impl CurrentRootMountSourceProviderSessionV1 {
         let Some(original) = &authorization.native_outcome else {
             return Ok(());
         };
+        let guard = original.guard().map_err(|error| self.poison(error))?;
+        let preparation = &guard.preparation;
+        let proof = guard.proof().map_err(|error| self.poison(error))?;
         if authorization.method != SourceProviderMethod::Acquire
             || authorization.deadline_policy != OutcomeDeadlinePolicyV2::Fresh
             || authorization.historical_session.is_some()
             || authorization.signed_request != original.signed_request
             || authorization.current_catalog_head_commitment
-                != Some(original.guard.proof.signed.head_commitment())
+                != Some(proof.signed.head_commitment())
             || authorization.catalog_floor.as_ref().is_none_or(|floor| {
                 floor.provider_authority_id()
-                    != original.guard.publication.provider().authority_id()
+                    != preparation.publication.provider().authority_id()
                     || floor.resource_namespace_digest()
-                        != original.guard.publication.resource_namespace_digest()
+                        != preparation.publication.resource_namespace_digest()
                     || (
                         floor.minimum_catalog_generation(),
                         floor.minimum_catalog_digest(),
-                    ) != original.guard.proof.signed.floor()
+                    ) != proof.signed.floor()
             })
             || original.validate_request().is_err()
         {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
-        self.require_native_acquire_currentness_v3(&original.guard)
+        self.require_native_acquire_currentness_v3(guard)
     }
 
     pub(in crate::handshake::mount_request) fn require_native_outcome_response_v3(
@@ -206,14 +229,15 @@ impl CurrentRootMountSourceProviderSessionV1 {
         original: &NativeAcquireOutcomeCustodyV3,
         canonical_response: &[u8],
     ) -> Result<(), SourceProviderSecurityError> {
+        let guard = original.guard().map_err(|error| self.poison(error))?;
         let lease_expiry = original
             .validate_response(canonical_response)
             .map_err(|error| self.poison(error))?;
-        self.require_native_acquire_currentness_v3(&original.guard)?;
+        self.require_native_acquire_currentness_v3(guard)?;
         if let Some(expires) = lease_expiry {
             let now = kernel_clock().map_err(|error| self.poison(error))?;
-            original
-                .guard
+            guard
+                .preparation
                 .deadline
                 .require_current_until(now, expires)
                 .map_err(|error| self.poison(error))?;

@@ -26,7 +26,7 @@ mod root_closed;
 /// Verification borrows the original packet and shares only the same private
 /// original guard already retained by the actual sent authorization.
 pub struct OriginalNativeReceivedOutcomeV5 {
-    received: RetainedSourceProviderRecordV5,
+    received: Option<RetainedSourceProviderRecordV5>,
     original: Arc<native_catalog::NativeAcquireOutcomeCustodyV3>,
     verified: Option<VerifiedMountProviderOutcomeV2>,
     pending_cut: Option<RootNativeCutV1>,
@@ -37,10 +37,20 @@ pub struct OriginalNativeReceivedOutcomeV5 {
 }
 
 impl OriginalNativeReceivedOutcomeV5 {
+    pub(in crate::handshake::mount_request) fn fail_original_custody_v5(&self) {
+        self.failed.set(true);
+    }
+
+    fn record(&self) -> Option<&crate::carrier::ReceivedSourceProviderRecordV1> {
+        self.received
+            .as_ref()
+            .and_then(RetainedSourceProviderRecordV5::bound)
+    }
+
     /// Borrows verified Pending DATA without releasing original packet custody.
     #[must_use]
     pub fn verified_pending(&self) -> Option<&VerifiedMountProviderOutcomeV2> {
-        if self.failed.get() {
+        if self.failed.get() || self.record().is_none() {
             None
         } else {
             self.verified.as_ref()
@@ -69,9 +79,10 @@ impl CurrentRootMountSourceProviderSessionV1 {
 
     /// Receives once under the exact original phase1 sent authorization.
     ///
-    /// `false` means transport backpressure without any typed packet. An
-    /// occupied slot forbids another receive, including after verification
-    /// failure or an unsupported Held/Complete first packet.
+    /// `false` means transport backpressure without any typed packet. The
+    /// same healthy empty shell may retry after all original checks. A parked
+    /// packet or failed shell forbids another receive, including an unsupported
+    /// Held/Complete first packet.
     ///
     /// # Errors
     ///
@@ -85,103 +96,101 @@ impl CurrentRootMountSourceProviderSessionV1 {
         authorization: &AuthorizedMountProviderOutcomeV2,
         slot: &mut Option<OriginalNativeReceivedOutcomeV5>,
     ) -> Result<bool, SourceProviderSecurityError> {
-        if slot.is_some() {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-        }
-        writer
-            .validate_readback(phase1)
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        let sidecar = phase1
-            .graph()
-            .sidecars()
-            .get(&phase1.attempt())
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let original_attempt = phase1
-            .graph()
-            .legacy()
-            .provider_attempts
-            .get(&phase1.attempt())
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        if sidecar.suffix().phase() != 1
-            || authorization.method != SourceProviderMethod::Acquire
-            || authorization.mount_attempt_id != Some(phase1.attempt())
-            || original_attempt.signed_request != authorization.signed_request.to_canonical_bytes()
-        {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-        }
-
-        self.require_native_outcome_authorization_v3(authorization)?;
-        let original = authorization
-            .native_outcome
-            .as_ref()
-            .map(Arc::clone)
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let mut received = None;
-        let capture = self.carrier.receive_original_retaining_v5(&mut received);
-
-        // Install on BOTH success and failure before propagating any error.
-        if let Some(received) = received {
-            *slot = Some(OriginalNativeReceivedOutcomeV5 {
-                received,
-                original,
-                verified: None,
-                pending_cut: None,
-                disposition: None,
-                unsigned8: None,
-                closed: root_closed::RootClosedProgressV5::new(),
-                failed: Cell::new(false),
-            });
-        }
-        match capture {
-            Err(CarrierFailureV1::Retryable) => return Ok(false),
-            Err(CarrierFailureV1::Fatal(error)) => {
-                if let Some(retained) = slot {
-                    retained.failed.set(true);
-                }
-                return Err(self.poison(error));
+        OriginalBoundaryV5::new(self, slot).run(|owner, slot| {
+            if slot.as_ref().is_some_and(|retained| {
+                retained.failed.get()
+                    || retained.received.is_some()
+                    || retained.verified.is_some()
+            }) {
+                return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
             }
-            Ok(_) => {}
-        }
-        let retained = slot
-            .as_mut()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let result = (|| {
-            let record = retained
-                .received
-                .bound()
+            writer
+                .validate_readback(phase1)
+                .map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            let sidecar = phase1
+                .graph()
+                .sidecars()
+                .get(&phase1.attempt())
                 .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-            record.execution.revalidate(self.carrier.socket().peer())?;
-            if !record.execution.has_same_execution(&self.provider_execution) {
-                return Err(SourceProviderSecurityError::SessionContinuity);
-            }
-
-            // Native control packets do not pass this ordinary response parser;
-            // Complete remains parked with its sole descriptor, never accepted.
-            let response = decode_acquire_response(&record.payload)
-                .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-            if response.status() != SourceProviderStatus::Pending
-                || response.signed_receipt().is_some()
-                || !record.descriptors.is_empty()
+            let original_attempt = phase1
+                .graph()
+                .legacy()
+                .provider_attempts
+                .get(&phase1.attempt())
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            if sidecar.suffix().phase() != 1
+                || authorization.method != SourceProviderMethod::Acquire
+                || authorization.mount_attempt_id != Some(phase1.attempt())
+                || original_attempt.signed_request != authorization.signed_request.to_canonical_bytes()
             {
-                return Err(SourceProviderSecurityError::SessionContinuity);
+                return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
             }
 
-            self.require_native_outcome_authorization_v3(authorization)?;
-            retained.verified = Some(self.verify_provider_outcome_bytes_v2(
-                None,
-                authorization,
-                record.payload.clone(),
-                None,
-            )?);
-            self.revalidate_original_pending_receipt_v5(writer, phase1, authorization, retained)?;
-            Ok(true)
-        })();
+            owner.require_native_outcome_authorization_v3(authorization)?;
 
-        if result.is_err() {
-            retained.failed.set(true);
-            self.poison(SourceProviderSecurityError::SessionContinuity);
-        }
-        result
+            let original = authorization.native_outcome.as_ref()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            if slot.as_ref().is_some_and(|retained| {
+                !Arc::ptr_eq(original, &retained.original)
+            }) {
+                return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+            if slot.is_none() {
+                **slot = Some(OriginalNativeReceivedOutcomeV5 {
+                    received: None,
+                    original: Arc::clone(original),
+                    verified: None,
+                    pending_cut: None,
+                    disposition: None,
+                    unsigned8: None,
+                    closed: root_closed::RootClosedProgressV5::new(),
+                    failed: Cell::new(false),
+                });
+            }
+            let retained = slot.as_mut()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            match owner.carrier.receive_original_retaining_v5(&mut retained.received) {
+                Ok(true) => {}
+                Ok(false) | Err(CarrierFailureV1::Retryable) => return Ok(false),
+                Err(CarrierFailureV1::Fatal(error)) => return Err(owner.poison(error)),
+            }
+
+            let retained = slot
+                .as_mut()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let result = (|| {
+                let record = retained
+                    .record()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                record.execution.revalidate(owner.carrier.socket().peer())?;
+                if !record.execution.has_same_execution(&owner.provider_execution) {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+
+                // Native control packets do not pass this ordinary response parser;
+                // Complete remains parked with its sole descriptor, never accepted.
+                let response = decode_acquire_response(&record.payload)
+                    .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+                if response.status() != SourceProviderStatus::Pending
+                    || response.signed_receipt().is_some()
+                    || !record.descriptors.is_empty()
+                {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+
+                owner.require_native_outcome_authorization_v3(authorization)?;
+                retained.verified = Some(owner.verify_provider_outcome_bytes_v2(
+                    None,
+                    authorization,
+                    record.payload.clone(),
+                    None,
+                )?);
+                owner.revalidate_original_pending_receipt_v5(writer, phase1, authorization, retained)?;
+                Ok(true)
+            })();
+
+            result
+        })
     }
 
     /// Rechecks the same received token against the exact current protected cut.
@@ -198,17 +207,20 @@ impl CurrentRootMountSourceProviderSessionV1 {
         authorization: &AuthorizedMountProviderOutcomeV2,
         retained: &OriginalNativeReceivedOutcomeV5,
     ) -> Result<(), SourceProviderSecurityError> {
-        let result = self.revalidate_original_pending_receipt_inner_v5(
-            writer,
-            readback,
-            authorization,
-            retained,
-        );
-        if result.is_err() {
-            retained.failed.set(true);
-            self.poison(SourceProviderSecurityError::SessionContinuity);
-        }
-        result
+        OriginalBoundaryV5::new(self, retained).run(|owner, retained| {
+            let retained = &**retained;
+            let result = owner.revalidate_original_pending_receipt_inner_v5(
+                writer,
+                readback,
+                authorization,
+                retained,
+            );
+            if result.is_err() {
+                retained.failed.set(true);
+                owner.poison(SourceProviderSecurityError::SessionContinuity);
+            }
+            result
+        })
     }
 
     fn revalidate_original_pending_receipt_inner_v5(
@@ -245,8 +257,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             .verified_pending()
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         let record = retained
-            .received
-            .bound()
+            .record()
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         if authorization
             .native_outcome
@@ -308,18 +319,21 @@ impl CurrentRootMountSourceProviderSessionV1 {
         retained: &mut OriginalNativeReceivedOutcomeV5,
         owners: &aos_sandbox::JournalTransaction,
     ) -> Result<(), SourceProviderSecurityError> {
-        let result = self.prepare_original_pending_closed_inner_v5(
-            writer,
-            phase1,
-            authorization,
-            retained,
-            owners,
-        );
-        if result.is_err() {
-            retained.failed.set(true);
-            self.poison(SourceProviderSecurityError::SessionContinuity);
-        }
-        result
+        OriginalBoundaryV5::new(self, retained).run(|owner, retained| {
+            let retained = &mut **retained;
+            let result = owner.prepare_original_pending_closed_inner_v5(
+                writer,
+                phase1,
+                authorization,
+                retained,
+                owners,
+            );
+            if result.is_err() {
+                retained.failed.set(true);
+                owner.poison(SourceProviderSecurityError::SessionContinuity);
+            }
+            result
+        })
     }
 
     fn prepare_original_pending_closed_inner_v5(
@@ -384,11 +398,13 @@ impl CurrentRootMountSourceProviderSessionV1 {
             descriptor_commitment: ObjectDigest::from_bytes([0; 32]),
             records: captured.witnesses().clone(),
         };
-        retained.disposition = Some(r.clone());
+        retained.disposition = Some(r);
+        let r = retained.disposition.as_ref()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         let witness = NativeHeldOwnerWitnessV1::Root(
             retained
                 .original
-                .original_root_witness(captured.witnesses().clone(), sequence),
+                .original_root_witness(captured.witnesses().clone(), sequence)?,
         )
         .to_canonical_bytes()
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;

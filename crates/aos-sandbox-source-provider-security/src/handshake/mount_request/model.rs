@@ -52,6 +52,10 @@ pub struct ReservedMountProviderRequestV2 {
     pub(super) attempt_record: Vec<u8>,
     pub(super) head_key: Vec<u8>,
     pub(super) head_record: Vec<u8>,
+    pub(super) original_failed: core::cell::Cell<bool>,
+    pub(super) root1_signature_attempted: core::cell::Cell<bool>,
+    pub(super) root1_send: core::cell::Cell<super::native_catalog::custody::OriginalSendStateV5>,
+    pub(super) acquire_send: core::cell::Cell<super::native_catalog::custody::OriginalSendStateV5>,
 }
 
 /// Retains projections after a durably reserved request was handed to the carrier.
@@ -771,7 +775,33 @@ impl PreparedMountProviderRequestV2 {
             attempt_record,
             head_key,
             head_record,
+            original_failed: core::cell::Cell::new(false),
+            root1_signature_attempted: core::cell::Cell::new(false),
+            root1_send: core::cell::Cell::new(
+                super::native_catalog::custody::OriginalSendStateV5::Unattempted,
+            ),
+            acquire_send: core::cell::Cell::new(
+                super::native_catalog::custody::OriginalSendStateV5::Unattempted,
+            ),
         }
+    }
+}
+
+impl ReservedMountProviderRequestV2 {
+    /// Reports retained possible-send DATA, not authority to retry Root1.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn original_root1_may_have_sent_v5(&self) -> bool {
+        use super::native_catalog::custody::OriginalSendStateV5 as Send;
+        matches!(self.root1_send.get(), Send::Attempted | Send::Accepted)
+    }
+
+    /// Reports retained possible-send DATA, not authority to retry Acquire.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn original_acquire_may_have_sent_v5(&self) -> bool {
+        use super::native_catalog::custody::OriginalSendStateV5 as Send;
+        matches!(self.acquire_send.get(), Send::Attempted | Send::Accepted)
     }
 }
 
@@ -825,6 +855,7 @@ impl MountProviderRequestProjectionV2 {
     pub const fn session(&self) -> &MountProviderSessionProjectionV2 {
         &self.session
     }
+
     /// Returns the request method.
     #[must_use]
     pub const fn method(&self) -> SourceProviderMethod {
@@ -943,6 +974,69 @@ impl MountProviderRequestProjectionV2 {
 }
 
 impl MountProviderSessionProjectionV2 {
+    // Copies only immutable Session DATA while its original protected plan
+    // remains parked. This does not duplicate Session or currentness custody.
+    pub(super) fn retained_data_copy(&self) -> Self {
+        Self {
+            signed_root_mount_hello: self.signed_root_mount_hello.clone(),
+            signed_provider_hello: self.signed_provider_hello.clone(),
+            ordered_signers: self.ordered_signers.each_ref().map(|value| {
+                MountProviderSignerProjectionV2 {
+                    signer: value.signer.clone(),
+                    public_key: value.public_key,
+                    authority_valid_from_seconds: value.authority_valid_from_seconds,
+                    authority_valid_until_seconds: value.authority_valid_until_seconds,
+                    key_valid_from_seconds: value.key_valid_from_seconds,
+                    key_valid_until_seconds: value.key_valid_until_seconds,
+                    authority_state: value.authority_state,
+                    key_state: value.key_state,
+                    superseded_by_key_generation: value.superseded_by_key_generation,
+                }
+            }),
+            authority_trust: self.authority_trust.each_ref().map(|value| {
+                MountProviderAuthorityTrustProjectionV2 {
+                    authority: value.authority.clone(),
+                    valid_from_seconds: value.valid_from_seconds,
+                    valid_until_seconds: value.valid_until_seconds,
+                    state: value.state,
+                }
+            }),
+            session_binding: self.session_binding,
+            signer_set_commitment: self.signer_set_commitment,
+            trust_generation: self.trust_generation,
+            trust_digest: self.trust_digest,
+            revocation_generation: self.revocation_generation,
+            revocation_digest: self.revocation_digest,
+            root_boot_id: self.root_boot_id,
+            node_id: self.node_id,
+            root_process_instance: self.root_process_instance,
+            provider_process_instance: self.provider_process_instance,
+            root_writer_uid: self.root_writer_uid,
+            root_writer_gid: self.root_writer_gid,
+            root_writer_tgid: self.root_writer_tgid,
+            root_writer_start_time_ticks: self.root_writer_start_time_ticks,
+            root_writer_cgroup_digest: self.root_writer_cgroup_digest,
+            provider_tgid: self.provider_tgid,
+            provider_pid: self.provider_pid,
+            provider_parent_pid: self.provider_parent_pid,
+            provider_start_time_ticks: self.provider_start_time_ticks,
+            provider_cgroup_id: self.provider_cgroup_id,
+            provider_cgroup_digest: self.provider_cgroup_digest,
+            provider_credentials: self.provider_credentials,
+            provider_execution_digest: self.provider_execution_digest,
+            route_id: self.route_id,
+            route_generation: self.route_generation,
+            route_digest: self.route_digest,
+            resource_namespace_digest: self.resource_namespace_digest,
+            proof_class_capabilities: self.proof_class_capabilities,
+            supports_recursive: self.supports_recursive,
+            supports_kernel_coupled: self.supports_kernel_coupled,
+            authenticated_at_seconds: self.authenticated_at_seconds,
+            current_valid_until_seconds: self.current_valid_until_seconds,
+            trusted_clock_evidence_digest: self.trusted_clock_evidence_digest,
+        }
+    }
+
     /// Borrows the exact canonical signed Root Mount and provider hellos.
     #[must_use]
     pub fn signed_hellos(&self) -> (&[u8], &[u8]) {
