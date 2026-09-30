@@ -20,7 +20,7 @@ let
             handler.program = {
               type = "derivation";
               name = "module-handler-fixture";
-              outPath = "/nix/store/00000000000000000000000000000000-module-handler-fixture";
+              outPath = toString ((import ./_fixture-payload.nix) "module-handler-fixture");
               meta.mainProgram = "handler";
             };
             effects = {

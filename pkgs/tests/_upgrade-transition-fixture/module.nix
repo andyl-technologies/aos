@@ -2,51 +2,26 @@
 {
   config,
   lib,
+  package,
   ...
 }: let
   cfg = config.upgrade-transition-fixture;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
   initialGeneration = cfg.generation == "initial";
   serviceName =
     if initialGeneration
     then "aos-upgrade-removed"
     else "aos-upgrade-test-marker";
-  resultOf = lib.abilities.resultOf;
 
   command = entryPoint: {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = entryPoint;
+      path = "${package}/${entryPoint}";
       arguments = [];
     };
     ignore_failure = false;
   };
-  ingress = serviceManagement.forProducer {
-    consumerInstance = "upgrade-transition-fixture";
-    key = "ingress";
-    interface = lib.abilities.interfaces.networkPolicy.interfaces.ingress;
-    methods = ["observe"];
-    parameters = {
-      endpoints = lib.optional (!initialGeneration) {
-        transport = "tcp";
-        port = 8443;
-      };
-      prerequisites = [];
-    };
-  };
-  tunables = serviceManagement.forProducer {
-    consumerInstance = "upgrade-transition-fixture";
-    key = "kernel-tunables";
-    interface = lib.abilities.interfaces.kernelTunables.interface;
-    parameters = {
-      values = lib.optionalAttrs (!initialGeneration) {
-        "net.ipv4.tcp_keepalive_time" = "300";
-      };
-      dependencies = [];
-    };
-  };
+  ingress = config.aos.abilities.networkPolicy.operations.ruleset.effects.host;
+  tunables = config.aos.abilities.kernelTunables.operations.ensure.effects.settings;
   service = {
-    consumerInstance = "upgrade-transition-fixture";
     service = serviceName;
     lifecycle = {
       description =
@@ -68,16 +43,11 @@
       start_timeout_millis = 90000;
       stop_timeout_millis = 90000;
     };
-    dependencies = let
-      readiness = [
-        (resultOf "ingress" "resource")
-        (resultOf "kernel-tunables" "resource")
-      ];
-    in {
-      prerequisites = readiness;
-      after = readiness;
+    activationAfter = [ingress.outputs.resource] ++ lib.optional (!initialGeneration) tunables.outputs.values;
+    dependencies = {
+      after = [];
       before = [];
-      requires = readiness;
+      requires = [];
       wants = [];
     };
     isolation = {
@@ -93,16 +63,15 @@
       permit_core_dumps = true;
     };
   };
-  producers = [ingress tunables];
 in {
   options.upgrade-transition-fixture = {
     enable = lib.mkOption {
-      type = lib.abilities.types.boolean;
+      type = lib.types.bool;
       default = true;
       description = "Enable the generation reconciliation lifecycle fixture.";
     };
     generation = lib.mkOption {
-      type = lib.abilities.types.enum [
+      type = lib.types.enum [
         "initial"
         "updated"
       ];
@@ -115,9 +84,17 @@ in {
     {
       aos.services."upgrade-transition-fixture.${serviceName}" = service // {enable = cfg.enable;};
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = cfg.enable;
+    (lib.mkIf cfg.enable {
+      aos.networkPolicy = {
+        enable = true;
+        ingress.upgrade-transition-fixture.endpoints = lib.optional (!initialGeneration) {
+          transport = "tcp";
+          port = 8443;
+        };
+      };
+      aos.kernel.sysctl = lib.optionalAttrs (!initialGeneration) {
+        "net.ipv4.tcp_keepalive_time" = "300";
+      };
     })
   ];
 }

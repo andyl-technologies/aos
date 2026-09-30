@@ -1,10 +1,11 @@
 ##! Checks the shared native service schema, references, and manager ownership.
 let
   lib = import ../../lib {system = "x86_64-linux";};
+  payload = import ./_fixture-payload.nix;
   program = {
     type = "derivation";
     name = "native-service-fixture";
-    outPath = "/nix/store/00000000000000000000000000000000-native-service-fixture";
+    outPath = toString (payload "native-service-fixture");
     meta.mainProgram = "native-service-fixture";
   };
   lifecycle = {
