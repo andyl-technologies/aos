@@ -51,7 +51,12 @@
   evaluated = lib.evalPackageModules {
     packages = [consumer handler];
     scope = ["profile" "selected-output"];
-    operatorModules = [{aos.packages.echo.enable = true;}];
+    operatorModules = [
+      {
+        aos.packages.echo.enable = true;
+        aos.abilities.catalog.operations.inspect.effects.main.input.available = "${handler.tools}";
+      }
+    ];
   };
   metadata = import ../../lib/packages/artifacts.nix {};
   sourceDescriptor = pkgs.writeTextFile {
@@ -59,7 +64,10 @@
     text = "retained evaluation inputs";
   };
   graphSourceInputs = metadata.graphInputs {
-    graph = {descriptor = "${sourceDescriptor}";};
+    graph.nodes.descriptor = {
+      input.descriptor = "${sourceDescriptor}";
+      handler = {};
+    };
     evaluationInputs = [sourceDescriptor];
   };
   roots = builtins.map (artifact: builtins.unsafeDiscardStringContext artifact.path) evaluated.deployment.artifacts;
@@ -85,6 +93,8 @@
   assert (lib.getOutput "static" pkgs.glibc.dev).deployment.package.path == builtins.toString pkgs.glibc.static;
   assert builtins.getContext (builtins.toJSON pkgs.glibc.dev.deployment) == {};
   assert builtins.getContext (builtins.toJSON handler.deployment.package) == {};
+  assert !(builtins.hasAttr (builtins.unsafeDiscardStringContext handler.drvPath) (builtins.getContext handler.documentationArtifact.text));
+  assert builtins.any (choice: choice.value == builtins.toString handler.unused) handler.documentation.abilities.catalog.inspect.input.available.type.values;
   assert builtins.getContext (builtins.toJSON available) == {}; true;
 in
   assert assertSelected;

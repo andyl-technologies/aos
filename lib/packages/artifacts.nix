@@ -129,7 +129,11 @@
     packageModules ? [],
     evaluationInputs ? [],
   }: let
-    graphContexts = builtins.getContext (builtins.toJSON graph);
+    operationalNodes = builtins.map (node: {
+      inherit (node) input handler;
+      after = node.after or [];
+    }) (builtins.attrValues graph.nodes);
+    graphContexts = builtins.getContext (builtins.toJSON operationalNodes);
     availableRoots =
       builtins.concatLists (builtins.map (record:
         builtins.concatLists (builtins.map (artifact: builtins.attrValues artifact.outputs)

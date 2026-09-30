@@ -222,6 +222,15 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         scope = ["package" packageName];
         packages = [package];
       }).documentation;
+    documentationSources =
+      builtins.map (record: record.configRoot)
+      (deploymentLib.packageModules.closure [package]);
+    # Documentation can describe available payloads without selecting them.
+    # Only its authenticated module source locations carry retention contexts.
+    documentationText =
+      builtins.appendContext
+      (builtins.unsafeDiscardStringContext (builtins.toJSON documentation))
+      (builtins.getContext (builtins.toJSON documentationSources));
   in {
     inherit deployment documentation;
     deploymentArtifact = artifactBuilders.writeTextFile {
@@ -232,7 +241,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     documentationArtifact = artifactBuilders.writeTextFile {
       name = "${packageName}-documentation";
       destination = "/options.json";
-      text = builtins.toJSON documentation;
+      text = documentationText;
     };
   };
 

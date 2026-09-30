@@ -336,6 +336,9 @@ store_path = "/nix/store/22222222222222222222222222222222-example-tools"
         let fixture: serde_json::Value =
             serde_json::from_slice(&fs::read(Path::new(&fixture).join("fixture.json")).unwrap())
                 .unwrap();
+        let qualification = fixture
+            .get("qualificationArtifact")
+            .and_then(serde_json::Value::as_str);
         let available: crate::deployment::model::Artifact =
             serde_json::from_value(fixture["available"].clone()).unwrap();
         let tools_envelope = Path::new(fixture["envelope"].as_str().unwrap())
@@ -402,7 +405,7 @@ store_path = "/nix/store/22222222222222222222222222222222-example-tools"
                 &available.outputs,
                 envelope,
                 Some(documentation),
-                None,
+                qualification,
                 &printer,
             )
             .unwrap();
@@ -457,7 +460,7 @@ store_path = "/nix/store/22222222222222222222222222222222-example-tools"
             let binding = crate::package_attestation::native_package_binding_digest(
                 envelope,
                 platform.module_documentation.as_ref(),
-                None,
+                platform.qualification.as_ref(),
             )
             .unwrap();
             assert_eq!(
