@@ -4,7 +4,9 @@
 }: let
   boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
   cadence = 200000000;
-  horizon = 3600000000;
+  # The current Linux boot and address probe complete before six billion
+  # instructions, inside the finite spin workload's reproducible window.
+  horizon = 6000000000;
   rrSwitchQuantum = 4096;
   probeSource = builtins.readFile ./phase0-s6-probe.c;
 

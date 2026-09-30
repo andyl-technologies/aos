@@ -11,10 +11,10 @@
   realtimeDeadlineProbe ? false,
   cadence ? 100000000,
   requireGuestPass ? true,
-  # The finite four-vCPU workload completes before the 4-billion-instruction
-  # default, leaving a deterministic sustained-contention window before the
-  # predeclared fingerprint horizon.
-  stopAt ? 4000000000,
+  # Linux 7.2 startup extends beyond four billion instructions. Eight billion
+  # reaches the completed four-vCPU workload and sustained contention while
+  # retaining a fixed, predeclared fingerprint horizon.
+  stopAt ? 8000000000,
   memoryMib ? 256,
   vcpuCount ? 4,
   detIpiProbe ? false,
@@ -363,6 +363,7 @@ in
           pkgs.python3
         ]
         ++ qemuRuntimeDeps
+        ++ lib.optionals realtimeDeadlineProbe [pkgs.socat]
         ++ lib.optionals (execBoundaryPluginPackage != null) [execBoundaryPluginPackage];
 
       INITRAMFS = "${initramfs}/initrd.img";
