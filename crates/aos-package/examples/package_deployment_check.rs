@@ -90,8 +90,19 @@ fn main() -> Result<()> {
         let package = Envelope::decode(&serde_json::to_vec(&package)?)?;
         catalog.0.insert(package.package.name.clone(), package);
     }
+    let mut module_envelopes = BTreeMap::new();
     for publication in fixture.publications {
-        let envelope = Envelope::decode(&std::fs::read(publication.envelope)?)?;
+        let envelope = Envelope::decode(&std::fs::read(&publication.envelope)?)?;
+        if envelope.module.is_some() {
+            module_envelopes.insert(
+                envelope.package.name.clone(),
+                publication
+                    .envelope
+                    .parent()
+                    .context("publication envelope has no root")?
+                    .to_path_buf(),
+            );
+        }
         ensure!(
             catalog.0.get(&envelope.package.name) == Some(&envelope),
             "publication changed the envelope"
@@ -203,6 +214,7 @@ fn main() -> Result<()> {
             library_nar_hash,
             scope: evaluation.scope.clone(),
             packages: evaluation.packages.clone(),
+            module_envelopes: module_envelopes.clone(),
             configuration: evaluation.configuration.clone(),
             runtime_configuration: Vec::new(),
             supplemental_inputs: Vec::new(),

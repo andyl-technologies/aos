@@ -110,6 +110,9 @@ pub struct EvaluationInput {
     pub scope: Vec<String>,
     /// Contains the exact resolved package modules and payload artifacts.
     pub packages: ResolvedPackages,
+    /// Retains each resolved module's original authenticated deployment envelope.
+    #[serde(rename = "moduleEnvelopes")]
+    pub module_envelopes: std::collections::BTreeMap<String, PathBuf>,
     /// Orders the retained baseline module sources.
     pub configuration: Vec<PathBuf>,
     /// Orders the replaceable operator module snapshot entrypoints.
@@ -175,6 +178,24 @@ impl EvaluationInput {
             ensure!(
                 root == *supplemental && suffix.as_os_str().is_empty(),
                 "supplemental input must name a canonical store root"
+            );
+        }
+        let mut module_names = std::collections::BTreeSet::new();
+        for module in &input.packages.modules {
+            ensure!(
+                module_names.insert(&module.name),
+                "resolved module names are duplicated"
+            );
+        }
+        ensure!(
+            module_names == input.module_envelopes.keys().collect(),
+            "module envelope catalog differs from resolved module names"
+        );
+        for path in input.module_envelopes.values() {
+            let (root, suffix) = crate::deployment::nix::store_root_and_suffix(path)?;
+            ensure!(
+                root == *path && suffix.as_os_str().is_empty(),
+                "module envelope must name a canonical store root"
             );
         }
         Ok(input)

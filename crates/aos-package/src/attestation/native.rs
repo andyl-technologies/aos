@@ -588,6 +588,7 @@ pub fn verify(
         .chain(&record.evaluation.configuration)
         .chain(&record.evaluation.runtime_configuration)
         .chain(&record.evaluation.supplemental_inputs)
+        .chain(record.evaluation.module_envelopes.values())
     {
         let (root, _) = crate::deployment::nix::store_root_and_suffix(source)?;
         ensure!(
@@ -717,6 +718,7 @@ mod tests {
                     modules: Vec::new(),
                 },
                 configuration: vec![PathBuf::from(format!("{baseline}/host.nix"))],
+                module_envelopes: Default::default(),
                 runtime_configuration: Vec::new(),
                 supplemental_inputs: Vec::new(),
             },
