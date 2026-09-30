@@ -311,7 +311,13 @@ async fn refuses_changed_source_policy_destination_and_regressing_proofs() {
         .record_mirror_import_progress(&original, &empty, false, 3)
         .await
         .is_err());
-    db.backend.execute("UPDATE mirror_sources SET resource_version = resource_version + 1 WHERE registry_id = ?1", &vals![original.registry_id]).await.unwrap();
+    db.backend
+        .execute(
+            "UPDATE mirror_sources SET resource_version = resource_version + 1 WHERE registry_id = ?1",
+            &vals![original.registry_id],
+        )
+        .await
+        .unwrap();
     assert!(db
         .record_mirror_import_progress(&original, &progress, true, 3)
         .await
@@ -324,7 +330,13 @@ async fn refuses_changed_source_policy_destination_and_regressing_proofs() {
             .state,
         "published"
     );
-    db.backend.execute("UPDATE mirror_sources SET resource_version = resource_version - 1 WHERE registry_id = ?1", &vals![original.registry_id]).await.unwrap();
+    db.backend
+        .execute(
+            "UPDATE mirror_sources SET resource_version = resource_version - 1 WHERE registry_id = ?1",
+            &vals![original.registry_id],
+        )
+        .await
+        .unwrap();
     db.backend
         .execute(
             "UPDATE bindings SET resource_version = resource_version + 1 WHERE id = ?1",
@@ -414,7 +426,13 @@ async fn committed_replay_keeps_exact_proof_when_current_configuration_changes()
         .record_mirror_import_progress(&original, &progress, true, 2)
         .await
         .unwrap();
-    db.backend.execute("UPDATE mirror_sources SET resource_version = resource_version + 1 WHERE registry_id = ?1", &vals![original.registry_id]).await.unwrap();
+    db.backend
+        .execute(
+            "UPDATE mirror_sources SET resource_version = resource_version + 1 WHERE registry_id = ?1",
+            &vals![original.registry_id],
+        )
+        .await
+        .unwrap();
     assert!(db
         .validate_mirror_import_authority(&original)
         .await
@@ -647,7 +665,13 @@ async fn live_postgres_generation_four_upgrade_and_exact_mirror_lifecycle() {
         .await
         .unwrap();
     let original_before = db.mirror_import(&original.job_id).await.unwrap().unwrap();
-    db.backend.execute("UPDATE mirror_sources SET resource_version = resource_version + 1 WHERE registry_id = ?1", &vals![original.registry_id]).await.unwrap();
+    db.backend
+        .execute(
+            "UPDATE mirror_sources SET resource_version = resource_version + 1 WHERE registry_id = ?1",
+            &vals![original.registry_id],
+        )
+        .await
+        .unwrap();
     assert!(db
         .record_mirror_import_progress(&original, &progress, true, 3)
         .await
@@ -660,7 +684,13 @@ async fn live_postgres_generation_four_upgrade_and_exact_mirror_lifecycle() {
             .state,
         original_before.state
     );
-    db.backend.execute("UPDATE mirror_sources SET resource_version = resource_version - 1 WHERE registry_id = ?1", &vals![original.registry_id]).await.unwrap();
+    db.backend
+        .execute(
+            "UPDATE mirror_sources SET resource_version = resource_version - 1 WHERE registry_id = ?1",
+            &vals![original.registry_id],
+        )
+        .await
+        .unwrap();
     db.record_mirror_import_progress(&original, &progress, true, 3)
         .await
         .unwrap();
@@ -727,7 +757,18 @@ async fn indexed_identity_preserves_long_legacy_paths_and_rejects_changed_scalar
     let canonical = serde_json::to_string(&legacy).unwrap();
     assert!(!canonical.contains("copy_operation_id"));
     assert!(db.admit_mirror_import(&legacy, 1).await.is_err());
-    db.backend.execute("INSERT INTO mirror_import_objects (job_id,registry_id,original_digest,original_json,state,created_at,updated_at) VALUES (?1,?2,?3,?4,'admitted',1,1)", &vals![legacy.job_id,legacy.registry_id,digest(&legacy).unwrap(),canonical]).await.unwrap();
+    db.backend
+        .execute(
+            "INSERT INTO mirror_import_objects (job_id,registry_id,original_digest,original_json,state,created_at,updated_at) VALUES (?1,?2,?3,?4,'admitted',1,1)",
+            &vals![
+                legacy.job_id,
+                legacy.registry_id,
+                digest(&legacy).unwrap(),
+                canonical
+            ],
+        )
+        .await
+        .unwrap();
 
     db.backfill_mirror_import_index().await.unwrap();
     let record = db
@@ -763,19 +804,47 @@ async fn indexed_identity_preserves_long_legacy_paths_and_rejects_changed_scalar
 async fn actual_generation_five_upgrade_backfills_a_legacy_original_without_reencoding() {
     let backend = SqlxBackend::connect_sqlite(":memory:").await.unwrap();
     initialize_generation_four(&backend).await;
-    backend.execute_batch(super::super::MIGRATIONS[4]).await.unwrap();
-    backend.execute("UPDATE schema_version SET version = 5", &[]).await.unwrap();
-    let legacy_db = Database { backend: Box::new(backend) };
+    backend
+        .execute_batch(super::super::MIGRATIONS[4])
+        .await
+        .unwrap();
+    backend
+        .execute("UPDATE schema_version SET version = 5", &[])
+        .await
+        .unwrap();
+    let legacy_db = Database {
+        backend: Box::new(backend),
+    };
     let mut legacy = original(&legacy_db).await;
     legacy.copy_operation_id = None;
     legacy.job_id = legacy.identity().unwrap();
     let canonical = serde_json::to_string(&legacy).unwrap();
-    legacy_db.backend.execute("INSERT INTO mirror_import_objects (job_id,registry_id,original_digest,original_json,state,created_at,updated_at) VALUES (?1,?2,?3,?4,'admitted',1,1)", &vals![legacy.job_id,legacy.registry_id,digest(&legacy).unwrap(),canonical]).await.unwrap();
+    legacy_db.backend
+        .execute(
+            "INSERT INTO mirror_import_objects (job_id,registry_id,original_digest,original_json,state,created_at,updated_at) VALUES (?1,?2,?3,?4,'admitted',1,1)",
+            &vals![
+                legacy.job_id,
+                legacy.registry_id,
+                digest(&legacy).unwrap(),
+                canonical
+            ],
+        )
+        .await
+        .unwrap();
 
     let upgraded = Database::with_backend(legacy_db.backend).await.unwrap();
-    let retained = upgraded.mirror_import_for_path(legacy.registry_id, &legacy.path).await.unwrap().unwrap();
+    let retained = upgraded
+        .mirror_import_for_path(legacy.registry_id, &legacy.path)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(retained.original, legacy);
-    assert_eq!(serde_json::to_string(&retained.original).unwrap(), canonical);
+    assert_eq!(
+        serde_json::to_string(&retained.original).unwrap(),
+        canonical
+    );
     assert!(retained.original.copy_operation_id.is_none());
-    retained.validate_index(Some(&legacy.path), Some(&legacy.source_path_digest()), None).unwrap();
+    retained
+        .validate_index(Some(&legacy.path), Some(&legacy.source_path_digest()), None)
+        .unwrap();
 }

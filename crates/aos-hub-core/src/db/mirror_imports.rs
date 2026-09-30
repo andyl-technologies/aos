@@ -105,6 +105,7 @@ impl MirrorImportRecord {
             updated_at,
         })
     }
+
     /// Validates generation 6 indexed identity against the complete original.
     ///
     /// # Errors
@@ -204,7 +205,11 @@ impl Database {
                     row.get(7)?,
                     row.get(8)?,
                 )?;
-                record.validate_index(row.get::<Option<String>>(9)?.as_deref(), row.get::<Option<String>>(10)?.as_deref(), row.get::<Option<String>>(11)?.as_deref())?;
+                record.validate_index(
+                    row.get::<Option<String>>(9)?.as_deref(),
+                    row.get::<Option<String>>(10)?.as_deref(),
+                    row.get::<Option<String>>(11)?.as_deref(),
+                )?;
                 Ok(record)
             })
             .transpose()
@@ -224,7 +229,13 @@ impl Database {
         hash.update(b"aos.hub.mirror-source-path.v1\0");
         hash.update(path.as_bytes());
         let digest = hex::encode(hash.finalize());
-        let row = self.backend.query_opt("SELECT job_id FROM mirror_import_objects WHERE registry_id = ?1 AND source_path_digest = ?2", &vals![registry_id, digest]).await?;
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT job_id FROM mirror_import_objects WHERE registry_id = ?1 AND source_path_digest = ?2",
+                &vals![registry_id, digest],
+            )
+            .await?;
         let Some(row) = row else {
             return Ok(None);
         };
@@ -247,7 +258,13 @@ impl Database {
     pub(super) async fn backfill_mirror_import_index(&self) -> Result<()> {
         let mut cursor = String::new();
         loop {
-            let rows = self.backend.query("SELECT job_id, registry_id, original_digest, original_json, progress_json, state, commit_digest, created_at, updated_at, copy_operation_id FROM mirror_import_objects WHERE source_path IS NULL AND job_id > ?1 ORDER BY job_id LIMIT 128", &vals![cursor]).await?;
+            let rows = self
+                .backend
+                .query(
+                    "SELECT job_id, registry_id, original_digest, original_json, progress_json, state, commit_digest, created_at, updated_at, copy_operation_id FROM mirror_import_objects WHERE source_path IS NULL AND job_id > ?1 ORDER BY job_id LIMIT 128",
+                    &vals![cursor],
+                )
+                .await?;
             if rows.is_empty() {
                 break;
             }
@@ -270,7 +287,17 @@ impl Database {
                     "mirror generation 6 operation is missing its atomic source index"
                 );
                 cursor = record.original.job_id.clone();
-                statements.push(CheckedStatement::exact("UPDATE mirror_import_objects SET source_path = ?2, source_path_digest = ?3, copy_operation_id = ?4 WHERE job_id = ?1 AND original_digest = ?5 AND source_path IS NULL", vals![record.original.job_id, record.original.path, record.original.source_path_digest(), record.original.copy_operation_id, digest(&record.original)?], 1));
+                statements.push(CheckedStatement::exact(
+                    "UPDATE mirror_import_objects SET source_path = ?2, source_path_digest = ?3, copy_operation_id = ?4 WHERE job_id = ?1 AND original_digest = ?5 AND source_path IS NULL",
+                    vals![
+                        record.original.job_id,
+                        record.original.path,
+                        record.original.source_path_digest(),
+                        record.original.copy_operation_id,
+                        digest(&record.original)?
+                    ],
+                    1,
+                ));
             }
             self.backend.checked_batch(&statements).await?;
         }
@@ -355,10 +382,25 @@ impl Database {
                              AND b.id = ?13 AND b.resource_version = ?14
                              AND b.kind = 'deployment_r2' AND b.is_instance_default = 1)
              ON CONFLICT(job_id) DO NOTHING",
-            &vals![original.job_id, original.registry_id, original_digest, original_json, now,
-                original.registry_resource_version, original.mirror_resource_version, original.upstream_base,
-                original.placement_id, original.placement_resource_version, original.write_spec_version,
-                original.placement_prefix, original.binding_id, original.binding_resource_version, original.path, original.source_path_digest(), original.copy_operation_id],
+            &vals![
+                original.job_id,
+                original.registry_id,
+                original_digest,
+                original_json,
+                now,
+                original.registry_resource_version,
+                original.mirror_resource_version,
+                original.upstream_base,
+                original.placement_id,
+                original.placement_resource_version,
+                original.write_spec_version,
+                original.placement_prefix,
+                original.binding_id,
+                original.binding_resource_version,
+                original.path,
+                original.source_path_digest(),
+                original.copy_operation_id
+            ],
         ).await?;
         let retained = self
             .mirror_import(&original.job_id)
