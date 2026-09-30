@@ -69,7 +69,7 @@ in
     postInstall = ''
       mkdir -p "$out/bin"
       found=0
-      for candidate in target/release/deps/dialect-*; do
+      for candidate in "''${CARGO_TARGET_DIR:-target}"/release/deps/dialect-*; do
         if [ -f "$candidate" ] && [ -x "$candidate" ]; then
           install -m 755 "$candidate" "$out/bin/aos-hub-dialect-contract"
           found=1
