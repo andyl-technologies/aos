@@ -1932,7 +1932,11 @@ pub fn validate_native_adapter_matrix_spec(spec: &NativeAdapterMatrixSpec) -> Re
             || scenario.postconditions.iter().any(|postcondition| {
                 !matrix_token(&postcondition.name) || !matrix_token(&postcondition.evidence_kind)
             })
-            || scenario.applicability.required_actions.windows(2).any(|pair| pair[0] >= pair[1])
+            || scenario
+                .applicability
+                .required_actions
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
             || scenario
                 .applicability
                 .required_resource_lifetimes
@@ -2051,7 +2055,9 @@ pub fn validate_native_adapter_matrix_spec(spec: &NativeAdapterMatrixSpec) -> Re
         || applicability.inapplicable_cells.iter().any(|entry| {
             !matches!(
                 entry.reason.as_str(),
-                "required-resource-lifetime-unavailable" | "missing-authenticated-state-format" | "unsupported-scenario-action"
+                "required-resource-lifetime-unavailable"
+                    | "missing-authenticated-state-format"
+                    | "unsupported-scenario-action"
             )
         })
         || !applicable_ids.is_disjoint(&inapplicable_ids)
@@ -2063,9 +2069,14 @@ pub fn validate_native_adapter_matrix_spec(spec: &NativeAdapterMatrixSpec) -> Re
     for cell in &spec.cells {
         let action_supported = cell.applicability.required_actions.is_empty()
             || cell.applicability.required_actions.contains(&cell.action);
-        let exclusion = applicability.inapplicable_cells.iter().find(|entry| entry.cell_id == cell.id);
-        if (!action_supported && exclusion.map(|entry| entry.reason.as_str()) != Some("unsupported-scenario-action"))
-            || (action_supported && exclusion.is_some_and(|entry| entry.reason == "unsupported-scenario-action"))
+        let exclusion = applicability
+            .inapplicable_cells
+            .iter()
+            .find(|entry| entry.cell_id == cell.id);
+        if (!action_supported
+            && exclusion.map(|entry| entry.reason.as_str()) != Some("unsupported-scenario-action"))
+            || (action_supported
+                && exclusion.is_some_and(|entry| entry.reason == "unsupported-scenario-action"))
         {
             bail!("native scenario action applicability contradicts its authored action predicate");
         }
