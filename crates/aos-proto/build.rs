@@ -72,7 +72,9 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // V1 comparison messages, plus explicit purpose-57 binding version 2 and
     // its accepted Policy descriptor. Original SSH V3/V5 declarations and all
     // earlier fields remain pinned in the combined compatibility baseline.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x8519_0037_f1a9_172e;
+    // Additive fixed-domain Nix: methods 50..52 and their two V2 comparison
+    // messages. This does not register a public RPC or enable either service.
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x1360_a91d_4630_05a5;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(

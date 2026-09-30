@@ -11,7 +11,7 @@
 //! would broaden precisely the authority boundary this module is sealing.
 
 use aos_sandbox_broker_session_protocol::{
-    BrokerOutcomeAdmissionV1, BrokerRequestAdmissionV1, BrokerSessionDurableEndpointV1,
+    BrokerSessionDurableEndpointV1,
     BrokerSessionDurableError, BrokerSessionDurableHistoryV1, BrokerSessionDurablePhaseV1,
     BrokerSessionDurableRecordV1, BrokerSessionPeerBindingV1, BrokerSessionProtectedBindingsV1,
     BrokerSessionProtocolV1, BrokerSessionReplayEvidenceV1, BrokerSessionTrafficStateV1,
@@ -1478,47 +1478,12 @@ fn reconstruct_traffic_records(
     transcript: &VerifiedBrokerSessionTranscriptV1,
     context: &ProtectedBrokerSessionVerificationContextV1,
 ) -> Result<BrokerSessionTrafficStateV1, BrokerSessionSecurityError> {
-    let mut traffic = BrokerSessionTrafficStateV1::from_provisional_transcript(transcript.clone())
-        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-    for record in records {
-        match record.phase() {
-            BrokerSessionDurablePhaseV1::RequestPrepared => {
-                let request = decode_canonical_request_v1(record.request_packet())
-                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-                traffic = match traffic
-                    .admit_request(
-                        &request,
-                        record.request_id(),
-                        record.maximum_response_bytes(),
-                        context,
-                    )
-                    .map_err(|_| BrokerSessionSecurityError::Currentness)?
-                {
-                    BrokerRequestAdmissionV1::New { next_state, .. } => *next_state,
-                    BrokerRequestAdmissionV1::ExactReplay(_) => {
-                        return Err(BrokerSessionSecurityError::Currentness);
-                    }
-                };
-            }
-            BrokerSessionDurablePhaseV1::Terminal => {
-                let packet = record
-                    .outcome_packet()
-                    .ok_or(BrokerSessionSecurityError::Currentness)?;
-                let outcome = decode_canonical_response_v1(packet)
-                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-                traffic = match traffic
-                    .admit_outcome(&outcome, context)
-                    .map_err(|_| BrokerSessionSecurityError::Currentness)?
-                {
-                    BrokerOutcomeAdmissionV1::New { next_state, .. } => *next_state,
-                    BrokerOutcomeAdmissionV1::ExactReplay(_) => {
-                        return Err(BrokerSessionSecurityError::Currentness);
-                    }
-                };
-            }
-        }
-    }
-    Ok(traffic)
+    aos_sandbox_broker_session_protocol::verify_historical_traffic_records_v1(
+        records,
+        transcript,
+        context,
+    )
+    .map_err(|_| BrokerSessionSecurityError::Currentness)
 }
 
 fn request_matches_head(

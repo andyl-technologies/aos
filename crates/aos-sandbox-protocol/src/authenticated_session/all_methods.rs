@@ -307,6 +307,12 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     MountFuseReserveIntent,
     /// Exact four-role purpose-56 preparation; terminal/read outcomes stay closed.
     HostPrepareFuseWorkerSession,
+    /// Original-disclosure resolution of one independently preadmitted recipe.
+    NixResolveProtectedRecipe,
+    /// Exact leased realization of an admitted derivation in the fixed domain.
+    NixRealizeAuthorizedDerivation,
+    /// Fresh readback of one exact original realization and retained root set.
+    NixQueryAuthorizedPathInfo,
 }
 
 /// Identifies which endpoint advanced client-to-broker request state.
@@ -358,6 +364,15 @@ pub const fn authenticated_broker_method_adapter_v1(
         None => return None,
     };
     let semantics = match method {
+        BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2 => {
+            AuthenticatedBrokerMethodSemanticsV1::NixResolveProtectedRecipe
+        }
+        BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2 => {
+            AuthenticatedBrokerMethodSemanticsV1::NixRealizeAuthorizedDerivation
+        }
+        BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2 => {
+            AuthenticatedBrokerMethodSemanticsV1::NixQueryAuthorizedPathInfo
+        }
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME => {
             AuthenticatedBrokerMethodSemanticsV1::HostApplyRuntime
         }
@@ -1257,6 +1272,7 @@ struct ValidatedRequestSemanticV1 {
 #[derive(Clone, Debug, PartialEq)]
 enum RequestOutcomeContextV1 {
     None,
+    Nix(crate::nix_build::ValidatedNixBuildRequestV2),
     HostObserve(crate::ValidatedObserveRuntimeRequestV1),
     MountApply(crate::ValidatedMountRequest),
     NetworkApply(CanonicalNetworkSemanticsV1),
@@ -1304,7 +1320,23 @@ fn validate_request_semantics(
     now: u64,
     bindings: AuthenticatedBrokerSemanticBindingsV1,
 ) -> Result<ValidatedRequestSemanticV1, AuthenticatedBrokerMethodErrorV1> {
+    let mut nix_outcome_context = RequestOutcomeContextV1::None;
     let (kind, header, portable_commitment) = match method {
+        BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+        | BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
+        | BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2 => {
+            let request = crate::nix_build::decode_nix_build_request_v2(
+                body, method, peer, policy, now,
+            )?;
+            let kind = authenticated_broker_method_adapter_v1(method)
+                .ok_or(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod)?
+                .semantics();
+            let header = *request.header();
+            let commitment = request.commitment();
+
+            nix_outcome_context = RequestOutcomeContextV1::Nix(request);
+            (kind, header, Some(commitment))
+        }
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME => {
             let request = crate::decode_runtime_request(body, peer, policy, now)?;
             let semantics = canonical_host_semantics_v1(&request)
@@ -1738,6 +1770,9 @@ fn validate_request_semantics(
         }
     };
     let outcome_context = match method {
+        BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+        | BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
+        | BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2 => nix_outcome_context,
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME => RequestOutcomeContextV1::HostObserve(
             decode_observe_runtime_request_v1(body, peer, policy, now)?,
         ),
@@ -2291,6 +2326,14 @@ fn validate_success_semantics(
                 body, original,
             )?;
         }
+        BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+        | BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
+        | BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2 => {
+            let RequestOutcomeContextV1::Nix(original) = &request.outcome_context else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::nix_build::decode_nix_build_response_v2(body, original, request.method())?;
+        }
         BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
@@ -2371,4 +2414,259 @@ pub fn authenticated_catalog_generation_binding_v1(generation: u64, digest: [u8;
     hasher.update(generation.to_be_bytes());
     hasher.update(digest);
     hasher.finalize().into()
+}
+
+#[cfg(test)]
+mod nix_request_context_tests {
+    use aos_proto::aos::sandbox::local::v1::{
+        AssignmentFence, Audience, NixBuildRequestV2, RequestHeader,
+    };
+    use buffa::Message as _;
+
+    use super::*;
+
+    const METHODS: [BrokerMethod; 3] = [
+        BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2,
+        BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2,
+        BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2,
+    ];
+
+    fn peer_policy() -> (PeerCredentials, PeerPolicy) {
+        (
+            PeerCredentials {
+                uid: 1000,
+                gid: 1000,
+                pid: Some(42),
+            },
+            PeerPolicy {
+                uid: 1000,
+                gid: Some(1000),
+                audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            },
+        )
+    }
+
+    fn header() -> RequestHeader {
+        RequestHeader {
+            protocol_major: 1,
+            protocol_minor: 0,
+            request_id: vec![1; 16],
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            deadline_boottime_nanoseconds: 100,
+            maximum_response_bytes: 4096,
+            ..Default::default()
+        }
+    }
+
+    fn request(method: BrokerMethod) -> NixBuildRequestV2 {
+        // Comparison DATA only: this fixture supplies no signed traffic or
+        // protected recipe, parent admission, roots, lease or floor authority.
+        NixBuildRequestV2 {
+            header: Some(header()).into(),
+            fence: Some(AssignmentFence {
+                sandbox_id: vec![2; 16],
+                incarnation_id: vec![3; 16],
+                assignment_epoch: 1,
+                desired_generation: 1,
+                assignment_digest: vec![4; 32],
+                ..Default::default()
+            })
+            .into(),
+            operation_id: vec![5; 16],
+            recipe_digest: vec![6; 32],
+            domain_digest: vec![7; 32],
+            disclosure_digest: vec![8; 32],
+            environment_digest: vec![9; 32],
+            parent_admission_digest: vec![10; 32],
+            input_presentation_digest: vec![11; 32],
+            expected_output_map_digest: vec![12; 32],
+            build_transaction_digest: if method
+                == BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+            {
+                Vec::new()
+            } else {
+                vec![13; 32]
+            },
+            original_realization_digest: if method
+                == BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2
+            {
+                vec![14; 32]
+            } else {
+                Vec::new()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn all_three_methods_retain_the_exact_validated_request_context() {
+        let (peer, policy) = peer_policy();
+
+        for method in METHODS {
+            let body = request(method).encode_to_vec();
+            let expected =
+                crate::nix_build::decode_nix_build_request_v2(&body, method, peer, policy, 1)
+                    .unwrap();
+
+            let semantic = validate_request_semantics(
+                method,
+                &body,
+                &[],
+                peer,
+                policy,
+                1,
+                AuthenticatedBrokerSemanticBindingsV1::default(),
+            )
+            .unwrap();
+
+            assert_eq!(semantic.header, *expected.header());
+            assert_eq!(semantic.commitment, expected.commitment());
+            assert_eq!(
+                semantic.kind,
+                authenticated_broker_method_adapter_v1(method)
+                    .unwrap()
+                    .semantics()
+            );
+            let RequestOutcomeContextV1::Nix(retained) = semantic.outcome_context else {
+                panic!("Nix method must retain its original request DATA");
+            };
+            assert_eq!(retained, expected);
+            assert_eq!(retained.wire().encode_to_vec(), body);
+            assert_eq!(retained.method(), method);
+        }
+    }
+
+    #[test]
+    fn method_specific_effect_coordinates_reject_cross_method_substitution() {
+        let (peer, policy) = peer_policy();
+        let resolve = BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2;
+        let realize = BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2;
+        let query = BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2;
+        let cases = [
+            (
+                request(resolve),
+                realize,
+                ProtocolValidationError::InvalidFixedBytes {
+                    field: "build_transaction_digest",
+                    bytes: 32,
+                },
+            ),
+            (
+                request(realize),
+                resolve,
+                ProtocolValidationError::InvalidField("resolve effect coordinates"),
+            ),
+            (
+                request(query),
+                realize,
+                ProtocolValidationError::InvalidField("realize original coordinate"),
+            ),
+            (
+                request(realize),
+                query,
+                ProtocolValidationError::InvalidFixedBytes {
+                    field: "original_realization_digest",
+                    bytes: 32,
+                },
+            ),
+        ];
+
+        for (wire, method, expected) in cases {
+            let error = validate_request_semantics(
+                method,
+                &wire.encode_to_vec(),
+                &[],
+                peer,
+                policy,
+                1,
+                AuthenticatedBrokerSemanticBindingsV1::default(),
+            )
+            .err()
+            .unwrap();
+
+            assert_eq!(error, AuthenticatedBrokerMethodErrorV1::Protocol(expected));
+        }
+    }
+
+    #[test]
+    fn all_three_methods_preserve_header_fence_coordinate_and_deadline_errors() {
+        let (peer, policy) = peer_policy();
+
+        for method in METHODS {
+            let original = request(method);
+            let mut missing_header = original.clone();
+            missing_header.header = None.into();
+            let mut missing_fence = original.clone();
+            missing_fence.fence = None.into();
+            let mut zero_request_id = original.clone();
+            zero_request_id.header = Some(RequestHeader {
+                request_id: vec![0; 16],
+                ..header()
+            })
+            .into();
+            let mut zero_operation = original.clone();
+            zero_operation.operation_id = vec![0; 16];
+            let cases = [
+                (
+                    missing_header,
+                    1,
+                    ProtocolValidationError::MissingField("header"),
+                ),
+                (
+                    missing_fence,
+                    1,
+                    ProtocolValidationError::MissingField("fence"),
+                ),
+                (
+                    zero_request_id,
+                    1,
+                    ProtocolValidationError::InvalidFixedBytes {
+                        field: "header.request_id",
+                        bytes: 16,
+                    },
+                ),
+                (
+                    zero_operation,
+                    1,
+                    ProtocolValidationError::InvalidFixedBytes {
+                        field: "operation_id",
+                        bytes: 16,
+                    },
+                ),
+                (original, 100, ProtocolValidationError::DeadlineExpired),
+            ];
+
+            for (wire, now, expected) in cases {
+                let body = wire.encode_to_vec();
+                let error = validate_request_semantics(
+                    method,
+                    &body,
+                    &[],
+                    peer,
+                    policy,
+                    now,
+                    AuthenticatedBrokerSemanticBindingsV1::default(),
+                )
+                .err()
+                .unwrap();
+
+                assert_eq!(error, AuthenticatedBrokerMethodErrorV1::Protocol(expected));
+            }
+
+            assert!(matches!(
+                validate_request_semantics(
+                    method,
+                    &[0xff],
+                    &[],
+                    peer,
+                    policy,
+                    1,
+                    AuthenticatedBrokerSemanticBindingsV1::default(),
+                ),
+                Err(AuthenticatedBrokerMethodErrorV1::Protocol(
+                    ProtocolValidationError::MalformedWire(_)
+                ))
+            ));
+        }
+    }
 }

@@ -837,6 +837,7 @@ dependencies = [
  "aos-filesystem-view-core",
  "aos-proto",
  "aos-sandbox-agent",
+ "aos-sandbox-broker-session-protocol",
  "aos-sandbox-core",
  "aos-sandbox-linux",
  "aos-sandbox-ownership-protocol",

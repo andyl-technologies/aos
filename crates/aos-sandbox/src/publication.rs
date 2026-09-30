@@ -1350,6 +1350,7 @@ const fn audience_code(audience: BrokerAudience) -> Result<u8, AuthorityPublicat
         BrokerAudience::Storage => Ok(3),
         BrokerAudience::Network => Ok(4),
         BrokerAudience::Guardian => Err(AuthorityPublicationError::UnsupportedBrokerAudience),
+        BrokerAudience::Nix => Err(AuthorityPublicationError::UnsupportedBrokerAudience),
     }
 }
 
@@ -1438,6 +1439,50 @@ fn take_bytes<'a>(
 ) -> Result<&'a [u8], AuthorityPublicationError> {
     let length = take_u32(bytes, cursor)?;
     take(bytes, cursor, length)
+}
+
+#[cfg(test)]
+mod nix_audience_denial_tests {
+    use super::*;
+
+    #[test]
+    fn nix_audience_has_no_publication_code_or_decode_path() {
+        for audience in [BrokerAudience::Guardian, BrokerAudience::Nix] {
+            assert!(matches!(
+                audience_code(audience),
+                Err(AuthorityPublicationError::UnsupportedBrokerAudience)
+            ));
+        }
+
+        for reserved in [0, 5, 6, u8::MAX] {
+            assert!(matches!(
+                audience_from_code(reserved),
+                Err(AuthorityPublicationError::CorruptCurrent)
+            ));
+        }
+
+        for method_code in [50, 51, 52] {
+            assert!(matches!(
+                broker_method_from_code(method_code),
+                Err(AuthorityPublicationError::CorruptCurrent)
+            ));
+        }
+    }
+
+    #[test]
+    fn existing_publication_audience_codes_round_trip_unchanged() {
+        let audiences = [
+            BrokerAudience::Host,
+            BrokerAudience::Mount,
+            BrokerAudience::Storage,
+            BrokerAudience::Network,
+        ];
+
+        for (code, audience) in (1..=4).zip(audiences) {
+            assert_eq!(audience_code(audience).unwrap(), code);
+            assert_eq!(audience_from_code(code).unwrap(), audience);
+        }
+    }
 }
 
 #[cfg(test)]

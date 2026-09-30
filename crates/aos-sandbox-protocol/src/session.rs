@@ -1375,6 +1375,9 @@ fn validate_outbound_carriers(
         BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
+        | BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+        | BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
+        | BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2
         | BrokerMethod::BROKER_METHOD_UNSPECIFIED => false,
     };
     if valid {
@@ -2199,6 +2202,41 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn nix_methods_remain_closed_to_legacy_carriers_and_protocols() {
+        let methods = [
+            BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2,
+            BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2,
+            BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2,
+        ];
+
+        for method in methods {
+            for roles in [
+                &[][..],
+                &[BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_ROOT][..],
+            ] {
+                assert_eq!(
+                    validate_outbound_carriers(method, roles),
+                    Err(ProtocolValidationError::DescriptorTableMismatch)
+                );
+            }
+
+            for protocol in [
+                ProtocolId::HostBroker,
+                ProtocolId::StorageBroker,
+                ProtocolId::MountBroker,
+                ProtocolId::MountFuseBroker,
+                ProtocolId::NetworkBroker,
+                ProtocolId::NixBuildBroker,
+            ] {
+                assert_eq!(
+                    validate_method(Some(method), protocol),
+                    Err(ProtocolValidationError::MethodMismatch)
+                );
+            }
+        }
+    }
 
     #[test]
     fn storage_output_attempt_and_query_remain_closed_to_sessions() {

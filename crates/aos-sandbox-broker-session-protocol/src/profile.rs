@@ -13,6 +13,7 @@ use aos_sandbox_core::{
     BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE, FeatureRef,
     HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE, HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE,
     MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE, validate_required_features,
+    NIX_NARROWING_PROXY_FEATURE_NAMESPACE,
 };
 
 mod fuse_worker;
@@ -43,6 +44,10 @@ const MOUNT_SOURCE_INVENTORY_FEATURES: [BrokerSessionMethodFeatureV1; 1] =
 const MOUNT_FUSE_INTENT_FEATURES: [BrokerSessionMethodFeatureV1; 2] = [
     BrokerSessionMethodFeatureV1::SignedPlanLease,
     BrokerSessionMethodFeatureV1::MountFusePresentation,
+];
+const NIX_PROXY_FEATURES: [BrokerSessionMethodFeatureV1; 2] = [
+    BrokerSessionMethodFeatureV1::SignedPlanLease,
+    BrokerSessionMethodFeatureV1::NixNarrowingProxy,
 ];
 const HOST_EXECUTION_SPEC_FEATURES: [BrokerSessionMethodFeatureV1; 2] = [
     BrokerSessionMethodFeatureV1::SignedPlanLease,
@@ -88,7 +93,7 @@ const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDis
 ///
 /// Registration is not production advertisement. Closed provisional carriers
 /// remain excluded until their protected issuers and Host owners are joined.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 47] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 50] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -136,6 +141,9 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 47] = [
     BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT,
     BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1,
+    BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2,
+    BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2,
+    BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -288,6 +296,8 @@ pub enum BrokerSessionMethodFeatureV1 {
     HostFuseWorkerSession,
     /// Requires exact FUSE presentation intent negotiation, separate from native Mount.
     MountFusePresentation,
+    /// Requires exact fixed-domain narrowed Nix realization 1.0.
+    NixNarrowingProxy,
 }
 
 impl BrokerSessionMethodFeatureV1 {
@@ -302,6 +312,7 @@ impl BrokerSessionMethodFeatureV1 {
             Self::HostConsumerCgroupReadback => HOST_CONSUMER_CGROUP_READBACK_FEATURE_NAMESPACE,
             Self::HostFuseWorkerSession => HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE,
             Self::MountFusePresentation => MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE,
+            Self::NixNarrowingProxy => NIX_NARROWING_PROXY_FEATURE_NAMESPACE,
         }
     }
 
@@ -481,6 +492,11 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => {
             BrokerSessionProtocolV1::Network
         }
+        BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+        | BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
+        | BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2 => {
+            BrokerSessionProtocolV1::Nix
+        }
         // The Storage method remains unnegotiable until its same-session Host
         // proof and protected writer admission are implemented.
         BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
@@ -540,12 +556,18 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
             | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
             | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+            | BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+            | BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
+            | BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2
     ) {
         BrokerSessionAuthorizationPresenceV1::Required
     } else {
         BrokerSessionAuthorizationPresenceV1::Forbidden
     };
     let required_features: &'static [BrokerSessionMethodFeatureV1] = match method {
+        BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+        | BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
+        | BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2 => &NIX_PROXY_FEATURES,
         BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1 => &MOUNT_FUSE_INTENT_FEATURES,
         BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 => &fuse_worker::FEATURES,
         BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
@@ -698,6 +720,7 @@ pub const fn supported_broker_session_version_v1(protocol: BrokerSessionProtocol
         BrokerSessionProtocolV1::Host
         | BrokerSessionProtocolV1::Storage
         | BrokerSessionProtocolV1::Network => (1, 0),
+        BrokerSessionProtocolV1::Nix => (1, 0),
         BrokerSessionProtocolV1::Mount => (2, 0),
         BrokerSessionProtocolV1::MountFuse => (3, 0),
     }
@@ -710,7 +733,9 @@ pub const fn maximum_broker_session_request_bytes_v1(protocol: BrokerSessionProt
         BrokerSessionProtocolV1::Host => AUTHENTICATED_HOST_QUERY_MAXIMUM_BYTES,
         BrokerSessionProtocolV1::Mount => AUTHENTICATED_MOUNT_PREPARE_CATALOG_MAXIMUM_BYTES,
         BrokerSessionProtocolV1::MountFuse => AUTHENTICATED_ORDINARY_REQUEST_MAXIMUM_BYTES,
-        BrokerSessionProtocolV1::Storage | BrokerSessionProtocolV1::Network => {
+        BrokerSessionProtocolV1::Storage
+        | BrokerSessionProtocolV1::Network
+        | BrokerSessionProtocolV1::Nix => {
             AUTHENTICATED_ORDINARY_REQUEST_MAXIMUM_BYTES
         }
     }
@@ -926,6 +951,15 @@ fn validate_feature_conditions(
         required_methods,
         advertised_methods,
     )?;
+    let selects_nix_proxy = required_methods.iter().chain(advertised_methods)
+        .copied().any(is_nix_proxy_method);
+    if selects_nix_proxy
+        && (protocol != BrokerSessionProtocolV1::Nix
+            || !has_feature(required_features, NIX_NARROWING_PROXY_FEATURE_NAMESPACE)
+            || !has_feature(advertised_features, NIX_NARROWING_PROXY_FEATURE_NAMESPACE))
+    {
+        return Err(BrokerSessionNegotiationError::FeatureCondition);
+    }
     if required_methods
         .iter()
         .copied()
@@ -1053,7 +1087,8 @@ pub(crate) const fn method_matches_protocol(
             | (BrokerSessionProtocolV1::Storage, BrokerSessionProtocolV1::Storage)
             | (BrokerSessionProtocolV1::Mount, BrokerSessionProtocolV1::Mount)
             | (BrokerSessionProtocolV1::MountFuse, BrokerSessionProtocolV1::MountFuse)
-            | (BrokerSessionProtocolV1::Network, BrokerSessionProtocolV1::Network) => true,
+            | (BrokerSessionProtocolV1::Network, BrokerSessionProtocolV1::Network)
+            | (BrokerSessionProtocolV1::Nix, BrokerSessionProtocolV1::Nix) => true,
             _ => false,
         },
         None => false,
@@ -1076,6 +1111,8 @@ pub(crate) fn method_has_required_traffic_features(
 ) -> bool {
     (!method_requires_authorization(method)
         || has_feature(required_features, SIGNED_PLAN_LEASE_FEATURE))
+        && (!is_nix_proxy_method(method)
+            || has_feature(required_features, NIX_NARROWING_PROXY_FEATURE_NAMESPACE))
         && (!is_mount_source_acquisition_method(method)
             || has_feature(required_features, MOUNT_SOURCE_ACQUISITION_FEATURE))
         && (!matches!(
@@ -1098,6 +1135,15 @@ pub(crate) fn method_has_required_traffic_features(
             ))
         && (method != BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
             || has_feature(required_features, MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE))
+}
+
+const fn is_nix_proxy_method(method: BrokerMethod) -> bool {
+    matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+            | BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
+            | BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2
+    )
 }
 
 const fn is_mount_source_acquisition_method(method: BrokerMethod) -> bool {
@@ -1125,6 +1171,165 @@ mod tests {
     use super::*;
 
     const RESPONSE_MAXIMUM: u32 = 65_536;
+
+    #[test]
+    fn nix_methods_require_exact_protocol_authorization_and_proxy_features() {
+        let methods = [
+            BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2,
+            BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2,
+            BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2,
+        ];
+
+        for (method, code) in methods.into_iter().zip(50..=52) {
+            let profile = authenticated_broker_method_profile_v1(method).unwrap();
+            assert_eq!(method as i32, code);
+            assert_eq!(profile.protocol(), BrokerSessionProtocolV1::Nix);
+            assert!(method_matches_protocol(method, BrokerSessionProtocolV1::Nix));
+            assert_eq!(profile.version(), (1, 0));
+            assert_eq!(profile.audience(), Audience::AUDIENCE_NODE_CONTROLLER);
+            assert_eq!(
+                profile.authorization(),
+                BrokerSessionAuthorizationPresenceV1::Required,
+            );
+            assert_eq!(profile.required_features(), &NIX_PROXY_FEATURES);
+            assert_eq!(profile.total_request_maximum_bytes(), 1_048_576);
+            assert_eq!(profile.cleared_request_maximum_bytes(), 1_048_265);
+            assert!(profile.request_descriptor_roles().is_empty());
+            assert!(profile.success_response_descriptor_roles().is_empty());
+
+            for foreign in [
+                BrokerSessionProtocolV1::Host,
+                BrokerSessionProtocolV1::Storage,
+                BrokerSessionProtocolV1::Mount,
+                BrokerSessionProtocolV1::Network,
+                BrokerSessionProtocolV1::MountFuse,
+            ] {
+                assert!(!method_matches_protocol(method, foreign));
+                assert!(!authenticated_broker_methods_for_role_v1(
+                    foreign,
+                    Audience::AUDIENCE_NODE_CONTROLLER,
+                ).contains(&method));
+            }
+        }
+    }
+
+    #[test]
+    fn nix_hello_and_historical_negotiation_are_available_as_pure_data() {
+        let protocol = BrokerSessionProtocolV1::Nix;
+        let audience = Audience::AUDIENCE_NODE_CONTROLLER;
+        let client = production_broker_client_hello_v1(protocol, audience, RESPONSE_MAXIMUM).unwrap();
+        let broker = production_broker_server_hello_v1(protocol, audience, RESPONSE_MAXIMUM).unwrap();
+        let expected = [50, 51, 52];
+
+        let client_methods = client.required_methods.iter()
+            .map(|method| method.as_known().unwrap() as i32)
+            .collect::<Vec<_>>();
+        let broker_methods = broker.methods.iter()
+            .map(|method| method.as_known().unwrap() as i32)
+            .collect::<Vec<_>>();
+        assert_eq!(client_methods, expected);
+        assert_eq!(broker_methods, expected);
+        let historical = validate_authenticated_negotiation_v1(
+            &client, &broker, protocol, 1, 0, audience,
+        ).unwrap();
+
+        // This is the shared historical/profile validator, not a live Session,
+        // installed service, signed context, current floor or readiness proof.
+        assert_eq!(historical.protocol, protocol);
+        assert_eq!(historical.required_methods.len(), 3);
+        for foreign in [
+            BrokerSessionProtocolV1::Host,
+            BrokerSessionProtocolV1::Storage,
+            BrokerSessionProtocolV1::Mount,
+            BrokerSessionProtocolV1::MountFuse,
+            BrokerSessionProtocolV1::Network,
+        ] {
+            assert!(validate_authenticated_negotiation_v1(
+                &client, &broker, foreign, 1, 0, audience,
+            ).is_err());
+        }
+    }
+
+    #[test]
+    fn nix_selected_methods_require_proxy_feature_on_both_hello_sides() {
+        let protocol = BrokerSessionProtocolV1::Nix;
+        let audience = Audience::AUDIENCE_NODE_CONTROLLER;
+        let client = production_broker_client_hello_v1(protocol, audience, RESPONSE_MAXIMUM).unwrap();
+        let broker = production_broker_server_hello_v1(protocol, audience, RESPONSE_MAXIMUM).unwrap();
+        let methods = authenticated_broker_methods_for_role_v1(protocol, audience);
+        let exact = feature_refs(&client.required_features).unwrap();
+        let mut missing = exact.clone();
+        missing.retain(|feature| feature.namespace() != NIX_NARROWING_PROXY_FEATURE_NAMESPACE);
+
+        for (required, advertised) in [(&missing, &missing), (&missing, &exact), (&exact, &missing)] {
+            assert_eq!(validate_feature_conditions(protocol, required, advertised, &methods, &methods),
+                Err(BrokerSessionNegotiationError::FeatureCondition));
+            // Advertised-only selection also cannot omit the contract.
+            assert_eq!(validate_feature_conditions(protocol, required, advertised, &[], &methods),
+                Err(BrokerSessionNegotiationError::FeatureCondition));
+        }
+        for (remove_client, remove_broker) in [(true, true), (true, false), (false, true)] {
+            let mut changed_client = client.clone();
+            let mut changed_broker = broker.clone();
+            if remove_client {
+                changed_client.required_features.retain(|feature| feature.namespace != NIX_NARROWING_PROXY_FEATURE_NAMESPACE);
+            }
+            if remove_broker {
+                changed_broker.features.retain(|feature| feature.namespace != NIX_NARROWING_PROXY_FEATURE_NAMESPACE);
+            }
+            assert!(validate_authenticated_negotiation_v1(
+                &changed_client, &changed_broker, protocol, 1, 0, audience,
+            ).is_err());
+        }
+        for (major, minor) in [(2, 0), (1, 1)] {
+            let mut substituted = exact.clone();
+            let index = substituted.iter().position(|feature| feature.namespace() == NIX_NARROWING_PROXY_FEATURE_NAMESPACE).unwrap();
+            substituted[index] = FeatureRef::new(NIX_NARROWING_PROXY_FEATURE_NAMESPACE, major, minor).unwrap();
+            for (required, advertised) in [(&substituted, &exact), (&exact, &substituted), (&substituted, &substituted)] {
+                assert_eq!(validate_feature_conditions(protocol, required, advertised, &methods, &methods),
+                    Err(BrokerSessionNegotiationError::FeatureCondition));
+            }
+        }
+        for foreign in [BrokerSessionProtocolV1::Host, BrokerSessionProtocolV1::Storage,
+            BrokerSessionProtocolV1::Mount, BrokerSessionProtocolV1::MountFuse, BrokerSessionProtocolV1::Network]
+        {
+            assert_eq!(validate_feature_conditions(foreign, &exact, &exact, &methods, &methods),
+                Err(BrokerSessionNegotiationError::FeatureCondition));
+        }
+    }
+
+    #[test]
+    fn nix_traffic_requires_proxy_and_signed_lease_without_changing_old_methods() {
+        let methods = authenticated_broker_methods_for_role_v1(
+            BrokerSessionProtocolV1::Nix, Audience::AUDIENCE_NODE_CONTROLLER,
+        );
+        let exact = feature_refs(&production_features_for_methods(&methods)).unwrap();
+
+        for method in methods {
+            assert!(method_has_required_traffic_features(method, &exact));
+            for namespace in [NIX_NARROWING_PROXY_FEATURE_NAMESPACE, SIGNED_PLAN_LEASE_FEATURE] {
+                let mut missing = exact.clone();
+                missing.retain(|feature| feature.namespace() != namespace);
+                assert!(!method_has_required_traffic_features(method, &missing));
+            }
+            for (major, minor) in [(2, 0), (1, 1)] {
+                let mut substituted = exact.clone();
+                let index = substituted.iter().position(|feature| feature.namespace() == NIX_NARROWING_PROXY_FEATURE_NAMESPACE).unwrap();
+                substituted[index] = FeatureRef::new(NIX_NARROWING_PROXY_FEATURE_NAMESPACE, major, minor).unwrap();
+                assert!(!method_has_required_traffic_features(method, &substituted));
+            }
+        }
+        for method in AUTHENTICATED_BROKER_METHODS_V1 {
+            if is_nix_proxy_method(method) {
+                continue;
+            }
+            let old_features = feature_refs(&production_features_for_methods(&[method])).unwrap();
+            let mut extra_proxy = old_features.clone();
+            extra_proxy.push(FeatureRef::new(NIX_NARROWING_PROXY_FEATURE_NAMESPACE, 1, 0).unwrap());
+            assert_eq!(method_has_required_traffic_features(method, &old_features),
+                method_has_required_traffic_features(method, &extra_proxy));
+        }
+    }
 
     #[test]
     fn storage_output_reserve_remains_unnegotiable() {
