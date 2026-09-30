@@ -233,3 +233,22 @@ authenticated visibility, writes, or stable service methods.
 
 The `aos hub login` device-code flow uses the same identity and authorization
 state as browser sign-in; see the [CLI guide](cli.md).
+
+## Inspect native runtime ability documents
+
+Open `/-/runtime-abilities`, choose a JSON file or paste its contents, and select
+**Inspect document**. The file picker reads locally; submitting sends the document
+to the Hub for rendering. The Hub does not retain it. Browser import accepts up
+to 2,796,199 bytes so encoded form data fits the shared 8 MiB request limit.
+
+Use `options.json` from a native `documentationArtifact` to browse option types,
+descriptions, operation inputs/results, and links between package/environment
+owners and the operations they declare, handle, or configure. Import an
+`aos.package.transaction` to see effects in execution order, with dependency
+links, implementation programs, owners, and lifetimes.
+
+These are evaluated declarations and desired execution paths, not live state.
+Imported documents do not authenticate a publisher. Existing release ability
+pages link to this viewer; release ingest/search still uses its previous format
+until the consumer migration. See the [full guide](../aos/runtime-abilities.md)
+and [inspection API](api.md#inspect-a-native-runtime-document).

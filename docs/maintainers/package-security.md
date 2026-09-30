@@ -24,11 +24,15 @@ functional evidence.
 
 ## Review the native package contract
 
-A package that contributes runtime behavior sets `abilities` to a checked-in,
-path-backed module. That module owns its options, implementations,
-requirements, guarantees, and desired resources. The derived signed package
-document is the portable contract; package metadata must not carry a second
-unit, permission, credential, or dependency catalog.
+A package with runtime configuration publishes a `module` directory and explicit
+`moduleDeps`. Its native input/result option modules, selected handlers, and
+configured effects compose in the deployment fixed point. Reference docs and the
+deferred transaction are derived from that configuration; package metadata must
+not maintain a second unit, permission, credential, or dependency catalog.
+
+See the [native runtime guide](../users/aos/runtime-abilities.md) for the current
+API. Consumer migration is in progress, so the old `abilities` recipe field and
+static provider/request maps are not the target for new code.
 
 For each declaration, verify:
 
@@ -66,10 +70,8 @@ VM or fleet gate.
 Useful baseline commands are:
 
 ```sh
-nix-build -A checks.eval --no-out-link
-nix-build -A checks.abilities --no-out-link
-nix-build -A checks.package-documentation --no-out-link
-nix build .#pkg-PACKAGE
+bash ./aos-dev build check effects --no-out-link
+bash ./aos-dev build package PACKAGE --no-out-link
 ```
 
 The relevant RFCs retain historical design context. Current package and module

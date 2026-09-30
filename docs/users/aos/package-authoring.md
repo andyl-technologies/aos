@@ -241,112 +241,79 @@ repinning in production fetches merely to bypass a stale rule digest.
 
 ## Declare the native package module
 
-Set `abilities` to a checked-in, path-backed module. The same ordinary module
-owns the package's typed options, symbolic ability declarations, desired
-resources, and effect planning. A function value cannot be published and
-reevaluated on another host, so the package field must identify a module
-artifact:
+A recipe may publish a configuration module directory alongside its payload:
 
 ```nix
+{ mkDerivation, service-interface, ... }:
 mkDerivation {
   pname = "acme-health-agent";
   version = "1.0.0";
-
-  abilities = ./_acme-health-agent/module.nix;
+  module = ./acme-health-agent-module; # Contains module.nix.
+  moduleDeps = [ service-interface ];
   # Sources, dependencies, and phases are declared normally.
 }
 ```
 
-Declare public options with ordinary `mkOption` declarations in that module.
-Author descriptions, defaults, examples, types, visibility, and provenance
-there once. Declare package-owned implementations and consumed requirement
-templates in `config.aos.abilities`. Use a canonical core interface when the
-contract is provider neutral; declare an interface in the package only when it
-is intrinsically specific to that package or backend. Request values use the
-standard structured option vocabulary and the final module fixed point checks
-them against the selected interface schema.
+The interface dependency is illustrative: select the package defining your
+actual domain contract. Module dependencies are separate from build and runtime
+library dependencies. A payload-only package does not need a module.
 
-`mkDerivation` exposes three related views:
+The module owns ordinary option declarations and configuration. It may expose
+ability operations, select handlers, or configure effects through a domain
+manager. Definitions in different files merge through the module fixed point.
+The [runtime abilities guide](runtime-abilities.md) shows the complete interface,
+service option, package configuration, handler composition, and execution path.
 
-- `package.abilities` is the checked local symbolic module projection. Its
-  public declaration maps include `interfaces`, `implementations`,
-  `requirementTemplates`, and `guarantees`.
-- `package.module` is the authenticated path-backed module output used for
-  on-host reevaluation.
-- `package.contract.value` is the derived signed package document. It retains
-  the exact option declarations and provenance, interface documents, provider
-  implementations, requirements, guarantees, handlers, artifact selectors,
-  and qualification claims. `package.contract.document` is its canonical store
-  object.
+Use native `module` and `moduleDeps`, not the superseded `abilities` or
+`configModule` recipe fields. Existing packages still using those fields are
+consumer migration work; they are not examples of the new authoring API.
 
-Consumers select provider-neutral interfaces symbolically. They do not import
-an implementation package or copy the provider's schema. The final system
-fixed point selects an implementation from enabled packages, checks each
-request against the retained interface document, and builds the desired,
-binding, and effect plans.
+## Generate and inspect package documentation
 
-## Generate package documentation
+Descriptions and types belong beside `mkOption` declarations. The builder
+projects options, operation schemas, and definition provenance from the same
+module evaluation. Do not maintain a separate documentation attrset, service
+catalog, or copy of the operation schema.
 
-Generated reference documentation has the same owners as the executable
-package contract. The package summary comes from ordinary package metadata.
-Option rows come from the checked contract's `option_declarations`; ability
-pages come from its retained interfaces, implementations, requirements, and
-guarantees. Method, output, and guarantee prose is authored beside its module
-declaration and retained in the signed document without changing semantic
-interface or implementation identity.
+The derivation exposes `deployment` and `documentation` Nix values plus two
+companion artifacts: `deploymentArtifact/deployment.json` and
+`documentationArtifact/options.json`. The first retains payload and module
+identities; the second is a native generated reference. Building either does
+not activate the package.
 
-Do not add a documentation attrset, a package-specific option table, or a unit
-catalog. Deployment pages add concrete resource realizations only from the
-checked final desired, binding, effect, and inspection views. A disabled
-package can therefore publish its static option and ability reference without
-appearing as a selected deployment provider.
-
-Verify the native projection and generated reference with:
+After exporting `options.json`, inspect it without Nix or a running system:
 
 ```sh
-nix-build -A checks.abilities --no-out-link
-nix-build -A checks.package-documentation --no-out-link
-apr verify --registry <name>
+aos docs runtime options.json
+aos docs runtime options.json --format html --output package-reference.html
 ```
 
-Declare the narrowest permissions and resources that the provider needs in
-the same ability module. The selected provider translates those declarations
-into its backend-specific realization; package documentation does not predict
-unit names, listener allocation, or activation steps from a second inventory.
+The same reader is available in Hub at `/-/runtime-abilities`. It links packages
+to the operations they declare, handle, and configure. An evaluated
+`aos.package.transaction` document instead shows the selected execution path.
+See [runtime inspection](runtime-abilities.md#inspect-the-generated-reference-and-execution-path).
 
-## Build and inspect the package
+## Build and inspect the payload
 
-Add the new file to Git before using its flake output; flakes evaluate the
-tracked source tree:
+Add source files to Git before using flake outputs, then use the repository
+build entry point:
 
 ```sh
-git add pkgs/acme/acme-health-agent.nix
-nix build .#pkg-acme-health-agent
+bash ./aos-dev build package acme-health-agent --no-out-link
+bash ./aos-dev build check effects --no-out-link
 ```
 
-Inspect the payload, local symbolic ability tree, and derived package contract:
-
-```sh
-find result -maxdepth 3 -type f -o -type l
-nix eval --json --file . pkgs.acme-health-agent.abilities
-nix-build -A pkgs.acme-health-agent.contract.document -o result-contract
-cat result-contract
-```
-
-Run repository checks before publishing:
-
-```sh
-nix run . -- lint
-nix run . -- test eval
-nix build .#pkg-acme-health-agent
-```
-
-Add package-specific checks under the derivation's `checks` attribute when a
-version command, library link, protocol response, or VM behavior can be tested
-directly. A successful build proves that the output was produced; it does not
-by itself prove that the service is healthy.
+Use package-specific checks for program behavior, linking, protocols, and runtime
+health. The generic effects check verifies the infrastructure with a small
+fixture; it does not qualify every package or prove that a service is running.
+Publication and installed-package consumers still need the
+[native migration](../../rfcs/0022-abilities-and-effects/consumer-migration.md).
 
 ## Integrate the service into a release image
+
+The following is the existing image consumer workflow. Its integration with the
+native runtime transaction path remains migration work; do not infer that
+registering a package already switches its activation to the new machinery.
 
 This is a release-maintainer workflow. Users of a published AOS image should
 install the package from a registry with `apm` instead. See

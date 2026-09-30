@@ -1,5 +1,11 @@
 # Inspect ability plans and retained execution
 
+> This page describes the existing `aos ability` consumer and its earlier plan
+> formats. It has not migrated to native module transactions. For the current
+> infrastructure, Nix examples, and `aos docs runtime` / Hub artifact inspection,
+> read [Runtime abilities](runtime-abilities.md). Consumer migration is tracked
+> [here](../../rfcs/0022-abilities-and-effects/consumer-migration.md).
+
 `aos ability` reads bounded canonical files and renders checked ability data.
 It is a host-side inspection and diagnostic surface. It does not fetch a live
 deployment, activate a plan, replay an effect, or change retained state.

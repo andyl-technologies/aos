@@ -33,3 +33,9 @@
   - [Manage trust and incidents](registry/trust.md)
 - [Operate Crucible](crucible/)
   - [Run Nginx and Curl in Crucible](crucible/quickstart.md)
+
+## Package runtime configuration
+
+The [runtime abilities guide](aos/runtime-abilities.md) shows how package,
+interface, operator, and handler modules produce deferred execution graphs, with
+Nix examples and matching CLI/Hub inspection paths.

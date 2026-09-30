@@ -110,3 +110,10 @@ consumption, and on-host activation as distinct installed capabilities.
 Registry producers should continue with
 [Operate an AOS package registry](../registry/). Hub operators should use the
 [AOS Hub guide](../aos-hub/).
+
+## Runtime abilities
+
+[Runtime abilities](runtime-abilities.md) explains native package modules,
+mergeable operation contracts, composed handlers, and the build-to-runtime path.
+Use `aos docs runtime` to inspect generated references and deferred transactions.
+The guide marks the remaining consumer migration explicitly.

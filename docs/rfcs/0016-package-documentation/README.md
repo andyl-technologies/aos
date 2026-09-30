@@ -1,5 +1,11 @@
 # RFC-0016: Package documentation as authenticated Nix objects
 
+> Package module/deferred runtime APIs have since moved to
+> [RFC-0022's native target](../0022-abilities-and-effects/13-target-state.md).
+> Its [infrastructure status](../0022-abilities-and-effects/infrastructure-cutover.md)
+> and [consumer migration](../0022-abilities-and-effects/consumer-migration.md)
+> distinguish implemented mechanisms from remaining integration work.
+
 - **Status:** Implemented.
 - **Date:** 2026-08-28.
 - **Audience:** package authors; APM, registry, AOS Hub, Web UI, CLI, and

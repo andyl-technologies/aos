@@ -1,5 +1,9 @@
 # Security, trust, and compatibility
 
+> Historical design analysis from the superseded registry model. API shapes and
+> implementation claims here are not current. Use the [native target state](13-target-state.md),
+> [infrastructure status](infrastructure-cutover.md), and [consumer handoff](consumer-migration.md).
+
 ## Authority survives every lowering boundary
 
 The declaration-to-execution chain is:
