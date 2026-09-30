@@ -6,12 +6,10 @@ for an installation scope. That evaluation produces a deferred effect graph.
 Rust retains the inputs, executes the selected handlers, and commits a package
 generation. A profile and a system deployment use the same infrastructure.
 
-This is an intentional API cutover. Existing package recipes, registry consumers,
-image activation entry points, and release/installed-package presentation paths
-still need migration. Native artifact inspection is available in `aos docs runtime`
-and the Hub import viewer.
-The infrastructure fixtures exercise the new path independently; they do not
-establish that an existing system boots through it.
+This is an immediate API cutover. The [consumer checklist](consumer-migration.md)
+tracks integration and qualification separately from the infrastructure
+contract. The infrastructure fixtures exercise the native path independently;
+they do not establish whole-system boot qualification.
 
 ## Package build and publication
 
@@ -135,6 +133,13 @@ payload artifacts, exact module contexts, and generated graph. The returned
 owners, handler availability, and configured effects. Its evaluation is lazy with
 respect to graph execution and handler selection.
 
+A caller may also supply `evaluationInput`, the immutable
+`aos.package.evaluation-input` descriptor produced before evaluation. It carries
+the source library's exact NAR identity, resolved package set, scope, and ordered
+baseline/operator sources, never the output graph. Package modules receive its
+path as an ordinary argument and may use it in typed effect inputs. This avoids
+self-references when an operation performs a further authorized evaluation.
+
 `lib.packageModuleLibrary` is an immutable source bundle for this evaluator. It
 does not contain an image baseline. The Rust `deployment::evaluation` module
 resolves the module closure through `PackageResolver`, then invokes stock Nix with
@@ -227,5 +232,6 @@ the native reference without Nix or a checkout. Passing a transaction instead
 shows its ordered execution path. Both support text, JSON, and HTML output.
 Hub exposes the same reader through `/-/runtime-abilities` and the read-only
 `/-/api/runtime-documentation` JSON endpoint. These are artifact inspection
-surfaces; existing authenticated release indexes are not yet native consumers.
-See the [handoff](consumer-migration.md) before continuing those migrations.
+surfaces. Authenticated release ingestion additionally checks signed native
+artifact locators before indexing the same generated data. See the
+[consumer checklist](consumer-migration.md) for remaining integration work.

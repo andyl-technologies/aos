@@ -94,6 +94,12 @@ let
   };
   documentedEntries = builtins.head (builtins.filter (entry: entry.pathStr == "entries") documented._optionDecls);
 in {
+  canonicalEnumDocumentation = assert (project (lib.types.enum ["transaction" "instance" "persistent"])).values
+  == [
+    {value = "instance";}
+    {value = "persistent";}
+    {value = "transaction";}
+  ]; true;
   mergedNestedDocumentation = assert builtins.attrNames documentedEntries.type.value.fields == ["after" "command"];
   assert documentedEntries.type.value.fields.after.element.kind == "string";
   assert !documentedEntries.type.value.open; true;
