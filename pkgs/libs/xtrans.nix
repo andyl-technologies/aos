@@ -50,6 +50,8 @@ in
         name = "install";
         script = ''
           make install
+          mkdir -p "$out/lib/pkgconfig"
+          ln -s ../../share/pkgconfig/xtrans.pc "$out/lib/pkgconfig/xtrans.pc"
           mkdir -p "$out/share/licenses/xtrans"
           cp COPYING "$out/share/licenses/xtrans/"
         '';
