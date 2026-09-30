@@ -11,9 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::document::{DocumentError, PackageDocument, VersionedDocument};
 use crate::identity::{LocalKey, RelativePath};
 use crate::limits::LimitProfile;
-use crate::schema::{
-    JsonValueKind, StringConstraint, ValueConstraint, ValueSchema, string_matches,
-};
+use crate::schema::{JsonValueKind, StringConstraint, ValueConstraint, ValueSchema};
 use crate::value::{AbilityValue, ArtifactReference};
 
 /// Records one package-owned module option from the authenticated evaluator.
@@ -66,6 +64,8 @@ pub enum OptionVisibility {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum OptionType {
+    /// Recursively structured canonical JSON without application-specific fields.
+    Json,
     /// Boolean value.
     Bool,
     /// Signed integer value.
@@ -450,7 +450,8 @@ impl OptionType {
                         return false;
                     }
                 }
-                Self::Bool
+                Self::Json
+                | Self::Bool
                 | Self::Port
                 | Self::Path
                 | Self::Duration
@@ -463,7 +464,7 @@ impl OptionType {
             }
         }
 
-        true
+        refinements_are_compatible(self)
     }
 
     /// Reports whether a canonical literal matches this portable option type.
@@ -561,10 +562,10 @@ impl OptionType {
                         .ok()
                         .is_some_and(|name| fields.contains_key(&name))
                 }) && fields.iter().all(|(name, field)| {
-                    values
-                        .get(name.as_str())
-                        .is_some_and(|value| field.admits_json(value))
-                        || optional_fields.contains(name)
+                    values.get(name.as_str()).map_or_else(
+                        || optional_fields.contains(name),
+                        |value| field.admits_json(value),
+                    )
                 })
             }),
             Self::DocumentRecord {
@@ -576,10 +577,10 @@ impl OptionType {
                     .keys()
                     .all(|name| name.len() as u64 <= *key_max_length && fields.contains_key(name))
                     && fields.iter().all(|(name, field)| {
-                        values
-                            .get(name)
-                            .is_some_and(|value| field.admits_json(value))
-                            || optional_fields.contains(name)
+                        values.get(name).map_or_else(
+                            || optional_fields.contains(name),
+                            |value| field.admits_json(value),
+                        )
                     })
             }),
             Self::TaggedUnion { tag, variants } => value.as_object().is_some_and(|values| {
@@ -612,6 +613,7 @@ impl OptionType {
             Self::OneOf { alternatives } => alternatives
                 .iter()
                 .any(|alternative| alternative.admits_json(value)),
+            Self::Json => aos_contract::canonical::to_vec(value).is_ok(),
             Self::Opaque { .. } => true,
             Self::ArtifactReference => {
                 serde_json::from_value::<ArtifactReference>(value.clone()).is_ok()
@@ -651,7 +653,8 @@ impl OptionType {
             | Self::ResourceReference
             | Self::ProviderAssignment
             | Self::OperationResultReference => Some(JsonValueKind::Object),
-            Self::Nullable { .. }
+            Self::Json
+            | Self::Nullable { .. }
             | Self::Optional { .. }
             | Self::OneOf { .. }
             | Self::DisjointUnion { .. }
@@ -687,7 +690,8 @@ impl OptionType {
                 | Self::DisjointUnion {
                     variants: alternatives,
                 } => stack.extend(alternatives),
-                Self::Bool
+                Self::Json
+                | Self::Bool
                 | Self::Integer { .. }
                 | Self::Unsigned { .. }
                 | Self::String { .. }
@@ -735,7 +739,8 @@ fn refinements_are_compatible(option_type: &OptionType) -> bool {
         | OptionType::DisjointUnion {
             variants: alternatives,
         } => alternatives.iter().all(refinements_are_compatible),
-        OptionType::Bool
+        OptionType::Json
+        | OptionType::Bool
         | OptionType::Integer { .. }
         | OptionType::Unsigned { .. }
         | OptionType::String { .. }
@@ -812,6 +817,17 @@ fn option_type_as_value_schema(option_type: &OptionType) -> Option<ValueSchema> 
             value: Box::new(option_type_as_value_schema(value)?),
             max_entries: *max_entries,
         },
+        OptionType::Submodule {
+            fields,
+            open: false,
+        } => ValueSchema::DocumentRecord {
+            key_max_length: MAX_STRING_LENGTH,
+            fields: fields
+                .iter()
+                .map(|(name, field)| Some((name.clone(), option_type_as_value_schema(field)?)))
+                .collect::<Option<_>>()?,
+            optional_fields: Vec::new(),
+        },
         OptionType::Record {
             fields,
             optional_fields,
@@ -858,15 +874,16 @@ fn option_type_as_value_schema(option_type: &OptionType) -> Option<ValueSchema> 
         OptionType::ResourceReference => ValueSchema::ResourceReference,
         OptionType::ProviderAssignment => ValueSchema::ProviderAssignment,
         OptionType::OperationResultReference => ValueSchema::OperationResultReference,
-        OptionType::AttrsOf { .. }
-        | OptionType::Submodule { .. }
+        OptionType::Json
+        | OptionType::AttrsOf { .. }
+        | OptionType::Submodule { open: true, .. }
         | OptionType::OneOf { .. }
         | OptionType::Opaque { .. } => return None,
     })
 }
 
 fn key_accepts(constraint: &StringConstraint, value: &str) -> bool {
-    string_matches(constraint.max_length, constraint.syntax, value)
+    constraint.admits(value)
 }
 
 /// Locates one option declaration below the authenticated package module root.

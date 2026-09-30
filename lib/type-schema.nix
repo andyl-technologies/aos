@@ -16,6 +16,12 @@
   in
     if !(type._portable or true)
     then throw "Option type '${type.description}' uses a Nix predicate that cannot validate deferred runtime values."
+    else if type ? _refinementConstraints
+    then {
+      kind = "refined";
+      value = project (builtins.removeAttrs type ["_refinementConstraints"]);
+      constraints = type._refinementConstraints;
+    }
     else if type ? _projectionType
     then project type._projectionType
     else if type ? _variantTypes

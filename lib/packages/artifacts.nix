@@ -11,6 +11,10 @@
     }) (package.outputs or ["out"]));
     mainProgram = package.meta.mainProgram or package.pname or null;
   };
+  # Every output of a derivation carries the same deployment envelope. Module
+  # identity follows that envelope; selected payload outputs remain explicit.
+  canonicalReference = package: package.deployment.package or (reference package);
+  canonicalDependencies = package: package.deployment.runtimeDependencies or (keyed (package.runtimeDeps or []));
   keyed = packages:
     builtins.foldl' (result: package: let
       name = nameFor package;
@@ -58,15 +62,20 @@
     && builtins.all (path: builtins.isString path && builtins.match "/nix/store/[^/]+" path != null) (builtins.attrValues reference.outputs);
   # These are artifact values, deliberately not pretend derivations. Their
   # string coercion permits ordinary interpolation in module configuration.
-  value = reference:
-    reference
-    // {
-      _type = "aos-package-artifact";
-      outPath = reference.path;
-      __toString = _: reference.path;
-      meta =
-        if reference.mainProgram == null
-        then {}
-        else {inherit (reference) mainProgram;};
-    };
-in {inherit nameFor reference keyed unique moduleReference envelope value valid;}
+  value = reference: let
+    base = selected:
+      reference
+      // {
+        _type = "aos-package-artifact";
+        path = selected;
+        outPath = selected;
+        __toString = _: selected;
+        meta =
+          if reference.mainProgram == null
+          then {}
+          else {inherit (reference) mainProgram;};
+      };
+    outputs = builtins.mapAttrs (_: path: base path // outputs) reference.outputs;
+  in
+    base reference.path // outputs;
+in {inherit nameFor reference canonicalReference canonicalDependencies keyed unique moduleReference envelope value valid;}

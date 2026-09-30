@@ -734,6 +734,14 @@ pub struct StringConstraint {
     pub syntax: Option<StringSyntax>,
 }
 
+impl StringConstraint {
+    /// Checks UTF-8 length and the selected portable syntax profile.
+    #[must_use]
+    pub fn admits(&self, value: &str) -> bool {
+        string_matches(self.max_length, self.syntax, value)
+    }
+}
+
 /// Defines one closed portable value schema.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]

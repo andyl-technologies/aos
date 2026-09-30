@@ -197,6 +197,8 @@
     };
   };
 in {
+  imports = [../modules/checks.nix];
+
   options.aos = {
     abilities = mkOption {
       type = types.lazyAttrsOf (types.submodule abilityModule);
@@ -216,8 +218,16 @@ in {
     };
   };
 
-  config.aos.activation.graph = import ./plan.nix {
-    inherit lib;
-    abilities = config.aos.abilities;
-  };
+  config.aos.activation.graph = let
+    failed = builtins.filter (check: !check.assertion) config.assertions;
+    checked =
+      if failed == []
+      then true
+      else throw "Failed configuration assertions:\n${builtins.concatStringsSep "\n" (builtins.map (check: check.message) failed)}";
+    warnings = builtins.foldl' (value: warning: builtins.trace "warning: ${warning}" value) true config.warnings;
+  in
+    builtins.seq checked (builtins.seq warnings (import ./plan.nix {
+      inherit lib;
+      abilities = config.aos.abilities;
+    }));
 }
