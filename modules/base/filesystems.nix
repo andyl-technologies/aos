@@ -98,11 +98,6 @@ in {
     };
 
     ## Block device for the EFI System Partition.
-    espDevice = lib.mkOption {
-      type = lib.types.str;
-      default = "/dev/disk/by-partlabel/ESP";
-      description = "Stable block-device path for the EFI System Partition.";
-    };
 
     # `aos.filesystems.overlayEtc` was removed in spec v12: the
     # composefs-backed /etc overlay is now unconditional. See

@@ -50,7 +50,6 @@
       name
       version
       stateVersion
-      moduleAbi
       ;
     release = {
       inherit
