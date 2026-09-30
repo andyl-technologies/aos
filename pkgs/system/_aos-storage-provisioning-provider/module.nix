@@ -33,7 +33,7 @@ in {
       };
       result.options = {
         provisioning_plan = field types.plan "Validated plan from the authorized native module fixed point.";
-        canonical_transaction = field lib.types.str "Canonical native deployment transaction from the same authored sources.";
+        canonical_plan = field lib.types.str "Canonical bytes of the validated provisioning plan from the same authored sources.";
       };
     };
     storageProvisioning.operations.commit = {

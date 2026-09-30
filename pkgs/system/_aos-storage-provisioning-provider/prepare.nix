@@ -76,7 +76,7 @@ in {
         };
         result.options = {
           resource = field lib.types.str "Durable verified disk transaction identity.";
-          committed_transaction = field lib.types.str "Immutable canonical native deployment transaction path.";
+          committed_plan = field lib.types.str "Immutable canonical validated provisioning plan path.";
           authorized_input = field lib.types.str "Rooted self-contained authorization receipt for checked host source adoption.";
           authorized_input_sha256 = field lib.types.str "Exact canonical authorization receipt content digest.";
           source = field (lib.types.enum ["operator" "fallback"]) "Configuration source committed by the durable marker.";
@@ -141,19 +141,19 @@ in {
                 marker = children.marker.outputs.marker;
               };
             };
-            transaction = {
+            planReceipt = {
               imports = [content.module];
               lifetime = "persistent";
               input = {
-                name = "authorized-provisioning-transaction";
-                media_type = "application/vnd.aos.package.transaction+json";
-                content = children.evaluate.outputs.canonical_transaction;
+                name = "authorized-provisioning-plan";
+                media_type = "application/vnd.aos.provisioning-plan+json";
+                content = children.evaluate.outputs.canonical_plan;
               };
             };
             commit = {
               imports = [commit.module];
               lifetime = "persistent";
-              after = [children.transaction.outputs.path];
+              after = [children.planReceipt.outputs.path];
               input = {
                 inherit (input) request;
                 inherit tools;
@@ -164,7 +164,7 @@ in {
           exports = {
             resource = children.commit.outputs.resource;
             source = children.commit.outputs.source;
-            committed_transaction = children.transaction.outputs.path;
+            committed_plan = children.planReceipt.outputs.path;
             authorized_input = children.authorizedInput.outputs.path;
             authorized_input_sha256 = children.authorizedInput.outputs.content_sha256;
           };
