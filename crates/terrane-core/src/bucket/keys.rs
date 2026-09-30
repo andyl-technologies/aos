@@ -109,6 +109,12 @@ impl BucketKey {
             ["gc", "cycle", cycle] if decimal(cycle) => Mutability::CreateOnce,
             ["gc", cycle, "roots"] if decimal(cycle) => Mutability::CreateOnce,
             ["gc", cycle, "state"] if decimal(cycle) => Mutability::CompareAndSwap,
+            // Classification grants no ordinary-write authority over this protected intent.
+            ["gc", cycle, "delete", pack, operation]
+                if decimal(cycle) && hex(pack, 32) && hex(operation, 64) =>
+            {
+                Mutability::CompareAndSwap
+            }
             ["gc", cycle, "mark", shard] if decimal(cycle) && digest_shard(shard) => {
                 Mutability::CreateOnce
             }
@@ -386,17 +392,38 @@ mod tests {
         let operation = "cd".repeat(32);
         for cycle in ["0", "1", "18446744073709551615"] {
             let key = alloc::format!("gc/{cycle}/delete/{pack}/{operation}");
-            assert_eq!(BucketKey::parse(&key).unwrap().mutability(), Mutability::CompareAndSwap);
+            assert_eq!(
+                BucketKey::parse(&key).unwrap().mutability(),
+                Mutability::CompareAndSwap
+            );
         }
 
         for cycle in ["+1", "01", "-1", "18446744073709551616"] {
-            assert!(BucketKey::parse(&alloc::format!("gc/{cycle}/delete/{pack}/{operation}")).is_err());
+            assert!(
+                BucketKey::parse(&alloc::format!("gc/{cycle}/delete/{pack}/{operation}")).is_err()
+            );
         }
-        for invalid_pack in ["AB".repeat(16), "ab".repeat(15), "ab".repeat(17), "g".repeat(32)] {
-            assert!(BucketKey::parse(&alloc::format!("gc/1/delete/{invalid_pack}/{operation}")).is_err());
+        for invalid_pack in [
+            "AB".repeat(16),
+            "ab".repeat(15),
+            "ab".repeat(17),
+            "g".repeat(32),
+        ] {
+            assert!(
+                BucketKey::parse(&alloc::format!("gc/1/delete/{invalid_pack}/{operation}"))
+                    .is_err()
+            );
         }
-        for invalid_operation in ["CD".repeat(32), "c".repeat(63), "c".repeat(65), "g".repeat(64)] {
-            assert!(BucketKey::parse(&alloc::format!("gc/1/delete/{pack}/{invalid_operation}")).is_err());
+        for invalid_operation in [
+            "CD".repeat(32),
+            "c".repeat(63),
+            "c".repeat(65),
+            "g".repeat(64),
+        ] {
+            assert!(
+                BucketKey::parse(&alloc::format!("gc/1/delete/{pack}/{invalid_operation}"))
+                    .is_err()
+            );
         }
         for key in [
             alloc::format!("gc/1/delete/{pack}"),
@@ -407,5 +434,4 @@ mod tests {
             assert!(BucketKey::parse(&key).is_err(), "{key}");
         }
     }
-
 }
