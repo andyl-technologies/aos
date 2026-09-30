@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-11.1.1.bundle;
-  patchBranchBundleSha256 = "650d9b4dc75a0fe73818b79319b1cd79e1b5869bf6b0bf5192fa51335fb494db";
+  patchBranchBundleSha256 = "61805cc8a40dcb3c8ddd30a56562c3bd5f9b1c92edc48e9a738f1f8d099e0cd5";
   patchBranchBaseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   patchBranchBaseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
-  patchBranchHeadCommit = "624209581d385395d23d744709cff9a6e2999479";
+  patchBranchHeadCommit = "3eb201b8934d2b9874672f603bfde508ad401ef2";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -1105,6 +1105,16 @@ let
       class = "D";
       enforces = "DET-1,QEMU-43";
       capability = "QEMU 11 translation success, realized ARM hardware-error dispatch, terminal VMState stream headers, and ordinary zero-budget TCG execution retain their runtime semantics";
+    }
+    {
+      file = "0118-crucible-queued-runtime-tb-invalidation.patch";
+      branchSubject = "crucible: queue global TB invalidation in an exclusive context";
+      branchCommit = "3eb201b8934d2b9874672f603bfde508ad401ef2";
+      branchTree = "90c8aab8812c3c897e92145baf7ddd1442af4edb";
+      catalogName = "crucible-queued-runtime-tb-invalidation";
+      class = "D";
+      enforces = "DET-1,QEMU-43";
+      capability = "Instruction and lifecycle invalidation queues a global TB flush in an exclusive CPU context before serialized RR guest execution resumes";
     }
   ];
   catalogOnlyCapabilities = [
