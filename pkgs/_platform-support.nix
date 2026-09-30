@@ -161,6 +161,8 @@ let
     "mkfontscale"
     "perl-locale-gettext"
     "python3-jinja2"
+    "python3-pyparsing"
+    "python3-railroad-diagrams"
     "python3-smartypants"
     "python3-typogrify"
     "xxhash"
