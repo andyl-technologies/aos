@@ -217,6 +217,7 @@ let
     "libtirpc"
     "libtpms"
     "libusb1"
+    "spice-protocol"
     "usbredir"
     "libuv"
     "libxcrypt"
