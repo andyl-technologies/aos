@@ -43,9 +43,13 @@
         scenarioSources = fixture.baselineSources;
       }).sources;
   adoptionSources =
-    if baselineSources == []
-    then scenarioSources
-    else baselineSources ++ [observerSource];
+    if fixture ? adoptionSources
+    then
+      (import ./_native-fixture-selection.nix {inherit lib;} {
+        inherit runtimeSystem;
+        scenarioSources = fixture.adoptionSources ++ [observerSource];
+      }).sources
+    else scenarioSources ++ baselineSources;
   sourceRoot = source: let
     locator = builtins.toString source;
     matched = builtins.match "^(/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[^/]+)(/.*)?$" locator;

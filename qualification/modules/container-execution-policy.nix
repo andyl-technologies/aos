@@ -6,7 +6,10 @@
 }: let
   types = import ./_types.nix {inherit lib;};
   stagePolicy = types.closed {
-    scope = types.text "Package-declared execution scope that implements this stage.";
+    operation = types.option (types.closed {
+      ability = types.text "Native ability selected for this execution stage.";
+      name = types.text "Native operation selected for this execution stage.";
+    }) "Selected native operation whose handler implements this execution stage.";
     status = types.option (lib.types.enum ["missing" "qualified"]) "Qualification disposition for this stage.";
     blockers = (types.strings "Open work that prevents qualification.") // {default = [];};
     evidence = (types.strings "Production checks that provide qualification evidence.") // {default = [];};
@@ -21,12 +24,18 @@ in {
   config.qualification = {
     containerExecution.stages = {
       host = {
-        scope = "host-manager";
+        operation = {
+          ability = "serviceManagement";
+          name = "realize";
+        };
         status = "qualified";
         evidence = ["checks.fleet.runtime-module-composition"];
       };
       system-container = {
-        scope = "host-manager";
+        operation = {
+          ability = "serviceManagement";
+          name = "realize";
+        };
         status = "missing";
         blockers = [
           "pr232-authenticated-backend-readiness"

@@ -3,10 +3,11 @@
   pkgs,
   lib,
   nativeAdapterMatrix,
+  nativeOperationSpec,
 }: let
   packageNames = pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
   contract = import ../../qualification {
-    inherit lib nativeAdapterMatrix;
+    inherit lib nativeAdapterMatrix nativeOperationSpec;
     inherit packageNames;
   };
   packageFunctionRequirement = builtins.head (
@@ -201,11 +202,11 @@
   partitionedNativeIds = builtins.sort builtins.lessThan (applicableNativeIds ++ inapplicableNativeIds);
   nativeRoleRevocationCells = builtins.filter (cell:
     builtins.match "revoke-(caller|provider|enforcement|assignment)-(before-acquisition|after-acquisition|before-external-effect)"
-    (builtins.elemAt (lib.splitString "/" cell.id) 4)
+    cell.scenario.id
     != null)
   nativeCells;
   nativeFailureControlCells = builtins.filter (cell: let
-    scenario = builtins.elemAt (lib.splitString "/" cell.id) 4;
+    scenario = cell.scenario.id;
   in
     builtins.elem scenario ["expire-attempt-deadline" "fail-cleanup" "fail-release"])
   nativeCells;
@@ -213,7 +214,7 @@
     builtins.filter (rule: rule.name == "aos-recovery") contract.package_rules
   );
   composed = import ../../qualification/_eval.nix {
-    inherit lib nativeAdapterMatrix;
+    inherit lib nativeAdapterMatrix nativeOperationSpec;
     packageNames = ["aos" "fixture"];
     modules = [
       {
@@ -262,7 +263,7 @@
   configured = composed.config.qualification;
   rejects = module:
     !(builtins.tryEval (builtins.deepSeq (import ../../qualification {
-        inherit lib nativeAdapterMatrix;
+        inherit lib nativeAdapterMatrix nativeOperationSpec;
         packageNames = ["aos"];
         modules = [module];
       })
@@ -295,13 +296,13 @@ in
   == builtins.length (lib.unique inapplicableNativeIds);
   assert builtins.all (id: !builtins.elem id inapplicableNativeIds) applicableNativeIds;
   assert partitionedNativeIds == map (cell: cell.id) nativeCells;
-  assert abilityRequirements.ability-native-adapter-matrix.matrix_spec == nativeAdapterMatrix.spec;
+  assert abilityRequirements.ability-native-adapter-matrix.native_operation_spec == nativeOperationSpec;
   assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeRoleRevocationCells;
   assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeFailureControlCells;
   assert builtins.all (cell: !(cell ? evidence)) nativeAdapterMatrix.spec.cells;
   assert builtins.elem nativeAdapterMatrix.check nativeAdapterChecks;
   assert builtins.any (check:
-    builtins.match "container-execution-surface-v1-sha256-[0-9a-f]{64}" check != null)
+    builtins.match "container-execution-surface-sha256-[0-9a-f]{64}" check != null)
   nativeAdapterChecks;
   assert builtins.all (requirement:
     requirement.phase
