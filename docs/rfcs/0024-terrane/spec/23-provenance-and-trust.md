@@ -100,8 +100,11 @@ ordinary namespace paths or opaque index keys; their meaning is verified
 against the identified root. A source receipt requires a verified signed
 source commit and a canonical tree witness for the source root and path,
 with the same content identity as the carried entry. A source root MUST be
-reachable from that source commit. An explicit prior `prov` remains valid
-only when that introducing commit and the carrying history are verified.
+reachable from that source commit. A certified disclosure instead uses the
+checked attestation boundary in PROV-26 to PROV-30; it does not require
+destination readers to fetch the private source graph. An explicit prior
+`prov` remains valid only when that introducing commit and the carrying
+history are verified.
 
 An unchanged entry without a receipt inherits its unambiguous introduction
 through parent history. New or content-changing entries, explicit
@@ -132,9 +135,94 @@ the view that demonstrably carried the entry.
 - **[PROV-10]** Because entries reference commits by identity, and commits
   are reachable from refs, an implementation MUST treat every introducing
   commit referenced by a live entry, and every source commit named by a
-  live signed receipt, as a garbage-collection root
+  live signed receipt, as a garbage-collection root, except exact source and
+  original-introducer audit identities behind a verified disclosure boundary
   ([`17-garbage-collection.md`](17-garbage-collection.md)), so that
   provenance can always be resolved for live content.
+
+## Durable disclosure evidence
+
+- **[PROV-26]** A disclosure certificate MUST be signed by an explicitly
+  configured source disclosure authority. Trusted configuration MUST bind
+  its Ed25519 public key and canonical source domain unambiguously to the
+  exact physical source repository/domain. An ordinary token terminal key,
+  embedded bare key, or issuer key alone MUST NOT confer this role. The
+  destination MUST retain scoped historical verification keys independently
+  of private source storage and verify authority at the certificate's
+  observed issue time. Ordinary key rotation MUST NOT invalidate accepted
+  historical certificates; explicit revocation policy MAY do so. *Gate:*
+  `gate:prov-disclosure-boundary`.
+- **[PROV-27]** A certificate MUST use the sixth receipt element and the
+  `disclosure-proof` and `disclosure-statement` schemas in
+  `reference/terrane-v1.cddl`. It MUST occur only on a `current` receipt
+  with `reintroduced_from` and the exact `provenance.reintroduced-from`
+  attribute. The statement MUST bind the source witness, original
+  introducing identity, actual destination root/path/domain, original
+  authoring ref, content projection and complete destination commit.
+  The source authority MUST verify the source's original introduction at
+  issuance; the destination verifies that attestation and matching
+  attribute without re-fetching the private source. *Gate:*
+  `gate:prov-disclosure-boundary`.
+
+The destination binding is BLAKE3-256 over ASCII
+`terrane-disclosure-target-v1`, one zero byte, and the canonical unsigned
+destination commit. Normalization omits commit signature key 8 and replaces
+every typed disclosure-proof signature in its profile receipts with exactly
+64 zero bytes. It changes no other field, including opaque token, property
+or recipe blobs. All commit fields and certificate metadata are finalized
+before computing this binding. The binding is derived externally; it is not
+stored inside the projection. Each source authority signs ASCII
+`terrane-disclosure-proof-v1`, one zero byte, and canonical CBOR of its
+`disclosure-statement`. The destination commit then signs the real complete
+certificates normally under PROV-3. Both purposes are registered in
+`reference/bucket-key-registry.md`; neither creates an immutable kind.
+
+- **[PROV-28]** A verifier MUST check the signed destination commit, embedded
+  token and original context, complete canonical destination tree, every
+  proof-bearing receipt, actual target root/path/effective domain, matching
+  original-introducer attribute, content projection, scoped historical
+  authority and certificate signature before exposing a verified boundary.
+  Removing or changing any field covered by the normalized unsigned projection
+  or certificate metadata MUST invalidate its whole-commit binding. Omitted
+  and zeroed signature slots MUST independently verify under their respective
+  actual preimages. Invalid signatures, unknown keys
+  and contradictory evidence MUST fail closed. Private provisional batch
+  validation MAY resolve candidate origins, but MUST expose no evaluator,
+  history or collector authority until all entry and attribute origins
+  validate. Unchecked certificate presence MUST NOT skip source lookup.
+  *Gate:* `gate:prov-disclosure-boundary`.
+- **[PROV-29]** A checked disclosure receipt MUST make the destination commit
+  the actual introducing commit and terminate only its exact certified
+  source and original-introducer proof edges. Audit MUST expose the source
+  identities and authority as an attested boundary, never fabricate a
+  verified private commit, its subject, signature or complete ancestry.
+  When a certified source commit is also a signed input parent, its exact
+  parent identity MUST remain recorded under PROV-5 and PROV-17. That parent
+  edge MAY be audit-only after complete candidate validation: every entry
+  MUST have an explicit publicly retainable verified source receipt, a
+  verified current certificate, or a current reintroduction with fully
+  verified publicly retainable source evidence. Unavailable parent evidence
+  MUST NOT prove absence, newness or unchangedness. Receiptless inheritance,
+  uncertified current newness, source receipts into the cut boundary, and
+  uncovered private attribute origins MUST fail closed. A certificate for
+  one entry MUST NOT authorize sibling content. An unanchored private input
+  parent MUST NOT be skipped. Checked boundaries MUST apply consistently
+  even when private objects happen to be available. *Gate:*
+  `gate:prov-disclosure-boundary`.
+- **[PROV-30]** A disclosure certificate MUST NOT authenticate an attribute
+  producer or grant acceptance through private ancestry. Copied attributes
+  MUST have destination-current provenance or independent verified,
+  publicly retainable producer evidence under PROV-9. Selectors MUST use the
+  public introducing commit and checked public ancestry; `strict` MUST NOT
+  substitute the attested private introducer. Memoization MUST distinguish
+  the exact signed destination and its verified boundary context. A
+  directory projection certifies only its marker, never descendants or
+  absence; a symlink projection certifies only raw target bytes, never target
+  access. Tree, whiteout, conflict and index entries MUST NOT use these
+  registered projections. Their disclosure still requires independently
+  verified safe materialization or authorized full-source retention; this
+  certificate does not relax their existing requirements. *Gate:*
+  `gate:prov-disclosure-boundary`.
 
 ## Trust selectors
 
@@ -165,6 +253,9 @@ commit, the commit's ancestry, and the entry's attribute provenance.
   view's commit without contacting an issuer or external service. If a
   required commit is unavailable, the selector MUST evaluate to false for
   the affected entry.
+  Source identities behind checked disclosure boundaries are audit evidence,
+  not required private commits; scoped historical authority keys are retained
+  trusted configuration, not an online issuer service.
 - **[PROV-14]** The effective selector for a read MUST be the conjunction
   of the selector on the view and the `trust` property of every root on the
   path from the view's root to the entry
@@ -200,6 +291,8 @@ commit, the commit's ancestry, and the entry's attribute provenance.
   erased.
   The `current` receipt MUST include the original source commit, root, and
   path, whose verified introduction MUST equal that attribute's value.
+  A durable disclosure MAY supply this source introduction through PROV-27's
+  verified source-authority attestation instead of retaining private history.
 - **[PROV-19]** Conflict resolution during merge
   ([`07-tree-algebra.md`](07-tree-algebra.md)) MAY use provenance as a
   policy input, for example "prefer the candidate whose introducing commit
@@ -216,6 +309,9 @@ commit, the commit's ancestry, and the entry's attribute provenance.
   An implementation MUST provide this walk as an operation of the wire
   protocol ([`18-protocol.md`](18-protocol.md)) and of the command-line
   interface.
+  At a checked disclosure boundary, this walk MUST return the typed attested
+  source identities and authority, explicitly distinguishing them from
+  independently verified private signatures or complete private ancestry.
 - **[PROV-21]** A ref's reflog
   ([`09-refs-and-commits.md`](09-refs-and-commits.md)) is the audit trail of
   authority changes on that ref: because `acl` changes are commits
@@ -225,6 +321,10 @@ commit, the commit's ancestry, and the entry's attribute provenance.
   long as the commit is retained, and a commit MUST be retained for as long
   as any live entry names it as introducing (PROV-10) or any tag or reflog
   entry within the retention property references it.
+  Exact audit identities behind a checked disclosure boundary do not require
+  retention of private source objects. The destination certificate,
+  introducing commit and independently retained scoped verification keys
+  MUST remain available for the live entry.
 
 ## Separation from authorization
 

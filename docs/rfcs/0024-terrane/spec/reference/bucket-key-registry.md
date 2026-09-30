@@ -29,12 +29,14 @@ Each domain names one kind and one CDDL type in
 | `terrane-policy-v1` | ruleset, policy object, or token when hashed | `ruleset` / `token` | 04, 31, 22 |
 | `terrane-memo-v1` | recipe memo | `memo` | 04, 10 |
 
-Two further domain strings are used for derivations that are not stored
-objects and therefore never appear in a pack:
+Further purpose strings are used for derivations or signatures that are not
+stored objects and therefore never appear as immutable kinds in a pack:
 
 | Domain string | Use | Owner |
 | --- | --- | --- |
 | `terrane-gear-v1` | seed of the BLAKE3-XOF that derives a chunk profile's gear table | 05, [`golden-vectors.md`](golden-vectors.md) |
+| `terrane-disclosure-target-v1` | BLAKE3-256 binding of the normalized unsigned destination commit | 23, `disclosure-statement` |
+| `terrane-disclosure-proof-v1` | Ed25519 preimage prefix for the canonical source-authority disclosure statement | 23, `disclosure-statement` |
 
 A new digest algorithm is a new profile with its own domain set (OBJ-9);
 the `-v1` suffix is part of the string and is not incremented in place.

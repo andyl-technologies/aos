@@ -292,7 +292,7 @@
   {
     "name": "gc-mark-reachability",
     "owner": "17",
-    "requirements": "GC-5"
+    "requirements": "GC-5, GC-30"
   },
   {
     "name": "gc-roots-complete",
@@ -922,7 +922,7 @@
   {
     "name": "dom-dedup-scope",
     "owner": "24",
-    "requirements": "DOM-8"
+    "requirements": "DOM-8, DOM-24"
   },
   {
     "name": "dom-default-private",
@@ -973,6 +973,11 @@
     "name": "prov-selector-presets",
     "owner": "23",
     "requirements": "PROV-12"
+  },
+  {
+    "name": "prov-disclosure-boundary",
+    "owner": "23",
+    "requirements": "PROV-26 to PROV-30"
   },
   {
     "name": "block-layout-determinism",

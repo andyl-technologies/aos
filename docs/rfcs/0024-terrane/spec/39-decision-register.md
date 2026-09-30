@@ -1205,6 +1205,29 @@ is added rather than editing history.
     an absent legacy field means unknown exclusion completeness, never known
     empty. This correction precedes T1's initial encoding freeze.
 
+- **[D-74] Preserve disclosures without retaining private source graphs.**
+  - **Status:** Decided
+  - **Decision:** Register embedded source-authority certificates for explicit
+    current reintroductions of file content, directory markers and symlink
+    bytes. Bind each certificate to the complete unsigned destination commit
+    with every typed certificate signature zeroed, then sign the real commit.
+    Verify all candidate origins before activating exact entry or parent audit
+    boundaries. Retain scoped historical authority keys independently of
+    source storage and persist proof-sensitive collector contexts.
+  - **Rationale:** Requiring full private source commits and trees to verify a
+    public reintroduction contradicts domain isolation, offline reopening and
+    private-domain erasure. Those records can expose unrelated sibling paths,
+    attributes, messages and tokens. A scoped authority attests the selected
+    source fact without claiming independently verified private signatures or
+    complete private ancestry. Whole-commit projection avoids signature cycles
+    and prevents certificate reuse on an altered destination record.
+  - **Affects:** PROV-7, PROV-10, PROV-13, PROV-18, PROV-20, PROV-22,
+    PROV-26 to PROV-30, DOM-7, DOM-24, GC-5, GC-7, GC-30, receipt and collector
+    CDDL, and the non-object purpose registry. Legacy receipt and context-free
+    collector bytes retain their meaning and identities. Special entry kinds
+    remain subject to their existing disclosure requirements. This correction
+    precedes T1's initial encoding freeze under D-66.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

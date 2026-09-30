@@ -79,7 +79,8 @@ data.
   every bundle or profile object the commit references, every resolved
   introducing commit, and every source commit referenced by entry,
   attribute-origin, or reintroduction receipts. Receipt source edges MUST
-  be retained independently of ordinary parent retention. Metadata needed
+  be retained independently of ordinary parent retention, except exact audit
+  edges behind a checked disclosure boundary under GC-30. Metadata needed
   to verify introducing commits, inline/side attribute producers and receipt
   history MUST remain reachable even after ordinary parent retention expires.
   A witness-only traversal retains commit, node, manifest and attribute
@@ -96,6 +97,37 @@ data.
   verify previous commits remains retained without adding their unrelated
   content to the count. Duration contexts use timestamp cutoffs and `null`
   represents unbounded full ancestry.
+- **[GC-30]** A collector MUST prune only exact certified proof edges after
+  verifying the complete destination signature, canonical candidate tree,
+  receipt batch and scoped historical source authority under PROV-26 to
+  PROV-30. Source and original-introducer audit identities behind a checked
+  boundary MUST NOT cause private `get`, `has` or catalog probes. The public
+  introducing commit and certificate remain live. An independently rooted
+  source MUST still traverse normally. Unchecked metadata or global digest
+  suppression MUST NOT authorize pruning. *Gate:*
+  `gate:gc-mark-reachability`.
+
+  Proof-sensitive traversal MUST carry `gc-proof-context` through pending,
+  expanded-object and commit-cutoff checkpoint entries. The context binds
+  destination commit, root and canonical absolute root occurrence path (`/`
+  at the view root). Leaf keys are complete root-relative paths; graft descent
+  replaces the root and appends the exact graft key to the occurrence path.
+  Ordering and deduplication MUST include context; cutoff dominance MUST apply
+  only within identical contexts. Cutoff entries are sorted uniquely by
+  `(commit, optional context)` and expanded objects by
+  `(kind, hash, flags, optional context)`. Absent context sorts before present;
+  present triples compare fieldwise by unsigned destination-commit bytes,
+  root bytes, then absolute-path bytes, not by encoded CBOR length headers.
+  Legacy absent context never authorizes pruning. Each separately
+  reached commit MUST verify its own certificate batch. Attribute catalog
+  lookup MUST remain scoped to the actual disclosure domain and entry proof.
+
+  Resume MUST reverify every persisted proof context before trusting cached
+  expansion or performing destructive effects, including after marking.
+  Historical authority configuration MUST remain consistently pinned or
+  revalidated throughout the cycle; incompatible explicit revocation MUST
+  stop effects rather than reuse stale checked state. Certificate bytes and
+  required scoped verification keys MUST survive private-source deletion.
 - **[GC-6]** Marking MUST skip any tree node, manifest, or root already
   expanded in this collection under the same traversal context. A prior
   witness-only expansion does not suppress a later full expansion; a broader
@@ -117,8 +149,9 @@ data.
   expansion contexts retain the least restrictive parent cutoff already
   visited; reaching a commit with a broader cutoff must still traverse newly
   eligible parent edges. Null
-  denotes unbounded retention, and receipt/source edges bypass the ordinary
-  parent-edge age test. All collector records use the CDDL version-one schemas;
+  denotes unbounded retention, and unpruned receipt/source edges bypass the
+  ordinary parent-edge age test. All collector records use the CDDL
+  version-one schemas;
   shard and revision key segments are canonical decimal unsigned integers.
   A mark checkpoint contains exactly 2,048 filter bytes, initially zero. For
   every hash, interpret byte pairs beginning at offsets 1, 11 and 21 as

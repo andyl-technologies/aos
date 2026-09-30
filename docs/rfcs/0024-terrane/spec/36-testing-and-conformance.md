@@ -200,7 +200,7 @@ here is a conformance error of this document.
 | `gate:bundle-verify` | 12 | PACK-24 |
 | `gate:commit-order` | 12 | PERF-11, TEST-15, PACK-14 |
 | `gate:gc-grace-window` | 17 | GC-10 |
-| `gate:gc-mark-reachability` | 17 | GC-5 |
+| `gate:gc-mark-reachability` | 17 | GC-5, GC-30 |
 | `gate:gc-roots-complete` | 17 | GC-1 |
 | `gate:gc-singleton-lease` | 17 | GC-22 |
 | `gate:gc-two-phase-delete` | 17 | GC-15 |
@@ -336,7 +336,7 @@ here is a conformance error of this document.
 | `gate:auth-token-chain` | 22 | AUTH-7 |
 | `gate:auth-verify-pure` | 22 | AUTH-11 |
 | `gate:auth-workload-mint` | 22 | AUTH-3 |
-| `gate:dom-dedup-scope` | 24 | DOM-8 |
+| `gate:dom-dedup-scope` | 24 | DOM-8, DOM-24 |
 | `gate:dom-default-private` | 24 | DOM-1 |
 | `gate:dom-existence-oracle` | 24 | DOM-16 |
 | `gate:dom-host-isolation` | 24 | DOM-12 |
@@ -347,6 +347,7 @@ here is a conformance error of this document.
 | `gate:prov-entry-preserve` | 23 | PROV-8 |
 | `gate:prov-fold-acceptance` | 23 | PROV-17 |
 | `gate:prov-selector-presets` | 23 | PROV-12 |
+| `gate:prov-disclosure-boundary` | 23 | PROV-26 to PROV-30 |
 
 ### Surfaces
 

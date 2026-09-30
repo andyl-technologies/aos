@@ -176,6 +176,33 @@ entry-receipt = [ digest32, bstr .size (1..4096), entry-origin ]
               / [ digest32, bstr .size (1..4096), 0,
                   attribute-origins / null, entry-source ]
                                      ; original source for reintroduction
+              / [ digest32, bstr .size (1..4096), 0,
+                  attribute-origins / null, entry-source, disclosure-proof ]
+
+; PROV-26..30: embedded source-authority attestation, not a new immutable kind.
+; Key 1 is lowercase hexadecimal and identifies a separately trusted scoped key.
+disclosure-proof = {
+  1 => tstr .size 64,
+  2 => tstr,                            ; canonical source disclosure domain
+  3 => timestamp,                       ; source authority's observed issue time
+  4 => bstr .size 64,                   ; source authority Ed25519 signature
+}
+disclosed-content = [ 1, size: uint, content: content-ref ]
+                  / [ 2 ]             ; directory marker only
+                  / [ 3, target: bstr .size (0..4096) ]
+disclosure-statement = [
+  authority: tstr .size 64, source-domain: tstr, observed-at: timestamp,
+  source: entry-source, original-introducer: digest32,
+  target: [ original-ref: tstr, root: digest32,
+            path: bstr .size (1..4096), effective-domain: tstr ],
+  content: disclosed-content, destination-binding: digest32
+]
+; Signature preimage is ASCII terrane-disclosure-proof-v1 || 0x00 || the
+; canonical statement. Binding is BLAKE3-256 over terrane-disclosure-target-v1
+; || 0x00 || the entire canonical unsigned destination commit, replacing ONLY
+; every typed disclosure-proof signature with 64 zero bytes. All metadata is
+; finalized first. The binding is external and is never stored in the projected
+; commit. The final commit signs the real certificates normally under PROV-3.
 
 pack-location = [ pack-id, locality ]
 
@@ -427,13 +454,21 @@ GcMark = {
   4 => [ * digest32 ],                  ; strictly sorted unique hashes
   5 => bstr .size 2048,                 ; GC-7 reconstructed membership hint
 }
+gc-proof-context = [ destination-commit: digest32, root: digest32,
+                     absolute-root-path: bstr .size (1..4097) ]
+; Absolute root occurrence paths are canonical; "/" names the view root.
+; Absent optional context preserves legacy context-free meaning. Explicit null
+; is invalid. Context is part of ordering and uniqueness. Compare fieldwise
+; by unsigned destination-commit, root, then absolute-path bytes. Absent is first.
 gc-pending = [ kind: pack-kind, hash: digest32,
-               parent-cutoff: gc-parent-cutoff, flags: uint ]
+               parent-cutoff: gc-parent-cutoff, flags: uint,
+               ? context: gc-proof-context ]
 ; Flags: bit 0 ordinary-parent edge, bit 1 root node, bit 2 index tree,
 ; bit 3 witness-only metadata traversal. Other bits are reserved and zero.
 ; Witness-only is forbidden for data-chunk kind 0. Receipt/source proof
 ; edges use witness-only; they omit ordinary-parent age filtering.
-gc-expanded-object = [ kind: pack-kind, hash: digest32, flags: uint ]
+gc-expanded-object = [ kind: pack-kind, hash: digest32, flags: uint,
+                       ? context: gc-proof-context ]
 ; Expansion flags may contain only bits 1, 2 and 3. Full commit cutoff
 ; visits use GcState key 7, not this context set.
 
@@ -445,10 +480,11 @@ GcState = {
   4 => timestamp,                       ; root snapshot time
   5 => [ * [ shard: uint, revision: uint, checkpoint-hash: digest32 ] ],
   6 => [ * gc-pending ],                ; exact unexpanded frontier
-  7 => [ * [ commit: digest32, parent-cutoff: gc-parent-cutoff ] ],
-                                        ; least restrictive expanded contexts
+  7 => [ * [ commit: digest32, parent-cutoff: gc-parent-cutoff,
+             ? context: gc-proof-context ] ],
+                                        ; unique by (commit, optional context)
   8 => [ * pack-id ],                   ; phase progress, sorted uniquely
-  9 => [ * gc-expanded-object ],        ; sorted unique typed expansion contexts
+  9 => [ * gc-expanded-object ],        ; unique by (kind, hash, flags, context)
 }
 
 ; trash/<cycle>/<pack-id> (GC-15).

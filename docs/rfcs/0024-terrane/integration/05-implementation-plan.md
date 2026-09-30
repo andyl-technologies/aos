@@ -257,7 +257,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.bucket-file-cas`.
 - [ ] **T-REF-2** Ref advance protocol (packs, indexes, log, CAS), epochs,
   single-writer default, tags, reflog, rollback, watch, and commit-set entry
-  provenance. — satisfies TREE-16, REF-12 to REF-23, REF-27 to REF-31;
+  provenance. Durable disclosure certificate verification and publication are
+  joint with T-PROV-1 and T-DOM-1; they remain unqualified until destination-only
+  reopen, private erasure and current-authority race checks pass. — satisfies
+  TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-30, DOM-24;
+  `checks.terrane.gates.prov-disclosure-boundary`,
   `checks.terrane.gates.ref-advance-ordering`,
   `checks.terrane.gates.ref-epoch-fencing`, `checks.terrane.gates.ref-watch`.
 - [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
@@ -265,7 +269,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `ttl`, `forever`, and ordinary reflog duration/count selection. Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,
-  GC-28, GC-29; `checks.terrane.gates.gc-roots-complete`,
+  GC-28 to GC-30; `checks.terrane.gates.gc-roots-complete`,
   `checks.terrane.gates.gc-mark-reachability`,
   `checks.terrane.gates.gc-grace-window`,
   `checks.terrane.gates.gc-two-phase-delete`,
@@ -273,14 +277,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 - [x] **T-PROV-1** Commit signing and verification, entry provenance,
   selector language and trust presets. Historical signatures, authenticated
   tree evidence, and entry and attribute origins are verified in the pure
-  core. Current-ACL commit guarding is joint with T-REF-2; merge admission
+  core. Current-ACL commit guarding and durable disclosure certificate
+  verification/publication are joint with T-REF-2 and T-DOM-1; merge admission
   with T-ALG-2; wire and command error translation with their runtime tasks.
   — satisfies PROV-1 to PROV-25;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`.
 - [ ] **T-DOM-1** Domain property semantics, cross-domain reference checks,
-  dedup scoping, existence-oracle rules. — satisfies DOM-1 to DOM-11,
-  DOM-16, DOM-17, DOM-20; `checks.terrane.gates.dom-reference-order`,
+  dedup scoping, existence-oracle rules and durable disclosure evidence.
+  Special tree, whiteout, conflict and index disclosure remain required;
+  file/directory-marker/symlink certificates alone do not qualify DOM-7.
+  — satisfies DOM-1 to DOM-11, DOM-16, DOM-17, DOM-20, DOM-24;
+  `checks.terrane.gates.dom-reference-order`,
   `checks.terrane.gates.dom-dedup-scope`.
 - [ ] **T-CRATE-1** SDK types and verbs (`Tree`, `View`, `Store`,
   `Repository`, `fork`, `commit`, `merge`, `diff`, `realize`) and the `sdk`

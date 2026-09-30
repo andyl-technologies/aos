@@ -79,7 +79,25 @@ never leak a private byte.
   branch's new content into the public domain (DOM-3 in reverse: new chunk
   records in `public`) under the folding principal's authority, and this
   admission MUST be recorded in the fold commit's provenance
-  ([`23-provenance-and-trust.md`](23-provenance-and-trust.md)).
+  ([`23-provenance-and-trust.md`](23-provenance-and-trust.md)). For registered
+  content projections, durable disclosure MAY use a checked source-authority
+  certificate under PROV-26 to PROV-30; other kinds require PROV-30's
+  independently verified safe materialization or authorized full-source
+  retention. Erasing the private source does not invalidate a certified entry
+  or require copying unrelated private metadata into the open domain.
+- **[DOM-24]** Issuing and publishing a disclosure certificate MUST require
+  the same principal's current `read` on the exact selected source entry and
+  current `commit` on the actual destination scopes. Source and destination
+  whole authority records, token expiry, epochs and path ACLs MUST be
+  revalidated before upload and final ref CAS. The source authority MUST
+  verify the reachable canonical source entry and its original introduction;
+  destination records MUST independently verify matching content in the
+  destination domain. The certificate MUST be in the signed destination
+  commit before publication. Unrelated private sibling paths, attributes,
+  source trees, commits, messages and token chains MUST NOT be copied into
+  the destination as proof. Destination-only reopening and private-domain
+  erasure MUST preserve the checked public introduction and its content.
+  *Gate:* `gate:dom-dedup-scope`.
 
 ## Deduplication scoping
 
