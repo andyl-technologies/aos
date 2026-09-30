@@ -1,4 +1,4 @@
-##! Package-owned qualification shares the canonical package contract carrier.
+##! Package-owned qualification retains a native, authenticated companion.
 {
   lib,
   pkgs,
@@ -93,32 +93,126 @@
     phases = [];
     qualification.packageProbe = probe;
   };
-  openProbe = probe // {
-    primary = probe.primary // {unchecked = true;};
+  namedOutputs = pkgs.mkDerivation {
+    pname = "package-qualification-carrier-probe";
+    version = "1";
+    src = null;
+    phases = [];
+    outputs = ["out" "dev"];
+    qualification.packageProbe = commandProbe;
   };
-  rejectsOpenProbe = !(builtins.tryEval (builtins.deepSeq (pkgs.mkDerivation {
-      pname = "invalid-package-qualification-carrier-probe";
+  noProbe = pkgs.mkDerivation {
+    pname = "package-without-qualification";
+    version = "1";
+    src = null;
+    phases = [];
+  };
+  tool = version:
+    pkgs.mkDerivation {
+      pname = "qualification-tool";
+      inherit version;
+      src = null;
+      phases = [];
+    };
+  firstTool = tool "1";
+  secondTool = tool "2";
+  externalProbe = qualification.packageProbe {
+    primary = operation {
+      input = "The declared build dependency.";
+      action = "Select the exact qualification tool artifact.";
+      expected = "The selector binds only to the declared dependency root.";
+      steps = [
+        (qualification.step {
+          argv = [
+            (qualification.template [
+              (qualification.artifactRoot {
+                artifact = {
+                  _type = "aos-package-output-selector";
+                  package = "qualification-tool";
+                  output = "out";
+                };
+              })
+            ])
+          ];
+          exit_code = 0;
+        })
+      ];
+    };
+    badInput = probe.bad_input;
+  };
+  withTools = dependencies:
+    pkgs.mkDerivation {
+      pname = "qualification-consumer";
       version = "1";
       src = null;
       phases = [];
-      qualification.packageProbe = openProbe;
-    })
-    true)).success;
+      buildDeps = dependencies;
+      qualification.packageProbe = externalProbe;
+    };
+  declaredTool = withTools [firstTool];
+  rejectsConflictingTools = !(builtins.tryEval (builtins.deepSeq (withTools [firstTool secondTool]).qualificationDocument true)).success;
+  rejectsUndeclaredTool = !(builtins.tryEval (builtins.deepSeq (withTools []).qualificationDocument true)).success;
+  openProbe =
+    probe
+    // {
+      primary = probe.primary // {unchecked = true;};
+    };
+  rejectsOpenProbe =
+    !(builtins.tryEval (builtins.deepSeq (pkgs.mkDerivation {
+        pname = "invalid-package-qualification-carrier-probe";
+        version = "1";
+        src = null;
+        phases = [];
+        qualification.packageProbe = openProbe;
+      })
+      true)).success;
+  rejectsMissingOutput =
+    !(builtins.tryEval (builtins.deepSeq
+      (pkgs.mkDerivation {
+        pname = "package-qualification-carrier-probe";
+        version = "1";
+        src = null;
+        phases = [];
+        qualification.packageProbe = commandProbe;
+      }).qualificationDocument
+      true)).success;
+  rejectsUnknownQualification =
+    !(builtins.tryEval (builtins.deepSeq (pkgs.mkDerivation {
+        pname = "invalid-qualification-field";
+        version = "1";
+        src = null;
+        phases = [];
+        qualification = {
+          packageProbe = probe;
+          unchecked = true;
+        };
+      })
+      true)).success;
 in
   assert !(package ? abilities);
-  assert builtins.attrNames package.contract == ["document" "selectors" "value"];
-  assert builtins.isAttrs package.contract.document;
-  assert package.contract.document ? outPath;
-  assert !(lib.hasInfix "/nix/store/" (builtins.toJSON package.contract.value));
-  assert package.contract.value.package_module == null;
-  assert package.contract.selectors
+  assert !(package ? contract);
+  assert !(noProbe ? qualificationArtifact);
+  assert package.qualificationArtifact ? outPath;
+  assert package.qualificationDocument.schema == "aos.package.qualification";
+  assert package.qualificationDocument.package
+  == {
+    name = "package-qualification-carrier-probe";
+    version = "1";
+  };
+  assert !(lib.hasInfix "/nix/store/" (builtins.toJSON package.qualificationDocument.probe));
+  assert package.qualificationDocument.selectors
   == [
     {
       package = "package-qualification-carrier-probe";
       output = "out";
     }
   ];
-  assert package.contract.value.qualification.package_probe.primary.steps != [];
+  assert package.qualificationDocument.probe.primary.steps != [];
+  assert (builtins.head package.qualificationDocument.artifacts).path == builtins.toString package;
+  assert namedOutputs.dev.qualificationArtifact == namedOutputs.qualificationArtifact;
+  assert namedOutputs.dev.qualificationDocument == namedOutputs.qualificationDocument;
+  assert map (artifact: artifact.path) namedOutputs.qualificationDocument.artifacts
+  == [(builtins.toString namedOutputs.dev) (builtins.toString namedOutputs.out)];
   assert builtins.attrNames (builtins.listToAttrs (map (selector: {
       name = "${selector.package}:${selector.output}";
       value = true;
@@ -128,7 +222,8 @@ in
     "package-qualification-carrier-probe:dev"
     "package-qualification-carrier-probe:out"
   ];
-  assert (builtins.elemAt commandProjection.value.primary.steps 0).argv == [
+  assert (builtins.elemAt commandProjection.value.primary.steps 0).argv
+  == [
     {
       fragments = [
         {
@@ -141,7 +236,14 @@ in
         }
       ];
     }
-    {fragments = [{kind = "harness"; tool = "python";}];}
+    {
+      fragments = [
+        {
+          kind = "harness";
+          tool = "python";
+        }
+      ];
+    }
     {
       fragments = [
         {
@@ -155,4 +257,8 @@ in
     }
   ];
   assert rejectsOpenProbe;
-    true
+  assert rejectsMissingOutput;
+  assert rejectsUnknownQualification;
+  assert (builtins.head (builtins.filter (artifact: artifact.selector.package == "qualification-tool") declaredTool.qualificationDocument.artifacts)).path == builtins.toString firstTool;
+  assert rejectsConflictingTools;
+  assert rejectsUndeclaredTool; true
