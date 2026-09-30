@@ -12,6 +12,11 @@ let
     outPath = moduleRoot;
     module = moduleRoot;
   };
+  payload = {
+    pname = "payload-only";
+    version = "1";
+    outPath = "/nix/store/00000000000000000000000000000000-payload-only";
+  };
   packageModuleLib = import ../../lib/build/package-modules.nix {};
   record = packageModuleLib.recordFor package;
   base = {lib, ...}: {
@@ -33,7 +38,7 @@ let
       host.modules = [{marker = "host";}];
       initrd.modules = [{marker = "initrd";}];
     };
-    environment.systemPackages = [package];
+    environment.systemPackages = [package payload];
   };
   evaluate = packageModules:
     import ../../lib/build/evaluate-stages.nix {
@@ -54,6 +59,7 @@ in {
   assert result.initrdAbilityEvaluation.config.marker == "initrd"; true;
   identityScopes = assert result.hostAbilityEvaluation.config.aos.activation.scope == ["fixture" "host"];
   assert result.initrdAbilityEvaluation.config.aos.activation.scope == ["fixture" "initrd"]; true;
+  retainsPayloadOnly = assert builtins.elem payload result.hostPackages; true;
   packageDeduplication = assert result.finalPackageModules == [record]; true;
   initrdExcludesHostPackages = assert result.initrdPackageModules == []; true;
   callerIdentity = assert (evaluate [record]).finalPackageModules == [record]; true;

@@ -18,6 +18,10 @@
     then throw "Option type '${type.description}' uses a Nix predicate that cannot validate deferred runtime values."
     else if type ? _projectionType
     then project type._projectionType
+    else if type ? _variantTypes
+    then schema // {variants = builtins.mapAttrs (_: project) type._variantTypes;}
+    else if type ? _alternativeTypes
+    then schema // {alternatives = builtins.map project type._alternativeTypes;}
     else if type ? _submodule
     then {
       kind = "submodule";
@@ -40,7 +44,16 @@
           project type._nestedType;
       }
     else if schema.kind == "string" && (schema.pattern or null) != null
-    then throw "String pattern '${schema.pattern}' has no portable activation validator."
+    then {
+      kind = "refined";
+      value = schema // {pattern = null;};
+      constraints = [
+        {
+          kind = "string-pattern";
+          pattern = (import ./types/portable-pattern.nix) schema.pattern;
+        }
+      ];
+    }
     else if schema.kind == "opaque"
     then throw "Option type '${type.description}' cannot cross the activation boundary."
     else schema;

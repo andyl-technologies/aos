@@ -117,7 +117,9 @@
       then value // {_value = applyInheritedPriority priority value._value;}
       else if builtins.isAttrs value && value ? _type && value._type == "merge"
       then value // {_values = builtins.map (applyInheritedPriority priority) value._values;}
-      else if builtins.isAttrs value
+      # Typed references and derivations are atomic option values. Descending
+      # into them would turn their identity fields into override markers.
+      else if builtins.isAttrs value && !(value ? _type || value ? outPath || value ? drvPath)
       then builtins.mapAttrs (_: applyInheritedPriority priority) value
       else {
         _type = "override";

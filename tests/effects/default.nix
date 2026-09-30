@@ -4,6 +4,8 @@
   fixture = import ./deployment-fixture.nix {inherit pkgs lib;};
   checks = {
     modules = import ./modules.nix;
+    types = import ./types.nix;
+    composition = import ./composition.nix;
     packages = (import ./packages.nix).checks;
     stages = import ./stages.nix;
     frozenHandler = import ./frozen-handler.nix;

@@ -1034,13 +1034,13 @@
       # by the engine itself; they cannot materialize runtime state.
       packageEngineContributionRoots = ["assertions" "warnings"];
 
-      # Preserve the first declaration's authorship when several modules
-      # extend the same option; optionMap separately merges their types.
+      # Use the merged declaration's extension owner, independent of module order.
+      # Nested type origins still retain every contributing package's provenance.
       authorshipDeclarations = builtins.listToAttrs (builtins.map (decl: {
           name = builtins.toJSON decl.path;
           value = decl;
         })
-        (builtins.filter (decl: decl.path != []) allOptionDecls));
+        (builtins.filter (decl: decl.path != []) (builtins.attrValues optionMap)));
 
       nearestDeclaration = path: let
         prefixes = builtins.genList (index:
@@ -1076,10 +1076,10 @@
         then throw "evalModules: package '${package}' writes undeclared option '${pathStr}'"
         else if declarationOwner == package
         then true
-        else if foreignEnable
-        then throw "evalModules: package '${package}' may not write foreign enable path '${pathStr}'"
         else if declaration.option.extensible or false
         then true
+        else if foreignEnable
+        then throw "evalModules: package '${package}' may not write foreign enable path '${pathStr}'"
         else throw "evalModules: package '${package}' writes non-extensible option '${pathStr}' declared by '${declarationOwner}'";
 
       packageAuthorshipCheck =
@@ -1150,25 +1150,22 @@
         declaringOwners = lists.unique (builtins.map
           (candidate: ownerForProvenance (candidate.provenance or "@base"))
           samePath);
-        extensibleBaseDeclarations =
+        extensibleDeclarations =
           builtins.filter
-          (candidate:
-            candidate.provenance
-            == "@base"
-            && candidate.option.extensible)
+          (candidate: candidate.option.extensible)
           samePath;
-        extensibleBaseTypes =
+        extensibleTypes =
           builtins.map
           (candidate: submoduleParts candidate.option.type)
-          extensibleBaseDeclarations;
+          extensibleDeclarations;
         baseSubmodule =
-          if extensibleBaseTypes == []
+          if extensibleTypes == []
           then null
-          else builtins.head extensibleBaseTypes;
+          else builtins.head extensibleTypes;
         scalarBase =
-          if extensibleBaseDeclarations == []
+          if extensibleDeclarations == []
           then null
-          else builtins.head extensibleBaseDeclarations;
+          else builtins.head extensibleDeclarations;
         sharedSubmodule =
           baseSubmodule
           != null
@@ -1181,6 +1178,7 @@
         specializedScalar =
           scalarBase
           != null
+          && scalarBase.provenance == "@base"
           && submoduleParts scalarBase.option.type == null
           && builtins.all
           (candidate: candidate.option.type.name == scalarBase.option.type.name)
@@ -1549,7 +1547,7 @@
           then laterDefault
           else throw "The option '${builtins.concatStringsSep "." later.path}' has conflicting submodule defaults.";
         declaration =
-          if earlier.provenance == "@base" && earlier.option.extensible
+          if earlier.option.extensible
           then earlier
           else later;
       in
