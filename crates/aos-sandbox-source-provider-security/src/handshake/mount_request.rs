@@ -54,6 +54,12 @@ mod native_pending;
 
 pub use native_pending::OriginalNativeReceivedOutcomeV5;
 
+#[path = "mount_request/original_inventory.rs"]
+mod original_inventory;
+pub use original_inventory::{
+    OriginalInventoryPreparationV6, OriginalInventoryReceivedOutcomeV6, OriginalInventorySendV6,
+};
+
 #[path = "mount_request/catalog_floor.rs"]
 mod catalog_floor;
 
@@ -65,6 +71,12 @@ mod native_export_fence;
 pub use model::*;
 use model::{HistoricalMountAcquisitionLineageV2, historical_acquisition_commitment};
 use projection::*;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ProviderSendBoundaryV6 {
+    Accepted,
+    Retryable,
+}
 
 fn current_unix_seconds() -> Result<i64, SourceProviderSecurityError> {
     super::current_unix_seconds()
@@ -257,9 +269,36 @@ impl CurrentRootMountSourceProviderSessionV1 {
         current_request_sequence: u64,
         current_response_sequence: u64,
     ) -> Result<CurrentMountProviderSessionPlanV2, SourceProviderSecurityError> {
+        self.current_mount_provider_session_plan_with_view_v2(
+            journal,
+            journal_snapshot,
+            head_key,
+            head_record,
+            current_request_sequence,
+            current_response_sequence,
+            None,
+        )
+    }
+
+    fn current_mount_provider_session_plan_with_view_v2(
+        &mut self,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
+        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        head_key: Vec<u8>,
+        head_record: Vec<u8>,
+        current_request_sequence: u64,
+        current_response_sequence: u64,
+        authenticated_at_seconds: Option<i64>,
+    ) -> Result<CurrentMountProviderSessionPlanV2, SourceProviderSecurityError> {
         self.revalidate()?;
         let now = super::current_unix_seconds()?;
-        let session = capture_session_projection(self, now).map_err(|error| self.poison(error))?;
+        let authentication_time = match authenticated_at_seconds {
+            Some(stored) => query_authentication_time_v6(stored, now)
+                .map_err(|error| self.poison(error))?,
+            None => now,
+        };
+        let session = capture_session_projection(self, authentication_time)
+            .map_err(|error| self.poison(error))?;
         let state = validated_mount_state(journal).map_err(|error| self.poison(error))?;
         let identity = (
             session.authority_trust[0].authority.authority_id(),
@@ -286,9 +325,9 @@ impl CurrentRootMountSourceProviderSessionV1 {
             || retained_session
                 .is_none_or(|stored| !stored_mount_session_matches_projection(stored, &session))
             || journal
-                .validate_mount_source_acquisition_snapshot(&journal_snapshot)
+                .validate_current_snapshot(&journal_snapshot)
                 .is_err()
-            || journal.get(&head_key).ok().flatten() != Some(head_record.as_slice())
+            || journal.current_value(&head_key).ok().flatten() != Some(head_record.as_slice())
         {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
@@ -686,7 +725,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
 
     fn validate_current_mount_plan(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
         plan: &CurrentMountProviderSessionPlanV2,
     ) -> Result<(), SourceProviderSecurityError> {
         self.revalidate()?;
@@ -714,19 +753,19 @@ impl CurrentRootMountSourceProviderSessionV1 {
                         .as_slice(),
                 )
             || journal
-                .validate_mount_source_acquisition_snapshot(&plan.journal_snapshot)
+                .validate_current_snapshot(&plan.journal_snapshot)
                 .is_err()
             || if plan.head_record.is_empty() {
-                journal.get(&plan.head_key).ok().flatten().is_some()
+                journal.current_value(&plan.head_key).ok().flatten().is_some()
             } else {
-                journal.get(&plan.head_key).ok().flatten() != Some(plan.head_record.as_slice())
+                journal.current_value(&plan.head_key).ok().flatten() != Some(plan.head_record.as_slice())
             }
             || match (
                 plan.predecessor_session_key.as_deref(),
                 plan.predecessor_session_record.as_deref(),
             ) {
                 (None, None) => false,
-                (Some(key), Some(record)) => journal.get(key).ok().flatten() != Some(record),
+                (Some(key), Some(record)) => journal.current_value(key).ok().flatten() != Some(record),
                 _ => true,
             }
         {
@@ -757,6 +796,23 @@ impl CurrentRootMountSourceProviderSessionV1 {
         after_send: impl FnOnce(
             &mut Self,
             &ReservedMountProviderRequestV2,
+        ) -> Result<(), SourceProviderSecurityError>,
+    ) -> Result<SentMountProviderRequestV2, MountProviderRequestSendRecoveryV2> {
+        self.send_reserved_mount_request_with_boundary_v6(
+            journal,
+            reservation,
+            |owner, retained, _| after_send(owner, retained),
+        )
+    }
+
+    fn send_reserved_mount_request_with_boundary_v6(
+        &mut self,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
+        reservation: ReservedMountProviderRequestV2,
+        after_send: impl FnOnce(
+            &mut Self,
+            &ReservedMountProviderRequestV2,
+            ProviderSendBoundaryV6,
         ) -> Result<(), SourceProviderSecurityError>,
     ) -> Result<SentMountProviderRequestV2, MountProviderRequestSendRecoveryV2> {
         if self.revalidate().is_err() {
@@ -812,14 +868,16 @@ impl CurrentRootMountSourceProviderSessionV1 {
         if let Err(failure) = self.carrier.send(&reservation.prepared.signed_request) {
             if let CarrierFailureV1::Fatal(error) = failure {
                 self.poison(error);
-            } else if let Err(error) = after_send(self, &reservation) {
+            } else if let Err(error) =
+                after_send(self, &reservation, ProviderSendBoundaryV6::Retryable)
+            {
                 // A retryable carrier result still crosses an I/O boundary.
                 // Native callers must retain and recheck the SAME custody.
                 self.poison(error);
             }
             return Err(MountProviderRequestSendRecoveryV2 { reservation });
         }
-        if let Err(error) = after_send(self, &reservation) {
+        if let Err(error) = after_send(self, &reservation, ProviderSendBoundaryV6::Accepted) {
             self.poison(error);
             return Err(MountProviderRequestSendRecoveryV2 { reservation });
         }
@@ -1378,12 +1436,30 @@ impl CurrentRootMountSourceProviderSessionV1 {
         {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
+        let expected = self.historical_inventory_correlations_with_view_v6(journal, &historical)?;
+        if correlations != expected {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        self.prepare_inventory_with_correlations_v2(journal, plan, request, correlations)
+    }
+
+    fn historical_inventory_correlations_with_view_v6(
+        &mut self,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
+        historical: &[HistoricalMountInventoryAuthorizationV2],
+    ) -> Result<
+        aos_sandbox_protocol::mount_source_acquisition_state::InventoryCorrelationSetV2,
+        SourceProviderSecurityError,
+    > {
+        if historical.len() > aos_sandbox_source_provider_protocol::MAXIMUM_INVENTORY_ENTRIES {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
         let current_session_binding = self.session.binding();
         let mut acquisition_ids = BTreeSet::new();
         let mut lease_ids = BTreeSet::new();
         let mut expected_entries = self.current_inventory_correlations_v2(journal)?.entries;
         for authorization in historical {
-            let lineage = authorization.lineage;
+            let lineage = &authorization.lineage;
             let current_holder = self.custody.inner().root_authority().authority();
             let provider = self.custody.inner().provider_authority().authority();
             if !lineage.revalidate(journal, current_session_binding)
@@ -1423,15 +1499,12 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 expected_entries,
             )
             .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        if correlations != expected {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-        }
-        self.prepare_inventory_with_correlations_v2(journal, plan, request, correlations)
+        Ok(expected)
     }
 
     fn current_inventory_correlations_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
     ) -> Result<
         aos_sandbox_protocol::mount_source_acquisition_state::InventoryCorrelationSetV2,
         SourceProviderSecurityError,
@@ -1483,6 +1556,44 @@ impl CurrentRootMountSourceProviderSessionV1 {
         typed_request_digest: ObjectDigest,
         session_projection: MountProviderSessionProjectionV2,
     ) -> Result<PreparedMountProviderRequestV2, SourceProviderSecurityError> {
+        self.authorize_non_acquire_retaining_v6(
+            method,
+            subject,
+            session_binding,
+            request_sequence,
+            request_id,
+            holder_authority_id,
+            holder_generation,
+            holder_authority_digest,
+            deadline_seconds,
+            expected_response_sequence,
+            acquisition,
+            lease,
+            typed_request_digest,
+            session_projection,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn authorize_non_acquire_retaining_v6(
+        &mut self,
+        method: SourceProviderMethod,
+        subject: Vec<u8>,
+        session_binding: ObjectDigest,
+        request_sequence: u64,
+        request_id: [u8; 16],
+        holder_authority_id: [u8; 16],
+        holder_generation: u64,
+        holder_authority_digest: ObjectDigest,
+        deadline_seconds: i64,
+        expected_response_sequence: u64,
+        acquisition: Option<(ObjectDigest, u64)>,
+        lease: Option<([u8; 16], ObjectDigest)>,
+        typed_request_digest: ObjectDigest,
+        session_projection: MountProviderSessionProjectionV2,
+        signed: Option<&mut Option<SignedSourceProviderRequestV1>>,
+    ) -> Result<PreparedMountProviderRequestV2, SourceProviderSecurityError> {
         self.revalidate()?;
         let now = super::current_unix_seconds()?;
         let current_session_binding = self.session.binding();
@@ -1522,6 +1633,10 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 inner.outcome_key().signing_key(),
             )
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            // Retain exact signature before custody/key postchecks can fail.
+            if let Some(signed) = signed {
+                *signed = Some(signed_request.clone());
+            }
             inner.revalidate_at(super::current_unix_seconds()?)?;
             let provider_key = inner
                 .trust()

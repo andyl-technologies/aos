@@ -35,6 +35,53 @@ impl OriginalRootClosedFlightV5 {
 }
 
 impl OriginalNativeAcquireFlightV5 {
+    /// Borrows actual original owners without refreshing historical readback.
+    ///
+    /// # Errors
+    /// Rejects incomplete/stopped original custody or a substituted Sent/origin.
+    pub(in crate::source_acquisition) fn borrow_root_closed_for_inventory_v6<'a>(
+        &'a self,
+        sent: &'a SentProviderQueryV2,
+    ) -> Result<(
+        &'a aos_sandbox_source_provider_security::AuthorizedMountProviderOutcomeV2,
+        &'a aos_sandbox_source_provider_security::OriginalNativeReceivedOutcomeV5,
+        &'a OriginalRootProtectedReadbackV5,
+    )> {
+        if self.stopped
+            || self.stage != Stage::Finished
+            || self.sent.is_some()
+            || self.pending.stage != PendingStage::Complete
+            || self.pending.closed.stage != ClosedStage::Sent
+        {
+            return Err(state_error("Query requires genuine completed original Closed custody"));
+        }
+        let received = self.pending.received.as_ref()
+            .ok_or_else(|| state_error("original packet absent"))?;
+        let origin = self.pending.closed.readback.as_ref()
+            .ok_or_else(|| state_error("original Closed origin absent"))?;
+        let original = self.attempt.as_ref()
+            .ok_or_else(|| state_error("original Attempt absent"))?;
+        let (attempt, authorization) = sent.security_parts();
+        if attempt != original.attempt_id
+            || attempt != origin.attempt()
+            || origin.graph().sidecars().get(&attempt)
+                .is_none_or(|sidecar| sidecar.suffix().phase() != 11)
+        {
+            return Err(state_error("original Query borrow has foreign Sent/origin"));
+        }
+
+        Ok((authorization, received, origin))
+    }
+
+    /// Revokes the actual retained token even when the ready-state borrow fails.
+    pub(in crate::source_acquisition) fn stop_original_inventory_v6(
+        &mut self,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+    ) {
+        self.stopped = true;
+        session.invalidate_original_inventory_continuation_v6(self.pending.received.as_ref());
+    }
+
     /// Permanently stops original8 without releasing any retained owner or debt.
     pub(in crate::source_acquisition) fn stop_root_closed(&mut self) {
         self.stopped = true;

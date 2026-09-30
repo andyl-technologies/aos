@@ -1353,16 +1353,16 @@ impl HistoricalMountAcquisitionLineageV2 {
 
     pub(super) fn revalidate(
         &self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &impl super::projection::MountSourceAcquisitionJournalViewV2,
         current_session_binding: ObjectDigest,
     ) -> bool {
         self.session_binding == current_session_binding
             && journal
-                .validate_mount_source_acquisition_snapshot(&self.journal_snapshot)
+                .validate_current_snapshot(&self.journal_snapshot)
                 .is_ok()
-            && journal.get(&self.acquisition_key).ok().flatten()
+            && journal.current_value(&self.acquisition_key).ok().flatten()
                 == Some(self.acquisition_record.as_slice())
-            && journal.get(&self.predecessor_session_key).ok().flatten()
+            && journal.current_value(&self.predecessor_session_key).ok().flatten()
                 == Some(self.predecessor_session_record.as_slice())
             && self.lineage_commitment == historical_acquisition_commitment(self)
     }

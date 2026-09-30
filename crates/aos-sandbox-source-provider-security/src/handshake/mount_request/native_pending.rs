@@ -55,6 +55,18 @@ impl OriginalNativeReceivedOutcomeV5 {
 }
 
 impl CurrentRootMountSourceProviderSessionV1 {
+    /// Revokes original continuation effects without asserting currentness.
+    #[doc(hidden)]
+    pub fn invalidate_original_inventory_continuation_v6(
+        &mut self,
+        retained: Option<&OriginalNativeReceivedOutcomeV5>,
+    ) {
+        if let Some(retained) = retained {
+            retained.failed.set(true);
+        }
+        self.poison(SourceProviderSecurityError::SessionContinuity);
+    }
+
     /// Receives once under the exact original phase1 sent authorization.
     ///
     /// `false` means transport backpressure without any typed packet. An
@@ -209,6 +221,25 @@ impl CurrentRootMountSourceProviderSessionV1 {
         writer
             .validate_readback(readback)
             .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        self.require_original_pending_receipt_owner_v5(
+            authorization,
+            retained,
+            readback.graph(),
+            readback.attempt(),
+        )?;
+        writer
+            .validate_readback(readback)
+            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))
+    }
+
+    // Receipt custody is shared without relaxing either named physical view.
+    fn require_original_pending_receipt_owner_v5(
+        &mut self,
+        authorization: &AuthorizedMountProviderOutcomeV2,
+        retained: &OriginalNativeReceivedOutcomeV5,
+        checked: &aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::RootNativeHeldGraphV2,
+        original_attempt: [u8; 32],
+    ) -> Result<(), SourceProviderSecurityError> {
         self.require_native_outcome_authorization_v3(authorization)?;
         let outcome = retained
             .verified_pending()
@@ -225,7 +256,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 .native_outcome
                 .as_ref()
                 .is_none_or(|original| !Arc::ptr_eq(original, &retained.original))
-            || authorization.mount_attempt_id != Some(readback.attempt())
+            || authorization.mount_attempt_id != Some(original_attempt)
             || outcome.status != SourceProviderStatus::Pending
             || outcome.canonical_response != record.payload
             || !record.descriptors.is_empty()
@@ -235,18 +266,16 @@ impl CurrentRootMountSourceProviderSessionV1 {
         }
 
         record.execution.revalidate(self.carrier.socket().peer())?;
-        let attempt = readback
-            .graph()
+        let attempt = checked
             .legacy()
             .provider_attempts
-            .get(&readback.attempt())
+            .get(&original_attempt)
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         require_received_pending_attempt_v5(authorization, outcome, attempt, true)?;
         if attempt.revision == 2 {
-            let sidecar = readback
-                .graph()
+            let sidecar = checked
                 .sidecars()
-                .get(&readback.attempt())
+                .get(&original_attempt)
                 .ok_or(SourceProviderSecurityError::SessionContinuity)?;
             if retained.pending_cut.as_ref() != sidecar.disposition_cut()
                 || retained.disposition.as_ref() != sidecar.disposition()
@@ -259,9 +288,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             &authorization.signed_request.to_canonical_bytes(),
         )?;
 
-        writer
-            .validate_readback(readback)
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))
+        Ok(())
     }
 
     /// Derives unsigned original8 under the same received guard and first-R cut.
