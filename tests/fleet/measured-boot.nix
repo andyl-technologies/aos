@@ -1258,7 +1258,7 @@ in {
           "journalctl -b -k --no-pager 2>&1"
       )
       assert "isLuks=N" in seal_log, seal_log
-      assert "unlocking /var via TPM2" not in seal_log, seal_log
+      assert "unlocking var from" not in seal_log, seal_log
       assert_recurrent_substrate("boot2")
 
       root_hash, root_data, root_hash_device, expected_pcr11 = assert_verified_root()
@@ -1308,7 +1308,7 @@ in {
           "journalctl -b -k --no-pager 2>&1"
       )
       assert "isLuks=Y" in unlock_log, unlock_log
-      assert "unlocking /var via TPM2" in unlock_log, unlock_log
+      assert "unlocking var from /dev/disk/by-partlabel/var via TPM2" in unlock_log, unlock_log
       assert "isLuks=N" not in unlock_log, unlock_log
       assert_recurrent_substrate("boot3")
       # The unlock above proves the signed policy extracted and compared in
@@ -1463,7 +1463,7 @@ in {
           [], expect_agent=False, settle=45
       )
       assert_external_cmdline_absent(transcript, "rdinit=/bin/sh")
-      assert "aos-var-crypt: TPM2 unlock failed" in transcript, transcript[-12000:]
+      assert "aos-var-crypt: TPM2 unlock of var failed" in transcript, transcript[-12000:]
       assert "AOS recovery>" not in transcript, transcript[-12000:]
 
       target.relaunch_with_smbios_oem_strings([], timeout=600)
@@ -1498,7 +1498,7 @@ in {
       )
       assert "Ignoring externally supplied command line because the UKI embeds one." in transcript, transcript[-12000:]
       assert_external_cmdline_absent(transcript, "rdinit=/bin/sh")
-      assert "aos-var-crypt: TPM2 unlock failed" in transcript, transcript[-12000:]
+      assert "aos-var-crypt: TPM2 unlock of var failed" in transcript, transcript[-12000:]
       assert "AOS recovery>" not in transcript, transcript[-12000:]
 
       target.relaunch_with_smbios_oem_strings([], timeout=600)
@@ -1559,7 +1559,7 @@ in {
       assert "Refusing recovery boot with an external command line." in transcript, transcript[-12000:]
       assert "Linux version" not in transcript, transcript[-12000:]
       assert "AOS recovery>" not in transcript, transcript[-12000:]
-      assert "aos-var-crypt: unlocking /var via TPM2" not in transcript, transcript[-12000:]
+      assert "aos-var-crypt: unlocking var from" not in transcript, transcript[-12000:]
 
       target.relaunch_with_smbios_oem_strings([], timeout=600)
       wait_multi_user("normal boot after refused recovery SMBIOS launch")
@@ -1594,7 +1594,7 @@ in {
               assert effective_cmdline.count(appended) == 1, effective_cmdline
           else:
               assert_external_cmdline_absent(transcript, appended)
-          assert "aos-var-crypt: TPM2 unlock failed" in transcript, transcript
+          assert "aos-var-crypt: TPM2 unlock of var failed" in transcript, transcript
           assert "AOS recovery>" not in transcript, transcript
 
           target.relaunch_with_smbios_oem_strings([], timeout=600)
@@ -1711,7 +1711,7 @@ in {
           transcript = reboot_recovery_console()
           assert "AOS signed recovery environment" in transcript, transcript[-12000:]
           assert "Persistent state is locked. Networking is disabled." in transcript, transcript[-12000:]
-          assert "unlocking /var via TPM2" not in transcript, transcript[-12000:]
+          assert "unlocking var from" not in transcript, transcript[-12000:]
           assert "Switching root" not in transcript, transcript[-12000:]
           assert "Reached target Network" not in transcript, transcript[-12000:]
           assert "Give root password for maintenance" not in transcript, transcript[-12000:]
@@ -1814,7 +1814,7 @@ in {
           in transcript
       ), transcript[-12000:]
       assert "Switching root" not in transcript, transcript[-12000:]
-      assert "unlocking /var via TPM2" not in transcript, transcript[-12000:]
+      assert "unlocking var from" not in transcript, transcript[-12000:]
       assert "Give root password for maintenance" not in transcript, transcript[-12000:]
 
       target.relaunch_with_smbios_oem_strings([], timeout=600)
