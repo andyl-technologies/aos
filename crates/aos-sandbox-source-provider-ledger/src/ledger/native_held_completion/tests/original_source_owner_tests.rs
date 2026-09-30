@@ -23,6 +23,8 @@ type Rows = BTreeMap<Vec<u8>, Vec<u8>>;
 #[path = "original_source_continuation_tests.rs"]
 mod continuation_tests;
 
+mod source_capacity_tests;
+
 struct Flight {
     graph: fixtures::Graph,
     before: Rows,

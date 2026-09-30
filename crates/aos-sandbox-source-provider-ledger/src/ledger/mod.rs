@@ -16,6 +16,7 @@ pub mod native_held_completion;
 mod primitives;
 pub mod reducer;
 pub mod reopen;
+pub mod source_capacity;
 
 /// Reports pure canonical-format or reducer rejection without runtime coupling.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
