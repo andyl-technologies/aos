@@ -474,6 +474,67 @@ is built without `host.nix`, so it cannot carry per-host directories; `/srv`
 is a bind mount of the persistent `/var/srv` that every host provides, and the
 mount unit creates the final directory beneath it.
 
+## Enable persistent home directories
+
+The image root is read-only, so no home directory can live on it. AOS binds
+`/root` from `/var/roothome` on every host, so root's shell history, tool
+configuration, and `apm` authoring state survive reboots and image upgrades.
+Other accounts get persistent homes only when you enable them:
+
+```nix
+{pkgs, ...}: {
+  aos.homes.enable = true;
+
+  aos.users.groups.alice = {
+    gid = 1000;
+    members = [];
+  };
+
+  aos.users.users.alice = {
+    uid = 1000;
+    group = "alice";
+    shell = "${pkgs.bash}/bin/bash";
+    description = "Workstation user";
+  };
+
+  environment.etc."ssh/authorized_keys/alice" = {
+    text = "ssh-ed25519 AAAA_REPLACE_ME alice@example.com\n";
+    mode = "0600";
+  };
+}
+```
+
+With `aos.homes.enable` set, `/home` is bound from `aos.homes.directory`
+(`/var/home` by default) and every account with a UID of 1000 or above
+defaults to `/var/home/<name>`. Those homes are created with the account's
+ownership and `aos.homes.mode` (`0700`) at boot and again on every
+configuration activation, so an account added to `host.nix` has its home
+before its first login. Files declared under `aos.homes.skel` are rendered to
+`/etc/skel` and copied into a home once; later edits by the user are kept.
+
+Leave homes disabled on single-purpose servers: `/home` then stays an empty
+read-only directory and accounts keep the placeholder home `/`. Enable them on
+workstations and shared servers. To put homes on their own volume or dataset,
+mount that volume at `aos.homes.directory`; the bind mount follows it. On a
+measured-boot image that volume can be sealed to the TPM like `/var`:
+
+```nix
+{
+  aos.homes.enable = true;
+  aos.provisioning.storage.partitions.home = {
+    sizeMin = "64G";
+    sizeMax = "64G";
+    encryption = "tpm2";
+  };
+  aos.filesystems.volumes.home.mountPoint = "/var/home";
+}
+```
+
+The sealed volume protects homes at rest against removal of the disk; it does
+not separate one user's data from root or from other users on the running
+host. A factory reset or reimage that recreates `/var` removes every home
+directory, so back them up like any other host state.
+
 ## Know when the plan becomes immutable
 
 On a fresh disk, AOS creates a provenance marker only after it has authorized,

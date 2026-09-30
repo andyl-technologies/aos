@@ -340,4 +340,6 @@ Reimage when:
 
 An immutable system makes replacement a normal recovery tool. The critical
 precondition is that application state, trust material, and deployment inputs
-are recoverable independently of the machine.
+are recoverable independently of the machine. Home directories are host state
+too: `/root` and, when `aos.homes` is enabled, `/home` live on `/var`, so any
+recovery that recreates `/var` discards them.
