@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use crate::backend::{Statement, vals};
+use crate::backend::Statement;
 
 use super::Database;
 
