@@ -101,6 +101,7 @@ pub mod keymap;
 pub mod kv;
 pub mod lease;
 pub mod migrate;
+pub mod mirror_acceptance;
 pub mod mirror_work;
 pub mod nix_sign;
 pub mod oci;

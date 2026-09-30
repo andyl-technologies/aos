@@ -10,6 +10,8 @@ use aos_hub_core::direct_upload::*;
 use worker::Env;
 
 pub(crate) struct QualifiedConfig {
+    /// Exact independently verified prerequisite measurement commitment.
+    pub(crate) acceptance_evidence: String,
     pub(crate) runtime: DirectRuntimeQualification,
     pub(crate) clock_qualification: String,
     pub(crate) uncertainty: u64,
@@ -123,6 +125,7 @@ impl QualifiedConfig {
             facts.runtime.maximum_parallel_provider_requests.get() as u32,
         )?;
         Ok(Self {
+            acceptance_evidence: artifact.evidence_sha256,
             clock_qualification: facts.clock_policy.commitment()?,
             uncertainty: facts.clock.uncertainty_seconds.get(),
             runtime: facts.runtime,
