@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use super::config::ApmConfig;
 use super::profile::Profile;
 use crate::types::ProfileScope;
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::aos_management_nix_env;
 use aos_core::output::{OutputMode, Printer};
 
 /// Outcome of clearing the NAR download cache.
@@ -455,7 +455,7 @@ async fn run_gc_locked(scope: ProfileScope, printer: &Printer, emit_json: bool) 
 
     printer.info("Running garbage collection...");
 
-    let nix_env = aos_nix_env();
+    let nix_env = aos_management_nix_env();
     let output = tokio::process::Command::new("nix-store")
         .envs(nix_env.iter().cloned())
         .arg("--gc")

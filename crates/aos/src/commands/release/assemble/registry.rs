@@ -9,14 +9,17 @@ use aos_package::registry::static_upload::collect_static_origin_files;
 use aos_release::artifact::{ArtifactKind, BundlePath};
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
-use aos_release::plan::ReleasePlanV1;
+use aos_release::plan::ReleasePlan;
 
 use super::{ArtifactAttributes, PayloadBuilder};
+
+/// Bundle path of the finalized registry author's own `HEAD`, kept as evidence.
+const FINALIZED_HEAD_EVIDENCE: &str = "evidence/registry-head";
 
 pub(super) fn assemble(
     registry: &Path,
     result_path: &Path,
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
     plan_digest: Sha256Digest,
     payload: &mut PayloadBuilder,
 ) -> Result<()> {
@@ -47,7 +50,7 @@ pub(super) fn assemble(
             .get(file.relative_path.as_str())
             .with_context(|| format!("unreviewed registry path {}", file.relative_path))?;
         validate_identity(identity, &file)?;
-        let relative = file.relative_path.clone();
+        let relative = format!("registry/{}", file.relative_path);
         BundlePath::parse(relative.clone())?;
         let id = format!(
             "registry/{}",
@@ -58,20 +61,22 @@ pub(super) fn assemble(
             expected: Some((identity.byte_size, Sha256Digest::parse(&identity.sha256)?)),
             ..ArtifactAttributes::plain(file.content_type)
         };
-        if relative == "HEAD" {
-            // Retain the finalized author's HEAD as evidence while staging
-            // keeps discovery on the approved base until a channel operation.
+        if file.relative_path == "HEAD" {
+            // Retain the finalized author's HEAD as evidence. The published
+            // HEAD (`registry/HEAD`, projected to the surface's `HEAD`) keeps
+            // discovery on the approved base until a channel operation, so
+            // every publication preserves the compare-and-swap base commit.
             payload.copy(
                 &file.source,
                 id,
                 ArtifactKind::RegistryObject,
-                "registry/HEAD".to_owned(),
+                FINALIZED_HEAD_EVIDENCE.to_owned(),
                 attributes,
             )?;
             let head = format!("{}\n", plan.registry_base_commit);
             let source = payload.root.join(".publication-head");
             super::write_new(&source, head.as_bytes())?;
-            let copied = payload.copy_origin(
+            let copied = payload.copy(
                 &source,
                 "registry/publication-head".to_owned(),
                 ArtifactKind::RegistryObject,
@@ -82,7 +87,7 @@ pub(super) fn assemble(
             copied?;
             continue;
         }
-        payload.copy_origin(
+        payload.copy(
             &file.source,
             id,
             ArtifactKind::RegistryObject,

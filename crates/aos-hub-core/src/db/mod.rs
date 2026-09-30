@@ -587,7 +587,15 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// The first entry is the immutable first stable production baseline. Databases
 /// from development histories must be reset before deploying this checkpoint;
 /// subsequent production changes require new forward migrations.
-pub const MIGRATIONS: &[&str] = &[include_str!("schema.sql")];
+///
+/// | Version | Script | Change |
+/// | --- | --- | --- |
+/// | 1 | `schema.sql` | Production baseline. |
+/// | 2 | `release_channel_advances.sql` | Channel ledger that admits per-train channel names. |
+pub const MIGRATIONS: &[&str] = &[
+    include_str!("schema.sql"),
+    include_str!("release_channel_advances.sql"),
+];
 
 /// Identifies the production migration lineage independently of its version.
 ///
@@ -27159,8 +27167,8 @@ source_nar_hash = ""
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            1,
-            "first production checkpoint has one baseline"
+            2,
+            "production baseline plus the per-train channel ledger"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection

@@ -6,7 +6,11 @@
 //! are reused across transfers: the HTTP client's connection pool, the
 //! SFTP session cache, and the S3 client cache all persist instead of
 //! being rebuilt on every request.
+//!
+//! A `PUT` carrying `If-Match` or `If-None-Match: *` is a conditional
+//! write; [`conditional`] defines its semantics for every protocol.
 
+pub mod conditional;
 pub mod fs;
 pub mod http;
 pub mod s3;

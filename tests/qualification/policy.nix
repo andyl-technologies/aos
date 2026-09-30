@@ -193,6 +193,11 @@
     .success;
   names = map (rule: rule.name) contract.package_rules;
   phases = map (gate: gate.phase) contract.requirements;
+  byField = field: rows: builtins.listToAttrs (map (row: lib.nameValuePair row.${field} row) rows);
+  profiles = byField "name" contract.profiles;
+  fitnessKinds = byField "kind" contract.fitness;
+  destinationKeys = map (row: "${row.surface}/${row.registry_tier}/${row.channel}") contract.destinations;
+  ringPartitions = profile: map (ring: ring.partitions) profile.rollout.rings;
   imageRecovery = builtins.head (
     builtins.filter (requirement: requirement.id == "image-update-recovery") contract.requirements
   );
@@ -275,8 +280,8 @@
     .success;
 in
   assert lib.hasInfix "cat scenario-report.json" (containerReport true);
-  assert !(lib.hasInfix "release qualification respond" (containerReport true));
-  assert lib.hasInfix "release qualification respond" (containerReport false);
+  assert !(lib.hasInfix "release step qualification respond" (containerReport true));
+  assert lib.hasInfix "release step qualification respond" (containerReport false);
   assert lib.hasInfix "lifecycle_cycles" (containerReport true);
   assert fixture == capturedFixture;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString sourceRoot) != null;
@@ -357,10 +362,8 @@ in
       "claim-disk-${platform}-qualified"
       "package-function"
     ]
-    # Release-wide recovery and rollout scenarios currently run on x86 only.
+    # Release-wide delivery and rollout scenarios currently run on x86 only.
     ++ lib.optionals (platform == "x86_64-linux") [
-      "operator-recovery"
-      "production-recovery"
       "rollout-health"
       "rollout-observation"
       "staging-delivery"
@@ -416,7 +419,6 @@ in
   assert configured.claims.fixture-reviewed.minimum_assurance == "A1";
   assert builtins.length configured.export.targets == 5;
   assert rejects {qualification.images.rebootCycles = 9;};
-  assert rejects {qualification.thresholds.stable.soak_seconds = lib.mkForce 1;};
   assert rejects {qualification.claims.disk-x86_64-linux-qualified.blocks_release = lib.mkForce false;};
   assert rejects {
     qualification.claims.invalid = {
@@ -428,8 +430,63 @@ in
     };
   };
   assert rejects {qualification.qemu.unknown = true;};
-  assert contract.thresholds.edge.soak_seconds < contract.thresholds.stable.soak_seconds;
-  assert contract.thresholds.stable.require_complete_matrix;
+  assert contract.schema_version == "aos.release.qualification-contract/v1";
+  assert contract.id == "aos-system";
+  assert builtins.all (requirement: !(requirement ? production_only)) contract.requirements;
+  assert !(builtins.any (requirement: builtins.elem requirement.id ["operator-recovery" "production-recovery"]) contract.requirements);
+  assert builtins.attrNames profiles == ["build" "functional" "smoke" "soak"];
+  assert builtins.length contract.destinations == 6;
+  assert builtins.attrNames fitnessKinds == ["alert-delivery" "authority-recovery" "hub-restore" "key-rotation" "storage-restore"];
+  assert profiles.build.requirements == ["build-integrity"];
+  assert profiles.build.claims == "none";
+  assert profiles.smoke.change_scoped && profiles.smoke.claims == "functional" && profiles.smoke.fitness == {};
+  assert profiles.functional.review_threshold == 1;
+  assert builtins.attrNames profiles.functional.fitness == ["alert-delivery" "authority-recovery" "hub-restore" "storage-restore"];
+  assert profiles.soak.claims == "qualified";
+  assert profiles.soak.soak_seconds == 604800;
+  assert ringPartitions profiles.soak == [4 32 128 256];
+  assert profiles.soak.require_complete_matrix;
+  assert profiles.soak.override
+  == {
+    soak_seconds = true;
+    rings = true;
+  };
+  assert builtins.all (profile: profile.name == "soak" || !(profile.override.soak_seconds || profile.override.rings)) contract.profiles;
+  assert builtins.all (profile: ringPartitions profile == [256] || profile.name == "soak") contract.profiles;
+  assert builtins.all (kind: kind.checks != [] && kind.bindings != []) contract.fitness;
+  assert !(builtins.any (key: builtins.elem key ["testing/candidate" "testing/stable" "production/edge"]) (map (row: "${row.registry_tier}/${row.channel}") contract.destinations));
+  assert builtins.elem "production/production/stable" destinationKeys;
+  assert builtins.all (row: builtins.hasAttr row.profile profiles) contract.destinations;
+  assert builtins.all (row: row.after == lib.optional (row.surface == "production") "staging") contract.destinations;
+  assert rejects {qualification.profiles.build.requirements = lib.mkForce ["staging-delivery"];};
+  assert rejects {qualification.profiles.soak.soak_seconds = lib.mkForce 1;};
+  assert rejects {
+    qualification.profiles.invalid = {
+      description = "Qualified claims without observation.";
+      requirements = ["build-integrity" "rollout-observation"];
+      claims = "qualified";
+      soak_seconds = 0;
+      review_threshold = 1;
+    };
+  };
+  assert rejects {
+    qualification.profiles.build.rollout.rings = lib.mkForce [
+      {
+        partitions = 128;
+        observe_seconds = 0;
+      }
+    ];
+  };
+  assert rejects {qualification.profiles.functional.fitness.unknown.max_age_seconds = 86400;};
+  assert rejects {
+    qualification.destinations."production/testing/candidate" = {
+      surface = "production";
+      registry_tier = "testing";
+      channel = "candidate";
+      profile = "smoke";
+      after = ["staging"];
+    };
+  };
     pkgs.writeTextFile {
       name = "aos-qualification-policy-check";
       destination = "/contract.json";

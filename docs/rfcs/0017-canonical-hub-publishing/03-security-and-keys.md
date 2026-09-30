@@ -41,7 +41,7 @@ Private keys are separate even when two roles use the same algorithm.
 | PCR policy | Non-exportable HSM or hardware token | Two-person release approval | Sign declared PCR policies embedded in reviewed UKIs |
 | TUF root | Three offline Ed25519 devices in distinct custody | 2 of 3 | Authorize TUF role keys and root rotation |
 | TUF top-level targets/delegations | Three offline Ed25519 devices | 2 of 3 | Authorize the release-role keys, paths, and thresholds |
-| TUF stable release | Three offline Ed25519 devices in distinct custody | 2 of 3 | Authorize a stable-eligible or emergency release manifest |
+| TUF stable release | Three offline Ed25519 devices in distinct custody | 2 of 3 | Authorize a stable-eligible release manifest |
 | TUF candidate release | Two operator-present hardware devices | 1 of 2 | Authorize an RC manifest that stable cannot select |
 | TUF edge release | TPM-sealed maintainer-host service key | 1 of 1 | Authorize only an edge-version manifest under the edge path |
 | TUF snapshot | Separate TPM-sealed maintainer-host service key | 1 of 1 | Bind one set of already-authorized role metadata |
@@ -94,8 +94,8 @@ Production separates the roles in accordance with the
 3. Root, top-level targets, and stable release private keys remain offline.
    Root rotation is signed by the old and new thresholds and publishes every
    intermediate root version.
-4. The stable role threshold-authorizes stable-eligible and emergency release
-   manifests. Candidate and edge roles cannot write that path or produce a
+4. The stable role threshold-authorizes stable-eligible release manifests,
+   including those planned with an emergency profile override. Candidate and edge roles cannot write that path or produce a
    version class that the stable channel accepts. The final no-suffix release
    appears on `candidate` with stable authorization before its soak begins.
 5. Candidate and edge roles bind only their closed release manifests. Their

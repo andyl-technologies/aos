@@ -1,4 +1,12 @@
 //! Restricted renewal of TUF timestamp metadata.
+//!
+//! `refresh` signs the next timestamp for a destination's surface. Without a
+//! prior timestamp it signs version one. With one, the continuity mode is
+//! derived from the snapshot it names (see
+//! [`aos_release::tuf::TimestampContinuity`]): a renewal of the same snapshot,
+//! or a move to the newer snapshot of a later release. Either way the new
+//! version is exactly the prior version plus one. `publish` replaces the
+//! surface's pointer over exactly that prior version.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -10,28 +18,27 @@ use anyhow::{Context as _, Result, bail};
 use aos_core::output::Printer;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
-use aos_release::plan::ReleasePlanV1;
+use aos_release::plan::ReleasePlan;
 use aos_release::signing::{
     SIGNING_REQUEST_DOMAIN, SignatureAlgorithm, SignerRole, SigningContext, SigningOperation,
-    SigningRequestV1, TrustedEd25519Key,
+    SigningRequest, TrustedEd25519Key,
 };
 use aos_release::tuf::{
-    RootMetadataV1, SnapshotMetadataV1, TufEnvelopeV1, TufRole, TufRootTrust, TufSignatureV1,
-    metadata_signing_digest, timestamp_metadata, verify_prior_timestamp_for_refresh,
-    verify_root_envelope, verify_snapshot_envelope, verify_timestamp,
+    RootMetadataV1, SnapshotMetadataV1, TimestampContinuity, TimestampMetadataV1, TufEnvelopeV1,
+    TufRole, TufRootTrust, TufSignatureV1, metadata_signing_digest, timestamp_metadata,
+    verify_prior_timestamp_for_continuity, verify_root_envelope, verify_snapshot_envelope,
+    verify_timestamp, verify_timestamp_succession,
 };
 use base64::Engine as _;
 
-use aos_remote::hub::{HubClient, hub_rpc};
-
 use crate::cli::{
-    HubAccessArgs, ReleaseTimestampCommand, ReleaseTimestampPublishArgs,
-    ReleaseTimestampRefreshArgs,
+    ReleaseTimestampCommand, ReleaseTimestampPublishArgs, ReleaseTimestampRefreshArgs,
 };
 
+use super::access::{self, SignerNeed};
 use super::capture;
-use super::hub_transition;
 use super::signer::ExternalSigner;
+use super::surface::TimestampPublication;
 use super::verify;
 
 pub(super) async fn run(command: &ReleaseTimestampCommand, printer: &Printer) -> Result<()> {
@@ -41,11 +48,11 @@ pub(super) async fn run(command: &ReleaseTimestampCommand, printer: &Printer) ->
     }
 }
 
-const PRODUCTION_HUB: &str = "https://aos.andyl.org";
-
+/// Publishes one verified timestamp pointer to a destination's surface.
 async fn publish(args: &ReleaseTimestampPublishArgs, printer: &Printer) -> Result<()> {
-    let plan: ReleasePlanV1 = read_canonical(&args.plan, "release plan")?;
+    let plan: ReleasePlan = read_canonical(&args.plan, "release plan")?;
     plan.require_publishable_qualification()?;
+    let destination = plan.destination(&args.to)?;
     let root: TufEnvelopeV1<RootMetadataV1> = read_canonical(&args.root, "TUF root")?;
     let snapshot: TufEnvelopeV1<SnapshotMetadataV1> =
         read_canonical(&args.snapshot, "TUF snapshot")?;
@@ -83,116 +90,61 @@ async fn publish(args: &ReleaseTimestampPublishArgs, printer: &Printer) -> Resul
 
     let timestamp_bytes = canonical::to_vec(&timestamp)?;
     let snapshot_bytes = canonical::to_vec(&snapshot)?;
-    let timestamp_digest = Sha256Digest::of_bytes(&timestamp_bytes);
-    let snapshot_digest = Sha256Digest::of_bytes(&snapshot_bytes);
-    let timestamp_path = "tuf/timestamp.json";
     let snapshot_path = format!("tuf/{}.snapshot.json", snapshot.signed.version);
-    require_surface_bytes(&args.registry_surface, timestamp_path, &timestamp_bytes)?;
+    require_surface_bytes(
+        &args.registry_surface,
+        "tuf/timestamp.json",
+        &timestamp_bytes,
+    )?;
     require_surface_bytes(&args.registry_surface, &snapshot_path, &snapshot_bytes)?;
 
-    let public_client = hub_transition::public_client()?;
-    hub_transition::verify_deployment(
-        &public_client,
-        PRODUCTION_HUB,
-        &plan.production_deployment_id,
+    let client = access::connect(
+        &plan,
+        destination.surface,
+        args.token.as_deref(),
+        args.config.as_deref(),
+        SignerNeed::Credentials,
     )
     .await?;
-    let access = HubAccessArgs {
-        hub: Some(PRODUCTION_HUB.into()),
-        token: args.token.clone(),
-    };
-    let publication = crate::commands::hub::prepare_registry_publication(
-        &access,
-        &plan.registry,
-        None,
-        &args.registry_surface,
-        printer,
-    )
-    .await?;
-    if !matches!(publication.state.as_str(), "preparing" | "writing_pointers") {
-        bail!("production Hub did not retain the timestamp publication for atomic commit");
-    }
-    require_publication_object(
-        &publication,
-        timestamp_path,
-        "mutable_pointer",
-        timestamp_digest,
-        timestamp_bytes.len(),
-    )?;
-    require_publication_object(
-        &publication,
-        &snapshot_path,
-        "immutable",
-        snapshot_digest,
-        snapshot_bytes.len(),
-    )?;
-    let token = args
-        .token
-        .as_deref()
-        .context("timestamp publication requires a production access token")?;
-    let hub = HubClient::connect_with_token(PRODUCTION_HUB, token)?;
-    let state = hub
-        .call_topology(
-            hub_rpc::PublishReleaseTimestamp,
-            &aos_proto_types::PublishReleaseTimestampRequest {
-                registry: plan.registry.clone(),
-                snapshot_digest: snapshot_digest.to_string(),
-                snapshot_version: i64::try_from(snapshot.signed.version)?,
-                timestamp_version: i64::try_from(timestamp.signed.version)?,
-                timestamp_digest: timestamp_digest.to_string(),
-                publication_id: publication.publication_id.clone(),
-                timestamp_path: timestamp_path.into(),
-                snapshot_path: snapshot_path.clone(),
+    client.verify_identity().await?;
+    let published = client
+        .publish_timestamp(
+            &args.registry_surface,
+            &TimestampPublication {
+                plan: &plan,
+                snapshot_bytes: &snapshot_bytes,
+                snapshot_version: snapshot.signed.version,
+                timestamp_bytes: &timestamp_bytes,
+                timestamp_version: timestamp.signed.version,
             },
+            printer,
         )
         .await?;
-    if state.snapshot_digest != snapshot_digest.to_string()
-        || state.snapshot_version != i64::try_from(snapshot.signed.version)?
-        || state.timestamp_version != i64::try_from(timestamp.signed.version)?
-        || state.timestamp_digest != timestamp_digest.to_string()
-    {
-        bail!("Hub timestamp state differs from the exact signed metadata");
-    }
-    let publication = hub
-        .call_topology(
-            hub_rpc::GetRegistryPublication,
-            &aos_proto_types::GetRegistryPublicationRequest {
-                publication_id: publication.publication_id.clone(),
-            },
-        )
-        .await?;
-    if publication.state != "ready" || publication.completed_at <= 0 {
-        bail!("production Hub did not atomically commit the timestamp publication");
-    }
-    hub_transition::read_back_publication(
-        &public_client,
-        PRODUCTION_HUB,
-        &plan.registry,
-        &publication,
-    )
-    .await?;
-    hub_transition::verify_deployment(
-        &public_client,
-        PRODUCTION_HUB,
-        &plan.production_deployment_id,
-    )
-    .await?;
-    persist_publication(args, &timestamp_bytes, &state, &publication.publication_id)?;
+    client.verify_identity().await?;
+    persist_publication(
+        args,
+        &timestamp_bytes,
+        &published.operation_id,
+        Sha256Digest::of_bytes(&snapshot_bytes),
+        snapshot.signed.version,
+        timestamp.signed.version,
+    )?;
 
     if printer.json_if_active(&serde_json::json!({
         "schema_version": "aos.release.timestamp-publish-result/v1",
+        "destination": destination.name,
         "timestamp_version": timestamp.signed.version,
-        "timestamp_digest": timestamp_digest,
+        "timestamp_digest": Sha256Digest::of_bytes(&timestamp_bytes),
         "snapshot_version": snapshot.signed.version,
-        "snapshot_digest": snapshot_digest,
-        "publication_id": publication.publication_id,
+        "operation_id": published.operation_id,
+        "objects_verified": published.objects.len(),
         "output": args.output,
     })) {
         return Ok(());
     }
     printer.success(&format!(
-        "Published and publicly verified timestamp {} as {}",
-        timestamp.signed.version, publication.publication_id
+        "Published and publicly verified timestamp {} to {} as {}",
+        timestamp.signed.version, destination.name, published.operation_id
     ));
     Ok(())
 }
@@ -206,78 +158,39 @@ fn require_surface_bytes(root: &Path, relative: &str, expected: &[u8]) -> Result
     Ok(())
 }
 
-fn require_publication_object(
-    publication: &aos_remote::hub_types::RegistryPublication,
-    path: &str,
-    kind: &str,
-    digest: Sha256Digest,
-    size: usize,
-) -> Result<()> {
-    let object = publication
-        .objects
-        .iter()
-        .find(|object| object.path == path)
-        .with_context(|| format!("Hub publication lacks {path}"))?;
-    if !object.verified
-        || object.kind != kind
-        || object.sha256 != digest.hex()
-        || object.byte_size != i64::try_from(size)?
-    {
-        bail!("Hub publication object {path} differs from signed metadata");
-    }
-    Ok(())
-}
-
 fn persist_publication(
     args: &ReleaseTimestampPublishArgs,
     timestamp: &[u8],
-    state: &aos_proto_types::ReleaseTimestampState,
-    publication_id: &str,
+    operation_id: &str,
+    snapshot_digest: Sha256Digest,
+    snapshot_version: u64,
+    timestamp_version: u64,
 ) -> Result<()> {
-    if args.output.exists() {
-        bail!(
-            "timestamp publication output already exists: {}",
-            args.output.display()
-        );
-    }
-    let parent = args
-        .output
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    fs::create_dir_all(parent)?;
-    let temporary = tempfile::Builder::new()
-        .prefix(".aos-release-timestamp-publish-")
-        .tempdir_in(parent)?;
-    let root = temporary.path().join("tree");
-    fs::create_dir(&root)?;
-    write_new(&root.join("timestamp.json"), timestamp)?;
     let evidence = canonical::to_vec(&serde_json::json!({
         "schema_version": "aos.release.timestamp-publication-evidence/v1",
-        "publication_id": publication_id,
-        "snapshot_digest": state.snapshot_digest,
-        "snapshot_version": state.snapshot_version,
-        "timestamp_digest": state.timestamp_digest,
-        "timestamp_version": state.timestamp_version,
+        "destination": args.to,
+        "operation_id": operation_id,
+        "snapshot_digest": snapshot_digest,
+        "snapshot_version": snapshot_version,
+        "timestamp_digest": Sha256Digest::of_bytes(timestamp),
+        "timestamp_version": timestamp_version,
     }))?;
-    write_new(&root.join("publication-evidence.json"), &evidence)?;
-    File::open(&root)?.sync_all()?;
-    rustix::fs::renameat_with(
-        rustix::fs::CWD,
-        &root,
-        rustix::fs::CWD,
+    super::journal::persist_tree(
         &args.output,
-        rustix::fs::RenameFlags::NOREPLACE,
-    )?;
-    File::open(parent)?.sync_all()?;
-    Ok(())
+        &[
+            ("timestamp.json", timestamp),
+            ("publication-evidence.json", &evidence),
+        ],
+        "timestamp publication",
+    )
 }
 
 async fn refresh(args: &ReleaseTimestampRefreshArgs, printer: &Printer) -> Result<()> {
     let plan_bytes = capture::control_file(&args.plan, "release plan")?;
     canonical::require_canonical(&plan_bytes, "release plan")?;
-    let plan: ReleasePlanV1 = canonical::from_slice(&plan_bytes, "release plan")?;
+    let plan: ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
     plan.validate()?;
+    plan.destination(&args.to)?;
     let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
 
     let root: TufEnvelopeV1<RootMetadataV1> = read_canonical(&args.root, "TUF root")?;
@@ -300,23 +213,33 @@ async fn refresh(args: &ReleaseTimestampRefreshArgs, printer: &Printer) -> Resul
     }
     verify_snapshot_envelope(&snapshot, &root.signed, now)?;
 
-    let previous = args
+    let previous: Option<TufEnvelopeV1<TimestampMetadataV1>> = args
         .previous_timestamp
         .as_ref()
         .map(|path| read_canonical(path, "prior TUF timestamp"))
         .transpose()?;
-    let previous_version = if let Some(previous) = &previous {
-        verify_prior_timestamp_for_refresh(previous, &root.signed, &snapshot)?;
-        if args.version != previous.signed.version.saturating_add(1) {
-            bail!("timestamp refresh version must increase by exactly one");
+    // The prior timestamp fixes the continuity mode: the same snapshot is a
+    // renewal, a newer snapshot is a later release on the same surface, and
+    // anything else (an older or conflicting snapshot) fails closed.
+    let continuity = match &previous {
+        Some(previous) => {
+            let mode = TimestampContinuity::between(&previous.signed, &snapshot)?;
+            verify_prior_timestamp_for_continuity(previous, &root.signed, &snapshot, mode)?;
+            if Some(args.version) != previous.signed.version.checked_add(1) {
+                bail!("timestamp refresh version must increase by exactly one");
+            }
+            Some((previous, mode))
         }
-        Some(previous.signed.version)
-    } else {
-        if args.version != 1 {
-            bail!("first timestamp version must be one");
+        None => {
+            if args.version != 1 {
+                bail!("first timestamp version must be one");
+            }
+            None
         }
-        None
     };
+    let previous_version = continuity
+        .as_ref()
+        .map(|(previous, _)| previous.signed.version);
 
     let signed = timestamp_metadata(
         &plan.registry,
@@ -341,7 +264,7 @@ async fn refresh(args: &ReleaseTimestampRefreshArgs, printer: &Printer) -> Resul
     let mut nonces = BTreeSet::new();
     for (key, identity) in signing_keys {
         let nonce = fresh_nonce(&mut nonces)?;
-        let request = SigningRequestV1 {
+        let request = SigningRequest {
             schema_version: SIGNING_REQUEST_DOMAIN.to_owned(),
             request_id: format!("timestamp-{}", &nonce[..20]),
             nonce,
@@ -368,19 +291,28 @@ async fn refresh(args: &ReleaseTimestampRefreshArgs, printer: &Printer) -> Resul
     }
     let envelope = TufEnvelopeV1 { signed, signatures };
     verify_timestamp(&envelope, &root.signed, &snapshot, previous_version, now)?;
+    if let Some((previous, mode)) = &continuity {
+        verify_timestamp_succession(&previous.signed, &envelope.signed, &snapshot, *mode)?;
+    }
     write_new(&args.output, &canonical::to_vec(&envelope)?)?;
 
+    let continuity_name = match continuity.map(|(_, mode)| mode) {
+        None => "first",
+        Some(TimestampContinuity::SameSnapshot) => "same-snapshot",
+        Some(TimestampContinuity::NewSnapshot) => "new-snapshot",
+    };
     if printer.json_if_active(&serde_json::json!({
         "schema_version": "aos.release.timestamp-refresh-result/v1",
         "version": envelope.signed.version,
         "snapshot_version": snapshot.signed.version,
+        "continuity": continuity_name,
         "signature_count": envelope.signatures.len(),
         "output": args.output,
     })) {
         return Ok(());
     }
     printer.success(&format!(
-        "Signed timestamp {} for snapshot {} at {}",
+        "Signed timestamp {} for snapshot {} ({continuity_name}) at {}",
         envelope.signed.version,
         snapshot.signed.version,
         args.output.display()
@@ -390,7 +322,7 @@ async fn refresh(args: &ReleaseTimestampRefreshArgs, printer: &Printer) -> Resul
 
 fn timestamp_signing_keys(
     root: &RootMetadataV1,
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
     specifications: &[String],
 ) -> Result<Vec<(TrustedEd25519Key, String)>> {
     let policy = root
@@ -504,42 +436,5 @@ mod tests {
     #[test]
     fn signing_key_paths_reject_duplicates() {
         assert!(parse_key_paths(&["key-1=/a".to_owned(), "key-1=/b".to_owned()]).is_err());
-    }
-
-    #[test]
-    fn timestamp_publication_requires_exact_declared_object() {
-        let bytes = b"timestamp";
-        let digest = Sha256Digest::of_bytes(bytes);
-        let publication = aos_remote::hub_types::RegistryPublication {
-            objects: vec![aos_remote::hub_types::RegistryPublicationObject {
-                path: "tuf/timestamp.json".into(),
-                kind: "mutable_pointer".into(),
-                sha256: digest.hex(),
-                byte_size: i64::try_from(bytes.len()).unwrap(),
-                verified: true,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        assert!(
-            require_publication_object(
-                &publication,
-                "tuf/timestamp.json",
-                "mutable_pointer",
-                digest,
-                bytes.len(),
-            )
-            .is_ok()
-        );
-        assert!(
-            require_publication_object(
-                &publication,
-                "tuf/timestamp.json",
-                "immutable",
-                digest,
-                bytes.len(),
-            )
-            .is_err()
-        );
     }
 }

@@ -1,4 +1,8 @@
 //! Atomic composition of registry, release-target, and TUF publication bytes.
+//!
+//! The composed tree is the extra surface content (TUF metadata and the
+//! release record) that `step publish --surface` overlays on the projected
+//! bundle, or that `step timestamp publish` renews, for one destination.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
@@ -9,7 +13,7 @@ use aos_core::output::Printer;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::manifest::ManifestEnvelopeV1;
-use aos_release::plan::ReleasePlanV1;
+use aos_release::plan::ReleasePlan;
 use aos_release::tuf::{
     ImmutableTufSetV1, TufEnvelopeV1, TufReleaseExpectation, TufRootTrust, verify_immutable_set,
     verify_timestamp,
@@ -27,8 +31,9 @@ pub(super) fn run(args: &ReleaseComposeSurfaceArgs, printer: &Printer) -> Result
         );
     }
     let plan_bytes = read_canonical_bytes(&args.plan, "release plan")?;
-    let plan: ReleasePlanV1 = canonical::from_slice(&plan_bytes, "release plan")?;
+    let plan: ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
     plan.validate()?;
+    let destination = plan.destination(&args.to)?;
     let captured = capture::bundle(&args.bundle)?;
     if captured.plan_bytes != plan_bytes {
         bail!("release bundle plan differs from the surface plan");
@@ -180,6 +185,7 @@ pub(super) fn run(args: &ReleaseComposeSurfaceArgs, printer: &Printer) -> Result
 
     if printer.json_if_active(&serde_json::json!({
         "schema_version": "aos.release.compose-surface-result/v1",
+        "destination": destination.name,
         "release_id": summary.release_id,
         "manifest_envelope_digest": manifest_envelope_digest,
         "snapshot_version": set.snapshot.signed.version,

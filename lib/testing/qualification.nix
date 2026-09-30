@@ -8,14 +8,14 @@
   workRoot,
   timeoutSeconds ? 1800,
 }: let
+  # `case_scenarios` maps exact case ids to executables that take precedence
+  # over the requirement-wide `scenarios`; it is omitted when empty so the
+  # registry stays canonical for the Rust reader.
   registry = pkgs.writeTextFile {
     name = "${name}-scenarios";
     destination = "/scenarios.json";
     text = builtins.toJSON ({
-        schema_version =
-          if caseScenarios == {}
-          then "aos.release.qualification-scenarios/v1"
-          else "aos.release.qualification-scenarios/v2";
+        schema_version = "aos.release.qualification-scenarios/v1";
         inherit platform scenarios;
       }
       // (
@@ -27,7 +27,7 @@
   quote = value: "'" + builtins.replaceStrings ["'"] ["'\\''"] value + "'";
   registryPath = "${registry}/scenarios.json";
   executor = pkgs.writeShellScriptBin name ''
-    exec ${pkgs.aos}/bin/aos release qualification execute \
+    exec ${pkgs.aos}/bin/aos release step qualification execute \
       --scenarios ${registryPath} \
       --identity ${quote identity} \
       --work-root ${quote workRoot} \

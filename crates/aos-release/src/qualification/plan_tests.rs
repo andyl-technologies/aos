@@ -1,10 +1,10 @@
 //! Tests early binding of published package cells to their execution images.
 
 use super::{K3sTopology, PackageExecution, PackageRole, PackageRule};
-use crate::plan::ReleasePlanV1;
+use crate::plan::ReleasePlan;
 use crate::platform::{MatrixCell, Platform};
 
-fn execution_plan(execution: PackageExecution) -> anyhow::Result<ReleasePlanV1> {
+fn execution_plan(execution: PackageExecution) -> anyhow::Result<ReleasePlan> {
     let (mut plan, _) = crate::verify::tests::qualification_fixture()?;
     let package = &mut plan.packages[0];
     for cell in &mut package.platforms {
@@ -25,7 +25,7 @@ fn execution_plan(execution: PackageExecution) -> anyhow::Result<ReleasePlanV1> 
         package.name = "k3s".into();
     }
     let template = package.clone();
-    let policy = plan.qualification.as_mut().unwrap();
+    let policy = &mut plan.qualification;
     let rule = policy
         .package_rules
         .iter_mut()
@@ -47,8 +47,7 @@ fn execution_plan(execution: PackageExecution) -> anyhow::Result<ReleasePlanV1> 
             });
         }
     }
-    plan.gates = policy.gates(&plan.registry, plan.release_class)?;
-    plan.public_evidence_policy_digest = policy.digest()?;
+    crate::verify::tests::rebind(&mut plan)?;
     Ok(plan)
 }
 
@@ -89,8 +88,6 @@ fn execution_image_requires_every_published_package_platform() -> anyhow::Result
 
         let error = plan
             .qualification
-            .as_ref()
-            .unwrap()
             .validate_plan(&plan)
             .unwrap_err()
             .to_string();
@@ -115,9 +112,9 @@ fn blocked_package_cells_do_not_require_an_execution_image() -> anyhow::Result<(
     }
     plan.images[0].system_variant = "another-image".into();
 
-    let policy = plan.qualification.as_ref().unwrap();
+    let policy = &plan.qualification;
     policy.validate_package_execution_images(&plan)?;
-    // The independent stable-release completeness requirement still applies.
+    // The soak profile of production/stable still requires a complete matrix.
     assert!(
         plan.validate()
             .unwrap_err()
