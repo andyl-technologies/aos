@@ -1,62 +1,47 @@
-##! Synthetic aggregate registry for reference HTTP backend endpoints.
-{lib, ...}: let
-  types = lib.abilities.types;
-  endpoint = types.record {
-    fields = {
-      address = types.enum ["127.0.0.1"];
-      port = types.integer {
-        minimum = 1024;
-        maximum = 65535;
-      };
-      transport = types.enum ["tcp"];
+##! Publishes checked loopback endpoint slots through a native typed operation.
+{
+  config,
+  lib,
+  package,
+  ...
+}: let
+  endpoint = lib.types.submodule {
+    options = {
+      address = lib.mkOption {type = lib.types.enum ["127.0.0.1"];};
+      port = lib.mkOption {type = lib.types.ints.between 1024 65535;};
+      transport = lib.mkOption {type = lib.types.enum ["tcp"];};
     };
-    optional = [];
   };
-  endpointMap = types.optional (types.map {
+  endpointMap = lib.types.nullOr (lib.types.attrsWith {
+    elemType = lib.types.nullOr endpoint;
+    maxEntries = 1024;
     keyMaxLength = 128;
     keySyntax = "local-key-v1";
-    maxEntries = 1024;
-    value = types.optional endpoint;
   });
-  lifecycle = {persistentDeleteMethod = null;};
-  aggregation = {
-    scope = "provider-instance";
-    key = "slot";
-    rejectSlotCollisions = true;
-    mergeContract = null;
-    controllerGroup = "backend";
-  };
-  declaration = lib.abilities.declareInterface {
-    name = "aos.test.http-backend";
-    abi = 1;
-    description = "Aggregates synthetic loopback HTTP backend endpoints for fixture consumers.";
-    requestType = endpoint;
-    outputs.endpoints = {
-      description = "Published endpoints keyed by fixture backend slot.";
-      schema = endpointMap;
-      phase = "planning";
-      visibility = "protected";
-      lifetime = "instance";
-    };
-    methods = {};
-    inherit lifecycle aggregation;
-    guarantees = [];
-  };
-  provider = import ./provider.nix {inherit lib;};
+  cfg = config.aos.referenceHttpBackend;
+  program = package // {meta.mainProgram = "aos-reference-binding";};
 in {
-  config.aos.abilities = {
-    interfaces.http-backend = declaration;
-    implementations.http-backend = {
-      description = "Aggregates the synthetic HTTP endpoints contributed by the fixture.";
-      interface = "http-backend";
-      methods = [];
-      guarantees = [];
-      requirements = {};
-      compose = provider.compose;
-      transition = provider.transition;
-      artifact = null;
-      desiredType = endpoint;
-      requiredFeatures = [];
+  options.aos.referenceHttpBackend = {
+    enable = lib.mkEnableOption "reference HTTP endpoint publication";
+    endpoints = lib.mkOption {
+      type = endpointMap;
+      default = {};
+      description = "Checked optional loopback endpoint slots published to native consumers.";
     };
   };
+  config = lib.mkMerge [
+    {
+      aos.abilities.referenceHttpBackend.operations.publish = {
+        input.options.endpoints = lib.mkOption {type = endpointMap;};
+        result.options = {
+          endpoints = lib.mkOption {type = endpointMap;};
+          resource = lib.mkOption {type = lib.types.str;};
+        };
+        handler = {inherit program;};
+      };
+    }
+    (lib.mkIf cfg.enable {
+      aos.abilities.referenceHttpBackend.operations.publish.effects.registry.input.endpoints = cfg.endpoints;
+    })
+  ];
 }

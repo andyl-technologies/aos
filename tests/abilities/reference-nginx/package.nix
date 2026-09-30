@@ -5,22 +5,33 @@
   mkDerivation,
   nginx,
   python3,
+  service-management,
 }: let
   mkFixture = {
     pname,
-    abilities,
+    module,
     src,
+    moduleDeps ? [],
   }:
     mkDerivation {
-      inherit pname abilities src;
+      inherit pname module src moduleDeps;
       version = "1.0.0";
-      runtimeDeps = [];
+      runtimeDeps = [python3];
 
       phases = [
         {
+          name = "check-native-handler";
+          script = ''
+            ${python3}/bin/python3 ${./.}/test-binding-handler.py
+          '';
+        }
+        {
           name = "install";
           script = ''
-            mkdir -p "$out/share/${pname}"
+            mkdir -p "$out/share/${pname}" "$out/bin"
+            printf '%s\n' '#!${python3}/bin/python3' > "$out/bin/aos-reference-binding"
+            cat ${./binding-handler.py} >> "$out/bin/aos-reference-binding"
+            chmod 0555 "$out/bin/aos-reference-binding"
             printf '%s\n' 'synthetic nginx composition fixture' > "$out/share/${pname}/README"
           '';
         }
@@ -29,32 +40,37 @@
       meta = {
         description = "Synthetic nginx composition fixture";
         license = "Apache-2.0";
+        mainProgram = "aos-reference-binding";
       };
     };
+  backendRegistry = mkFixture {
+    pname = "ability-reference-http-backend-registry";
+    module = ./modules/backend-registry;
+    src = ./modules/backend-registry;
+  };
 in {
   consumer = mkFixture {
     pname = "ability-reference-nginx-consumer";
-    abilities = ./modules/consumer;
+    module = ./modules/consumer;
+    moduleDeps = [service-management];
     src = ./modules/consumer;
   };
 
   backend-consumer = mkFixture {
     pname = "ability-reference-nginx-backend-consumer";
-    abilities = ./modules/backend-consumer;
+    module = ./modules/backend-consumer;
+    moduleDeps = [service-management backendRegistry];
     src = ./modules/backend-consumer;
   };
 
-  backend-registry = mkFixture {
-    pname = "ability-reference-http-backend-registry";
-    abilities = ./modules/backend-registry;
-    src = ./modules/backend-registry;
-  };
+  backend-registry = backendRegistry;
 
   runtime-services = mkDerivation {
     pname = "ability-reference-runtime-services";
     version = "1.0.0";
     src = ./modules/runtime-services;
-    abilities = ./modules/runtime-services;
+    module = ./modules/runtime-services;
+    moduleDeps = [service-management];
     runtimeDeps = [coreutils nginx python3];
 
     phases = [

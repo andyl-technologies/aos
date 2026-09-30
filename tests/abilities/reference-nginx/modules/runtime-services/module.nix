@@ -1,19 +1,19 @@
 ##! Package-owned service declarations for native ability reference tests.
-{lib, ...}: let
-  inherit (lib.abilities) packageOutput resultOf;
-
+{
+  config,
+  lib,
+  package,
+  ...
+}: let
   command = entryPoint: arguments: {
     executable = {
-      artifact = packageOutput {};
-      entry_point = "bin/${entryPoint}";
+      path = "${package}/bin/${entryPoint}";
       inherit arguments;
     };
     ignore_failure = false;
   };
 
   setupService = {
-    consumerInstance = "runtime-services";
-    service = "setup";
     enable = true;
     lifecycle = {
       description = "Prepare native ability reference fixture state";
@@ -38,7 +38,7 @@
     };
   };
 
-  setupResource = resultOf "setup-lifecycle" "resource";
+  setupResource = config.aos.abilities.serviceManagement.operations.realize.effects."runtime-services.setup".outputs.resource;
   dependencies = {
     prerequisites = [setupResource];
     after = [setupResource];
@@ -55,9 +55,7 @@
     managerName ? name,
   }:
     {
-      consumerInstance = "runtime-services";
       enable = true;
-      service = name;
       lifecycle = {
         inherit description;
         execution_model = "foreground";
