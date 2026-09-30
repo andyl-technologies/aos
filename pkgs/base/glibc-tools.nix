@@ -11,7 +11,9 @@ in
     pname = "glibc-tools";
     inherit version;
 
-    buildDeps = [glibc.bin];
+    # The utility tree is target data copied by native build tools.
+    src = glibc.bin;
+    buildDeps = [];
     runtimeDeps = [glibc perl bash];
     dontNukeRefs = true;
 
