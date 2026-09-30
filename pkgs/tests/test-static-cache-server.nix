@@ -1,13 +1,43 @@
 {
+  service-management,
+  aos-filesystem-provider,
+  nftables,
   lib,
   mkDerivation,
   python3,
 }:
 mkDerivation {
   platformSupport = {
-    build = [{abi = ["gnu"]; os = ["linux"];}];
-    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-    target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+    build = [
+      {
+        abi = ["gnu"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["linux"];
+      }
+      {
+        abi = ["darwin"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["darwin"];
+      }
+    ];
+    target = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["linux"];
+      }
+      {
+        abi = ["darwin"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["darwin"];
+      }
+    ];
     role = "public-package";
   };
   pname = "test-static-cache-server";
@@ -101,7 +131,8 @@ mkDerivation {
     }
   ];
 
-  abilities = ./_test-static-cache-server;
+  moduleDeps = [service-management aos-filesystem-provider nftables];
+  module = ./_test-static-cache-server;
 
   meta = {
     description = "AOS static cache test HTTP server package";

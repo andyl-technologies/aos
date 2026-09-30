@@ -2,22 +2,14 @@
 {
   config,
   lib,
+  package,
+  dependencies,
   ...
 }: let
   cfg = config.desired-prune-test;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  inherit (lib.abilities) resultOf;
 
-  state = serviceManagement.forProducer {
-    consumerInstance = "desired-prune-test";
-    key = "state";
-    interface = serviceManagement.interfaces.persistentStorageAllocation;
-    parameters = {
-      name = "state";
-      purpose = "state";
-      mode = "0750";
-    };
-  };
+  state = config.aos.abilities.filesystem.operations.persistentAllocate.effects."desired-prune-test-state";
+
   serviceDefinition = {
     lifecycle = {
       description = "AOS desired reconciliation prune test";
@@ -28,9 +20,8 @@
       start = [
         {
           executable = {
-            artifact = lib.abilities.packageOutput {};
-            entry_point = "bin/desired-prune-test-start";
-            arguments = [(resultOf "state" "planned-path")];
+            path = "${package}/bin/desired-prune-test-start";
+            arguments = [state.outputs.path];
           };
           ignore_failure = false;
         }
@@ -48,15 +39,14 @@
     storage.mounts = [
       {
         name = "state";
-        source = resultOf "state" "planned-path";
+        source = state.outputs.path;
         access = "read-write";
       }
     ];
   };
-  producers = [state];
 in {
   options.desired-prune-test.enable = lib.mkOption {
-    type = lib.abilities.types.boolean;
+    type = lib.types.bool;
     default = true;
     description = "Enable the desired-state pruning test service.";
   };
@@ -65,9 +55,14 @@ in {
     {
       aos.services."desired-prune-test.main" = serviceDefinition // {enable = cfg.enable;};
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = cfg.enable;
+    (lib.mkIf cfg.enable {
+      aos.abilities.filesystem.operations.persistentAllocate.effects."desired-prune-test-state".lifetime = "persistent";
+      aos.abilities.filesystem.operations.persistentAllocate.effects."desired-prune-test-state".input = {
+        path = "/var/lib/desired-prune-test";
+        mode = "0750";
+        owner = "root";
+        group = "root";
+      };
     })
   ];
 }

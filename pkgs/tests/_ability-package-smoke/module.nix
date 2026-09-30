@@ -1,56 +1,50 @@
-{lib, ...}: let
-  interface = lib.abilities.declareInterface {
-    name = "aos.test.package-smoke";
-    abi = 1;
-    description = "Exercises package ability projection and retained artifact closure.";
-    requestType = lib.abilities.types.boolean;
-    outputs = {};
-    methods = {};
-    lifecycle = {
-      persistentDeleteMethod = null;
-    };
-    guarantees = [];
-    aggregation = {
-      scope = "provider-instance";
-      key = "slot";
-      rejectSlotCollisions = true;
-      mergeContract = null;
-      controllerGroup = "smoke";
-    };
-  };
-in {
-  config.aos.abilities = {
-    interfaces.default = interface;
-    implementations.default = {
-      description = "Provides the package ability projection smoke interface.";
-      interface = "default";
-      methods = [];
-      requirements = {};
-      guarantees = [];
-      compose = context: context;
-      transition = context: context;
-      artifact = lib.abilities.packageOutput {
-        package = "ability-package-smoke-provider";
+##! Exercises native package schema projection and retained handler closures.
+{
+  lib,
+  dependencies,
+  ...
+}: {
+  aos.abilities.packageSmoke.operations.echo = {
+    input.options = {
+      enabled = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Requested fixture value.";
       };
-      providerModule = {
-        artifact = lib.abilities.packageOutput {output = "module";};
-        path = "provider.nix";
+      label = lib.mkOption {
+        type = lib.types.str;
+        default = "café 東京 😀";
+        description = "Unicode boundary value.";
+      };
+      maximum = lib.mkOption {
+        type = lib.types.ints.between (-9007199254740991) 9007199254740991;
+        default = 9007199254740991;
+        description = "Largest portable integer.";
+      };
+      minimum = lib.mkOption {
+        type = lib.types.ints.between (-9007199254740991) 9007199254740991;
+        default = -9007199254740991;
+        description = "Smallest portable integer.";
       };
     };
-
-    requirementTemplates.canonical-edge = {
-      description = "Exercises canonical boundary values in a package-owned requirement.";
-      interface = "aos.test.canonical-edge";
-      abi = 4294967295;
-      descriptor = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
-      methods = [];
-      guarantees = [];
-      strength = "advisory";
-      fallback.outputs.sample = {
-        label = "café 東京 😀";
-        maximum = 9007199254740991;
-        minimum = -9007199254740991;
+    result.options = {
+      enabled = lib.mkOption {
+        type = lib.types.bool;
+        description = "Echoed fixture value.";
+      };
+      label = lib.mkOption {
+        type = lib.types.str;
+        description = "Exact Unicode echo.";
+      };
+      maximum = lib.mkOption {
+        type = lib.types.int;
+        description = "Exact maximum integer.";
+      };
+      minimum = lib.mkOption {
+        type = lib.types.int;
+        description = "Exact minimum integer.";
       };
     };
+    handler.program = dependencies.ability-package-smoke-provider;
   };
 }

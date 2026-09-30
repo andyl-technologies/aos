@@ -1,54 +1,38 @@
-##! Package-owned fleet execution observer endpoint and controller service.
+##! Native fleet boundary observer service or explicit external test endpoint.
 {
   config,
   lib,
+  package,
   packageName,
   packageVersion,
   ...
 }: let
   cfg = config.aos.tests.executionObserver;
   settings = import ./settings.nix;
-  abilityTypes = lib.abilities.types;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  inherit (lib.abilities) resultOf;
-  forwardEndpointInterface = lib.abilities.interfaces.executionObservationEndpoint.interfaces.endpoint;
-  forwardEndpointRequirement = {
-    description = "Discovers the selected protected execution observer endpoint.";
-    interface = forwardEndpointInterface.identity.name;
-    inherit (forwardEndpointInterface.identity) abi descriptor;
-    inherit (forwardEndpointInterface) methods;
-    guarantees = [];
-    strength = "required";
-    fallback = null;
-  };
-  forwardEndpointRequest = {
-    requirement = "forward-endpoint";
-    consumer = "boundary-observer";
-    scope = ["forward-endpoint"];
-    parameters.endpoint = "default";
-  };
-
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "boundary-observer";
-      inherit key interface parameters;
-    };
-  runtimeStorage = producer "runtime-storage" serviceManagement.interfaces.storageAllocation {
-    name = "ability-boundary-observer-runtime";
-    purpose = "runtime";
+  managerOwned = cfg.activationOwner == "manager";
+  runtimeDirectory = {
+    path = settings.runtimeRoot;
     mode = "0700";
-    requested_path = settings.runtimeRoot;
+    owner = "root";
+    group = "root";
   };
-  stateStorage = producer "state-storage" serviceManagement.interfaces.persistentStorageAllocation {
-    name = "ability-boundary-observer-state";
-    purpose = "state";
+  stateDirectory = {
+    path = settings.stateRoot;
     mode = "0700";
-    requested_path = settings.stateRoot;
+    owner = "root";
+    group = "root";
   };
+  runtimePath =
+    if managerOwned
+    then settings.runtimeRoot
+    else config.aos.abilities.filesystem.operations.directory.effects.boundary-observer-runtime.outputs.path;
+  statePath =
+    if managerOwned
+    then settings.stateRoot
+    else config.aos.abilities.filesystem.operations.persistentAllocate.effects.boundary-observer-state.outputs.path;
   controllerCommand = {
     executable = {
-      artifact = lib.abilities.packageOutput {};
-      entry_point = "bin/aos-ability-boundary-controller";
+      path = "${package}/bin/aos-ability-boundary-controller";
       arguments = [
         "serve"
         "--socket"
@@ -58,8 +42,9 @@
     ignore_failure = false;
   };
   controllerService = {
-    consumerInstance = "boundary-observer";
-    service = "controller";
+    service = "aos-ability-boundary-controller";
+    activationOwner = cfg.activationOwner;
+    activationAfter = lib.optionals (!managerOwned) [runtimePath statePath];
     lifecycle = {
       description = "AOS fleet ability boundary observer (${packageName} ${packageVersion})";
       execution_model = "foreground";
@@ -78,32 +63,26 @@
       stop_timeout_millis = 90000;
     };
     dependencies = {
-      prerequisites =
-        [
-          (resultOf "runtime-storage" "resource")
-          (resultOf "state-storage" "resource")
-        ]
-        ++ lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "resource");
-      after = lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "resource");
+      after = [];
       before = [];
-      requires = lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "resource");
+      requires = [];
       wants = [];
     };
     environment = {
-      variables = lib.optionalAttrs cfg.forwardToSelectedEndpoint {
-        AOS_ABILITY_FORWARD_SOCKET = resultOf "forward-endpoint" "socket-path";
+      variables = lib.optionalAttrs (cfg.forwardSocketPath != null) {
+        AOS_ABILITY_FORWARD_SOCKET = cfg.forwardSocketPath;
       };
       search_path = [];
     };
     storage.mounts = [
       {
         name = "runtime";
-        source = resultOf "runtime-storage" "planned-path";
+        source = runtimePath;
         access = "read-write";
       }
       {
         name = "state";
-        source = resultOf "state-storage" "planned-path";
+        source = statePath;
         access = "read-write";
       }
     ];
@@ -120,7 +99,6 @@
         ];
         mode = "0600";
         remove_on_stop = true;
-        prerequisites = [(resultOf "runtime-storage" "resource")];
       }
     ];
     manager_identity = {
@@ -150,63 +128,62 @@
       permit_core_dumps = false;
     };
   };
-  endpointInterface = {
-    alias = "execution-observer-endpoint";
-    declaration = config.aos.abilities.interfaces."${packageName}:execution-observer-endpoint";
-  };
-  endpoint = producer "endpoint" endpointInterface {
-    hosting = cfg.mode;
-    service_resource =
-      if cfg.mode == "managed-service"
-      then resultOf "controller-lifecycle" "resource"
-      else null;
-    socket_path = settings.socketPath;
-  };
 in {
-  imports = [
-    ./endpoint-interface.nix
-    ./endpoint-provider.nix
-  ];
-
   options.aos.tests.executionObserver = {
+    activationOwner = lib.mkOption {
+      type = lib.types.enum ["ability" "manager"];
+      default = "ability";
+      description = "Assign listener directories and startup to native realization or the image manager.";
+    };
+    bootstrap = lib.mkOption {
+      readOnly = true;
+      default = {
+        serviceKey = "boundary-observer.controller";
+        directories = [];
+        files = [];
+      };
+      description = "Image bootstrap projection of the package-authored listener allocations.";
+      type = lib.types.submodule {
+        options = {
+          serviceKey = lib.mkOption {type = lib.types.str;};
+          directories = lib.mkOption {type = lib.types.listOf (lib.types.submodule config.aos.abilities.filesystem.operations.directory.input);};
+          files = lib.mkOption {type = lib.types.listOf (lib.types.submodule config.aos.abilities.configuration.operations.file.input);};
+        };
+      };
+    };
+
     enable = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = true;
-      description = "Select the package-owned fleet execution observer endpoint.";
+      description = "Select the native fleet observer endpoint.";
     };
     mode = lib.mkOption {
-      type = abilityTypes.enum ["managed-service" "external-test-mount"];
+      type = lib.types.enum ["managed-service" "external-test-mount"];
       default = "managed-service";
-      description = "Whether this system owns the controller or consumes the test's externally mounted socket.";
+      description = "Own the controller service or consume an externally mounted test endpoint.";
     };
-    forwardToSelectedEndpoint = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = false;
-      description = "Forward observed events to the endpoint selected by the package requirement.";
+    forwardSocketPath = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Explicit protected downstream native observer socket.";
     };
   };
-
-  config = lib.mkMerge [
-    {
-      aos.abilities.requirementTemplates.forward-endpoint = forwardEndpointRequirement;
-      aos.services."boundary-observer.controller" =
-        controllerService
-        // {
-          enable = cfg.enable && cfg.mode == "managed-service";
+  config = lib.mkIf cfg.enable (lib.mkMerge [
+    {aos.execution.observer = {socketPath = settings.socketPath;};}
+    (lib.mkIf (cfg.mode == "managed-service") {
+      aos.abilities.filesystem.operations.directory.effects = lib.mkIf (!managerOwned) {boundary-observer-runtime.input = runtimeDirectory;};
+      aos.abilities.filesystem.operations.persistentAllocate.effects = lib.mkIf (!managerOwned) {
+        boundary-observer-state = {
+          lifetime = "persistent";
+          input = stateDirectory;
         };
-    }
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [endpoint];
-      enabled = cfg.enable;
+      };
+      aos.tests.executionObserver.bootstrap = {
+        serviceKey = "boundary-observer.controller";
+        directories = lib.optionals managerOwned [runtimeDirectory stateDirectory];
+        files = [];
+      };
+      aos.services."boundary-observer.controller" = controllerService // {enable = true;};
     })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [runtimeStorage stateStorage];
-      enabled = cfg.enable && cfg.mode == "managed-service";
-    })
-    (lib.mkIf (cfg.enable && cfg.forwardToSelectedEndpoint) {
-      aos.abilities.requests.forward-endpoint = forwardEndpointRequest;
-    })
-  ];
+  ]);
 }

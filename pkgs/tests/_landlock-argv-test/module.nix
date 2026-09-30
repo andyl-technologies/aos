@@ -2,22 +2,14 @@
 {
   config,
   lib,
+  package,
+  dependencies,
   ...
 }: let
   cfg = config.landlock-argv-test;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  inherit (lib.abilities) resultOf;
 
-  state = serviceManagement.forProducer {
-    consumerInstance = "landlock-argv-test";
-    key = "state";
-    interface = serviceManagement.interfaces.persistentStorageAllocation;
-    parameters = {
-      name = "state";
-      purpose = "state";
-      mode = "0750";
-    };
-  };
+  state = config.aos.abilities.filesystem.operations.persistentAllocate.effects."landlock-argv-test-state";
+
   serviceDefinition = {
     lifecycle = {
       description = "AOS argument preservation test";
@@ -28,10 +20,9 @@
       start = [
         {
           executable = {
-            artifact = lib.abilities.packageOutput {};
-            entry_point = "bin/landlock-argv-test-recorder";
+            path = "${package}/bin/landlock-argv-test-recorder";
             arguments = [
-              (resultOf "state" "planned-path")
+              state.outputs.path
               "plain"
               "two words"
               "semi;colon"
@@ -55,15 +46,14 @@
     storage.mounts = [
       {
         name = "state";
-        source = resultOf "state" "planned-path";
+        source = state.outputs.path;
         access = "read-write";
       }
     ];
   };
-  producers = [state];
 in {
   options.landlock-argv-test.enable = lib.mkOption {
-    type = lib.abilities.types.boolean;
+    type = lib.types.bool;
     default = true;
     description = "Enable the argument-preservation test service.";
   };
@@ -72,9 +62,14 @@ in {
     {
       aos.services."landlock-argv-test.main" = serviceDefinition // {enable = cfg.enable;};
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = cfg.enable;
+    (lib.mkIf cfg.enable {
+      aos.abilities.filesystem.operations.persistentAllocate.effects."landlock-argv-test-state".lifetime = "persistent";
+      aos.abilities.filesystem.operations.persistentAllocate.effects."landlock-argv-test-state".input = {
+        path = "/var/lib/landlock-argv-test";
+        mode = "0750";
+        owner = "root";
+        group = "root";
+      };
     })
   ];
 }

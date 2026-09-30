@@ -1,4 +1,7 @@
 {
+  service-management,
+  aos-filesystem-provider,
+  nftables,
   lib,
   mkDerivation,
   aos,
@@ -47,8 +50,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -153,7 +167,8 @@ in
       }
     ];
 
-    abilities = ./_aos-registry-server;
+    moduleDeps = [service-management aos-filesystem-provider nftables];
+    module = ./_aos-registry-server;
 
     meta = {
       description = "AOS registry and binary cache server test package";

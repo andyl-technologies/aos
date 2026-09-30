@@ -47,18 +47,21 @@ class ObserverInterruptionTests(unittest.TestCase):
         self.state = tempfile.TemporaryDirectory()
         self.addCleanup(self.state.cleanup)
         OBSERVER.configure_state_root(self.state.name)
-        self.operation = {"operation": {"key": "selected"}, "plan": "plan"}
+        self.operation = "files.write.selected"
         self.event = {
-            "boundary": "effect-returned",
-            "operation": self.operation,
-            "purpose": "effect",
+            "boundary": "dispatch-returned",
+            "effect": self.operation,
+            "transaction": "transaction",
+            "revision": "exact-revision",
+            "journal_sequence": 1,
+            "action": "apply",
             "schema": OBSERVER.EVENT_SCHEMA,
         }
         self.payload = OBSERVER.canonical_bytes(self.event)
         self.target = {
             "action": "terminate-peer",
-            "boundary": "effect-returned",
-            "purpose": "effect",
+            "boundary": "dispatch-returned",
+            "invocation_action": "apply",
             "sequence": "initrd-interruption",
         }
 
@@ -87,11 +90,11 @@ class ObserverInterruptionTests(unittest.TestCase):
         self.assertFalse(OBSERVER.matches_initial_boundary(self.event, selected))
         recovery = {
             **self.event,
-            "boundary": "reconciliation-returned",
-            "purpose": "reconcile",
+            "boundary": "observation-returned",
+
         }
         self.assertTrue(OBSERVER.matches_recovery_boundary(recovery, selected))
-        unrelated = {**recovery, "operation": {"operation": {"key": "other"}}}
+        unrelated = {**recovery, "effect": "files.write.other"}
         self.assertFalse(OBSERVER.matches_recovery_boundary(unrelated, selected))
 
         sender, receiver = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -128,7 +131,7 @@ class ObserverInterruptionTests(unittest.TestCase):
         self.assertFalse(OBSERVER.HELD_EVENT.exists())
 
     def test_first_effect_target_rejects_other_boundaries(self):
-        invalid = {**self.target, "boundary": "effect-intent-durable"}
+        invalid = {**self.target, "boundary": "intent-durable"}
         OBSERVER.replace_canonical(OBSERVER.TARGET, invalid)
         with self.assertRaisesRegex(ValueError, "effect return"):
             OBSERVER.load_target()

@@ -1,4 +1,6 @@
 {
+  service-management,
+  aos-filesystem-provider,
   mkDerivation,
   writeShellScriptBin,
 }: let
@@ -21,8 +23,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "build-input";
     };
@@ -45,7 +58,8 @@ in
       }
     ];
 
-    abilities = ./_landlock-argv-test;
+    moduleDeps = [service-management aos-filesystem-provider];
+    module = ./_landlock-argv-test;
 
     meta = {
       description = "AOS Landlock exec argv preservation test payload";

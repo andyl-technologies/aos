@@ -1,4 +1,6 @@
 {
+  service-management,
+  aos-filesystem-provider,
   lib,
   mkDerivation,
   writeTextFile,
@@ -36,8 +38,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "build-input";
     };
@@ -108,7 +121,8 @@ in
       }
     ];
 
-    abilities = ./_aos-credential-delivery-test;
+    moduleDeps = [service-management aos-filesystem-provider];
+    module = ./_aos-credential-delivery-test;
 
     meta = {
       description = "Fleet fixture for typed credential delivery";

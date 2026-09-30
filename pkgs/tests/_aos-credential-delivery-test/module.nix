@@ -2,44 +2,20 @@
 {
   config,
   lib,
+  package,
+  dependencies,
   ...
 }: let
   cfg = config.aos-credential-delivery-test;
-  abilityTypes = lib.abilities.types;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  inherit (lib.abilities) resultOf;
 
-  state = serviceManagement.forProducer {
-    consumerInstance = "aos-credential-delivery-test";
-    key = "state";
-    interface = serviceManagement.interfaces.persistentStorageAllocation;
-    parameters = {
-      name = "state";
-      purpose = "state";
-      mode = "0700";
-    };
-  };
-  credentialSource = serviceManagement.forProducer {
-    consumerInstance = "aos-credential-delivery-test";
-    key = "join-token-source";
-    interface = serviceManagement.interfaces.namedCredential;
-    parameters = {
-      name = cfg.credentialName;
-      scope = "system";
-    };
-  };
-  credential = serviceManagement.forProducer {
-    consumerInstance = "aos-credential-delivery-test";
-    key = "join-token";
-    interface = serviceManagement.interfaces.credentialDelivery;
-    parameters = {
-      name = "join-token";
-      source = resultOf "join-token-source" "resource";
-      encrypted = cfg.encrypted;
-    };
-  };
+  state = config.aos.abilities.filesystem.operations.persistentAllocate.effects."aos-credential-delivery-test-state";
+  credential = config.aos.abilities.credential.operations.deliver.effects.aos-credential-delivery-test;
+
   serviceDefinition = {
+    manager_identity = {
+      name = "aos-credential-delivery-test";
+      aliases = [];
+    };
     lifecycle = {
       description = "System credential consumer";
       execution_model = "oneshot";
@@ -49,11 +25,10 @@
       start = [
         {
           executable = {
-            artifact = lib.abilities.packageOutput {};
-            entry_point = "bin/aos-credential-delivery-test-consumer";
+            path = "${package}/bin/aos-credential-delivery-test-consumer";
             arguments = [
-              (resultOf "join-token" "credential-path")
-              (resultOf "state" "planned-path")
+              credential.outputs.path
+              state.outputs.path
             ];
           };
           ignore_failure = false;
@@ -73,39 +48,38 @@
     credentials.views = [
       {
         name = "join-token";
-        reference = resultOf "join-token" "credential-path";
-        encrypted = cfg.encrypted;
+        reference = credential.outputs.path;
+        encrypted = false;
         optional = false;
       }
     ];
     storage.mounts = [
       {
         name = "state";
-        source = resultOf "state" "planned-path";
+        source = state.outputs.path;
         access = "read-write";
       }
     ];
   };
-  producers = [state credentialSource credential];
 in {
   options.aos-credential-delivery-test = {
     enable = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = true;
       description = "Enable the credential-delivery integration fixture.";
     };
     credentialName = lib.mkOption {
-      type = abilityTypes.localKey;
+      type = lib.types.strMatching "[A-Za-z0-9._-]+";
       default = "bootstrap-token";
       description = "Logical system credential name resolved before delivery.";
     };
     encrypted = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = false;
       description = "Whether the credential requires encrypted delivery.";
     };
     restartToken = lib.mkOption {
-      type = abilityTypes.optional serviceTypes.restartToken;
+      type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Operator-controlled token whose change requests a restart.";
     };
@@ -115,9 +89,19 @@ in {
     {
       aos.services."aos-credential-delivery-test.main" = serviceDefinition // {enable = cfg.enable;};
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = cfg.enable;
+    (lib.mkIf cfg.enable {
+      aos.abilities.filesystem.operations.persistentAllocate.effects."aos-credential-delivery-test-state".lifetime = "persistent";
+      aos.abilities.filesystem.operations.persistentAllocate.effects."aos-credential-delivery-test-state".input = {
+        path = "/var/lib/aos-credential-delivery-test";
+        mode = "0700";
+        owner = "root";
+        group = "root";
+      };
+      aos.abilities.credential.operations.deliver.effects.aos-credential-delivery-test.input = {
+        name = cfg.credentialName;
+        scope = "system";
+        encrypted = cfg.encrypted;
+      };
     })
   ];
 }

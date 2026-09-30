@@ -1,5 +1,7 @@
 ##! Test-only package that prepares the blank ZFS pool device used by VM checks.
 {
+  service-management,
+  kmod,
   coreutils,
   lib,
   mkDerivation,
@@ -60,7 +62,8 @@ in
       }
     ];
 
-    abilities = ./_aos-zfs-test-pool;
+    moduleDeps = [service-management kmod];
+    module = ./_aos-zfs-test-pool;
 
     meta = {
       description = "Prepare the blank ZFS pool used by AOS VM checks";

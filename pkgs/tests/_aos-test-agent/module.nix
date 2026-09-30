@@ -2,12 +2,11 @@
 {
   config,
   lib,
+  package,
+  dependencies,
   ...
 }: let
   cfg = config.aos-test-agent;
-  abilityTypes = lib.abilities.types;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
 
   serviceDefinition = {
     lifecycle = {
@@ -19,8 +18,7 @@
       start = [
         {
           executable = {
-            artifact = lib.abilities.packageOutput {};
-            entry_point = "share/aos-test-agent/aos-test-agent";
+            path = "${package}/share/aos-test-agent/aos-test-agent";
             arguments = [];
           };
           ignore_failure = false;
@@ -42,10 +40,10 @@
     environment = {
       variables = {};
       search_path = [
-        (lib.abilities.packageOutput {package = "coreutils";})
-        (lib.abilities.packageOutput {package = "bash";})
-        (lib.abilities.packageOutput {package = "socat";})
-        (lib.abilities.packageOutput {package = "systemd";})
+        "${dependencies.coreutils}"
+        "${dependencies.bash}"
+        "${dependencies.socat}"
+        "${dependencies.systemd}"
       ];
     };
     isolation = {
@@ -65,12 +63,12 @@
 in {
   options.aos-test-agent = {
     enable = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = true;
       description = "Enable the VM test guest agent.";
     };
     restartToken = lib.mkOption {
-      type = abilityTypes.optional serviceTypes.restartToken;
+      type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Operator-controlled token whose change requests a restart on the next safe activation.";
     };

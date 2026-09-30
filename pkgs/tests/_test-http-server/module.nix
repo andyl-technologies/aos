@@ -2,39 +2,13 @@
 {
   config,
   lib,
+  package,
+  dependencies,
   ...
 }: let
   cfg = config.test-http-server;
-  abilityTypes = lib.abilities.types;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  inherit (lib.abilities) resultOf;
-  ingress = serviceManagement.forProducer {
-    consumerInstance = "test-http-server";
-    key = "ingress";
-    interface = lib.abilities.interfaces.networkPolicy.interfaces.ingress;
-    methods = ["observe"];
-    parameters = {
-      endpoints = [
-        {
-          transport = "tcp";
-          port = cfg.port;
-        }
-      ];
-      prerequisites = [];
-    };
-  };
-
-  content = serviceManagement.forProducer {
-    consumerInstance = "test-http-server";
-    key = "content";
-    interface = serviceManagement.interfaces.persistentStorageAllocation;
-    parameters = {
-      name = "content";
-      purpose = "state";
-      mode = "0755";
-    };
-  };
+  content = config.aos.abilities.filesystem.operations.persistentAllocate.effects."test-http-server-content";
+  ingress = config.aos.abilities.networkPolicy.operations.ruleset.effects.host;
 
   serviceDefinition = {
     lifecycle =
@@ -47,11 +21,10 @@
         start = [
           {
             executable = {
-              artifact = lib.abilities.packageOutput {};
-              entry_point = "bin/test-http-server";
+              path = "${package}/bin/test-http-server";
               arguments = [
                 "--port=${builtins.toString cfg.port}"
-                (resultOf "content" "planned-path")
+                content.outputs.path
               ];
             };
             ignore_failure = false;
@@ -73,7 +46,7 @@
     storage.mounts = [
       {
         name = "content";
-        source = resultOf "content" "planned-path";
+        source = content.outputs.path;
         access = "read-write";
       }
     ];
@@ -89,7 +62,7 @@
       permit_core_dumps = false;
     };
     dependencies = let
-      readiness = resultOf "ingress" "resource";
+      readiness = ingress.outputs.resource;
     in {
       prerequisites = [readiness];
       after = [readiness];
@@ -98,24 +71,20 @@
       wants = [];
     };
   };
-  producers = [content ingress];
 in {
   options.test-http-server = {
     enable = lib.mkOption {
-      type = abilityTypes.boolean;
+      type = lib.types.bool;
       default = true;
       description = "Enable the test HTTP server.";
     };
     port = lib.mkOption {
-      type = abilityTypes.integer {
-        minimum = 1;
-        maximum = 65535;
-      };
+      type = lib.types.ints.between 1 65535;
       default = 8000;
       description = "TCP port on which the test server listens.";
     };
     restartToken = lib.mkOption {
-      type = abilityTypes.optional serviceTypes.restartToken;
+      type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Operator-controlled token whose change requests a restart.";
     };
@@ -125,9 +94,23 @@ in {
     {
       aos.services."test-http-server.main" = serviceDefinition // {enable = cfg.enable;};
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = cfg.enable;
+    (lib.mkIf cfg.enable {
+      aos.abilities.filesystem.operations.persistentAllocate.effects."test-http-server-content".lifetime = "persistent";
+      aos.abilities.filesystem.operations.persistentAllocate.effects."test-http-server-content".input = {
+        path = "/var/lib/test-http-server";
+        mode = "0755";
+        owner = "root";
+        group = "root";
+      };
+      aos.networkPolicy = {
+        enable = true;
+        ingress."test-http-server".endpoints = [
+          {
+            transport = "tcp";
+            port = cfg.port;
+          }
+        ];
+      };
     })
   ];
 }
