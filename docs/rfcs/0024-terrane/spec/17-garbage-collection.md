@@ -61,7 +61,9 @@ data.
   and recorded in the collection's own object under `gc/` so that a resumed
   collection marks from the same roots. A ref moved after the snapshot is
   covered by the grace window (§Safety). Candidate-selected head and
-  predecessor records identify committed reflog roots. Never-selected
+  retained absent-name predecessor records identify committed reflog roots
+  under [`reference/publication-authority.md`](reference/publication-authority.md).
+  Unknown retained selection MUST refuse exhaustive collection. Never-selected
   proposals MUST NOT become retained content roots. Candidate metadata needed
   to traverse a selected chain or an active snapshot MUST remain readable;
   expired content and never-selected proposals are not made live by that
@@ -255,10 +257,11 @@ data.
 The following completes GC-15, GC-16, GC-24 and GC-29 under D-78. It does
 not replace current reachability, retention or lease authorization.
 
-Filesystem backends MUST retain a protected `CreationJournal` for each pack,
-detached index and tombstone they can delete. Its fresh secure 32-byte nonce
-identifies the physical incarnation; equal bytes, path, device and inode MUST
-NOT reuse a nonce after recreation. Under stable backend exclusion, a writer
+Filesystem backends MUST retain a protected external-control `CreationJournal`
+for each pack, detached index and tombstone they can delete. Its fresh secure
+32-byte nonce identifies the physical incarnation; equal bytes, path, device
+and inode MUST NOT reuse a nonce after recreation. Under stable backend
+exclusion, a writer
 MUST durably install and synchronize Pending before mutation. It MUST then
 install verified final bytes, synchronize the same nofollow regular-file
 descriptor and containing/required ancestor directories, observe that exact
@@ -313,6 +316,12 @@ current authorization MUST refuse effects; physical journal implementation
 alone does not establish it. GC-1 to GC-7 and GC-30 still apply. Finite failures
 with stable valid qualification MUST permit recovery to finish exact owned
 artifacts, rather than strand them indefinitely as generic unknown versions.
+
+D-79's [`reference/publication-authority.md`](reference/publication-authority.md)
+defines the exact current fence, selected lease/configuration transitions,
+retained absent-name history and source-preserving collection evidence.
+Protected journals and deletion operations belong outside portable local
+payload; copied physical intent cannot authorize destination deletion.
 
 Restore or recreation MUST durably cancel the exact owning operation and
 invalidate its ownership BEFORE clearing the serving exclusion or mutating

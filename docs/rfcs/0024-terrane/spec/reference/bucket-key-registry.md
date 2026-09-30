@@ -80,15 +80,23 @@ mutable authorities in version 2.
 | `gc/<cycle>/mark/<shard>` | final mark-set checkpoint (GC-7) | create-once | collector | 17 |
 | `gc/<cycle>/mark/<shard>/<revision>` | immutable incremental `GcMark` checkpoint | create-once | collector | 17 |
 | `gc/<cycle>/state` | fenced `GcState` progress and checkpoint pointers | CAS | collector | 17 |
-| `gc/<cycle>/delete/<pack-id>/<operation-id>` | protected `DeleteOperation` physical intent | CAS | fenced collector | 17 |
 | `trash/<cycle>/<pack-id>` | `Tombstone` | create-once | collector | 13, 17 |
 | `CAPABILITIES` | `Capabilities`, including the store profile | CAS | the opening store | 13, 04 |
+| `publication/SELECTED-HISTORY` | portable complete `SelectedHistory`, including absent branches | CAS | selected publication | 09, 13, 17 |
+| `publication/snapshots/<revision>:<operation-id>` | `PortableSnapshot` complete checkpoint or exact projection delta | create-once | selected publication | 09, 13 |
+| `publication/PORTABLE` | exact `PortableCurrent` snapshot pointer | CAS | selected publication | 09, 13 |
 
 Candidate-log `<ref>` values are registered branch names in `refs/heads/`,
 `refs/jobs/`, `refs/conflicts/` or `refs/derived/`. Tags and advisory notes do
 not acquire candidate logs. Candidate and migrated legacy filenames are
 disjoint from valid ref segments. Neither a nested `<seq>/<candidate-id>`
 directory nor an unsuffixed version-2 ref or legacy-log leaf is registered.
+
+Portable snapshot revisions are canonical unsigned decimal. Their operation
+IDs are the creating transaction's secure 32-byte nonce in lowercase 64-hex.
+`publication/PORTABLE` selects one exact immutable snapshot; staged proposals
+do not select themselves, and individual cache files cannot replace that
+complete projection during fresh-copy validation.
 
 Registered sidecar kinds under `refs/notes/`: `profiles` (learned access
 profiles, [`../19-tiering-and-topology.md`](../19-tiering-and-topology.md)),
@@ -99,6 +107,52 @@ pointers, [`../10-derived-data.md`](../10-derived-data.md)).
 Keys under any other prefix are reserved. A reader MUST ignore them and
 scrub MUST report them (BKT-1).
 
+## Protected publication control keys
+
+D-79 registers these names relative to the backend's protected control
+namespace, outside the portable local bucket root. They are not packed
+content or ordinary import authority. Remote control namespaces use the
+same names under genuinely registered provider authority. Protocol and
+copy rules are in [`publication-authority.md`](publication-authority.md).
+
+| Key | Holds | Class |
+| --- | --- | --- |
+| `backend-registration.cbor` | actual `BackendRegistration` activation/recovery binding | CAS |
+| `publication/commits/<revision>` | authoritative `PublicationCommit` slot | create-once |
+| `publication/transactions/<operation-id>` | exact `PublicationTransaction` | create-once |
+| `publication/lineage/<digest>` | privately checked `CheckedLineage` | create-once |
+| `publication/guards/<digest>` | immutable complete `GuardSnapshot` | create-once |
+| `publication/STATE` | optional nonauthoritative selected state cache | CAS |
+| `publication/CURRENT` | optional nonauthoritative `PublicationCurrent` cache | CAS |
+| `gc/<cycle>/fence/<revision>` | complete current `GcFence` | create-once |
+| `gc/<cycle>/reconcile/<operation-id>/<revision>` | exact `GcReconciliation` | create-once |
+| `gc/<cycle>/delete/<pack-id>/<operation-id>` | protected `DeleteOperation` physical intent | CAS |
+
+Cycle/revision are canonical unsigned decimal, without leading zeroes
+except `0`. Operation IDs are fresh secure 32-byte nonces in lowercase
+64-hex form. Digests are lowercase 64-hex raw BLAKE3 of exact canonical
+control bytes, without a content identity domain. A digest or named key
+does not provide its private creation capability. Commit slots and
+selected transactions remain retrievable and cannot be pruned or reused
+without a separately registered protocol.
+
+Original-authority control has independently configured ownership. These
+existing create-once records retain their canonical local schemas:
+
+| Relative key | Holds |
+| --- | --- |
+| `registration.cbor` | `physical-registration` |
+| `bootstrap-<original-id>-<ref-digest>-<epoch>.cbor` | `OriginalBootstrap` |
+| `commit-<commit-id>.cbor` | `OriginalAssociation` |
+| `import-<commit-id>.cbor` | `OriginalImport` |
+| `import-binding-<commit-id>.cbor` | `OriginalImportBinding` |
+| `import-trust-<import-digest>.cbor` | `OriginalImportTrust` |
+
+IDs and digests are lowercase 64-hex; ref-digest is raw BLAKE3 of the exact
+full ref name's UTF-8 bytes, and epoch is canonical unsigned decimal.
+Exact relative selectors are consumed control pins, never inferred from
+LIST. No ordinary bucket key or copied record creates this authority.
+
 ## Filesystem coordination files
 
 These registered filesystem-only names implement BKT-13 and BKT-14 and
@@ -108,13 +162,20 @@ buckets, authoritative catalogs, or logical listings.
 | Name | Holds | Rule |
 | --- | --- | --- |
 | `.terrane-locks/<key-digest>` | local exclusion inode | stable while writers can hold it; never replaced or unlinked |
-| `.terrane-creation/<key-digest>` | protected `CreationJournal` incarnation evidence | replaced only under backend exclusion; never exposed or imported as content |
+| `<protected-control>/.terrane-creation/<key-digest>` | protected `CreationJournal` incarnation evidence | replaced only under backend exclusion; never exposed or imported as content |
 | `<directory>/.terrane-tmp:<random-id>` | unpublished staged bytes | synced before atomic publication; never readable as content |
 
 `<key-digest>` is lowercase hexadecimal BLAKE3-256 of the logical key's
 ASCII bytes; `<random-id>` is lowercase hexadecimal of 16 secure random
 bytes. Coordination files have no content identity or cross-provider
 version token. Creation journals supply only backend-local incarnation evidence.
+
+Default protected backend control is the sibling
+`.terrane-control:<root-digest>` outside the bucket root. The digest is raw
+BLAKE3 of normalized absolute root bytes in lowercase 64-hex form. This is
+a filesystem control placement, not a logical bucket key. Explicit external
+control configuration may override the default while preserving its checked
+physical ownership and copy boundary.
 
 Deletion `<operation-id>` is the lowercase 64-digit hexadecimal spelling of
 a fresh secure 32-byte nonce. Immutable operation authorization and exact

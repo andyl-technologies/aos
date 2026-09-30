@@ -168,7 +168,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `error` policies; fast-forward; fork and fold; recipes for `merge` and
   `overlay` composites. Native delta parity is completed with T-FUSE-3
   when the overlay-upper importer exists. Narrowed to trunk scope: `filter`, `map`, set
-  operations, and the remaining recipe kinds are T-ALG-3 on B-derive. —
+  operations, and the remaining recipe kinds are T-ALG-3 on B-derive.
+  D-79's checked cold-fork lineage and genuine zero-TreeNode-I/O qualification
+  remain joint with ref publication and source-preserving collection. —
   satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [x] **T-PROP-1** Property resolution, types, boundary properties,
@@ -211,6 +213,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   tests for every format. D-80 adds independently reproduced D-77/D-78 byte
   witnesses and distinguishes decoder rejection from authority claims.
   Remaining format publication and joint native qualification are incomplete.
+  D-79's newly registered publication/control schemas also need independent
+  byte vectors and decoder tests before T1's encoding freeze.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
@@ -252,6 +256,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and durable reopen qualified by the local backend checks.
   Protected deletion-intent key classification grants no ordinary-write authority;
   physical deletion and current-root fencing remain joint work with T-GC-1.
+  D-79's selected publication chain, protected external control and retained
+  absent-name history require joint T-REF-2/T-GC-1 integration; existing local
+  backend qualification does not claim those new contracts complete.
   Narrowed to trunk scope: S3-compatible and GCS backends are
   T-BKT-2 and T-BKT-3 at T3. The backend implements OBJ-5's idempotent
   writes and verified reads; T-HOST-1 completes its cache-admission rule.
@@ -282,7 +289,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   admission and historical context coverage under D-75 remain incomplete;
   ordinary entry paths cannot become permission boundaries. D-76's original
   ACL administration, retained bootstrap evidence and actual-ancestor
-  delegation checks remain joint with these admission gates. — satisfies
+  delegation checks remain joint with these admission gates. D-79's exact
+  selected publication, complete Guard inputs and absent-name recreation
+  history remain pending implementation and actual competing-writer checks.
+  — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,
   `checks.terrane.gates.prov-disclosure-boundary`,
@@ -294,7 +304,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   registers physical creation journals and recoverable deletion intent;
   native integration, actual crash/timer/restore qualification and complete
   current-root/publication fencing remain pending. Physical intent alone
-  cannot qualify deletion. Narrowed
+  cannot qualify deletion.
+  D-79 defines complete current fences, selected lease/configuration changes
+  and source-lineage preservation; their native implementation and actual
+  effect/recovery qualification remain incomplete. Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,
   GC-28 to GC-30; `checks.terrane.gates.gc-roots-complete`,

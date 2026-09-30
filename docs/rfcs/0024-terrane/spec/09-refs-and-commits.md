@@ -13,12 +13,12 @@ produces the roots refs name is in [`07-tree-algebra.md`](07-tree-algebra.md).
 Everything in a store is immutable and content-addressed except refs. A
 [commit](02-glossary.md#the-five-nouns) binds a tree root to its parents and
 provenance and is itself immutable; a [ref](02-glossary.md#the-five-nouns) is
-a small mutable record naming a commit. Because refs are the only thing that
-changes, they are the only thing that needs coordination, and the
-coordination required is exactly one primitive: a conditional write on a
-single small object. Every backend that can offer put-if-absent and
-compare-and-swap on one key can hold refs, and an authority that holds refs
-needs nothing else.
+a small logically mutable record naming a commit. Publication also selects
+the catalog, retained history, collector lease and checked serving evidence.
+Their coordination has one commit point: create-if-absent at the next
+immutable publication slot. The selected transaction supplies whole-record
+logical compare-and-swap without a separate database. The complete protocol
+is [`reference/publication-authority.md`](reference/publication-authority.md).
 
 The ref namespace and the commit graph follow git's shape, because git's
 shape is right for this problem: branches advance, tags are permanent,
@@ -58,6 +58,9 @@ has pointed. The object encoding is not git's, for the reasons in
   `<seq>:legacy` keys after qualified migration (BKT-3). A proposal is not
   committed merely because its sequence is no greater than the current head's.
   The reflog is part of the namespace for reading but is not itself a ref.
+  Removal MUST retain the exact last-selected whole head under D-79's
+  complete retained-history selector; absence MUST NOT select a proposal
+  or discard committed history.
 
 ## Ref record
 
@@ -147,6 +150,11 @@ under concurrent garbage collection ([`17-garbage-collection.md`](17-garbage-col
   32-byte candidate ID; a bounded in-flight attempt may retain its ID. Before
   applying the CAS, the authority MUST verify that the selected candidate
   exists and its whole new and previous records equal `new` and `expect`.
+  Final checked publication MUST use the selected transaction protocol in
+  [`reference/publication-authority.md`](reference/publication-authority.md),
+  retaining actual backend exclusion and current source, catalog, trust and
+  retention checks through its commit point. Raw CAS MUST invalidate the
+  target's checked lineage rather than manufacture verified serving evidence.
   *Gate:* `gate:ref-advance-ordering`.
 - **[REF-13]** Step (3) MUST use put-if-absent on the exact candidate key.
   An existing candidate means collision or duplicate append, not proof that
@@ -207,9 +215,12 @@ under concurrent garbage collection ([`17-garbage-collection.md`](17-garbage-col
   record MUST contain the new ref record, the previous commit hash, the
   principal, and a reason string (`commit`, `merge`, `fold`, `rollback`,
   `job-checkpoint`, `migrate`). A new candidate record MUST also contain
-  the complete expected previous RefRecord, or null for the first write;
-  its previous-commit field MUST agree with that record. The new RefRecord
-  MUST carry the candidate ID that selects this proposal.
+  the complete expected previous RefRecord, or null when currently absent.
+  Recreation with retained history MUST include key 7's exact last-selected
+  predecessor, continue its sequence, and preserve epoch/home fencing.
+  The previous-commit field MUST agree with that retained predecessor when
+  present, otherwise with the expected record or fresh-name null.
+  The new RefRecord MUST carry the candidate ID that selects this proposal.
 - **[REF-22]** Reflog records are garbage-collection roots under the
   effective `retain` mode. For `retain=gc`, the effective `reflog_retain`
   property selects a duration or the newest committed record count; `lease`,
@@ -224,10 +235,14 @@ under concurrent garbage collection ([`17-garbage-collection.md`](17-garbage-col
   records in
   sequence order. Readers MUST follow the authoritative head's candidate
   and whole predecessor records, then return that selected chain in ascending
-  order. Legacy numbered records are bounded by the selected legacy record;
-  pending proposals beyond it are not visible. A request beyond the current
-  sequence returns no records. Gaps MUST be reported; a reader MUST NOT infer
-  a gap means an advance did not occur or enumerate proposals using LIST.
+  order. An absent branch MUST begin at its exact retained selected head,
+  following recreation key 7 where present. Unknown legacy selection MUST
+  refuse exhaustive history claims. Legacy numbered records are bounded by
+  the selected legacy record; pending proposals beyond it are not visible.
+  A request beyond the last
+  selected sequence returns no records. Gaps MUST be reported; a reader MUST
+  NOT infer a gap means an advance did not occur or enumerate proposals
+  using LIST.
 
 ## Merge base and ancestry
 
@@ -294,11 +309,8 @@ under concurrent garbage collection ([`17-garbage-collection.md`](17-garbage-col
 
 ## Informative: why one conditional write is enough
 
-An earlier generation of this design kept object records, chunk locations,
-reference counts, aliases, pins, and job state in a transactional key-value
-database and needed shared open packs with leases and a reaper to reclaim
-them. Every one of those structures existed to coordinate mutation of
-something other than a ref. Making every writer seal its own packs, making
-every index and manifest immutable, and putting all mutability in refs
-leaves exactly one coordination point, and that point fits in a single
-conditional PUT on any bucket that supports one.
+Each writer seals its own packs and publishes immutable index generations.
+One create-once slot selects a complete transaction over the logically
+mutable records. This keeps publication database-free while preventing
+independent head, catalog or lease updates from leaving stale checked
+serving evidence current. A reflog proposal alone never wins that slot.

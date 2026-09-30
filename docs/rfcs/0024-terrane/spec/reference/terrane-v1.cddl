@@ -238,9 +238,12 @@ RefLogRecord = {
   4 => reflog-reason,
   5 => timestamp,
   ? 6 => RefRecord / null,              ; complete expected previous record
+  ? 7 => RefRecord,                     ; retained predecessor on absent recreation
 }
-; New candidate-selected logs require key 6 (null only for the first write).
-; Legacy records omit it. Key 2 must agree with key 6's commit or null.
+; New candidate-selected logs require key 6: the exact current expectation.
+; Key 7 is allowed only with explicit key 6 null and exact retained history.
+; Key 2 agrees with key 7 when present, otherwise with key 6 or fresh null.
+; Legacy records omit both. D-79 preserves all existing record bytes.
 reflog-reason = "commit" / "merge" / "fold" / "rollback"
               / "job-checkpoint" / "migrate"
 
@@ -417,6 +420,7 @@ Capabilities = {
   ? 8 => store-profile,                 ; OBJ-8
   ? 9 => generation,                    ; authoritative published index generation
   ? 10 => [ * tstr ],                   ; complete monotone registered ref names
+  ? 11 => 1,                           ; D-79 checked publication authority active
 }
 store-profile = {
   1 => tstr,                            ; identity profile name, "terrane-v1"
@@ -499,7 +503,7 @@ Tombstone = {
 }
 
 ; D-78: protected filesystem evidence, never content or absolute age authority.
-; .terrane-creation/<raw-BLAKE3-256-of-logical-key>.
+; <protected-control>/.terrane-creation/<raw-BLAKE3-256-of-logical-key>.
 CreationJournal = {
   0 => 1,
   1 => tstr,                            ; exact registered artifact key
@@ -543,6 +547,197 @@ gc-artifact-version = [ key: tstr, nonce: bstr .size 32,
 ; Exact keys/kinds, pack/cycle/epoch, identity/size and nonce associations
 ; must agree. Key 6 must be >= checked D * 1e9. Authorization is immutable;
 ; its digest is raw BLAKE3 over these exact canonical authorization bytes.
+
+; ---------------------------------------------------------------------------
+; D-79: protected publication authority (reference/publication-authority.md)
+; ---------------------------------------------------------------------------
+; Protected records are backend control, never packed content/imported authority.
+; SelectedHistory/PortableSnapshot/PortableCurrent are ordinary portable payload.
+; Their digest references use raw BLAKE3 of exact canonical bytes. Existing
+; immutable identity domains, signed Commit bytes and local original records
+; retain their interpretation. Claims need an independently checked factory.
+
+backend-binding = [0, bstr, uint, uint, uint, uint]
+                / [1, remote-provider, remote-resource, remote-coordination]
+; Local: normalized root bytes, actual root dev/ino and coordination dev/ino.
+remote-provider = "s3" / "gcs"
+remote-resource = [tstr .size (1..4096), tstr .size (1..4096),
+                   bstr .size (0..4096), bstr .size 32]
+; Exact endpoint, bucket, prefix, secure protected resource registration nonce.
+remote-coordination = [bstr .size (1..4096), bstr .size 32]
+; Exact protected coordination key and secure registration nonce.
+BackendRegistration = {
+  0 => 1,
+  1 => backend-binding,
+  2 => 0 / 1,                           ; Pending / Active activation
+  3 => digest32 / null,                 ; exact genesis slot, required Active
+}
+; Binding is immutable; a nonnull genesis digest never changes. Pending is not
+; fresh registration permission. Actual private factory and owner checks apply.
+
+local-original-registration = [1, digest32, bstr, tstr,
+                               uint, uint, uint, uint, bstr]
+; Existing local bytes: ID/root/domain/root dev/ino/coordination dev/ino/control.
+physical-registration = local-original-registration
+                      / [2, digest32, tstr, backend-binding, bstr]
+; Remote: protected original ID, domain, actual remote binding/control namespace.
+; Remote case requires backend-binding case 1, never synthetic local identities.
+authority-acl = [* [tstr, 0..31]]
+; Preserve configured order/repetitions; validate names and registered verb mask.
+OriginalBootstrap = [1, digest32, tstr, epoch, authority-acl]
+OriginalAssociation = [1, digest32, digest32, tstr, epoch]
+OriginalImport = [1, local-original-registration,
+                   OriginalBootstrap, OriginalAssociation]
+               / [2, physical-registration,
+                   OriginalBootstrap, OriginalAssociation]
+; Version 2 explicitly supports the independently checked registration union.
+OriginalImportBinding = [1, digest32, digest32, digest32, digest32]
+; Commit/source original ID/destination original ID/raw exact import digest.
+issuer-row = [tstr, tstr, digest32, timestamp / null]
+disclosure-row = [tstr, tstr, digest32, timestamp, timestamp / null]
+OriginalImportTrust = [1, digest32, digest32, digest32,
+                        [* issuer-row], [* disclosure-row]]
+; Import digest/source ID/destination ID/historical issuer keys/disclosure roles.
+
+seeded-chunk-profile = [uint, uint, uint, 48, 0..255, digest32]
+; Minimum/target/maximum/window/normalization/seed. Validate registered FastCDC
+; constraints and derive gear/masks, never accept duplicated unchecked values.
+trusted-guard-config = {
+  0 => 1,
+  1 => tstr,                            ; store name
+  2 => tstr,                            ; private-domain encoding hint
+  3 => locality,                        ; complete configured home
+  4 => authority-acl,                   ; new-authoring baseline, not history repair
+  5 => uint,                            ; minimum chunk size, equals profile minimum
+  6 => tstr,                            ; checked physical storage domain
+  7 => tstr,                            ; selected chunk profile name
+  8 => seeded-chunk-profile,
+  9 => tstr / null,                     ; policy authority
+}
+configured-registry-inputs = {
+  0 => 1,
+  1 => uint,                            ; property behavior/default semantics revision
+  2 => [* name],                       ; exact registered behavioral property set
+  3 => uint,                            ; attribute registry revision
+  4 => uint,                            ; trust-selector semantics revision
+  5 => uint,                            ; tree format interpretation revision
+  6 => uint,                            ; FastCDC/gear/mask semantics revision
+  7 => tstr,                            ; identity profile, currently terrane-v1
+  8 => [* name],                       ; trusted later preserve-only names
+}
+; Registered revision 1 means current normative semantics. Unsupported revisions
+; refuse verification. Names sort uniquely; the two sets are disjoint.
+GuardSnapshot = {
+  0 => 1,
+  1 => physical-registration,
+  2 => [* issuer-row],
+  3 => [* disclosure-row],
+  4 => trusted-guard-config,
+  5 => configured-registry-inputs,
+}
+required-control-pin = [0 / 1 / 2 / 3 / 4 / 5,
+                        physical-registration, tstr, digest32]
+; Registration/bootstrap/association/import/import-binding/import-trust;
+; actual retention owner/exact relative key/raw canonical record digest.
+consumed-root-policy = [digest32, bstr .size (1..4097),
+                        [+ [bstr .cbor property-map, bstr .cbor property-map]]]
+; Root/full absolute occurrence path/ancestor-first properties and graft overrides.
+consumed-view-policy = [digest32, tstr, [* consumed-root-policy]]
+; Signed view identity/independently checked default domain/exact root occurrences.
+lineage-used-inputs = {
+  0 => 1,
+  1 => [* issuer-row],
+  2 => [* disclosure-row],
+  3 => [* required-control-pin],
+  4 => configured-registry-inputs,
+  5 => trusted-guard-config,
+  6 => [* consumed-view-policy],
+}
+CheckedLineage = {
+  0 => 1,
+  1 => tstr,                            ; exact source full ref name
+  2 => bstr .cbor RefRecord,             ; exact whole selected source record
+  3 => digest32,                        ; signed Commit ID
+  4 => bstr .cbor commit,                ; exact signed Commit bytes
+  5 => digest32,                        ; immutable GuardSnapshot digest
+  6 => uint,                            ; qualified availability-loss generation
+  7 => [* required-control-pin],
+  8 => physical-registration,
+  9 => lineage-used-inputs,             ; exhaustive privately checked dependencies
+}
+; Key 7 equals the complete canonical control-pin set in key 9.3.
+committed-selection = [0] / [1, RefRecord] / [2]
+; Never selected/exact last-selected whole head/unknown pre-protocol history.
+SelectedHistory = {
+  0 => 1,
+  1 => [* [tstr, committed-selection]],
+  2 => backend-binding,                 ; nonauthoritative portable origin stamp
+}
+PortableSnapshot = {
+  0 => 1,
+  1 => uint,                            ; selected source publication revision
+  2 => backend-binding,
+  3 => [* [tstr, bstr / null]],          ; full projection or exact predecessor delta
+  4 => [tstr, digest32] / null,          ; exact prior snapshot, null full checkpoint
+}
+PortableCurrent = {0 => 1, 1 => tstr, 2 => digest32}
+; Exact immutable snapshot key/raw digest. Portable data, never private authority.
+PublicationState = {
+  0 => 1,
+  1 => uint,                            ; transaction revision
+  2 => uint,                            ; availability-loss generation
+  3 => [* [tstr, digest32]],            ; exact current source -> checked lineage
+  4 => backend-binding,
+  5 => [* [tstr, committed-selection]],  ; every inventoried branch, even absent
+  6 => digest32 / null,                 ; selected current GuardSnapshot, null pre-Guard
+}
+PublicationCurrent = {0 => 1, 1 => uint, 2 => digest32}
+; Nonauthoritative cache of selected commit revision/digest.
+PublicationCommit = {
+  0 => 1,
+  1 => uint,
+  2 => digest32 / null,                 ; predecessor digest, null only genesis 0
+  3 => tstr,                            ; immutable transaction key
+  4 => digest32,                        ; exact transaction digest
+}
+publication-proof = [0]                ; raw opaque mutation, no lineage creation
+                  / [1, digest32]      ; privately checked candidate Lineage digest
+                  / [2, tstr, digest32, [* [pack-id, digest32]],
+                     [* [tstr, digest32]]]
+                  / [4, digest32]      ; privately checked Guard configuration transition
+; GC preservation: exact Fence key/digest, removed pack/index witnesses and
+; exact carried current source/prior Lineage pairs. Only a checked adapter seals it.
+PublicationTransaction = {
+  0 => 1,
+  1 => bstr .size 32,                   ; secure nonce matching immutable key
+  2 => bstr .cbor PublicationState / null, ; predecessor state, null only genesis
+  3 => bstr .cbor PublicationState,      ; exact next selected state
+  4 => [* [tstr, bstr / null, bstr / null]],
+       ; sorted unique logical key/whole expected bytes/new bytes or absence
+  5 => publication-proof,
+  6 => [uint, digest32] / null,          ; exact predecessor slot/digest or genesis
+  7 => [tstr, digest32],                ; staged exact portable snapshot key/digest
+}
+GcFence = {
+  0 => 1,
+  1 => bstr .cbor Capabilities,
+  2 => bstr .cbor IndexGenerationManifest / null,
+  3 => [* [tstr, bstr / null, committed-selection, RefLogRecord / null]],
+       ; complete ref name/current whole bytes or absence/selection/selected log
+  4 => digest32,                        ; immutable GuardSnapshot digest
+  5 => bstr .cbor PublicationState,
+  6 => [tstr, digest32],                ; exact selected GcRoots key/digest
+  7 => [tstr, digest32],                ; exact selected GcState key/digest
+  8 => backend-binding,
+  9 => [* required-control-pin],        ; exhaustive actually consumed mark inputs
+}
+GcReconciliation = {
+  0 => 1,
+  1 => digest32,                        ; immutable deletion authorization digest
+  2 => [tstr, digest32],                ; exact current Fence key/digest
+  3 => [pack-id, cycle, epoch],          ; exact original exclusion incarnation
+  4 => digest32,                        ; verified detached Index identity
+}
 
 ; ---------------------------------------------------------------------------
 ; Capability token (22-authentication-and-authorization.md AUTH-7..AUTH-18)

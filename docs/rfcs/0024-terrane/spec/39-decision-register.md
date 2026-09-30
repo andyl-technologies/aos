@@ -1324,6 +1324,45 @@ is added rather than editing history.
     current-root/publication fencing remain required before physical gates
     can qualify.
 
+- **[D-79] Select complete publication and current collection authority.**
+  - **Status:** Decided
+  - **Decision:** Select whole logical ref, catalog, lease and retained-history
+    transactions through contiguous immutable create-once publication slots.
+    Retain exact committed history across ref absence; use optional reflog
+    key 7 for an absent-name recreation's committed predecessor. Register
+    actual local/remote backend bindings, complete trusted Guard snapshots,
+    privately checked source lineage and exact current collection fences.
+    Select Guard changes and lease transitions through the same protocol.
+    Preserve cold unchanged-root forks by checking actually consumed evidence
+    and carrying unaffected lineage through qualified unrelated changes.
+    Keep publication control and physical deletion authority outside portable
+    local payload; copied selected history includes a nonauthoritative origin
+    stamp and requires genuine fresh destination registration. Stage a complete
+    portable snapshot and atomically select it before individual cache updates
+    or physical loss, preserving readable copies after interrupted projection.
+  - **Rationale:** A missing ref does not identify its last committed proposal,
+    and selecting by LIST or maximum sequence can promote abandoned writes.
+    Independent ref, catalog or lease updates can admit deduplicated content
+    while a collector still holds old marks. Mutable ETags and cache bytes
+    cannot close that cross-key race. A global snapshot hash also invalidates
+    unaffected cold-fork evidence after unrelated trusted-key additions;
+    omitting actual Guard inputs instead silently retains stale authority.
+    Immutable selection, exhaustive consumed dependencies and current effect
+    checks address these gaps without inventing a database or trusting public
+    records as private capabilities. External control preserves ordinary
+    payload copies without importing physical age or signing authority. A
+    portable snapshot also avoids treating a half-flushed ref/history cache
+    pair as a committed copied view; fresh-copy genesis clears source leases.
+  - **Affects:** REF-4 to REF-7, REF-12, REF-21 to REF-23, BKT-1 to BKT-5,
+    BKT-10, BKT-14, BKT-17, GC-1 to GC-7, GC-22 to GC-24, GC-29, ALG-29, ALG-32
+    and STORE-13. Requirement IDs, gates, immutable identity domains,
+    existing signed Commit bytes and local original records remain stable.
+    CAPABILITIES key 11 and RefLogRecord key 7 are optional additions;
+    new protected schemas and control placement are registered before T1's
+    initial freeze. Existing publication activation requires an external
+    quiescent fence. Implementation, golden vectors and genuine native
+    qualification remain required; these schemas alone prove no runtime gate.
+
 - **[D-80] Distinguish record byte witnesses from authority.**
   - **Status:** Decided
   - **Decision:** Retain every existing golden byte unchanged; document

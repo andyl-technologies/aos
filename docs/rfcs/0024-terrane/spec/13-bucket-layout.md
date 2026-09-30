@@ -19,8 +19,9 @@ Everything under `objects/` is immutable and content- or id-addressed.
 Everything under `refs/heads/` is mutable and changes only by
 compare-and-swap. Everything under `logs/` and `refs/tags/` is written once
 with create-if-absent. `gc/` holds the garbage collector's lease and cycle
-markers. `trash/` holds tombstoned packs awaiting deletion. There is
-nothing else.
+markers. `trash/` holds tombstoned packs awaiting deletion. Protected
+publication control selects these logical values through immutable commit
+slots; payload copies carry portable selected history, not private authority.
 
 ## Key layout
 
@@ -48,7 +49,15 @@ nothing else.
   trash/
     <cycle>/<pack-id>                    tombstone             create-once
   CAPABILITIES                           probe record          CAS
+  publication/SELECTED-HISTORY            retained branch heads CAS
+  publication/snapshots/<rev>:<operation> complete projection   create-once
+  publication/PORTABLE                    exact snapshot       CAS
 ```
+
+Protected control has the separately registered keys in
+[`reference/bucket-key-registry.md`](reference/bucket-key-registry.md).
+Its selection, activation and portable-copy rules are normative in
+[`reference/publication-authority.md`](reference/publication-authority.md).
 
 `<aa>` is the first two lowercase hexadecimal characters of the pack id, a
 fan-out that keeps listings bounded on filesystems and spreads keys across
@@ -100,16 +109,17 @@ so a reader can fetch a generation atomically and detect a partial one.
   generation whose
   `MANIFEST` is absent or lists a shard the reader cannot fetch or verify.
   The published generation MUST be selected through `CAPABILITIES` key 9
-  by conditional write after the manifest, and MUST NOT decrease.
+  by conditional selected publication after the manifest, and MUST NOT
+  decrease.
   *Gate:* `gate:index-generation-manifest`.
 
 The optional `CAPABILITIES` key 9 selects the current authoritative index
 generation. A writer first stores and verifies every listed shard and
 filter, then writes that generation's immutable `MANIFEST`, and finally
-advances key 9 by CAS without decreasing its value. Readers fetch this
-pointer and the exact named manifest; they never discover a generation by
-`LIST`. An absent pointer supplies no published catalog. Startup probes
-preserve the pointer, and a failed pointer CAS leaves an unpublished
+advances logical key 9 by selected CAS without decreasing its value. Readers
+fetch this pointer and the exact named manifest; they never discover a
+generation by `LIST`. An absent pointer supplies no published catalog.
+Startup probes preserve the pointer, and a failed pointer CAS leaves an unpublished
 generation available only for recovery. A manifest entry omits both filter
 fields when no filter is published for that shard.
 
@@ -194,6 +204,12 @@ versions are refused. Probe updates preserve the selected version and all
 optional authority fields. Version-2 filesystem effects verify their version
 under the existing stable namespace exclusion.
 
+D-79's CAPABILITIES key 11 independently marks checked publication authority.
+Absent key 11 does not establish a fresh empty control chain. Activation of
+existing version-2 payload requires the complete external quiescent fence,
+validated genesis and restart rules in the publication reference. A layout
+version alone never qualifies checked publication or destructive collection.
+
 A version-1 to version-2 migration MUST establish exclusive, quiescent authority
 over the complete namespace. It MUST stop and drain legacy readers, writers and
 in-flight effects and prevent their resumption until cleanup and verification
@@ -234,8 +250,10 @@ These rules are proved by BKT-1's registry, BKT-3's layout and BKT-14's CAS gate
 
 ## Conditional writes
 
-The layout has no coordinator. Safety under concurrent writers rests
-entirely on the object store's conditional-write primitives.
+The layout has no separate coordinator database. Safety under concurrent
+writers rests on conditional-write primitives and the registered immutable
+publication chain. Mutable materialized payload keys are caches of selected
+logical values once checked publication is active.
 
 Two primitives are required:
 
@@ -252,11 +270,12 @@ Their spelling on the major providers:
 | Cloudflare R2 | `If-None-Match: *` via the S3 API; `onlyIf.etagDoesNotMatch` via the Workers binding | `If-Match: <etag>` via the S3 API; `onlyIf.etagMatches` via the Workers binding |
 | Filesystem | `open(O_CREAT \| O_EXCL)` then rename | write to a temporary name, `renameat2(RENAME_EXCHANGE)` or lock-and-rename against the observed inode |
 
-- **[BKT-5]** A `ref_cas` on a `bucket` MUST be implemented as a
-  compare-and-swap on the ref key using the version token (ETag,
-  generation, or inode identity) observed by the most recent read of that
-  key. A `ref_cas` with `expect = absent` MUST be implemented as
-  create-if-absent. *Gate:* `gate:bucket-ref-cas`.
+- **[BKT-5]** A `ref_cas` on a `bucket` MUST compare the whole selected
+  expected record or explicit absence and publish through D-79's exact
+  next create-once commit slot. Backend version observations MUST remain
+  opaque and MUST NOT substitute for the complete selected transaction or
+  cross-key fence. A materialized ref-key update alone MUST NOT establish
+  logical publication. *Gate:* `gate:bucket-ref-cas`.
 - **[BKT-6]** A `ref_log_append` and every create-once key MUST be written
   with create-if-absent. A writer MUST treat a precondition failure as
   `exists` and MUST NOT retry with an unconditional write.
@@ -290,6 +309,9 @@ compare-and-swap into an unconditional overwrite.
   multi-writer safety, MUST refuse to open. *Gate:* `gate:bucket-probe`.
   Explicit read-only legacy access performs no write probes and MUST NOT
   advertise verified ref-write capability.
+  Active checked publication MUST additionally qualify actual linearizable
+  create-if-absent and exact reads for its protected control namespace;
+  a stale ETag failure alone does not qualify whole-transaction fencing.
 - **[BKT-11]** A backend reporting `refs: single-writer` MUST refuse
   `ref_cas` and `ref_log_append` from more than one writer identity per
   process lifetime, and a `guard` above it MUST refuse tokens that would
@@ -311,10 +333,13 @@ A `bucket(file://<root>)` is the same layout on a local filesystem.
   across read, compare, write, and rename, or an exchange rename against
   the observed inode. A filesystem that provides neither MUST be reported
   as `refs: single-writer`. *Gate:* `gate:bucket-file-cas`.
+  Checked publication and each current-authority destructive effect MUST
+  retain the same actual stable namespace exclusion through final comparison
+  and effect, as defined in the publication reference.
 Filesystem coordination files are separate from logical bucket keys.
-Protected `.terrane-creation/<key-digest>` journals retain D-78's local
-physical incarnation evidence for collector artifacts. They are not content,
-catalog members, imported snapshot authority or logical listing results;
+Protected external-control `.terrane-creation/<key-digest>` journals retain
+D-78's local physical incarnation evidence for collector artifacts. They are
+not content, catalog members, imported snapshot authority or logical listing results;
 only held backend exclusion may mutate them under GC-29's protocol.
 The reserved `.terrane-locks/<key-digest>` files provide stable exclusion
 inodes; `.terrane-tmp:<random-id>` files in a destination's directory hold
@@ -344,8 +369,11 @@ locks locally and never treats copied staging files as published content.
   sorted by unsigned UTF-8 bytes, contain unique registered full ref names,
   and never lose a name. Before first publishing a ref, its authority MUST
   durably add its name by whole-record `CAPABILITIES` CAS. Startup probes and
-  index-pointer publication MUST preserve this inventory. Absence of key 10
-  in a legacy bucket means completeness is unknown, never an empty inventory.
+  index-pointer publication MUST preserve this inventory and key 11's
+  publication marker. Active publication MUST select inventory, retained
+  branch history and ref changes through the registered transaction protocol.
+  Absence of key 10 in a legacy bucket means completeness is unknown, never
+  an empty inventory.
   *Gate:* `gate:bucket-file-cas`.
 
 A new empty inventory requires authoritative fresh bucket initialization;
@@ -375,8 +403,8 @@ from `LIST` or from the subset of names they happened to read.
 
 A create-once proposal does not itself advance a branch: a writer may stop
 between append and CAS, and concurrent writers may propose the same sequence.
-Terrane keeps a separate whole-record CAS ref because readers and mirrors need
-one authoritative key, and collectors need a selected history independent of
-bucket listings. The head selects its candidate and complete predecessor
-chain. An inconsistent or missing selected log is corruption; a reader never
-repairs the head from an unselected proposal.
+Terrane keeps a whole-record logical CAS ref because readers and mirrors need
+an exact selected head, and collectors need selected history independent of
+bucket listings. The publication chain selects the head; the head selects its
+candidate and complete predecessor chain. An inconsistent or missing selected
+log is corruption; a reader never repairs the head from an unselected proposal.
