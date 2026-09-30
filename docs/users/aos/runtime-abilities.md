@@ -5,11 +5,10 @@ compose through Nix's recursive `options`/`config` fixed point. Ability operatio
 add typed, deferred host modifications to that configuration. Evaluation produces
 data; the Rust runtime executes the selected handlers later.
 
-The native infrastructure described here is implemented. Existing package,
-registry, image, and installation consumers are being migrated separately. The
-service examples below demonstrate the API; they do not imply that the existing
-service packages already use it. The [migration handoff](../../rfcs/0022-abilities-and-effects/consumer-migration.md)
-identifies that boundary.
+This guide describes the native package and runtime interface. The examples
+introduce the machinery with a small service contract; production domain
+contracts are documented from their actual module declarations. Implementation
+and qualification progress are tracked in the [migration checklist](../../rfcs/0022-abilities-and-effects/consumer-migration.md).
 
 ```mermaid
 flowchart LR
@@ -239,11 +238,12 @@ Use the actual registered package name in that command. Descriptions belong besi
 from those declarations and definition provenance. Do not author a second
 ability catalog or option table for documentation.
 
-A publisher must retain these artifacts and the exact module closure alongside
-the authenticated release. Publication does not execute effects. Integration
-with existing APR/Hub release metadata and indexes is a remaining consumer
-migration; generating these artifacts alone does not make them discoverable
-through existing package search.
+Publication retains these artifacts and the exact module closure alongside the
+authenticated release. Native release metadata identifies each companion by its
+store identity, NAR hash, and exact document digest. Hub validates those bindings
+before indexing the generated options and operations. Publication does not
+execute effects; a locally imported document is an inspection view, not an
+authenticated release.
 
 ## Evaluate an installation scope
 
@@ -295,6 +295,32 @@ stock Nix in pure/restricted mode with fixed source inputs and import-from-
 derivation disabled. It builds nothing and executes no host modification.
 Package/version/source conflicts fail before execution.
 
+### Retain inputs before producing the graph
+
+Production evaluation also retains an `aos.package.evaluation-input` document.
+It identifies the immutable module library and its NAR hash, installation scope,
+resolved packages, ordered baseline modules, and operator configuration snapshot.
+It contains no output graph. Packages that need to perform another authorized
+evaluation receive its immutable path as the `evaluationInput` module argument:
+
+```nix
+{ evaluationInput, ... }: {
+  aos.abilities.example.operations.evaluate.effects.main.input.source =
+    evaluationInput;
+}
+```
+
+Here `example.evaluate` stands for a package-owned operation whose `source`
+option accepts that retained descriptor. The path is an ordinary operation
+input, so revision tracking and retention apply without a separate invocation
+context channel. A caller authenticates the descriptor and its source identities
+before admitting it; merely parsing a descriptor establishes no authority.
+
+Baseline modules remain authored source files, rather than snapshots of their
+final merged defaults. Reconfiguration replaces the operator snapshot and
+reevaluates the new package closure against those sources. Different outputs of
+one package share one module identity; selected payload outputs remain explicit.
+
 ## Runtime state, reconfiguration, and recovery
 
 A process handler implements `apply`, `remove`, and `observe`, accepting a JSON
@@ -308,6 +334,10 @@ ability, operation, and instance name. Composed children also include their
 parent. Upgrading a package does not change that identity merely because its
 version or store path changes. Semantic inputs and handler artifacts determine
 the revision automatically; changing descriptions does not trigger an update.
+`after` establishes execution order. A dependency's result belongs in `input`
+when changes to that result should change the consumer's resolved revision.
+Portable type constraints are checked after Nix merging and again after runtime
+result substitution.
 
 | Lifetime | Retention |
 | --- | --- |
@@ -327,12 +357,38 @@ releases their artifact roots; persistent effects retain separate handler roots.
 Current-generation pruning is rejected. Journals are bounded and currently have
 no automatic compaction; pruning roots does not reclaim journal bytes.
 
-Boot and image consumers must select and retain their backend packages, submit
-the appropriate scope to this same transaction infrastructure, and resume
-pending work before starting another generation. The production boot/install
-entry points have not yet been moved to that path. The current process transport
-also uses Linux facilities; alternate execution platforms need a transport
-implementation as well as their own domain handlers.
+Image construction selects package/module slices for the host, initrd, and
+container. Host activation uses the same `profile/system` scope and generation
+journal as subsequent package changes. The image supplies the initial desired
+state; subsequent boots reconcile the committed profile and recover pending
+work. They must not overwrite an installed profile with the original image's
+package selection. Container images select a smaller package-managed base.
+
+Configuration-lower construction is an OS-owned operation. Its immutable output
+is retained by the native transaction and mounted before dependent file and
+service operations. Image path provenance lets removal hide obsolete baseline
+entries while preserving unrelated operator edits.
+
+Optional execution observers receive only transaction/effect identities and
+journal boundaries, without arguments or results. An observer failure stops
+execution; recovery observes the exact durable invocation before retry. Observer
+acknowledgements cannot supply a handler outcome. The observer must already be
+available before the first observed dispatch; it cannot observe its own creation.
+Image-owned startup or an externally supplied test listener can establish that
+prerequisite.
+
+Read-only journal inspection uses the same bounded replay model as activation:
+
+```sh
+aos ability journal activation.journal --format json
+```
+
+It distinguishes desired state, pending invocations, and durable completion.
+It does not query live services or repair an interrupted journal.
+
+The current process transport uses Linux facilities; another execution platform
+needs a transport implementation as well as its own domain handlers. These
+interfaces do not themselves establish whole-system boot qualification.
 
 ## Inspect the generated reference and execution path
 
@@ -367,13 +423,15 @@ curl --data-binary @options.json -H 'Content-Type: application/json' \
 
 Omit `format=html` to return the parsed JSON after structural validation.
 Inspection does not authenticate a release, evaluate configuration, or activate
-a graph. Existing installed-package documentation, release search, and
-`aos ability` inspection still use their previous consumer formats; the native
-viewer deliberately does not adapt those formats.
+a graph. Installed-package documentation and Hub release browsing use the same
+native reader with their own authenticated package/release context. Package
+pages distinguish declarations from configured deployment effects. A system's
+reported desired graph and observed state are separate assertions; a document
+digest alone is not evidence that a handler ran.
 
 The executable integration example is
 [`package_deployment_check`](../../../crates/aos-package/examples/package_deployment_check.rs),
 using the source-built [`checks.effects` fixture](../../../tests/effects/deployment-fixture.nix).
 It exercises artifact publication, deployment-time evaluation, real handler
 execution, generation reopening, reconfiguration, and pruning. It provides a
-small concrete starting point for the remaining consumers.
+small executable example of the shared infrastructure boundary.

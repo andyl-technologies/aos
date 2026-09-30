@@ -73,6 +73,8 @@
         }
       ];
     }
+    else if schema.kind == "enum"
+    then schema // {values = builtins.sort (left: right: left.value < right.value) schema.values;}
     else if schema.kind == "opaque" && !allowOpaque
     then throw "Option type '${type.description}' cannot cross the activation boundary."
     else schema;
