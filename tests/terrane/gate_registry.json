@@ -957,7 +957,7 @@
   {
     "name": "prov-commit-verify",
     "owner": "23",
-    "requirements": "PROV-4"
+    "requirements": "PROV-4, PROV-31"
   },
   {
     "name": "prov-entry-preserve",

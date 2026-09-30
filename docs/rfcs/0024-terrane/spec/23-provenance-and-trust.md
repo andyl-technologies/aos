@@ -58,11 +58,12 @@ trusted one", and policy decides which it requires.
   `commit` in its original authoring context at that epoch. Every new
   authored commit MUST carry the signed `commit-context` in its profile pair:
   the original canonical ref, producing surface, locality and affected
-  absolute root paths with effective disclosure domains. Roots are sorted
-  uniquely by unsigned `(path bytes, domain bytes)`. Admission MUST verify
-  those root/domain pairs against the canonical candidate and previous
-  trees and check the current ACLs separately; a signed domain assertion is
-  not a tree witness. A legacy draft record without this context MAY be
+  absolute root paths with effective disclosure domains under PROV-31.
+  Roots are sorted uniquely by unsigned `(path bytes, domain bytes)`.
+  Admission MUST verify those root/domain pairs against the canonical
+  candidate and previous trees and check the current ACLs separately; a
+  signed domain assertion is not a tree witness. A legacy draft record
+  without this context MAY be
   verified only with a trusted complete original context, and MUST NOT be
   admitted as a newly authored contextless commit. Reading, forking, tagging
   or carrying a historical commit MUST verify its original context rather
@@ -80,6 +81,59 @@ trusted one", and policy decides which it requires.
   ([`32-tree-jobs.md`](32-tree-jobs.md)) and rulesets
   ([`31-routing-rulesets.md`](31-routing-rulesets.md)); `migrated` by
   [`33-migrations.md`](33-migrations.md).
+
+## Affected root authorization
+
+- **[PROV-31]** Signed `commit-context` pairs MUST name actual root
+  occurrences, never ordinary entry paths. For an ordinary advance, admission
+  and historical verification MUST derive affected root units from the
+  canonical candidate and the canonical first parent's tree. An entry
+  addition, removal, content or metadata change affects its containing root.
+  Changes to root properties or graft overrides affect their root units and
+  every descendant whose effective inherited policy changes. Materializing
+  the same effective implicit owner under DOM-1 MUST NOT add an ancestor
+  policy change. *Gate:* `gate:prov-commit-verify`.
+
+  A graft target digest change caused only by changes within the same child
+  root occurrence MUST NOT require authority on the containing ancestor root
+  when its descriptor metadata, overrides and effective policy are unchanged.
+  Root introduction, removal, moves and other descriptor changes still affect
+  their containing root and the changed root units. Removed and moved roots
+  use their prior occurrence policies; introduced roots use candidate
+  policies. Replacements and domain changes check both sides, including
+  descendants whose effective policy changes. Unchanged siblings MUST NOT
+  become affected solely because their ancestor's digest changes.
+
+  Every signed claim MUST be witnessed as an actual root occurrence in the
+  candidate or prior tree with its claimed effective domain. Every affected
+  root/domain pair MUST be covered by a signed same-domain root claim at that
+  occurrence or a canonical ancestor occurrence. Verification MUST evaluate
+  the embedded token in its original authoring context on every signed claim
+  and every affected actual root/domain pair. Broader valid historical root
+  claims remain acceptable; a claim alone is not a canonical change witness.
+  Admission MUST separately evaluate the current operation token and current
+  ACLs for every affected actual root/domain, and enforce applicable `admin`
+  requirements for authority-bearing property changes, before uploads and
+  final CAS. Requested file paths MUST resolve to their actual containing
+  root for grant and ACL checks; entry reachability is a separate check.
+  These rules preserve AUTH-29's prohibition on per-entry permissions.
+
+  Initial tree publication MUST authorize the view root and all affected
+  root units. An unchanged-tree authored record MUST still carry a nonempty
+  authorized actual-root context. ALG-32's constant-cost copied-tree fork
+  retains its specified source and destination authorization; computing an
+  empty change set MUST NOT require scanning that unchanged tree.
+
+  If a complete verified PROV-29 batch makes the exact first parent an
+  audit-only boundary, verification MUST treat the candidate as a complete
+  fresh materialization with view-root publication scope and all required
+  entry and attribute evidence. It MUST NOT fetch private evidence or infer
+  unchangedness from unavailable history. An audit-only second parent does
+  not replace the publicly retained first-parent change baseline. A bounded
+  session scope MUST NOT confer authority or replace verification of all
+  actual changes. Unreachable staged uploads MUST be rejected; newly reachable
+  reused bytes require scoped verified availability evidence or fresh
+  verified upload, never namespace membership alone.
 
 ## Entry provenance
 

@@ -343,7 +343,7 @@ here is a conformance error of this document.
 | `gate:dom-reference-order` | 24 | DOM-5 |
 | `gate:dom-wipe` | 24 | DOM-18 |
 | `gate:prov-commit-signature` | 23 | PROV-2 |
-| `gate:prov-commit-verify` | 23 | PROV-4 |
+| `gate:prov-commit-verify` | 23 | PROV-4, PROV-31 |
 | `gate:prov-entry-preserve` | 23 | PROV-8 |
 | `gate:prov-fold-acceptance` | 23 | PROV-17 |
 | `gate:prov-selector-presets` | 23 | PROV-12 |

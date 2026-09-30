@@ -1228,6 +1228,29 @@ is added rather than editing history.
     remain subject to their existing disclosure requirements. This correction
     precedes T1's initial encoding freeze under D-66.
 
+- **[D-75] Authorize affected root units independently of Merkle propagation.**
+  - **Status:** Decided
+  - **Decision:** Define affected roots against the canonical first parent,
+    retaining root-unit grant and ACL semantics. Propagating a changed child
+    digest through otherwise unchanged graft descriptors does not require
+    writes to ancestor or sibling roots. Authenticate signed root claims and
+    every actual changed root/domain against original and current authority.
+    Removed roots retain prior policy witnesses; a fully certified audit-only
+    first parent requires complete fresh materialization and view-root scope.
+  - **Rationale:** PROV-4 named affected root paths without distinguishing an
+    actual permission unit from a structural ancestor digest change. Requiring
+    every candidate root denies a writer granted only a real nested root;
+    authorizing an ordinary entry spelling instead invents a permission
+    boundary that AUTH-29 forbids. Exact changes, witnessed root claims and
+    independently checked current authority avoid both failure modes. This
+    also preserves D-61's unchanged effective ownership and D-74's prohibition
+    on inferring absence or unchangedness from discarded private evidence.
+  - **Affects:** PROV-4, PROV-31, AUTH-19, AUTH-24, AUTH-26, AUTH-28 to AUTH-30,
+    DOM-1 and commit-context interpretation. Field numbers, byte shapes,
+    canonical ordering and unaffected identities remain unchanged; broader
+    valid historical root contexts remain verifiable. This clarification
+    precedes T1's initial freeze and preserves ALG-32's copied-tree fork cost.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

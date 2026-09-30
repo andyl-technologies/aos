@@ -156,6 +156,8 @@ profile-pair = {
 ; complete original context at verification. Root pairs sort uniquely by
 ; unsigned (absolute path bytes, UTF-8 domain bytes). They are verified against
 ; canonical candidate/previous trees, not trusted solely because they are signed.
+; PROV-31 pairs name actual affected root units, never ordinary entry paths;
+; ancestor graft target digest propagation alone does not affect that ancestor.
 commit-context = {
   1 => tstr,                            ; original canonical ref name
   2 => tstr,                            ; registered producing surface

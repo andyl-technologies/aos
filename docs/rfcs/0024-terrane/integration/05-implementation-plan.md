@@ -261,8 +261,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   incomplete: the shared receipt codec accepts the registered raw shape, but
   unchecked certificates cannot replace verified history. These checks are
   joint with T-PROV-1 and T-DOM-1; they remain unqualified until destination-only
-  reopen, private erasure and current-authority race checks pass. — satisfies
-  TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-30, DOM-24;
+  reopen, private erasure and current-authority race checks pass. Affected-root
+  admission and historical context coverage under D-75 remain incomplete;
+  ordinary entry paths cannot become permission boundaries. — satisfies
+  TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
+  `checks.terrane.gates.prov-commit-verify`,
   `checks.terrane.gates.prov-disclosure-boundary`,
   `checks.terrane.gates.ref-advance-ordering`,
   `checks.terrane.gates.ref-epoch-fencing`, `checks.terrane.gates.ref-watch`.
