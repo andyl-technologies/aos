@@ -7,15 +7,13 @@
   identity,
   scenarioId,
   checks,
-  testScript,
-  setupBody,
-  extraClosures,
-  candidateRuntimeCompanions,
+  testScript ? "",
+  setupBody ? "",
+  extraClosures ? [],
+  candidateRuntimeCompanions ? [],
   stagingHubUrl ? null,
-  matrixSpec ? null,
-  matrixSpecJson ? null,
-  matrixQualifiedCells ? [],
-  matrixAdditionalCohorts ? [],
+  nativeOperationSpec ? null,
+  nativeOperationCohorts ? [],
   cohorts ? [
     {
       id = "ability";
@@ -36,19 +34,19 @@
     text = testScript;
   };
   fixtureScript = "${fixtureScriptRoot}/script.py";
-  matrixSpecRoot =
-    if matrixSpec == null
+  nativeOperationSpecRoot =
+    if nativeOperationSpec == null
     then null
     else
       pkgs.writeTextFile {
         name = "${name}-native-adapter-matrix";
         destination = "/matrix-spec.json";
-        text = matrixSpecJson;
+        text = builtins.toJSON nativeOperationSpec;
       };
-  matrixSpecPath =
-    if matrixSpecRoot == null
+  nativeOperationSpecPath =
+    if nativeOperationSpecRoot == null
     then ""
-    else "${matrixSpecRoot}/matrix-spec.json";
+    else "${nativeOperationSpecRoot}/matrix-spec.json";
   setupModuleRoot = pkgs.writeTextFile {
     name = "${name}-setup";
     destination = "/module.nix";
@@ -91,57 +89,25 @@
       script = "${scriptRoot}/script.py";
       setup = "${setupRoot}/module.nix";
     })
-  matrixAdditionalCohorts;
+  nativeOperationCohorts;
   allCandidateRuntimeCompanions =
     candidateRuntimeCompanions
     ++ lib.concatMap (cohort: cohort.candidateRuntimeCompanions) additionalCohorts;
-  additionalQualifiedCells = lib.concatMap (cohort: cohort.qualifiedCells) additionalCohorts;
-  matrixInapplicableCellIds =
-    if matrixSpec == null
-    then []
-    else map (entry: entry.cell_id) matrixSpec.applicability.inapplicable_cells;
-  matrixApplicableCellIds =
-    if matrixSpec == null
-    then []
-    else
-      map (cell: cell.id) (
-        builtins.filter (cell: !builtins.elem cell.id matrixInapplicableCellIds) matrixSpec.cells
-      );
-  primaryQualifiedCells =
-    builtins.filter (
-      cellId: !builtins.elem cellId additionalQualifiedCells
-    )
-    matrixQualifiedCells;
   cohortInput = cohort: script: setup: qualifiedCells: {
     inherit (cohort) id requiredInputs execution report;
     inherit script setup qualifiedCells;
+  } // lib.optionalAttrs (cohort.report.kind == "matrix") {
+    matrixSpec = cohort.matrixSpec;
+    selectedEvaluation = cohort.selectedEvaluation;
   };
-  matrixCohortInputs =
-    lib.optional (matrixSpec != null) (cohortInput {
-        id = "primary";
-        requiredInputs = [];
-        execution = {
-          bootInput = "candidate-image";
-          fixtureRole = null;
-          recordsGuestKernel = true;
-        };
-        report = {kind = "matrix";};
-      }
-      fixtureScript
-      setupModule
-      primaryQualifiedCells)
-    ++ map (cohort:
-      cohortInput
-      cohort
-      cohort.script
-      cohort.setup
-      cohort.qualifiedCells)
+  matrixCohortInputs = map (cohort:
+    cohortInput cohort cohort.script cohort.setup cohort.qualifiedCells)
     additionalCohorts;
   scenarioCohortInputs = map (cohort:
     cohortInput cohort fixtureScript setupModule [])
   cohorts;
   qualificationCohorts =
-    if matrixSpec == null
+    if nativeOperationSpec == null
     then scenarioCohortInputs
     else matrixCohortInputs;
   requiresStagingHub =
@@ -149,11 +115,33 @@
       cohort: builtins.elem "predecessor-image" cohort.requiredInputs
     )
     qualificationCohorts;
+  selectedEvaluationRoots = lib.concatMap (cohort: let
+    selection = cohort.selectedEvaluation;
+    sourceRoot = locator: let
+      match = builtins.match "^(/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[^/]+)(/.*)?$" locator;
+    in
+      if match == null
+      then throw "Qualification scenario source must belong to an immutable store root."
+      # Regex captures discard Nix string context. Carry the original source
+      # dependency into the explicit root so it is realized and retained.
+      else builtins.appendContext (builtins.head match) (builtins.getContext locator);
+  in
+    [selection.locator] ++ map sourceRoot selection.scenario_sources)
+  additionalCohorts;
+  fixtureEvaluations = pkgs.writeTextFile {
+    name = "${name}-fixture-evaluations";
+    destination = "/evaluations.json";
+    text = builtins.toJSON (builtins.listToAttrs (map (cohort: {
+      name = cohort.id;
+      value = cohort.selectedEvaluation;
+    }) additionalCohorts));
+  };
   fixtureRoots = lib.unique (
     map builtins.toString (
-      [fixtureScriptRoot setupModuleRoot]
+      [fixtureScriptRoot setupModuleRoot fixtureEvaluations]
+      ++ selectedEvaluationRoots
       ++ lib.concatMap (cohort: [cohort.scriptRoot cohort.setupRoot]) additionalCohorts
-      ++ lib.optional (matrixSpecRoot != null) matrixSpecRoot
+      ++ lib.optional (nativeOperationSpecRoot != null) nativeOperationSpecRoot
       ++ extraClosures
       ++ lib.concatMap (cohort: cohort.extraClosures) additionalCohorts
     )
@@ -189,6 +177,10 @@
               ${pkgs.nix}/bin/nix-store \
               "$TMPDIR/qualification-fixture-export"
           test -s "$out/fixture.export"
+          # Preserve the original graph used to verify each streamed NAR. The
+          # configured executor registry commits these exact bytes at build time.
+          cp ${fixtureGraph}/inventory.json "$out/inventory.json"
+          cp ${fixtureEvaluations}/evaluations.json "$out/evaluations.json"
 
           bytecode="$(${pkgs.findutils}/bin/find "$out" \
             \( -type d -name __pycache__ -o -type f \
@@ -202,6 +194,8 @@
     ];
   };
   fixtureArchive = "${fixtureArchiveRoot}/fixture.export";
+  fixtureInventoryPath = "${fixtureArchiveRoot}/inventory.json";
+  fixtureEvaluationsPath = "${fixtureArchiveRoot}/evaluations.json";
   fixtureContractDigest = "sha256:${builtins.hashString "sha256" (builtins.toJSON (
     {
       inherit scenarioId checks setupBody;
@@ -212,8 +206,8 @@
     // {
       inherit qualificationCohorts;
     }
-    // lib.optionalAttrs (matrixSpec != null) {
-      inherit matrixQualifiedCells matrixSpec;
+    // lib.optionalAttrs (nativeOperationSpec != null) {
+      inherit nativeOperationSpec;
     }
   ))}";
   narSelfReference = pkgs.mkDerivation {
@@ -253,6 +247,33 @@
     name = "${name}-support";
     destination = "/share/aos-release/qualification-image.py";
     text = builtins.readFile ./qualification-image.py;
+  };
+  nativeImageSupport = pkgs.writeTextFile {
+    name = "${name}-native-image-support";
+    destination = "/share/aos-release/qualification-native-image.py";
+    text = builtins.readFile ./qualification-native-image.py;
+    checkPhase = ''
+      PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-image-pycache \
+        ${pkgs.buildPackages.python3}/bin/python3 -m py_compile \
+          $out/share/aos-release/qualification-native-image.py
+      PYTHONDONTWRITEBYTECODE=1 ${pkgs.buildPackages.python3}/bin/python3 \
+        ${./qualification-native-image-self-test.py} \
+        $out/share/aos-release/qualification-native-image.py
+    '';
+  };
+  nativeCustodySupport = pkgs.writeTextFile {
+    name = "${name}-native-custody-support";
+    destination = "/share/aos-release/qualification-native-custody.py";
+    text = builtins.readFile ./qualification-native-custody.py;
+    checkPhase = ''
+      PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-custody-pycache \
+        ${pkgs.buildPackages.python3}/bin/python3 -m py_compile \
+        $out/share/aos-release/qualification-native-custody.py
+      PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-custody-tests \
+        ${pkgs.buildPackages.python3}/bin/python3 \
+        ${./qualification-native-custody-self-test.py} \
+        $out/share/aos-release/qualification-native-custody.py
+    '';
   };
   narSupport = pkgs.writeTextFile {
     name = "${name}-nar-support";
@@ -307,56 +328,25 @@
       $out/share/aos-release/native_adapter_evidence.py
     cp ${../../qualification/providers/native_adapter_evidence_common.py} \
       $out/share/aos-release/native_adapter_evidence_common.py
-    cp ${../../qualification/providers/native_adapter_operation_evidence.py} \
-      $out/share/aos-release/native_adapter_operation_evidence.py
-    cp ${../../qualification/providers/native_adapter_provider_state_evidence.py} \
-      $out/share/aos-release/native_adapter_provider_state_evidence.py
     cp ${../../qualification/providers/native_adapter_runtime_evidence.py} \
       $out/share/aos-release/native_adapter_runtime_evidence.py
-    cp ${../../qualification/providers/reference_evidence.py} \
-      $out/share/aos-release/reference_evidence.py
-    cp ${../../qualification/providers/rollout_evidence.py} \
-      $out/share/aos-release/rollout_evidence.py
 
     PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-cohort-pycache \
       ${pkgs.buildPackages.python3}/bin/python3 -m py_compile \
       $out/share/aos-release/qualification-native-adapter-cohort.py \
       $out/share/aos-release/native_adapter_evidence.py \
       $out/share/aos-release/native_adapter_evidence_common.py \
-      $out/share/aos-release/native_adapter_operation_evidence.py \
-      $out/share/aos-release/native_adapter_provider_state_evidence.py \
-      $out/share/aos-release/native_adapter_runtime_evidence.py \
-      $out/share/aos-release/reference_evidence.py \
-      $out/share/aos-release/rollout_evidence.py
+      $out/share/aos-release/native_adapter_runtime_evidence.py
 
     PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-cohort-test-pycache \
       ${pkgs.buildPackages.python3}/bin/python3 \
       ${./qualification-native-adapter-cohort-self-test.py} \
       $out/share/aos-release/qualification-native-adapter-cohort.py \
-      ${../../qualification/native-adapter-scenarios.json}
+      ${../../tests/fleet/native-activation-evidence.py}
 
-    PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-effect-test-pycache \
-      ${pkgs.buildPackages.python3}/bin/python3 \
-      ${./qualification-native-adapter-effect-self-test.py} \
-      $out/share/aos-release/qualification-native-adapter-cohort.py \
-      ${../..}/tests/fleet/ability-effect-boundary-evidence.py \
-      ${../../qualification/native-adapter-scenarios.json}
-
-    PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-provider-state-test-pycache \
-      ${pkgs.buildPackages.python3}/bin/python3 \
-      ${../..}/tests/fleet/ability-provider-state-evidence-self-test.py \
-      $out/share/aos-release/qualification-native-adapter-cohort.py
-
-    PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-cancellation-test-pycache \
-      ${pkgs.buildPackages.python3}/bin/python3 \
-      ${./qualification-native-adapter-cancellation-self-test.py} \
-      $out/share/aos-release/qualification-native-adapter-cohort.py \
-      ${../..}/tests/fleet/ability-effect-boundary-evidence.py \
-      ${../..}/tests/fleet/ability-cancellation-evidence.py \
-      ${../../qualification/native-adapter-scenarios.json}
   '';
   matrixCohortSupportPath =
-    if matrixSpec == null
+    if nativeOperationSpec == null
     then ""
     else "${matrixCohortSupport}/share/aos-release/qualification-native-adapter-cohort.py";
   executable = pkgs.writeShellScriptBin name ''
@@ -372,6 +362,8 @@
     export AOS_QUALIFICATION_CHECKS=${lib.escapeShellArg (builtins.toJSON checks)}
     export AOS_QUALIFICATION_FIXTURE_CONTRACT=${lib.escapeShellArg fixtureContractDigest}
     export AOS_QUALIFICATION_FIXTURE_ARCHIVE=${lib.escapeShellArg fixtureArchive}
+    export AOS_QUALIFICATION_FIXTURE_INVENTORY=${lib.escapeShellArg fixtureInventoryPath}
+    export AOS_QUALIFICATION_FIXTURE_EVALUATIONS=${lib.escapeShellArg fixtureEvaluationsPath}
     export AOS_QUALIFICATION_CANDIDATE_RUNTIME_COMPANIONS=${lib.escapeShellArg (builtins.toJSON allCandidateRuntimeCompanions)}
     export AOS_QUALIFICATION_STAGING_HUB_URL=${lib.escapeShellArg (
       if stagingHubUrl == null
@@ -379,12 +371,13 @@
       else stagingHubUrl
     )}
     export AOS_QUALIFICATION_FIXTURE_SCRIPT=${lib.escapeShellArg fixtureScript}
-    export AOS_QUALIFICATION_NATIVE_ADAPTER_MATRIX_SPEC=${lib.escapeShellArg matrixSpecPath}
-    export AOS_QUALIFICATION_NATIVE_ADAPTER_QUALIFIED_CELLS=${lib.escapeShellArg (builtins.toJSON matrixQualifiedCells)}
+    export AOS_QUALIFICATION_NATIVE_OPERATION_SPEC=${lib.escapeShellArg nativeOperationSpecPath}
     export AOS_QUALIFICATION_COHORTS=${lib.escapeShellArg (builtins.toJSON qualificationCohorts)}
     export AOS_QUALIFICATION_NATIVE_ADAPTER_COHORT_SUPPORT=${lib.escapeShellArg matrixCohortSupportPath}
     export AOS_QUALIFICATION_SETUP_MODULE=${lib.escapeShellArg setupModule}
     export AOS_QUALIFICATION_IMAGE_SUPPORT=${lib.escapeShellArg "${support}/share/aos-release/qualification-image.py"}
+    export AOS_QUALIFICATION_NATIVE_CUSTODY_SUPPORT=${lib.escapeShellArg "${nativeCustodySupport}/share/aos-release/qualification-native-custody.py"}
+    export AOS_QUALIFICATION_NATIVE_IMAGE_SUPPORT=${lib.escapeShellArg "${nativeImageSupport}/share/aos-release/qualification-native-image.py"}
     export AOS_QUALIFICATION_NAR_SUPPORT=${lib.escapeShellArg "${narSupport}/share/aos-release/qualification-nar.py"}
     export AOS_QUALIFICATION_QEMU=${lib.escapeShellArg qemu}
     export AOS_QUALIFICATION_QEMU_IMG=${lib.escapeShellArg "${pkgs.qemu}/bin/qemu-img"}
@@ -447,12 +440,12 @@ in
     "ability-native-adapter-matrix"
     "ability-native-recovery"
   ];
-  assert (matrixSpec != null) == (scenarioId == "ability-native-adapter-matrix");
-  assert (matrixSpecJson != null) == (matrixSpec != null);
+  assert (nativeOperationSpec != null) == (scenarioId == "ability-native-adapter-matrix");
   assert qualificationCohorts != [];
+  assert nativeOperationSpec != null || testScript != "";
   assert builtins.all (cohort:
     builtins.sort builtins.lessThan (builtins.attrNames cohort)
-    == ["execution" "id" "qualifiedCells" "report" "requiredInputs" "script" "setup"]
+    == (if cohort.report.kind == "matrix" then ["execution" "id" "matrixSpec" "qualifiedCells" "report" "requiredInputs" "script" "selectedEvaluation" "setup"] else ["execution" "id" "qualifiedCells" "report" "requiredInputs" "script" "setup"])
     && cohort.id != ""
     && builtins.all (input: builtins.elem input ["predecessor-image"]) cohort.requiredInputs
     && builtins.length cohort.requiredInputs == builtins.length (lib.unique cohort.requiredInputs)
@@ -478,16 +471,20 @@ in
       else builtins.attrNames cohort.report == ["kind"]
     ))
   qualificationCohorts;
-  assert matrixSpec
+  assert nativeOperationSpec
   == null
   || builtins.all (cohort: cohort.report.kind == "matrix") qualificationCohorts;
   assert !(builtins.any (cohort: cohort.report.kind == "release-transition") qualificationCohorts)
   || builtins.all (cohort: cohort.report.kind == "release-transition") qualificationCohorts;
-  assert (matrixQualifiedCells != []) == (matrixSpec != null);
-  assert builtins.sort builtins.lessThan matrixQualifiedCells
-  == builtins.sort builtins.lessThan (lib.concatMap (cohort: cohort.qualifiedCells) matrixCohortInputs);
-  assert builtins.length matrixQualifiedCells == builtins.length (lib.unique matrixQualifiedCells);
-  assert builtins.sort builtins.lessThan matrixQualifiedCells == matrixApplicableCellIds;
+  assert (nativeOperationCohorts != []) == (nativeOperationSpec != null);
+  assert nativeOperationSpec == null || map (cohort: {
+    inherit (cohort) id;
+    matrix_spec = cohort.matrixSpec;
+    selected_evaluation = cohort.selectedEvaluation;
+  }) matrixCohortInputs == nativeOperationSpec.cohorts;
+  assert builtins.all (cohort:
+    cohort.qualifiedCells == cohort.matrixSpec.applicability.applicable_cell_ids
+    && cohort.qualifiedCells != []) matrixCohortInputs;
   assert builtins.length matrixCohortInputs == builtins.length (lib.unique (map (cohort: cohort.id) matrixCohortInputs));
   assert builtins.all (cohort:
     (cohort.id
@@ -496,7 +493,7 @@ in
       && cohort.testScript != ""
       && cohort.candidateRuntimeCompanions != [])
     || throw "native adapter matrix cohort '${cohort.id}' is incomplete: ${toString (builtins.length cohort.qualifiedCells)} cells, ${toString (builtins.length cohort.candidateRuntimeCompanions)} companions, ${toString (builtins.stringLength cohort.testScript)} script bytes")
-  matrixAdditionalCohorts;
+  nativeOperationCohorts;
   assert checks != [];
   assert (stagingHubUrl != null) == requiresStagingHub;
   assert stagingHubUrl == null || builtins.match "https://[^/]+/?" stagingHubUrl != null;
@@ -509,12 +506,17 @@ in
             inherit
               checks
               fixtureArchive
+              fixtureArchiveRoot
+              fixtureInventoryPath
+              fixtureEvaluationsPath
               fixtureContractDigest
               fixtureRoots
               fixtureScript
-              matrixQualifiedCells
-              matrixSpecPath
+              nativeOperationSpecPath
+              matrixCohortSupport
               narSupport
+              nativeImageSupport
+              nativeCustodySupport
               scenarioId
               setupModule
               ;
