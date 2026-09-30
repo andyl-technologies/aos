@@ -496,6 +496,7 @@ let
   # fixture, and downloader closures are outside the first Darwin release.
   # The Darwin AOS clients retain their non-VM commands without target GLib.
   linuxScoped = [
+    "libepoxy-headers"
     "libx11"
     "libxext"
     "libxrender"
