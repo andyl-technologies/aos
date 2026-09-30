@@ -670,6 +670,19 @@ class Handler:
         contents = configuration_bytes(self.value)
         expected = digest(contents)
         current = read_digest(path)
+        if action == "observe" and self.invocation.get("action") == "remove":
+            if self.receipt is None:
+                return {"status": "absent" if current is None else "indeterminate"}
+            owned = {self.receipt["path"]: {self.receipt["digest"], self.receipt.get("previous_digest")}}
+            if self.receipt.get("previous_path"):
+                owned[self.receipt["previous_path"]] = {self.receipt.get("previous_path_digest")}
+            observed = {name: read_digest(owned_path(name)) for name in owned}
+            if any(value is not None and value not in owned[name] for name, value in observed.items()):
+                return {"status": "indeterminate"}
+            if all(value is None for value in observed.values()):
+                self.finish_remove()
+                return {"status": "absent"}
+            return {"status": "retry-safe"}
         if action == "observe":
             uid, gid = file_identity(self.value)
             if current == expected and self.receipt and self.receipt.get("digest") == expected and not self.receipt.get("pending"):
@@ -753,6 +766,24 @@ class Handler:
         owner = self.value.get("activation_owner", "ability")
         expected = all(read_digest(self.unit_directory / name) == value for name, value in desired.items())
         expected = expected and self.links_match(realization["links"])
+        if action == "observe" and self.invocation.get("action") == "remove":
+            if self.receipt is None:
+                absent = all(not (self.unit_directory / name).exists() and not (self.unit_directory / name).is_symlink() for name in desired)
+                return {"status": "absent" if absent else "indeterminate"}
+            if self.receipt.get("removing") and self.receipt.get("dispatching"):
+                # A failed stop may have run arbitrary package commands. File
+                # identity alone cannot authorize another lifecycle invocation.
+                return {"status": "indeterminate"}
+            if any(read_digest(self.unit_directory / name) not in {None, value} for name, value in prior_units.items()):
+                return {"status": "indeterminate"}
+            if not self.links_safe(prior_links):
+                return {"status": "indeterminate"}
+            absent = all(not (self.unit_directory / name).exists() and not (self.unit_directory / name).is_symlink() for name in prior_units)
+            absent = absent and all(not (self.unit_directory / name).is_symlink() for name in prior_links)
+            if absent:
+                self.finish_remove()
+                return {"status": "absent"}
+            return {"status": "retry-safe"}
         if action == "observe":
             if self.receipt and self.receipt.get("pending") and self.receipt.get("dispatching"):
                 if not expected or self.receipt["revision"] != self.invocation["revision"]:
@@ -792,7 +823,9 @@ class Handler:
             if not self.links_safe(prior_links):
                 raise ValueError("service installation link changed outside its owning effect")
             if self.receipt.get("owner") == "ability":
+                self.save(dict(self.receipt, removing=True, dispatching=True))
                 self.manager("stop", *self.receipt.get("starts", []), *self.receipt.get("units", {}))
+                self.save(dict(self.receipt, dispatching=False))
             self.remove_links(prior_links)
             for name in prior_units:
                 durable_unlink(self.unit_directory / name)
