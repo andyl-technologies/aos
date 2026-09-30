@@ -1129,6 +1129,24 @@ is added rather than editing history.
     unions and the registered reflog-count reason. Existing unaffected bytes
     remain valid. This correction precedes T1's encoding freeze.
 
+- **[D-70] Bind tag publication to source authority without a commit session.**
+  - **Status:** Decided
+  - **Decision:** A guarded tag publication carries the exact authorized
+    source ref snapshot and its epoch. A fresh tag has sequence one and records
+    that observed source epoch, not an unspecified principal-wide counter.
+    Source `tag` authority permits both unannotated and annotated creation;
+    terminal-key signatures bind the exact new tag name and selected commit.
+    Current source authority and applicable target caveats are revalidated.
+    Existing-tag replacement/deletion still requires REF-2's admin authority.
+  - **Rationale:** REF-19 referred to a principal-wide epoch that no authority
+    or schema defines. Requiring a commit writer session would deny legitimate
+    tag-only grants, contradicting AUTH-22. Requiring admin for every new
+    annotation similarly adds a restriction absent from REF-20. An exact
+    guarded source snapshot supplies a defined authority fence while retaining
+    the token's actual grants and caveats.
+  - **Affects:** REF-19, REF-20, AUTH-22 and the tag verb table. Stored field
+    numbers, epoch width and SnapshotEnvelope signature bytes remain unchanged.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

@@ -179,7 +179,14 @@ under concurrent garbage collection ([`17-garbage-collection.md`](17-garbage-col
 
 - **[REF-19]** A tag MUST be written with put-if-absent. A second write to
   an existing tag name MUST fail. A tag record MUST have `seq=1` and its
-  `writer_epoch` MUST be the writing principal's current epoch.
+  `writer_epoch` MUST record the authorized source ref's observed current
+  epoch. It is an authority snapshot/fence, not a principal-wide epoch.
+  Creation MUST use a guard-issued publication context bound to the complete
+  source record and the tagging principal's current `tag` authorization.
+  Source authorization and the whole source record MUST be revalidated before
+  create-once publication; a changed source requires a fresh context.
+  `commit` authority or a commit writer session MUST NOT be required merely
+  to create a tag.
 - **[REF-20]** An **annotated tag** MAY carry, in its record's `policy`, a
   snapshot envelope: a signed statement binding the tag name, the commit, and
   arbitrary attestation data. The envelope format is `SnapshotEnvelope` in
@@ -188,6 +195,10 @@ under concurrent garbage collection ([`17-garbage-collection.md`](17-garbage-col
   the tagging principal's capability chain. Its preimage is the canonical
   envelope map with key 5 absent, without an additional prefix. Verification
   MUST bind the expected tag name and commit as well as that terminal key.
+  First creation MUST use the source `tag` grant (or `admin` through its
+  implication), without an additional `admin` requirement for an annotation.
+  Applicable target namespace, root and token caveats MUST still be enforced.
+  Changing an existing immutable tag remains subject to REF-2.
 
 ## Reflog
 
