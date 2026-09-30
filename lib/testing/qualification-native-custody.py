@@ -106,3 +106,36 @@ def verify_admission(admission: dict[str, Any], inventory: dict[str, dict[str, A
         if (expected is None or row["narHash"] != expected["narHash"]
                 or row["narSize"] != expected["narSize"] or row["references"] != references):
             raise RuntimeError("native scenario catalog differs from original executor NAR evidence")
+
+
+def validate_evaluation_contexts(selected: dict[str, Any], adopted: dict[str, Any]) -> None:
+    """Keeps authenticated baseline adoption in the selected library and package catalog.
+
+    Both descriptors must have already passed native document validation and
+    independent source admission. Their desired graphs and authored source
+    lists may differ; adopting a fixture must not substitute another evaluator
+    library, platform, profile scope, or frozen package selection.
+    """
+    if any(selected[key] != adopted[key] for key in ("library", "libraryNarHash", "scope", "packages")):
+        raise RuntimeError("fixture adoption changes the exact selected library or package catalog")
+
+
+def adoption_invocation(cohort: dict[str, Any], documents: dict[str, dict[str, bytes]],
+                        driver: str, nix_store: str, profile: str) -> tuple[str, ...]:
+    """Renders baseline adoption from already authenticated original bundle bytes.
+
+    The selected target is never substituted for an absent adopted baseline.
+    The caller verifies the driver's original NAR identity before executing
+    this command; the raw admission digest binds bytes, not their authority.
+    """
+    selection = cohort.get("adoptionEvaluation")
+    if not isinstance(selection, dict) or not isinstance(selection.get("locator"), str):
+        raise RuntimeError("fixture adoption lacks its exact authored baseline")
+    locator = selection["locator"]
+    if STORE_ROOT(locator) is None or locator not in documents:
+        raise RuntimeError("fixture adoption baseline lacks independently authenticated documents")
+    contents = documents[locator].get("admission.json")
+    if not isinstance(contents, bytes) or not 0 < len(contents) <= MAX_DOCUMENT_BYTES:
+        raise RuntimeError("fixture adoption has no bounded original admission bytes")
+    receipt_digest = "sha256:" + hashlib.sha256(contents).hexdigest()
+    return driver, "adopt-native-fixture", locator, receipt_digest, nix_store, profile

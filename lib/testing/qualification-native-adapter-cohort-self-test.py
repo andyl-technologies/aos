@@ -552,14 +552,17 @@ class NativeCohortTests(unittest.TestCase):
         spec = {"schema": "aos.qualification.native-operation-spec",
                 "required_operations": self.matrix["required_operations"],
                 "cohorts": [{"id": name, "matrix_spec": copy.deepcopy(self.matrix),
-                             "selected_evaluation": selected | {"locator": "/nix/store/" + name + "-bundle"}}
+                             "selected_evaluation": selected | {"locator": "/nix/store/" + name + "-bundle"},
+                             "adoption_evaluation": selected | {"locator": "/nix/store/" + name + "-baseline",
+                                                               "scenario_sources": ["/nix/store/fixture-source/inactive.nix"]}}
                             for name in ("first", "second")]}
         execution = {"submissions": {self.cell_id: {"disposition": "checked", "evidenceDigest": sha256(self.flight)}},
                      "subjects": {self.cell_id: self.subject}, "evidence": {self.cell_id: canonical(self.flight)},
                      "qualification_subject": {"schema": COHORT.QUALIFICATION_SUBJECT_SCHEMA,
                                                "matrixSpecDigest": sha256(self.matrix),
                                                "operations": self.matrix["surface"]["adapters"]},
-                     "candidate_digest": "sha256:" + "c" * 64}
+                     "candidate_digest": "sha256:" + "c" * 64,
+                     "adoption_digest": "sha256:" + "d" * 64}
         return spec, {name: copy.deepcopy(execution) for name in ("first", "second")}
 
     def test_identical_cell_ids_keep_separate_closed_cohort_contexts(self):
@@ -569,6 +572,24 @@ class NativeCohortTests(unittest.TestCase):
         self.assertEqual([observation["id"] for observation in observations], ["first", "second"])
         self.assertNotEqual(observations[0]["selected_evaluation"], observations[1]["selected_evaluation"])
         self.assertEqual(observations[0]["cells"][0]["id"], observations[1]["cells"][0]["id"])
+
+    def test_adoption_custody_and_digest_cannot_be_omitted(self):
+        spec, executions = self.cohort_population()
+        del spec["cohorts"][0]["adoption_evaluation"]
+        with self.assertRaisesRegex(RuntimeError, "declaration"):
+            COHORT.build_cohorts(spec, executions, "sha256:" + "a" * 64, "sha256:" + "b" * 64)
+        spec, executions = self.cohort_population()
+        del executions["first"]["adoption_digest"]
+        with self.assertRaisesRegex(RuntimeError, "commitment"):
+            COHORT.build_cohorts(spec, executions, "sha256:" + "a" * 64, "sha256:" + "b" * 64)
+
+    def test_future_target_and_adopted_baseline_keep_distinct_commitments(self):
+        spec, executions = self.cohort_population()
+        observations, _ = COHORT.build_cohorts(spec, executions, "sha256:" + "a" * 64, "sha256:" + "b" * 64)
+        first = observations[0]
+        self.assertNotEqual(first["selected_evaluation"], first["adoption_evaluation"])
+        self.assertNotEqual(first["candidate_digest"], first["adoption_digest"])
+        self.assertEqual(first["adoption_evaluation"], spec["cohorts"][0]["adoption_evaluation"])
 
     def test_missing_execution_cannot_shrink_closed_cohort_population(self):
         spec, executions = self.cohort_population()

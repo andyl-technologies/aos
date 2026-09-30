@@ -12,6 +12,7 @@
   extraClosures ? [],
   candidateRuntimeCompanions ? [],
   selectedEvaluation ? null,
+  adoptionEvaluation ? null,
   stagingHubUrl ? null,
   nativeOperationSpec ? null,
   nativeOperationCohorts ? [],
@@ -103,13 +104,13 @@
       matrixSpec = cohort.matrixSpec;
     }
     // lib.optionalAttrs (cohort ? selectedEvaluation) {
-      inherit (cohort) selectedEvaluation;
+      inherit (cohort) selectedEvaluation adoptionEvaluation;
     };
   matrixCohortInputs = map (cohort:
     cohortInput cohort cohort.script cohort.setup cohort.qualifiedCells)
   additionalCohorts;
   scenarioCohortInputs = map (cohort:
-    cohortInput (cohort // lib.optionalAttrs (selectedEvaluation != null) {inherit selectedEvaluation;}) fixtureScript setupModule [])
+    cohortInput (cohort // lib.optionalAttrs (selectedEvaluation != null) {inherit selectedEvaluation adoptionEvaluation;}) fixtureScript setupModule [])
   cohorts;
   qualificationCohorts =
     if nativeOperationSpec == null
@@ -122,7 +123,7 @@
     qualificationCohorts;
   selectedEvaluationCohorts = builtins.filter (cohort: cohort ? selectedEvaluation) qualificationCohorts;
   selectedEvaluationRoots = lib.concatMap (cohort: let
-    selection = cohort.selectedEvaluation;
+    selections = [cohort.selectedEvaluation cohort.adoptionEvaluation];
     sourceRoot = locator: let
       match = builtins.match "^(/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[^/]+)(/.*)?$" locator;
     in
@@ -132,14 +133,17 @@
       # dependency into the explicit root so it is realized and retained.
       else builtins.appendContext (builtins.head match) (builtins.getContext locator);
   in
-    [selection.locator] ++ map sourceRoot selection.scenario_sources)
+    lib.concatMap (selection: [selection.locator] ++ map sourceRoot selection.scenario_sources) selections)
   selectedEvaluationCohorts;
   fixtureEvaluations = pkgs.writeTextFile {
     name = "${name}-fixture-evaluations";
     destination = "/evaluations.json";
     text = builtins.toJSON (builtins.listToAttrs (map (cohort: {
         name = cohort.id;
-        value = cohort.selectedEvaluation;
+        value = {
+          selected_evaluation = cohort.selectedEvaluation;
+          adoption_evaluation = cohort.adoptionEvaluation;
+        };
       })
       selectedEvaluationCohorts));
   };
@@ -456,8 +460,8 @@ in
     builtins.sort builtins.lessThan (builtins.attrNames cohort)
     == (
       if cohort.report.kind == "matrix"
-      then ["execution" "id" "matrixSpec" "qualifiedCells" "report" "requiredInputs" "script" "selectedEvaluation" "setup"]
-      else ["execution" "id" "qualifiedCells" "report" "requiredInputs" "script" "selectedEvaluation" "setup"]
+      then ["adoptionEvaluation" "execution" "id" "matrixSpec" "qualifiedCells" "report" "requiredInputs" "script" "selectedEvaluation" "setup"]
+      else ["adoptionEvaluation" "execution" "id" "qualifiedCells" "report" "requiredInputs" "script" "selectedEvaluation" "setup"]
     )
     && cohort.id != ""
     && builtins.all (input: builtins.elem input ["predecessor-image"]) cohort.requiredInputs
@@ -496,6 +500,7 @@ in
     inherit (cohort) id;
     matrix_spec = cohort.matrixSpec;
     selected_evaluation = cohort.selectedEvaluation;
+    adoption_evaluation = cohort.adoptionEvaluation;
   })
   matrixCohortInputs
   == nativeOperationSpec.cohorts;

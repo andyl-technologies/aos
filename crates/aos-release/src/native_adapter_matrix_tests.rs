@@ -1030,3 +1030,59 @@ fn required_operation_selection_is_closed_nonempty_and_ordered() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn adoption_evaluation_is_mandatory_and_separate_from_target_custody() -> Result<()> {
+    let mut spec = crate::test_support::qualification::native_operation_spec();
+    spec.cohorts[0]
+        .adoption_evaluation
+        .locator
+        .push_str("-inactive");
+    assert!(
+        crate::qualification_evidence::validate_native_operation_qualification_spec(&spec).is_ok()
+    );
+
+    let mut missing = serde_json::to_value(&spec)?;
+    missing["cohorts"][0]
+        .as_object_mut()
+        .expect("fixture cohort is an object")
+        .remove("adoption_evaluation");
+    assert!(
+        serde_json::from_value::<crate::qualification_evidence::NativeOperationQualificationSpec>(
+            missing
+        )
+        .is_err()
+    );
+
+    spec.cohorts[0].adoption_evaluation.locator = "/tmp/untrusted-baseline".into();
+    assert!(
+        crate::qualification_evidence::validate_native_operation_qualification_spec(&spec).is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn observation_cannot_substitute_another_adopted_baseline() -> Result<()> {
+    let (case, environment, mut observation) = fixture()?;
+    observation.cohorts[0]
+        .adoption_evaluation
+        .locator
+        .push_str("-foreign");
+    assert!(
+        validate_native_adapter_matrix_observation(
+            &case,
+            environment,
+            digest("executor"),
+            &observation
+        )
+        .is_err()
+    );
+
+    let mut missing = serde_json::to_value(observation)?;
+    missing["cohorts"][0]
+        .as_object_mut()
+        .expect("fixture cohort is an object")
+        .remove("adoption_digest");
+    assert!(serde_json::from_value::<NativeAdapterMatrixObservation>(missing).is_err());
+    Ok(())
+}

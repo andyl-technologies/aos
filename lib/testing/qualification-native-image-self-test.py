@@ -85,6 +85,22 @@ class NativeImageTests(unittest.TestCase):
     def test_exact_native_image_bundle_is_accepted(self):
         self.assertEqual(self.validate()["packages"]["artifacts"][0]["path"], self.payload)
 
+    def test_supplemental_source_is_retained_without_becoming_an_import(self):
+        self.replace("evaluation.json", lambda value: value.update(supplementalInputs=[self.envelope]))
+        result = self.validate()
+        self.assertEqual(result["evaluation"]["configuration"], [])
+        self.assertEqual(result["evaluation"]["supplementalInputs"], [self.envelope])
+
+    def test_supplemental_source_cannot_be_unretained_or_unadmitted(self):
+        self.replace("evaluation.json", lambda value: value.update(supplementalInputs=[self.envelope]))
+        self.replace("transaction.json", lambda value: value["inputs"].remove(self.envelope))
+        with self.assertRaisesRegex(RuntimeError, "supplemental source root"):
+            self.validate()
+        self.setUp()
+        self.replace("evaluation.json", lambda value: value.update(supplementalInputs=["/nix/store/" + "3" * 32 + "-foreign"]))
+        with self.assertRaises(RuntimeError):
+            self.validate()
+
     def test_captured_byte_change_is_rejected(self):
         self.documents["packages.json"] += b"\n"
         with self.assertRaisesRegex(RuntimeError, "captured assembly"):

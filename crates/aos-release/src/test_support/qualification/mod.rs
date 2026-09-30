@@ -333,6 +333,11 @@ pub(crate) fn native_operation_spec()
                 locator: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-synthetic-evaluation".into(),
                 scenario_sources: Vec::new(),
             },
+            adoption_evaluation: aos_release::qualification_evidence::NativeSelectedEvaluation {
+                role: aos_release::qualification_evidence::NativeEvaluationRole::CandidateBaseline,
+                locator: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-synthetic-evaluation".into(),
+                scenario_sources: Vec::new(),
+            },
         }],
     }
 }
@@ -346,9 +351,11 @@ pub(crate) fn native_cohort_observation(
         id: authored.id.clone(),
         matrix_spec: authored.matrix_spec.clone(),
         selected_evaluation: authored.selected_evaluation.clone(),
+        adoption_evaluation: authored.adoption_evaluation.clone(),
         spec_digest: Sha256Digest::of_bytes(
             crate::canonical::to_vec(&authored.matrix_spec).expect("synthetic matrix serializes"),
         ),
+        adoption_digest: aos_contract::Sha256Digest::of_bytes("synthetic adopted baseline"),
         candidate_digest: Sha256Digest::of_bytes("synthetic candidate bytes"),
         cells,
     }

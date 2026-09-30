@@ -781,6 +781,8 @@ fn select<'a>(
             spec.cohorts.iter().any(|cohort| {
                 cohort.selected_evaluation.role
                     == aos_release::qualification_evidence::NativeEvaluationRole::Scenario
+                    || cohort.adoption_evaluation.role
+                        == aos_release::qualification_evidence::NativeEvaluationRole::Scenario
             })
         })
     {
@@ -982,6 +984,12 @@ mod tests {
                         .into(),
                     scenario_sources: Vec::new(),
                 },
+                adoption_evaluation: NativeSelectedEvaluation {
+                    role: NativeEvaluationRole::CandidateBaseline,
+                    locator: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-synthetic-evaluation"
+                        .into(),
+                    scenario_sources: Vec::new(),
+                },
             }],
         }
     }
@@ -1071,6 +1079,10 @@ mod tests {
                         .selected_evaluation
                         .clone(),
                     spec_digest: Sha256Digest::of_bytes(canonical::to_vec(&spec)?),
+                    adoption_evaluation: native_operation_spec(spec.clone()).cohorts[0]
+                        .adoption_evaluation
+                        .clone(),
+                    adoption_digest: Sha256Digest::of_bytes("synthetic adopted baseline"),
                     candidate_digest: Sha256Digest::of_bytes("synthetic candidate bytes"),
                     cells,
                 },
