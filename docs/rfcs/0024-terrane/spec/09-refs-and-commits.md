@@ -53,10 +53,11 @@ has pointed. The object encoding is not git's, for the reasons in
 - **[REF-4]** The **reflog** of a branch contains one committed record per
   sequence number, selected from immutable proposals by the head's candidate
   ID and complete predecessor chain. New proposals use the create-once key
-  `logs/<ref>/<seq>:<candidate-id>` in the key registry; sequence-only keys
-  remain readable as legacy records. A proposal is not committed merely
-  because its sequence is no greater than the current head's. The reflog is
-  part of the namespace for reading but is not itself a ref.
+  `logs/<ref>/<seq>:<candidate-id>` in the key registry; sequence-only records
+  remain readable through version-1 compatibility or their version-2
+  `<seq>:legacy` keys after qualified migration (BKT-3). A proposal is not
+  committed merely because its sequence is no greater than the current head's.
+  The reflog is part of the namespace for reading but is not itself a ref.
 
 ## Ref record
 

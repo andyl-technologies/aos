@@ -52,6 +52,12 @@ with create-if-absent; **CAS** keys are written only with compare-and-swap.
 zero-padded 20-digit decimal. `<candidate-id>` is the lowercase 64-digit
 hexadecimal form of a secure-random 32-byte reflog proposal ID. The colon
 separator in a candidate filename cannot occur in a valid ref segment.
+The following primary keys belong to layout version 2. Ref and sidecar leaves
+append `:record`, and migrated legacy logs append `:legacy`. Public ref names
+and the authoritative ref inventory remain unsuffixed. Version-1 unsuffixed
+records and sequence files are registered only for explicit read-only legacy
+access and externally fenced migration under BKT-3; they are never alternate
+mutable authorities in version 2.
 
 | Key | Holds | Class | Writer | Owner |
 | --- | --- | --- | --- | --- |
@@ -60,13 +66,13 @@ separator in a candidate filename cannot occur in a valid ref segment.
 | `objects/index/<generation>/<shard>.idx` | merged index shard | immutable | collector | 12, 13, 17 |
 | `objects/index/<generation>/<shard>.flt` | shard filter | immutable | collector | 12, 13 |
 | `objects/index/<generation>/MANIFEST` | `IndexGenerationManifest`, written last | immutable | collector | 13 |
-| `refs/heads/<tenant>/<name>` | `RefRecord` of a branch | CAS | holders of `commit` | 09, 13 |
-| `refs/tags/<tenant>/<name>` | `RefRecord` of a tag | create-once | holders of `tag` | 09, 13 |
-| `refs/notes/<kind>/<tenant>/<name>` | advisory sidecar record | CAS | any authorized writer | 09, 13 |
-| `refs/jobs/<tenant>/<id>` | `RefRecord` of a tree-job branch | CAS | the job | 09, 32 |
-| `refs/conflicts/<tenant>/<ref>/<seq>` | `RefRecord` of an unresolved multi-writer merge | CAS | the losing writer, then resolvers | 09, 20 |
-| `refs/derived/<tenant>/<name>` | `RefRecord` of a ruleset-derived root | CAS | realizing instances | 09, 31 |
-| `logs/refs/heads/<tenant>/<name>/<seq>` | legacy `RefLogRecord` | create-once | legacy writer | 09, 13 |
+| `refs/heads/<tenant>/<name>:record` | `RefRecord` of a branch | CAS | holders of `commit` | 09, 13 |
+| `refs/tags/<tenant>/<name>:record` | `RefRecord` of a tag | create-once | holders of `tag` | 09, 13 |
+| `refs/notes/<kind>/<tenant>/<name>:record` | advisory sidecar record | CAS | any authorized writer | 09, 13 |
+| `refs/jobs/<tenant>/<id>:record` | `RefRecord` of a tree-job branch | CAS | the job | 09, 32 |
+| `refs/conflicts/<tenant>/<ref>/<seq>:record` | `RefRecord` of an unresolved multi-writer merge | CAS | the losing writer, then resolvers | 09, 20 |
+| `refs/derived/<tenant>/<name>:record` | `RefRecord` of a ruleset-derived root | CAS | realizing instances | 09, 31 |
+| `logs/refs/heads/<tenant>/<name>/<seq>:legacy` | migrated legacy `RefLogRecord` | create-once | qualified migrator | 09, 13 |
 | `logs/<ref>/<seq>:<candidate-id>` | selected/proposed `RefLogRecord` | create-once | the advancing writer | 09, 13 |
 | `gc/lease` | `GcLease` | CAS | collector | 17 |
 | `gc/cycle/<n>` | cycle completion marker | create-once | collector | 13, 17 |
@@ -79,8 +85,9 @@ separator in a candidate filename cannot occur in a valid ref segment.
 
 Candidate-log `<ref>` values are registered branch names in `refs/heads/`,
 `refs/jobs/`, `refs/conflicts/` or `refs/derived/`. Tags and advisory notes do
-not acquire candidate logs. A sibling candidate key can coexist with a legacy
-sequence-only file; a nested `<seq>/<candidate-id>` directory cannot.
+not acquire candidate logs. Candidate and migrated legacy filenames are
+disjoint from valid ref segments. Neither a nested `<seq>/<candidate-id>`
+directory nor an unsuffixed version-2 ref or legacy-log leaf is registered.
 
 Registered sidecar kinds under `refs/notes/`: `profiles` (learned access
 profiles, [`../19-tiering-and-topology.md`](../19-tiering-and-topology.md)),

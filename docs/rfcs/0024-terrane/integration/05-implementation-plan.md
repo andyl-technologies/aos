@@ -238,7 +238,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.bundle-verify`.
 - [ ] **T-BKT-1** `bucket` backend over `file://`: key layout, mutability
   classes, atomic writes, filesystem CAS, generation manifests, startup
-  probe. Narrowed to trunk scope: S3-compatible and GCS backends are
+  probe. D-77's version-2 ref and migrated-log leaves preserve nested ref names;
+  version-1 compatibility is read-only and qualified migration may be refused.
+  Implementation and actual collision/reopen qualification remain pending.
+  Narrowed to trunk scope: S3-compatible and GCS backends are
   T-BKT-2 and T-BKT-3 at T3. The backend implements OBJ-5's idempotent
   writes and verified reads; T-HOST-1 completes its cache-admission rule.
   — satisfies OBJ-5 jointly with T-HOST-1, STORE-1 to STORE-9, STORE-11

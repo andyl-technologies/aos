@@ -407,7 +407,7 @@ pack-exclusion = [ pack-id, cycle, epoch ]
 
 ; CAPABILITIES key (BKT-10..12, STORE-12).
 Capabilities = {
-  1 => uint,                            ; layout version, 1
+  1 => 1 / 2,                           ; legacy read-only / suffix-safe layout
   2 => bool,                            ; create-if-absent honored
   3 => bool,                            ; compare-and-swap honored
   4 => bool,                            ; ranged GET

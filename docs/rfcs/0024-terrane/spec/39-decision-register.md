@@ -1274,6 +1274,30 @@ is added rather than editing history.
     separate from current ACL intersection under D-58. This clarification
     precedes T1's initial freeze.
 
+- **[D-77] Preserve nested ref names in the portable layout.**
+  - **Status:** Decided
+  - **Decision:** Use layout version 2 with `:record` ref/sidecar leaves and
+    `:legacy` migrated numbered-log leaves in both object and filesystem stores.
+    Preserve public ref grammar, record encodings and unsuffixed ref inventories.
+    Keep version-1 compatibility read-only; require complete authoritative source
+    evidence and external quiescent write fencing before any migration. Ordinary
+    opens never silently upgrade. Implementations may refuse migration until
+    its complete evidence and provider fencing are available.
+  - **Rationale:** REF-1 permits both `a` and `a/b`, but an unsuffixed ref file
+    obstructs the directory needed by its descendant. A numbered legacy log
+    similarly obstructs a valid decimal ref segment. The actual filesystem
+    regression reproduces the collision. Colon suffixes cannot alias ref
+    segments, preserve BKT-3's identical logical keys and avoid narrowing the
+    namespace. A version CAS cannot fence an already-open object-store writer's
+    independent old ref ETag, and ref inventory alone cannot prove every legacy
+    log or sidecar relocated. Exclusive migration and durable exact-byte recovery
+    avoid competing authorities and incomplete cleanup.
+  - **Affects:** REF-1, REF-4, BKT-1 to BKT-3, BKT-5, BKT-6, BKT-10,
+    BKT-13, BKT-14 and BKT-17. Requirement IDs and gate names remain stable.
+    The layout-version field changes for new namespaces; immutable identities,
+    token patterns, candidate keys and ref/log record bytes are unchanged.
+    This correction precedes T1's initial freeze.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

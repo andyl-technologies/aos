@@ -33,14 +33,14 @@ nothing else.
     index/<generation>/<shard>.flt            shard filter          immutable
     index/<generation>/MANIFEST               generation manifest        immutable
   refs/
-    heads/<tenant>/<name>                branch ref record     CAS
-    tags/<tenant>/<name>                 tag ref record        create-once
-    notes/<kind>/<tenant>/<name>         advisory sidecar      CAS
-    jobs/<tenant>/<id>                   tree-job ref record   CAS
-    conflicts/<tenant>/<ref>/<seq>       unresolved merge      CAS
-    derived/<tenant>/<path>              realization root      CAS
+    heads/<tenant>/<name>:record         branch ref record     CAS
+    tags/<tenant>/<name>:record          tag ref record        create-once
+    notes/<kind>/<tenant>/<name>:record  advisory sidecar      CAS
+    jobs/<tenant>/<id>:record            tree-job ref record   CAS
+    conflicts/<tenant>/<ref>/<seq>:record unresolved merge     CAS
+    derived/<tenant>/<path>:record       realization root      CAS
   logs/
-    refs/heads/<tenant>/<name>/<seq>     legacy log record     create-once
+    refs/heads/<tenant>/<name>/<seq>:legacy migrated legacy log create-once
     <ref>/<seq>:<candidate-id>            candidate log record  create-once
   gc/
     lease                                collector lease       CAS
@@ -56,8 +56,14 @@ object-store partitions. `<tenant>` is a registered tenant identifier or the
 literal `_` for a single-tenant store. `<seq>` is a zero-padded 20-digit
 decimal so that lexical order is numeric order. Candidate IDs are secure-random
 32-byte identifiers rendered as 64 lowercase hexadecimal digits. Candidate
-filenames use a colon separator, disjoint from valid ref-name segments; they
-remain siblings of legacy sequence files on `file://`. The full registry of
+filenames use a colon separator, disjoint from valid ref-name segments.
+Layout version 2 appends the literal `:record` to the final segment of every
+ref or advisory-sidecar key and `:legacy` to migrated sequence-only log keys.
+These suffixes belong to bucket keys, never to public ref names, token patterns,
+wire arguments or the key-10 ref-name inventory. Consequently records for both
+`refs/heads/_/a` and `refs/heads/_/a/b` can coexist, as can a legacy log sequence
+and a valid nested ref whose next segment is that decimal sequence. Candidate
+IDs cannot equal `legacy`. The full registry of
 prefixes, including reserved ones, is in
 [`reference/bucket-key-registry.md`](reference/bucket-key-registry.md).
 
@@ -174,6 +180,58 @@ passes.
 A record the store writes at first open and re-verifies on every open,
 holding the results of the probes below and the layout version.
 
+### Layout versions and legacy access
+
+New authoritative namespaces MUST initialize layout version 2 before enabling
+writes. Version 1 uses the former unsuffixed ref and sidecar keys and plain
+20-digit legacy log filenames. Legacy record encodings and candidate-log keys
+are unchanged. Explicit read-only compatibility MUST select the exact version-1
+locations and refuse all writes, startup probe mutations and destructive
+maintenance. A legacy reader MUST stop and reopen on a layout transition.
+Ordinary version-2 write opens MUST refuse version 1 as migration-required;
+opening an existing namespace MUST NOT silently upgrade its version. Unsupported
+versions are refused. Probe updates preserve the selected version and all
+optional authority fields. Version-2 filesystem effects verify their version
+under the existing stable namespace exclusion.
+
+A version-1 to version-2 migration MUST establish exclusive, quiescent authority
+over the complete namespace. It MUST stop and drain legacy readers, writers and
+in-flight effects and prevent their resumption until cleanup and verification
+complete. Filesystem migration also retains the actual stable exclusion inode;
+the inode MUST NOT be replaced or unlinked. Provider migration requires actual
+revocation or blocking of old write authority and drained conditional writes.
+A `CAPABILITIES` CAS alone does not fence an already-open writer's independent
+old ref key. A backend without this external authority MUST refuse migration.
+
+Migration MUST have authoritative complete source evidence for the whole legacy
+ref, sidecar and log namespace, not merely a selected subset. Every old regular
+leaf that could obstruct a valid version-2 descendant MUST be relocated and
+removed before ordinary version-2 admission. Key 10 inventories refs but does
+not prove completeness of other artifacts. `LIST` is not completeness evidence;
+unknown legacy completeness stays unknown. An implementation unable to prove
+whole-namespace completeness MUST refuse migration and retain read-only
+compatibility until such evidence is available.
+
+Under the quiescent fence, migration MUST validate and durably create each new
+key from the exact original bytes without replacing an existing destination.
+An existing destination is usable only after exact equality; conflicting bytes
+fail migration. All new keys MUST be durable before complete-record conditional
+publication of version 2. The version switch preserves the profile, selected
+generation, complete ref inventory and all other authority fields. Only after
+the switch is durably established may obsolete version-1 files be removed,
+using exact original-byte/version conditions and durable parent synchronization.
+Cleanup and complete version-2 verification MUST finish before ordinary clients
+resume, so old files cannot obstruct valid descendant directories.
+
+After interruption, migration MUST reestablish its external fence and recover
+from exact source/destination bytes and the authoritative selected version.
+Matching duplicate bytes prove only that key's copy, never completeness or
+writer exclusion. An uncertain version-switch outcome requires an authoritative
+reread and MUST NOT be reported as success. If the fence cannot survive or be
+reestablished without admitting clients, migration is unsupported. Version-2
+writes never treat unsuffixed legacy copies as alternative mutable authority.
+These rules are proved by BKT-1's registry, BKT-3's layout and BKT-14's CAS gates.
+
 ## Conditional writes
 
 The layout has no coordinator. Safety under concurrent writers rests
@@ -224,12 +282,14 @@ Not every S3-compatible service honors conditional headers; some proxies
 and older implementations silently drop them, which would turn a
 compare-and-swap into an unconditional overwrite.
 
-- **[BKT-10]** On every open, a `bucket` backend MUST probe both primitives
-  against the `CAPABILITIES` key: perform a create-if-absent that is
+- **[BKT-10]** On every write-capable open, a `bucket` backend MUST probe both
+  primitives against the `CAPABILITIES` key: perform a create-if-absent that is
   expected to fail against an existing key, and a compare-and-swap with a
   stale version token that is expected to fail. If either write succeeds,
   the backend MUST report `refs: single-writer` or, if configured to require
   multi-writer safety, MUST refuse to open. *Gate:* `gate:bucket-probe`.
+  Explicit read-only legacy access performs no write probes and MUST NOT
+  advertise verified ref-write capability.
 - **[BKT-11]** A backend reporting `refs: single-writer` MUST refuse
   `ref_cas` and `ref_log_append` from more than one writer identity per
   process lifetime, and a `guard` above it MUST refuse tokens that would
