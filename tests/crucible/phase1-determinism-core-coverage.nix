@@ -456,7 +456,7 @@
             "crucible-sim/src/lib.rs" \
             "crucible-sim/src/lib.rs" \
             1 \
-            "for chunk in &mut chunks {" \
+            "for word in chunks {" \
             "stable hasher full chunk branch"
           require_line_marker \
             "crucible-sim/src/lib.rs" \

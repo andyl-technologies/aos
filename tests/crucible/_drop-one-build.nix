@@ -45,10 +45,12 @@ in
       pkgs.meson
       pkgs.ninja
       pkgs.pixman
+      pkgs.pip
       pkgs.pkg-config
       pkgs.python3
       pkgs.sed
       pkgs.setuptools
+      pkgs.wheel
       pkgs.distlib
       pkgs.findutils
       pkgs.tar
@@ -158,13 +160,17 @@ in
             sed -i "1s|#!/usr/bin/env python3|#!${pkgs.python3}/bin/python3|" "$f"
             sed -i "1s|#!/usr/bin/python3|#!${pkgs.python3}/bin/python3|" "$f"
           done
-          export PYTHONPATH="${pkgs.meson}/lib/python3/site-packages:${pkgs.distlib}/lib/python3.14/site-packages:${pkgs.setuptools}/lib/python3.14/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
+          export PYTHONPATH="${pkgs.meson}/lib/python3/site-packages:${pkgs.distlib}/lib/python3.14/site-packages:${pkgs.setuptools}/lib/python3.14/site-packages:${pkgs.pip}/lib/python3.14/site-packages:${pkgs.wheel}/lib/python3.14/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
           export PYTHONDONTWRITEBYTECODE=1
           if ! "$CONFIG_SHELL" ./configure \
             --prefix="$TMPDIR/install" \
             ${configureFlags} \
             --disable-werror \
             > "$out/configure.log" 2>&1; then
+            tail -n 60 "$out/configure.log" >&2
+            if [ -f build/meson-logs/meson-log.txt ]; then
+              tail -n 60 build/meson-logs/meson-log.txt >&2
+            fi
             fail "full-minus-$DROP_INDEX QEMU configuration failed"
           fi
           rm -f subprojects/.wraplock
