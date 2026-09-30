@@ -2,6 +2,7 @@
 {
   lib,
   mkDerivation,
+  aos-runtime-checks,
   fetchurl,
   gnumake,
   autoconf,
@@ -11,13 +12,26 @@
   linux-headers,
   libcap,
   bash,
+  service-management,
+  kernel-interface,
 }: let
   version = "4.2.1";
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -123,7 +137,8 @@ in
     runtimeDeps = [libcap bash];
     propagatedDeps = [];
 
-    abilities = ./_audit;
+    module = ./_audit;
+    moduleDeps = [aos-runtime-checks service-management kernel-interface];
 
     phases = [
       {
