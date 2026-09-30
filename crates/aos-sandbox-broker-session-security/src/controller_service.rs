@@ -2062,7 +2062,7 @@ fn controller_from_journal(
     Ok(NodeController::new(
         scope,
         limits,
-        ProductionOperationCompilerV1,
+        ProductionOperationCompilerV1::new(),
         Reconciler::new(journal, executor),
     ))
 }
@@ -4185,6 +4185,15 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
     ) -> Result<EffectObservation, EffectFailure> {
         reject_unqualified_delete_effect(plan)?;
 
+        if plan.public_mutation_context()
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+            .is_some_and(|context| context.has_retained_nix_start())
+        {
+            // Admission is real, but no namespace47 floor/archive/publication
+            // owner exists in this slice. Generic lifecycle cannot stand in.
+            return Ok(EffectObservation::Absent);
+        }
+
         if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CreateSandbox)
         {
@@ -4335,6 +4344,15 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         journal: &mut Journal,
     ) -> Result<EffectReceipt, EffectFailure> {
         reject_unqualified_delete_effect(plan)?;
+
+        if plan.public_mutation_context()
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+            .is_some_and(|context| context.has_retained_nix_start())
+        {
+            return Err(EffectFailure::Retryable(
+                "retained Nix Start awaits genuine session floor and recipe publication owners".to_owned(),
+            ));
+        }
 
         if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CreateSandbox)

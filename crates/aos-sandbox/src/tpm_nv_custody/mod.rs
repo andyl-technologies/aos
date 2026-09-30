@@ -14,6 +14,15 @@ use crate::journal::RecordNamespace;
 #[doc(hidden)]
 pub mod credential;
 
+mod role_binding;
+mod root;
+
+pub use root::{
+    FAILED_CREATE_ORIGINAL_HISTORIES_MAXIMUM_BYTES_V4, FailedCreateOriginalHistoriesDataV4,
+    FailedCreateOriginalHistoryErrorV4, encode_failed_create_original_histories_v4,
+    failed_create_original_histories_encoded_len_v4,
+};
+
 /// Names an independently provisioned fixed-purpose NV index as inert DATA.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NvCustodyEndpointV1 {

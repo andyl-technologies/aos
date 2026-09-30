@@ -5,6 +5,8 @@
 //! remains historical evidence: no Controller prepare floor, CAS, ACK, or
 //! public Create/Apply transition is issued here.
 
+mod v3;
+
 use aos_proto::aos::sandbox::local::v1::{
     BrokerMethod, BrokerRequestEnvelope, HostNoApplySettlementPhaseV2 as WirePhaseV2,
     QueryHostExecutionNoApplySettlementRequestV2, SettleHostExecutionNoApplyRequestV2,

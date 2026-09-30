@@ -62,6 +62,8 @@ pub struct PublicMutationEffectV1 {
     canonical_request: Vec<u8>,
     #[cfg(target_os = "linux")]
     fuse_admission: Option<crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1>,
+    #[cfg(target_os = "linux")]
+    nix_start: Option<crate::production_operation_compiler::NixStartAdmissionCarrierV2>,
 }
 
 impl PublicMutationEffectV1 {
@@ -98,6 +100,8 @@ impl PublicMutationEffectV1 {
             canonical_request,
             #[cfg(target_os = "linux")]
             fuse_admission: None,
+            #[cfg(target_os = "linux")]
+            nix_start: None,
         })
     }
 
@@ -147,6 +151,13 @@ impl PublicMutationEffectV1 {
 
     fn encode(&self) -> Result<Vec<u8>, ReconcilerError> {
         #[cfg(target_os = "linux")]
+        if let Some(carrier) = &self.nix_start {
+            if self.fuse_admission.is_some() {
+                return Err(ReconcilerError::InvalidPlan("mixed public admission carriers"));
+            }
+            return carrier.encode().map_err(|_| ReconcilerError::InvalidPlan("invalid Nix Start carrier"));
+        }
+        #[cfg(target_os = "linux")]
         if let Some(carrier) = &self.fuse_admission {
             return Ok(carrier.canonical_bytes().to_vec());
         }
@@ -183,6 +194,14 @@ impl PublicMutationEffectV1 {
 
     fn decode(bytes: &[u8]) -> Result<Option<Self>, ReconcilerError> {
         #[cfg(target_os = "linux")]
+        if let Some(carrier) = crate::production_operation_compiler::NixStartAdmissionCarrierV2::decode(bytes)
+            .map_err(|_| ReconcilerError::InvalidPlan("invalid Nix Start carrier"))?
+        {
+            let context = Self::decode_plain(carrier.ordinary_effect())?
+                .ok_or(ReconcilerError::InvalidPlan("missing Nix Start context"))?;
+            return context.with_nix_start(carrier).map(Some);
+        }
+        #[cfg(target_os = "linux")]
         if let Some(carrier) =
             crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1::decode(bytes)
                 .map_err(|_| ReconcilerError::InvalidPlan("invalid FUSE admission carrier"))?
@@ -201,7 +220,7 @@ impl PublicMutationEffectV1 {
         mut self,
         carrier: crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1,
     ) -> Result<Self, ReconcilerError> {
-        if self.encode_plain()? != carrier.ordinary_effect() {
+        if self.nix_start.is_some() || self.encode_plain()? != carrier.ordinary_effect() {
             return Err(ReconcilerError::InvalidPlan(
                 "FUSE admission context mismatch",
             ));
@@ -215,6 +234,35 @@ impl PublicMutationEffectV1 {
         &self,
     ) -> Option<&crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1> {
         self.fuse_admission.as_ref()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_nix_start(
+        mut self,
+        carrier: crate::production_operation_compiler::NixStartAdmissionCarrierV2,
+    ) -> Result<Self, ReconcilerError> {
+        if self.fuse_admission.is_some()
+            || self.encode_plain()? != carrier.ordinary_effect()
+            || !matches!(self.validated_request()?, crate::cli_model::DormantSandboxRequestKindV1::Start(_))
+        {
+            return Err(ReconcilerError::InvalidPlan("Nix Start context mismatch"));
+        }
+        // Preflight the complete wrapper before admission, not only its nested
+        // request, recipe or lease. No partial desired-state write follows.
+        carrier.encode().map_err(|_| ReconcilerError::InvalidPlan("Nix Start carrier exceeds bound"))?;
+        self.nix_start = Some(carrier);
+        Ok(self)
+    }
+
+    /// Reports retained Nix continuation DATA, never build or floor readiness.
+    #[cfg(target_os = "linux")]
+    pub fn has_retained_nix_start(&self) -> bool {
+        self.nix_start.is_some()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn nix_start(&self) -> Option<&crate::production_operation_compiler::NixStartAdmissionCarrierV2> {
+        self.nix_start.as_ref()
     }
 
     pub(crate) fn decode_plain(bytes: &[u8]) -> Result<Option<Self>, ReconcilerError> {
@@ -2031,6 +2079,40 @@ mod tests {
     use aos_proto::aos::sandbox::v1::AttenuateCapabilityRequest;
     use aos_sandbox_core::{BrokerArgumentCommitment, BrokerGrantTarget, BrokerVerb};
     use buffa::Message as _;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ordinary_public_effect_retains_exact_original_time_without_nix_data() {
+        let context = PublicMutationEffectV1::new(
+            PrincipalId::from_bytes([1; 16]), ProjectId::from_bytes([2; 16]),
+            123, b"historical-request-data".to_vec(),
+        ).unwrap();
+        let mut expected = b"AOSPME01".to_vec();
+        expected.extend_from_slice(&1_u16.to_be_bytes());
+        expected.extend_from_slice(&[0; 6]);
+        expected.extend_from_slice(&[1; 16]);
+        expected.extend_from_slice(&[2; 16]);
+        expected.extend_from_slice(&123_i64.to_be_bytes());
+        expected.extend_from_slice(&23_u32.to_be_bytes());
+        expected.extend_from_slice(b"historical-request-data");
+        let digest = Sha256::new().chain_update(PUBLIC_MUTATION_EFFECT_DIGEST_DOMAIN)
+            .chain_update(&expected).finalize();
+        expected.extend_from_slice(&digest);
+
+        let retained = PublicMutationEffectV1::decode(&context.encode().unwrap()).unwrap().unwrap();
+        assert_eq!(context.encode().unwrap(), expected);
+        assert_eq!(retained, context);
+        assert_eq!(retained.accepted_wall_seconds(), 123);
+        assert!(!retained.has_retained_nix_start());
+        assert!(retained.fuse_admission().is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn malformed_recognized_nix_carrier_never_falls_back_to_ordinary_effect() {
+        assert!(PublicMutationEffectV1::decode(b"AOSNCA02").is_err());
+        assert_eq!(PublicMutationEffectV1::decode(b"unrelated-format").unwrap(), None);
+    }
 
     #[test]
     fn retained_capability_handle_effect_checks_method_without_resource_uid() {
