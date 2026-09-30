@@ -9,7 +9,10 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  sessionGateTest = builtins.readFile ../../crates/crucible-session/tests/gate_control_responsive.rs;
+  sessionGateTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-session/tests/gate_control_responsive.rs;
+  };
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;

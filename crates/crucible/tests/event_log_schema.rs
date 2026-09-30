@@ -45,3 +45,41 @@ fn event_log_entries_carry_source_level_class_and_icount_stamp() {
     assert!(segment.contains("entry.level=info"));
     assert!(segment.contains("entry.class=observational"));
 }
+
+#[test]
+fn command_caused_entries_preserve_command_correlation_source() {
+    let node = crucible::SchedulerNodeId {
+        node: NodeId {
+            name: String::from("guest-a"),
+        },
+        kind: crucible::SchedulingNodeKind::Vm,
+    };
+    let event = crucible::ScheduledEvent {
+        key: crucible::ScheduledEventKey::from_parts(
+            VirtualTime { ticks: 12 },
+            node.clone(),
+            node,
+            42,
+        ),
+        payload: crucible::ScheduledEventPayload::Control(crucible::ControlOperation {
+            sequence: 42,
+            kind: crucible::ControlOperationKind::Pause,
+        }),
+    };
+    let entry = crucible::test_support::condition_payload_entry_for_test(
+        0,
+        VirtualTime { ticks: 12 },
+        crucible::SchedulerEventLogPayload::ResolvedHappening(event),
+    );
+
+    assert_eq!(entry.source(), &EventSource::Command { command_id: 42 });
+    assert_eq!(entry.class(), EventClass::Causal);
+    assert_eq!(entry.time().icount.icount, Icount { retired: 12 });
+    assert!(entry.has_valid_content_hash());
+    let mut log = EventLog::new();
+    let append = log
+        .append_entries(vec![entry])
+        .expect("command entry should append");
+    assert!(append.segment_text.contains("entry.source.command_id=42"));
+    assert!(append.segment_text.contains("entry.at_icount_retired=12"));
+}
