@@ -29,9 +29,7 @@ use super::{
     CURRENT_HEAD_DOMAIN_V2, OperatorRecoveryIssuanceErrorV1, ProtectedOperatorRecoverySignerV1,
     StorageRepairIssuanceV2, hash, issuance_key_v2,
 };
-use crate::controller::{
-    ActivatedOperationCompiler, NodeController, SingleNodeEffectExecutor, recovery_current_key,
-};
+use crate::controller::recovery_current_key;
 use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 
 const MAGIC: &[u8; 8] = b"AOSOTP02";
@@ -44,8 +42,21 @@ const COMMIT_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-proof-commit.
 
 mod ledger_receipt;
 mod successor_commit;
+mod held_receipt;
+mod precondition_failure;
 
-fn issued_intent(
+pub(super) use precondition_failure::{
+    ObservedRepairPreconditionV1, PreparedRepairPreconditionFailureV1,
+    verify_current_failure_v1, verify_settled_failure_receipt_v1,
+    terminal_claims as failure_terminal_claims_v1,
+};
+
+pub(super) use successor_commit::{
+    PreparedRepairSuccessorV1, RepairSuccessorCommitOutcomeV1, verify_current_terminal_v2,
+    verify_settled_terminal_receipt_v2,
+};
+
+pub(super) fn issued_intent(
     journal: &Journal,
     signer: &ProtectedOperatorRecoverySignerV1,
     operation_id: OperationId,
@@ -67,6 +78,45 @@ fn issued_intent(
         verify_operator_recovery_effect_intent_v1(&issued.signed_intent, signer.verifier())
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
     Ok((issued, intent))
+}
+
+pub(super) fn terminal_owner_pair_v4(
+    journal: &Journal,
+    signer: &ProtectedOperatorRecoverySignerV1,
+    owner: &ProtectedStorageRepairReceiptVerifierV2,
+    operation: OperationId,
+) -> Result<[u8; 32], OperatorRecoveryIssuanceErrorV1> {
+    let (_, intent) = issued_intent(journal, signer, operation)?;
+    Ok(super::receipt::verified_retained_repair_receipt_v3(journal, &intent, owner)?.signed_pair_digest)
+}
+
+pub(super) fn verify_authenticated_repair_history_v4(
+    journal: &mut Journal,
+    signer: &ProtectedOperatorRecoverySignerV1,
+    owner: &ProtectedStorageRepairReceiptVerifierV2,
+    operation: OperationId,
+    before: &AuthenticatedBrokerMethodOutcomeV1,
+    after: &AuthenticatedBrokerMethodOutcomeV1,
+    fresh: &AuthenticatedBrokerMethodOutcomeV1,
+) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
+    let (issued, intent) = issued_intent(journal, signer, operation)?;
+    let owner_facts = super::receipt::verified_retained_repair_receipt_v3(journal, &intent, owner)?;
+    let proof = read_sealed_proof_v2(journal, &issued, intent.effect_id, owner_facts.signed_pair_digest)?;
+    before::read(journal, &issued, intent.effect_id)?.matches_outcome(before)?;
+    probe_challenge::read(journal, &issued, intent.effect_id, ProbeStageV1::Before, [0; 32])?.matches_outcome(before)?;
+    probe_challenge::read(journal, &issued, intent.effect_id, ProbeStageV1::After, owner_facts.signed_pair_digest)?.matches_outcome(after)?;
+    probe_challenge::read(journal, &issued, intent.effect_id, ProbeStageV1::Terminal, owner_facts.signed_pair_digest)?.matches_outcome(fresh)?;
+    if proof.before_packet_digest != hash(b"aos.sandbox.operator-storage-repair-before-packet.v1\0", &[before.canonical_packet()])
+        || proof.after_packet_digest != hash(AFTER_DOMAIN, &[after.canonical_packet()])
+    {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
+    for outcome in [before, after, fresh] {
+        crate::lifecycle::LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(outcome)
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    }
+    signer.credential.recheck().map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
+    owner.recheck()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,11 +177,7 @@ impl StoredProofV2 {
     }
 }
 
-impl<C, E> NodeController<C, E>
-where
-    C: ActivatedOperationCompiler,
-    E: SingleNodeEffectExecutor,
-{
+pub(super) trait RepairTerminalProofV1: super::RepairJournalOwnerV1 + super::receipt::RepairReceiptV1 {
     /// Seals exact V2 physical proof under the unchanged protected predecessor.
     ///
     /// The public operation and current head remain untouched. This method
@@ -146,7 +192,7 @@ where
     /// or an uncertain protected proof commit.
     #[allow(dead_code, reason = "public operator Repair route remains closed")]
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn seal_storage_repair_terminal_proof_v2(
+    fn seal_storage_repair_terminal_proof_v2(
         &mut self,
         signer: &ProtectedOperatorRecoverySignerV1,
         owner: &ProtectedStorageRepairReceiptVerifierV2,
@@ -169,7 +215,7 @@ where
             signed_evidence,
             signed_receipt,
         )?;
-        let journal = self.reconciler.journal_mut();
+        let journal = self.repair_journal();
         journal
             .ensure_protected_authority()
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
@@ -210,6 +256,8 @@ where
         Ok(hash(PROOF_DOMAIN, &[&proof.encode()]))
     }
 }
+
+impl<T: super::RepairJournalOwnerV1 + super::receipt::RepairReceiptV1> RepairTerminalProofV1 for T {}
 
 fn reserve(
     journal: &mut Journal,
@@ -261,7 +309,7 @@ fn reserve(
 
 /// Rechecks the retained proof identity before a new post-proof live query.
 pub(super) fn read_sealed_proof_v2(
-    journal: &mut Journal,
+    journal: &Journal,
     issued: &StorageRepairIssuanceV2,
     effect_id: [u8; 32],
     signed_pair_digest: [u8; 32],

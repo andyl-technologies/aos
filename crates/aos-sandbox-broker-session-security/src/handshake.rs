@@ -1538,6 +1538,22 @@ impl DormantAuthenticatedBrokerSessionV1 {
         )
     }
 
+    pub(super) fn operator_repair_inventory_history(
+        &mut self,
+        request_id: [u8; 16],
+        packet: Option<&[u8]>,
+    ) -> Result<
+        aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+        BrokerSessionSecurityError,
+    > {
+        self.owner.operator_repair_inventory_history(
+            request_id,
+            packet,
+            &self.transcript,
+            self.socket.peer(),
+        )
+    }
+
     pub(super) fn require_current_node(
         &mut self,
         expected_node: [u8; 16],

@@ -388,6 +388,24 @@ impl DurablePublicOperationV1 {
         })
     }
 
+    /// Projects only a separately validated Repair failure, not generic blocked work.
+    pub(super) fn project_original_precondition_replaced(
+        self,
+        operation_id: OperationId,
+        operation_record: &[u8],
+        effect_records: &[&[u8]],
+    ) -> Operation {
+        let mut operation = self.project(operation_id, OperationState::PermanentlyBlocked,
+            1, 0, true, false, operation_record, effect_records);
+        operation.progress = Some(OperationProgress {
+            milestone: "original-precondition-replaced".to_owned(),
+            completed_units: 0,
+            total_units: 1,
+            ..Default::default()
+        }).into();
+        operation
+    }
+
     pub(super) fn project(
         self,
         operation_id: OperationId,

@@ -47,6 +47,7 @@ pub mod network_inventory;
 pub mod operator_storage_repair_transport;
 pub mod operator_storage_repair_transport_v2;
 pub mod operator_storage_repair_transport_v3;
+pub mod operator_storage_repair_terminal_v4;
 pub mod payload_scope;
 pub mod semantics;
 pub mod session;

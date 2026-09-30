@@ -6,6 +6,8 @@
 //! policy. The closed operator Repair path may durably reserve the session's
 //! own selected request identifier before that exact query is prepared.
 
+mod operator_repair;
+
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerMethod, BrokerRequestEnvelope, InventoryDestinationSlotsRequest,
     InventoryMountSourceAcquisitionsRequest, InventoryMountsRequest, InventoryNetworksRequest,
@@ -1991,6 +1993,10 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         let inventory =
             LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(&outcome)?;
         self.0.recheck(currentness)?;
+        self.operator_repair_inventory_history(
+            outcome.request().request_id(),
+            Some(outcome.canonical_packet()),
+        )?;
         Ok((outcome, inventory))
     }
 
@@ -2143,6 +2149,10 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         let inventory =
             LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(&outcome)?;
         self.0.recheck(currentness)?;
+        self.operator_repair_inventory_history(
+            expected_request_id,
+            Some(outcome.canonical_packet()),
+        )?;
         Ok((outcome, inventory))
     }
 

@@ -40,6 +40,7 @@ pub fn serve_operator_repair_once(
     runtime: &mut StorageBrokerRuntime,
     verifier: &ControllerPeerVerifier,
     owner: &mut StorageOperatorRecoveryOwnerV1,
+    guest_root_template: Option<&crate::guest_root_inventory::ProtectedGuestRootTemplateV1>,
 ) -> Result<StorageConnectionOutcome, StorageServiceError> {
     if runtime.requires_reopen() {
         return Err(StorageRuntimeError::ReopenRequired.into());
@@ -57,7 +58,9 @@ pub fn serve_operator_repair_once(
         .ok_or(StorageServiceError::Clock)?;
     let record = match receive(
         &mut connection,
-        MAXIMUM_OPERATOR_STORAGE_REPAIR_PACKET_BYTES_V3,
+        MAXIMUM_OPERATOR_STORAGE_REPAIR_PACKET_BYTES_V3.max(
+            aos_sandbox_protocol::operator_storage_repair_terminal_v4::MAXIMUM_TERMINAL_REQUEST_BYTES_V4,
+        ),
         receive_deadline,
     ) {
         Ok(record) => record,
@@ -68,6 +71,79 @@ pub fn serve_operator_repair_once(
         .is_err()
     {
         return Ok(StorageConnectionOutcome::PeerRejected);
+    }
+    if record.payload().starts_with(b"AOSORH04") {
+        let request = match owner.verify_terminal_request_v4(record.payload()) {
+            Ok(request) => request,
+            Err(_) => return Ok(StorageConnectionOutcome::RequestRejected),
+        };
+        drop(record);
+        let now = boottime()?;
+        if request.deadline() <= now
+            || request.deadline() > now.checked_add(MAXIMUM_REQUEST_LIFETIME_NANOSECONDS).ok_or(StorageServiceError::Clock)?
+            || verifier.recheck_connection(execution, connection.peer()).is_err()
+        {
+            return Ok(StorageConnectionOutcome::RequestRejected);
+        }
+        // Original custody precedes exclusion. Failure after this point
+        // leaves a cold-recoverable reservation and keeps dispatch closed.
+        match owner.recover_terminal_settlement_v4(&request) {
+            Ok(Some(readback)) => {
+                if verifier.recheck_connection(execution, connection.peer()).is_err()
+                    || send(&mut connection, &readback, request.deadline()).is_err()
+                {
+                    return Ok(StorageConnectionOutcome::TransportRejected);
+                }
+                return Ok(StorageConnectionOutcome::Served);
+            }
+            Ok(None) => {}
+            Err(StorageOperatorRecoveryErrorV1::Journal(_)) => return Err(StorageRuntimeError::ReopenRequired.into()),
+            Err(_) => return Ok(StorageConnectionOutcome::RequestRejected),
+        }
+        match owner.reserve_terminal_hold_v4(&request) {
+            Ok(()) => {}
+            Err(StorageOperatorRecoveryErrorV1::Journal(_)) => return Err(StorageRuntimeError::ReopenRequired.into()),
+            Err(_) => return Ok(StorageConnectionOutcome::RequestRejected),
+        }
+        runtime.retain_operator_terminal_exclusion()?;
+        let held = runtime.hold_operator_terminal_inventory_v4(
+            request.inventory(), request.deadline(), guest_root_template, owner,
+        )?;
+        let witness = owner.finish_terminal_hold_v4(&request, held.state_cut(), held.live_cut())
+            .map_err(|_| StorageRuntimeError::ReopenRequired)?;
+        if verifier.recheck_connection(execution, connection.peer()).is_err()
+            || send(&mut connection, witness.as_bytes(), request.deadline()).is_err()
+        {
+            return Ok(StorageConnectionOutcome::TransportRejected);
+        }
+
+        // Both actual owners stay on this same serial actor child. There is
+        // no ordinary Inventory request while the hold is live.
+        let ack = match receive(&mut connection,
+            aos_sandbox_protocol::operator_storage_repair_terminal_v4::TERMINAL_SETTLEMENT_BYTES_V4,
+            request.deadline())
+        {
+            Ok(ack) => ack,
+            Err(_) => return Ok(StorageConnectionOutcome::TransportRejected),
+        };
+        if verifier.verify_record(execution, connection.peer(), ack.subject()).is_err()
+            || verifier.recheck_connection(execution, connection.peer()).is_err()
+        {
+            return Ok(StorageConnectionOutcome::PeerRejected);
+        }
+        let settlement = match owner.settle_terminal_hold_v4(&request, &witness, ack.payload(), boottime()?) {
+            Ok(settlement) => settlement,
+            Err(_) => return Ok(StorageConnectionOutcome::RequestRejected),
+        };
+        drop(ack);
+        let release = settlement.release().to_vec();
+        held.release_after_settlement(settlement)?;
+        if verifier.recheck_connection(execution, connection.peer()).is_err()
+            || send(&mut connection, &release, request.deadline()).is_err()
+        {
+            return Ok(StorageConnectionOutcome::TransportRejected);
+        }
+        return Ok(StorageConnectionOutcome::Served);
     }
     let request = match OperatorStorageRepairRequestV3::decode(record.payload()) {
         Ok(request) => request,

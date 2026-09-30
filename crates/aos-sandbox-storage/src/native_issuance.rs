@@ -437,6 +437,42 @@ impl StorageNativeIssuanceLedgerV1 {
         Self::from_journal(journal, state_directory, NativeIssuanceCustodyV1::RootOwned)
     }
 
+    /// Retains existing native custody without creating names or repairing a tail.
+    pub(crate) fn open_existing_root_owned(
+        state_directory: &Path,
+    ) -> Result<Self, StorageNativeIssuanceErrorV1> {
+        let journal = Journal::open_existing_protected_at(
+            state_directory,
+            JOURNAL_FILE,
+            journal_limits(),
+        )?.0;
+        Self::from_journal(journal, state_directory, NativeIssuanceCustodyV1::RootOwned)
+    }
+
+    /// Rechecks the complete retained native rows and the same writer's exact cut.
+    pub(crate) fn operator_terminal_readback_cut_v4(
+        &mut self,
+    ) -> Result<(u64, ObjectDigest), StorageNativeIssuanceErrorV1> {
+        self.validate_boundary()?;
+        let rows = self.rows()?;
+        self.preflight_retirements(&rows, None)?;
+
+        let mut digest = Sha256::new();
+        digest.update(b"aos.sandbox.operator-repair-native-cut.v4\0");
+        digest.update(self.journal.snapshot_sequence().to_be_bytes());
+        for (namespace, key, value) in self.journal.all_records() {
+            digest.update((namespace as u16).to_be_bytes());
+            digest.update((key.len() as u64).to_be_bytes());
+            digest.update(key);
+            digest.update((value.len() as u64).to_be_bytes());
+            digest.update(value);
+        }
+        Ok((
+            self.journal.snapshot_sequence(),
+            ObjectDigest::from_bytes(digest.finalize().into()),
+        ))
+    }
+
     fn from_journal(
         journal: Journal,
         state_directory: &Path,

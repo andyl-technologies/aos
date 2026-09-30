@@ -1501,6 +1501,18 @@ impl DormantAuthenticatedBrokerSessionV1 {
         Ok(self.0.retain_authenticated_peer_pidfd()?)
     }
 
+    /// Reauthenticates immutable original Repair Inventory, never a live hold.
+    pub(crate) fn operator_repair_inventory_history(
+        &mut self,
+        request_id: [u8; 16],
+        packet: Option<&[u8]>,
+    ) -> Result<
+        aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+        BrokerSessionSecurityError,
+    > {
+        self.0.operator_repair_inventory_history(request_id, packet)
+    }
+
     pub(crate) fn original_storage_inventory_coordinates(
         &mut self,
         group_request_id: [u8; 16],
@@ -4335,6 +4347,47 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 }
             }
         })
+    }
+
+    /// Rejects one ordinary request while original Repair settlement is unresolved.
+    ///
+    /// This method never borrows a Storage runtime or domain dispatcher. It
+    /// reuses actual authenticated request admission and the independently
+    /// held namespace-47 session writer to commit only an exact signed Conflict.
+    /// No inventory, physical effect, owner hold, or public ledger row changes.
+    /// Prior in-flight or terminal work is not overwritten or called absent;
+    /// the consumed socket closes promptly and its original durable history
+    /// remains the sole recovery authority.
+    ///
+    /// # Errors
+    ///
+    /// Consumes the session on prior replay, unavailable current custody,
+    /// malformed authenticated request, uncertain error commit/readback or
+    /// response delivery beyond the original bounded request deadline.
+    pub fn serve_operator_repair_unresolved_rejection(
+        self,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, crate::ProductionBrokerServiceErrorV1> {
+        let (mut session, event) =
+            self.receive_production_request(deadline_boottime_nanoseconds)?;
+        let request = match event {
+            crate::ProductionBrokerRequestEventV1::Request(request) => request,
+            crate::ProductionBrokerRequestEventV1::InFlightReplay(_)
+            | crate::ProductionBrokerRequestEventV1::TerminalReplay(_)
+            | crate::ProductionBrokerRequestEventV1::DescriptorTerminalReplay(_) => {
+                return Err(crate::ProductionBrokerResponseErrorV1::OutcomeRecovery.into());
+            }
+        };
+        let deadline = deadline_boottime_nanoseconds
+            .min(request.0.deadline_boottime_nanoseconds());
+        check_production_deadline(deadline)
+            .map_err(crate::ProductionBrokerResponseErrorV1::from)?;
+        let committed = session
+            .commit_authenticated_error_response(request, DormantBrokerFailureV1::Conflict)
+            .map_err(crate::ProductionBrokerResponseErrorV1::from)?;
+        session
+            .finish_authenticated_response(committed, deadline)
+            .map_err(Into::into)
     }
 
     /// Receives and reserves one exact Host catalog publication descriptor.
