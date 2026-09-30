@@ -215,7 +215,7 @@
   };
   profileScope = ["profile" "system"];
   profilePackages = [application nativeHandler namedOutputFixture.dev];
-  profileDescriptor = import ../../pkgs/containers/_aos-oci-backend/evaluation-input.nix {
+  profileDescriptor = lib.build.evaluationInput {
     inherit lib pkgs;
     packages = profilePackages;
     scope = profileScope;

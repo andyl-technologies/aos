@@ -34,7 +34,7 @@
     else if evaluationInput != null
     then evaluationInput
     else
-      import ../evaluation-input.nix {
+      lib.build.evaluationInput {
         inherit lib pkgs packages scope configuration runtimeConfiguration;
         system = lib.platform.system;
       };

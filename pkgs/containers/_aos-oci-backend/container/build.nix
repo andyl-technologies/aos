@@ -205,7 +205,7 @@
     if evaluationInput != null
     then evaluationInput
     else
-      import ../evaluation-input.nix {
+      lib.build.evaluationInput {
         inherit lib pkgs configuration runtimeConfiguration;
         packages = container.packageRoots;
         scope = ["container" container.name];

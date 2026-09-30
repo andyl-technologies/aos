@@ -17,7 +17,7 @@
     ];
   };
   descriptor = retainPayloads:
-    import ../../pkgs/containers/_aos-oci-backend/evaluation-input.nix {
+    lib.build.evaluationInput {
       inherit lib pkgs retainPayloads;
       packages = [package];
       scope = ["projection-check"];
