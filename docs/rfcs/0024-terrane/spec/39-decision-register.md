@@ -941,6 +941,50 @@ is added rather than editing history.
     record bytes, ordering, mismatch semantics and requirement IDs remain
     unchanged. This correction precedes T1's store-interface freeze.
 
+- **[D-58] Bind historical authorization context into commits.**
+  - **Status:** Decided
+  - **Decision:** Profile-pair key 8 carries the original ref, registered
+    surface, locality and sorted affected root/domain pairs. New authored
+    commits require it; legacy draft records retain explicit trusted-context
+    verification. Historical verification uses the original context, while
+    current fork, tag, read and commit operations use their current grants.
+  - **Rationale:** Embedded capabilities can restrict ref, surface, locality,
+    root and domain, but the prior commit schema omitted these request fields.
+    Substituting a destination ref or current locality breaks legitimate
+    historical verification and can fabricate the scope of original authority.
+    Signatures bind the context; canonical tree witnesses and current ACL
+    checks still establish the facts claimed by it.
+  - **Affects:** PROV-2 to PROV-4, AUTH-19, AUTH-26, REF-31 and profile-pair
+    CDDL. Key 8 is optional for legacy decoding, preserving existing bytes.
+    This correction precedes T1's identity and encoding freeze.
+
+- **[D-59] Authenticate side-only attribute producers without hash cycles.**
+  - **Status:** Decided
+  - **Decision:** Optional AttrRecord key 6 binds the exact unsigned record
+    to the terminal key of its already sealed producer commit, using the
+    registered detached-signature preimage. Trust requires the verified
+    producer commit and a canonical witness for that same object's reachability.
+    Legacy unsigned records need matching verified inline origin evidence.
+  - **Rationale:** DRV-4 makes inline attributes optional, while PROV-9 and
+    attr-by require authenticated producer evidence. A producer hash alone
+    is forgeable and requiring the future record hash inside its producer
+    commit would create a cycle. The detached signature is evidence independent
+    of content introduction; recomputation verifies value, not authorship.
+  - **Affects:** DRV-1, DRV-2, DRV-4, DRV-10, PROV-9, PROV-11 and PROV-16.
+    Existing keys 1 through 5 remain byte-identical when key 6 is absent;
+    signed and unsigned variants remain distinct immutable records. This
+    correction precedes T1's encoding freeze.
+
+- **[D-60] Specify checkpoint integrity hashes.**
+  - **Status:** Decided
+  - **Decision:** GcState checkpoint pointers are raw BLAKE3-256 of the
+    selected canonical GcMark record bytes, verified on resume.
+  - **Rationale:** D-56 introduced digest pointers but omitted their preimage.
+    A GcMark is a collector record, not a binary Index immutable; using the
+    index identity domain would misidentify its format.
+  - **Affects:** GC-7, GC-24 and GcState CDDL semantics. No field, existing
+    identity domain or requirement ID changes; this precedes T1's freeze.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

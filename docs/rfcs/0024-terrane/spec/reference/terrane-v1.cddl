@@ -150,6 +150,17 @@ profile-pair = {
   ? 5 => lease,                         ; job or exposure lease
   ? 6 => property-map,                  ; required-property snapshot
   ? 7 => [ * entry-receipt ],           ; signed entry origins (PROV-7)
+  ? 8 => commit-context,               ; original authorization (PROV-4)
+}
+; New commits carry this context; legacy draft records require a trusted
+; complete original context at verification. Root pairs sort uniquely by
+; unsigned (absolute path bytes, UTF-8 domain bytes). They are verified against
+; canonical candidate/previous trees, not trusted solely because they are signed.
+commit-context = {
+  1 => tstr,                            ; original canonical ref name
+  2 => tstr,                            ; registered producing surface
+  3 => locality,
+  4 => [ + [ path: bstr, domain: tstr ] ], ; nonempty canonical absolute path
 }
 lease = { 1 => tstr, 2 => timestamp }   ; owner, expiry
 
@@ -219,6 +230,7 @@ AttrRecord = {
   3 => any,                             ; value, in the attribute's type
   4 => tstr,                            ; producing function "name/version"
   5 => provenance-ref,                  ; commit that produced it (PROV-9)
+  ? 6 => bstr .size 64,                 ; detached terminal-key producer proof
 }
 
 ; Domain terrane-memo-v1 (ALG-28..30, DRV-19).

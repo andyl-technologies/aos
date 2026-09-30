@@ -55,7 +55,20 @@ trusted one", and policy decides which it requires.
 - **[PROV-4]** A store MUST verify the signature and the embedded token
   chain of every commit before accepting a ref update that points at it, and
   MUST reject a commit whose embedded token would not have authorized
-  `commit` on that ref at that epoch. *Gate:* `gate:prov-commit-verify`.
+  `commit` in its original authoring context at that epoch. Every new
+  authored commit MUST carry the signed `commit-context` in its profile pair:
+  the original canonical ref, producing surface, locality and affected
+  absolute root paths with effective disclosure domains. Roots are sorted
+  uniquely by unsigned `(path bytes, domain bytes)`. Admission MUST verify
+  those root/domain pairs against the canonical candidate and previous
+  trees and check the current ACLs separately; a signed domain assertion is
+  not a tree witness. A legacy draft record without this context MAY be
+  verified only with a trusted complete original context, and MUST NOT be
+  admitted as a newly authored contextless commit. Reading, forking, tagging
+  or carrying a historical commit MUST verify its original context rather
+  than substitute the destination ref, current epoch, surface or locality.
+  The current operation still requires its own grants and current ACL
+  intersection. *Gate:* `gate:prov-commit-verify`.
 - **[PROV-5]** A commit produced by a merge or fold MUST list every input
   commit as a parent, in a stable order: the target's previous commit first,
   then the merged commits in the order given to the merge. A merge commit
@@ -106,7 +119,16 @@ the view that demonstrably carried the entry.
 - **[PROV-9]** Derived attributes ([`10-derived-data.md`](10-derived-data.md))
   MUST record the commit that produced them, separately from the entry's
   introducing commit, so that a selector can require that a hash or
-  classification was computed by a trusted job.
+  classification was computed by a trusted job. A side-only attribute's
+  producer MUST be authenticated by its detached terminal-key signature over
+  the record and a canonical tree witness that the producer commit reached
+  the same object. The producer commit's token, original context and
+  signature MUST verify. A claimed producer hash, recomputation, or equality
+  with another record alone is not producer evidence. An unsigned legacy
+  record can establish producer provenance only through matching verified
+  inline value and attribute-origin history. Selector context identities
+  MUST distinguish the exact side record and its verified object/domain
+  evidence.
 - **[PROV-10]** Because entries reference commits by identity, and commits
   are reachable from refs, an implementation MUST treat every introducing
   commit referenced by a live entry, and every source commit named by a

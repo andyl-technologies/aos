@@ -78,7 +78,10 @@ data.
   its last checkpoint and never repeats a completed shard. Checkpoint revisions
   are immutable at `gc/<cycle>/mark/<shard>/<revision>`; the fenced CAS record
   `gc/<cycle>/state` binds each selected revision's hash and the pending frontier.
-  Final shards may also use `gc/<cycle>/mark/<shard>`. Commit expansion contexts
+  Each checkpoint pointer is raw BLAKE3-256 over its exact canonical GcMark
+  bytes; it is an integrity pointer to a record, not an immutable Index
+  identity. Final shards may also use `gc/<cycle>/mark/<shard>`. Commit
+  expansion contexts
   retain the least restrictive parent cutoff already visited; reaching a commit
   with a broader cutoff must still traverse newly eligible parent edges. Null
   denotes unbounded retention, and receipt/source edges bypass the ordinary

@@ -48,7 +48,13 @@ of them. Lookup by a secondary hash is a range lookup in an index tree.
   plaintext bytes and the function version. Two producers computing the same
   attribute for the same object and function version MUST produce identical
   values and function metadata. Their records retain each producer's
-  provenance and therefore need not have identical bytes or identities. An
+  provenance and therefore need not have identical bytes or identities.
+  A record claiming a producer for a side-only value MUST include key 6,
+  a detached Ed25519 signature made by that verified producer commit's
+  token terminal key. Its preimage is the ASCII bytes
+  `terrane-attr-signature-v1`, one zero byte, and the canonical AttrRecord
+  encoded with key 6 absent. This binds keys 1 through 5 without creating
+  a cycle with the already sealed producer commit. An
   implementation MAY verify a record by recomputation and MUST quarantine a
   record that fails verification.
 - **[DRV-3]** Side-table records are stored in meta packs
