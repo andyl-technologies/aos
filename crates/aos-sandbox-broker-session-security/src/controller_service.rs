@@ -145,6 +145,11 @@ pub(crate) mod execution_output_reserve;
 )]
 mod execution_output_storage_reserve;
 mod guest_root;
+#[allow(
+    dead_code,
+    reason = "Local Nix input custody awaits genuine configured worker and independently floored session ingress"
+)]
+mod nix_inputs;
 mod original_attach;
 mod operator_repair;
 mod public_api;
