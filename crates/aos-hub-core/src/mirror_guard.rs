@@ -17,6 +17,8 @@ use crate::{
     storage_work::StorageWorkKey,
 };
 
+pub mod batch;
+
 /// Identifies the independent production physical guard lookup.
 pub const MIRROR_GUARD_LOOKUP_PATH: &str = "/_internal/storage/mirror-final-guard";
 /// Identifies the controlled, reserved-namespace guard lookup.
