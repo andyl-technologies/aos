@@ -6,7 +6,6 @@ use aos_sandbox_linux::seqpacket::SeqpacketError;
 use aos_sandbox_linux::seqpacket::descriptor_subject::{
     DescriptorSubjectSocket, ReceivedDescriptorRecord,
 };
-use aos_sandbox_linux::seqpacket::KernelAuthorizedRecordSubject;
 use aos_sandbox_source_provider_protocol::{
     MAXIMUM_FRAME_BYTES, MAXIMUM_INVENTORY_READBACK_PACKET_BYTES, SourceRootObservationV1,
     VerifiedStorageNativeAcquireV3, source_root_descriptor_commitment_v1,
@@ -150,11 +149,6 @@ pub(crate) struct ReceivedSourceProviderRecordV1 {
 /// Keeps typed receive custody through origin and execution verification errors.
 pub(crate) enum RetainedSourceProviderRecordV5 {
     Received(ReceivedDescriptorRecord),
-    ExecutionFailed {
-        payload: Vec<u8>,
-        _subject: KernelAuthorizedRecordSubject,
-        descriptors: Vec<OwnedFd>,
-    },
     Bound(ReceivedSourceProviderRecordV1),
 }
 
@@ -280,42 +274,25 @@ impl InertSourceProviderCarrierV1 {
 
         let received = self.receive_raw(true, MAXIMUM_FRAME_BYTES)?;
         *slot = Some(RetainedSourceProviderRecordV5::Received(received));
-        let Some(RetainedSourceProviderRecordV5::Received(received)) = slot.take() else {
+        let Some(RetainedSourceProviderRecordV5::Received(received)) = slot.as_ref() else {
             return Err(CarrierFailureV1::Fatal(
                 SourceProviderSecurityError::SessionContinuity,
             ));
         };
-        let bound = match self.socket.bind_received_retaining(received) {
-            Ok(bound) => bound,
-            Err((_error, received)) => {
-                *slot = Some(RetainedSourceProviderRecordV5::Received(received));
-                self.close();
-                return Err(CarrierFailureV1::Fatal(
-                    SourceProviderSecurityError::SessionContinuity,
-                ));
-            }
-        };
+        if self.socket.validate_received_origin(received).is_err() {
+            self.close();
+            return Err(CarrierFailureV1::Fatal(
+                SourceProviderSecurityError::SessionContinuity,
+            ));
+        }
 
-        let (payload, subject, descriptors, peer) = bound.into_parts();
-        let execution = match ProcessExecutionEvidenceV1::capture_retaining(peer, subject) {
-            Ok(execution) => execution,
-            Err((error, subject)) => {
-                *slot = Some(RetainedSourceProviderRecordV5::ExecutionFailed {
-                    payload,
-                    _subject: subject,
-                    descriptors,
-                });
-                self.close();
-                return Err(CarrierFailureV1::Fatal(error));
-            }
-        };
-        *slot = Some(RetainedSourceProviderRecordV5::Bound(
-            ReceivedSourceProviderRecordV1 {
-                payload,
-                descriptors,
-                execution,
-            },
-        ));
+        if let Err(error) =
+            ProcessExecutionEvidenceV1::capture_parked_record(self.socket.peer(), slot)
+        {
+            self.close();
+            return Err(CarrierFailureV1::Fatal(error));
+        }
+
         self.interrupted_retries = 0;
         Ok(true)
     }

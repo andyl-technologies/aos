@@ -6,6 +6,7 @@ use aos_sandbox_linux::seqpacket::{ConnectionPeerIdentity, KernelAuthorizedRecor
 
 use super::{CurrentKernelBootV1, read_cgroup_path_digest};
 use crate::SourceProviderSecurityError;
+use crate::carrier::{ReceivedSourceProviderRecordV1, RetainedSourceProviderRecordV5};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct RemoteBaselineV1 {
@@ -44,6 +45,36 @@ impl ProcessExecutionEvidenceV1 {
             Err(error) => return Err((error, subject)),
         };
         Ok(Self { subject, baseline })
+    }
+
+    /// Observes the actual subject while its entire typed packet remains parked.
+    ///
+    /// The baseline never escapes as caller-nominated DATA. Only after the
+    /// existing complete observation succeeds are the same subject and packet
+    /// moved directly into bound execution custody, without postchecks.
+    pub(crate) fn capture_parked_record(
+        peer: &ConnectionPeerIdentity,
+        slot: &mut Option<RetainedSourceProviderRecordV5>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        let Some(RetainedSourceProviderRecordV5::Received(received)) = slot.as_ref() else {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        };
+        let baseline = Self::capture_baseline(peer, received.subject())?;
+
+        // Exclusive custody and the checked variant cannot change across the
+        // observation. The final region contains only ownership transfers.
+        if let Some(RetainedSourceProviderRecordV5::Received(received)) = slot.take() {
+            let (payload, subject, descriptors) = received.into_parts();
+            *slot = Some(RetainedSourceProviderRecordV5::Bound(
+                ReceivedSourceProviderRecordV1 {
+                    payload,
+                    descriptors,
+                    execution: Self { subject, baseline },
+                },
+            ));
+        }
+
+        Ok(())
     }
 
     fn capture_baseline(

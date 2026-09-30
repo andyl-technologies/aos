@@ -1,7 +1,9 @@
 //! Owned ordinary Query stages under genuine original RootClosed custody.
 //!
 //! Original Sent/Pending/native2 remain occupied. Query candidates, packets and
-//! independent count-one debt survive every returned error and later Query.
+//! independent count-one debt survive returned errors and unwind through the
+//! guarded broker/Session boundary, starting from a genuine phase11 tuple.
+//! Older original construction and panic-abort are not covered by that boundary.
 
 use std::collections::BTreeMap;
 
