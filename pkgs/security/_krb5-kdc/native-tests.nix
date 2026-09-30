@@ -26,7 +26,15 @@
   files = enabled.aos.abilities.configuration.operations.file.effects;
   services = enabled.aos.abilities.serviceManagement.operations.realize.effects;
   assertionsHold = result: builtins.all (value: value.assertion) result.assertions;
+  aclAccepted = value:
+    (builtins.tryEval (builtins.deepSeq
+      (evaluate {acl = [value];}).config.aos.krb5Kdc.acl
+      true)).success;
 in {
+  aclRecordValidation = assert aclAccepted "admin/admin@EXAMPLE.TEST\t*";
+  assert !(aclAccepted "");
+  assert !(aclAccepted "admin\n*");
+  assert !(aclAccepted "admin\r*"); true;
   clientConfiguration = assert lib.hasInfix "default_realm = EXAMPLE.TEST" files.krb5-client.input.content;
   assert lib.hasInfix "kdc = kdc.example.test:88" files.krb5-client.input.content; true;
   profileComposition = assert builtins.length files.krb5-kdc.input.fragments == 11; true;

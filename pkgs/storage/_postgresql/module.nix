@@ -15,12 +15,32 @@
   positiveInt = types.ints.between 1 9007199254740991;
   nonNegativeInt = types.ints.between 0 9007199254740991;
   port = types.ints.between 1 65535;
-  nonEmptyLine = types.strMatching "[^\n\r]+";
+  nonEmptyLine = types.refined {
+    type = types.str;
+    constraints = [
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+      {
+        kind = "string-excludes";
+        classes = ["line-break"];
+      }
+    ];
+  };
   identifier = types.strMatching "[A-Za-z_][A-Za-z0-9_$-]*";
   address = types.strMatching "[^,'[:space:]]+";
   memorySize = types.strMatching "[1-9][0-9]*(B|kB|MB|GB|TB)";
   settingName = types.strMatching "[a-z][a-z0-9_]*";
-  settingString = types.strMatching "[^\n\r]*";
+  settingString = types.refined {
+    type = types.str;
+    constraints = [
+      {
+        kind = "string-excludes";
+        classes = ["line-break"];
+      }
+    ];
+  };
   settingValue = types.oneOf [types.bool (types.ints.between (-9007199254740991) 9007199254740991) settingString];
   settingsType = types.attrsWith {
     elemType = settingValue;

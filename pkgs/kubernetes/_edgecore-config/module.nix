@@ -391,8 +391,10 @@ in {
       ];
       aos.services.edgecore = lib.mkDefault service;
     }
+    {
+      aos.services.edgecore.activationAfter = lib.mkIf serviceEnabled [modules.outputs.loaded tunables.outputs.values];
+    }
     (lib.mkIf serviceEnabled {
-      aos.services.edgecore.activationAfter = [modules.outputs.loaded tunables.outputs.values];
       aos.kernel.tunablePrerequisites = [modules.outputs.loaded];
       aos.kernel.sysctl = {
         "net.ipv4.ip_forward" = "1";
