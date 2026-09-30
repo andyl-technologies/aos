@@ -174,6 +174,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
 /// Reads ordered reflog records from a live file bucket.
 ///
 /// Every call consults authoritative numbered keys rather than directory listing.
+/// Records become visible only after the authoritative ref confirms their
+/// sequence. Idle reads wait through the configured clock binding.
 pub struct FileRefWatch<F, C, V> {
     bucket: FileBucket<F, C, V>,
     name: String,
@@ -189,11 +191,24 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let Some(seq) = self.next else {
             return Ok(None);
         };
-        let records = self.bucket.ref_log_read(&self.name, seq).await?;
-        let record = records.into_iter().next();
-        if record.is_some() {
-            self.next = seq.checked_add(1);
+        loop {
+            let head = self.bucket.ref_get(&self.name).await?;
+            if head.is_some_and(|record| record.seq >= seq) {
+                let records = self.bucket.ref_log_read(&self.name, seq).await?;
+                let record = records
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| corrupt(&self.name))?;
+                self.next = seq.checked_add(1);
+                return Ok(Some(record));
+            }
+
+            self.bucket
+                .inner
+                .clock
+                .sleep(std::time::Duration::from_millis(10))
+                .await
+                .map_err(files::io_failure)?;
         }
-        Ok(record)
     }
 }

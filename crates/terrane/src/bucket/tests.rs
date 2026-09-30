@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::store::{
-    MetaUpload, RefCasOutcome, RefLogAppendOutcome, RefStore, TokioClock, TokioLocalFs,
+    MetaUpload, RefCasOutcome, RefLogAppendOutcome, RefStore, RefWatch, TokioClock, TokioLocalFs,
 };
 use terrane_core::refs::{RefLogReason, RefLogRecord, RefRecord};
 
@@ -43,6 +43,39 @@ fn log(record: RefRecord, previous_commit: Option<[u8; 32]>) -> RefLogRecord {
         reason: RefLogReason::Commit,
         timestamp: 1,
     }
+}
+
+#[tokio::test]
+async fn live_watch_waits_for_authoritative_ref_publication_and_replays_sequences() {
+    let bucket = fixture().await;
+    let name = "refs/heads/_/main";
+    let mut watch = bucket.ref_watch(name, 1).await.unwrap();
+    let timeout = std::time::Duration::from_millis(25);
+    assert!(tokio::time::timeout(timeout, watch.next()).await.is_err());
+
+    let first = RefRecord::first([1; 32], 1, Locality::default());
+    let first_log = log(first.clone(), None);
+    bucket.ref_log_append(name, 1, &first_log).await.unwrap();
+    assert_eq!(
+        bucket.ref_log_read(name, 1).await.unwrap(),
+        vec![first_log.clone()]
+    );
+    assert!(tokio::time::timeout(timeout, watch.next()).await.is_err());
+    bucket.ref_cas(name, None, &first).await.unwrap();
+    assert_eq!(watch.next().await.unwrap(), Some(first_log.clone()));
+
+    let second = first.advance([2; 32], 2).unwrap();
+    let second_log = log(second.clone(), Some(first.commit));
+    bucket.ref_log_append(name, 2, &second_log).await.unwrap();
+    assert!(tokio::time::timeout(timeout, watch.next()).await.is_err());
+    bucket.ref_cas(name, Some(&first), &second).await.unwrap();
+    assert_eq!(watch.next().await.unwrap(), Some(second_log.clone()));
+
+    let mut resumed = bucket.ref_watch(name, 1).await.unwrap();
+    assert_eq!(resumed.next().await.unwrap(), Some(first_log));
+    assert_eq!(resumed.next().await.unwrap(), Some(second_log));
+    assert!(tokio::time::timeout(timeout, resumed.next()).await.is_err());
+    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
 }
 
 #[tokio::test]
