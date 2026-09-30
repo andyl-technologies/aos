@@ -43,6 +43,13 @@
   extraCmakeFlags ? [],
   qualification ? null,
 }: let
+  mkLlvmDerivation = attrs:
+    mkDerivation (attrs
+      // (
+        if qualification == null
+        then {}
+        else {inherit qualification;}
+      ));
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   versionMatch = builtins.match "([0-9]+)\\..*" version;
   versionMajor = builtins.elemAt versionMatch 0;
@@ -60,10 +67,10 @@
   targetsStr = builtins.concatStringsSep ";" targets;
   extraFlagsStr = builtins.concatStringsSep " " extraCmakeFlags;
 in
-  mkDerivation {
+  mkLlvmDerivation {
     pname = "llvm";
     inherit platformSupport;
-    inherit version qualification;
+    inherit version;
 
     src = fetchurl {
       urls = [

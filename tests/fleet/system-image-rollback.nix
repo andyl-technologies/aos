@@ -1,11 +1,6 @@
-# Durable A/B lifecycle acceptance.
-#
-# This is the executable acceptance gate for the image lifecycle. It
-# publishes a real measured, dm-verity-backed raw image through a registry,
-# stages it through `apm upgrade --system` onto the inactive GPT slot, exhausts
-# its real sd-boot boot count and observes automatic fallback, retries and
-# blesses that exact image, proves boot-commit replay is idempotent, then
-# exercises explicit rollback and transition-journal crash recovery.
+# Authenticated A/B image acceptance through native public operations.
+# Exercises real counted boot exhaustion, successful executor handoff, rollback,
+# candidate health failure, boot-commit replay, and explicit expired retirement.
 {
   lib,
   mkSystem,
@@ -13,45 +8,56 @@
   systems,
   extraFixtureModules ? [],
   extraTestArtifactRoots ? [],
+  replaceExecutor ? true,
 }: let
   testPackages = [
     pkgs.diffutils
   ];
 
-  failurePreStart = ''read -r cmdline < /proc/cmdline; case " $cmdline " in *" systemd.verity_root_data=/dev/disk/by-partlabel/root-b "*) if [ ! -e /var/lib/aos-test/allow-eval ]; then exit 1; fi ;; esac'';
-  bootCommitCondition = "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg "read -r cmdline < /proc/cmdline; case \" $cmdline \" in *\" systemd.verity_root_data=/dev/disk/by-partlabel/root-b \"*) test ! -e /var/lib/aos-test/skip-image-commit || test -e /var/lib/aos-test/allow-image-commit ;; esac"}";
-  bootCommitPreStart = "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg "read -r cmdline < /proc/cmdline; case \" $cmdline \" in *\" systemd.verity_root_data=/dev/disk/by-partlabel/root-b \"*) test -e /var/lib/aos-test/skip-image-commit || test -e /var/lib/aos-test/allow-image-commit ;; esac"}";
-  rolloutSnapshotPackage = pkgs.writeShellScriptBin "aos-fleet-rollout-snapshot" ''
+  rolloutPolicy = import ./_image-rollout-production.nix {inherit pkgs;};
+  bootFaultHook = pkgs.writeShellScriptBin "aos-image-acceptance-boot-fault" ''
     set -eu
-    state=/var/lib/profiles/image/state.json
-    [ -s "$state" ] || exit 0
-    schema=$(${pkgs.jq}/bin/jq -r '.active_rollout.schema // ""' "$state")
-    [ "$schema" = aos.image-rollout/v1 ] || exit 0
-
-    status=$(${pkgs.jq}/bin/jq -er '.active_rollout.status' "$state")
-    running=$(${pkgs.jq}/bin/jq -er '.running' "$state")
-    destination="/var/lib/aos-test/rollout-$status-running-$running.json"
-    ${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-test
-    ${pkgs.coreutils}/bin/cp "$state" "$destination"
-    ${pkgs.coreutils}/bin/sync -f "$destination"
+    if test -f /var/lib/aos-test/blocked-image-toplevel; then
+      IFS= read -r blocked < /var/lib/aos-test/blocked-image-toplevel
+      running=$(${pkgs.coreutils}/bin/readlink /run/current-system)
+      test "$running" != "$blocked"
+    fi
   '';
-  rolloutSnapshotScript = "${rolloutSnapshotPackage}/bin/aos-fleet-rollout-snapshot";
-  candidatePackageRuntime =
-    pkgs.runCommand "aos-package-runtime-rollout-candidate" {
-      buildDeps = [pkgs.coreutils];
-    } ''
-      mkdir -p $out
-      cp -r --no-preserve=mode,ownership ${pkgs.aos.packageRuntime}/. $out/
-      printf '%s\n' candidate-executor > $out/rollout-test-identity
-    '';
+  bootFaultCommand = {
+    executable = {
+      path = "${bootFaultHook}/bin/aos-image-acceptance-boot-fault";
+      arguments = [];
+    };
+    ignore_failure = false;
+  };
+  bootFaultModule = {
+    aos.packages.aos-image-acceptance-boot-fault = {
+      package = bootFaultHook;
+      bundle = true;
+    };
+    aos.services."control-plane.aos-activate".lifecycle.pre_start = lib.mkBefore [bootFaultCommand];
+  };
+  candidateAos =
+    if !replaceExecutor
+    then pkgs.aos
+    else
+      pkgs.aos.overrideAttrs (previous: {
+        phases =
+          previous.phases
+          ++ [
+            {
+              name = "mark-image-qualification-executor";
+              script = ''
+                printf '%s\n' candidate-executor > "$packageRuntime/rollout-test-identity"
+              '';
+            }
+          ];
+      });
+  candidatePackageRuntime = candidateAos.packageRuntime;
   candidatePkgs =
     pkgs
     // {
-      aos =
-        pkgs.aos
-        // {
-          packageRuntime = candidatePackageRuntime;
-        };
+      aos = candidateAos;
     };
   candidateAgentUnit = pkgs.writeTextFile {
     name = "aos-fleet-test-agent-runtime-unit";
@@ -69,44 +75,9 @@
       Environment=PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin
     '';
   };
-  drainScriptPackage = pkgs.writeShellScriptBin "aos-fleet-drain-hook" ''
-    set -eu
-    ${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-test
-    IFS= read -r boot_id < /proc/sys/kernel/random/boot_id
-    printf '%s\n' "$boot_id" > /var/lib/aos-test/drained-boot-id
-    ${pkgs.coreutils}/bin/sync -f /var/lib/aos-test/drained-boot-id
-  '';
-  drainScript = "${drainScriptPackage}/bin/aos-fleet-drain-hook";
-  candidateHealthScriptPackage = pkgs.writeShellScriptBin "aos-fleet-candidate-health-hook" ''
-    set -eu
-    ${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-test
-    IFS= read -r boot_id < /proc/sys/kernel/random/boot_id
-    printf '%s\n' "$boot_id" >> /var/lib/aos-test/health-boot-ids
-    booted=$(${pkgs.coreutils}/bin/readlink /run/current-system)
-    configured=$(${pkgs.coreutils}/bin/readlink -f /var/lib/profiles/system/current/toplevel)
-    printf 'candidate\t%s\t%s\t%s\n' "$boot_id" "$booted" "$configured" \
-      >> /var/lib/aos-test/health-observations
-    ${pkgs.coreutils}/bin/sync -f /var/lib/aos-test/health-boot-ids
-    ${pkgs.coreutils}/bin/sync -f /var/lib/aos-test/health-observations
-    if [ -e /var/lib/aos-test/rollout-health-fail ]; then
-      exit 1
-    fi
-  '';
-  healthScript = "${candidateHealthScriptPackage}/bin/aos-fleet-candidate-health-hook";
-  predecessorHealthScriptPackage = pkgs.writeShellScriptBin "aos-fleet-predecessor-health-hook" ''
-    set -eu
-    ${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-test
-    IFS= read -r boot_id < /proc/sys/kernel/random/boot_id
-    booted=$(${pkgs.coreutils}/bin/readlink /run/current-system)
-    configured=$(${pkgs.coreutils}/bin/readlink -f /var/lib/profiles/system/current/toplevel)
-    printf 'predecessor\t%s\t%s\t%s\n' "$boot_id" "$booted" "$configured" \
-      >> /var/lib/aos-test/health-observations
-    ${pkgs.coreutils}/bin/sync -f /var/lib/aos-test/health-observations
-    if [ ! -e /var/lib/aos-test/rollout-health-fail ]; then
-      exit 1
-    fi
-  '';
-  predecessorHealthScript = "${predecessorHealthScriptPackage}/bin/aos-fleet-predecessor-health-hook";
+  drainScript = rolloutPolicy.module.aos.apm.drainScript;
+  healthScript = rolloutPolicy.module.aos.apm.healthScript;
+  predecessorHealthScript = healthScript;
   initrdControlFallback = {
     aos.boot.initrd.packageRoots = [pkgs.aos-test-agent];
     boot.initrd.systemd.services.aos-test-agent-initrd-fallback = {
@@ -138,6 +109,8 @@
       [
         ../../systems/server-verity.nix
         initrdControlFallback
+        rolloutPolicy.module
+        bootFaultModule
         {
           aos.system.version = "9999.0.0-image-rollback";
 
@@ -157,7 +130,10 @@
           aos.boot.kernelParams = ["net.ifnames=0"];
           aos.apm.drainScript = drainScript;
           aos.apm.healthScript = healthScript;
-          aos.packages.aos-test-agent.bundle = true;
+          aos.packages.aos-test-agent = {
+            package = pkgs.aos-test-agent;
+            bundle = true;
+          };
           environment.systemPackages = testPackages;
           aos.networking.interfaces.fleet-eth0 = {
             matchMACAddress = "52:54:00:12:00:02";
@@ -180,7 +156,7 @@
           systemd.services.aos-test-agent-bootstrap = {
             description = "Install the AOS VM test control channel";
             wantedBy = ["multi-user.target"];
-            before = ["aos-eval.service"];
+            before = ["aos-activate.service"];
             stopOnRemoval = false;
             unitConfig.RefuseManualStop = true;
             serviceConfig.Type = "oneshot";
@@ -205,28 +181,24 @@
   # Image-mode machines boot the system image directly. Keep only the exact
   # byte-comparison tool needed by the slot assertions in that image; APM's
   # production libgit2 path performs the target-side registry clone.
-  targetSystem = mkSystem (
+  targetModules =
     [
       ../../systems/server-verity.nix
       initrdControlFallback
+      rolloutPolicy.module
+      bootFaultModule
       {
         environment.systemPackages = testPackages;
+        aos.packages.aos-test-agent = {
+          package = pkgs.aos-test-agent;
+          bundle = true;
+        };
         aos.apm.drainScript = drainScript;
         aos.apm.healthScript = predecessorHealthScript;
       }
     ]
-    ++ extraFixtureModules
-  );
-
-  registrySystem = mkSystem [
-    ../../systems/server-test.nix
-    {
-      aos.packages =
-        lib.genAttrs
-        ["aos-registry-server" "test-static-cache-server"]
-        (_: {bundle = true;});
-    }
-  ];
+    ++ extraFixtureModules;
+  targetSystem = mkSystem targetModules;
 in {
   name = "system-image-rollback";
   timeout = 5400;
@@ -236,6 +208,12 @@ in {
   # structured-ability rollout acceptance test. Keeping one construction avoids
   # qualifying two independently evaluated image identities.
   abilityRolloutFixture = {
+    inherit candidate targetSystem targetModules;
+    predecessorTop = targetSystem.config.system.build.toplevel;
+    predecessorBootContract = targetSystem.config.system.build.bootArtifactContract;
+    candidateBootContract = candidate.config.system.build.bootArtifactContract;
+    baselineEvaluation = targetSystem.config.system.build.hostDeploymentBundle;
+    baselineProjection = targetSystem.qualificationProjection;
     inherit
       candidateImage
       candidateImageDisk
@@ -250,44 +228,6 @@ in {
   };
 
   machines = {
-    registry = {
-      system = registrySystem;
-      packages = ["aos-registry-server" "test-static-cache-server"];
-      metadata."host.nix" = ''
-        {
-          aos.networking.hostName = "registry";
-          aos.apm.desiredPackages = ["aos-registry-server" "test-static-cache-server"];
-          "aos-registry-server".enable = true;
-        }
-      '';
-      extraModules = [
-        {
-          environment.etc."tmpfiles.d/fleet-registry-cache.conf".text = ''
-            d /var/lib/sysreg-cache 0755 root root - -
-          '';
-        }
-      ];
-      # The publisher needs the candidate toplevel, its complete raw OTA
-      # artifact, and the tools that derive signer/SBAT/PCR facts from both
-      # slot-specific UKIs.
-      extraClosures = [
-        candidateTop
-        candidateImage
-        candidateImageDisk
-        candidateImageInfo
-        candidateUki
-        pkgs.aos.apr
-        pkgs.gawk
-        pkgs.secure-boot-test-keys
-        pkgs.sbsigntools
-        pkgs.binutils
-        pkgs.git
-        pkgs.systemd
-      ];
-      varSizeMiB = 12288;
-      memoryMiB = 6144;
-    };
-
     target = {
       system = targetSystem;
       bootMode = "image";
@@ -302,6 +242,11 @@ in {
       memoryMiB = 8192;
       tpm = true;
       packages = ["aos-test-agent"];
+      extraClosures =
+        [candidateTop candidateImage candidateImageDisk candidateImageInfo candidateUki candidatePackageRuntime]
+        ++ rolloutPolicy.extraClosures
+        ++ [bootFaultHook]
+        ++ [pkgs.aos.apr pkgs.sbsigntools pkgs.binutils pkgs.efitools pkgs.gawk pkgs.git pkgs.secure-boot-test-keys];
       # The same authenticated leaf is replayed after each image transition.
       # It keeps the fleet address stable after the candidate's base library
       # replaces the image-baked test identity.
@@ -313,1001 +258,43 @@ in {
           aos.networking.interfaces.eth0.address = "192.168.50.11/24";
           aos.apm.desiredPackages = [ "aos-test-agent" ];
 
-          environment.etc."hosts".text = "127.0.0.1 localhost\n192.168.50.10 registry\n192.168.50.11 target\n";
+          environment.etc."hosts".text = "127.0.0.1 localhost\n192.168.50.11 target\n";
         }
       '';
     };
   };
 
   testScript =
-    # python
-    ''
-      import base64
-      import json
-      import re
-      import shlex
+    rolloutPolicy.testPrelude
+    + ''
+      import sys
+      import types
       import textwrap
 
-      APM = "${pkgs.aos.apm}/bin/apm"
-      APR = "${pkgs.aos.apr}/bin/apr"
-      SB_GUID = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
-      MOUNT = "${pkgs.util-linux}/bin/mount"
+      runtime = target
+      SYSTEMCTL = "${pkgs.systemd}/bin/systemctl"
+      SYSTEMD_RUN = "${pkgs.systemd}/bin/systemd-run"
       BOOTCTL = "${pkgs.systemd}/bin/bootctl"
-      SYNC = "${pkgs.coreutils}/bin/sync"
-      CMP = "${pkgs.diffutils}/bin/cmp"
-      IMAGE_STATE = "/var/lib/profiles/image/state.json"
-      TRANSITION_INTENT = "/var/lib/profiles/image/.transition-intent.json"
-
-
-      def run_rebooting_apm(arguments, label, timeout=1800):
-          old_boot_id = target.succeed(
-              "cat /proc/sys/kernel/random/boot_id"
-          ).strip()
-          output = f"/var/lib/aos-test/{label}.out"
-          status = f"/var/lib/aos-test/{label}.status"
-          target.succeed(f"rm -f {output} {status}")
-          script = (
-              "set -eu; rc=0; "
-              f"HOME=/tmp PATH=${pkgs.nix}/bin:$PATH "
-              f"{APM} {arguments} > {output} 2>&1 || rc=$?; "
-              f"printf '%s\\n' \"$rc\" > {status}; "
-              f"{SYNC} -f {status}; "
-              "exit \"$rc\""
-          )
-          # Reboot returns after queueing shutdown. Keep D-Bus and the wrapper
-          # alive until its actual exit status and output are durable; ExecStop
-          # runs before systemd terminates the service's remaining processes.
-          shutdown_barrier = (
-              f"until test -s {status}; do ${pkgs.coreutils}/bin/sleep 0.1; done; "
-              f"{SYNC} -f {status}"
-          )
-          properties = [
-              "Type=exec",
-              "DefaultDependencies=no",
-              "After=dbus.service",
-              "Before=shutdown.target",
-              "Conflicts=shutdown.target",
-              f"TimeoutStopSec={timeout}",
-              "ExecStop=${pkgs.bash}/bin/bash -c " + shlex.quote(shutdown_barrier),
-          ]
-          command = (
-              "${pkgs.systemd}/bin/systemd-run --no-block --collect "
-              f"--unit=aos-test-{label} "
-              + " ".join("--property=" + shlex.quote(value) for value in properties)
-              + " -- ${pkgs.bash}/bin/bash -c " + shlex.quote(script)
-          )
-          try:
-              exit_code, stdout, stderr = target.execute(command, timeout=30)
-          except Exception as error:
-              # The persistent QEMU RPC channel can survive a guest reset.
-              # Only short launch/poll requests may overlap that reset.
-              print(f"{label} launch connection interrupted: {error}")
-          else:
-              assert exit_code == 0, (
-                  f"{label} launch failed (exit {exit_code}): "
-                  + (stdout + stderr).decode("utf-8", errors="replace")
-              )
-
-          target.wait_until_succeeds(
-              f"test ! -e /etc/initrd-release && test -s {status}",
-              timeout=timeout,
-          )
-          result = target.succeed(f"cat {status}").strip()
-          assert result == "0", (
-              f"{label} failed (exit {result}): " + target.succeed(f"cat {output}")
-          )
-          target.wait_until_succeeds(
-              "test ! -e /etc/initrd-release && "
-              "test \"$(cat /proc/sys/kernel/random/boot_id)\" != "
-              + shlex.quote(old_boot_id),
-              timeout=600,
-          )
-          target.succeed(f"test \"$(cat {status})\" = 0")
-          return target.succeed(f"cat {output}")
-
-
-      def image_state():
-          return json.loads(target.succeed(f"cat {IMAGE_STATE}"))
-
-
-      def write_json(path, value):
-          payload = base64.b64encode(
-              (json.dumps(value, separators=(",", ":")) + "\n").encode()
-          ).decode()
-          target.succeed(
-              f"printf %s {shlex.quote(payload)} | "
-              f"${pkgs.coreutils}/bin/base64 -d > {path}.new; "
-              f"{SYNC} -f {path}.new; mv {path}.new {path}; "
-              f"{SYNC} -f /var/lib/profiles/image"
-          )
-
-
-      def generation(state, number):
-          matches = [g for g in state["generations"] if g["number"] == number]
-          assert len(matches) == 1, (number, state)
-          return matches[0]
-
-
-      def assert_generation_runtime_identity(record):
-          toplevel = shlex.quote(record["toplevel"])
-          state_version = target.succeed(
-              f"cat {toplevel}/meta/state-version"
-          ).strip()
-          native_executor = target.succeed(
-              f"cat {toplevel}/meta/native-executor-ref"
-          ).strip()
-
-          assert state_version, record
-          assert record["state_version"] == state_version, record
-          assert re.fullmatch(
-              r"/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[^/]+",
-              native_executor,
-          ), native_executor
-          assert record["native_executor_ref"] == native_executor, record
-
-
-      def rollout_snapshot(status, running):
-          path = f"/var/lib/aos-test/rollout-{status}-running-{running}.json"
-          return json.loads(target.succeed(f"cat {path}"))
-
-
-      def efivar_byte(name):
-          path = f"/sys/firmware/efi/efivars/{name}-{SB_GUID}"
-          out = target.succeed(f"od -An -tu1 -j4 -N1 {path}").strip()
-          return int(out)
-
-
-      def assert_boot_read_only():
-          mounts = target.succeed("cat /proc/mounts")
-          match = re.search(r"^\S+ /boot \S+ (\S+)", mounts, re.M)
-          assert match, f"/boot is not mounted:\n{mounts}"
-          options = match.group(1).split(",")
-          assert "ro" in options and "rw" not in options, (
-              f"/boot was not restored read-only: {match.group(0)!r}"
-          )
-
-
-      def counted_variant(recorded, tries_left, tries_done):
-          prefix = recorded.rsplit("+", 1)[0]
-          return f"{prefix}+{tries_left}-{tries_done}.efi"
-
-
-      def assert_only_counted_variant(recorded, expected):
-          prefix = recorded.rsplit("+", 1)[0]
-          target.succeed(f"test -f /boot/{expected}")
-          target.fail(f"test -e /boot/{prefix}.efi")
-          target.succeed(
-              f"set -- /boot/{prefix}+*.efi; "
-              f'[ "$#" -eq 1 ] && [ -e "$1" ] '
-              f'&& [ "$1" = "/boot/{expected}" ]'
-          )
-
-
-      def assert_switched_root():
-          try:
-              target.wait_until_succeeds(
-                  "test ! -e /etc/initrd-release", timeout=60
-              )
-          except Exception:
-              print(target.succeed("cat /proc/cmdline 2>&1 || true"))
-              print(target.succeed("systemctl list-jobs --no-pager 2>&1 || true"))
-              print(target.succeed("systemctl --failed --no-pager 2>&1 || true"))
-              for unit in (
-                  "mount-var.service",
-                  "nix-overlay-setup.service",
-                  "aos-seed-profiles.service",
-                  "run-etc-setup.service",
-                  "aos-machine-id.service",
-                  "etc-overlay-setup.service",
-                  "initrd-fs.target",
-                  "initrd-switch-root.target",
-              ):
-                  print(target.succeed(
-                      f"systemctl status {unit} --no-pager 2>&1 || true"
-                  ))
-                  print(target.succeed(
-                      f"journalctl -b -u {unit} --no-pager 2>&1 || true"
-                  ))
-              raise
-
-
-      def wait_for_failed_candidate_pipeline():
-          target.wait_until_succeeds(
-              "systemctl is-active --quiet multi-user.target", timeout=420
-          )
-          try:
-              target.wait_until_succeeds(
-                  "systemctl is-failed --quiet aos-eval.service", timeout=120
-              )
-          except Exception:
-              print(target.succeed("cat /proc/cmdline"))
-              print(target.succeed(
-                  "${pkgs.findutils}/bin/find "
-                  "/var/etc/systemd/system -maxdepth 3 -type f -print "
-                  "-exec sed -n '1,120p' {} ';' 2>&1 || true"
-              ))
-              for unit in (
-                  "aos-ability-host-receiver.service",
-                  "aos-firstboot-reeval.service",
-                  "aos-nix-db.service",
-                  "systemd-pcrphase.service",
-                  "aos-image-measurement-index.service",
-                  "aos-seed-baked-packages.service",
-                  "aos-eval.service",
-              ):
-                  print(target.succeed(
-                      f"systemctl cat {unit} --no-pager 2>&1 || true"
-                  ))
-                  print(target.succeed(
-                      f"systemctl status {unit} --no-pager 2>&1 || true"
-                  ))
-                  print(target.succeed(
-                      f"journalctl -b -u {unit} --no-pager 2>&1 || true"
-                  ))
-              print(target.succeed("systemctl list-jobs --no-pager 2>&1 || true"))
-              raise
-          target.succeed("test ! -e /run/aos/manifest.json")
-          target.succeed(
-              "test \"$(systemctl show -p Result --value "
-              "aos-graph-compile.service)\" = success"
-          )
-          target.succeed(
-              "test \"$(systemctl show -p ActiveState --value "
-              "aos-graph-compile.service)\" = inactive"
-          )
-          target.succeed(
-              "test \"$(systemctl show -p ConditionResult --value "
-              "aos-graph-compile.service)\" = no"
-          )
-          target.succeed(
-              "test \"$(systemctl show -p Result --value "
-              "aos-image-boot-commit.service)\" = success"
-          )
-          target.succeed(
-              "test \"$(systemctl show -p ActiveState --value "
-              "aos-image-boot-commit.service)\" = inactive"
-          )
-
-
-      # -- Initial stock image ------------------------------------------------
-      try:
-          target.wait_until_succeeds(
-              "systemctl is-active --quiet aos-image-boot-commit.service", timeout=300
-          )
-      except Exception:
-          for unit in (
-              "network-online.target",
-              "aos-eval.service",
-              "aos-graph-compile.service",
-              "aos-activate.service",
-              "aos-image-boot-commit.service",
-          ):
-              print(target.succeed(
-                  f"systemctl status {unit} --no-pager 2>&1 || true"
-              ))
-              print(target.succeed(
-                  f"journalctl -b -u {unit} --no-pager 2>&1 || true"
-              ))
-          print(target.succeed("systemctl list-jobs --no-pager 2>&1 || true"))
-          raise
-      target.wait_until_succeeds(
-          "systemctl is-active --quiet multi-user.target", timeout=420
-      )
-      assert_boot_read_only()
-
-      # Setup Mode intentionally uses a disposable plain /var. Enroll the
-      # image's test keys and let the first enforcing boot replace it with the
-      # durable TPM-sealed LUKS volume before exercising stateful transitions.
-      assert efivar_byte("SetupMode") == 1
-      assert efivar_byte("SecureBoot") == 0
-      efi_update = (
-          "PATH=${pkgs.util-linux}/bin:$PATH "
-          "${pkgs.efitools}/bin/efi-updatevar"
-      )
-      keys = "${pkgs.secure-boot-test-keys}"
-      for variable in ("db", "KEK", "PK"):
-          target.succeed(
-              f"{efi_update} -f {keys}/{variable}.auth {variable} 2>&1"
-          )
-      assert efivar_byte("SetupMode") == 0
-      target.reboot(timeout=600)
-      target.wait_until_succeeds(
-          "systemctl is-active --quiet aos-image-boot-commit.service", timeout=420
-      )
-      target.wait_until_succeeds(
-          "systemctl is-active --quiet multi-user.target", timeout=420
-      )
-      assert efivar_byte("SecureBoot") == 1
-      target.succeed(
-          "${pkgs.cryptsetup}/sbin/cryptsetup isLuks "
-          "/dev/disk/by-partlabel/var"
-      )
-      target.succeed(
-          "source=; while read -r device mountpoint rest; do "
-          "test \"$mountpoint\" != /var || source=$device; "
-          "done < /proc/mounts; test \"$source\" = /dev/mapper/var"
-      )
-      assert_boot_read_only()
-
-      initial = image_state()
-      assert initial["running"] == 1, initial
-      assert initial["default"] == 1, initial
-      assert initial.get("pending") is None, initial
-      old = generation(initial, 1)
-      assert old["slot"] == "A", old
-      assert_generation_runtime_identity(old)
-      assert old["native_executor_ref"] != "${candidatePackageRuntime}", old
-
-      # Keep fault injection outside host.nix: structural systemd units are
-      # image-owned, while host.nix is deliberately restricted to operator-
-      # owned settings. Persistent local drop-ins let the test prevent both
-      # evaluation and boot blessing only while slot B is running.
-      target.succeed(textwrap.dedent("""
-          set -eu
-          mkdir -p \
-            /var/etc/systemd/system/aos-eval.service.d \
-            /var/etc/systemd/system/aos-firstboot-reeval.service.d \
-            /var/etc/systemd/system/aos-image-boot-commit.service.d \
-            /var/etc/systemd/system/multi-user.target.wants
-          cat > /var/etc/systemd/system/aos-test-agent.service <<'EOF'
-          [Unit]
-          Description=AOS VM Test Guest Agent
-          RefuseManualStop=true
-
-          [Service]
-          Type=simple
-          ExecStart=${pkgs.aos-test-agent}/share/aos-test-agent/aos-test-agent
-          Restart=on-failure
-          RestartSec=1
-          Environment=PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin
-          EOF
-          ln -sfn ../aos-test-agent.service \
-            /var/etc/systemd/system/multi-user.target.wants/aos-test-agent.service
-          cat > /var/etc/systemd/system/aos-eval.service.d/90-rollback-test.conf <<'EOF'
-          [Service]
-          ExecStartPre=${pkgs.bash}/bin/bash -c ${lib.escapeShellArg failurePreStart}
-          EOF
-          cat > /var/etc/systemd/system/aos-firstboot-reeval.service.d/90-rollback-test.conf <<'EOF'
-          [Service]
-          ExecStartPre=${rolloutSnapshotScript}
-          EOF
-          cat > /var/etc/systemd/system/aos-image-boot-commit.service.d/90-rollback-test.conf <<'EOF'
-          [Service]
-          ExecCondition=${bootCommitCondition}
-          ExecStartPre=${rolloutSnapshotScript}
-          ExecStartPre=${bootCommitPreStart}
-          EOF
-          touch /var/lib/aos-test/skip-image-commit
-          ${pkgs.coreutils}/bin/sync
-      """))
-
-      # These are real udev links to block devices, not regular-file fixtures.
-      # The production writer must follow the trusted by-partlabel link and
-      # validate the opened descriptor before performing a destructive write.
-      for label in ("root-a", "root-a-hash", "root-b", "root-b-hash"):
-          target.succeed(f"test -L /dev/disk/by-partlabel/{label}")
-          target.succeed(f"test -b $(readlink -f /dev/disk/by-partlabel/{label})")
-
-      # -- Publish a catalog-backed A/B image ---------------------------------
-      registry.wait_for_unit("aos-registry-server-gitd.service", timeout=180)
-      registry.wait_until_succeeds(
-          "systemctl is-active --quiet aos-pkg-test-static-cache-server.target",
-          timeout=180,
-      )
-      registry.wait_until_succeeds(
-          "systemctl is-active --quiet aos-nix-db.service", timeout=180
-      )
-      registry.succeed(textwrap.dedent("""
-          set -eu
-          export HOME=/tmp
-          export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test
-          export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
-          export NIX_REMOTE=""
-          export NIX_CONF_DIR=/tmp/nix-conf
-          export PATH="${pkgs.sbsigntools}/bin:${pkgs.binutils}/bin:${pkgs.systemd}/lib/systemd:$PATH"
-          mkdir -p "$NIX_CONF_DIR"
-          printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
-            > "$NIX_CONF_DIR/nix.conf"
-
-          ${pkgs.nix}/bin/nix-store --check-validity '${candidateTop}'
-          ${pkgs.nix}/bin/nix-store --check-validity '${candidateImage}'
-
-          # Privileged sysroot provenance must name a registry-roster signer.
-          ${pkgs.aos.apr}/bin/apr keys generate release --registry sysreg \\
-            > /tmp/sysreg-keygen.out 2>&1
-          PUBLIC_KEY=$(${pkgs.gawk}/bin/awk '/Public key:/ {print $NF; exit}' /tmp/sysreg-keygen.out)
-          SIGNING_KEY=$HOME/.config/apm/keys/sysreg-release.key
-          ${pkgs.aos.apr}/bin/apr create sysreg \\
-            --trust-key "$PUBLIC_KEY" --trust-key-id release --key "$SIGNING_KEY"
-          mkdir -p "$HOME/.config/apm/registries.d"
-          cat > "$HOME/.config/apm/registries.d/sysreg.toml" <<EOF
-          [registry]
-          name = "sysreg"
-          url = "file://$HOME/.local/share/apm/registries/sysreg"
-
-          [registry.signing_keys]
-          release = "$SIGNING_KEY"
-          EOF
-          REG_DIR=$HOME/.local/share/apm/registries/sysreg
-          mkdir -p "$REG_DIR/sb-certs"
-          cp ${pkgs.secure-boot-test-keys}/db.crt "$REG_DIR/sb-certs/db.pem"
-          DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
-          ORIGIN=/var/lib/aos-registry-server/registries/sysreg
-          git init --bare --object-format=sha256 "$ORIGIN"
-          git -C "$ORIGIN" symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
-          git -C "$REG_DIR" remote add origin "$ORIGIN"
-          set -- '${candidateUki}'/*.efi
-          test "$#" -eq 1
-          CANDIDATE_UKI="$1"
-
-          if ! ${pkgs.aos.apr}/bin/apr --json publish '${candidateTop}' \\
-            --name aos \\
-            --version 9999.0.0-image-rollback \\
-            --description 'A/B lifecycle fixture' \\
-            --license MIT \\
-            --maintainer test \\
-            --sysroot \\
-            --image-payload '${candidateImage}' \\
-            --image-disk '${candidateImageDisk}' \\
-            --image-info '${candidateImageInfo}' --image-format raw \\
-            --image-uki "$CANDIDATE_UKI" \\
-            --no-ca \\
-            --registry sysreg \\
-            --key-id release --no-commit > /tmp/publish.json; then
-            cat /tmp/publish.json >&2
-            exit 1
-          fi
-          echo "$DEFAULT_BRANCH" > /tmp/sysreg-branch
-      """), timeout=1200)
-
-      publication = json.loads(registry.succeed("cat /tmp/publish.json"))
-      images = publication.get("images", [])
-      assert len(images) == 1, images
-      ukis = images[0].get("ukis", [])
-      assert {u.get("slot") for u in ukis} == {"a", "b"}, ukis
-      for uki in ukis:
-          signer = uki.get("sb_signer_cert_sha256")
-          expected = uki.get("expected_pcr11")
-          assert signer and re.fullmatch(r"[0-9a-f]{64}", signer), uki
-          assert expected and re.fullmatch(r"[0-9a-f]{64}", expected), uki
-          assert uki.get("sbat"), uki
-      candidate_b_pcr11 = next(
-          u["expected_pcr11"] for u in ukis if u["slot"] == "b"
-      )
-      signers = sorted({u["sb_signer_cert_sha256"] for u in ukis})
-
-      catalog_commands = "\n".join(
-          f"{APR} sb-certs add aos-db-{index} --cert-sha256 {signer} "
-          "--registry sysreg --no-commit"
-          for index, signer in enumerate(signers)
-      )
-      registry.succeed(textwrap.dedent(f"""
-          set -eu
-          export HOME=/tmp
-          export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test
-          export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
-          export NIX_REMOTE=""
-          export NIX_CONF_DIR=/tmp/nix-conf
-          REG_DIR=$HOME/.local/share/apm/registries/sysreg
-          DEFAULT_BRANCH=$(cat /tmp/sysreg-branch)
-          ORIGIN=/var/lib/aos-registry-server/registries/sysreg
-
-          {catalog_commands}
-          {APR} verify --registry sysreg
-          {APR} cache generate \\
-            --registry sysreg \\
-            --output /var/lib/sysreg-cache \\
-            --cache-url http://registry:8000/sysreg-cache \\
-            --priority 46 \\
-            --no-commit
-          chmod -R a+rX /var/lib/sysreg-cache
-
-          git -C "$REG_DIR" add -A
-          git -C "$REG_DIR" commit -m 'release: A/B lifecycle fixture'
-          git -C "$REG_DIR" tag v1.0.0
-          git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
-          # StateDirectory may use an idmapped mount. Set ownership in the
-          # daemon's view so Git sees its own UID rather than the host mapping.
-          git_pid=$(systemctl show -p MainPID --value aos-registry-server-gitd.service)
-          test "$git_pid" -gt 0
-          git_owner=$(id -u aos-gitd):$(id -g aos-gitd)
-          ${pkgs.util-linux}/bin/nsenter --target "$git_pid" --mount --root --wd=/ \\
-            ${pkgs.coreutils}/bin/chown -R "$git_owner" "$ORIGIN"
-      """), timeout=1800)
-      branch = registry.succeed("cat /tmp/sysreg-branch").strip()
-
-      target.succeed(
-          "HOME=/tmp USER=root PATH=${pkgs.nix}/bin:$PATH "
-          f"{APM} registry --system add --no-verify "
-          f"git://registry:9418/sysreg --name sysreg --priority 500 "
-          f"--branch {branch}",
-          timeout=180,
-      )
-
-      # Registration persists the endpoint; explicitly fetch the catalog into
-      # the system scope before asking the offline upgrade resolver to select it.
-      target.succeed(
-          "HOME=/tmp USER=root PATH=${pkgs.nix}/bin:$PATH "
-          f"{APM} update --system --registry sysreg 2>&1",
-          timeout=180,
-      )
-
-      # -- Stage the actual inactive slot -------------------------------------
-      # A separately realized candidate executor makes this a real runtime
-      # ownership handoff. Any retained config generation with unfinished
-      # native effects must reject the handoff before drain or image selection.
-      initial_config = json.loads(
-          target.succeed("cat /var/lib/profiles/system/state.json")
-      )
-      blocked_generation = initial_config["current"]
-      blocked_transaction = (
-          f"/var/lib/profiles/system/gen-{blocked_generation}/"
-          "ability-transactions/blocked-executor-replacement"
-      )
-      before_blocked_upgrade = image_state()
-      blocked_boot_id = target.succeed(
-          "cat /proc/sys/kernel/random/boot_id"
-      ).strip()
-      target.succeed(f"mkdir -p {blocked_transaction}")
-      blocked_command = (
-          "set -o pipefail; "
-          "HOME=/tmp PATH=${pkgs.nix}/bin:$PATH "
-          f"{APM} upgrade --system --yes --drain --reboot 2>&1 "
-          "| ${pkgs.coreutils}/bin/tee /var/lib/aos-test/blocked-upgrade.out"
-      )
-      target.fail(
-          "${pkgs.bash}/bin/bash -c " + shlex.quote(blocked_command),
-          timeout=1800,
-      )
-      blocked_out = target.succeed(
-          "cat /var/lib/aos-test/blocked-upgrade.out"
-      )
-      assert f"config generation {blocked_generation}" in blocked_out, blocked_out
-      assert "settle all ability transactions" in blocked_out, blocked_out
-      assert image_state() == before_blocked_upgrade
-      assert target.succeed(
-          "cat /proc/sys/kernel/random/boot_id"
-      ).strip() == blocked_boot_id
-      target.fail("test -e /var/lib/aos-test/drained-boot-id")
-      target.succeed(f"rm -rf {blocked_transaction}")
-
-      out = run_rebooting_apm(
-          "upgrade --system --yes --drain --reboot", "initial-upgrade-reboot"
-      )
-      print("=== stage candidate ===\n" + out)
-      assert "Secure Boot catalog validation passed" in out, out
-      assert "Staging inactive A/B image slot" in out, out
-      assert "Draining workloads" in out, out
-      assert "Drain complete" in out, out
-      # An exact LoaderEntryDefault would keep selecting the counted UKI even
-      # after sd-boot marks it bad. Staging must leave selection to the
-      # image-owned aos-*.efi pattern so exhaustion can fall back to slot A.
-      target.fail(
-          f"test -e /sys/firmware/efi/efivars/LoaderEntryDefault-{SB_GUID}"
-      )
-      assert_boot_read_only()
-
-      staged = image_state()
-      assert staged["running"] == 2, staged
-      assert staged["default"] == 2, staged
-      assert staged["pending"] == 2, staged
-      assert staged["active_rollout"]["status"] == "candidate_booted", staged
-      candidate_record = generation(staged, 2)
-      assert candidate_record["slot"] == "B", candidate_record
-      assert candidate_record["registry"] == "sysreg", candidate_record
-      assert candidate_record["expected_pcr11"] == candidate_b_pcr11, candidate_record
-      assert_generation_runtime_identity(candidate_record)
-      assert candidate_record["state_version"] == old["state_version"], (
-          old,
-          candidate_record,
-      )
-      assert candidate_record["native_executor_ref"] == "${candidatePackageRuntime}", (
-          candidate_record
-      )
-      assert candidate_record["native_executor_ref"] != old["native_executor_ref"], (
-          old,
-          candidate_record,
-      )
-      assert candidate_record["expected_pcr11"] != old.get("expected_pcr11"), (
-          old,
-          candidate_record,
-      )
-
-      candidate_entry = candidate_record["uki_path"]
-      assert "+" in candidate_entry and candidate_entry.endswith(".efi"), candidate_entry
-      target.succeed(f"test -f /boot/{candidate_entry}")
-      root_bytes = target.succeed(
-          "stat -c %s '${candidateImage}/root.img'"
-      ).strip()
-      hash_bytes = target.succeed(
-          "stat -c %s '${candidateImage}/root.verity'"
-      ).strip()
-      target.succeed(
-          f"{CMP} -n {root_bytes} '${candidateImage}/root.img' "
-          "/dev/disk/by-partlabel/root-b"
-      )
-      target.succeed(
-          f"{CMP} -n {hash_bytes} '${candidateImage}/root.verity' "
-          "/dev/disk/by-partlabel/root-b-hash"
-      )
-      target.succeed(
-          f"{CMP} '${candidateImage}/uki-b.efi' /boot/{candidate_entry}"
-      )
-
-      # -- Exhaust the first candidate and prove automatic fallback ------------
-      # Each launch is performed by sd-boot itself. Because the candidate's
-      # controlled eval failure prevents boot assessment from being blessed,
-      # the loader must atomically rename the UKI through every counted state.
-      # No userspace command edits the candidate entry during this sequence.
-      expected_counted = [
-          counted_variant(candidate_entry, 2, 1),
-          counted_variant(candidate_entry, 1, 2),
-          counted_variant(candidate_entry, 0, 3),
-      ]
-      wait_for_failed_candidate_pipeline()
-      first_attempt = image_state()
-      assert first_attempt["running"] == 2, first_attempt
-      assert first_attempt["active_rollout"]["status"] == "candidate_booted", first_attempt
-      assert_only_counted_variant(candidate_entry, expected_counted[0])
-      for attempt, expected_entry in enumerate(expected_counted[1:], start=2):
-          target.reboot(timeout=600)
-          assert_switched_root()
-          wait_for_failed_candidate_pipeline()
-          attempted = image_state()
-          assert attempted["running"] == 2, (attempt, attempted)
-          assert attempted["default"] == 2, (attempt, attempted)
-          assert attempted["pending"] == 2, (attempt, attempted)
-          assert_only_counted_variant(candidate_entry, expected_entry)
-          target.fail(f"test -e /boot/{candidate_entry}")
-          assert_boot_read_only()
-
-      candidate_exhausted = expected_counted[-1]
-      target.reboot(timeout=600)
-      try:
-          target.wait_until_succeeds(
-              "systemctl is-active --quiet aos-image-boot-commit.service", timeout=420
-          )
-      except Exception:
-          print(target.succeed(f"cat {IMAGE_STATE} 2>&1 || true"))
-          print(target.succeed(
-              "test ! -e /run/aos/image-reeval-required || "
-              "cat /run/aos/image-reeval-required"
-          ))
-          for unit in (
-              "aos-firstboot-reeval.service",
-              "aos-eval.service",
-              "aos-graph-compile.service",
-              "aos-activate.service",
-              "aos-image-boot-commit.service",
-          ):
-              print(target.succeed(
-                  f"systemctl cat {unit} --no-pager 2>&1 || true"
-              ))
-              print(target.succeed(
-                  f"systemctl status {unit} --no-pager 2>&1 || true"
-              ))
-              print(target.succeed(
-                  f"journalctl -b -u {unit} --no-pager 2>&1 || true"
-              ))
-          print(target.succeed("systemctl list-jobs --no-pager 2>&1 || true"))
-          raise
-      fallback = image_state()
-      assert fallback["running"] == 1, fallback
-      assert fallback["default"] == 1, fallback
-      assert fallback.get("pending") is None, fallback
-      assert fallback.get("active_rollout") is None, fallback
-      assert fallback["last_rollout"] == {
-          "schema": "aos.image-rollout/v1",
-          "candidate": 2,
-          "prior": 1,
-          "state_version": old["state_version"],
-          "status": "health_failed",
-      }, fallback
-      failed_candidate = generation(fallback, 2)
-      assert failed_candidate["registry"] == "sysreg", failed_candidate
-      assert failed_candidate["expected_pcr11"] == candidate_b_pcr11, failed_candidate
-      assert_generation_runtime_identity(failed_candidate)
-      assert_only_counted_variant(candidate_entry, candidate_exhausted)
-      assert_boot_read_only()
-
-      # Retry the exact same authenticated image. A retry must re-arm the one
-      # catalog identity rather than append another record with the same
-      # immutable toplevel: initrd reconciliation intentionally rejects
-      # ambiguous persisted identities.
-      target.succeed(
-          "mkdir -p /var/lib/aos-test && "
-          "touch /var/lib/aos-test/allow-eval "
-          "/var/lib/aos-test/allow-image-commit && "
-          "rm -f /var/lib/aos-test/rollout-*.json"
-      )
-      out = run_rebooting_apm(
-          "upgrade --system --yes --drain --reboot", "upgrade-reboot"
-      )
-      print("=== retry candidate with automatic reboot ===\n" + out)
-      assert "Draining workloads" in out, out
-      assert "Drain complete" in out, out
-      target.wait_until_succeeds(
-          "systemctl is-active --quiet aos-image-boot-commit.service", timeout=420
-      )
-      target.succeed("systemctl is-active --quiet aos-config.target")
-      assert_boot_read_only()
-
-      retried = image_state()
-      retried_number = retried["running"]
-      assert retried_number != 1, retried
-      assert retried["default"] == retried_number, retried
-      assert retried.get("pending") is None, retried
-      matching_toplevels = [
-          g for g in retried["generations"]
-          if g["toplevel"] == "${candidateTop}"
-      ]
-      assert len(matching_toplevels) == 1, (
-          "retry created an ambiguous duplicate image identity",
-          matching_toplevels,
-      )
-      retry_candidate = generation(retried, retried_number)
-      assert retry_candidate["slot"] == "B", retry_candidate
-      assert retry_candidate["registry"] == "sysreg", retry_candidate
-      assert retry_candidate["expected_pcr11"] == candidate_b_pcr11, retry_candidate
-      assert_generation_runtime_identity(retry_candidate)
-      candidate_entry = retry_candidate["uki_path"]
-      assert_boot_read_only()
-
-      staged_rollout = rollout_snapshot("staged", retried_number)
-      assert staged_rollout["active_rollout"] == {
-          "schema": "aos.image-rollout/v1",
-          "candidate": retried_number,
-          "prior": 1,
-          "state_version": retry_candidate["state_version"],
-          "status": "staged",
-      }, staged_rollout
-      candidate_booted_rollout = rollout_snapshot(
-          "candidate_booted", retried_number
-      )
-      assert candidate_booted_rollout["active_rollout"]["candidate"] == retried_number, (
-          candidate_booted_rollout
-      )
-      assert candidate_booted_rollout["active_rollout"]["prior"] == 1, (
-          candidate_booted_rollout
-      )
-
-      # -- Candidate boot and durable blessing --------------------------------
-      committed = image_state()
-      assert committed["running"] == retried_number, committed
-      assert committed["default"] == retried_number, committed
-      assert committed.get("pending") is None, committed
-      assert committed.get("active_rollout") is None, committed
-      assert committed["last_rollout"] == {
-          "schema": "aos.image-rollout/v1",
-          "candidate": retried_number,
-          "prior": 1,
-          "state_version": retry_candidate["state_version"],
-          "status": "succeeded",
-      }, committed
-      committed_candidate = generation(committed, retried_number)
-      assert committed_candidate["registry"] == "sysreg", committed_candidate
-      assert committed_candidate["expected_pcr11"] == candidate_b_pcr11, committed_candidate
-      config_state = json.loads(
-          target.succeed("cat /var/lib/profiles/system/state.json")
-      )
-      current_config = next(
-          g for g in config_state["generations"]
-          if g["number"] == config_state["current"]
-      )
-      assert current_config["image_gen_parent"] == retried_number, current_config
-      for unit in ("aos-eval.service", "aos-activate.service"):
-          start = target.succeed(
-              f"systemctl show -p ExecStart --value {unit}"
-          )
-          match = re.search(r"path=([^ ;}]+)", start)
-          assert match, (unit, start)
-          target.succeed(
-              "grep -F "
-              + shlex.quote("${candidatePackageRuntime}/")
-              + " "
-              + shlex.quote(match.group(1))
-          )
-          target.fail(
-              "grep -F "
-              + shlex.quote(old["native_executor_ref"] + "/")
-              + " "
-              + shlex.quote(match.group(1))
-          )
-
-      stable_candidate = candidate_entry.split("+", 1)[0] + ".efi"
-      target.succeed(f"test -f /boot/{stable_candidate}")
-      target.fail(f"test -e /boot/{candidate_entry}")
-
-      # Replay the exact crash-recovery shape: bootctl already renamed the
-      # counted entry, but state publication did not clear `pending`. The unit
-      # must accept the stable file as already blessed and converge again.
-      replay_pending = image_state()
-      replay_pending["pending"] = replay_pending["running"]
-      write_json(IMAGE_STATE, replay_pending)
-      target.succeed(f"""
-          set -eu
-          printf '%s\n' {retried_number} > /run/aos/image-reeval-required
-          systemctl restart aos-image-boot-commit.service
-      """)
-      replayed = image_state()
-      assert replayed["running"] == retried_number, replayed
-      assert replayed["default"] == retried_number, replayed
-      assert replayed.get("pending") is None, replayed
-      assert_boot_read_only()
-
-      # -- Explicit durable rollback to the known-good A image -----------------
-      target.succeed("rm -f /var/lib/aos-test/rollout-*.json")
-      out = run_rebooting_apm(
-          "rollback --system --image --generation 1 --drain --reboot",
-          "explicit-rollback-reboot",
-      )
-      print("=== explicit executor-crossing rollback ===\n" + out)
-      assert "Draining workloads" in out, out
-      assert "Drain complete" in out, out
-      target.wait_until_succeeds(
-          "systemctl is-active --quiet aos-image-boot-commit.service", timeout=420
-      )
-      rolled_back = image_state()
-      assert rolled_back["running"] == 1, rolled_back
-      assert rolled_back["default"] == 1, rolled_back
-      assert rolled_back.get("pending") is None, rolled_back
-      assert rolled_back.get("active_rollout") is None, rolled_back
-      assert rolled_back["last_rollout"]["status"] == "succeeded", rolled_back
-      assert rolled_back["last_rollout"]["candidate"] == 1, rolled_back
-      assert rolled_back["last_rollout"]["prior"] == retried_number, rolled_back
-      assert rollout_snapshot("staged", 1)["active_rollout"]["candidate"] == 1
-      assert rollout_snapshot("candidate_booted", 1)["active_rollout"]["prior"] == retried_number
-      old_entry = generation(rolled_back, 1)["uki_path"]
-      old_stable = old_entry.split("+", 1)[0] + ".efi"
-      target.succeed(f"test -f /boot/{old_stable}")
-      assert_boot_read_only()
-
-      # -- Recover a post-selection crash despite eval/graph failure -----------
-      # Reproduce the durable crash window after pending state and the
-      # bootloader default were selected, but before default-state publication
-      # and journal removal. The early first-boot service must authenticate the
-      # image that actually booted and clear the journal before the deliberately
-      # failing candidate eval/graph pipeline can run. Otherwise the subsequent
-      # operator rollback to generation 1 would be rejected as a conflicting
-      # unfinished transition.
-      crashed_selection = image_state()
-      crashed_selection["pending"] = retried_number
-      crashed_selection["default"] = 1
-      write_json(IMAGE_STATE, crashed_selection)
-      write_json(TRANSITION_INTENT, {
-          "target": retried_number,
-          "prior_default": 1,
-          "entry_id": stable_candidate.split("/", 2)[-1],
-      })
-      target.succeed(f"""
-          set -eu
-          rm -f /var/lib/aos-test/allow-eval \
-            /var/lib/aos-test/allow-image-commit
-          {MOUNT} -o remount,rw /boot
-          {BOOTCTL} set-default '{stable_candidate.split("/", 2)[-1]}'
-          {MOUNT} -o remount,ro /boot
-      """)
-      assert_boot_read_only()
-
-      target.reboot(timeout=600)
-      wait_for_failed_candidate_pipeline()
-      target.succeed("systemctl is-active --quiet aos-firstboot-reeval.service")
-      target.fail(f"test -e {TRANSITION_INTENT}")
-      crashed = image_state()
-      assert crashed["running"] == retried_number, crashed
-      assert crashed["default"] == retried_number, crashed
-      assert crashed["pending"] == retried_number, crashed
-      crashed_config = json.loads(
-          target.succeed("cat /var/lib/profiles/system/state.json")
-      )
-      crashed_current = next(
-          g for g in crashed_config["generations"]
-          if g["number"] == crashed_config["current"]
-      )
-      assert crashed_current["image_gen_parent"] == 1, crashed_current
-      assert_boot_read_only()
-
-      running_boot_id = target.succeed(
-          "cat /proc/sys/kernel/random/boot_id"
-      ).strip()
-      target.succeed("rm -f /var/lib/aos-test/rollout-*.json")
-      out = run_rebooting_apm(
-          "rollback --system --image --generation 1 --drain --reboot",
-          "rollback-drain-reboot",
-      )
-      print("=== drained rollback with automatic reboot ===\n" + out)
-      assert "Draining workloads" in out, out
-      assert "Drain complete" in out, out
-      target.wait_until_succeeds(
-          "systemctl is-active --quiet aos-image-boot-commit.service", timeout=420
-      )
-      target.fail(f"test -e {TRANSITION_INTENT}")
-      drained_boot_id = target.succeed(
-          "cat /var/lib/aos-test/drained-boot-id"
-      ).strip()
-      assert drained_boot_id == running_boot_id, (
-          drained_boot_id,
-          running_boot_id,
-      )
-      recovered = image_state()
-      assert recovered["running"] == 1, recovered
-      assert recovered["default"] == 1, recovered
-      assert recovered.get("pending") is None, recovered
-      assert recovered.get("active_rollout") is None, recovered
-      assert recovered["last_rollout"] == {
-          "schema": "aos.image-rollout/v1",
-          "candidate": 1,
-          "prior": retried_number,
-          "state_version": old["state_version"],
-          "status": "succeeded",
-      }, recovered
-      rollback_staged = rollout_snapshot("staged", 1)
-      assert rollback_staged["active_rollout"]["candidate"] == 1, rollback_staged
-      rollback_booted = rollout_snapshot("candidate_booted", 1)
-      assert rollback_booted["active_rollout"]["prior"] == retried_number, (
-          rollback_booted
-      )
-      assert_boot_read_only()
-
-      # Re-arm the same candidate as a qualified rollout, then deny only its
-      # strict boot commit. The failure handler must preserve health failure
-      # across every sd-boot retry and publish it only after slot A is running
-      # and authoritative again.
-      target.succeed(
-          "touch /var/lib/aos-test/allow-eval && "
-          "rm -f /var/lib/aos-test/allow-image-commit "
-          "/var/lib/aos-test/skip-image-commit "
-          "/var/lib/aos-test/rollout-*.json"
-      )
-      out = run_rebooting_apm(
-          "upgrade --system --yes --drain --reboot",
-          "qualified-health-failure",
-      )
-      print("=== qualified candidate health failure ===\n" + out)
-      assert "Draining workloads" in out, out
-      assert "Drain complete" in out, out
-      target.wait_until_succeeds(
-          "${pkgs.jq}/bin/jq -e "
-          "'.running == 1 and .default == 1 "
-          "and (.pending // null) == null "
-          "and (.active_rollout // null) == null "
-          "and .last_rollout.status == \"health_failed\"' "
-          f"{IMAGE_STATE} >/dev/null",
-          timeout=1800,
-      )
-      target.wait_until_succeeds(
-          "systemctl is-active --quiet aos-image-boot-commit.service", timeout=420
-      )
-
-      failed_rollout = image_state()
-      assert failed_rollout["running"] == 1, failed_rollout
-      assert failed_rollout["default"] == 1, failed_rollout
-      assert failed_rollout.get("pending") is None, failed_rollout
-      assert failed_rollout.get("active_rollout") is None, failed_rollout
-      assert failed_rollout["last_rollout"] == {
-          "schema": "aos.image-rollout/v1",
-          "candidate": retried_number,
-          "prior": 1,
-          "state_version": retry_candidate["state_version"],
-          "status": "health_failed",
-      }, failed_rollout
-      failed_staged = rollout_snapshot("staged", retried_number)
-      assert failed_staged["active_rollout"]["status"] == "staged", failed_staged
-      failed_booted = rollout_snapshot("candidate_booted", retried_number)
-      assert failed_booted["active_rollout"]["status"] == "candidate_booted", (
-          failed_booted
-      )
-      failed_retry = rollout_snapshot("health_failed", retried_number)
-      assert failed_retry["active_rollout"]["status"] == "health_failed", failed_retry
-      failed_fallback = rollout_snapshot("health_failed", 1)
-      assert failed_fallback["active_rollout"]["candidate"] == retried_number, (
-          failed_fallback
-      )
-      exhausted_again = counted_variant(candidate_entry, 0, 3)
-      assert_only_counted_variant(candidate_entry, exhausted_again)
-      assert_boot_read_only()
-
-      failed = target.succeed("systemctl --failed --no-legend").strip()
-      assert not failed, f"failed units after A/B rollback: {failed!r}"
+      DATE = "${pkgs.coreutils}/bin/date"
+      SHA256SUM = "${pkgs.coreutils}/bin/sha256sum"
+      OD = "${pkgs.coreutils}/bin/od"
+      EFI_UPDATEVAR = "${pkgs.efitools}/bin/efi-updatevar"
+      SECURE_BOOT_KEYS = "${pkgs.secure-boot-test-keys}"
+      UTIL_LINUX = "${pkgs.util-linux}/bin"
+      GIT_BIN = "${pkgs.git}/bin"
+      CANDIDATE_TOP = "${candidateTop}"
+      CANDIDATE_IMAGE = "${candidateImage}"
+      CANDIDATE_IMAGE_DISK = "${candidateImageDisk}"
+      CANDIDATE_IMAGE_INFO = "${candidateImageInfo}"
+      CANDIDATE_UKI = "${candidateUki}"
+      CANDIDATE_EXECUTOR = "${candidatePackageRuntime}"
+      BOOT_FAULT_HOOK = "${bootFaultHook}/bin/aos-image-acceptance-boot-fault"
+      CANDIDATE_BOOT_CONTRACT = "${candidate.config.system.build.bootArtifactContract}"
+      OBSERVER_HOST_MODULE = ${builtins.toJSON (rolloutPolicy.qualificationSetupBody + "aos.services.\"control-plane.aos-activate\".lifecycle.pre_start = lib.mkBefore [ (builtins.fromJSON " + builtins.toJSON (builtins.toJSON bootFaultCommand) + ") ];\n")}
+      IMAGE_ACCEPTANCE = types.ModuleType("native_image_acceptance")
+      IMAGE_ACCEPTANCE.__dict__.update(globals())
+      exec(compile(${builtins.toJSON (builtins.readFile ./native-image-acceptance.py)},
+          "native-image-acceptance.py", "exec"), IMAGE_ACCEPTANCE.__dict__)
+      IMAGE_ACCEPTANCE.run()
     '';
 }

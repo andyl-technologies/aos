@@ -1,322 +1,439 @@
-"""Runs one real A/B image rollout effect-boundary flight.
+"""Runs actual image flights from an authenticated future native evaluation.
 
-The surrounding Nix cohort supplies a signed alternate image and the ordinary
-published-image qualification runtime. Each cohort VM executes exactly one
-matrix cell so rebooting and fallback cannot leak state into another flight.
+Preparation authenticates and indexes the candidate without boot selection.
+Operator sources select the exact retained effect afterward. Independent slot,
+UKI, firmware and boot readings remain separate from checked activation journals.
 """
 
-from __future__ import annotations
-
+import base64
+import hashlib
 import json
 import re
 import shlex
-import textwrap
-from typing import Any
-
+import time
 
 IMAGE_STATE = "/var/lib/profiles/image/state.json"
-SECURE_BOOT_GUID = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
+ROOT = "/var/lib/aos/native-image-flights"
+OPERATIONS = {"imageRollout", "imageSelection", "imageRetirement"}
+ORACLE_TOP = None
 
 
-def image_state() -> dict[str, Any]:
-    """Loads the physical image-generation state."""
-
-    return json.loads(runtime.succeed(f"{COREUTILS}/cat {IMAGE_STATE}"))
-
-
-def generation(state: dict[str, Any], number: int) -> dict[str, Any]:
-    """Returns one exact image generation."""
-
-    matches = [entry for entry in state["generations"] if entry["number"] == number]
-    if len(matches) != 1:
-        raise RuntimeError(f"image generation {number} is absent or repeated")
-    return matches[0]
+def read_json(path):
+    """Uses the common bounded reader for real guest state."""
+    return NATIVE_FLIGHT.read_json(path)
 
 
-def efivar_byte(name: str) -> int:
-    """Reads one authenticated UEFI variable byte."""
-
-    path = f"/sys/firmware/efi/efivars/{name}-{SECURE_BOOT_GUID}"
-    return int(runtime.succeed(f"{OD} -An -tu1 -j4 -N1 {shlex.quote(path)}").strip())
-
-
-def bootstrap_rollout_host() -> None:
-    """Enables test Secure Boot keys and checks the initial image authority."""
-
-    runtime.wait_until_succeeds(
-        f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service", timeout=420
-    )
-    runtime.wait_until_succeeds(
-        f"{SYSTEMCTL} is-active --quiet multi-user.target", timeout=420
-    )
-    if efivar_byte("SetupMode") == 1:
-        update = f"PATH={UTIL_LINUX}:$PATH {EFI_UPDATEVAR}"
-        for variable in ("db", "KEK", "PK"):
-            runtime.succeed(
-                f"{update} -f {shlex.quote(SECURE_BOOT_KEYS + '/' + variable + '.auth')} "
-                f"{variable} 2>&1"
-            )
-        runtime.reboot(timeout=600)
-        runtime.wait_until_succeeds(
-            f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service",
-            timeout=420,
-        )
-        runtime.wait_until_succeeds(
-            f"{SYSTEMCTL} is-active --quiet multi-user.target", timeout=420
-        )
-    if efivar_byte("SecureBoot") != 1:
-        raise RuntimeError("rollout matrix host did not enter Secure Boot mode")
+def image_state():
+    """Requires the actual durable native image index."""
+    state = read_json(IMAGE_STATE)
+    if state.get("schema") != "aos.image-generation-state/v1":
+        raise RuntimeError("image flight encountered another index format")
+    return state
 
 
-def publish_system_candidate() -> None:
-    """Publishes the signed alternate image from exact retained store paths."""
-
-    runtime.succeed(
-        textwrap.dedent(
-            f"""
-            set -eu
-            export HOME=/tmp/rollout-system-registry
-            export GIT_AUTHOR_NAME='Rollout Matrix Fixture'
-            export GIT_AUTHOR_EMAIL=rollout-matrix@example.test
-            export GIT_COMMITTER_NAME='Rollout Matrix Fixture'
-            export GIT_COMMITTER_EMAIL=rollout-matrix@example.test
-            export NIX_REMOTE=""
-            export NIX_CONF_DIR=/tmp/rollout-system-nix-conf
-            export PATH={GIT_BIN}:{NIX_BIN}:$PATH
-            mkdir -p "$HOME" "$NIX_CONF_DIR"
-            printf 'experimental-features = nix-command\\nsandbox = false\\n' \
-              > "$NIX_CONF_DIR/nix.conf"
-
-            {APR_BASE} create rollout-system
-            registry="$HOME/.local/share/apm/registries/rollout-system"
-            mkdir -p "$registry/sb-certs"
-            cp {shlex.quote(SECURE_BOOT_KEYS + '/db.crt')} "$registry/sb-certs/db.pem"
-            set -- {CANDIDATE_UKI}/*.efi
-            test "$#" -eq 1
-            {APR_BASE} --json publish {shlex.quote(CANDIDATE_TOP)} \
-              --name aos \
-              --version 9999.0.0-effect-matrix \
-              --description 'native rollout effect matrix candidate' \
-              --license Apache-2.0 \
-              --maintainer test \
-              --sysroot \
-              --image-payload {shlex.quote(CANDIDATE_IMAGE)} \
-              --image-disk {shlex.quote(CANDIDATE_IMAGE_DISK)} \
-              --image-info {shlex.quote(CANDIDATE_IMAGE_INFO)} \
-              --image-format raw \
-              --image-uki "$1" \
-              --no-ca \
-              --registry rollout-system \
-              --no-commit > /tmp/rollout-system-publication.json
-            signer=$({JQ} -er '.images[0].ukis[0].sb_signer_cert_sha256' \
-              /tmp/rollout-system-publication.json)
-            {APR_BASE} sb-certs add rollout-db \
-              --cert-sha256 "$signer" --registry rollout-system --no-commit
-            {GIT_BIN}/git -C "$registry" add -A
-            {GIT_BIN}/git -C "$registry" commit -m 'release: rollout matrix image'
-            {GIT_BIN}/git -C "$registry" tag v1.0.0
-            {APM_BASE} registry --system add --no-verify \
-              "file://$registry" --name rollout-system --no-clone
-            {APM_BASE} update --system --registry rollout-system
-            """
-        ),
-        timeout=1800,
-    )
-    publication = json.loads(
-        runtime.succeed(f"{COREUTILS}/cat /tmp/rollout-system-publication.json")
-    )
-    ukis = publication["images"][0]["ukis"]
-    if {entry["slot"] for entry in ukis} != {"a", "b"}:
-        raise RuntimeError(f"rollout candidate did not publish both slots: {ukis!r}")
-    if not all(re.fullmatch(r"[0-9a-f]{64}", entry["expected_pcr11"]) for entry in ukis):
-        raise RuntimeError("rollout candidate lacks bounded PCR11 identities")
+def image_record(top):
+    """Requires one physical entitlement for an exact authenticated image."""
+    rows = [record for record in image_state()["generations"]
+            if record["toplevel"] == top and not record["boot_provider_state"]["evidence"].get("retired", False)]
+    if len(rows) != 1:
+        raise RuntimeError("image flight has no unique non-retired image entitlement")
+    return rows[0]
 
 
-def stage_candidate() -> dict[str, Any]:
-    """Stages the signed image without selecting or rebooting it."""
-
-    before = image_state()
-    if before["running"] != before["default"]:
-        raise RuntimeError("rollout matrix did not start from its default image")
-    boot_id = runtime.succeed(f"{COREUTILS}/cat /proc/sys/kernel/random/boot_id").strip()
-    runtime.succeed(
-        f"HOME=/tmp PATH={NIX_BIN}:$PATH {APM_BASE} upgrade --system --yes",
-        timeout=1800,
-    )
-    staged = image_state()
-    candidate = generation(staged, staged["pending"])
-    if staged["running"] != before["running"] or staged["default"] != before["default"]:
-        raise RuntimeError("advisory image staging changed active boot authority")
-    if runtime.succeed(f"{COREUTILS}/cat /proc/sys/kernel/random/boot_id").strip() != boot_id:
-        raise RuntimeError("advisory image staging rebooted the host")
-    return candidate
-
-
-def rollout_request(candidate: dict[str, Any]) -> dict[str, Any]:
-    """Builds the exact authenticated A/B request from physical generations."""
-
-    state = image_state()
-    predecessor = generation(state, state["running"])
-
-    def identity(record: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "toplevel": record["toplevel"],
-            "uki": record.get("uki_source_path") or record["uki_path"],
-            "executor": record["native_executor_ref"],
-            "state_format": record["state_version"],
-        }
-
-    now = int(runtime.succeed(f"{DATE} +%s%3N").strip())
-    return {
-        "strategy": "single-host-ab-v1",
-        "concurrency": 1,
-        "predecessor": identity(predecessor),
-        "candidate": identity(candidate),
-        "retention_expires_at_millis": now + 600000,
-    }
-
-
-def rollout_host(
-    request: dict[str, Any],
-    mode: str,
-    label: str,
-) -> str:
-    """Writes operator intent resolved to the selected production provider."""
-
-    path = f"/var/lib/aos/ability-boundary-test/rollout-host-{label}.nix"
-    write_rollout_host(path, request, OBSERVER_HOST_MODULE, mode != "retire")
-    runtime.succeed(f"{OBSERVER_CONTROLLER} persist-file {shlex.quote(path)}")
+def write_worktree(path, source, retire=None):
+    """Authors ordinary source options; package admission precedes this step."""
+    body = "{ lib, ... }: { imports = [ " + source + " ];\n" + IMAGE_SETUP_BODY + OBSERVER_HOST_MODULE
+    if retire is not None:
+        body += "aos.activation.retire = " + json.dumps([retire]) + ";\n"
+    body += "}\n"
+    encoded = base64.b64encode(body.encode()).decode()
+    runtime.succeed(f"{COREUTILS}/install -d -m0700 {shlex.quote(path)}")
+    runtime.succeed(f"printf %s {shlex.quote(encoded)} | {COREUTILS}/base64 -d > {shlex.quote(path + '/image.nix')}")
     return path
 
 
-def settle_initial_rollout(
-    request: dict[str, Any],
-    label: str,
-    mode: str = "rollout",
-) -> None:
-    """Completes one healthy rollout so a later retirement is authorized."""
-
-    host = rollout_host(request, mode, label)
-    boot_id = runtime.succeed(f"{COREUTILS}/cat /proc/sys/kernel/random/boot_id").strip()
-    try:
-        runtime.succeed(
-            f"HOME=/tmp PATH={NIX_BIN}:$PATH {APM_BASE} switch "
-            f"--from {shlex.quote(host)} --eval-root /run/{shlex.quote(label)}",
-            timeout=1800,
-        )
-    except Exception:
-        pass
-    runtime.wait_until_succeeds(
-        f"test \"$({COREUTILS}/cat /proc/sys/kernel/random/boot_id)\" != "
-        f"{shlex.quote(boot_id)}",
-        timeout=900,
-    )
-    runtime.wait_until_succeeds(
-        f"{JQ} -e '.active_rollout == null and .last_rollout.status == \"succeeded\"' "
-        f"{IMAGE_STATE}",
-        timeout=900,
-    )
+def apply_source(path, label):
+    """Uses the real package manager and its ordinary retained source transaction."""
+    runtime.succeed(f"{APM} switch --worktree {shlex.quote(path)} --eval-root {ROOT}/{shlex.quote(label)}", timeout=1800)
 
 
-def run_rollout_cancellation_cell(cell_id: str, evidence_builder: Any) -> None:
-    """Cancels one exact image method against authenticated published images."""
-
-    adapter, interface, _, method, scenario = cell_id.split("/")
-    if adapter != "image-rollout" or scenario != "cancel-unsettled-attempt":
-        raise RuntimeError(f"rollout cancellation received foreign cell {cell_id!r}")
-
-    runtime.wait_until_succeeds(
-        f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service", timeout=420
-    )
-    runtime.wait_until_succeeds(
-        f"{SYSTEMCTL} is-active --quiet multi-user.target", timeout=420
-    )
+def prepare_candidate():
+    """Checks public preparation preserved both running and preferred authority."""
     runtime.assert_published_image("predecessor")
     runtime.stage_published_candidate()
-    candidate = stage_candidate()
-    request = rollout_request(candidate)
-
-    if method == "retire":
-        baseline_label = "rollout-cancel-baseline"
-        runtime.expect_published_image("candidate")
-        settle_initial_rollout(request, baseline_label)
-        runtime.assert_published_image("candidate")
-        deadline = request["retention_expires_at_millis"] // 1000 + 1
-        runtime.succeed(f"{DATE} -s @{deadline}")
-
-    label = "rollout-cancel-" + method.replace("-", "_")
-    host = rollout_host(request, "retire" if method == "retire" else "rollout", label)
-    flight = EFFECT_FLIGHT.EffectFlight(
-        cell_id=cell_id,
-        interface=interface,
-        method=method,
-        provider_key="image-rollout",
-        resource_key="machine",
-        label=label,
-    )
-
-    def observe(operation: dict[str, Any]) -> dict[str, Any]:
-        foreign = {
-            "adapter": "systemd-manager",
-            "operation": foreign_systemd_operation(operation),
-        }
-        return EFFECT_ORACLES.observe_resource(cell_id, operation, foreign)
-
-    EFFECT_FLIGHT.run_cancellation_flight(
-        flight, host, evidence_builder, observe
-    )
+    before = observe()
+    qualified = " --qualified" if IMAGE_PURPOSE != "selection" else ""
+    record = json.loads(runtime.succeed(f"{APM} --json --yes image prepare aos{qualified}", timeout=3600))
+    if (record["toplevel"], record["native_executor_ref"], record["boot_artifact_contract"]) != (IMAGE_CANDIDATE_TOP, IMAGE_CANDIDATE_EXECUTOR, IMAGE_CANDIDATE_CONTRACT):
+        raise RuntimeError("prepared signed candidate differs from the case-bound future inputs")
+    after = observe()
+    for key in ("running", "preferred"):
+        if before["selected"][key] != after["selected"][key]:
+            raise RuntimeError("preparation changed active boot authority")
+    return record
 
 
-def foreign_systemd_operation(operation: dict[str, Any]) -> dict[str, Any]:
-    """Builds an independent live systemd sentinel observation."""
+def observe():
+    """Reads live firmware/UKI bytes and a foreign file independently in the guest."""
+    program = r'''
+import hashlib, json, re
+from pathlib import Path
+import sys
+request = json.loads(sys.argv[1])
+root = Path('/boot')
+def firmware(name):
+    matches = list(Path('/sys/firmware/efi/efivars').glob(name + '-*'))
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise RuntimeError('firmware selection repeated')
+    data = matches[0].read_bytes()
+    if len(data) > 16384 or len(data) < 4:
+        raise RuntimeError('firmware selection exceeds bound')
+    return data[4:].decode('utf-16-le').rstrip('\x00')
+# Exact UKI source bytes are observed without trusting receipt claims about them.
+state = json.loads(Path('/var/lib/profiles/image/state.json').read_text())
+records = [row for row in state['generations'] if row['toplevel'] == request['candidate'] ]
+owners = []
+uki = None
+if len(records) > 1:
+    raise RuntimeError('ambiguous candidate slot ownership')
+if records:
+    evidence = records[0]['boot_provider_state']['evidence']
+    source = root / evidence.get('uki-source-path', evidence['installed-entry'])
+    if source.is_symlink():
+        raise RuntimeError('physical candidate payload is a foreign symlink')
+    if not source.is_file():
+        entry = evidence['installed-entry'].rsplit('/', 1)[-1]
+        stable = re.sub(r'\+[0-9]+(?:-[0-9]+)?(?=\.efi$)', '', entry)
+        pattern = re.escape(stable[:-4]) + r'(?:\+[0-9]+(?:-[0-9]+)?)?\.efi'
+        matches = [path for path in (root / 'EFI/Linux').iterdir() if re.fullmatch(pattern, path.name)]
+        if len(matches) > 1:
+            raise RuntimeError('ambiguous physical candidate payload')
+        if matches:
+            source = matches[0]
+    if source.is_symlink():
+        raise RuntimeError('physical candidate entry is a foreign symlink')
+    if source.is_file():
+        owners = ['physical-slot:' + evidence['slot']]
+        uki = hashlib.sha256(source.read_bytes()).hexdigest()
+foreign = Path('/var/lib/aos/native-image-flight-foreign')
+metadata = foreign.stat()
+print(json.dumps({'selected': {
+    'owners': owners, 'uki': uki,
+    'running': str(Path('/run/current-system').readlink()),
+    'preferred': firmware('LoaderEntryPreferred')},
+    'foreign': {'digest': hashlib.sha256(foreign.read_bytes()).hexdigest(),
+                'mode': metadata.st_mode & 0o7777, 'uid': metadata.st_uid, 'gid': metadata.st_gid}}))
+'''
+    encoded = base64.b64encode(program.encode()).decode()
+    launcher = "import base64;exec(compile(base64.b64decode(" + repr(encoded) + "),'<image-live-oracle>','exec'))"
+    return json.loads(runtime.succeed(f"{PYTHON} -c {shlex.quote(launcher)} {shlex.quote(json.dumps({'candidate': ORACLE_TOP or IMAGE_CANDIDATE_TOP}))}"))
 
-    foreign = json.loads(json.dumps(operation))
-    provider = foreign["target"]["resource"]["provider"]
-    provider["key"] = "rollout-foreign"
-    foreign["target"]["resource"]["key"] = "rollout-foreign-service"
-    foreign["inputs"] = {
-        "source": "literal",
-        "value": {"unit": "aos-rollout-matrix-foreign.service"},
+
+def select_effect(cell, adapter):
+    """Requires the exact operation, handler and image tuple in the signed carrier."""
+    ability = cell["operation"]["ability"]
+    matches = [(effect, node) for effect, node in SELECTED_EVALUATION_GRAPH["nodes"].items()
+               if node["identity"][-3:-1] == [ability, "ensure"] and node["handler"] == adapter["handler"]]
+    if len(matches) != 1:
+        raise RuntimeError("image matrix has no unique selected native effect")
+    effect, node = matches[0]
+    pair = node["input"]["rollout"]
+    expected_images = {
+        "predecessor": (IMAGE_PREDECESSOR_TOP, IMAGE_PREDECESSOR_EXECUTOR, IMAGE_PREDECESSOR_CONTRACT),
+        "candidate": (IMAGE_CANDIDATE_TOP, IMAGE_CANDIDATE_EXECUTOR, IMAGE_CANDIDATE_CONTRACT),
     }
-    return foreign
+    for role, expected in expected_images.items():
+        actual = pair[role]
+        if (actual["toplevel"], actual["executor"], actual["boot-artifact-contract"]) != expected:
+            raise RuntimeError("selected image tuple belongs to another physical fixture")
+    return effect, node
 
 
-def run_rollout_cell(cell_id: str, evidence_builder: Any) -> None:
-    """Stages and interrupts the one rollout method named by a matrix cell."""
+def launch(flight):
+    """Uses normal source switching; recovery can span a real machine reboot."""
+    if IMAGE_PURPOSE == "qualified" and flight.cell["action"] == "apply":
+        runtime.expect_published_image("candidate")
+    NATIVE_FLIGHT.start(flight)
 
-    adapter, interface, _, method, _ = cell_id.split("/")
-    if adapter != "image-rollout":
-        raise RuntimeError(f"rollout cohort received foreign adapter {adapter!r}")
-    bootstrap_rollout_host()
-    publish_system_candidate()
-    candidate = stage_candidate()
-    request = rollout_request(candidate)
-    label = "rollout-" + method.replace("-", "_") + "-" + cell_id.rsplit("/", 1)[-1]
 
-    if method == "retire":
-        settle_initial_rollout(request, label + "-baseline")
-        deadline = request["retention_expires_at_millis"] // 1000 + 1
-        runtime.succeed(f"{DATE} -s @{deadline}")
-        host = rollout_host(request, "retire", label)
+def wait_commit(event):
+    """Requires the original transaction's actual durable native commit."""
+    journal = shlex.quote(NATIVE_FLIGHT.JOURNAL)
+    transaction = shlex.quote(event["transaction"])
+    runtime.wait_until_succeeds(
+        f"{AOS} ability journal {journal} --format json | {JQ} -e --arg t {transaction} '.pending == null and any(.records[]; .event == \"commit\" and .transaction == $t)'", timeout=3600)
+    if IMAGE_PURPOSE == "qualified" and event["action"] == "apply":
+        runtime.assert_published_image("candidate")
+
+
+def run_interruption(flight, expected):
+    """Retains actual native recovery frames across process loss and boot."""
+    boundary = NATIVE_EVIDENCE.SCENARIO_BOUNDARIES[flight.cell["scenario"]["id"]]
+    sequence = flight.unit
+    runtime.succeed(f"{COREUTILS}/rm -f {NATIVE_FLIGHT.HELD} {NATIVE_FLIGHT.CONTINUE}")
+    NATIVE_FLIGHT.select(flight, "intent-durable", sequence + "-baseline", "pause")
+    launch(flight)
+    event = NATIVE_FLIGHT.wait_held(flight, sequence + "-baseline", "intent-durable")
+    baseline = observe()
+    if boundary != "intent-durable":
+        NATIVE_FLIGHT.select(flight, boundary, sequence, "disconnect")
+        NATIVE_FLIGHT.write_canonical(NATIVE_FLIGHT.CONTINUE, {"sequence": sequence + "-baseline"})
+        event = NATIVE_FLIGHT.wait_held(flight, sequence, boundary)
+    unsettled = observe()
+    NATIVE_FLIGHT.stop_interrupted(flight)
+    before = NATIVE_FLIGHT.inspect()
+    runtime.succeed(f"{COREUTILS}/rm -f {NATIVE_FLIGHT.TARGET}")
+    launch(flight)
+    wait_commit(event)
+    after = NATIVE_FLIGHT.inspect()
+    boundaries = [json.loads(line) for line in NATIVE_FLIGHT.read_bounded(NATIVE_FLIGHT.EVENTS).splitlines()]
+    NATIVE_BUILDER.retain(flight.cell["id"], NATIVE_EVIDENCE.NativeObservation(
+        SELECTED_EVALUATION_GRAPH, event, before, after, boundaries,
+        baseline, unsettled, observe(), expected))
+
+
+
+def stable_entry(path):
+    """Normalizes the actual counted UKI name to its firmware selection ID."""
+    name = path.rsplit("/", 1)[-1]
+    return re.sub(r"\+[0-9]+(?:-[0-9]+)?(?=\.efi$)", "", name)
+
+
+def current_reference_graph():
+    """Reads the checked committed source graph used by retained transitions."""
+    target = runtime.succeed(f"{COREUTILS}/readlink /var/lib/profiles/system/current").strip()
+    generation = int(target.rsplit("gen-", 1)[1])
+    document = json.loads(runtime.succeed(f"{AOS} ability diagnostic /var/lib/profiles/system {generation} --audience deployment"))
+    if document["liveStateVerified"] is not False:
+        raise RuntimeError("diagnostic cannot replace the physical oracle")
+    return document["desired"]["graph"]
+
+
+def establish_lease(source, qualified):
+    """Completes the actual lease precondition before testing its retirement."""
+    worktree = write_worktree(ROOT + "/lease", source)
+    if qualified:
+        runtime.expect_published_image("candidate")
+        unit = "native-image-lease-precondition"
+        runtime.succeed(f"{SYSTEMD_RUN} --quiet --unit={unit} --property=Type=exec {APM} switch --worktree {shlex.quote(worktree)} --eval-root {ROOT}/lease-evaluation")
+        runtime.wait_until_succeeds(f"test \"$({COREUTILS}/readlink /run/current-system)\" = {shlex.quote(IMAGE_CANDIDATE_TOP)}", timeout=3600)
+        runtime.wait_until_succeeds(f"{AOS} ability journal {NATIVE_FLIGHT.JOURNAL} --format json | {JQ} -e '.pending == null and .completed != null'", timeout=3600)
     else:
-        if method in {"hold", "withdraw"}:
-            runtime.succeed(f"{COREUTILS}/touch /var/lib/aos-test/rollout-health-fail")
-        host = rollout_host(request, "rollout", label)
+        apply_source(worktree, "lease-evaluation")
+        runtime.expect_published_image("candidate")
+        runtime.reboot(timeout=600)
+    runtime.assert_published_image("candidate")
+    return worktree
 
-    flight = EFFECT_FLIGHT.EffectFlight(
-        cell_id=cell_id,
-        interface=interface,
-        method=method,
-        provider_key="image-rollout",
-        resource_key="machine",
-        label=label,
-    )
 
-    def observe(operation: dict[str, Any]) -> dict[str, Any]:
-        foreign = {
-            "adapter": "systemd-manager",
-            "operation": foreign_systemd_operation(operation),
-        }
-        return EFFECT_ORACLES.observe_resource(cell_id, operation, foreign)
+def expire_lease(node):
+    """Advances actual fixture time past the authenticated operation deadline."""
+    deadline = node["input"]["rollout"]["retention-expires-at-millis"]
+    runtime.succeed(f"{COREUTILS}/date -s @{deadline // 1000 + 1}")
 
-    EFFECT_FLIGHT.run_effect_flight(flight, host, evidence_builder, observe)
+
+
+def suspend_dispatched_handler(flight, node):
+    """Blocks only the exact child of the controlled manager for a real deadline."""
+    manager = int(runtime.succeed(f"{SYSTEMCTL} show --property=MainPID --value {shlex.quote(flight.unit)}").strip())
+    if manager <= 0:
+        raise RuntimeError("deadline manager is not running")
+    executable = node["handler"]["executable"]
+    program = r'''
+import json, os, signal, sys, time
+from pathlib import Path
+request = json.loads(sys.argv[1])
+expected = Path(request['executable']).resolve(strict=True)
+def child_of(pid):
+    seen = set()
+    while pid > 1 and pid not in seen:
+        seen.add(pid)
+        if pid == request['manager']:
+            return True
+        status = Path('/proc') / str(pid) / 'status'
+        fields = dict(line.split(':', 1) for line in status.read_text().splitlines() if ':' in line)
+        pid = int(fields['PPid'].strip())
+    return False
+end = time.monotonic() + 15
+while time.monotonic() < end:
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            pid = int(entry.name)
+            if (entry / 'exe').resolve(strict=True) == expected and child_of(pid):
+                os.kill(pid, signal.SIGSTOP)
+                Path(request['receipt']).write_text(json.dumps({'process': pid, 'executable': str(expected)}))
+                raise SystemExit(0)
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            continue
+    time.sleep(0.0001)
+raise RuntimeError('selected admitted handler was never suspended')
+'''
+    request = {"manager": manager, "executable": executable, "receipt": ROOT + "/deadline-substrate.json"}
+    encoded = base64.b64encode(program.encode()).decode()
+    launcher = "import base64;exec(compile(base64.b64decode(" + repr(encoded) + "),'<image-handler-deadline>','exec'))"
+    runtime.succeed(f"{SYSTEMD_RUN} --quiet --unit={shlex.quote(flight.unit + '-deadline-control')} --property=Type=exec {PYTHON} -c {shlex.quote(launcher)} {shlex.quote(json.dumps(request))}")
+
+
+def inject_owned_conflict(expected, node, after_result=False):
+    """Alters only case-bound mutable EFI bytes, leaving the signed index intact."""
+    pair = node["input"]["rollout"]
+    owned_top = ORACLE_TOP or IMAGE_CANDIDATE_TOP
+    request = {"pair": pair, "owned": owned_top, "after_result": after_result}
+    program = r'''
+import json, os, stat, sys
+from pathlib import Path
+request = json.loads(sys.argv[1])
+root = Path('/boot')
+paths = []
+for manifest in (root / 'EFI/.aos-rollout-retention').glob('*/manifest.json'):
+    if manifest.is_symlink() or not manifest.is_file():
+        raise RuntimeError('retained manifest is not regular')
+    contents = manifest.read_bytes()
+    if len(contents) > 1048576:
+        raise RuntimeError('retained manifest exceeds bound')
+    value = json.loads(contents)
+    if (value['candidate'], value['predecessor']) == (request['pair']['candidate']['boot-artifact-contract'], request['pair']['predecessor']['boot-artifact-contract']):
+        paths.append(manifest.parent / 'candidate.efi')
+if len(paths) > 1:
+    raise RuntimeError('case has ambiguous physical retention leases')
+if not paths:
+    state = json.loads(Path('/var/lib/profiles/image/state.json').read_text())
+    rows = [record for record in state['generations'] if record['toplevel'] == request['owned']]
+    if len(rows) != 1:
+        raise RuntimeError('owned image record is ambiguous')
+    evidence = rows[0]['boot_provider_state']['evidence']
+    relative = evidence.get('uki-source-path', evidence['installed-entry'])
+    path = root / relative
+    if not path.is_relative_to(root / 'EFI') or '..' in path.parts:
+        raise RuntimeError('owned conflict escaped EFI namespace')
+    paths.append(path)
+path = paths[0]
+if path.exists() and (path.is_symlink() or not stat.S_ISREG(path.stat().st_mode)):
+    raise RuntimeError('owned conflict target is not regular')
+path.parent.mkdir(parents=True, exist_ok=True)
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+os.write(fd, b'controlled foreign physical payload\n')
+os.fsync(fd)
+os.close(fd)
+print(json.dumps({'path': str(path)}))
+'''
+    encoded = base64.b64encode(program.encode()).decode()
+    launcher = "import base64;exec(compile(base64.b64decode(" + repr(encoded) + "),'<image-owned-conflict>','exec'))"
+    runtime.succeed(f"{MOUNT} -o remount,rw /boot")
+    try:
+        runtime.succeed(f"{PYTHON} -c {shlex.quote(launcher)} {shlex.quote(json.dumps(request))}")
+    finally:
+        runtime.succeed(f"{MOUNT} -o remount,ro /boot")
+    expected.clear()
+    expected.update(observe()["selected"])
+
+
+def dependent_oracle(remove):
+    """Reads the actual reverse-order directory or forward-order systemd unit."""
+    if remove:
+        program = "import json;from pathlib import Path;p=Path('/var/lib/aos-native-image-prerequisite');s=p.stat();print(json.dumps({'present':p.is_dir(),'mode':s.st_mode&0o7777,'uid':s.st_uid,'gid':s.st_gid,'entries':sorted(x.name for x in p.iterdir())}))"
+        return json.loads(runtime.succeed(f"{PYTHON} -c {shlex.quote(program)}"))
+    output = runtime.succeed(f"{SYSTEMCTL} show image-qualification-dependent.service --property=LoadState,ActiveState,MainPID")
+    return dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+
+
+def selected_dependency(graph, effect, remove):
+    """Requires the real edge supplied by the fixture's native managers."""
+    nodes = graph["nodes"]
+    if remove:
+        matches = [candidate for candidate in nodes[effect]["dependencies"]
+                   if nodes[candidate]["identity"][-3:] == ["filesystem", "directory", "native-image-prerequisite"]]
+    else:
+        matches = [candidate for candidate, node in nodes.items()
+                   if effect in node["dependencies"] and node["identity"][-1] == "image-qualification-dependent"]
+    if len(matches) != 1:
+        raise RuntimeError("image fixture lacks its exact action-specific dependency barrier")
+    return matches[0]
+
+def run():
+    """Requires one fresh physical image context for each selected domain cell."""
+    global ORACLE_TOP
+    if len(COHORT_CELLS) != 1:
+        raise RuntimeError("physical image flights require one independently booted case per execution")
+    runtime.succeed(f"{COREUTILS}/install -d -m0700 {ROOT}")
+    runtime.succeed(f"printf '%s\n' foreign-image-flight > /var/lib/aos/native-image-flight-foreign")
+    runtime.succeed(f"{COREUTILS}/chmod 0600 /var/lib/aos/native-image-flight-foreign")
+    baseline = write_worktree(ROOT + "/baseline", IMAGE_BASELINE_SOURCE)
+    apply_source(baseline, "baseline")
+    candidate = prepare_candidate()
+    cells = {cell["id"]: cell for cell in MATRIX_SPEC["cells"]}
+    adapters = {adapter["adapter"]: adapter for adapter in MATRIX_SPEC["surface"]["adapters"]}
+    cell = cells[COHORT_CELLS[0]]
+    adapter = adapters[cell["adapter"]]
+    effect, node = select_effect(cell, adapter)
+    if cell["operation"]["ability"] not in OPERATIONS:
+        raise RuntimeError("closed image cohort selected another operation")
+    scenario = cell["scenario"]["id"]
+    source = IMAGE_SCENARIO_SOURCE
+    source_path = write_worktree(ROOT + "/scenario", source)
+    original = None
+    retained = {"activate-retained-target", "retain-persistent-orphan", "retire-explicit-persistent-target"}
+    if IMAGE_PURPOSE == "retirement":
+        establish_lease(IMAGE_QUALIFIED_SOURCE, True)
+        expire_lease(node)
+        ORACLE_TOP = IMAGE_PREDECESSOR_TOP
+    if cell["action"] == "remove" or scenario in retained:
+        if IMAGE_PURPOSE == "retirement":
+            apply_source(source_path, "retirement-precondition")
+        else:
+            establish_lease(source, IMAGE_PURPOSE == "qualified")
+            ORACLE_TOP = IMAGE_PREDECESSOR_TOP
+        original = current_reference_graph()
+        if original["nodes"].get(effect) != node:
+            raise RuntimeError("retained image effect differs from the admitted scenario graph")
+        if cell["action"] == "remove" or scenario == "retire-explicit-persistent-target":
+            expire_lease(node)
+        if scenario != "activate-retained-target":
+            retirement = effect if cell["action"] == "remove" or scenario == "retire-explicit-persistent-target" else None
+            source_path = write_worktree(ROOT + "/withdraw", IMAGE_BASELINE_SOURCE, retirement)
+    unit = "native-image-" + hashlib.sha256(cell["id"].encode()).hexdigest()[:20]
+    flight = NATIVE_FLIGHT.NativeFlight(cell, effect, source_path, unit, original)
+    expected = observe()["selected"]
+    if scenario in retained:
+        if scenario == "retire-explicit-persistent-target" and IMAGE_PURPOSE != "retirement":
+            expected.update(owners=[], uki=None)
+        NATIVE_FLIGHT.run_retained_transition(flight, NATIVE_BUILDER, observe, expected)
+        return
+    if scenario == "cancel-pending-invocation":
+        NATIVE_FLIGHT.run_pending_control(flight, NATIVE_BUILDER, observe, expected, launch=NATIVE_FLIGHT.start)
+        return
+    if scenario == "expire-invocation-deadline":
+        NATIVE_FLIGHT.run_pending_control(flight, NATIVE_BUILDER, observe, expected,
+            prepare_block=lambda: suspend_dispatched_handler(flight, node), launch=NATIVE_FLIGHT.start)
+        receipt = read_json(ROOT + "/deadline-substrate.json")
+        if receipt["executable"] != node["handler"]["executable"]:
+            raise RuntimeError("deadline did not block the selected immutable handler")
+        return
+    if scenario == "block-dependent-effect":
+        graph = original or SELECTED_EVALUATION_GRAPH
+        flight = NATIVE_FLIGHT.NativeFlight(cell, effect, source_path, unit, graph)
+        dependent = selected_dependency(graph, effect, cell["action"] == "remove")
+        NATIVE_FLIGHT.run_dependency_block(flight, NATIVE_BUILDER, observe, expected, dependent,
+            lambda: dependent_oracle(cell["action"] == "remove"),
+            lambda: inject_owned_conflict(expected, node), launch=NATIVE_FLIGHT.start)
+        return
+    if scenario in {"fail-manager-after-dispatch-attempt", "reject-uncertain-recovery", "reject-foreign-resource-mutation"}:
+        NATIVE_FLIGHT.run_rejection(flight, NATIVE_BUILDER, observe, expected,
+            lambda: inject_owned_conflict(expected, node, scenario == "reject-uncertain-recovery"),
+            launch=launch, interruption_boundary="dispatch-started" if cell["action"] == "remove" else "dispatch-returned")
+        return
+    if scenario not in NATIVE_EVIDENCE.SCENARIO_BOUNDARIES:
+        raise RuntimeError("image cell has no implemented physical proof; qualification remains incomplete")
+    if IMAGE_PURPOSE == "retirement" or cell["action"] == "remove":
+        if IMAGE_PURPOSE != "retirement" or cell["action"] == "apply":
+            expected.update(owners=[], uki=None)
+    else:
+        evidence = candidate["boot_provider_state"]["evidence"]
+        expected["preferred"] = stable_entry(evidence["installed-entry"])
+        if IMAGE_PURPOSE == "qualified":
+            expected["running"] = IMAGE_CANDIDATE_TOP
+    run_interruption(flight, expected)

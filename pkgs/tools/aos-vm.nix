@@ -86,7 +86,10 @@ in
     version = aos.version;
     src = null;
 
-    runtimeDeps = [aos aos.apr edk2 gptfdisk qemu];
+    runtimeDeps = {
+      inherit aos edk2 gptfdisk qemu;
+      apr = aos.apr;
+    };
 
     # This package copies the base CLI launcher so it can add the VM-specific
     # environment without another shell process. Preserve the launcher's
