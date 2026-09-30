@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use super::tests::{Validator, config};
+use super::tests::{PreparedCas, Selected, Validator, config};
 use super::*;
 use crate::store::{ByteRange, RefStore, TokioClock, TokioLocalFs};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -107,17 +107,18 @@ async fn unsynced_temporary_write_never_changes_visible_ref() {
     let bucket = FileBucket::open(config(root.clone()), fs, TokioClock, Validator)
         .await
         .unwrap();
-    let first = RefRecord::first([1; 32], 1, Locality::default());
+    let first = RefRecord::first([1; 32], 1, Locality::default()).selected();
     bucket
-        .ref_cas("refs/heads/_/main", None, &first)
+        .prepared_cas("refs/heads/_/main", None, &first)
         .await
         .unwrap();
-    let second = first.advance([2; 32], 2).unwrap();
+    let second = first.advance([2; 32], 2).unwrap().selected();
 
+    bucket.ref_log_append("refs/heads/_/main", second.seq, &super::tests::log(second.clone(), Some(first.clone()))).await.unwrap();
     bucket.inner.fs.fail_sync.store(true, Ordering::SeqCst);
     assert!(
         bucket
-            .ref_cas("refs/heads/_/main", Some(&first), &second)
+            .prepared_cas("refs/heads/_/main", Some(&first), &second)
             .await
             .is_err()
     );
@@ -203,9 +204,9 @@ async fn stale_directory_listing_cannot_change_content_or_ref_results() {
     let identity = put_bytes(&bucket, b"content held without listing")
         .await
         .unwrap();
-    let first = RefRecord::first([1; 32], 1, Locality::default());
+    let first = RefRecord::first([1; 32], 1, Locality::default()).selected();
     bucket
-        .ref_cas("refs/heads/_/main", None, &first)
+        .prepared_cas("refs/heads/_/main", None, &first)
         .await
         .unwrap();
 

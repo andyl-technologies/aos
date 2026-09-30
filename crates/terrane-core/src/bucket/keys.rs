@@ -104,23 +104,33 @@ impl BucketKey {
                     RefWriteMode::CompareAndSwap => Mutability::CompareAndSwap,
                 }
             }
-            ["logs", "refs", "heads", _, rest @ ..] if rest.len() >= 2 => {
-                if !sequence(rest[rest.len() - 1]) {
-                    return Err(KeyError);
-                }
-                let ref_key = key
+            ["logs", "refs", ..] => {
+                let (ref_key, suffix) = key
                     .strip_prefix("logs/")
                     .ok_or(KeyError)?
                     .rsplit_once('/')
-                    .ok_or(KeyError)?
-                    .0;
+                    .ok_or(KeyError)?;
                 Self::parse(ref_key)?;
+                let name = RefName::parse(ref_key).map_err(|_| KeyError)?;
+                if let Some((seq, candidate)) = suffix.split_once(':') {
+                    if !branch(name.class()) || !sequence(seq) || !hex(candidate, 64) {
+                        return Err(KeyError);
+                    }
+                } else if name.class() != RefClass::Heads || !sequence(suffix) {
+                    return Err(KeyError);
+                }
                 Mutability::CreateOnce
             }
             ["gc", "lease"] => Mutability::CompareAndSwap,
             ["gc", "cycle", cycle] if decimal(cycle) => Mutability::CreateOnce,
             ["gc", cycle, "roots"] if decimal(cycle) => Mutability::CreateOnce,
-            ["gc", cycle, "mark", shard] if decimal(cycle) && decimal(shard) => {
+            ["gc", cycle, "state"] if decimal(cycle) => Mutability::CompareAndSwap,
+            ["gc", cycle, "mark", shard] if decimal(cycle) && digest_shard(shard) => {
+                Mutability::CreateOnce
+            }
+            ["gc", cycle, "mark", shard, revision]
+                if decimal(cycle) && digest_shard(shard) && decimal(revision) =>
+            {
                 Mutability::CreateOnce
             }
             ["trash", cycle, id] if decimal(cycle) && hex(id, 32) => Mutability::CreateOnce,
@@ -164,6 +174,23 @@ impl BucketKey {
         }
         Self::parse(&alloc::format!("logs/{name}/{seq:020}"))
     }
+
+    /// Formats a create-once proposal sibling for a registered branch.
+    ///
+    /// # Errors
+    /// Rejects unsafe names, nonbranch classes, and a zero sequence.
+    pub fn reflog_candidate(name: &str, seq: u64, candidate: &[u8; 32]) -> Result<Self, KeyError> {
+        let candidate: String = candidate.iter().map(|byte| alloc::format!("{byte:02x}")).collect();
+        Self::parse(&alloc::format!("logs/{name}/{seq:020}:{candidate}"))
+    }
+}
+
+fn branch(class: RefClass) -> bool {
+    matches!(class, RefClass::Heads | RefClass::Jobs | RefClass::Conflicts | RefClass::Derived)
+}
+
+fn digest_shard(value: &str) -> bool {
+    decimal(value) && value.parse::<u8>().is_ok()
 }
 
 fn decimal(value: &str) -> bool {
@@ -216,5 +243,36 @@ mod tests {
                 .mutability(),
             Mutability::CompareAndSwap
         );
+    }
+
+    #[test]
+    fn candidates_are_registered_siblings_for_exact_branch_classes() {
+        for name in [
+            "refs/heads/_/main",
+            "refs/jobs/_/build",
+            "refs/conflicts/_/00000000000000000001",
+            "refs/derived/_/shared",
+        ] {
+            let key = BucketKey::reflog_candidate(name, 1, &[17; 32]).unwrap();
+            assert!(key.as_str().ends_with(&alloc::format!("/00000000000000000001:{}", "11".repeat(32))));
+            assert_eq!(key.mutability(), Mutability::CreateOnce);
+        }
+        for name in ["refs/tags/_/release", "refs/notes/memos/_/memo"] {
+            assert!(BucketKey::reflog_candidate(name, 1, &[17; 32]).is_err());
+        }
+        let key = BucketKey::reflog_candidate("refs/heads/_/main", 1, &[171; 32]).unwrap();
+        assert!(BucketKey::parse(&key.as_str().to_uppercase()).is_err());
+        assert!(BucketKey::reflog_candidate("refs/heads/_/main", 0, &[17; 32]).is_err());
+        assert!(BucketKey::parse("logs/refs/jobs/_/build/00000000000000000001").is_err());
+        assert!(BucketKey::parse(&alloc::format!("logs/refs/heads/_/main/00000000000000000001/{}", "11".repeat(32))).is_err());
+    }
+
+    #[test]
+    fn gc_state_and_checkpoint_revisions_keep_the_registered_write_classes() {
+        assert_eq!(BucketKey::parse("gc/1/state").unwrap().mutability(), Mutability::CompareAndSwap);
+        assert_eq!(BucketKey::parse("gc/1/mark/255/0").unwrap().mutability(), Mutability::CreateOnce);
+        for key in ["gc/01/state", "gc/1/mark/256/0", "gc/1/mark/1/00", "gc/1/marks/00"] {
+            assert!(BucketKey::parse(key).is_err(), "{key}");
+        }
     }
 }

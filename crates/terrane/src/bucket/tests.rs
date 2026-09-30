@@ -35,13 +35,45 @@ pub(super) fn config(root: PathBuf) -> FileBucketConfig {
     }
 }
 
-fn log(record: RefRecord, previous_commit: Option<[u8; 32]>) -> RefLogRecord {
+pub(super) fn log(record: RefRecord, previous: Option<RefRecord>) -> RefLogRecord {
     RefLogRecord {
         record,
-        previous_commit,
+        previous_commit: previous.as_ref().map(|record| record.commit),
+        expected_previous: Some(previous),
         principal: "writer".into(),
         reason: RefLogReason::Commit,
         timestamp: 1,
+    }
+}
+
+pub(super) trait Selected {
+    fn selected(self) -> Self;
+}
+
+impl Selected for RefRecord {
+    fn selected(mut self) -> Self {
+        let mut candidate = self.commit;
+        candidate[..8].copy_from_slice(&self.seq.to_be_bytes());
+        candidate[8..16].copy_from_slice(&self.writer_epoch.to_be_bytes());
+        self.candidate_id = Some(candidate);
+        self
+    }
+}
+
+// Fixtures prepare durable proposals explicitly before exercising the real CAS.
+#[async_trait::async_trait]
+pub(super) trait PreparedCas {
+    async fn prepared_cas(&self, name: &str, expected: Option<&RefRecord>, new: &RefRecord) -> Result<RefCasOutcome, StoreFailure>;
+}
+
+#[async_trait::async_trait]
+impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding> PreparedCas for FileBucket<F, C, V> {
+    async fn prepared_cas(&self, name: &str, expected: Option<&RefRecord>, new: &RefRecord) -> Result<RefCasOutcome, StoreFailure> {
+        let current = self.ref_get(name).await?;
+        if current.as_ref() == expected && new.candidate_id.is_some() && !name.starts_with("refs/tags/") {
+            self.ref_log_append(name, new.seq, &log(new.clone(), expected.cloned())).await?;
+        }
+        self.ref_cas(name, expected, new).await
     }
 }
 
@@ -53,22 +85,19 @@ async fn live_watch_waits_for_authoritative_ref_publication_and_replays_sequence
     let timeout = std::time::Duration::from_millis(25);
     assert!(tokio::time::timeout(timeout, watch.next()).await.is_err());
 
-    let first = RefRecord::first([1; 32], 1, Locality::default());
+    let first = RefRecord::first([1; 32], 1, Locality::default()).selected();
     let first_log = log(first.clone(), None);
     bucket.ref_log_append(name, 1, &first_log).await.unwrap();
-    assert_eq!(
-        bucket.ref_log_read(name, 1).await.unwrap(),
-        vec![first_log.clone()]
-    );
+    assert!(bucket.ref_log_read(name, 1).await.unwrap().is_empty());
     assert!(tokio::time::timeout(timeout, watch.next()).await.is_err());
-    bucket.ref_cas(name, None, &first).await.unwrap();
+    bucket.prepared_cas(name, None, &first).await.unwrap();
     assert_eq!(watch.next().await.unwrap(), Some(first_log.clone()));
 
-    let second = first.advance([2; 32], 2).unwrap();
-    let second_log = log(second.clone(), Some(first.commit));
+    let second = first.advance([2; 32], 2).unwrap().selected();
+    let second_log = log(second.clone(), Some(first.clone()));
     bucket.ref_log_append(name, 2, &second_log).await.unwrap();
     assert!(tokio::time::timeout(timeout, watch.next()).await.is_err());
-    bucket.ref_cas(name, Some(&first), &second).await.unwrap();
+    bucket.prepared_cas(name, Some(&first), &second).await.unwrap();
     assert_eq!(watch.next().await.unwrap(), Some(second_log.clone()));
 
     let mut resumed = bucket.ref_watch(name, 1).await.unwrap();
@@ -89,12 +118,12 @@ async fn whole_record_cas_has_one_winner_across_independent_opens() {
     )
     .await
     .unwrap();
-    let a = RefRecord::first([1; 32], 1, Locality::default());
-    let b = RefRecord::first([2; 32], 1, Locality::default());
+    let a = RefRecord::first([1; 32], 1, Locality::default()).selected();
+    let b = RefRecord::first([2; 32], 1, Locality::default()).selected();
 
     let (one, two) = tokio::join!(
-        first.ref_cas("refs/heads/_/main", None, &a),
-        second.ref_cas("refs/heads/_/main", None, &b)
+        first.prepared_cas("refs/heads/_/main", None, &a),
+        second.prepared_cas("refs/heads/_/main", None, &b)
     );
     assert_eq!(
         usize::from(matches!(one.unwrap(), RefCasOutcome::Applied))
@@ -103,19 +132,19 @@ async fn whole_record_cas_has_one_winner_across_independent_opens() {
     );
     let current = first.ref_get("refs/heads/_/main").await.unwrap().unwrap();
     assert!(current == a || current == b);
-    let next = current.advance([3; 32], 2).unwrap();
+    let next = current.advance([3; 32], 2).unwrap().selected();
     let mut wrong = current.clone();
     wrong.writer_epoch += 1;
     assert_eq!(
         first
-            .ref_cas("refs/heads/_/main", Some(&wrong), &next)
+            .prepared_cas("refs/heads/_/main", Some(&wrong), &next)
             .await
             .unwrap(),
         RefCasOutcome::Conflict(Some(Box::new(current.clone())))
     );
     assert_eq!(
         first
-            .ref_cas("refs/heads/_/main", Some(&current), &next)
+            .prepared_cas("refs/heads/_/main", Some(&current), &next)
             .await
             .unwrap(),
         RefCasOutcome::Applied
@@ -127,19 +156,19 @@ async fn whole_record_cas_has_one_winner_across_independent_opens() {
 #[tokio::test]
 async fn tags_and_reflogs_never_replace_existing_bytes() {
     let bucket = fixture().await;
-    let first = RefRecord::first([1; 32], 1, Locality::default());
-    let second = first.advance([2; 32], 2).unwrap();
+    let first = RefRecord::first([1; 32], 1, Locality::default()).selected();
+    let second = first.advance([2; 32], 2).unwrap().selected();
 
     assert_eq!(
         bucket
-            .ref_cas("refs/tags/_/release", None, &first)
+            .prepared_cas("refs/tags/_/release", None, &first)
             .await
             .unwrap(),
         RefCasOutcome::Applied
     );
     assert!(matches!(
         bucket
-            .ref_cas("refs/tags/_/release", Some(&first), &second)
+            .prepared_cas("refs/tags/_/release", Some(&first), &second)
             .await
             .unwrap(),
         RefCasOutcome::Conflict(_)
@@ -164,23 +193,19 @@ async fn tags_and_reflogs_never_replace_existing_bytes() {
             .unwrap(),
         RefLogAppendOutcome::Exists
     );
+    bucket.prepared_cas("refs/heads/_/main", None, &first).await.unwrap();
     assert_eq!(
         bucket.ref_log_read("refs/heads/_/main", 1).await.unwrap()[0].record,
         first
     );
     assert_eq!(
         bucket
-            .ref_log_append("refs/heads/_/main", 2, &log(second, Some(first.commit)))
+            .ref_log_append("refs/heads/_/main", 2, &log(second.clone(), Some(first.clone())))
             .await
             .unwrap(),
         RefLogAppendOutcome::Appended
     );
-    assert!(
-        bucket
-            .root()
-            .join("logs/refs/heads/_/main/00000000000000000002")
-            .exists()
-    );
+    assert!(bucket.root().join(BucketKey::reflog_candidate("refs/heads/_/main", 2, &second.candidate_id.unwrap()).unwrap().as_str()).exists());
 
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
 }
@@ -188,14 +213,14 @@ async fn tags_and_reflogs_never_replace_existing_bytes() {
 #[tokio::test]
 async fn ref_successors_fence_epoch_home_and_sequence() {
     let bucket = fixture().await;
-    let first = RefRecord::first([1; 32], 9, Locality::default());
+    let first = RefRecord::first([1; 32], 9, Locality::default()).selected();
     bucket
-        .ref_cas("refs/heads/_/main", None, &first)
+        .prepared_cas("refs/heads/_/main", None, &first)
         .await
         .unwrap();
 
     for field in 0..3 {
-        let mut bad = first.advance([2; 32], 10).unwrap();
+        let mut bad = first.advance([2; 32], 10).unwrap().selected();
         match field {
             0 => bad.seq += 1,
             1 => bad.writer_epoch = 8,
@@ -203,7 +228,7 @@ async fn ref_successors_fence_epoch_home_and_sequence() {
         }
         assert!(
             bucket
-                .ref_cas("refs/heads/_/main", Some(&first), &bad)
+                .prepared_cas("refs/heads/_/main", Some(&first), &bad)
                 .await
                 .is_err()
         );
@@ -252,9 +277,9 @@ async fn stable_exclusion_inode_survives_cas_and_reopen() {
         .root()
         .join(BucketKey::parse("CAPABILITIES").unwrap().lock_name());
     let inode = tokio::fs::metadata(&path).await.unwrap().ino();
-    let record = RefRecord::first([1; 32], 1, Locality::default());
+    let record = RefRecord::first([1; 32], 1, Locality::default()).selected();
     bucket
-        .ref_cas("refs/heads/_/main", None, &record)
+        .prepared_cas("refs/heads/_/main", None, &record)
         .await
         .unwrap();
     let reopened = FileBucket::open(
@@ -276,14 +301,14 @@ async fn stable_exclusion_inode_survives_cas_and_reopen() {
 #[tokio::test]
 async fn unknown_keys_are_not_refs_and_symlinks_fail_closed() {
     let bucket = fixture().await;
-    let record = RefRecord::first([1; 32], 1, Locality::default());
+    let record = RefRecord::first([1; 32], 1, Locality::default()).selected();
     for name in [
         "refs/heads/main",
         "refs/heads/_/.",
         "objects/loose/hash",
         "refs/unknown/_/main",
     ] {
-        assert!(bucket.ref_cas(name, None, &record).await.is_err());
+        assert!(bucket.prepared_cas(name, None, &record).await.is_err());
     }
     tokio::fs::create_dir_all(bucket.root().join("refs"))
         .await
@@ -291,7 +316,7 @@ async fn unknown_keys_are_not_refs_and_symlinks_fail_closed() {
     std::os::unix::fs::symlink(std::env::temp_dir(), bucket.root().join("refs/heads")).unwrap();
     assert!(
         bucket
-            .ref_cas("refs/heads/_/main", None, &record)
+            .prepared_cas("refs/heads/_/main", None, &record)
             .await
             .is_err()
     );
@@ -302,11 +327,11 @@ async fn unknown_keys_are_not_refs_and_symlinks_fail_closed() {
 #[tokio::test]
 async fn missing_reflog_with_committed_horizon_is_corruption() {
     let bucket = fixture().await;
-    let first = RefRecord::first([1; 32], 1, Locality::default());
-    bucket
-        .ref_cas("refs/heads/_/main", None, &first)
-        .await
-        .unwrap();
+    let first = RefRecord::first([1; 32], 1, Locality::default()).selected();
+    let key = BucketKey::parse("refs/heads/_/main").unwrap();
+    let _guard = bucket.exclusive().await.unwrap();
+    bucket.install(&key, &first.encode().unwrap(), false).await.unwrap();
+    drop(_guard);
     assert!(matches!(
         bucket
             .ref_log_read("refs/heads/_/main", 1)
@@ -321,16 +346,19 @@ async fn missing_reflog_with_committed_horizon_is_corruption() {
 #[tokio::test]
 async fn committed_reflog_must_match_the_complete_ref_record() {
     let bucket = fixture().await;
-    let pending = RefRecord::first([1; 32], 1, Locality::default());
-    let committed = RefRecord::first([2; 32], 1, Locality::default());
+    let pending = RefRecord::first([1; 32], 1, Locality::default()).selected();
+    let committed = RefRecord::first([2; 32], 1, Locality::default()).selected();
     bucket
-        .ref_log_append("refs/heads/_/main", 1, &log(pending, None))
+        .ref_log_append("refs/heads/_/main", 1, &log(pending.clone(), None))
         .await
         .unwrap();
-    bucket
-        .ref_cas("refs/heads/_/main", None, &committed)
-        .await
-        .unwrap();
+    // Author a damaged endpoint whose selected proposal contains other bytes.
+    let mut committed = committed;
+    committed.candidate_id = pending.candidate_id;
+    let key = BucketKey::parse("refs/heads/_/main").unwrap();
+    let _guard = bucket.exclusive().await.unwrap();
+    bucket.install(&key, &committed.encode().unwrap(), false).await.unwrap();
+    drop(_guard);
 
     assert!(matches!(
         bucket
@@ -347,9 +375,9 @@ async fn committed_reflog_must_match_the_complete_ref_record() {
 async fn missing_capabilities_never_reinitializes_existing_portable_state() {
     let bucket = fixture().await;
     let root = bucket.root().to_owned();
-    let record = RefRecord::first([1; 32], 1, Locality::default());
+    let record = RefRecord::first([1; 32], 1, Locality::default()).selected();
     bucket
-        .ref_cas("refs/heads/_/main", None, &record)
+        .prepared_cas("refs/heads/_/main", None, &record)
         .await
         .unwrap();
     tokio::fs::remove_file(root.join("CAPABILITIES"))
