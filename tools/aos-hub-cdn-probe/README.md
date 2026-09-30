@@ -11,16 +11,14 @@ variables:
 - `PROBE_HOSTNAME`
 - `PROBE_ENDPOINT_ID`
 - `PROBE_ENDPOINT_GENERATION`
-- `PROBE_PUBLIC_KEY_SHA256`, the hexadecimal SHA-256 digest of the raw Ed25519
-  public key pinned in the endpoint revision
-
-Supply `PROBE_SIGNING_PKCS8` as a Worker secret containing the base64-encoded
-PKCS#8 Ed25519 private key. Verify the private key matches the endpoint's public
-key before deployment. Declare `PROBE_CHALLENGES` as a SQLite Durable Object
-namespace using `ProbeChallengeGuard`. Set the endpoint's probe provider to
-`external` and its secret reference to the operator's dedicated responder key
-identity. Each deployment uses its own key; the responder needs no Hub login,
-storage credentials, or maintenance key.
+Declare `PROBE_CHALLENGES` as a SQLite Durable Object namespace using
+`ProbeChallengeGuard`. Its Ed25519 key is generated and retained inside the
+provider's encrypted object storage. No private key is uploaded or returned.
+Read the public key from the exact CDN proof path with `?public_key=1`, review
+and pin it in the endpoint generation through the Hub API, and set the endpoint
+probe provider to `external`. The responder needs no Hub login, storage
+credentials, or maintenance key. Keep the object namespace identity stable
+across deployments; replacing it requires a new reviewed endpoint key pin.
 
 Attach a Worker route for the exact hostname and
 `/.well-known/aos-domain-probe*`. Retain the R2 custom-domain attachment and avoid
