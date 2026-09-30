@@ -75,7 +75,7 @@ pub enum ColorChoice {
 }
 
 #[derive(Parser)]
-#[command(name = "aos", about = "AOS build tool", version)]
+#[command(name = "aos", bin_name = "aos", about = "AOS build tool", version)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -104,6 +104,7 @@ pub struct Cli {
 #[derive(Parser)]
 #[command(
     name = "apm",
+    bin_name = "apm",
     about = "Consume and manage AOS packages",
     version,
     after_long_help = aos_package::ENVIRONMENT_HELP
@@ -144,6 +145,7 @@ pub struct ApmCli {
 #[derive(Parser)]
 #[command(
     name = "apr",
+    bin_name = "apr",
     about = "Author and publish AOS package registries",
     version,
     after_long_help = aos_package::ENVIRONMENT_HELP
