@@ -7,6 +7,8 @@
 
 use std::collections::BTreeMap;
 
+use sha2::{Digest as _, Sha256};
+
 use super::super::family::{
     CanonicalCapacityFamily, require_legacy_owner, require_legacy_transaction,
 };
@@ -148,6 +150,37 @@ fn exact_r1_literal_value_and_real_transaction_framing() {
         encoded_transaction_append_bytes(&admission).unwrap(),
         184 + (79 + 7 + 18) + (79 + 4 + 15) + 454
     );
+}
+
+#[test]
+fn shared_scalar_extraction_preserves_ordinary_error_precedence() {
+    for (offset, replacement, reason) in [
+        (9, 6, "ordinary capacity envelope"),
+        (12, 0, "unknown ordinary capacity kind"),
+        (13, 0, "unknown ordinary capacity profile"),
+        (16, 0, "ordinary capacity key or identity"),
+    ] {
+        let mut value = independent_value();
+        value[offset] = replacement;
+        value[268] ^= 1;
+
+        assert!(matches!(
+            OrdinaryCapacityRecordV4::decode(&[], &value),
+            Err(JournalError::MalformedRecord(actual)) if actual == reason
+        ));
+    }
+
+    let mut value = independent_value();
+    value[12] = 0;
+    value[13] = 0;
+    assert!(matches!(
+        OrdinaryCapacityRecordV4::decode(&[], &value),
+        Err(JournalError::MalformedRecord("unknown ordinary capacity kind"))
+    ));
+    assert!(matches!(
+        floor_identity(&[0; 267]),
+        Err(JournalError::MalformedRecord("ordinary identity payload width"))
+    ));
 }
 
 #[test]
