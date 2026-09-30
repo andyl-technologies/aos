@@ -17,6 +17,10 @@ pub mod all_methods;
 /// Holds production-inert checkpoint companion drafts for sealed composition.
 #[doc(hidden)]
 pub mod checkpoint;
+/// Holds canonical historical data without live session or floor authority.
+pub mod historical_checkpoint;
+/// Holds canonical historical stored-session DATA without protected custody.
+pub mod stored_history;
 
 use aos_proto::aos::sandbox::local::v1::{
     BrokerDescriptorRole, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
@@ -1276,6 +1280,7 @@ fn protocol_id_for_profile(protocol: BrokerSessionProtocolV1) -> ProtocolId {
         BrokerSessionProtocolV1::Mount => ProtocolId::MountBroker,
         BrokerSessionProtocolV1::MountFuse => ProtocolId::MountFuseBroker,
         BrokerSessionProtocolV1::Network => ProtocolId::NetworkBroker,
+        BrokerSessionProtocolV1::Nix => ProtocolId::NixBuildBroker,
     }
 }
 

@@ -355,11 +355,24 @@ fn handshake(protocol: BrokerSessionProtocolV1, major: u16) -> Handshake {
             BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
         }
         BrokerSessionProtocolV1::Network => BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
+        BrokerSessionProtocolV1::Nix => {
+            BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+        }
     };
+    let mut features = vec![feature(), signed_plan_feature()];
+    if protocol == BrokerSessionProtocolV1::Nix {
+        features.push(Feature {
+            namespace: aos_sandbox_core::NIX_NARROWING_PROXY_FEATURE_NAMESPACE.to_owned(),
+            major: 1,
+            minor: 0,
+            ..Default::default()
+        });
+    }
+
     let client_message = aos_proto::aos::sandbox::local::v1::BrokerClientHello {
         protocol_major: u32::from(major),
         audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
-        required_features: vec![feature(), signed_plan_feature()],
+        required_features: features.clone(),
         maximum_response_bytes: 65_536,
         required_methods: vec![method.into()],
         ..Default::default()
@@ -385,7 +398,7 @@ fn handshake(protocol: BrokerSessionProtocolV1, major: u16) -> Handshake {
 
     let broker_message = BrokerServerHello {
         protocol_major: u32::from(major),
-        features: vec![feature(), signed_plan_feature()],
+        features,
         maximum_request_bytes:
             aos_sandbox_broker_session_protocol::maximum_broker_session_request_bytes_v1(protocol)
                 as u32,
@@ -502,6 +515,112 @@ fn verify_resigned_hellos(
     let broker = decode_canonical_server_hello_v1(&broker)
         .unwrap_or_else(|error| panic!("resigned broker decode failed: {error}"));
     verify_broker_session_transcript_v1(&client, &broker, &handshake.context).is_ok()
+}
+
+#[test]
+fn nix_foundation_handshake_verifies_only_historical_profile_data() {
+    let handshake = handshake(BrokerSessionProtocolV1::Nix, 1);
+    let transcript = transcript(&handshake);
+    let profile = aos_sandbox_broker_session_protocol::authenticated_broker_method_profile_v1(
+        handshake.method,
+    )
+    .unwrap();
+
+    // Test keys and scalar context are historical DATA, not a protected owner,
+    // installed endpoint, current floor or permission to dispatch a Nix effect.
+    assert_eq!(
+        handshake.method,
+        BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+    );
+    assert_eq!(profile.protocol(), BrokerSessionProtocolV1::Nix);
+    assert_eq!(profile.version(), (1, 0));
+    assert_eq!(profile.audience(), Audience::AUDIENCE_NODE_CONTROLLER);
+    assert_eq!(transcript.protocol(), BrokerSessionProtocolV1::Nix);
+    assert_eq!(transcript.protocol_version(), (1, 0));
+    assert_eq!(transcript.required_methods(), &[handshake.method]);
+    assert_eq!(transcript.negotiated_methods(), &[handshake.method]);
+
+    let client = BrokerClientHello::decode_from_slice(&handshake.client_packet).unwrap();
+    let broker = BrokerServerHello::decode_from_slice(&handshake.broker_packet).unwrap();
+
+    assert_eq!(client.required_features, broker.features);
+    assert_eq!(client.required_features.len(), 3);
+    let proxy = client
+        .required_features
+        .iter()
+        .find(|feature| {
+            feature.namespace == aos_sandbox_core::NIX_NARROWING_PROXY_FEATURE_NAMESPACE
+        })
+        .unwrap();
+    assert_eq!((proxy.major, proxy.minor), (1, 0));
+}
+
+#[test]
+fn nix_foundation_handshake_refuses_missing_proxy_or_signed_lease() {
+    let handshake = handshake(BrokerSessionProtocolV1::Nix, 1);
+    let client = BrokerClientHello::decode_from_slice(&handshake.client_packet).unwrap();
+    let broker = BrokerServerHello::decode_from_slice(&handshake.broker_packet).unwrap();
+
+    for namespace in [
+        aos_sandbox_core::NIX_NARROWING_PROXY_FEATURE_NAMESPACE,
+        "aos.sandbox.authorization.signed-plan-lease",
+    ] {
+        for (remove_client, remove_broker) in [(true, true), (true, false), (false, true)] {
+            let mut changed_client = client.clone();
+            let mut changed_broker = broker.clone();
+            if remove_client {
+                changed_client
+                    .required_features
+                    .retain(|feature| feature.namespace != namespace);
+            }
+            if remove_broker {
+                changed_broker
+                    .features
+                    .retain(|feature| feature.namespace != namespace);
+            }
+
+            assert!(
+                !verify_resigned_hellos(&handshake, changed_client, changed_broker),
+                "missing {namespace}: client={remove_client}, broker={remove_broker}"
+            );
+        }
+    }
+}
+
+#[test]
+fn nix_foundation_hello_decoder_refuses_inexact_proxy_versions() {
+    let handshake = handshake(BrokerSessionProtocolV1::Nix, 1);
+    let client = BrokerClientHello::decode_from_slice(&handshake.client_packet).unwrap();
+    let broker = BrokerServerHello::decode_from_slice(&handshake.broker_packet).unwrap();
+
+    for (major, minor) in [(2, 0), (1, 1)] {
+        let mut changed_client = client.clone();
+        let mut changed_broker = broker.clone();
+        for features in [
+            &mut changed_client.required_features,
+            &mut changed_broker.features,
+        ] {
+            let proxy = features
+                .iter_mut()
+                .find(|feature| {
+                    feature.namespace == aos_sandbox_core::NIX_NARROWING_PROXY_FEATURE_NAMESPACE
+                })
+                .unwrap();
+            proxy.major = major;
+            proxy.minor = minor;
+        }
+
+        // Feature shape fails before signature/transcript admission. The old
+        // signature is not claimed valid for these changed hello fields.
+        assert!(matches!(
+            decode_canonical_client_hello_v1(&encode_client_test_packet(&changed_client)),
+            Err(BrokerSessionProjectionError::InvalidSemantics)
+        ));
+        assert!(matches!(
+            decode_canonical_server_hello_v1(&encode_server_test_packet(&changed_broker)),
+            Err(BrokerSessionProjectionError::InvalidSemantics)
+        ));
+    }
 }
 
 #[test]

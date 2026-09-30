@@ -13,6 +13,19 @@
 //!             || preceding)[32]
 //! ```
 
+mod authority;
+mod publication_chunks;
+mod recovery;
+
+pub use authority::{
+    HistoricalPreparedStorageOutputArchiveV1, HistoricalRetainedStorageOutputArchiveV1,
+    HistoricalStorageOutputRetentionErrorV1, retain_historical_complete_storage_output_archive_v1,
+};
+pub use recovery::{
+    HistoricalLoadedStorageOutputArchiveV1, HistoricalStorageOutputArchiveStateV1,
+    load_historical_complete_storage_output_archive_v1,
+};
+
 use aos_proto::aos::sandbox::local::v1::{
     ObserveHostStorageOutputRequestV1, QueryStorageExecutionOutputRequestV1, RequestHeader,
     ReserveStorageExecutionOutputRequestV1,

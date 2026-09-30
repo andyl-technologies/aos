@@ -333,6 +333,9 @@ impl EffectDomain {
             BrokerAudience::Guardian => Err(ReconcilerError::InvalidPlan(
                 "guardian authority cannot use the generic broker effect path",
             )),
+            BrokerAudience::Nix => Err(ReconcilerError::InvalidPlan(
+                "Nix authority cannot use the generic broker effect path",
+            )),
         }
     }
 }
@@ -2002,6 +2005,9 @@ const fn audience_code(audience: BrokerAudience) -> Result<u8, ReconcilerError> 
         BrokerAudience::Guardian => Err(ReconcilerError::InvalidPlan(
             "guardian authority cannot use the generic broker effect path",
         )),
+        BrokerAudience::Nix => Err(ReconcilerError::InvalidPlan(
+            "Nix authority cannot use the generic broker effect path",
+        )),
     }
 }
 
@@ -2048,6 +2054,31 @@ mod tests {
             request.encode(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn nix_audience_cannot_enter_or_encode_the_generic_broker_effect_path() {
+        assert!(matches!(
+            EffectDomain::from_audience(BrokerAudience::Nix),
+            Err(ReconcilerError::InvalidPlan(
+                "Nix authority cannot use the generic broker effect path"
+            ))
+        ));
+        assert!(matches!(
+            audience_code(BrokerAudience::Nix),
+            Err(ReconcilerError::InvalidPlan(
+                "Nix authority cannot use the generic broker effect path"
+            ))
+        ));
+
+        for reserved in [0, 5, 6, u8::MAX] {
+            assert!(matches!(
+                audience_from_code(reserved),
+                Err(ReconcilerError::CorruptLedger(
+                    "unknown authority effect audience"
+                ))
+            ));
+        }
     }
 
     #[test]
