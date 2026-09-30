@@ -86,124 +86,127 @@ impl CurrentRootMountSourceProviderSessionV1 {
         ),
     ) -> Result<(), SourceProviderSecurityError> {
         let (authorization, retained, origin) = original;
-        let result = (|| {
-            let snapshot = writer
-                .snapshot()
-                .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-            writer
-                .validate_original_root_closed_origin_v6(origin)
-                .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-            let current = writer
-                .current_graph()
-                .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-            if retained.failed.get()
-                || !matches!(retained.closed.signature, SignatureState::Signed(_))
-                || retained.closed.send != SendState::Sent
-            {
-                return Err(SourceProviderSecurityError::SessionContinuity);
-            }
-            self.require_original_pending_receipt_owner_v5(
-                authorization,
-                retained,
-                &current,
-                origin.attempt(),
-            )?;
-            let outcome = retained
-                .verified_pending()
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-            let attempt = current
-                .legacy()
-                .provider_attempts
-                .get(&origin.attempt())
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-            require_received_pending_attempt_v5(authorization, outcome, attempt, false)?;
+        OriginalBoundaryV5::new(self, retained).run(|owner, retained| {
+            let retained = &**retained;
+            let result = (|| {
+                let snapshot = writer
+                    .snapshot()
+                    .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+                writer
+                    .validate_original_root_closed_origin_v6(origin)
+                    .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+                let current = writer
+                    .current_graph()
+                    .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+                if retained.failed.get()
+                    || !matches!(retained.closed.signature, SignatureState::Signed(_))
+                    || retained.closed.send != SendState::Sent
+                {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+                owner.require_original_pending_receipt_owner_v5(
+                    authorization,
+                    retained,
+                    &current,
+                    origin.attempt(),
+                )?;
+                let outcome = retained
+                    .verified_pending()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                let attempt = current
+                    .legacy()
+                    .provider_attempts
+                    .get(&origin.attempt())
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                require_received_pending_attempt_v5(authorization, outcome, attempt, false)?;
 
-            // The archived Head belongs to first R, not today's Query Head.
-            let sidecar = origin
-                .graph()
-                .sidecars()
-                .get(&origin.attempt())
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-            let cut = retained
-                .pending_cut
-                .as_ref()
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-            let captured = cut
-                .reconstruct(origin.graph().legacy(), origin.attempt())
+                // The archived Head belongs to first R, not today's Query Head.
+                let sidecar = origin
+                    .graph()
+                    .sidecars()
+                    .get(&origin.attempt())
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                let cut = retained
+                    .pending_cut
+                    .as_ref()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                let captured = cut
+                    .reconstruct(origin.graph().legacy(), origin.attempt())
+                    .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+                require_current_companions(origin.graph(), &captured)?;
+                let root1 = sidecar
+                    .suffix()
+                    .control(Kind::RootPrepared)
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                let unsigned = retained
+                    .unsigned_closed()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                let signed = retained
+                    .signed_closed()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                let disposition = retained
+                    .disposition
+                    .as_ref()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                let disposition_bytes = disposition
+                    .to_canonical_bytes()
+                    .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+                if sidecar.suffix().phase() != 11
+                    || sidecar.settlement().is_some()
+                    || sidecar.terminal_verifier().is_some()
+                    || unsigned.kind() != Kind::RootClosed
+                    || unsigned.scope() != sidecar.original_scope()
+                    || unsigned.scope().original_source_session != owner.session.binding()
+                    || unsigned.predecessor() != root1.digest()
+                    || unsigned.signer() != root1.prepared().signer()
+                    || unsigned.sections().len() != 3
+                    || unsigned.section(Tag::RootPrepared) != Some(root1.to_canonical_bytes().as_slice())
+                    || unsigned.section(Tag::RootDispositionAssertion)
+                        != Some(disposition_bytes.as_slice())
+                    || signed.prepared() != unsigned
+                    || sidecar.suffix().control(Kind::RootClosed) != Some(signed)
+                    || sidecar.suffix().prepared().is_some()
+                    || sidecar.suffix().controls().len() != 2
+                {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+                let witness = NativeHeldOwnerWitnessV1::from_canonical_bytes(
+                    NativeHeldOwnerV1::Root,
+                    unsigned
+                        .section(Tag::Witness)
+                        .ok_or(SourceProviderSecurityError::SessionContinuity)?,
+                )
                 .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-            require_current_companions(origin.graph(), &captured)?;
-            let root1 = sidecar
-                .suffix()
-                .control(Kind::RootPrepared)
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-            let unsigned = retained
-                .unsigned_closed()
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-            let signed = retained
-                .signed_closed()
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-            let disposition = retained
-                .disposition
-                .as_ref()
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-            let disposition_bytes = disposition
+                let NativeHeldOwnerWitnessV1::Root(witness) = witness else {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                };
+                let expected = NativeHeldOwnerWitnessV1::Root(
+                    retained.original.original_root_witness(
+                        captured.witnesses().clone(),
+                        witness.journal_sequence,
+                    )?,
+                )
                 .to_canonical_bytes()
                 .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-            if sidecar.suffix().phase() != 11
-                || sidecar.settlement().is_some()
-                || sidecar.terminal_verifier().is_some()
-                || unsigned.kind() != Kind::RootClosed
-                || unsigned.scope() != sidecar.original_scope()
-                || unsigned.scope().original_source_session != self.session.binding()
-                || unsigned.predecessor() != root1.digest()
-                || unsigned.signer() != root1.prepared().signer()
-                || unsigned.sections().len() != 3
-                || unsigned.section(Tag::RootPrepared) != Some(root1.to_canonical_bytes().as_slice())
-                || unsigned.section(Tag::RootDispositionAssertion)
-                    != Some(disposition_bytes.as_slice())
-                || signed.prepared() != unsigned
-                || sidecar.suffix().control(Kind::RootClosed) != Some(signed)
-                || sidecar.suffix().prepared().is_some()
-                || sidecar.suffix().controls().len() != 2
-            {
-                return Err(SourceProviderSecurityError::SessionContinuity);
+                if unsigned.section(Tag::Witness) != Some(expected.as_slice()) {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+                owner.require_current_root_mount_record_role_v5(unsigned.signer())?;
+                owner.require_original_pending_receipt_owner_v5(
+                    authorization,
+                    retained,
+                    &current,
+                    origin.attempt(),
+                )?;
+                writer
+                    .validate_snapshot(&snapshot)
+                    .map_err(|_| SourceProviderSecurityError::SessionContinuity)
+            })();
+            if result.is_err() {
+                owner.invalidate_original_inventory_continuation_v6(Some(retained));
             }
-            let witness = NativeHeldOwnerWitnessV1::from_canonical_bytes(
-                NativeHeldOwnerV1::Root,
-                unsigned
-                    .section(Tag::Witness)
-                    .ok_or(SourceProviderSecurityError::SessionContinuity)?,
-            )
-            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-            let NativeHeldOwnerWitnessV1::Root(witness) = witness else {
-                return Err(SourceProviderSecurityError::SessionContinuity);
-            };
-            let expected = NativeHeldOwnerWitnessV1::Root(
-                retained.original.original_root_witness(
-                    captured.witnesses().clone(),
-                    witness.journal_sequence,
-                ),
-            )
-            .to_canonical_bytes()
-            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-            if unsigned.section(Tag::Witness) != Some(expected.as_slice()) {
-                return Err(SourceProviderSecurityError::SessionContinuity);
-            }
-            self.require_current_root_mount_record_role_v5(unsigned.signer())?;
-            self.require_original_pending_receipt_owner_v5(
-                authorization,
-                retained,
-                &current,
-                origin.attempt(),
-            )?;
-            writer
-                .validate_snapshot(&snapshot)
-                .map_err(|_| SourceProviderSecurityError::SessionContinuity)
-        })();
-        if result.is_err() {
-            self.invalidate_original_inventory_continuation_v6(Some(retained));
-        }
-        result
+            result
+        })
     }
 
     /// Rechecks the actual original Pending cut, role and retained Closed bytes.
@@ -223,13 +226,16 @@ impl CurrentRootMountSourceProviderSessionV1 {
         authorization: &AuthorizedMountProviderOutcomeV2,
         retained: &OriginalNativeReceivedOutcomeV5,
     ) -> Result<(), SourceProviderSecurityError> {
-        let result = self.require_original_root_closed_v5(writer, readback, authorization, retained);
-        if let Err(error) = result {
-            retained.failed.set(true);
-            return Err(self.poison(error));
-        }
+        OriginalBoundaryV5::new(self, retained).run(|owner, retained| {
+            let retained = &**retained;
+            let result = owner.require_original_root_closed_v5(writer, readback, authorization, retained);
+            if let Err(error) = result {
+                retained.failed.set(true);
+                return Err(owner.poison(error));
+            }
 
-        Ok(())
+            Ok(())
+        })
     }
 
     fn require_original_root_closed_v5(
@@ -327,7 +333,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         let expected = NativeHeldOwnerWitnessV1::Root(
             retained
                 .original
-                .original_root_witness(captured.witnesses().clone(), sequence),
+                .original_root_witness(captured.witnesses().clone(), sequence)?,
         )
         .to_canonical_bytes()
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
@@ -373,41 +379,44 @@ impl CurrentRootMountSourceProviderSessionV1 {
         authorization: &AuthorizedMountProviderOutcomeV2,
         retained: &mut OriginalNativeReceivedOutcomeV5,
     ) -> Result<(), SourceProviderSecurityError> {
-        let result = (|| {
-            self.revalidate_original_root_closed_v5(writer, phase10, authorization, retained)?;
-            if phase10
-                .graph()
-                .sidecars()
-                .get(&phase10.attempt())
-                .is_none_or(|sidecar| sidecar.suffix().phase() != 10)
-            {
-                return Err(SourceProviderSecurityError::SessionContinuity);
+        OriginalBoundaryV5::new(self, retained).run(|owner, retained| {
+            let retained = &mut **retained;
+            let result = (|| {
+                owner.revalidate_original_root_closed_v5(writer, phase10, authorization, retained)?;
+                if phase10
+                    .graph()
+                    .sidecars()
+                    .get(&phase10.attempt())
+                    .is_none_or(|sidecar| sidecar.suffix().phase() != 10)
+                {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+                let unsigned = retained
+                    .unsigned_closed()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?
+                    .clone();
+
+                // A lost return cannot restore Unattempted or lose signed custody.
+                retained.closed.arm_signature()?;
+                let signature = owner
+                    .custody
+                    .inner()
+                    .outcome_key()
+                    .signing_key()
+                    .sign(&unsigned.signature_message())
+                    .to_bytes();
+                retained.closed.signature = SignatureState::Signed(unsigned.with_signature(signature));
+
+                owner.revalidate_original_root_closed_v5(writer, phase10, authorization, retained)
+            })();
+
+            if let Err(error) = result {
+                retained.failed.set(true);
+                return Err(owner.poison(error));
             }
-            let unsigned = retained
-                .unsigned_closed()
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?
-                .clone();
 
-            // A lost return cannot restore Unattempted or lose signed custody.
-            retained.closed.arm_signature()?;
-            let signature = self
-                .custody
-                .inner()
-                .outcome_key()
-                .signing_key()
-                .sign(&unsigned.signature_message())
-                .to_bytes();
-            retained.closed.signature = SignatureState::Signed(unsigned.with_signature(signature));
-
-            self.revalidate_original_root_closed_v5(writer, phase10, authorization, retained)
-        })();
-
-        if let Err(error) = result {
-            retained.failed.set(true);
-            return Err(self.poison(error));
-        }
-
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Sends exact stored original8 with zero FDs on the same original carrier.
@@ -428,47 +437,50 @@ impl CurrentRootMountSourceProviderSessionV1 {
         authorization: &AuthorizedMountProviderOutcomeV2,
         retained: &mut OriginalNativeReceivedOutcomeV5,
     ) -> Result<bool, SourceProviderSecurityError> {
-        let result = (|| {
-            self.revalidate_original_root_closed_v5(writer, phase11, authorization, retained)?;
-            if phase11
-                .graph()
-                .sidecars()
-                .get(&phase11.attempt())
-                .is_none_or(|sidecar| sidecar.suffix().phase() != 11)
-            {
-                return Err(SourceProviderSecurityError::SessionContinuity);
-            }
-            if retained.closed.send == SendState::Sent {
-                return Ok(true);
-            }
-
-            let bytes = retained
-                .signed_closed()
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?
-                .to_canonical_bytes();
-
-            retained.closed.arm_send()?;
-            let sent = match self.carrier.send(&bytes) {
-                Ok(()) => true,
-                Err(CarrierFailureV1::Retryable) => {
-                    retained.closed.send = SendState::Retryable;
-                    false
+        OriginalBoundaryV5::new(self, retained).run(|owner, retained| {
+            let retained = &mut **retained;
+            let result = (|| {
+                owner.revalidate_original_root_closed_v5(writer, phase11, authorization, retained)?;
+                if phase11
+                    .graph()
+                    .sidecars()
+                    .get(&phase11.attempt())
+                    .is_none_or(|sidecar| sidecar.suffix().phase() != 11)
+                {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
                 }
-                Err(CarrierFailureV1::Fatal(error)) => return Err(error),
-            };
-            self.revalidate_original_root_closed_v5(writer, phase11, authorization, retained)?;
-            if sent {
-                retained.closed.send = SendState::Sent;
+                if retained.closed.send == SendState::Sent {
+                    return Ok(true);
+                }
+
+                let bytes = retained
+                    .signed_closed()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?
+                    .to_canonical_bytes();
+
+                retained.closed.arm_send()?;
+                let sent = match owner.carrier.send(&bytes) {
+                    Ok(()) => {
+                        retained.closed.send = SendState::Sent;
+                        true
+                    }
+                    Err(CarrierFailureV1::Retryable) => {
+                        retained.closed.send = SendState::Retryable;
+                        false
+                    }
+                    Err(CarrierFailureV1::Fatal(error)) => return Err(error),
+                };
+                owner.revalidate_original_root_closed_v5(writer, phase11, authorization, retained)?;
+                Ok(sent)
+            })();
+
+            if let Err(error) = result {
+                retained.failed.set(true);
+                return Err(owner.poison(error));
             }
-            Ok(sent)
-        })();
 
-        if let Err(error) = result {
-            retained.failed.set(true);
-            return Err(self.poison(error));
-        }
-
-        result
+            result
+        })
     }
 }
 

@@ -262,6 +262,26 @@ impl<W: MountWorker> MountBroker<W> {
         boundary.finish(result)
     }
 
+    /// Lends the same runtime and actual Session before original-start progress.
+    ///
+    /// The failure boundary precedes health and attachment. Nested retained
+    /// producers preserve genuine Live, catalog and V5 append custody; initial
+    /// hello construction, legacy consuming calls and process loss are separate.
+    ///
+    /// # Errors
+    ///
+    /// Restores retained runtime and revokes actual Session on refusal or unwind.
+    pub(crate) fn with_original_native_source_owner_v5<R>(
+        &mut self,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        operation: impl for<'journal> FnOnce(
+            &mut crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2<'journal>,
+            &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        ) -> Result<R>,
+    ) -> Result<R> {
+        self.with_original_inventory_source_owner_v6(session, operation)
+    }
+
     /// Lends the sole protected Mount journal to the source-acquisition owner.
     ///
     /// The first borrow replays the complete source graph. Later borrows

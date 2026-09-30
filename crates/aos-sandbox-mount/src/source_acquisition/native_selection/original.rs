@@ -16,7 +16,7 @@ use aos_sandbox_source_provider_protocol::native_held_completion::frame::{
     PreparedNativeHeldControlV1, SignedNativeHeldControlV1,
 };
 use aos_sandbox_source_provider_security::{
-    CurrentRootMountSourceProviderSessionV1, MountProviderRequestSendRecoveryV2,
+    CurrentRootMountSourceProviderSessionV1, CurrentMountProviderSessionPlanV2,
     PendingNativeMountAcquireV3, PreparedMountProviderRequestV2, ReservedMountProviderRequestV2,
     SentMountProviderRequestV2,
 };
@@ -61,6 +61,8 @@ pub(in crate::source_acquisition) struct OriginalNativeAcquireFlightV5 {
     deadline: i64,
     stage: Stage,
     stopped: bool,
+    catalog_plan: Option<CurrentMountProviderSessionPlanV2>,
+    catalog_draft: Option<aos_sandbox_source_provider_protocol::AcquireSourceRequestV1>,
     query: Option<PendingNativeMountAcquireV3>,
     prepared: Option<PreparedMountProviderRequestV2>,
     owners: Option<JournalTransaction>,
@@ -69,17 +71,54 @@ pub(in crate::source_acquisition) struct OriginalNativeAcquireFlightV5 {
     head: Option<SourceProviderHeadV2>,
     unsigned_root1: Option<PreparedNativeHeldControlV1>,
     admission_append: Option<PreparedOriginalRootAppendV5>,
-    admission: Option<OriginalRootProtectedReadbackV5>,
     reservation: Option<ReservedMountProviderRequestV2>,
     signed_root1: Option<SignedNativeHeldControlV1>,
     root1_append: Option<PreparedOriginalRootAppendV5>,
-    persisted_root1: Option<OriginalRootProtectedReadbackV5>,
     root1_possible_send: bool,
     root1_sent: bool,
     acquire_send_attempted: bool,
-    send_recovery: Option<MountProviderRequestSendRecoveryV2>,
     sent: Option<SentMountProviderRequestV2>,
     pending: OriginalNativePendingFlightV5,
+}
+
+/// Fails the genuine original flight and actual Session on returned error or unwind.
+struct OriginalFlightBoundaryV5<'flight, 'session> {
+    flight: &'flight mut OriginalNativeAcquireFlightV5,
+    session: &'session mut CurrentRootMountSourceProviderSessionV1,
+    succeeded: bool,
+}
+
+impl<'flight, 'session> OriginalFlightBoundaryV5<'flight, 'session> {
+    fn new(
+        flight: &'flight mut OriginalNativeAcquireFlightV5,
+        session: &'session mut CurrentRootMountSourceProviderSessionV1,
+    ) -> Self {
+        Self {
+            flight,
+            session,
+            succeeded: false,
+        }
+    }
+
+    fn run<R>(
+        &mut self,
+        operation: impl FnOnce(
+            &mut OriginalNativeAcquireFlightV5,
+            &mut CurrentRootMountSourceProviderSessionV1,
+        ) -> Result<R>,
+    ) -> Result<R> {
+        let result = operation(self.flight, self.session);
+        self.succeeded = result.is_ok();
+        result
+    }
+}
+
+impl Drop for OriginalFlightBoundaryV5<'_, '_> {
+    fn drop(&mut self) {
+        if !self.succeeded {
+            self.flight.stop_original_inventory_v6(self.session);
+        }
+    }
 }
 
 impl OriginalNativeAcquireFlightV5 {
@@ -105,6 +144,8 @@ impl OriginalNativeAcquireFlightV5 {
             deadline,
             stage: Stage::BeginQuery,
             stopped: false,
+            catalog_plan: None,
+            catalog_draft: None,
             query: None,
             prepared: None,
             owners: None,
@@ -113,15 +154,12 @@ impl OriginalNativeAcquireFlightV5 {
             head: None,
             unsigned_root1: None,
             admission_append: None,
-            admission: None,
             reservation: None,
             signed_root1: None,
             root1_append: None,
-            persisted_root1: None,
             root1_possible_send: false,
             root1_sent: false,
             acquire_send_attempted: false,
-            send_recovery: None,
             sent: None,
             pending: OriginalNativePendingFlightV5::new(),
         }
@@ -151,45 +189,48 @@ impl OriginalNativeAcquireFlightV5 {
         journal: &mut ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
     ) -> Result<()> {
-        if self.stopped {
-            return Err(state_error(
-                "original native flight is retained after failure",
-            ));
-        }
-        let result = (|| {
-            if self.stage == Stage::BeginQuery {
-                table.begin_original_native_provider_acquire_retaining_v5(
-                    journal,
-                    session,
-                    &self.live,
-                    &self.mount_request,
-                    self.mount_plan,
-                    self.ownership_lease,
-                    &self.publication,
-                    &self.catalog,
-                    self.selection.clone(),
-                    self.deadline,
-                    &mut self.query,
-                )?;
-                self.stage = Stage::Query;
+        OriginalFlightBoundaryV5::new(self, session).run(|flight, session| {
+            if flight.stopped {
+                return Err(state_error(
+                    "original native flight is retained after failure",
+                ));
             }
-            let query = self
-                .query
-                .as_mut()
-                .ok_or_else(|| state_error("original native query custody absent"))?;
-            if let Some(prepared) = session
-                .prepare_native_acquire_v3(journal, query)
-                .map_err(|_| state_error("original native catalog preparation failed"))?
-            {
-                self.prepared = Some(prepared);
-                self.stage = Stage::PrepareAdmission;
+            let result = (|| {
+                if flight.stage == Stage::BeginQuery {
+                    table.begin_original_native_provider_acquire_retaining_v5(
+                        journal,
+                        session,
+                        &flight.live,
+                        &flight.mount_request,
+                        flight.mount_plan,
+                        flight.ownership_lease,
+                        &flight.publication,
+                        &flight.catalog,
+                        flight.selection.clone(),
+                        flight.deadline,
+                        &mut flight.catalog_plan,
+                        &mut flight.catalog_draft,
+                        &mut flight.query,
+                    )?;
+                    flight.stage = Stage::Query;
+                }
+                let query = flight
+                    .query
+                    .as_mut()
+                    .ok_or_else(|| state_error("original native query custody absent"))?;
+                if session
+                    .prepare_original_native_acquire_retaining_v5(journal, query, &mut flight.prepared)
+                    .map_err(|_| state_error("original native catalog preparation failed"))?
+                {
+                    flight.stage = Stage::PrepareAdmission;
+                }
+                Ok(())
+            })();
+            if result.is_err() {
+                flight.stopped = true;
             }
-            Ok(())
-        })();
-        if result.is_err() {
-            self.stopped = true;
-        }
-        result
+            result
+        })
     }
 
     /// Performs one bounded physical/sign/send stage while retaining all errors.
@@ -200,16 +241,18 @@ impl OriginalNativeAcquireFlightV5 {
         writer: &mut MountOriginalNativeJournalAuthorityV5<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
     ) -> Result<bool> {
-        if self.stopped {
-            return Err(state_error(
-                "original native flight is retained after failure",
-            ));
-        }
-        let result = self.advance_stage(table, native_index, writer, session);
-        if result.is_err() {
-            self.stopped = true;
-        }
-        result
+        OriginalFlightBoundaryV5::new(self, session).run(|flight, session| {
+            if flight.stopped {
+                return Err(state_error(
+                    "original native flight is retained after failure",
+                ));
+            }
+            let result = flight.advance_stage(table, native_index, writer, session);
+            if result.is_err() {
+                flight.stopped = true;
+            }
+            result
+        })
     }
 
     fn install(
@@ -263,20 +306,18 @@ impl OriginalNativeAcquireFlightV5 {
                     .owners
                     .as_ref()
                     .ok_or_else(|| state_error("original owner bytes absent"))?;
-                self.unsigned_root1 = Some(
-                    session
-                        .prepare_original_root_assertion_v5(writer, prepared, owners)
-                        .map_err(|_| state_error("original unsigned Root1 currentness failed"))?,
-                );
-                self.admission_append = Some(
-                    writer.prepare_admission(
-                        owners,
-                        self.unsigned_root1
-                            .as_ref()
-                            .ok_or_else(|| state_error("original unsigned Root1 absent"))?
-                            .clone(),
-                    )?,
-                );
+                session.prepare_original_root_assertion_retaining_v5(
+                    writer,
+                    prepared,
+                    owners,
+                    &mut self.unsigned_root1,
+                ).map_err(|_| state_error("original unsigned Root1 currentness failed"))?;
+                writer.prepare_admission_retaining_v5(
+                    owners,
+                    self.unsigned_root1.as_ref()
+                        .ok_or_else(|| state_error("original unsigned Root1 absent"))?,
+                    &mut self.admission_append,
+                )?;
                 self.stage = Stage::CommitAdmission;
             }
             Stage::CommitAdmission => {
@@ -288,18 +329,10 @@ impl OriginalNativeAcquireFlightV5 {
                             .ok_or_else(|| state_error("original prepared Acquire absent"))?,
                     )
                     .map_err(|_| state_error("original admission currentness failed"))?;
-                let append = self
-                    .admission_append
-                    .as_ref()
+                let append = self.admission_append.as_mut()
                     .ok_or_else(|| state_error("original admission append absent"))?;
-                self.admission = Some(writer.commit_prepared(append).map_err(|error| {
-                    session.invalidate_native_acquire_commit_v3();
-                    error
-                })?);
-                let readback = self
-                    .admission
-                    .as_ref()
-                    .ok_or_else(|| state_error("original admission readback absent"))?;
+                writer.commit_prepared_retaining_v5(append)?;
+                let readback = append.readback()?;
                 if self
                     .tentative
                     .as_ref()
@@ -322,77 +355,45 @@ impl OriginalNativeAcquireFlightV5 {
                         .as_ref()
                         .ok_or_else(|| state_error("original Head absent"))?,
                 )?;
-                let prepared = self
-                    .prepared
-                    .take()
-                    .ok_or_else(|| state_error("original preparation absent"))?;
-                match session.confirm_original_native_reservation_v5(
+                session.confirm_original_native_reservation_retaining_v5(
                     writer,
-                    prepared,
+                    &mut self.prepared,
                     coordinates.attempt_key,
                     coordinates.attempt_record,
                     coordinates.head_key,
                     coordinates.head_record,
-                ) {
-                    Ok(reservation) => self.reservation = Some(reservation),
-                    Err((prepared, _)) => {
-                        self.prepared = Some(prepared);
-                        return Err(state_error("original reservation unconfirmed"));
-                    }
-                }
+                    &mut self.reservation,
+                ).map_err(|_| state_error("original reservation unconfirmed"))?;
                 self.stage = Stage::Sign;
             }
             Stage::Sign => {
-                let admission = self
-                    .admission
-                    .as_ref()
-                    .ok_or_else(|| state_error("original admission readback absent"))?;
+                let admission = self.admission_append.as_ref()
+                    .ok_or_else(|| state_error("original admission append absent"))?.readback()?;
                 Self::install(table, native_index, writer, admission)?;
-                match session.sign_original_root1_v5(
+                session.sign_original_root1_retaining_v5(
                     writer,
                     admission,
-                    self.reservation
-                        .as_ref()
+                    self.reservation.as_ref()
                         .ok_or_else(|| state_error("original reservation absent"))?,
-                ) {
-                    Ok(signed) => self.signed_root1 = Some(signed),
-                    Err((signed, _)) => {
-                        self.signed_root1 = signed;
-                        return Err(state_error("original Root1 signing/currentness failed"));
-                    }
-                }
+                    &mut self.signed_root1,
+                ).map_err(|_| state_error("original Root1 signing/currentness failed"))?;
                 self.stage = Stage::PrepareRoot1Store;
             }
             Stage::PrepareRoot1Store => {
-                self.root1_append = Some(
-                    writer.prepare_root1_store(
-                        self.admission
-                            .as_ref()
-                            .ok_or_else(|| state_error("original admission absent"))?,
-                        self.signed_root1
-                            .as_ref()
-                            .ok_or_else(|| state_error("original signed Root1 absent"))?,
-                    )?,
-                );
+                writer.prepare_root1_store_retaining_v5(
+                    self.admission_append.as_ref()
+                        .ok_or_else(|| state_error("original admission append absent"))?.readback()?,
+                    self.signed_root1.as_ref()
+                        .ok_or_else(|| state_error("original signed Root1 absent"))?,
+                    &mut self.root1_append,
+                )?;
                 self.stage = Stage::CommitRoot1Store;
             }
             Stage::CommitRoot1Store => {
-                self.persisted_root1 = Some(
-                    writer
-                        .commit_prepared(
-                            self.root1_append
-                                .as_ref()
-                                .ok_or_else(|| state_error("original Root1 append absent"))?,
-                        )
-                        .map_err(|error| {
-                            session.invalidate_native_acquire_commit_v3();
-                            error
-                        })?,
-                );
-                let persisted = self
-                    .persisted_root1
-                    .as_ref()
-                    .ok_or_else(|| state_error("stored Root1 readback absent"))?;
+                let append = self.root1_append.as_mut()
+                    .ok_or_else(|| state_error("original Root1 append absent"))?;
+                writer.commit_prepared_retaining_v5(append)?;
+                let persisted = append.readback()?;
                 Self::install(table, native_index, writer, persisted)?;
                 session
                     .advance_original_root1_reservation_v5(
@@ -411,9 +412,9 @@ impl OriginalNativeAcquireFlightV5 {
             Stage::SendRoot1 => {
                 let send = session.send_original_root1_v5(
                     writer,
-                    self.persisted_root1
+                    self.root1_append
                         .as_ref()
-                        .ok_or_else(|| state_error("stored Root1 readback absent"))?,
+                        .ok_or_else(|| state_error("stored Root1 append absent"))?.readback()?,
                     self.reservation
                         .as_ref()
                         .ok_or_else(|| state_error("original reservation absent"))?,
@@ -440,47 +441,22 @@ impl OriginalNativeAcquireFlightV5 {
                         "original Acquire cannot precede stored Root1 send",
                     ));
                 }
-                let persisted = self
-                    .persisted_root1
-                    .as_ref()
-                    .ok_or_else(|| state_error("stored Root1 readback absent"))?;
-                let signed = self
-                    .signed_root1
-                    .as_ref()
+                let persisted = self.root1_append.as_ref()
+                    .ok_or_else(|| state_error("stored Root1 append absent"))?.readback()?;
+                let signed = self.signed_root1.as_ref()
                     .ok_or_else(|| state_error("original Root1 bytes absent"))?;
                 self.acquire_send_attempted = true;
-                let send = if self.stage == Stage::SendAcquire {
-                    session.send_original_native_acquire_v5(
-                        writer,
-                        persisted,
-                        signed,
-                        self.reservation
-                            .take()
-                            .ok_or_else(|| state_error("original reservation absent"))?,
-                    )
+                if session.send_original_native_acquire_retaining_v5(
+                    writer,
+                    persisted,
+                    signed,
+                    &mut self.reservation,
+                    &mut self.sent,
+                ).map_err(|_| state_error("original Acquire send/currentness failed"))? {
+                    self.stage = Stage::Finished;
                 } else {
-                    session.retry_original_native_acquire_v5(
-                        writer,
-                        persisted,
-                        signed,
-                        self.send_recovery
-                            .take()
-                            .ok_or_else(|| state_error("original send recovery absent"))?,
-                    )
-                };
-                match send {
-                    Ok(sent) => {
-                        self.sent = Some(sent);
-                        self.stage = Stage::Finished;
-                    }
-                    Err(recovery) => {
-                        self.send_recovery = Some(recovery);
-                        self.stage = Stage::RetryAcquire;
-                        if session.current_authority_scope_v2().is_err() {
-                            return Err(state_error("original Acquire send is occupied/poisoned"));
-                        }
-                        return Ok(false);
-                    }
+                    self.stage = Stage::RetryAcquire;
+                    return Ok(false);
                 }
             }
             Stage::Finished => return Ok(true),

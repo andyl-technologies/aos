@@ -8,6 +8,9 @@
 //! separate, closed prerequisites.
 
 use aos_sandbox_core::{RawClockProvenance, RawPairedClockSample};
+use aos_sandbox_source_provider_protocol::native_held_completion::witness::{
+    NativeHeldByteWitnessV1, NativeHeldGenerationClaimV1, RootNativeHeldWitnessV1,
+};
 use aos_sandbox_source_provider_protocol::{
     ACQUIRE_SOURCE_REQUEST_VERSION_V2, CatalogCurrentnessQueryV1, NativeAcquireCatalogBindingV3,
     ProviderHeldSnapshotCatalogV1, SignedCatalogCurrentnessV1, SourceResourceV1,
@@ -20,6 +23,8 @@ use crate::{RevalidatedProviderConfigurationV1, VerifiedCatalogPublicationV1};
 
 #[path = "native_catalog/outcome.rs"]
 mod outcome;
+
+pub(super) mod custody;
 
 pub(super) use outcome::NativeAcquireOutcomeCustodyV3;
 pub(super) use outcome::require_native_completion_barrier;
@@ -38,6 +43,9 @@ pub struct PendingNativeMountAcquireV3 {
     retained_currentness: Option<NativeAcquireCurrentnessGuardV3>,
     retained_prepared: Option<PreparedMountProviderRequestV2>,
     retained_signed_request: Option<Vec<u8>>,
+    retained_signed: Option<SignedSourceProviderRequestV1>,
+    signature_attempted: bool,
+    failed: core::cell::Cell<bool>,
 }
 
 struct NativeAcquirePreparationV3 {
@@ -55,38 +63,49 @@ struct NativeAcquirePreparationV3 {
 
 /// Retains genuine received-sender custody through reservation, send, and outcome.
 pub(super) struct NativeAcquireCurrentnessGuardV3 {
-    proof: AuthenticatedRootMountCatalogCurrentnessV1,
-    publication: VerifiedCatalogPublicationV1,
-    catalog: ProviderHeldSnapshotCatalogV1,
+    preparation: NativeAcquirePreparationV3,
     binding_digest: ObjectDigest,
     resource: SourceResourceV1,
     snapshot: ZfsHeldSnapshotProofV1,
     trust: (u64, ObjectDigest),
     revocation: (u64, ObjectDigest),
-    mount_head_minimum: (u64, ObjectDigest),
-    deadline: OriginalNativeDeadlineV3,
-    planning_snapshot: aos_sandbox::ProtectedJournalSnapshot,
 }
 
 impl NativeAcquireCurrentnessGuardV3 {
     pub(super) const fn original_planning_snapshot(
         &self,
     ) -> &aos_sandbox::ProtectedJournalSnapshot {
-        &self.planning_snapshot
+        &self.preparation.plan.journal_snapshot
+    }
+
+    fn proof(
+        &self,
+    ) -> Result<&AuthenticatedRootMountCatalogCurrentnessV1, SourceProviderSecurityError> {
+        self.preparation
+            .proof
+            .as_ref()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)
     }
 
     pub(super) fn original_root_witness(
-        &self, records: [aos_sandbox_source_provider_protocol::native_held_completion::witness::NativeHeldByteWitnessV1; 4],
+        &self,
+        records: [NativeHeldByteWitnessV1; 4],
         journal_sequence: u64,
-    ) -> aos_sandbox_source_provider_protocol::native_held_completion::witness::RootNativeHeldWitnessV1{
-        use aos_sandbox_source_provider_protocol::native_held_completion::witness::NativeHeldGenerationClaimV1;
+    ) -> Result<RootNativeHeldWitnessV1, SourceProviderSecurityError> {
         let claim = |(generation, digest)| NativeHeldGenerationClaimV1 { generation, digest };
-        aos_sandbox_source_provider_protocol::native_held_completion::witness::RootNativeHeldWitnessV1 {
-            local_socket_cookie: self.proof.socket_cookie.get(), journal_sequence,
-            planning_sequence: self.planning_snapshot.sequence(), trust: claim(self.trust),
-            revocation: claim(self.revocation), provider_head: claim(self.proof.head()),
-            provider_floor: claim(self.proof.floor()), publication: self.proof.publication_digest(), records,
-        }
+        let proof = self.proof()?;
+
+        Ok(RootNativeHeldWitnessV1 {
+            local_socket_cookie: proof.socket_cookie.get(),
+            journal_sequence,
+            planning_sequence: self.original_planning_snapshot().sequence(),
+            trust: claim(self.trust),
+            revocation: claim(self.revocation),
+            provider_head: claim(proof.head()),
+            provider_floor: claim(proof.floor()),
+            publication: proof.publication_digest(),
+            records,
+        })
     }
 }
 
@@ -186,135 +205,181 @@ impl CurrentRootMountSourceProviderSessionV1 {
         selection_key: Option<Vec<u8>>,
         retained: &mut Option<PendingNativeMountAcquireV3>,
     ) -> Result<(), SourceProviderSecurityError> {
-        *retained = Some(PendingNativeMountAcquireV3 {
-            retained_plan: Some(plan),
-            retained_draft: Some(request),
-            retained_deadline: None,
-            preparation: None,
-            retained_currentness: None,
-            retained_prepared: None,
-            retained_signed_request: None,
-        });
-        let pending = retained
-            .as_mut()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let plan = pending
-            .retained_plan
-            .as_ref()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let request = pending
-            .retained_draft
-            .as_ref()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        self.validate_current_mount_plan(journal, plan)?;
-        let mount = live_mount_request.request();
-        if self.has_pending_control_exchange()
-            || request.acquisition_version() != ACQUIRE_SOURCE_REQUEST_VERSION_V2
-            || request.kernel_coupled()
-            || request.session_binding() != plan.session.session_binding
-            || request.sequence() != plan.current_request_sequence
-            || request.node_id() != plan.session.node_id
-            || request.boot_id() != plan.session.root_boot_id
-            || request.deadline_seconds() > plan.session.current_valid_until_seconds
-            || request.prospective_apply_template() != mount.prospective_mount_template()
-            || request.prospective_apply_template_digest()
-                != mount.prospective_mount_template_digest()
-            || request.binding() != mount.source_binding().canonical_bytes()
-            || request.source_use()
-                != aos_sandbox_source_provider_protocol::SourceUseV1::MountCreate
-            || request.requested_bounds()
-                != (
-                    mount.requested_lease_seconds(),
-                    mount.recursive(),
-                    mount.requested_maximum_submounts(),
-                    mount.kernel_coupled(),
-                )
-        {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-        }
-        let deadline = OriginalNativeDeadlineV3::capture(
-            request.deadline_seconds(),
-            plan.session.root_boot_id,
-            mount.header().deadline_boottime_nanoseconds(),
-        )
-        .map_err(|error| self.poison(error))?;
-        pending.retained_deadline = Some(deadline);
-        let deadline = pending
-            .retained_deadline
-            .as_ref()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let request = bound_native_draft_deadline(request.clone(), deadline)
-            .map_err(|error| self.poison(error))?;
-        let configuration = RevalidatedProviderConfigurationV1::capture_root_mount(
-            &mut self.custody,
-            deadline.initial.paired.wall_seconds(),
-        )
-        .map_err(|error| self.poison(error))?;
-        let publication = crate::verify_catalog_publication(&configuration, canonical_publication)
-            .map_err(|error| self.poison(error))?;
-        let catalog = ProviderHeldSnapshotCatalogV1::from_canonical_bytes(canonical_catalog)
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        require_publication_scope(&publication, &configuration, &plan.session)
-            .map_err(|error| self.poison(error))?;
-        select_catalog_claim(&catalog, &publication, request.binding_digest())
-            .map_err(|error| self.poison(error))?;
-
-        let graph = validated_mount_state(journal).map_err(|error| self.poison(error))?;
-        let bounds = catalog_floor::remote_catalog_bounds(
-            &graph,
-            &plan.session,
-            publication.catalog_floor(),
-        )
-        .map_err(|error| self.poison(error))?;
-        catalog_floor::validate_mount_floor(
+        let mut plan_slot = Some(plan);
+        let mut request_slot = Some(request);
+        self.begin_original_native_acquire_from_parked_v5(
             journal,
-            &graph,
-            &plan.session,
-            &bounds.query_floor,
-            selection_key.as_deref(),
-        )
-        .map_err(|error| self.poison(error))?;
-        let socket_cookie = self.carrier.socket().peer().socket_cookie();
-        // Park the actual plan and paired clock BEFORE catalog IO. Even a
-        // poisoned post-IO check leaves this same original owner in the flight.
-        pending.preparation = Some(NativeAcquirePreparationV3 {
-            plan: pending
-                .retained_plan
-                .take()
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?,
-            request,
-            publication,
-            catalog,
+            &mut plan_slot,
+            &mut request_slot,
+            live_mount_request,
+            canonical_publication,
+            canonical_catalog,
             selection_key,
-            query: None,
-            mount_head_minimum: bounds.head_minimum,
-            socket_cookie,
-            deadline: pending
-                .retained_deadline
-                .take()
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?,
-            proof: None,
-        });
-        let preparation = pending
-            .preparation
-            .as_mut()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        preparation.proof = self
-            .advance_catalog_currentness_checked(&bounds.query_floor, || {
-                preparation.deadline.require_current(kernel_clock()?)
-            })?;
-        preparation.query = Some(match &preparation.proof {
-            Some(proof) => proof.query.clone(),
-            None => self
-                .catalog_exchange
+            retained,
+        )
+    }
+
+    /// Begins the original challenge without consuming the caller's parked inputs.
+    ///
+    /// # Errors
+    ///
+    /// Retains both inputs, pending custody and the actual Session on refusal or
+    /// unwind. A failed flight cannot be restarted using the same slots.
+    #[allow(clippy::too_many_arguments)]
+    #[doc(hidden)]
+    pub fn begin_original_native_acquire_from_parked_v5(
+        &mut self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        plan_slot: &mut Option<CurrentMountProviderSessionPlanV2>,
+        request_slot: &mut Option<AcquireSourceRequestV1>,
+        live_mount_request: &aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest,
+        canonical_publication: &[u8],
+        canonical_catalog: &[u8],
+        selection_key: Option<Vec<u8>>,
+        retained: &mut Option<PendingNativeMountAcquireV3>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        OriginalBoundaryV5::new(self, retained).run(|owner, retained| {
+            if retained.is_some() || plan_slot.is_none() || request_slot.is_none() {
+                return Err(SourceProviderSecurityError::SessionContinuity);
+            }
+
+            **retained = Some(PendingNativeMountAcquireV3 {
+                retained_plan: plan_slot.take(),
+                retained_draft: request_slot.take(),
+                retained_deadline: None,
+                preparation: None,
+                retained_currentness: None,
+                retained_prepared: None,
+                retained_signed_request: None,
+                retained_signed: None,
+                signature_attempted: false,
+                failed: core::cell::Cell::new(false),
+            });
+            let pending = retained
+                .as_mut()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let plan = pending
+                .retained_plan
                 .as_ref()
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?
-                .query
-                .clone(),
-        });
-        self.require_original_native_deadline_v3(&preparation.deadline)?;
-        self.validate_current_mount_plan(journal, &preparation.plan)?;
-        Ok(())
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let request = pending
+                .retained_draft
+                .as_ref()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            owner.validate_current_mount_plan(journal, plan)?;
+            let mount = live_mount_request.request();
+            if owner.has_pending_control_exchange()
+                || request.acquisition_version() != ACQUIRE_SOURCE_REQUEST_VERSION_V2
+                || request.kernel_coupled()
+                || request.session_binding() != plan.session.session_binding
+                || request.sequence() != plan.current_request_sequence
+                || request.node_id() != plan.session.node_id
+                || request.boot_id() != plan.session.root_boot_id
+                || request.deadline_seconds() > plan.session.current_valid_until_seconds
+                || request.prospective_apply_template() != mount.prospective_mount_template()
+                || request.prospective_apply_template_digest()
+                    != mount.prospective_mount_template_digest()
+                || request.binding() != mount.source_binding().canonical_bytes()
+                || request.source_use()
+                    != aos_sandbox_source_provider_protocol::SourceUseV1::MountCreate
+                || request.requested_bounds()
+                    != (
+                        mount.requested_lease_seconds(),
+                        mount.recursive(),
+                        mount.requested_maximum_submounts(),
+                        mount.kernel_coupled(),
+                    )
+            {
+                return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+            let deadline = OriginalNativeDeadlineV3::capture(
+                request.deadline_seconds(),
+                plan.session.root_boot_id,
+                mount.header().deadline_boottime_nanoseconds(),
+            )
+            .map_err(|error| owner.poison(error))?;
+            pending.retained_deadline = Some(deadline);
+            let deadline = pending
+                .retained_deadline
+                .as_ref()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let request = bound_native_draft_deadline(request.clone(), deadline)
+                .map_err(|error| owner.poison(error))?;
+            let configuration = RevalidatedProviderConfigurationV1::capture_root_mount(
+                &mut owner.custody,
+                deadline.initial.paired.wall_seconds(),
+            )
+            .map_err(|error| owner.poison(error))?;
+            let publication = crate::verify_catalog_publication(&configuration, canonical_publication)
+                .map_err(|error| owner.poison(error))?;
+            let catalog = ProviderHeldSnapshotCatalogV1::from_canonical_bytes(canonical_catalog)
+                .map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            require_publication_scope(&publication, &configuration, &plan.session)
+                .map_err(|error| owner.poison(error))?;
+            select_catalog_claim(&catalog, &publication, request.binding_digest())
+                .map_err(|error| owner.poison(error))?;
+
+            let graph = validated_mount_state(journal).map_err(|error| owner.poison(error))?;
+            let bounds = catalog_floor::remote_catalog_bounds(
+                &graph,
+                &plan.session,
+                publication.catalog_floor(),
+            )
+            .map_err(|error| owner.poison(error))?;
+            catalog_floor::validate_mount_floor(
+                journal,
+                &graph,
+                &plan.session,
+                &bounds.query_floor,
+                selection_key.as_deref(),
+            )
+            .map_err(|error| owner.poison(error))?;
+            let socket_cookie = owner.carrier.socket().peer().socket_cookie();
+            // Park the actual plan and paired clock BEFORE catalog IO. Even a
+            // poisoned post-IO check leaves this same original owner in the flight.
+            match (pending.retained_plan.take(), pending.retained_deadline.take()) {
+                (Some(plan), Some(deadline)) => {
+                    pending.preparation = Some(NativeAcquirePreparationV3 {
+                        plan,
+                        request,
+                        publication,
+                        catalog,
+                        selection_key,
+                        query: None,
+                        mount_head_minimum: bounds.head_minimum,
+                        socket_cookie,
+                        deadline,
+                        proof: None,
+                    });
+                }
+                (plan, deadline) => {
+                    pending.retained_plan = plan;
+                    pending.retained_deadline = deadline;
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+            }
+            let preparation = pending
+                .preparation
+                .as_mut()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            owner.advance_catalog_currentness_retaining_v5(
+                &bounds.query_floor,
+                || preparation.deadline.require_current(kernel_clock()?),
+                &mut preparation.proof,
+            )?;
+            preparation.query = Some(match &preparation.proof {
+                Some(proof) => proof.query.clone(),
+                None => owner
+                    .catalog_exchange
+                    .as_ref()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?
+                    .query
+                    .clone(),
+            });
+            owner.require_original_native_deadline_v3(&preparation.deadline)?;
+            owner.validate_current_mount_plan(journal, &preparation.plan)?;
+            Ok(())
+        })
     }
 
     /// Advances and signs one exact original native Acquire V3 preparation.
@@ -332,166 +397,177 @@ impl CurrentRootMountSourceProviderSessionV1 {
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         pending: &mut PendingNativeMountAcquireV3,
     ) -> Result<Option<PreparedMountProviderRequestV2>, SourceProviderSecurityError> {
-        let preparation = pending
-            .preparation
-            .as_mut()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        self.validate_current_mount_plan(journal, &preparation.plan)?;
-        self.require_original_native_deadline_v3(&preparation.deadline)?;
-        if preparation.socket_cookie != self.carrier.socket().peer().socket_cookie() {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        let mut prepared = None;
+        if self.prepare_original_native_acquire_retaining_v5(journal, pending, &mut prepared)? {
+            Ok(prepared)
+        } else {
+            Ok(None)
         }
-        if preparation.proof.is_none() {
-            let query = preparation
-                .query
-                .as_ref()
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-            // An absent or different exchange means another caller completed
-            // or superseded our query. Never start a new query on that path.
-            if !original_query_is_pending(
-                query,
-                self.catalog_exchange
-                    .as_ref()
-                    .map(|exchange| &exchange.query),
-                self.session.binding(),
-                self.catalog_sequence,
-            ) {
-                return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-            }
-            let minimum = ProviderCatalogFloorV1::new(
-                preparation.plan.session.authority_trust[1]
-                    .authority
-                    .authority_id(),
-                preparation.plan.session.resource_namespace_digest,
-                query.minimum().0,
-                query.minimum().1,
-            )
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-            preparation.proof = self.advance_catalog_currentness_checked(&minimum, || {
-                preparation.deadline.require_current(kernel_clock()?)
-            })?;
-            self.require_original_native_deadline_v3(&preparation.deadline)?;
-            if preparation.proof.is_none() {
-                return Ok(None);
-            }
-        }
+    }
 
-        // Recheck while every original owner is still parked in pending. No
-        // fallible operation below may discard the received proof or nonce.
-        self.validate_current_mount_plan(journal, &preparation.plan)?;
-        let original_proof = preparation
-            .proof
-            .as_ref()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        if Some(&original_proof.query) != preparation.query.as_ref()
-            || original_proof.socket_cookie != preparation.socket_cookie
-        {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-        }
-        let (resource, snapshot) = select_catalog_claim(
-            &preparation.catalog,
-            &preparation.publication,
-            preparation.request.binding_digest(),
-        )
-        .map_err(|error| self.poison(error))?;
-        let binding = join_current_catalog_claims(
-            &original_proof.signed,
-            &original_proof.query,
-            &preparation.publication,
-            preparation.mount_head_minimum,
-        )
-        .map_err(|error| self.poison(error))?;
-        let preparation = pending
-            .preparation
-            .take()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let proof = preparation
-            .proof
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let CurrentMountProviderSessionPlanV2 {
-            session,
-            current_request_sequence: request_sequence,
-            current_response_sequence: response_sequence,
-            journal_snapshot: planning_snapshot,
-            ..
-        } = preparation.plan;
-        let guard = NativeAcquireCurrentnessGuardV3 {
-            proof,
-            publication: preparation.publication,
-            catalog: preparation.catalog,
-            binding_digest: preparation.request.binding_digest(),
-            resource,
-            snapshot,
-            trust: (session.trust_generation, session.trust_digest),
-            revocation: (session.revocation_generation, session.revocation_digest),
-            mount_head_minimum: preparation.mount_head_minimum,
-            deadline: preparation.deadline,
-            planning_snapshot,
-        };
-        pending.retained_currentness = Some(guard);
-        let guard = pending
-            .retained_currentness
-            .as_ref()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        self.require_native_acquire_currentness_v3(&guard)?;
-        let request = AcquireSourceRequestV1::new_native_v3(preparation.request, binding)
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        let graph = validated_mount_state(journal).map_err(|error| self.poison(error))?;
-        let catalog_floor = ProviderCatalogFloorV1::new(
-            guard.publication.provider().authority_id(),
-            guard.publication.resource_namespace_digest(),
-            guard.proof.floor().0,
-            guard.proof.floor().1,
-        )
-        .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        let selection_floor = catalog_floor::validate_mount_floor(
-            journal,
-            &graph,
-            &session,
-            &catalog_floor,
-            preparation.selection_key.as_deref(),
-        )
-        .map_err(|error| self.poison(error))?;
-        let normalized = NormalizedAcquisitionIntentV2::from_original_acquire_request(
-            &request,
-            session.authority_trust[1].authority.clone(),
-            session.authority_trust[0].authority.clone(),
-            session.node_id,
-            session.root_boot_id,
-            session.route_id,
-            session.route_generation,
-            session.route_digest,
-            session.resource_namespace_digest,
-            session.revocation_generation,
-            session.revocation_digest,
-        )
-        .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        let prepared = self.prepare_acquire_from_catalog_retaining(
-            session,
-            request_sequence,
-            response_sequence,
-            request,
-            normalized,
-            catalog_floor,
-            selection_floor,
-            guard.proof.head_commitment(),
-            &mut pending.retained_signed_request,
-        )?;
-        pending.retained_prepared = Some(prepared);
-        let prepared = pending
-            .retained_prepared
-            .as_mut()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        prepared.native_currentness = pending.retained_currentness.take();
-        let guard = prepared
-            .native_currentness
-            .as_ref()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        self.require_native_acquire_currentness_v3(guard)?;
-        journal
-            .validate_mount_source_acquisition_snapshot(&guard.planning_snapshot)
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        Ok(pending.retained_prepared.take())
+    /// Advances the same preparation and parks its signed output before postchecks.
+    ///
+    /// # Errors
+    ///
+    /// Retains the complete pending and prepared owners on any refusal or unwind.
+    /// A completed or failed preparation cannot sign or transfer a second time.
+    #[doc(hidden)]
+    pub fn prepare_original_native_acquire_retaining_v5(
+        &mut self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        pending: &mut PendingNativeMountAcquireV3,
+        prepared_slot: &mut Option<PreparedMountProviderRequestV2>,
+    ) -> Result<bool, SourceProviderSecurityError> {
+        OriginalBoundaryV5::new(self, pending).run(|owner, pending| {
+            let pending = &mut **pending;
+            if pending.failed.get()
+                || pending.signature_attempted
+                || prepared_slot.is_some()
+                || pending.retained_prepared.is_some()
+                || pending.retained_currentness.is_some()
+            {
+                return Err(SourceProviderSecurityError::SessionContinuity);
+            }
+            let preparation = pending.preparation.as_mut()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            owner.validate_current_mount_plan(journal, &preparation.plan)?;
+            owner.require_original_native_deadline_v3(&preparation.deadline)?;
+            if preparation.socket_cookie != owner.carrier.socket().peer().socket_cookie() {
+                return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+
+            if preparation.proof.is_none() {
+                let query = preparation.query.as_ref()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                if !original_query_is_pending(
+                    query,
+                    owner.catalog_exchange.as_ref().map(|exchange| &exchange.query),
+                    owner.session.binding(),
+                    owner.catalog_sequence,
+                ) {
+                    return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
+                }
+                let minimum = ProviderCatalogFloorV1::new(
+                    preparation.plan.session.authority_trust[1].authority.authority_id(),
+                    preparation.plan.session.resource_namespace_digest,
+                    query.minimum().0,
+                    query.minimum().1,
+                )
+                .map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+                owner.advance_catalog_currentness_retaining_v5(
+                    &minimum,
+                    || preparation.deadline.require_current(kernel_clock()?),
+                    &mut preparation.proof,
+                )?;
+                owner.require_original_native_deadline_v3(&preparation.deadline)?;
+                if preparation.proof.is_none() {
+                    return Ok(false);
+                }
+            }
+
+            // Derive only DATA while the actual plan, deadline and packet are
+            // still parked together. No original custody is split for signing.
+            owner.validate_current_mount_plan(journal, &preparation.plan)?;
+            let proof = preparation.proof.as_ref()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            if Some(&proof.query) != preparation.query.as_ref()
+                || proof.socket_cookie != preparation.socket_cookie
+            {
+                return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+            let (resource, snapshot) = select_catalog_claim(
+                &preparation.catalog,
+                &preparation.publication,
+                preparation.request.binding_digest(),
+            ).map_err(|error| owner.poison(error))?;
+            let binding = join_current_catalog_claims(
+                &proof.signed,
+                &proof.query,
+                &preparation.publication,
+                preparation.mount_head_minimum,
+            )
+            .map_err(|error| owner.poison(error))?;
+            let request = AcquireSourceRequestV1::new_native_v3(
+                preparation.request.clone(),
+                binding,
+            )
+            .map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            let session = preparation.plan.session.retained_data_copy();
+            let request_sequence = preparation.plan.current_request_sequence;
+            let response_sequence = preparation.plan.current_response_sequence;
+            let binding_digest = preparation.request.binding_digest();
+            let trust = (session.trust_generation, session.trust_digest);
+            let revocation = (session.revocation_generation, session.revocation_digest);
+            let head_commitment = proof.head_commitment();
+            let graph = validated_mount_state(journal).map_err(|error| owner.poison(error))?;
+            let catalog_floor = ProviderCatalogFloorV1::new(
+                preparation.publication.provider().authority_id(),
+                preparation.publication.resource_namespace_digest(),
+                proof.floor().0,
+                proof.floor().1,
+            ).map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            let selection_floor = catalog_floor::validate_mount_floor(
+                journal,
+                &graph,
+                &session,
+                &catalog_floor,
+                preparation.selection_key.as_deref(),
+            ).map_err(|error| owner.poison(error))?;
+            let normalized = NormalizedAcquisitionIntentV2::from_original_acquire_request(
+                &request,
+                session.authority_trust[1].authority.clone(),
+                session.authority_trust[0].authority.clone(),
+                session.node_id,
+                session.root_boot_id,
+                session.route_id,
+                session.route_generation,
+                session.route_digest,
+                session.resource_namespace_digest,
+                session.revocation_generation,
+                session.revocation_digest,
+            ).map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+
+            // Only direct moves separate the original preparation and guard.
+            pending.retained_currentness = pending.preparation.take().map(|preparation| {
+                NativeAcquireCurrentnessGuardV3 {
+                    preparation,
+                    binding_digest,
+                    resource,
+                    snapshot,
+                    trust,
+                    revocation,
+                }
+            });
+            let guard = pending.retained_currentness.as_ref()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            owner.require_native_acquire_currentness_v3(guard)?;
+            owner.prepare_acquire_from_catalog_retaining(
+                session,
+                request_sequence,
+                response_sequence,
+                request,
+                normalized,
+                catalog_floor,
+                selection_floor,
+                head_commitment,
+                &mut pending.retained_signed_request,
+                &mut pending.retained_signed,
+                &mut pending.signature_attempted,
+                &mut pending.retained_prepared,
+            )?;
+            let prepared = pending.retained_prepared.as_mut()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            prepared.native_currentness = pending.retained_currentness.take();
+            let guard = prepared.native_currentness.as_ref()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            owner.require_native_acquire_currentness_v3(guard)?;
+            journal.validate_mount_source_acquisition_snapshot(
+                guard.original_planning_snapshot(),
+            ).map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+
+            *prepared_slot = pending.retained_prepared.take();
+            Ok(true)
+        })
     }
 
     /// Rechecks original native preparation immediately before Mount commit.
@@ -506,14 +582,16 @@ impl CurrentRootMountSourceProviderSessionV1 {
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         prepared: &PreparedMountProviderRequestV2,
     ) -> Result<(), SourceProviderSecurityError> {
-        let guard = prepared
-            .native_currentness
-            .as_ref()
-            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        journal
-            .validate_mount_source_acquisition_snapshot(&guard.planning_snapshot)
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        self.require_native_acquire_currentness_v3(guard)
+        OriginalBoundaryV5::new(self, ()).run(|owner, _| {
+            let guard = prepared
+                .native_currentness
+                .as_ref()
+                .ok_or_else(|| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            journal
+                .validate_mount_source_acquisition_snapshot(guard.original_planning_snapshot())
+                .map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            owner.require_native_acquire_currentness_v3(guard)
+        })
     }
 
     /// Rechecks the original native sender and exact committed Mount readback.
@@ -539,23 +617,26 @@ impl CurrentRootMountSourceProviderSessionV1 {
         journal: &impl MountSourceAcquisitionJournalViewV2,
         reservation: &ReservedMountProviderRequestV2,
     ) -> Result<(), SourceProviderSecurityError> {
-        let guard = reservation
-            .prepared
-            .native_currentness
-            .as_ref()
-            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        reservation
-            .prepared
-            .validate_protected_reservation(
-                journal,
-                &reservation.reservation_snapshot,
-                &reservation.attempt_key,
-                &reservation.attempt_record,
-                &reservation.head_key,
-                &reservation.head_record,
-            )
-            .map_err(|error| self.poison(error))?;
-        self.require_native_acquire_currentness_v3(guard)
+        OriginalBoundaryV5::new(self, reservation).run(|owner, reservation| {
+            let reservation = &**reservation;
+            let guard = reservation
+                .prepared
+                .native_currentness
+                .as_ref()
+                .ok_or_else(|| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            reservation
+                .prepared
+                .validate_protected_reservation(
+                    journal,
+                    &reservation.reservation_snapshot,
+                    &reservation.attempt_key,
+                    &reservation.attempt_record,
+                    &reservation.head_key,
+                    &reservation.head_record,
+                )
+                .map_err(|error| owner.poison(error))?;
+            owner.require_native_acquire_currentness_v3(guard)
+        })
     }
 
     /// Confirms exact native reservation records without losing preparation on failure.
@@ -605,37 +686,16 @@ impl CurrentRootMountSourceProviderSessionV1 {
         ReservedMountProviderRequestV2,
         (PreparedMountProviderRequestV2, SourceProviderSecurityError),
     > {
-        let validation = (|| {
-            let guard = prepared
-                .native_currentness
-                .as_ref()
-                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-            if guard.proof.query.session_binding() != self.session.binding()
-                || guard.proof.socket_cookie != self.carrier.socket().peer().socket_cookie()
-                || !guard
-                    .proof
-                    .execution
-                    .has_same_execution(&self.provider_execution)
-            {
-                return Err(SourceProviderSecurityError::SessionContinuity);
-            }
-            let snapshot = journal
-                .capture_snapshot()
-                .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-            prepared.validate_protected_reservation(
+        let validation = OriginalBoundaryV5::new(self, ()).run(|owner, _| {
+            owner.validate_native_reservation_confirmation_v5(
                 journal,
-                &snapshot,
+                &prepared,
                 &attempt_key,
                 &attempt_record,
                 &head_key,
                 &head_record,
-            )?;
-            let attempt = match aos_sandbox_protocol::mount_source_acquisition_state::decode_mount_source_state_record_v2(&attempt_key, &attempt_record) {
-                Ok(aos_sandbox_protocol::mount_source_acquisition_state::StoredRecordV2::ProviderQueryAttempt { value }) => value,
-                _ => return Err(SourceProviderSecurityError::SessionContinuity),
-            };
-            Ok((snapshot, attempt.session_id, attempt.attempt_id))
-        })();
+            )
+        });
         match validation {
             Ok((snapshot, session_id, attempt_id)) => Ok(prepared.bind_reserved(
                 snapshot,
@@ -646,8 +706,91 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 session_id,
                 attempt_id,
             )),
-            Err(error) => Err((prepared, self.poison(error))),
+            Err(error) => Err((prepared, error)),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn confirm_native_reservation_retaining_with_view_v5(
+        &mut self,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
+        prepared: &mut Option<PreparedMountProviderRequestV2>,
+        attempt_key: Vec<u8>,
+        attempt_record: Vec<u8>,
+        head_key: Vec<u8>,
+        head_record: Vec<u8>,
+        reserved: &mut Option<ReservedMountProviderRequestV2>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        OriginalBoundaryV5::new(self, reserved).run(|owner, reserved| {
+            if reserved.is_some() {
+                return Err(SourceProviderSecurityError::SessionContinuity);
+            }
+            let current = prepared.as_ref()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let (snapshot, session_id, attempt_id) =
+                owner.validate_native_reservation_confirmation_v5(
+                    journal,
+                    current,
+                    &attempt_key,
+                    &attempt_record,
+                    &head_key,
+                    &head_record,
+                )?;
+
+            **reserved = prepared.take().map(|prepared| {
+                prepared.bind_reserved(
+                    snapshot,
+                    attempt_key,
+                    attempt_record,
+                    head_key,
+                    head_record,
+                    session_id,
+                    attempt_id,
+                )
+            });
+            Ok(())
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_native_reservation_confirmation_v5(
+        &mut self,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
+        prepared: &PreparedMountProviderRequestV2,
+        attempt_key: &[u8],
+        attempt_record: &[u8],
+        head_key: &[u8],
+        head_record: &[u8],
+    ) -> Result<
+        (aos_sandbox::ProtectedJournalSnapshot, [u8; 32], [u8; 32]),
+        SourceProviderSecurityError,
+    > {
+        let guard = prepared.native_currentness.as_ref()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let proof = guard.proof()?;
+        if proof.query.session_binding() != self.session.binding()
+            || proof.socket_cookie != self.carrier.socket().peer().socket_cookie()
+            || !proof.execution().has_same_execution(&self.provider_execution)
+        {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        let snapshot = journal.capture_snapshot()
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        prepared.validate_protected_reservation(
+            journal,
+            &snapshot,
+            attempt_key,
+            attempt_record,
+            head_key,
+            head_record,
+        )?;
+        let attempt = match aos_sandbox_protocol::mount_source_acquisition_state::decode_mount_source_state_record_v2(
+            attempt_key, attempt_record,
+        ) {
+            Ok(aos_sandbox_protocol::mount_source_acquisition_state::StoredRecordV2::ProviderQueryAttempt { value }) => value,
+            _ => return Err(SourceProviderSecurityError::SessionContinuity),
+        };
+        Ok((snapshot, attempt.session_id, attempt.attempt_id))
     }
 
     /// Fail-stops the original session after an indeterminate native commit.
@@ -663,88 +806,92 @@ impl CurrentRootMountSourceProviderSessionV1 {
         &mut self,
         guard: &NativeAcquireCurrentnessGuardV3,
     ) -> Result<(), SourceProviderSecurityError> {
-        self.revalidate()?;
-        let now = kernel_clock().map_err(|error| self.poison(error))?;
-        guard
-            .deadline
-            .require_current(now)
-            .map_err(|error| self.poison(error))?;
-        if !original_query_is_latest(
-            &guard.proof.query,
-            self.session.binding(),
-            self.catalog_sequence,
-            self.has_pending_control_exchange(),
-        ) || guard.proof.socket_cookie != self.carrier.socket().peer().socket_cookie()
-            || !guard
-                .proof
-                .execution
-                .has_same_execution(&self.provider_execution)
-            || guard.proof.execution.boot_id() != now.host_boot_id()
-        {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-        }
-        guard
-            .proof
-            .execution
-            .revalidate(self.carrier.socket().peer())
-            .map_err(|error| self.poison(error))?;
-        let configuration = RevalidatedProviderConfigurationV1::capture_root_mount(
-            &mut self.custody,
-            now.wall_seconds(),
-        )
-        .map_err(|error| self.poison(error))?;
-        if configuration.trust_head() != guard.trust
-            || configuration.revocation_head() != guard.revocation
-        {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-        }
-        let publication = crate::verify_catalog_publication(
-            &configuration,
-            guard.publication.canonical_publication(),
-        )
-        .map_err(|error| self.poison(error))?;
-        if publication.provider() != configuration.provider()
-            || publication.resource_namespace_digest() != configuration.resource_namespace_digest()
-            || join_current_catalog_claims(
-                &guard.proof.signed,
-                &guard.proof.query,
-                &publication,
-                guard.mount_head_minimum,
+        OriginalBoundaryV5::new(self, ()).run(|owner, _| {
+            let preparation = &guard.preparation;
+            let proof = guard.proof().map_err(|error| owner.poison(error))?;
+            proof
+                .require_packet_consistency()
+                .map_err(|error| owner.poison(error))?;
+
+            owner.revalidate()?;
+            let now = kernel_clock().map_err(|error| owner.poison(error))?;
+            preparation
+                .deadline
+                .require_current(now)
+                .map_err(|error| owner.poison(error))?;
+            if !original_query_is_latest(
+                &proof.query,
+                owner.session.binding(),
+                owner.catalog_sequence,
+                owner.has_pending_control_exchange(),
+            ) || proof.socket_cookie != owner.carrier.socket().peer().socket_cookie()
+                || !proof
+                    .execution()
+                    .has_same_execution(&owner.provider_execution)
+                || proof.execution().boot_id() != now.host_boot_id()
+            {
+                return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+            proof
+                .execution()
+                .revalidate(owner.carrier.socket().peer())
+                .map_err(|error| owner.poison(error))?;
+            let configuration = RevalidatedProviderConfigurationV1::capture_root_mount(
+                &mut owner.custody,
+                now.wall_seconds(),
             )
-            .is_err()
-            || select_catalog_claim(&guard.catalog, &publication, guard.binding_digest)
-                != Ok((guard.resource.clone(), guard.snapshot.clone()))
-        {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-        }
-        let (signer, public_key) = {
-            let inner = self.custody.inner();
-            let signer = inner.provider_authority().traffic_signer().clone();
-            let public_key = inner
-                .trust()
-                .keys()
-                .iter()
-                .find(|key| {
-                    key.signer() == &signer
-                        && key.state() == SourceProviderKeyTrustStateV1::Eligible
-                })
-                .map(|key| *key.public_key());
-            (signer, public_key)
-        };
-        let public_key = public_key
-            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        guard
-            .proof
-            .signed
-            .verify_for_query(&guard.proof.query, &signer, &public_key)
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        self.revalidate()?;
-        guard
-            .proof
-            .execution
-            .revalidate(self.carrier.socket().peer())
-            .map_err(|error| self.poison(error))?;
-        self.require_original_native_deadline_v3(&guard.deadline)
+            .map_err(|error| owner.poison(error))?;
+            if configuration.trust_head() != guard.trust
+                || configuration.revocation_head() != guard.revocation
+            {
+                return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+            let publication = crate::verify_catalog_publication(
+                &configuration,
+                preparation.publication.canonical_publication(),
+            )
+            .map_err(|error| owner.poison(error))?;
+            if publication.provider() != configuration.provider()
+                || publication.resource_namespace_digest() != configuration.resource_namespace_digest()
+                || join_current_catalog_claims(
+                    &proof.signed,
+                    &proof.query,
+                    &publication,
+                    preparation.mount_head_minimum,
+                )
+                .is_err()
+                || select_catalog_claim(&preparation.catalog, &publication, guard.binding_digest)
+                    != Ok((guard.resource.clone(), guard.snapshot.clone()))
+            {
+                return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+            let (signer, public_key) = {
+                let inner = owner.custody.inner();
+                let signer = inner.provider_authority().traffic_signer().clone();
+                let public_key = inner
+                    .trust()
+                    .keys()
+                    .iter()
+                    .find(|key| {
+                        key.signer() == &signer
+                            && key.state() == SourceProviderKeyTrustStateV1::Eligible
+                    })
+                    .map(|key| *key.public_key());
+                (signer, public_key)
+            };
+            let public_key = public_key
+                .ok_or_else(|| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            proof
+                .signed
+                .verify_for_query(&proof.query, &signer, &public_key)
+                .map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            owner.revalidate()?;
+            proof
+                .execution()
+                .revalidate(owner.carrier.socket().peer())
+                .map_err(|error| owner.poison(error))?;
+            owner.require_original_native_deadline_v3(&preparation.deadline)
+        })
     }
 
     // Clock observation failure is also a loss of original currentness. In

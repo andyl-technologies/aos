@@ -27,7 +27,6 @@ pub(super) struct OriginalNativePendingFlightV5 {
     owners: Option<JournalTransaction>,
     tentative: Option<SourceAcquisitionTableV2>,
     append: Option<PreparedOriginalRootAppendV5>,
-    readback: Option<OriginalRootProtectedReadbackV5>,
     closed: root_closed::OriginalRootClosedFlightV5,
 }
 
@@ -39,7 +38,6 @@ impl OriginalNativePendingFlightV5 {
             owners: None,
             tentative: None,
             append: None,
-            readback: None,
             closed: root_closed::OriginalRootClosedFlightV5::new(),
         }
     }
@@ -55,18 +53,20 @@ impl OriginalNativeAcquireFlightV5 {
         session: &mut CurrentRootMountSourceProviderSessionV1,
         sent: &SentProviderQueryV2,
     ) -> Result<bool> {
-        if self.stopped || self.stage != Stage::Finished || self.sent.is_some() {
-            return Err(state_error(
-                "original Pending requires retained completed send custody",
-            ));
-        }
+        OriginalFlightBoundaryV5::new(self, session).run(|flight, session| {
+            if flight.stopped || flight.stage != Stage::Finished || flight.sent.is_some() {
+                return Err(state_error(
+                    "original Pending requires retained completed send custody",
+                ));
+            }
 
-        let result = self.advance_pending_stage(table, native_index, writer, session, sent);
-        if result.is_err() {
-            self.stopped = true;
-            session.invalidate_native_acquire_commit_v3();
-        }
-        result
+            let result = flight.advance_pending_stage(table, native_index, writer, session, sent);
+            if result.is_err() {
+                flight.stopped = true;
+                session.invalidate_native_acquire_commit_v3();
+            }
+            result
+        })
     }
 
     fn advance_pending_stage(
@@ -78,9 +78,10 @@ impl OriginalNativeAcquireFlightV5 {
         sent: &SentProviderQueryV2,
     ) -> Result<bool> {
         let phase1 = self
-            .persisted_root1
+            .root1_append
             .as_ref()
-            .ok_or_else(|| state_error("original Pending stored Root1 readback absent"))?;
+            .ok_or_else(|| state_error("original Pending stored Root1 append absent"))?
+            .readback()?;
         let (attempt, authorization) = sent.security_parts();
         if phase1.attempt() != attempt {
             return Err(state_error("original Pending sent owner mismatch"));
@@ -184,14 +185,10 @@ impl OriginalNativeAcquireFlightV5 {
                 let append = self
                     .pending
                     .append
-                    .as_ref()
+                    .as_mut()
                     .ok_or_else(|| state_error("original Pending append absent"))?;
-                self.pending.readback = Some(writer.commit_prepared(append)?);
-                let readback = self
-                    .pending
-                    .readback
-                    .as_ref()
-                    .ok_or_else(|| state_error("original Pending readback absent"))?;
+                writer.commit_prepared_retaining_v5(append)?;
+                let readback = append.readback()?;
                 session
                     .revalidate_original_pending_receipt_v5(writer, readback, authorization, received)
                     .map_err(|_| state_error("original Pending actual readback differs from receipt"))?;
@@ -215,9 +212,10 @@ impl OriginalNativeAcquireFlightV5 {
             PendingStage::Complete => {
                 let readback = self
                     .pending
-                    .readback
+                    .append
                     .as_ref()
-                    .ok_or_else(|| state_error("original Pending readback absent"))?;
+                    .ok_or_else(|| state_error("original Pending append absent"))?
+                    .readback()?;
                 Self::install(table, native_index, writer, readback)?;
                 let received = self
                     .pending

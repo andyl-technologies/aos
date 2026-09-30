@@ -125,97 +125,102 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
         unsigned8: &PreparedNativeHeldControlV1,
         slot: &mut Option<PreparedOriginalRootAppendV5>,
     ) -> Result<(), JournalError> {
-        if slot.is_some() {
-            return Err(invalid());
-        }
+        custody::PreparationBoundaryV5::new(slot).run(|slot| {
+            if slot.is_some() {
+                return Err(invalid());
+            }
 
-        let (cut, captured, sequence) = self.prospective_original_pending_cut_v5(phase1, owners)?;
-        let old = phase1
-            .graph
-            .sidecars()
-            .get(&phase1.attempt)
-            .ok_or_else(invalid)?;
-        let r = RootNativeDispositionAssertionV1 {
-            disposition: NativeHeldDispositionV1::Closed,
-            observation: RootNativeObservationV1::PreparedOnly,
-            scope: *old.original_scope(),
-            source_artifact: ObjectDigest::from_bytes([0; 32]),
-            descriptor_commitment: ObjectDigest::from_bytes([0; 32]),
-            records: captured.witnesses().clone(),
-        };
-        if unsigned8.kind() != NativeHeldControlKindV1::RootClosed
-            || unsigned8.scope() != old.original_scope()
-            || unsigned8.section(Tag::RootDispositionAssertion)
-                != Some(r.to_canonical_bytes().map_err(|_| invalid())?.as_slice())
-        {
-            return Err(invalid());
-        }
+            let (cut, captured, sequence) = self.prospective_original_pending_cut_v5(phase1, owners)?;
+            let old = phase1
+                .graph
+                .sidecars()
+                .get(&phase1.attempt)
+                .ok_or_else(invalid)?;
+            let r = RootNativeDispositionAssertionV1 {
+                disposition: NativeHeldDispositionV1::Closed,
+                observation: RootNativeObservationV1::PreparedOnly,
+                scope: *old.original_scope(),
+                source_artifact: ObjectDigest::from_bytes([0; 32]),
+                descriptor_commitment: ObjectDigest::from_bytes([0; 32]),
+                records: captured.witnesses().clone(),
+            };
+            if unsigned8.kind() != NativeHeldControlKindV1::RootClosed
+                || unsigned8.scope() != old.original_scope()
+                || unsigned8.section(Tag::RootDispositionAssertion)
+                    != Some(r.to_canonical_bytes().map_err(|_| invalid())?.as_slice())
+            {
+                return Err(invalid());
+            }
 
-        validate_witness(old, unsigned8, &r, sequence)?;
-        let suffix = NativeHeldCompletionSuffixV1::new(
-            NativeHeldOwnerV1::Root,
-            10,
-            old.suffix().flight(),
-            Some(unsigned8.clone()),
-            old.suffix().controls().to_vec(),
-        )
-        .map_err(|_| invalid())?;
-        let next = RootNativeHeldSidecarV2::new(
-            *old.original_scope(),
-            [0; 16],
-            Some(r),
-            None,
-            None,
-            suffix,
-            old.admission_cut().clone(),
-            Some(cut),
-            None,
-        )
-        .map_err(|_| invalid())?;
+            validate_witness(old, unsigned8, &r, sequence)?;
+            let suffix = NativeHeldCompletionSuffixV1::new(
+                NativeHeldOwnerV1::Root,
+                10,
+                old.suffix().flight(),
+                Some(unsigned8.clone()),
+                old.suffix().controls().to_vec(),
+            )
+            .map_err(|_| invalid())?;
+            let next = RootNativeHeldSidecarV2::new(
+                *old.original_scope(),
+                [0; 16],
+                Some(r),
+                None,
+                None,
+                suffix,
+                old.admission_cut().clone(),
+                Some(cut),
+                None,
+            )
+            .map_err(|_| invalid())?;
 
-        let mut records = owners.records().to_vec();
-        records.push(JournalRecord::put(
-            RecordNamespace::MountSourceAcquisition,
-            native_root_sidecar_key_v2(phase1.attempt).map_err(|_| invalid())?,
-            next.to_canonical_bytes().map_err(|_| invalid())?,
-        ));
-        let owners = JournalTransaction::new(*owners.id(), records)?;
-        let (transaction, floor, old_floor) = derive_continuation(
-            &self.authority.journal.state,
-            &owners,
-            phase1.attempt,
-            self.authority.journal.limits,
-        )?;
-        let digest = authority_preflight_digest(std::slice::from_ref(&transaction));
-        *slot = Some(PreparedOriginalRootAppendV5 {
-            transaction,
-            snapshot: phase1.snapshot.clone(),
-            attempt: phase1.attempt,
-            digest,
-            floor,
-            preflight_complete: false,
-        });
+            let mut records = owners.records().to_vec();
+            records.push(JournalRecord::put(
+                RecordNamespace::MountSourceAcquisition,
+                native_root_sidecar_key_v2(phase1.attempt).map_err(|_| invalid())?,
+                next.to_canonical_bytes().map_err(|_| invalid())?,
+            ));
+            let owners = JournalTransaction::new(*owners.id(), records)?;
+            let (transaction, floor, old_floor) = derive_continuation(
+                &self.authority.journal.state,
+                &owners,
+                phase1.attempt,
+                self.authority.journal.limits,
+            )?;
+            *slot = Some(PreparedOriginalRootAppendV5 {
+                transaction,
+                snapshot: phase1.snapshot.clone(),
+                attempt: phase1.attempt,
+                digest: [0; 32],
+                floor,
+                preflight_complete: false,
+                failed: core::cell::Cell::new(false),
+                attempted: core::cell::Cell::new(false),
+                actual: None,
+            });
 
-        // The completed coupled candidate is retained before every remaining
-        // check. A failed candidate is permanently noncommittable.
-        let prepared = slot.as_mut().ok_or_else(invalid)?;
-        validate_transfer(
-            &prepared.transaction,
-            &old_floor,
-            prepared.floor.as_ref(),
-            self.authority.journal.limits,
-        )?;
-        validate_pending_sequence(
-            &self.authority.journal.state,
-            &prepared.transaction,
-            phase1.attempt,
-            sequence,
-        )?;
-        self.preflight(&prepared.transaction, phase1.attempt)?;
-        self.validate_readback(phase1)?;
-        prepared.preflight_complete = true;
+            // The completed coupled candidate is retained before every remaining
+            // check. A failed candidate is permanently noncommittable.
+            let prepared = slot.as_mut().ok_or_else(invalid)?;
+            prepared.digest = authority_preflight_digest(std::slice::from_ref(&prepared.transaction));
+            validate_transfer(
+                &prepared.transaction,
+                &old_floor,
+                prepared.floor.as_ref(),
+                self.authority.journal.limits,
+            )?;
+            validate_pending_sequence(
+                &self.authority.journal.state,
+                &prepared.transaction,
+                phase1.attempt,
+                sequence,
+            )?;
+            self.preflight(&prepared.transaction, phase1.attempt)?;
+            self.validate_readback(phase1)?;
+            prepared.preflight_complete = true;
 
-        Ok(())
+            Ok(())
+        })
     }
 }
 

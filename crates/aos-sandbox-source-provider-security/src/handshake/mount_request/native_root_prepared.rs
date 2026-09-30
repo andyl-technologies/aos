@@ -30,20 +30,23 @@ impl CurrentRootMountSourceProviderSessionV1 {
         writer: &MountOriginalNativeJournalAuthorityV5<'_>,
         prepared: &PreparedMountProviderRequestV2,
     ) -> Result<(), SourceProviderSecurityError> {
-        let guard = prepared
-            .native_currentness
-            .as_ref()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        writer
-            .validate_original_planning_snapshot(guard.original_planning_snapshot())
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        self.require_native_acquire_currentness_v3(guard)
+        OriginalBoundaryV5::new(self, ()).run(|owner, _| {
+            let guard = prepared
+                .native_currentness
+                .as_ref()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            writer
+                .validate_original_planning_snapshot(guard.original_planning_snapshot())
+                .map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            owner.require_native_acquire_currentness_v3(guard)
+        })
     }
 
     /// Sends the same original Acquire after Root1's successful atomic send.
     ///
-    /// Trusted Mount owns the Root1 progress bit. Both IO boundaries recheck
-    /// original sender/cut/deadline while retaining the same reservation.
+    /// The actual reservation records Root1's accepted send. Both IO boundaries
+    /// recheck original sender/cut/deadline. This compatibility wrapper returns
+    /// custody on ordinary error but cannot restore caller ownership on unwind.
     ///
     /// # Errors
     /// Returns the SAME reserved custody on currentness or atomic send failure.
@@ -56,23 +59,118 @@ impl CurrentRootMountSourceProviderSessionV1 {
         signed: &SignedNativeHeldControlV1,
         reservation: ReservedMountProviderRequestV2,
     ) -> Result<SentMountProviderRequestV2, MountProviderRequestSendRecoveryV2> {
-        let matches = persisted
-            .graph()
-            .sidecars()
-            .get(&persisted.attempt())
-            .is_some_and(|r| {
-                r.suffix().phase() == 1 && r.suffix().control(Kind::RootPrepared) == Some(signed)
-            });
-        if !matches
-            || self
-                .require_original_root1_v5(writer, persisted, &reservation)
-                .is_err()
+        let mut reservation = reservation;
+        let signed_request = match self.send_original_native_borrowed_v5(
+            writer,
+            persisted,
+            signed,
+            &reservation,
+        ) {
+            Ok(Some(request)) => request,
+            Ok(None) | Err(_) => return Err(MountProviderRequestSendRecoveryV2 { reservation }),
+        };
+        if native_catalog::custody::park_native_outcome_v5(
+            &mut reservation.prepared,
+            &signed_request,
+        )
+        .is_err()
         {
             self.poison(SourceProviderSecurityError::SessionContinuity);
             return Err(MountProviderRequestSendRecoveryV2 { reservation });
         }
-        self.send_reserved_mount_request_with_view(writer, reservation, |owner, retained| {
-            owner.require_original_root1_v5(writer, persisted, retained)
+
+        let ReservedMountProviderRequestV2 { prepared, .. } = reservation;
+        Ok(SentMountProviderRequestV2 {
+            projection: prepared.projection,
+            outcome: prepared.outcome,
+        })
+    }
+
+    /// Sends while retaining Reserved across every actual carrier boundary.
+    ///
+    /// # Errors
+    /// Keeps the same reservation or Sent output on refusal and unwind. Only a
+    /// fully rechecked Retryable result permits reuse of the reservation.
+    #[doc(hidden)]
+    pub fn send_original_native_acquire_retaining_v5(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        persisted: &OriginalRootProtectedReadbackV5,
+        signed: &SignedNativeHeldControlV1,
+        reservation: &mut Option<ReservedMountProviderRequestV2>,
+        sent: &mut Option<SentMountProviderRequestV2>,
+    ) -> Result<bool, SourceProviderSecurityError> {
+        OriginalBoundaryV5::new(self, reservation).run(|owner, reservation| {
+            if sent.is_some() {
+                return Err(SourceProviderSecurityError::SessionContinuity);
+            }
+            let reserved = reservation.as_ref()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let Some(request) = owner.send_original_native_borrowed_v5(
+                writer,
+                persisted,
+                signed,
+                reserved,
+            )? else {
+                return Ok(false);
+            };
+            let reserved = reservation.as_mut()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            native_catalog::custody::park_native_outcome_v5(&mut reserved.prepared, &request)?;
+
+            *sent = reservation.take().map(|reserved| {
+                let ReservedMountProviderRequestV2 { prepared, .. } = reserved;
+                SentMountProviderRequestV2 {
+                    projection: prepared.projection,
+                    outcome: prepared.outcome,
+                }
+            });
+            Ok(true)
+        })
+    }
+
+    fn send_original_native_borrowed_v5(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        persisted: &OriginalRootProtectedReadbackV5,
+        signed: &SignedNativeHeldControlV1,
+        reservation: &ReservedMountProviderRequestV2,
+    ) -> Result<Option<SignedSourceProviderRequestV1>, SourceProviderSecurityError> {
+        use native_catalog::custody::OriginalSendStateV5 as Send;
+        OriginalBoundaryV5::new(self, reservation).run(|owner, reservation| {
+            let reservation = *reservation;
+            if reservation.original_failed.get()
+                || reservation.root1_send.get() != Send::Accepted
+                || !matches!(reservation.acquire_send.get(), Send::Unattempted | Send::Retryable)
+                || persisted.graph().sidecars().get(&persisted.attempt()).is_none_or(|row| {
+                    row.suffix().phase() != 1
+                        || row.suffix().control(Kind::RootPrepared) != Some(signed)
+                })
+            {
+                return Err(SourceProviderSecurityError::SessionContinuity);
+            }
+            owner.require_original_root1_v5(writer, persisted, reservation)?;
+            let retryable_this_call = core::cell::Cell::new(false);
+            let result = owner.send_borrowed_mount_request_with_attempt_v5(
+                writer,
+                reservation,
+                || reservation.acquire_send.set(Send::Attempted),
+                |owner, reservation, boundary| {
+                    retryable_this_call.set(boundary == ProviderSendBoundaryV6::Retryable);
+                    reservation.acquire_send.set(match boundary {
+                        ProviderSendBoundaryV6::Accepted => Send::Accepted,
+                        ProviderSendBoundaryV6::Retryable => Send::Retryable,
+                    });
+                    owner.require_original_root1_v5(writer, persisted, reservation)
+                },
+            );
+            match result {
+                Ok(request) => Ok(Some(request)),
+                Err(_) if retryable_this_call.get()
+                    && reservation.acquire_send.get() == Send::Retryable
+                    && owner.revalidate().is_ok() => Ok(None),
+                Err(error) => Err(error),
+            }
         })
     }
 
@@ -90,6 +188,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     ) -> Result<SentMountProviderRequestV2, MountProviderRequestSendRecoveryV2> {
         self.send_original_native_acquire_v5(writer, persisted, signed, recovery.reservation)
     }
+
     /// Derives unsigned Root1 from genuine original custody and prospective rows.
     ///
     /// This produces DATA only. The real writer must atomically admit/read it
@@ -104,72 +203,104 @@ impl CurrentRootMountSourceProviderSessionV1 {
         prepared: &PreparedMountProviderRequestV2,
         owners: &aos_sandbox::JournalTransaction,
     ) -> Result<PreparedNativeHeldControlV1, SourceProviderSecurityError> {
-        let guard = prepared
-            .native_currentness
-            .as_ref()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        writer
-            .validate_original_planning_snapshot(guard.original_planning_snapshot())
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        self.require_native_acquire_currentness_v3(guard)?;
-        let attempt = owners.records().iter().filter_map(|record| {
-            if record.namespace() != aos_sandbox::RecordNamespace::MountSourceAcquisition { return None; }
-            match aos_sandbox_protocol::mount_source_acquisition_state::decode_mount_source_state_record_v2(record.key(), record.value()?) {
-                Ok(aos_sandbox_protocol::mount_source_acquisition_state::StoredRecordV2::ProviderQueryAttempt { value }) => Some(value),
-                _ => None,
+        let mut retained = None;
+        self.prepare_original_root_assertion_retaining_v5(writer, prepared, owners, &mut retained)?;
+        retained.ok_or(SourceProviderSecurityError::SessionContinuity)
+    }
+
+    /// Parks original unsigned Root1 before its post-preparation currentness checks.
+    ///
+    /// # Errors
+    /// Retains any output and revokes the actual Session on refusal or unwind.
+    #[doc(hidden)]
+    pub fn prepare_original_root_assertion_retaining_v5(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        prepared: &PreparedMountProviderRequestV2,
+        owners: &aos_sandbox::JournalTransaction,
+        root1_slot: &mut Option<PreparedNativeHeldControlV1>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        OriginalBoundaryV5::new(self, ()).run(|owner, _| {
+            if root1_slot.is_some() {
+                return Err(SourceProviderSecurityError::SessionContinuity);
             }
-        }).next().ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        if attempt.signed_request != prepared.signed_request
-            || prepared.projection.session_binding != self.session.binding()
-        {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-        }
-        let (_, captured, sequence) = writer
-            .prospective_original_admission_cut(owners, attempt.attempt_id)
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        let witness = NativeHeldOwnerWitnessV1::Root(
-            guard.original_root_witness(captured.witnesses().clone(), sequence),
-        )
-        .to_canonical_bytes()
-        .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        let request = prepared.projection.signed_request_digest;
-        let session = self.session.binding();
-        let mount_attempt = ObjectDigest::from_bytes(attempt.attempt_id);
-        let acquisition = prepared
-            .projection
-            .acquisition_id
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let scope = NativeHeldScopeV1 {
-            flight: native_held_flight_digest_v1(request, mount_attempt, session),
-            original_source_session: session,
-            mount_attempt,
-            provider_attempt: ObjectDigest::from_bytes([0; 32]),
-            provider_acquisition: acquisition,
-            original_root_request: request,
-            original_native_request: ObjectDigest::from_bytes([0; 32]),
-        };
-        let signer = self
-            .custody
-            .inner()
-            .root_authority()
-            .traffic_signer()
-            .clone();
-        let root1 = PreparedNativeHeldControlV1::new(
-            Kind::RootPrepared,
-            scope,
-            ObjectDigest::from_bytes([0; 32]),
-            vec![
-                NativeHeldSectionV1::new(Tag::Witness, witness)
-                    .map_err(|_| SourceProviderSecurityError::SessionContinuity)?,
-            ],
-            NativeHeldSignerV1::SourceProvider(signer),
-        )
-        .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        self.require_native_acquire_currentness_v3(guard)?;
-        writer
-            .validate_original_planning_snapshot(guard.original_planning_snapshot())
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        Ok(root1)
+            let guard = prepared
+                .native_currentness
+                .as_ref()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            writer
+                .validate_original_planning_snapshot(guard.original_planning_snapshot())
+                .map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            owner.require_native_acquire_currentness_v3(guard)?;
+            let attempt = owners
+                .records()
+                .iter()
+                .filter_map(|record| {
+                    if record.namespace() != aos_sandbox::RecordNamespace::MountSourceAcquisition {
+                        return None;
+                    }
+                    match aos_sandbox_protocol::mount_source_acquisition_state::decode_mount_source_state_record_v2(
+                        record.key(),
+                        record.value()?,
+                    ) {
+                        Ok(aos_sandbox_protocol::mount_source_acquisition_state::StoredRecordV2::ProviderQueryAttempt { value }) => Some(value),
+                        _ => None,
+                    }
+                })
+                .next()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            if attempt.signed_request != prepared.signed_request
+                || prepared.projection.session_binding != owner.session.binding()
+            {
+                return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+            let (_, captured, sequence) = writer
+                .prospective_original_admission_cut(owners, attempt.attempt_id)
+                .map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            let witness = NativeHeldOwnerWitnessV1::Root(
+                guard.original_root_witness(captured.witnesses().clone(), sequence)?,
+            )
+            .to_canonical_bytes()
+            .map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            let request = prepared.projection.signed_request_digest;
+            let session = owner.session.binding();
+            let mount_attempt = ObjectDigest::from_bytes(attempt.attempt_id);
+            let acquisition = prepared
+                .projection
+                .acquisition_id
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let scope = NativeHeldScopeV1 {
+                flight: native_held_flight_digest_v1(request, mount_attempt, session),
+                original_source_session: session,
+                mount_attempt,
+                provider_attempt: ObjectDigest::from_bytes([0; 32]),
+                provider_acquisition: acquisition,
+                original_root_request: request,
+                original_native_request: ObjectDigest::from_bytes([0; 32]),
+            };
+            let signer = owner
+                .custody
+                .inner()
+                .root_authority()
+                .traffic_signer()
+                .clone();
+            *root1_slot = Some(PreparedNativeHeldControlV1::new(
+                Kind::RootPrepared,
+                scope,
+                ObjectDigest::from_bytes([0; 32]),
+                vec![
+                    NativeHeldSectionV1::new(Tag::Witness, witness)
+                        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?,
+                ],
+                NativeHeldSignerV1::SourceProvider(signer),
+            )
+            .map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?);
+            owner.require_native_acquire_currentness_v3(guard)?;
+            writer
+                .validate_original_planning_snapshot(guard.original_planning_snapshot())
+                .map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            Ok(())
+        })
     }
 
     /// Confirms original reservation through the fully validated named v5 view.
@@ -197,6 +328,33 @@ impl CurrentRootMountSourceProviderSessionV1 {
             attempt_record,
             head_key,
             head_record,
+        )
+    }
+
+    /// Confirms and parks the actual reservation without consuming preparation early.
+    ///
+    /// # Errors
+    /// Retains preparation and any occupied output on exact readback failure or unwind.
+    #[allow(clippy::too_many_arguments)]
+    #[doc(hidden)]
+    pub fn confirm_original_native_reservation_retaining_v5(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        prepared: &mut Option<PreparedMountProviderRequestV2>,
+        attempt_key: Vec<u8>,
+        attempt_record: Vec<u8>,
+        head_key: Vec<u8>,
+        head_record: Vec<u8>,
+        reserved: &mut Option<ReservedMountProviderRequestV2>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        self.confirm_native_reservation_retaining_with_view_v5(
+            writer,
+            prepared,
+            attempt_key,
+            attempt_record,
+            head_key,
+            head_record,
+            reserved,
         )
     }
 
@@ -285,58 +443,71 @@ impl CurrentRootMountSourceProviderSessionV1 {
             SourceProviderSecurityError,
         ),
     > {
-        self.require_original_root1_v5(writer, admission, reservation)
-            .map_err(|error| (None, self.poison(error)))?;
-        let floor = admission
-            .floor()
-            .ok_or((None, SourceProviderSecurityError::SessionContinuity))?;
-        let sidecar = admission
-            .graph()
-            .sidecars()
-            .get(&admission.attempt())
-            .ok_or((None, SourceProviderSecurityError::SessionContinuity))?;
-        let NativeHeldOwnerWitnessV1::Root(witness) =
-            NativeHeldOwnerWitnessV1::from_canonical_bytes(
-                NativeHeldOwnerV1::Root,
-                floor
-                    .original_prepared()
-                    .section(Tag::Witness)
-                    .ok_or((None, SourceProviderSecurityError::SessionContinuity))?,
-            )
-            .map_err(|_| (None, SourceProviderSecurityError::SessionContinuity))?
-        else {
-            return Err((None, SourceProviderSecurityError::SessionContinuity));
-        };
-        if sidecar.suffix().phase() != 0
-            || witness.journal_sequence != admission.sequence()
-            || witness.local_socket_cookie != self.carrier.socket().peer().socket_cookie().get()
-            || witness.planning_sequence
-                != reservation
-                    .prepared
-                    .native_currentness
-                    .as_ref()
-                    .ok_or((None, SourceProviderSecurityError::SessionContinuity))?
-                    .original_planning_snapshot()
-                    .sequence()
-        {
-            return Err((
-                None,
-                self.poison(SourceProviderSecurityError::SessionContinuity),
-            ));
+        let mut signed = None;
+        match self.sign_original_root1_retaining_v5(writer, admission, reservation, &mut signed) {
+            Ok(()) => signed.ok_or((None, SourceProviderSecurityError::SessionContinuity)),
+            Err(error) => Err((signed, error)),
         }
-        let root1 = floor.original_prepared().clone();
-        let signature = self
-            .custody
-            .inner()
-            .outcome_key()
-            .signing_key()
-            .sign(&root1.signature_message())
-            .to_bytes();
-        let signed = root1.with_signature(signature);
-        if let Err(error) = self.require_original_root1_v5(writer, admission, reservation) {
-            return Err((Some(signed), self.poison(error)));
-        }
-        Ok(signed)
+    }
+
+    /// Signs once and parks the actual Root1 before any post-sign check.
+    ///
+    /// # Errors
+    /// Retains signed bytes and fail-stops the same reservation and Session on
+    /// any refusal or unwind. Signature attempts are never renewed.
+    #[doc(hidden)]
+    pub fn sign_original_root1_retaining_v5(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        admission: &OriginalRootProtectedReadbackV5,
+        reservation: &ReservedMountProviderRequestV2,
+        signed_slot: &mut Option<SignedNativeHeldControlV1>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        OriginalBoundaryV5::new(self, reservation).run(|owner, reservation| {
+            let reservation = *reservation;
+            if reservation.original_failed.get()
+                || reservation.root1_signature_attempted.get()
+                || signed_slot.is_some()
+            {
+                return Err(SourceProviderSecurityError::SessionContinuity);
+            }
+            owner.require_original_root1_v5(writer, admission, reservation)?;
+            let floor = admission.floor()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let sidecar = admission.graph().sidecars().get(&admission.attempt())
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let NativeHeldOwnerWitnessV1::Root(witness) =
+                NativeHeldOwnerWitnessV1::from_canonical_bytes(
+                    NativeHeldOwnerV1::Root,
+                    floor.original_prepared().section(Tag::Witness)
+                        .ok_or(SourceProviderSecurityError::SessionContinuity)?,
+                ).map_err(|_| SourceProviderSecurityError::SessionContinuity)?
+            else {
+                return Err(SourceProviderSecurityError::SessionContinuity);
+            };
+            if sidecar.suffix().phase() != 0
+                || witness.journal_sequence != admission.sequence()
+                || witness.local_socket_cookie != owner.carrier.socket().peer().socket_cookie().get()
+                || witness.planning_sequence != reservation.prepared.native_currentness
+                    .as_ref().ok_or(SourceProviderSecurityError::SessionContinuity)?
+                    .original_planning_snapshot().sequence()
+            {
+                return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+            let root1 = floor.original_prepared().clone();
+            let message = root1.signature_message();
+            reservation.root1_signature_attempted.set(true);
+            let signature = owner
+                .custody
+                .inner()
+                .outcome_key()
+                .signing_key()
+                .sign(&message)
+                .to_bytes();
+            *signed_slot = Some(root1.with_signature(signature));
+
+            owner.require_original_root1_v5(writer, admission, reservation)
+        })
     }
 
     /// Advances only the reservation snapshot after exact original Root1 storage.
@@ -352,45 +523,48 @@ impl CurrentRootMountSourceProviderSessionV1 {
         reservation: &mut ReservedMountProviderRequestV2,
         signed: &SignedNativeHeldControlV1,
     ) -> Result<(), SourceProviderSecurityError> {
-        writer
-            .validate_readback(persisted)
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        let floor = persisted
-            .floor()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let sidecar = persisted
-            .graph()
-            .sidecars()
-            .get(&persisted.attempt())
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        if sidecar.suffix().phase() != 1
-            || sidecar.suffix().control(Kind::RootPrepared) != Some(signed)
-            || signed.prepared() != floor.original_prepared()
-        {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-        }
-        let snapshot = writer
-            .snapshot()
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        reservation
-            .prepared
-            .validate_protected_reservation(
-                writer,
-                &snapshot,
-                &reservation.attempt_key,
-                &reservation.attempt_record,
-                &reservation.head_key,
-                &reservation.head_record,
-            )
-            .map_err(|error| self.poison(error))?;
-        let guard = reservation
-            .prepared
-            .native_currentness
-            .as_ref()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        self.require_native_acquire_currentness_v3(guard)?;
-        reservation.reservation_snapshot = snapshot;
-        self.require_original_root1_v5(writer, persisted, reservation)
+        OriginalBoundaryV5::new(self, reservation).run(|owner, reservation| {
+            let reservation = &mut **reservation;
+            writer
+                .validate_readback(persisted)
+                .map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            let floor = persisted
+                .floor()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let sidecar = persisted
+                .graph()
+                .sidecars()
+                .get(&persisted.attempt())
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            if sidecar.suffix().phase() != 1
+                || sidecar.suffix().control(Kind::RootPrepared) != Some(signed)
+                || signed.prepared() != floor.original_prepared()
+            {
+                return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+            let snapshot = writer
+                .snapshot()
+                .map_err(|_| owner.poison(SourceProviderSecurityError::SessionContinuity))?;
+            reservation
+                .prepared
+                .validate_protected_reservation(
+                    writer,
+                    &snapshot,
+                    &reservation.attempt_key,
+                    &reservation.attempt_record,
+                    &reservation.head_key,
+                    &reservation.head_record,
+                )
+                .map_err(|error| owner.poison(error))?;
+            let guard = reservation
+                .prepared
+                .native_currentness
+                .as_ref()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            owner.require_native_acquire_currentness_v3(guard)?;
+            reservation.reservation_snapshot = snapshot;
+            owner.require_original_root1_v5(writer, persisted, reservation)
+        })
     }
 
     /// Sends stored Root1 before the original Acquire on the SAME carrier.
@@ -406,28 +580,39 @@ impl CurrentRootMountSourceProviderSessionV1 {
         reservation: &ReservedMountProviderRequestV2,
         signed: &SignedNativeHeldControlV1,
     ) -> Result<bool, (bool, SourceProviderSecurityError)> {
-        self.require_original_root1_v5(writer, persisted, reservation)
-            .map_err(|error| (false, self.poison(error)))?;
-        let sidecar = persisted
-            .graph()
-            .sidecars()
-            .get(&persisted.attempt())
-            .ok_or((false, SourceProviderSecurityError::SessionContinuity))?;
-        if sidecar.suffix().phase() != 1
-            || sidecar.suffix().control(Kind::RootPrepared) != Some(signed)
-        {
-            return Err((
-                false,
-                self.poison(SourceProviderSecurityError::SessionContinuity),
-            ));
-        }
-        let sent = match self.carrier.send(&signed.to_canonical_bytes()) {
-            Ok(()) => true,
-            Err(CarrierFailureV1::Retryable) => false,
-            Err(CarrierFailureV1::Fatal(error)) => return Err((true, self.poison(error))),
-        };
-        self.require_original_root1_v5(writer, persisted, reservation)
-            .map_err(|error| (sent, self.poison(error)))?;
-        Ok(sent)
+        use native_catalog::custody::OriginalSendStateV5 as Send;
+        OriginalBoundaryV5::new(self, reservation).run(|owner, reservation| {
+            let reservation = *reservation;
+            if reservation.original_failed.get()
+                || !matches!(reservation.root1_send.get(), Send::Unattempted | Send::Retryable)
+            {
+                return Err((false, SourceProviderSecurityError::SessionContinuity));
+            }
+            owner.require_original_root1_v5(writer, persisted, reservation)
+                .map_err(|error| (false, owner.poison(error)))?;
+            let sidecar = persisted.graph().sidecars().get(&persisted.attempt())
+                .ok_or((false, SourceProviderSecurityError::SessionContinuity))?;
+            if sidecar.suffix().phase() != 1
+                || sidecar.suffix().control(Kind::RootPrepared) != Some(signed)
+            {
+                return Err((false, owner.poison(SourceProviderSecurityError::SessionContinuity)));
+            }
+            let bytes = signed.to_canonical_bytes();
+            reservation.root1_send.set(Send::Attempted);
+            let sent = match owner.carrier.send(&bytes) {
+                Ok(()) => {
+                    reservation.root1_send.set(Send::Accepted);
+                    true
+                }
+                Err(CarrierFailureV1::Retryable) => {
+                    reservation.root1_send.set(Send::Retryable);
+                    false
+                }
+                Err(CarrierFailureV1::Fatal(error)) => return Err((true, owner.poison(error))),
+            };
+            owner.require_original_root1_v5(writer, persisted, reservation)
+                .map_err(|error| (sent, owner.poison(error)))?;
+            Ok(sent)
+        })
     }
 }

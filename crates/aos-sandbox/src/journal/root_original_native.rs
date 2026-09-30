@@ -36,6 +36,7 @@ type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
 
 mod pending_v5;
 mod root_closed_v5;
+mod custody;
 
 #[cfg(test)]
 pub(super) use root_closed_v5::phase11_funded_data;
@@ -276,6 +277,17 @@ fn admission(
     prepared: PreparedNativeHeldControlV1,
     limits: JournalLimits,
 ) -> Result<(JournalTransaction, OriginalRootCapacityRecordV5), JournalError> {
+    let (transaction, floor) = derive_admission(state, owners, prepared, limits)?;
+    validate_transaction(&transaction, limits)?;
+    Ok((transaction, floor))
+}
+
+fn derive_admission(
+    state: &State,
+    owners: &JournalTransaction,
+    prepared: PreparedNativeHeldControlV1,
+    limits: JournalLimits,
+) -> Result<(JournalTransaction, OriginalRootCapacityRecordV5), JournalError> {
     require_named_funding(state, limits)?;
     let before = graph(state)?;
     pending(state, limits)?;
@@ -341,7 +353,6 @@ fn admission(
     ));
     records.push(floor.to_journal_record()?);
     let transaction = JournalTransaction::new(*owners.id(), records)?;
-    validate_transaction(&transaction, limits)?;
     Ok((transaction, floor))
 }
 
@@ -583,6 +594,9 @@ pub struct PreparedOriginalRootAppendV5 {
     digest: [u8; 32],
     floor: Option<OriginalRootCapacityRecordV5>,
     preflight_complete: bool,
+    failed: core::cell::Cell<bool>,
+    attempted: core::cell::Cell<bool>,
+    actual: Option<custody::ActualOriginalRootAppendV5>,
 }
 
 /// Binds exact original rows/floor to a physical current writer and sequence.
@@ -698,15 +712,9 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
         owners: &JournalTransaction,
         prepared: PreparedNativeHeldControlV1,
     ) -> Result<PreparedOriginalRootAppendV5, JournalError> {
-        self.current_graph()?;
-        let attempt = *prepared.scope().mount_attempt.as_bytes();
-        let (transaction, floor) = admission(
-            &self.authority.journal.state,
-            owners,
-            prepared,
-            self.authority.journal.limits,
-        )?;
-        self.prepared(transaction, attempt, Some(floor))
+        let mut retained = None;
+        self.prepare_admission_retaining_v5(owners, &prepared, &mut retained)?;
+        retained.ok_or_else(invalid)
     }
 
     /// Reconstructs exact prospective companions for unsigned original DATA.
@@ -753,30 +761,9 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
         owners: &JournalTransaction,
         attempt: [u8; 32],
     ) -> Result<PreparedOriginalRootAppendV5, JournalError> {
-        self.current_graph()?;
-        let (transaction, floor, _) = continuation(
-            &self.authority.journal.state,
-            owners,
-            attempt,
-            self.authority.journal.limits,
-        )?;
-        let append_frames = u64::try_from(transaction.records().len())
-            .map_err(|_| JournalError::SequenceExhausted)?
-            .checked_add(2)
-            .ok_or(JournalError::SequenceExhausted)?;
-        let successor_sequence = self
-            .authority
-            .journal
-            .snapshot_sequence()
-            .checked_add(append_frames)
-            .ok_or(JournalError::SequenceExhausted)?;
-        pending_v5::validate_pending_sequence(
-            &self.authority.journal.state,
-            &transaction,
-            attempt,
-            successor_sequence,
-        )?;
-        self.prepared(transaction, attempt, floor)
+        let mut retained = None;
+        self.prepare_transition_retaining_v5(owners, attempt, &mut retained)?;
+        retained.ok_or_else(invalid)
     }
 
     /// Prepares exact signed Root1 storage before either original carrier send.
@@ -789,6 +776,16 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
         admission: &OriginalRootProtectedReadbackV5,
         signed: &SignedNativeHeldControlV1,
     ) -> Result<PreparedOriginalRootAppendV5, JournalError> {
+        let mut retained = None;
+        self.prepare_root1_store_retaining_v5(admission, signed, &mut retained)?;
+        retained.ok_or_else(invalid)
+    }
+
+    fn original_root1_store_owners(
+        &self,
+        admission: &OriginalRootProtectedReadbackV5,
+        signed: &SignedNativeHeldControlV1,
+    ) -> Result<JournalTransaction, JournalError> {
         self.validate_readback(admission)?;
         let floor = admission.floor.as_ref().ok_or_else(invalid)?;
         let old = admission
@@ -837,25 +834,7 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
                 sidecar.to_canonical_bytes().map_err(|_| invalid())?,
             )],
         )?;
-        self.prepare_transition(&owners, admission.attempt)
-    }
-
-    fn prepared(
-        &self,
-        transaction: JournalTransaction,
-        attempt: [u8; 32],
-        floor: Option<OriginalRootCapacityRecordV5>,
-    ) -> Result<PreparedOriginalRootAppendV5, JournalError> {
-        self.preflight(&transaction, attempt)?;
-        let digest = authority_preflight_digest(std::slice::from_ref(&transaction));
-        Ok(PreparedOriginalRootAppendV5 {
-            transaction,
-            snapshot: self.snapshot()?,
-            attempt,
-            digest,
-            floor,
-            preflight_complete: true,
-        })
+        Ok(owners)
     }
 
     fn preflight(
@@ -885,57 +864,9 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
         &mut self,
         prepared: &PreparedOriginalRootAppendV5,
     ) -> Result<OriginalRootProtectedReadbackV5, JournalError> {
-        if !prepared.preflight_complete {
-            return Err(invalid());
-        }
-        self.validate_snapshot(&prepared.snapshot)?;
-        if authority_preflight_digest(std::slice::from_ref(&prepared.transaction))
-            != prepared.digest
-        {
-            return Err(invalid());
-        }
-        self.preflight(&prepared.transaction, prepared.attempt)?;
-        let _: CommitResult = self.authority.journal.commit_with_cache_gate(
-            &prepared.transaction,
-            None,
-            true,
-            false,
-            false,
-            false,
-            false,
-            SourceProjectAdmissionTransition::None,
-            controller_source_genesis::ControllerSourceGenesisTransition::None,
-            source_tree_genesis::SourceGenesisTransitionV1::None,
-            RootSourceGenesisTransitionV1::None,
-            Some(RootOwnerEdge::OriginalNative(prepared.attempt)),
-            CacheMutationGateV1::Ordinary,
-        )?;
-        self.readback(prepared)
-            .inspect_err(|_| self.authority.journal.poisoned = true)
-    }
-
-    fn readback(
-        &self,
-        prepared: &PreparedOriginalRootAppendV5,
-    ) -> Result<OriginalRootProtectedReadbackV5, JournalError> {
-        self.require_current()?;
-        if !self
-            .authority
-            .journal
-            .transaction_ids
-            .contains(prepared.transaction.id())
-            || prepared.transaction.records().iter().any(|record| {
-                self.authority.journal.get(record.namespace(), record.key()) != record.value()
-            })
-        {
-            return Err(JournalError::StaleAuthoritySnapshot);
-        }
-        Ok(OriginalRootProtectedReadbackV5 {
-            snapshot: self.snapshot()?,
-            graph: self.current_graph()?,
-            floor: prepared.floor.clone(),
-            attempt: prepared.attempt,
-        })
+        let mut actual = None;
+        self.commit_original_input_v5(custody::OriginalAppendInputV5::borrow(prepared), &mut actual)?;
+        actual.and_then(|capture| capture.complete).ok_or_else(invalid)
     }
 
     /// Reconstructs protected metadata for one existing original Root terminal.
