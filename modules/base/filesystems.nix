@@ -5,6 +5,12 @@
 ##! This is the core of the immutable OS design — the root filesystem is
 ##! mounted read-only and all mutable state lives elsewhere.
 ##!
+##! Mutable state defaults to ext4. `/var` is a repart partition, or an MD
+##! array declared in `aos.provisioning.storage.arrays`, either optionally
+##! inside a TPM-sealed LUKS2 container on a measured-boot image. Additional
+##! data volumes are mounted through `aos.filesystems.volumes`
+##! (modules/services/storage-topology.nix).
+##!
 ##! This module owns the pool's existence: whether the host uses ZFS, which
 ##! pool carries its state, and importing that pool at boot. The datasets in
 ##! it and the memory ZFS may hold are owned by modules/base/zfs-datasets.nix
@@ -23,10 +29,14 @@
   cfg = config.aos.filesystems;
   protectedSandboxNetworkRoots =
     config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
+  protectedSandboxRoots =
+    protectedSandboxNetworkRoots
+    || config.aos.sandbox.controllerService.method46TpmFloor.required
+    || config.aos.sandbox.storageBroker.method46TpmFloor.required;
   varRootContext =
     config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
   varRootContextOption =
-    lib.optionalString protectedSandboxNetworkRoots ",rootcontext=${varRootContext}";
+    lib.optionalString protectedSandboxRoots ",rootcontext=${varRootContext}";
 
   # OpenZFS is an out-of-tree module, so its build is bound to one exact
   # kernel. `aos.boot.storage` overrides this when the immutable image slots
@@ -73,7 +83,13 @@
         # generates the systemd mount unit that mounts it.
       ''
       else ''
-        # /var — persistent mutable state (partition created by systemd-repart)
+        # /var — persistent mutable state. The initrd mounts it before
+        # switch-root from whichever device carries the filesystem: the repart
+        # partition, the `var` MD array that partition is a member of, or the
+        # LUKS2 mapper on either (modules/services/boot-substrate.nix). Stage-2
+        # systemd adopts that live mount; this entry names the root-disk
+        # partition, which exists in every topology, so the generated device
+        # dependency is always satisfiable.
         /dev/disk/by-partlabel/var  /var  ext4  rw,relatime,nosuid,nodev${varRootContextOption}  0  2
       ''
     )

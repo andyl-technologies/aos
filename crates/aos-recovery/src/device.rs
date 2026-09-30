@@ -79,6 +79,17 @@ pub fn discover_host_layout() -> Result<HostLayout, DeviceError> {
     let root_b = unique_blkid("PARTLABEL", "root-b")?;
     let root_b_hash = unique_blkid("PARTLABEL", "root-b-hash")?;
     let var = unique_blkid("PARTLABEL", "var")?;
+    // A host that mirrors its system state declares a `var` MD array in
+    // host.nix; the partition then only carries an MD superblock. Recovery
+    // maintenance authenticates and mounts the root-disk partition directly,
+    // so it must refuse rather than treat the member as the volume.
+    if probe_type(&var)?.as_deref() == Some("linux_raid_member") {
+        return Err(DeviceError::Topology(
+            "the var partition is an MD array member; recovery maintenance supports only \
+             a system-state volume carried directly by the root-disk partition"
+                .into(),
+        ));
+    }
     let devices = [&esp, &root_a, &root_a_hash, &root_b, &root_b_hash, &var];
     let parent = partition_parent(&esp)?;
     for device in devices.iter().skip(1) {
@@ -139,6 +150,22 @@ fn media_parent(device: &Path) -> Result<PathBuf, DeviceError> {
         });
     }
     Ok(sys)
+}
+
+/// Probes the on-disk signature type of a device, ignoring the blkid cache.
+fn probe_type(device: &Path) -> Result<Option<String>, DeviceError> {
+    let output = Command::new("/bin/blkid")
+        .args(["-c", "/dev/null", "-p", "-s", "TYPE", "-o", "value"])
+        .arg(device)
+        .output()?;
+    // blkid exits 2 for a device without any recognized signature.
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let value = String::from_utf8(output.stdout)
+        .map_err(|error| DeviceError::Topology(error.to_string()))?;
+    let value = value.trim();
+    Ok((!value.is_empty()).then(|| value.to_owned()))
 }
 
 fn unique_blkid(field: &str, value: &str) -> Result<PathBuf, DeviceError> {

@@ -174,7 +174,78 @@ The repository intentionally does not wrap this destructive step in an AOS
 command. Use the deployment system's normal image-import or disk-imaging
 workflow, with its audit and confirmation controls.
 
+## Install redundant ext4 storage
+
+Redundancy for persistent state does not need a different image. Write the
+raw image to the boot disk as above, give every additional disk a blank GUID
+partition table, and declare the topology in `host.nix`:
+
+```sh
+for disk in /dev/disk/by-id/REPLACE_WITH_DISK_2 /dev/disk/by-id/REPLACE_WITH_DISK_3; do
+  sudo sgdisk --clear "$disk"
+done
+```
+
+```nix
+{
+  aos.provisioning.storage = {
+    partitions = {
+      var = {
+        sizeMin = "64G";
+        sizeMax = "64G";
+        grow = false;
+      };
+      var-mirror = {
+        device = "/dev/disk/by-id/REPLACE_WITH_DISK_2";
+        sizeMin = "64G";
+        sizeMax = "64G";
+      };
+      data-a = {
+        device = "/dev/disk/by-id/REPLACE_WITH_DISK_2";
+        sizeMin = "100G";
+        grow = true;
+      };
+      data-b = {
+        device = "/dev/disk/by-id/REPLACE_WITH_DISK_3";
+        sizeMin = "100G";
+        grow = true;
+      };
+    };
+    arrays = {
+      var = {
+        level = "raid1";
+        members = [ "var" "var-mirror" ];
+      };
+      data = {
+        level = "raid1";
+        members = [ "data-a" "data-b" ];
+        # Measured-boot images only.
+        encryption = "tpm2";
+      };
+    };
+  };
+
+  aos.filesystems.volumes.data.mountPoint = "/srv/data";
+}
+```
+
+The first boot carves every partition, creates the arrays, and commits the
+provenance marker only once they exist. Later boots assemble the arrays from
+their superblocks before `/var` is mounted, and start a mirror degraded when a
+member is missing. The immutable A/B image slots and the EFI System Partition
+remain on the boot disk; this layout protects state, not the boot path. The
+[`host.nix` guide](host-nix.md#mirror-the-system-state) documents the levels,
+naming rules, encryption policy, and mount units.
+
 ## Install redundant encrypted ZFS storage
+
+> [!NOTE]
+> ZFS is supported when configured, at the lowest of the
+> [filesystem support tiers](support-status.md#filesystem-support-tiers).
+> OpenZFS is an out-of-tree module whose Linux integration has produced memory
+> retention, write stalls, and kernel panics on large hosts that no
+> configuration bounds. Prefer the ext4 layout above unless a deployment needs
+> ZFS features, and qualify ZFS on the exact host and kernel first.
 
 The reusable `aos.profiles.bareMetalZfs` profile provides a different
 bare-metal layout. Every selected disk receives an independently bootable ESP
@@ -363,6 +434,9 @@ If first boot stops before the target, inspect the units and state in
   out-of-band recovery path when moving network and access policy to runtime.
 - Secure-boot and measured-boot variants in this repository use test keys.
   They are validation fixtures, not production enrollment artifacts.
+- MD arrays declared in `host.nix` protect persistent state only; the image
+  slots and EFI System Partition are not mirrored, and the recovery console
+  does not yet open a mirrored `/var`.
 - The ZFS installer supports mirrored pairs striped into RAID10-style pools.
   RAID0-only topology is intentionally not exposed because it cannot satisfy
   the redundant-storage contract.

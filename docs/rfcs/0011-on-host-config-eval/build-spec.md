@@ -1461,9 +1461,14 @@ aos metadata restore-runtime     # hash-check and restore last evaluated input
 The initrd graph is `aos-metadata-detect.service` →
 `aos-metadata-network.service` → `aos-metadata-fetch.service` →
 `aos-metadata-authorize.service` → `aos-provisioning-eval.service` →
-`aos-repart.service`. Every phase uses
+`aos-repart.service` → `aos-storage-topology.service`. Every phase uses
 `DefaultDependencies=no` and `RemainAfterExit=yes`; authorization failure is
-fatal before repart.
+fatal before repart, and the provenance marker commits only after the
+topology unit has created every declared array. Both storage units rewrite
+the GPT and trigger a partition-table rescan, so on verity images
+`systemd-veritysetup@root.service` and `aos-verity-root-verify.service` order
+after `aos-storage-topology.service`; opening `root-a` during the rescan
+would fail the verity scan and isolate to the boot-identity failure target.
 
 ## 2. The `PlatformFetcher` trait
 
@@ -1748,15 +1753,19 @@ Rust deserializes the evaluated `aos.provisioning-plan/v1` JSON with unknown
 fields denied. It permits `null` for the root disk or stable
 `/dev/disk/by-id/...` targets, validates labels/sizes/UUIDs, rejects protected
 partition types and the reserved sentinel GUID, and permits at most one grow
-partition per device. Measured-boot `var` remains raw; the unmeasured default is
-ext4.
+partition per device. The topology layer resolves `arrays` and each volume's
+encryption against image policy, then renders `storage-arrays` and
+`storage-volumes` beside the repart definitions. A TPM-sealed volume is
+rendered raw; the unmeasured `var` default is ext4.
 
 The hard ordering is:
 
 ```text
 durable-state-detect → metadata-fetch → authorize exact host.nix
   → restricted aos.provisioning eval → Rust validate/render
-  → dry-run every disk → mutate every disk → commit GPT provenance marker
+  → dry-run every disk → mutate every disk → reserve pending marker
+  → assemble/create arrays → format plain array volumes
+  → commit GPT provenance marker
   → aos-var-crypt/mount-var → switch_root → full aos-eval
 ```
 

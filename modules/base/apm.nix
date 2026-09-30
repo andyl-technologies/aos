@@ -303,9 +303,10 @@ in {
 
     # install-at-boot's baked /etc (desired.toml + registry config) plus the
     # tmpfiles config. `apm registry add` writes
-    # `~/.config/apm/registries.d/<name>.toml`; the root-owned tree is baked by
-    # lib/build/rootfs.nix because /root lives on the read-only rootfs, so
-    # tmpfiles only manages writable runtime paths.
+    # `~/.config/apm/registries.d/<name>.toml`; /root is bound from the
+    # persistent state volume (modules/base/homes.nix), so tmpfiles creates
+    # the root-owned authoring tree there on first boot like every other
+    # writable runtime path.
     environment.etc =
       installAtBootEtc
       // {
@@ -318,6 +319,9 @@ in {
           d  /var/lib/apm/credential-transactions 0700 root root - -
           d  /var/lib/apm/config                 0755 root root - -
           d  /var/lib/apm/config/registries.d    0755 root root - -
+          d  /root/.config                       0700 root root - -
+          d  /root/.config/apm                   0755 root root - -
+          d  /root/.config/apm/registries.d      0755 root root - -
         '';
       };
 
