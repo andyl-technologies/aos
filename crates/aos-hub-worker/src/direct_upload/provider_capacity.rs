@@ -63,14 +63,24 @@ impl Pool {
     }
 
     fn wake(&self) {
-        let wakers = self
-            .waiters
-            .borrow()
-            .iter()
-            .map(|waiter| waiter.waker.clone())
-            .collect::<Vec<_>>();
-        for waker in wakers {
-            waker.wake();
+        // Another Durable Object may release this isolate-wide pool. A Wasm
+        // waker would resume its waiter in that object's I/O context. Each
+        // Wasm waiter instead owns the runtime timer below; native executors
+        // retain ordinary immediate wakeups.
+        #[cfg(target_arch = "wasm32")]
+        return;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let wakers = self
+                .waiters
+                .borrow()
+                .iter()
+                .map(|waiter| waiter.waker.clone())
+                .collect::<Vec<_>>();
+            for waker in wakers {
+                waker.wake();
+            }
         }
     }
 }
