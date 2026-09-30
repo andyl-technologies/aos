@@ -220,6 +220,7 @@ in
     runtimeDeps =
       if isDarwin
       then [
+        bash
         bison
         flex
         coreutils
@@ -491,15 +492,26 @@ in
       {
         name = "build";
         script =
-          if isDarwin
-          then ''
-            export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
-            ${buildPackages.gnumake}/bin/make -j$NIX_BUILD_CORES world
+          lib.optionalString isCross ''
+            # PGXS installs both regression drivers for target-side extension
+            # tests. Their child shell must run on the target, while Make keeps
+            # its native shell for source generation during the cross build.
+            sed -i 's|-DSHELLPROG="$(SHELL)"|-DSHELLPROG="${bash}/bin/bash"|' \
+              src/test/regress/GNUmakefile
+            grep -F -- '-DSHELLPROG="${bash}/bin/bash"' \
+              src/test/regress/GNUmakefile
           ''
-          else ''
-            export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
-            make -j$NIX_BUILD_CORES world
-          '';
+          + (
+            if isDarwin
+            then ''
+              export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
+              ${buildPackages.gnumake}/bin/make -j$NIX_BUILD_CORES world
+            ''
+            else ''
+              export XML_CATALOG_FILES="${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml"
+              make -j$NIX_BUILD_CORES world
+            ''
+          );
       }
       {
         name = "install";
