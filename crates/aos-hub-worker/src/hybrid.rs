@@ -982,14 +982,19 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
     let Some(signature) = request.headers().get(STORAGE_WORK_SIGNATURE_HEADER)? else {
         return Response::error("storage work signature is required", 401);
     };
-    let Some(body) = read_bounded_body(&mut request, aos_hub_core::direct_upload::MAX_DIRECT_CAPABILITY_BYTES).await?
+    let Some(body) = read_bounded_body(
+        &mut request,
+        aos_hub_core::direct_upload::MAX_DIRECT_CAPABILITY_BYTES,
+    )
+    .await?
     else {
         return Response::error("storage capability challenge is invalid", 401);
     };
     let key = StorageWorkKey::new(env.secret("HUB_STORAGE_WORK_KEY")?.to_string())
         .map_err(|error| worker::Error::RustError(error.to_string()))?;
     if body != STORAGE_CAPABILITIES_CHALLENGE {
-        return crate::direct_upload::broker::capabilities(&request, env, &key, &signature, &body).await;
+        return crate::direct_upload::broker::capabilities(&request, env, &key, &signature, &body)
+            .await;
     }
     if key.verify_body(&signature, &body).is_err() {
         return Response::error("storage capability challenge is invalid", 401);
@@ -1285,7 +1290,11 @@ pub async fn proxy(request: Request, env: &Env) -> Result<Response> {
     proxy_with_upload_phase(request, env, None).await
 }
 
-pub(crate) async fn proxy_upload_phase(request: Request, env: &Env, phase: &str) -> Result<Response> {
+pub(crate) async fn proxy_upload_phase(
+    request: Request,
+    env: &Env,
+    phase: &str,
+) -> Result<Response> {
     match proxy_with_upload_phase(request, env, Some(phase)).await {
         Ok(response) => Ok(response),
         Err(error) => {
@@ -1614,7 +1623,10 @@ async fn deliver_storage(
         return Response::error("hybrid immutable response exceeds its authorized size", 503);
     };
     if bytes.len() != maximum {
-        return Response::error("hybrid immutable response differs from its authorized size", 503);
+        return Response::error(
+            "hybrid immutable response differs from its authorized size",
+            503,
+        );
     }
     let mut response = Response::from_bytes(bytes)?
         .with_status(status)
@@ -1623,7 +1635,10 @@ async fn deliver_storage(
     Ok(response)
 }
 
-pub(crate) async fn read_bounded_response(mut response: Response, maximum: usize) -> Result<Option<Vec<u8>>> {
+pub(crate) async fn read_bounded_response(
+    mut response: Response,
+    maximum: usize,
+) -> Result<Option<Vec<u8>>> {
     if response
         .headers()
         .get("content-length")?
