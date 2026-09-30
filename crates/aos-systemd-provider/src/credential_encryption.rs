@@ -11,12 +11,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use aos_ability_model::LocalKey;
 
 use crate::executable::validate_store_executable;
 
 const DEFAULT_PCR_PUBLIC_KEY: &str = "/etc/aos/pcr-sign.pem";
 const MAX_CREDENTIAL_BYTES: u64 = 1024 * 1024;
+
+/// Encrypts one named credential using its pinned backend and PCR policy.
+///
+/// # Errors
+/// Returns an error for malformed arguments, invalid input files, a backend
+/// failure, malformed ciphertext, or an output write failure.
 pub(crate) fn run(arguments: &[OsString]) -> Result<()> {
     let request = EncryptionRequest::parse(arguments)?;
     request.validate()?;
@@ -48,7 +53,7 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<()> {
 
 struct EncryptionRequest {
     systemd_creds: PathBuf,
-    name: LocalKey,
+    name: String,
     input: PathBuf,
     public_key: PathBuf,
 }
@@ -74,7 +79,8 @@ impl EncryptionRequest {
                     let value = value
                         .to_str()
                         .ok_or_else(|| anyhow::anyhow!("credential name is not valid UTF-8"))?;
-                    name = Some(LocalKey::new(value)?);
+                    validate_credential_name(value)?;
+                    name = Some(value.to_owned());
                 }
                 Some("--input") if input.is_none() => input = Some(PathBuf::from(value)),
                 Some("--pcr-public-key") if public_key.is_none() => {
@@ -128,6 +134,19 @@ fn default_pcr_public_key() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"));
     root.join(DEFAULT_PCR_PUBLIC_KEY.trim_start_matches('/'))
+}
+
+/// Keeps the credential name grammar independent of deployment schemas.
+fn validate_credential_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 128
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+    {
+        bail!("credential name must contain 1..128 characters from [A-Za-z0-9._-]");
+    }
+    Ok(())
 }
 
 fn validate_regular_file(path: &Path, label: &str) -> Result<()> {
@@ -190,6 +209,14 @@ fn trim_pretty_part(part: &str) -> (&str, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_names_preserve_the_bounded_grammar() {
+        assert!(validate_credential_name("edge.v1_0-main").is_ok());
+        for name in ["", "host/path", "é", &"x".repeat(129)] {
+            assert!(validate_credential_name(name).is_err());
+        }
+    }
 
     #[test]
     fn normalizes_pretty_ciphertext() {

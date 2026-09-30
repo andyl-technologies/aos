@@ -1,0 +1,239 @@
+##! Retains a native image scope and authenticates its exact immutable inputs.
+{
+  lib,
+  pkgs,
+  packages,
+  graph,
+  retire ? [],
+  scope,
+  system,
+  inputs ? [],
+  withProfileRecords ? false,
+  configuration ? [],
+  evaluationInput ? null,
+  runtimeConfiguration ? [],
+}: let
+  modules = lib.packageModules;
+  resolved = {
+    inherit system;
+    artifacts = modules.payloads packages;
+    modules = modules.closure packages;
+  };
+  sourceLibrary = lib.packageModuleLibrary;
+  discard = value: builtins.unsafeDiscardStringContext (builtins.toString value);
+  packageClosure = builtins.genericClosure {
+    startSet =
+      map (package: {
+        key = discard package;
+        inherit package;
+      })
+      packages;
+    operator = record:
+      map (package: {
+        key = discard package;
+        inherit package;
+      })
+      ((record.package.moduleDeps or []) ++ (record.package.runtimeDeps or []));
+  };
+  artifacts = lib.packageArtifacts;
+  packageForArtifact = artifact: let
+    candidates = builtins.filter (record: let
+      canonical = artifacts.canonicalReference record.package;
+    in
+      canonical.name
+      == artifact.name
+      && canonical.version == artifact.version
+      && discard record.package == discard artifact.path)
+    packageClosure;
+    origins = lib.uniqueBy (record:
+      builtins.toString (record.package.deploymentArtifact or
+        (throw "Image package '${artifact.name}' has no retained native deployment artifact.")))
+    candidates;
+  in
+    if builtins.length origins != 1
+    then throw "Image artifact '${artifact.path}' does not resolve to one retained package envelope."
+    else (builtins.head origins).package;
+  profileRecord = artifact: let
+    package = packageForArtifact artifact;
+    envelope = package.deploymentArtifact or (throw "Image package '${modules.nameFor package}' has no retained native deployment artifact.");
+    documentation = package.documentationArtifact or null;
+    qualification = package.qualificationArtifact or null;
+  in {
+    store_path = artifact.path;
+    pushed_at = 0;
+    pushed_by = "image";
+    expires_at = null;
+    is_root = true;
+    last_accessed = 0;
+    access_count = 0;
+    apm = {
+      name = artifact.name;
+      version = artifact.version;
+      explicit = builtins.elem (discard artifact.path) (map discard packages);
+      registry = "image";
+      installed_at = "image";
+      held = false;
+      source_drv = "";
+      source_nar_hash = "";
+      deployment = builtins.toString envelope;
+      module_documentation =
+        if documentation == null
+        then null
+        else builtins.toString documentation;
+      qualification =
+        if qualification == null
+        then null
+        else builtins.toString qualification;
+      attestation = {};
+    };
+  };
+  profileRecords =
+    if withProfileRecords
+    then map profileRecord resolved.artifacts
+    else [];
+  profileRoots = lib.concatMap (record:
+    [record.apm.deployment]
+    ++ lib.optional (record.apm.module_documentation != null) record.apm.module_documentation
+    ++ lib.optional (record.apm.qualification != null) record.apm.qualification)
+  profileRecords;
+  # Replay files belong to immutable store roots, which admission retains.
+  storeRoot = value: let
+    file = builtins.toString value;
+    match = builtins.match "(/nix/store/[^/]+)(/.*)?" file;
+  in
+    if match == null
+    then throw "Native evaluation inputs must be retained in the Nix store."
+    else builtins.substring 0 (builtins.stringLength (builtins.elemAt match 0)) file;
+  configurationRoots = map storeRoot (configuration ++ runtimeConfiguration);
+  retainedInputs = lib.uniqueBy builtins.toString (inputs ++ profileRoots ++ configurationRoots ++ [(storeRoot evaluationFile)]);
+  evaluationFile =
+    if evaluationInput != null
+    then evaluationInput
+    else
+      import ./evaluation-input.nix {
+        inherit lib pkgs packages scope system configuration runtimeConfiguration;
+      };
+  profileTemplate = buildPackages.writeTextFile {
+    name = "aos-image-installed-template";
+    destination = "/template.json";
+    text = builtins.toJSON profileRecords;
+  };
+  graphInputs = artifacts.graphInputs {
+    inherit graph;
+    packageArtifacts = resolved.artifacts;
+    packageModules = resolved.modules;
+    evaluationInputs = [sourceLibrary] ++ retainedInputs;
+  };
+  inputRoots = lib.uniqueBy builtins.toString (
+    graphInputs ++ builtins.map (artifact: artifact.path) resolved.artifacts
+  );
+  buildPackages = pkgs.buildPackages;
+  closureInfo = (lib.build.closureInfo {pkgs = buildPackages;}) {
+    rootPaths = inputRoots;
+    pname = "aos-image-admission-closure";
+  };
+  # Nix exports base32 hashes; the authenticated native protocol uses SHA256
+  # hex identities. Keep conversion in the source-built Nix implementation.
+  normalizedInventory = buildPackages.runCommand "aos-native-admission-inventory" {} ''
+    mkdir -p "$out"
+    ${buildPackages.jq}/bin/jq -c '.paths[]' ${closureInfo}/inventory.json |
+    while IFS= read -r entry; do
+      printf '%s\n' "$entry" > entry.json
+      nar_hash=$(${buildPackages.jq}/bin/jq -r .narHash entry.json)
+      nar_hash=$(${buildPackages.nix}/bin/nix --extra-experimental-features nix-command \
+        hash to-base16 --type sha256 "$nar_hash")
+      ${buildPackages.jq}/bin/jq -c --arg hash "sha256:$nar_hash" \
+        '.narHash = $hash' entry.json
+    done > paths.jsonl
+    ${buildPackages.jq}/bin/jq -cs '{paths:.}' paths.jsonl > "$out/inventory.json"
+  '';
+  receipt = buildPackages.runCommand "aos-image-admission" {} ''
+    rmdir "$out"
+    ${buildPackages.jq}/bin/jq -c '
+      {schema:"aos.package.admission",roots:[.paths[] | .path as $root | {
+        storePath:.path,narHash:.narHash,narSize:.narSize,
+        references:(.references | map(select(. != $root) | split("/")[-1] | split("-")[0]) | sort | unique)
+      }]}
+    ' ${normalizedInventory}/inventory.json > "$out"
+  '';
+  # The authenticated receipt root is its document. Its expected
+  # digest is a separate image-owned artifact, avoiding receipt self-identity.
+  admissionDigest = buildPackages.runCommand "aos-image-admission-digest" {} ''
+    mkdir -p "$out"
+    digest=$(${buildPackages.coreutils}/bin/sha256sum ${receipt})
+    printf 'sha256:%s\n' "''${digest%% *}" > "$out/admission-sha256"
+  '';
+  installed = buildPackages.runCommand "aos-image-installed" {} ''
+    mkdir -p "$out"
+    ${buildPackages.jq}/bin/jq -c '.[] | .apm.deployment, (.apm.module_documentation // empty), (.apm.qualification // empty)' ${profileTemplate}/template.json |
+    while IFS= read -r encoded; do
+      artifact=$(${buildPackages.jq}/bin/jq -r '.' <<EOF
+    $encoded
+    EOF
+      )
+      document="$artifact/deployment.json"
+      if [ ! -f "$document" ]; then document="$artifact/options.json"; fi
+      if [ ! -f "$document" ]; then document="$artifact/qualification.json"; fi
+      test -f "$document"
+      digest=$(${buildPackages.coreutils}/bin/sha256sum "$document")
+      size=$(${buildPackages.coreutils}/bin/wc -c < "$document")
+      ${buildPackages.jq}/bin/jq -c --arg root "$artifact" --arg digest "sha256:''${digest%% *}" --argjson size "$size" '
+        .paths[] | select(.path == $root) | {
+          store_path:.path,nar_hash:.narHash,nar_size:.narSize,
+          references:(.references | map(select(. != $root) | split("/")[-1] | split("-")[0]) | sort | unique),
+          document_sha256:$digest,document_size:$size
+        }
+      ' ${normalizedInventory}/inventory.json
+    done > "$out/locators.jsonl"
+    ${buildPackages.jq}/bin/jq -cs 'map({key:.store_path,value:.}) | from_entries' "$out/locators.jsonl" > "$out/locators.json"
+    ${buildPackages.jq}/bin/jq --slurpfile locators "$out/locators.json" '
+      map(.apm.deployment as $deployment | .apm.module_documentation as $documentation | .apm.qualification as $qualification |
+        .apm.deployment = ($locators[0][$deployment] // error("Unadmitted deployment artifact")) |
+        .apm.module_documentation = (if $documentation == null then null else
+          ($locators[0][$documentation] // error("Unadmitted documentation artifact")) end) |
+        .apm.qualification = (if $qualification == null then null else
+          ($locators[0][$qualification] // error("Unadmitted qualification artifact")) end))
+    ' ${profileTemplate}/template.json > "$out/installed.json"
+  '';
+  transaction = {
+    schema = "aos.package.transaction";
+    inherit scope system graph retire;
+    inherit (resolved) artifacts;
+    packages = resolved.modules;
+    inputs = builtins.map builtins.toString (lib.uniqueBy builtins.toString ([receipt] ++ graphInputs));
+  };
+  transactionFile = pkgs.writeTextFile {
+    name = "aos-image-transaction";
+    destination = "/transaction.json";
+    text = builtins.toJSON transaction;
+  };
+  packagesFile = pkgs.writeTextFile {
+    name = "aos-image-packages";
+    destination = "/packages.json";
+    text = builtins.toJSON resolved;
+  };
+  metadata = {
+    nativeTransaction = transaction;
+    nativeResolvedPackages = resolved;
+    nativeDeploymentParts = [closureInfo receipt admissionDigest transactionFile packagesFile] ++ lib.optional (evaluationFile.nativeEvaluationDescriptor or false) evaluationFile ++ lib.optional withProfileRecords installed;
+    nativeSourceLibrary = sourceLibrary;
+    nativeEvaluationInputs = graphInputs;
+    nativeEvaluationDescriptor = evaluationFile;
+  };
+in
+  (pkgs.runCommand "aos-${lib.concatStringsSep "-" scope}-deployment" {
+      passthru = metadata;
+    } ''
+      mkdir -p "$out"
+      ln -s ${transactionFile}/transaction.json "$out/transaction.json"
+      ln -s ${packagesFile}/packages.json "$out/packages.json"
+      ln -s ${receipt} "$out/admission.json"
+      ln -s ${admissionDigest}/admission-sha256 "$out/admission-sha256"
+      ln -s ${sourceLibrary} "$out/module-library"
+      ln -s ${closureInfo}/registration "$out/registration"
+      ${lib.optionalString withProfileRecords ''
+        ln -s ${installed}/installed.json "$out/installed.json"
+      ''}
+      ln -s ${evaluationFile} "$out/evaluation.json"
+    '')
+  // metadata

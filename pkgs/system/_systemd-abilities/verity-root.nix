@@ -2,35 +2,24 @@
 {
   config,
   lib,
+  package,
+  dependencies,
   ...
 }: let
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  milestones = serviceManagement.milestones;
-  interfaces = serviceManagement.interfaces;
-  resultOf = lib.abilities.resultOf;
-  consumerInstance = "systemd-verity-root";
   serviceName = "aos-systemd-verity-root-setup";
-  initrdStage =
-    config.aos.abilities.environment
-    != null
-    && config.aos.abilities.environment.stage == "initrd";
-
-  milestone = key: name:
-    serviceManagement.forProducer {
-      inherit consumerInstance key;
-      interface = interfaces.systemMilestoneReadiness;
-      parameters.milestone = name;
-    };
-  bootIdentity = milestone "boot-identity" milestones.bootIdentityValidated;
-  deviceManager = milestone "device-manager" milestones.deviceManager;
-  deviceEvents = milestone "device-events" milestones.deviceEventsTriggered;
-  deviceSettle = milestone "device-settle" milestones.deviceSettle;
-  integrityFailure = milestone "integrity-failure" milestones.bootIntegrityFailure;
-  readiness = key: resultOf key "resource";
+  initrdStage = (config.aos.boot.stage or "host") == "initrd";
+  units = {
+    boot-identity = "aos-boot-identity-guard.service";
+    device-manager = "systemd-udevd.service";
+    device-events = "systemd-udev-trigger.service";
+    device-settle = "systemd-udev-settle.service";
+    integrity-failure = "aos-boot-integrity-failure.target";
+  };
+  readiness = key: units.${key};
 
   setup = {
-    inherit consumerInstance;
     activationOwner = "image";
+    autoStart = false;
     service = serviceName;
     manager_identity = {
       name = serviceName;
@@ -45,8 +34,7 @@
       start = [
         {
           executable = {
-            artifact = lib.abilities.packageOutput {};
-            entry_point = "libexec/aos-systemd-verity-root-setup";
+            path = "${package}/libexec/aos-systemd-verity-root-setup";
             arguments = [];
           };
           ignore_failure = false;
@@ -94,31 +82,10 @@
     };
     environment = {
       variables = {};
-      search_path = builtins.map lib.abilities.packageOutput [
-        {}
-        {package = "coreutils";}
-      ];
+      search_path = [package.path dependencies.coreutils.path];
     };
   };
-  producers = [
-    bootIdentity
-    deviceManager
-    deviceEvents
-    deviceSettle
-    integrityFailure
-  ];
 in {
-  config = lib.mkMerge [
-    {
-      aos.services."systemd-verity-root.aos-systemd-verity-root-setup" =
-        setup
-        // {
-          enable = initrdStage;
-        };
-    }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = initrdStage;
-    })
-  ];
+  config.aos.services."systemd-verity-root.aos-systemd-verity-root-setup" =
+    setup // {enable = initrdStage;};
 }

@@ -1,8 +1,7 @@
 //! Provider-owned import of signed measurements for installed boot artifacts.
 
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{Read as _, Write as _};
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
@@ -27,117 +26,238 @@ struct UkiMeasurement {
     expected_pcr11: String,
 }
 
-/// Imports the signed PCR 11 expectation for the running seed image.
+/// Returns authenticated measurements of the physically selected running image.
 ///
 /// # Errors
-///
-/// Returns an error when the selected ESP, running image state, boot artifact,
-/// signed measurement, or public key cannot be authenticated exactly.
+/// Returns an error for an unretained verifier/key, malformed signed metadata,
+/// an ambiguous UKI, mismatched UKI bytes, or invalid signed root measurements.
 pub(crate) fn run(arguments: &[String]) -> Result<()> {
-    let [flag, public_key] = arguments else {
-        bail!("usage: aos-systemd-image-measurement-index --pcr-public-key PATH");
+    let [
+        openssl_flag,
+        openssl,
+        objcopy_flag,
+        objcopy,
+        key_flag,
+        public_key,
+    ] = arguments
+    else {
+        bail!(
+            "usage: aos-systemd-image-evidence --openssl PATH --objcopy PATH --pcr-public-key PATH"
+        );
     };
     ensure!(
-        flag == "--pcr-public-key",
-        "unknown measurement-index argument"
+        openssl_flag == "--openssl"
+            && objcopy_flag == "--objcopy"
+            && key_flag == "--pcr-public-key",
+        "image verifier arguments are not canonical"
     );
-    let public_key = PathBuf::from(public_key);
-    ensure!(
-        public_key.is_absolute(),
-        "PCR public key path must be absolute"
-    );
-
-    import_measurement(&public_key)
+    for path in [openssl, objcopy, public_key] {
+        let path = Path::new(path);
+        ensure!(
+            path.is_absolute()
+                && path.starts_with("/nix/store")
+                && path
+                    .components()
+                    .all(|part| matches!(part, Component::RootDir | Component::Normal(_)))
+                && fs::canonicalize(path)? == path
+                && fs::symlink_metadata(path)?.is_file(),
+            "image verifier inputs must be canonical immutable files"
+        );
+    }
+    let evidence = verified_evidence(
+        Path::new(public_key),
+        Path::new(openssl),
+        Path::new(objcopy),
+    )?;
+    std::io::stdout().write_all(&serde_json::to_vec(&evidence)?)?;
+    Ok(())
 }
 
-fn import_measurement(public_key: &Path) -> Result<()> {
+fn verified_evidence(public_key: &Path, openssl: &Path, objcopy: &Path) -> Result<Value> {
     validate_boot_mount()?;
-
-    let state_path = Path::new(IMAGE_STATE);
-    let mut images: Value = serde_json::from_slice(
-        &fs::read(state_path).with_context(|| format!("reading {}", state_path.display()))?,
-    )
-    .context("decoding image generation state")?;
+    let images: Value =
+        serde_json::from_slice(&read_bounded(Path::new(IMAGE_STATE), 1024 * 1024)?)?;
     let running_number = images
         .get("running")
         .and_then(Value::as_u64)
         .context("image state has no running generation number")?;
     let generations = images
-        .get_mut("generations")
-        .and_then(Value::as_array_mut)
+        .get("generations")
+        .and_then(Value::as_array)
         .context("image state has no generation list")?;
-    let mut matching = generations.iter_mut().filter(|generation| {
-        generation.get("number").and_then(Value::as_u64) == Some(running_number)
-    });
-    let running = matching
-        .next()
-        .context("running image generation is absent")?;
-    ensure!(
-        matching.next().is_none(),
-        "running image generation is ambiguous"
-    );
-    let registry = running
-        .get("registry")
+    let matching = generations
+        .iter()
+        .filter(|generation| {
+            generation.get("number").and_then(Value::as_u64) == Some(running_number)
+        })
+        .collect::<Vec<_>>();
+    let [running] = matching.as_slice() else {
+        bail!("running image is absent or ambiguous");
+    };
+    let toplevel = running
+        .get("toplevel")
         .and_then(Value::as_str)
-        .context("running image has no registry")?;
-    if registry != "seed" {
-        ensure!(
-            running
-                .get("expected_pcr11")
-                .and_then(Value::as_str)
-                .is_some_and(|digest| !digest.is_empty()),
-            "registry image has no authenticated PCR 11 expectation"
-        );
-        return Ok(());
-    }
-
-    let recorded = safe_uki_path(
-        running
-            .get("uki_path")
+        .context("running image omits immutable toplevel")?;
+    ensure!(
+        fs::read_link("/run/current-system")? == Path::new(toplevel),
+        "running image differs from verified immutable boot identity"
+    );
+    let boot_contract = running
+        .get("boot_artifact_contract")
+        .and_then(Value::as_str)
+        .context("running image omits boot contract")?;
+    let provider = running
+        .get("boot_provider_state")
+        .and_then(|state| state.get("evidence"))
+        .context("running image omits backend evidence")?;
+    let recorded = safe_source_path(
+        provider
+            .get("uki-source-path")
             .and_then(Value::as_str)
-            .context("running image has no boot artifact path")?,
+            .context("running image has no authenticated UKI source path")?,
     )?;
     let recorded_uki = Path::new(BOOT_ROOT).join(&recorded);
-    let live_uki = resolve_unique_live_uki(Path::new(BOOT_ROOT), &recorded)?;
+    let installed = safe_uki_path(
+        provider
+            .get("installed-entry")
+            .and_then(Value::as_str)
+            .context("running image has no installed entry")?,
+    )?;
+    let live_uki = resolve_unique_live_uki(Path::new(BOOT_ROOT), &installed)?;
     let measurement = PathBuf::from(format!("{}.measurement", recorded_uki.display()));
     let signature = PathBuf::from(format!("{}.sig", measurement.display()));
-    for required in [
-        live_uki.as_path(),
-        measurement.as_path(),
-        signature.as_path(),
-        public_key,
-    ] {
-        ensure!(
-            required.is_file(),
-            "required file is missing: {}",
-            required.display()
-        );
-    }
-
-    run_command(
-        Command::new("openssl")
-            .args(["dgst", "-sha256", "-verify"])
-            .arg(public_key)
-            .arg("-signature")
-            .arg(&signature)
-            .arg(&measurement),
-        "verifying signed boot measurement metadata",
-    )?;
-    let parsed = parse_measurement(&fs::read_to_string(&measurement)?)?;
+    read_bounded(&signature, 16 * 1024)?;
+    let measurement_bytes = read_bounded(&measurement, 4096)?;
+    // Verify the exact buffered document that is parsed below. Re-reading the
+    // writable ESP path after verification would introduce a substitution race.
+    let mut verifier = Command::new(openssl)
+        .env_clear()
+        .args(["dgst", "-sha256", "-verify"])
+        .arg(public_key)
+        .arg("-signature")
+        .arg(&signature)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()?;
+    verifier
+        .stdin
+        .take()
+        .context("signature verifier input is absent")?
+        .write_all(&measurement_bytes)?;
     ensure!(
-        sha256_file(&live_uki)? == parsed.uki_sha256,
-        "measurement metadata belongs to a different boot artifact"
+        verifier.wait()?.success(),
+        "signed boot measurement verification failed"
+    );
+    let parsed = parse_measurement(std::str::from_utf8(&measurement_bytes)?)?;
+    // Capture the UKI once before checking its signature-bound digest and
+    // parsing sections. The ESP can be writable during image maintenance.
+    fs::create_dir_all("/run/aos")?;
+    let stage = tempfile::Builder::new()
+        .prefix("image-evidence-")
+        .tempdir_in("/run/aos")?;
+    let captured = stage.path().join("uki.efi");
+    let source = rustix::fs::open(
+        &live_uki,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?;
+    let source = fs::File::from(source);
+    ensure!(
+        source.metadata()?.is_file() && source.metadata()?.len() <= 512 * 1024 * 1024,
+        "signed UKI is not a bounded regular file"
+    );
+    let mut captured_file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&captured)?;
+    let copied = std::io::copy(&mut source.take(512 * 1024 * 1024 + 1), &mut captured_file)?;
+    ensure!(
+        copied <= 512 * 1024 * 1024,
+        "signed UKI grew beyond its bound"
+    );
+    captured_file.sync_all()?;
+    ensure!(
+        sha256_file(&captured)? == parsed.uki_sha256,
+        "signed measurement belongs to a different boot artifact"
     );
 
-    if let Some(recorded) = running.get("expected_pcr11").and_then(Value::as_str) {
+    let cmdline_path = stage.path().join("cmdline");
+    let status = Command::new(objcopy)
+        .env_clear()
+        .args(["-O", "binary", "--only-section=.cmdline"])
+        .arg(&captured)
+        .arg(&cmdline_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .status()?;
+    ensure!(
+        status.success(),
+        "extracting signed UKI command line failed"
+    );
+    let cmdline = read_bounded(&cmdline_path, 64 * 1024)?;
+    let cmdline = std::str::from_utf8(&cmdline)?.trim_end_matches('\0');
+    ensure!(
+        !cmdline.contains('\0'),
+        "signed UKI command line contains an embedded NUL"
+    );
+    let root_hash = unique_parameter(cmdline, "roothash")?;
+    if let Some(root_hash) = &root_hash {
         ensure!(
-            recorded == parsed.expected_pcr11,
-            "catalog and signed boot artifact PCR 11 disagree"
+            is_lower_hex_digest(root_hash),
+            "signed root hash is not canonical SHA-256"
         );
-        return Ok(());
     }
-    running["expected_pcr11"] = Value::String(parsed.expected_pcr11);
-    write_atomic(state_path, &serde_json::to_vec_pretty(&images)?)
+    let root_uuid = unique_parameter(cmdline, "aos.verity-uuid")?;
+    if let Some(uuid) = &root_uuid {
+        ensure!(
+            uuid.len() == 36
+                && uuid.bytes().enumerate().all(|(index, byte)| {
+                    if [8, 13, 18, 23].contains(&index) {
+                        byte == b'-'
+                    } else {
+                        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+                    }
+                }),
+            "signed verity UUID is not canonical"
+        );
+    }
+    Ok(
+        serde_json::json!({"toplevel":toplevel,"boot_artifact_contract":boot_contract,
+        "expected_pcr11":parsed.expected_pcr11,"root_verity_roothash":root_hash,
+        "root_verity_uuid":root_uuid}),
+    )
+}
+
+fn unique_parameter(cmdline: &str, name: &str) -> Result<Option<String>> {
+    let prefix = format!("{name}=");
+    let matches = cmdline
+        .split_ascii_whitespace()
+        .filter_map(|word| word.strip_prefix(&prefix))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Ok(None),
+        [value] if !value.is_empty() => Ok(Some((*value).into())),
+        _ => bail!("signed UKI command line has ambiguous or empty {name}"),
+    }
+}
+
+fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_file() && metadata.len() <= limit,
+        "boot evidence is not a bounded regular file"
+    );
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= limit,
+        "boot evidence grew beyond its bound"
+    );
+    Ok(bytes)
 }
 
 fn validate_boot_mount() -> Result<()> {
@@ -212,6 +332,26 @@ fn safe_uki_path(recorded: &str) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+fn safe_source_path(value: &str) -> Result<PathBuf> {
+    if let Ok(path) = safe_uki_path(value) {
+        return Ok(path);
+    }
+    let parts = value.split('/').collect::<Vec<_>>();
+    ensure!(
+        parts.len() == 4
+            && parts[0] == "EFI"
+            && parts[1] == ".aos-candidates"
+            && parts[3] == "candidate.efi",
+        "invalid staged UKI source"
+    );
+    let generation: u32 = parts[2].parse()?;
+    ensure!(
+        generation > 0 && generation.to_string() == parts[2],
+        "invalid staged generation"
+    );
+    Ok(PathBuf::from(value))
+}
+
 fn resolve_unique_live_uki(boot_root: &Path, recorded: &Path) -> Result<PathBuf> {
     let exact = boot_root.join(recorded);
     if exact.is_file() {
@@ -249,7 +389,12 @@ fn stable_entry(entry: &str) -> Result<String> {
         .context("boot entry has no .efi suffix")?;
     let stable = match stem.rsplit_once('+') {
         Some((base, tries))
-            if !base.is_empty() && tries.bytes().all(|byte| byte.is_ascii_digit()) =>
+            if !base.is_empty()
+                && !tries.is_empty()
+                && tries.split('-').count() <= 2
+                && tries.split('-').all(|part| {
+                    !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+                }) =>
         {
             base
         }
@@ -307,33 +452,6 @@ fn sha256_file(path: &Path) -> Result<String> {
         hasher.update(&buffer[..read]);
     }
     Ok(hex::encode(hasher.finalize()))
-}
-
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().context("image state path has no parent")?;
-    let temporary = parent.join(".measurement-index-state.tmp");
-    match fs::symlink_metadata(&temporary) {
-        Ok(metadata) if metadata.file_type().is_file() => fs::remove_file(&temporary)?,
-        Ok(_) => bail!("measurement index temporary path is not a regular file"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    fs::rename(&temporary, path)?;
-    fs::File::open(parent)?.sync_all()?;
-    Ok(())
-}
-
-fn run_command(command: &mut Command, action: &str) -> Result<()> {
-    let status = command.status().with_context(|| action.to_string())?;
-    ensure!(status.success(), "{action} failed with {status}");
-    Ok(())
 }
 
 #[cfg(test)]

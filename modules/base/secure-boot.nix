@@ -305,41 +305,6 @@ in {
           distinct from the db key and the module-signing key.
         '';
       };
-
-      signedPcrs = lib.mkOption {
-        type = lib.types.str;
-        default = "11";
-        description = ''
-          PCRs covered by the *signed* policy (flexible across UKIs that
-          share the policy key). PCR 11 is the UKI/boot-phase measurement
-          — the one that changes per UKI and that the signature blesses.
-        '';
-      };
-
-      pinnedPcrs = lib.mkOption {
-        type = lib.types.str;
-        default = "7+12";
-        description = ''
-          PCRs bound by *value* (not the signature), in systemd's
-          plus-separated PCR syntax. PCR 7 records Secure Boot state and PCR
-          12 records boot inputs outside the embedded UKI command line.
-          Changing either denies unattended `/var` unlock and requires the
-          recovery key to replace the TPM enrollment.
-        '';
-      };
-
-      recoveryKeyPath = lib.mkOption {
-        type = lib.types.str;
-        default = "/run/aos-var-recovery.key";
-        description = ''
-          Where the first-boot sealing writes the generated LUKS recovery
-          passphrase. MUST be off the encrypted volume it unlocks; the
-          default is the `/run` tmpfs. A deployment is expected to escrow
-          this off-machine (e.g. report it back through the provisioning
-          metadata channel) — "escrowed somewhere recoverable, never on
-          /var" is the hard requirement (RFC-0006 measured-boot.md).
-        '';
-      };
     };
   };
 
@@ -493,24 +458,6 @@ in {
         (builtins.toString pcrKeyForInitrd)
       ];
       environment.etc."aos/pcr-sign.pem".source = "${pcrKeyForInitrd}/pcr.pem";
-    })
-
-    # Keep the complete conditional on a selection-stage storage option. The
-    # resulting stage module does not depend on package-owned host options
-    # that are absent from the smaller selection and initrd option trees.
-    (lib.mkIf (cfg.measuredBoot.enable && config.aos.boot.storage.backend != "zfs-zvol") {
-      aos.activation.stages.initrd = {
-        modules = [
-          {
-            aos.security.measuredVar = {
-              enable = true;
-              pcrPublicKey = "${pcrKeyForInitrd}/pcr.pem";
-              inherit (cfg.measuredBoot) signedPcrs pinnedPcrs recoveryKeyPath;
-              requireVerity = config.aos.security.verity.enable;
-            };
-          }
-        ];
-      };
     })
   ];
 }
