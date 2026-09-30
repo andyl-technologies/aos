@@ -28,6 +28,7 @@ pub mod prefetch;
 pub mod profile;
 pub mod release;
 pub mod repl;
+pub mod runtime_docs;
 pub mod serve;
 pub mod show;
 pub mod system;

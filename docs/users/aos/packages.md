@@ -84,6 +84,28 @@ apm rollback --generation N --dry-run
 apm rollback --generation N
 ```
 
+## Prepare an image before selecting it
+
+On a live AOS host, root can authenticate and stage a system image separately
+from choosing the next boot:
+
+```sh
+apm image prepare server --registry acme --dry-run
+apm image prepare server --registry acme --yes
+```
+
+Preparation imports the signed closure, performs physical staging, and indexes
+the authenticated receipt. It prints the exact staged `ImageGeneration` as JSON.
+A dry-run resolves the package without importing, staging, or writing image
+state. Preparation does not select the next boot or submit a rollout.
+
+Add `--qualified` to require explicit authenticated candidate health before
+staging for a later qualified rollout. This check does not itself qualify a
+rollout; subsequent operator-source admission still applies. Pending profile or
+image work must be recovered before preparing another candidate. Cancellation
+waits for immutable transfers to finish before physical writes; interrupted
+physical staging retains its intent for authenticated retry.
+
 ## Manage machine-wide packages
 
 Ordinary machine-wide packages are reconciled from an authoritative desired

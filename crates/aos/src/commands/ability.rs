@@ -15,14 +15,17 @@ use aos_doc_model::artifact_consumption::{
 use aos_doc_model::runtime::RuntimeDocument;
 use std::collections::BTreeSet;
 mod browser;
+mod evaluate;
 
-/// Runs native ability inspection without evaluating Nix or invoking handlers.
+/// Runs native inspection or pure source replay without invoking handlers.
 ///
 /// # Errors
 /// Returns an error for invalid or oversized native documents, unavailable
-/// committed generations, ambiguous graph identities, or output failures.
+/// committed generations, ambiguous graph identities, failed or cancelled source
+/// replay, or output failures.
 pub async fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
     match command {
+        AbilityCommand::Evaluate(args) => evaluate::run(args),
         AbilityCommand::Journal(args) => {
             let inspection = aos_ability_runtime::activation::inspect(
                 &args.journal,

@@ -22,6 +22,22 @@ fn run(directory: &Path, arguments: &[&str]) -> Output {
 }
 
 #[test]
+fn source_replay_requires_an_explicit_store_tool_and_emits_no_partial_json() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = run(
+        directory.path(),
+        &["--json", "ability", "evaluate", "evaluation-input.json"],
+    );
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("native source replay requires --nix-store or AOS_NIX_STORE")
+    );
+}
+
+#[test]
 fn native_json_mode_and_html_use_the_shared_reference_reader() {
     let directory = tempfile::tempdir().unwrap();
     let document = reference("Enable <sample>.");
