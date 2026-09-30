@@ -8,9 +8,9 @@
 //! {"schema":"aos.module.documentation","scope":["package","example"],"system":"x86_64-linux","packages":[],"options":[],"abilities":{}}
 //! ```
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use aos_ability_plan::module_graph::{CheckedModuleGraph, GRAPH_LIMITS};
+use aos_ability_plan::module_graph::{CheckedModuleGraph, GRAPH_LIMITS, check_retirement};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -163,6 +163,7 @@ enum Source {
         scope: Vec<String>,
         system: String,
         graph: CheckedModuleGraph,
+        retire: BTreeSet<String>,
     },
 }
 
@@ -184,6 +185,17 @@ impl RuntimeDocument {
     pub fn transaction_graph(&self) -> Option<&CheckedModuleGraph> {
         match &self.source {
             Source::Transaction { graph, .. } => Some(graph),
+            Source::ModuleReference(_) => None,
+        }
+    }
+
+    /// Returns explicit retirement decisions from a checked native transaction.
+    ///
+    /// Module references contain declarations and therefore have no retirement list.
+    #[must_use]
+    pub fn transaction_retirement(&self) -> Option<&BTreeSet<String>> {
+        match &self.source {
+            Source::Transaction { retire, .. } => Some(retire),
             Source::ModuleReference(_) => None,
         }
     }
@@ -220,10 +232,19 @@ impl RuntimeDocument {
                 let graph =
                     CheckedModuleGraph::decode(&serde_json::to_vec(graph).map_err(invalid)?)
                         .map_err(invalid)?;
+                let retirement: Vec<String> = serde_json::from_value(
+                    original
+                        .get("retire")
+                        .cloned()
+                        .ok_or_else(|| invalid("missing explicit retirement list"))?,
+                )
+                .map_err(invalid)?;
+                let retire = check_retirement(&graph, &retirement).map_err(invalid)?;
                 Source::Transaction {
                     scope,
                     system,
                     graph,
+                    retire,
                 }
             }
             _ => {
@@ -421,7 +442,7 @@ mod tests {
             RuntimeDocument::from_json(br#"{"schema":"aos.package-ability-reference/v1"}"#)
                 .is_err()
         );
-        assert!(RuntimeDocument::from_json(br#"{"schema":"aos.package.transaction","scope":[],"system":"x86_64-linux","graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}}"#).is_err());
+        assert!(RuntimeDocument::from_json(br#"{"schema":"aos.package.transaction","scope":[],"system":"x86_64-linux","retire":[],"graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}}"#).is_err());
     }
 
     #[test]
@@ -457,5 +478,26 @@ mod tests {
         assert!(html.contains("Configured instances: main"));
         assert!(html.contains("A &lt;message&gt;"));
         assert!(reference.render_plain().contains("Input message: str"));
+    }
+    #[test]
+    fn transaction_retirement_is_required_checked_and_rendered_as_desired_intent() {
+        let mut transaction = serde_json::json!({
+            "schema":"aos.package.transaction", "scope":["host","main"],
+            "system":"x86_64-linux", "retire":["<retained-effect>"],
+            "graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}
+        });
+        let document =
+            RuntimeDocument::from_json(&serde_json::to_vec(&transaction).unwrap()).unwrap();
+        assert_eq!(
+            document.transaction_retirement().unwrap(),
+            &BTreeSet::from(["<retained-effect>".to_string()])
+        );
+        assert!(document.render_plain().contains("<retained-effect>"));
+        assert!(document.render_html().contains("&lt;retained-effect&gt;"));
+
+        transaction["retire"] = serde_json::json!(["duplicate", "duplicate"]);
+        assert!(RuntimeDocument::from_json(&serde_json::to_vec(&transaction).unwrap()).is_err());
+        transaction.as_object_mut().unwrap().remove("retire");
+        assert!(RuntimeDocument::from_json(&serde_json::to_vec(&transaction).unwrap()).is_err());
     }
 }

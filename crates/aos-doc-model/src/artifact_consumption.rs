@@ -10,8 +10,7 @@ use aos_ability_model::{
     ArtifactConsumptionEvidenceDocument, ArtifactConsumptionMechanism,
     ArtifactConsumptionObservation, ArtifactFileEvidence, ArtifactRetentionRequirement,
     BUILD_TOOL_EXECUTION_FEATURE, ELF_STARTUP_LINKAGE_FEATURE, HELPER_EXECUTION_FEATURE,
-    IMMUTABLE_DATA_INPUT_FEATURE, RUNTIME_PLUGIN_LOAD_FEATURE, RequiredFeature, VersionedDocument,
-    decode_canonical,
+    IMMUTABLE_DATA_INPUT_FEATURE, RUNTIME_PLUGIN_LOAD_FEATURE, RequiredFeature, decode_canonical,
 };
 use aos_contract::Sha256Digest;
 use serde::Serialize;

@@ -1,13 +1,13 @@
-//! Test-only decoder for a producer-emitted initrd stage contract.
+//! Checks producer-emitted initrd contracts and exact native image attachments.
 
 use std::fs;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_image_finalizer::assembly::UNSIGNED_IMAGE_ASSEMBLY_V2;
+use aos_image_finalizer::assembly::UNSIGNED_IMAGE_ASSEMBLY_V3;
 use aos_image_finalizer::capture::capture_unsigned_assembly;
-use aos_image_finalizer::finalize::verify_static_ability_contract_attachments;
+use aos_image_finalizer::finalize::verify_native_deployment_attachments;
 use aos_image_finalizer::initrd_contract::InitrdStageContractV1;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
@@ -61,8 +61,8 @@ pub(super) fn verify(arguments: &[String]) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error when the assembly is malformed, an input changes during
-/// capture, the image is not schema v2, the embedded initrd contract and exact
-/// archive bytes disagree, or either stage-specific ability contract is absent.
+/// capture, the image is not schema v3, the embedded initrd contract and exact
+/// archive bytes disagree, or either native stage deployment is absent.
 pub(super) fn verify_assembly(arguments: &[String]) -> Result<()> {
     if arguments.len() != 2 {
         bail!("usage: aos-release-fleet-fixture image-assembly-contract ROOT RELEASE_ID");
@@ -71,8 +71,8 @@ pub(super) fn verify_assembly(arguments: &[String]) -> Result<()> {
         Ok(format!("sha256:{}", "a".repeat(64)))
     })?;
     ensure!(
-        assembly.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V2 && assembly.initrd_contract.is_some(),
-        "producer assembly lacks its version-2 initrd and ability contracts"
+        assembly.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V3 && assembly.initrd_contract.is_some(),
+        "producer assembly lacks its version-3 initrd and native deployments"
     );
     Ok(())
 }
@@ -81,26 +81,27 @@ pub(super) fn verify_assembly(arguments: &[String]) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error when the assembly is invalid or the extracted initrd does
-/// not contain the exact captured contract at its immutable path.
+/// Returns an error when the assembly is invalid or either extracted tree lacks
+/// the exact captured native inputs at their immutable paths.
 pub(super) fn verify_assembly_attachments(arguments: &[String]) -> Result<()> {
-    if arguments.len() != 3 {
+    if arguments.len() != 4 {
         bail!(
-            "usage: aos-release-fleet-fixture image-assembly-attachments ROOT RELEASE_ID INITRD_TREE"
+            "usage: aos-release-fleet-fixture image-assembly-attachments ROOT RELEASE_ID INITRD_TREE ROOT_TREE"
         );
     }
     let assembly = capture_unsigned_assembly(Path::new(&arguments[0]), &arguments[1], |_| {
         Ok(format!("sha256:{}", "a".repeat(64)))
     })?;
     ensure!(
-        assembly.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V2,
-        "producer assembly lacks version-2 ability contracts"
+        assembly.schema_version == UNSIGNED_IMAGE_ASSEMBLY_V3,
+        "producer assembly lacks version-3 native deployments"
     );
     let captured_inputs = tempfile::tempdir()?;
-    verify_static_ability_contract_attachments(
+    verify_native_deployment_attachments(
         Path::new(&arguments[0]),
         &assembly,
         captured_inputs.path(),
         Path::new(&arguments[2]),
+        Path::new(&arguments[3]),
     )
 }

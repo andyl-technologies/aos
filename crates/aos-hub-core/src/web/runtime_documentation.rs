@@ -193,7 +193,7 @@ mod tests {
             "format".into(),
             "invalid".into(),
         )]));
-        let response = inspect(query, Bytes::from_static(br#"{"schema":"aos.package.transaction","scope":["host","main"],"system":"x86_64-linux","graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}}"#)).await;
+        let response = inspect(query, Bytes::from_static(br#"{"schema":"aos.package.transaction","scope":["host","main"],"system":"x86_64-linux","retire":[],"graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}}"#)).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

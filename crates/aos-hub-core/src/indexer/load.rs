@@ -827,6 +827,14 @@ pub(super) fn required_package_store_hashes(packages: &[PackageToml]) -> BTreeSe
                     artifact
                         .named_outputs
                         .values()
+                        .flat_map(|output| {
+                            std::iter::once(&output.store_path).chain(
+                                output
+                                    .deployment
+                                    .iter()
+                                    .map(|deployment| &deployment.store_path),
+                            )
+                        })
                         .map(|store_path| store_hash_component(store_path).to_string()),
                 );
             }
@@ -866,8 +874,8 @@ fn enrich_packages_from_store(
                 artifact.nar_hash = nar.nar_hash();
                 artifact.nar_size = nar.size;
 
-                for (output, store_path) in &artifact.named_outputs {
-                    let output_hash = store_hash_component(store_path);
+                for (output, metadata) in &artifact.named_outputs {
+                    let output_hash = store_hash_component(&metadata.store_path);
                     let output_record = store.get(output_hash).with_context(|| {
                         format!(
                             "package {} {} {platform} named output {output} has no signed store record for {output_hash}",
@@ -880,6 +888,20 @@ fn enrich_packages_from_store(
                         package.package.name,
                         version.version
                     );
+                    if let Some(deployment) = &metadata.deployment {
+                        deployment.validate()?;
+                        let deployment_hash = store_hash_component(&deployment.store_path);
+                        let deployment_record = store.get(deployment_hash).with_context(|| {
+                            format!("named output {output} has no signed deployment store record for {deployment_hash}")
+                        })?;
+                        anyhow::ensure!(
+                            deployment_record
+                                .blessed_nars()
+                                .iter()
+                                .any(|nar| nar.matches(&deployment.nar_hash, deployment.nar_size)),
+                            "named output {output} deployment NAR differs from its signed store record"
+                        );
+                    }
                 }
 
                 let dependencies = record.dep_ias();

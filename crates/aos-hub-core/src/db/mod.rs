@@ -4116,7 +4116,10 @@ impl Database {
                         entry
                             .named_outputs
                             .values()
-                            .map(|store_path| ("output", store_path.as_str())),
+                            .flat_map(|output| {
+                                std::iter::once(("output", output.store_path.as_str()))
+                                    .chain(output.deployment.iter().map(|deployment| ("output", deployment.store_path.as_str())))
+                            }),
                     );
                     if !entry.source_drv.is_empty() {
                         catalog_artifacts.push(("source_derivation", entry.source_drv.as_str()));
@@ -26738,7 +26741,7 @@ requires-features = ["image-artifact-contract-v1"]
             source_nar_hash = "sha256:bb"
 
             [versions.platforms.x86_64-linux.named_outputs]
-            dev = "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
+            dev = { store_path = "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev" }
 
             "#,
         )

@@ -93,6 +93,7 @@ pub(super) fn plain(source: &Source) -> String {
             scope,
             system,
             graph,
+            retire,
         } => {
             let _ = writeln!(
                 output,
@@ -100,6 +101,11 @@ pub(super) fn plain(source: &Source) -> String {
                 scope.join(" / ")
             );
             output.push_str("Selected execution path; not an observation or activation receipt.\n");
+            output.push_str("Explicit retirement decisions (desired intent):\n");
+            for identity in retire {
+                let _ = writeln!(output, "  {identity}");
+            }
+
             for (position, id) in graph.graph().order.iter().enumerate() {
                 let effect = &graph.graph().nodes[id];
                 let _ = writeln!(
@@ -272,7 +278,12 @@ pub(super) fn html(source: &Source) -> String {
                 }
             }
         }
-        Source::Transaction { graph, .. } => {
+        Source::Transaction { graph, retire, .. } => {
+            html.push_str("<h3>Explicit retirement decisions</h3><p>Desired intent; no live-state verification.</p><ul>");
+            for identity in retire {
+                let _ = write!(html, "<li><code>{}</code></li>", escape(identity));
+            }
+            html.push_str("</ul>");
             html.push_str("<h3>Execution path</h3><ol>");
             for id in &graph.graph().order {
                 let effect = &graph.graph().nodes[id];
