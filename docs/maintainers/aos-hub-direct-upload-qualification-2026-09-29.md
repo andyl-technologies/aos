@@ -648,3 +648,37 @@ clock bounds, staging privacy and writer closure, hosted Native acceptance,
 runtime parity, latency and byte-direction budgets remain qualification gates.
 Earlier failed runs and unknown originals remain recorded above. No production
 readiness or hosted performance result follows from these focused source tests.
+
+## Storage-local Git tree and pack checkpoints
+
+[Selected tree projection, `edf0446f72`](https://github.com/andyl-technologies/aos/commit/edf0446f72ad05b907792e7186e44b0baadaf3d9)
+adds bounded name/kind/OID pages with continuations bound to the verified tree,
+selection and source snapshot. Ten focused tests passed: four shared predicate
+and pagination tests, five Worker/wire/Native-validator integration tests, and
+one Native capability test. The isolated default Worker Wasm check passed.
+Controlled R2/S3 stream fixtures exercised the actual registry indexer with a
+raw source-tree fetch trap, provider length bounds and source/hash/cursor drift
+refusal. The frozen 14-file manifest is SHA-256
+`6ac35b117940e00077f7e84a32435c9fd9c3a326d847794d1207b3b7173f2798`.
+Earlier compiler failures and the zero-test capability invocation remain retained
+and are not counted as passing tests.
+
+[Pack/index verification and projection, `157359b957`](https://github.com/andyl-technologies/aos/commit/157359b957c4303161b0f55d6a86b9221a231eee)
+consumes pack chunks without retaining encoded pack bodies. Complete SHA-256
+pack/index, CRC, offset and delta validation precedes selected decoded content.
+The existing 8 MiB pack, 4 MiB index, 12 MiB decoded graph and 4 MiB object limits
+remain enforced; selection returns at most eight objects and 128 KiB of content.
+The isolated registry suite passed 90 tests, including 16 pack cases with actual
+AOS Git OFS/REF fixtures, stream splits, substitution refusals and resource/range
+bounds. The pure Wasm check and one pure execution-deadline test passed. The Worker
+adapter source check passed with an explicit Reader dependency and a gate-only
+module declaration; its initial private-Reader compile failure remains retained.
+The frozen 11-file evidence manifest is SHA-256
+`09a1ff991decef84fed51910726556a50d8fe575f2247b36572d3c9c9f80abe0`.
+
+These controlled fixtures and source checks do not establish completed mirror
+runtime integration, deployed upstream/provider behavior, publication, fleet
+qualification or throughput. Pack transport, source-incarnation checks, authority
+and capacity integration remain pending. The Worker source check does not qualify
+actual awaited reads or cancellation. Earlier failures and pending deployment
+gates remain in force.
