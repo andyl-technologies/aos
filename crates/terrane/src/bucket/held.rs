@@ -66,6 +66,8 @@ async fn identity<
 pub(crate) struct HeldBuckets<'a, F: LocalFs, C, V, G: LocalFs, D, W> {
     source: &'a FileBucket<F, C, V>,
     destination: &'a FileBucket<G, D, W>,
+    source_identity: PhysicalIdentity,
+    destination_identity: PhysicalIdentity,
     _source_guard: F::Lock,
     _destination_guard: G::Lock,
 }
@@ -109,6 +111,8 @@ impl<
         Ok(Self {
             source,
             destination,
+            source_identity: source_id,
+            destination_identity: destination_id,
             _source_guard: source_guard,
             _destination_guard: destination_guard,
         })
@@ -120,6 +124,7 @@ impl<
     pub(crate) fn source(&self) -> HeldBucket<'_, F, C, V, false> {
         HeldBucket {
             bucket: self.source,
+            identity: self.source_identity,
         }
     }
 
@@ -127,6 +132,7 @@ impl<
     pub(crate) fn destination(&self) -> HeldBucket<'_, G, D, W, true> {
         HeldBucket {
             bucket: self.destination,
+            identity: self.destination_identity,
         }
     }
 }
@@ -153,6 +159,7 @@ async fn recheck<
 /// Borrows an already excluded bucket without exposing its guard or reacquiring it.
 pub(crate) struct HeldBucket<'a, F, C, V, const WRITABLE: bool> {
     bucket: &'a FileBucket<F, C, V>,
+    identity: PhysicalIdentity,
 }
 
 impl<
@@ -162,6 +169,14 @@ impl<
     const WRITABLE: bool,
 > HeldBucket<'_, F, C, V, WRITABLE>
 {
+    /// Returns the root and coordination inode identities rechecked under both guards.
+    ///
+    /// These device/inode pairs identify the namespace while the borrowed pair
+    /// guards live. They do not independently authorize disclosure or mutation.
+    pub(crate) fn physical_identity(&self) -> ((u64, u64), (u64, u64)) {
+        (self.identity.root, self.identity.lock)
+    }
+
     /// Returns the actual configured filesystem for private disclosure binding checks.
     pub(crate) fn fs(&self) -> &F {
         self.bucket.fs()

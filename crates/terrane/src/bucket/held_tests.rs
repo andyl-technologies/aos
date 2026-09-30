@@ -442,3 +442,48 @@ async fn held_buckets_ordinary_invalid_refs_reject_before_locking() {
     assert_eq!(fs.attempts.available_permits(), 0);
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
 }
+
+#[tokio::test]
+async fn held_buckets_identity_matches_independently_opened_physical_namespace() {
+    use std::os::unix::fs::MetadataExt;
+    let source = fixture().await;
+    let destination = fixture().await;
+    let independent_source = FileBucket::open(
+        config(source.root().to_owned()),
+        TokioLocalFs,
+        TokioClock,
+        Validator,
+    )
+    .await
+    .unwrap();
+    let independent_destination = FileBucket::open(
+        config(destination.root().to_owned()),
+        TokioLocalFs,
+        TokioClock,
+        Validator,
+    )
+    .await
+    .unwrap();
+    let pair = HeldBuckets::acquire(&independent_source, &independent_destination)
+        .await
+        .unwrap();
+    let key = BucketKey::parse("CAPABILITIES").unwrap();
+    for (bucket, actual) in [
+        (&source, pair.source().physical_identity()),
+        (&destination, pair.destination().physical_identity()),
+    ] {
+        let root = TokioLocalFs.symlink_metadata(bucket.root()).await.unwrap();
+        let lock = TokioLocalFs
+            .symlink_metadata(&bucket.root().join(key.lock_name()))
+            .await
+            .unwrap();
+        assert_eq!(actual, ((root.dev(), root.ino()), (lock.dev(), lock.ino())));
+    }
+    assert_ne!(
+        pair.source().physical_identity(),
+        pair.destination().physical_identity()
+    );
+    drop(pair);
+    tokio::fs::remove_dir_all(source.root()).await.unwrap();
+    tokio::fs::remove_dir_all(destination.root()).await.unwrap();
+}
