@@ -324,14 +324,31 @@ impl FitnessAttestation {
             .iter()
             .find(|role| role.role == SignerRole::ReleaseEvidence)
             .ok_or_else(|| anyhow::anyhow!("plan lacks a release-evidence role"))?;
+        Self::verify_signed_by(bytes, &role.key_ids, keys)
+    }
+
+    /// Verifies a signed attestation envelope by one of `evidence_key_ids`.
+    ///
+    /// Attestations are maintainer-wide, so a coordinator without a frozen
+    /// plan verifies them against its configured release-evidence roster.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid or untrusted signature, a signer outside
+    /// `evidence_key_ids`, or an `authority_id` that differs from the signing
+    /// key.
+    pub fn verify_signed_by(
+        bytes: &[u8],
+        evidence_key_ids: &[String],
+        keys: &[TrustedEd25519Key],
+    ) -> Result<Self> {
         let trusted: BTreeMap<_, _> = keys
             .iter()
             .map(|key| (key.key_id.clone(), key.public_key))
             .collect();
         let (key, attestation): (String, Self) =
             crate::receipt::verify_signed_receipt_with_key(bytes, &trusted)?;
-        if attestation.authority_id != key || !role.key_ids.contains(&key) {
-            bail!("fitness attestation signer is not a planned release-evidence key");
+        if attestation.authority_id != key || !evidence_key_ids.contains(&key) {
+            bail!("fitness attestation signer is not a release-evidence key");
         }
         Ok(attestation)
     }

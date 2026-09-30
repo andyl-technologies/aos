@@ -32,6 +32,14 @@
               > smoke.c
             "$CC" smoke.c -o "$c/bin/aos-darwin-c-smoke"
 
+            # Ruby rejects a successful configure link if dsymutil emits a
+            # missing-object diagnostic. Resolve normalized N_OSO paths while
+            # retaining actual debug information for both Darwin targets.
+            NIX_LDFLAGS="" "$CC" -g smoke.c -o debug-smoke 2> debug-smoke.err
+            test ! -s debug-smoke.err
+            test -s debug-smoke.dSYM/Contents/Resources/DWARF/debug-smoke
+            dwarfdump --verify debug-smoke.dSYM
+
             # Dependency-only preprocessing must not receive Darwin linker
             # flags; configure probes commonly combine this mode with -Werror.
             "$CC" -Werror -MM smoke.c > smoke.d
@@ -54,6 +62,7 @@
               '#include <sys/syscall.h>' \
               '#include <sys/ttydev.h>' \
               '#include <sys/xattr.h>' \
+              '#include <sys/vnode.h>' \
               '#include <SystemConfiguration/SCNetworkConfiguration.h>' \
               '#include <SystemConfiguration/SystemConfiguration.h>' \
               '_Static_assert(kSCNetworkFlagsReachable == (1u << 1), "legacy reachability flag");' \
@@ -63,6 +72,7 @@
               '_Static_assert(PT_CONTINUE == 7, "ptrace continue request");' \
               '_Static_assert(PT_ATTACH == 10, "ptrace attach request");' \
               '_Static_assert(PT_DETACH == 11, "ptrace detach request");' \
+              '_Static_assert(VT_HFS == 16, "HFS filesystem tag ABI");' \
               '_Static_assert(sizeof(((struct in6_ifreq *)0)->ifr_name) == IFNAMSIZ, "IPv6 interface name ABI");' \
               '_Static_assert(SIOCGIFNETMASK_IN6 == _IOWR('"'"'i'"'"', 37, struct in6_ifreq), "IPv6 netmask ioctl ABI");' \
               'int main(void) {' \

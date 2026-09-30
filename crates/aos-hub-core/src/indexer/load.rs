@@ -121,7 +121,9 @@ impl<'a> ObjectReader<'a> {
             return Ok(decoded);
         }
 
-        self.load_bundle(oid).await?;
+        if self.bundled(oid)?.is_none() {
+            self.load_bundle(oid).await?;
+        }
         if let Some(decoded) = self.cached(oid)? {
             return Ok(decoded);
         }
@@ -273,10 +275,8 @@ impl<'a> ObjectReader<'a> {
                     .into_iter()
                     .map(|(oid, loose)| (oid, Arc::from(loose))),
             );
-        self.attempted_bundles
-            .lock()
-            .map_err(|_| anyhow::anyhow!("registry bundle-attempt lock is poisoned"))?
-            .extend((0_u16..=255).map(|value| format!("{value:02x}")));
+        // An aggregate can be retained from an earlier publication. Its
+        // presence must not prevent newer objects from loading their shards.
         Ok(true)
     }
 

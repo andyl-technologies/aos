@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "2.25";
 in
@@ -28,6 +29,17 @@ in
         script = ''
           tar xf $src
           cd which-${version}
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              # Darwin unistd.h declares getopt with its full prototype;
+              # the bundled empty-parameter declaration conflicts in C23.
+              sed -i '/^extern int getopt();$/i #ifndef __APPLE__' getopt.h
+              sed -i '/^extern int getopt();$/a #endif' getopt.h
+              grep -Fq '#ifndef __APPLE__' getopt.h
+            ''
+            else ""
+          }
         '';
       }
       {

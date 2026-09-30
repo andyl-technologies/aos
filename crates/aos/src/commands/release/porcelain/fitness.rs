@@ -17,8 +17,14 @@
 //! `[signer.roles]` (the roster `new` freezes into plans), `surface` and
 //! `hub-schema` from `[surfaces.production]` (a Hub's deployment identity is
 //! also probed live), `tooling` from `tooling_closure`, and `alert-config`
-//! from `[alert]`. The contract's fitness kinds and profiles come from the
-//! newest release plan under `work_root`.
+//! from `[alert]`.
+//!
+//! Neither command needs a frozen plan. Fitness kinds and profiles come from
+//! the newest release plan under `work_root` when one exists, else from that
+//! work directory's exported `contract.json`, else from the repository's Nix
+//! contract export (the `step contract` leaf). Attestations are verified
+//! against the configured `[signer.roles.release-evidence]` roster, falling
+//! back to the newest plan's frozen roster.
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -26,6 +32,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context as _, Result, bail};
+use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
@@ -53,8 +60,8 @@ const MAX_REPORT_BYTES: u64 = 4 * 1024 * 1024;
 /// attestation that already exists for the same kind and time.
 pub(super) async fn run(args: &ReleaseFitnessRunArgs, printer: &Printer) -> Result<()> {
     let (_, config) = MaintainerConfig::load(args.config.as_deref())?;
-    let plan = newest_plan(&config)?;
-    let kind = plan.qualification.fitness_kind(&args.kind)?;
+    let context = FitnessContext::load(&config)?;
+    let kind = context.contract.fitness_kind(&args.kind)?;
     let report_bytes = read_report(args.report.as_deref())?;
     let report: FitnessReport = canonical::from_slice(&report_bytes, "fitness report")?;
 
@@ -90,7 +97,7 @@ pub(super) async fn run(args: &ReleaseFitnessRunArgs, printer: &Printer) -> Resu
         &attestation,
     )
     .await?;
-    FitnessAttestation::verify_signed(&signed, &plan, &trusted_keys(&config)?)?;
+    FitnessAttestation::verify_signed_by(&signed, &context.evidence_keys, &trusted_keys(&config)?)?;
 
     let path = attestation_path(&config.fitness_root, &kind.kind, &attestation.performed_at);
     workdir::write_new_file(&path, &signed)?;
@@ -115,25 +122,30 @@ pub(super) async fn run(args: &ReleaseFitnessRunArgs, printer: &Printer) -> Resu
 /// Prints each fitness kind's newest attestation, age, and binding status.
 ///
 /// # Errors
-/// Returns an error for an unreadable configuration, plan, or fitness root.
+/// Returns an error for an unreadable configuration, contract, or fitness
+/// root.
 pub(super) fn status(args: &ReleaseFitnessStatusArgs, printer: &Printer) -> Result<()> {
     let (_, config) = MaintainerConfig::load(args.config.as_deref())?;
-    let plan = newest_plan(&config)?;
+    let context = FitnessContext::load(&config)?;
     let live = live_bindings(
         &config,
         SurfaceRole::Production,
         keys::roster_digest(&config)?,
     )?;
-    let attestations = load_attestations(&config.fitness_root, &plan, &trusted_keys(&config)?)?;
+    let attestations = load_attestations(
+        &config.fitness_root,
+        &context.evidence_keys,
+        &trusted_keys(&config)?,
+    )?;
     let now = SystemTime::now();
-    let statuses = plan
-        .qualification
+    let statuses = context
+        .contract
         .fitness
         .iter()
         .map(|kind| {
             kind_status(
-                &plan.qualification,
-                &plan.destinations,
+                &context.contract,
+                &context.destinations,
                 kind,
                 &attestations,
                 &live,
@@ -341,13 +353,13 @@ pub(super) fn live_bindings(
     })
 }
 
-/// Loads every attestation under `root` that verifies against a planned key.
+/// Loads every attestation under `root` signed by one of `evidence_keys`.
 ///
 /// # Errors
 /// Returns an error for an unreadable root or attestation file.
 pub(super) fn load_attestations(
     root: &Path,
-    plan: &ReleasePlan,
+    evidence_keys: &[String],
     keys: &[TrustedEd25519Key],
 ) -> Result<Vec<FitnessAttestation>> {
     let mut attestations = Vec::new();
@@ -363,7 +375,9 @@ pub(super) fn load_attestations(
         }
         for path in super::observe::files_matching(&kind.path(), "", ".json")? {
             let bytes = capture::control_file(&path, "fitness attestation")?;
-            if let Ok(attestation) = FitnessAttestation::verify_signed(&bytes, plan, keys) {
+            if let Ok(attestation) =
+                FitnessAttestation::verify_signed_by(&bytes, evidence_keys, keys)
+            {
                 attestations.push(attestation);
             }
         }
@@ -385,20 +399,100 @@ pub(super) fn trusted_keys(config: &MaintainerConfig) -> Result<Vec<TrustedEd255
     super::super::verify::load_trusted_keys(&specs)
 }
 
-/// Reads the plan of the newest release under `work_root`.
+/// Returns the release-evidence key ids a plan froze.
 ///
 /// # Errors
-/// Returns an error when no release exists or its plan is unreadable.
-pub(super) fn newest_plan(config: &MaintainerConfig) -> Result<ReleasePlan> {
-    let work = WorkDir::select(config, None)
-        .context("fitness kinds and profiles come from a frozen plan; run aos release new first")?;
+/// Returns an error when the plan has no release-evidence role.
+pub(super) fn planned_evidence_keys(plan: &ReleasePlan) -> Result<Vec<String>> {
+    plan.signers
+        .iter()
+        .find(|requirement| requirement.role == SignerRole::ReleaseEvidence)
+        .map(|requirement| requirement.key_ids.clone())
+        .context("release plan lacks a release-evidence signer role")
+}
+
+/// The fitness policy and signer roster `run` and `status` evaluate against.
+struct FitnessContext {
+    /// Contract whose fitness kinds and profiles apply.
+    contract: QualificationContract,
+    /// Release-evidence key ids that may sign attestations.
+    evidence_keys: Vec<String>,
+    /// Destinations of the newest plan; empty when no plan exists.
+    destinations: Vec<PlannedDestination>,
+}
+
+impl FitnessContext {
+    /// Resolves the contract and roster without requiring a frozen plan.
+    ///
+    /// # Errors
+    /// Returns an error for an unreadable or foreign plan or contract, a
+    /// failed Nix export when neither a plan nor `contract.json` exists, or
+    /// when neither the configuration nor a plan names a release-evidence
+    /// roster.
+    fn load(config: &MaintainerConfig) -> Result<Self> {
+        let work = newest_work(config);
+        let plan = work.as_ref().map(read_plan).transpose()?.flatten();
+        if let Some(plan) = &plan
+            && plan.registry != config.registry
+        {
+            bail!("the newest release belongs to registry {}", plan.registry);
+        }
+
+        let contract = match (&plan, &work) {
+            (Some(plan), _) => plan.qualification.clone(),
+            (None, Some(work)) if work.contract().is_file() => read_contract(&work.contract())?,
+            (None, _) => {
+                let nix = NixRunner::new(0, true).context(
+                    "no release plan or contract.json exists under work_root, so the \
+                     contract comes from the Nix export; run from the AOS checkout",
+                )?;
+                super::super::contract::export(&nix)?
+            }
+        };
+
+        let evidence_keys = match (config.role_keys(SignerRole::ReleaseEvidence), &plan) {
+            (Ok(configured), _) => configured.keys.into_iter().map(|key| key.key_id).collect(),
+            (Err(_), Some(plan)) => planned_evidence_keys(plan)?,
+            (Err(_), None) => bail!(
+                "fitness attestations are verified against the release-evidence roster; \
+                 configure [signer.roles.release-evidence] or create a release with \
+                 aos release new"
+            ),
+        };
+
+        Ok(Self {
+            contract,
+            evidence_keys,
+            destinations: plan.map(|plan| plan.destinations).unwrap_or_default(),
+        })
+    }
+}
+
+/// Returns the newest release directory under `work_root`, if any.
+///
+/// A missing or empty `work_root` is the normal state before the first
+/// `aos release new`; the contract then comes from the Nix export.
+fn newest_work(config: &MaintainerConfig) -> Option<WorkDir> {
+    WorkDir::select(config, None).ok()
+}
+
+/// Reads a work directory's frozen plan; `None` before `new` froze it.
+fn read_plan(work: &WorkDir) -> Result<Option<ReleasePlan>> {
+    if !work.plan().is_file() {
+        return Ok(None);
+    }
     let bytes = capture::control_file(&work.plan(), "release plan")?;
     let plan: ReleasePlan = canonical::from_slice(&bytes, "release plan")?;
     plan.validate()?;
-    if plan.registry != config.registry {
-        bail!("the newest release belongs to registry {}", plan.registry);
-    }
-    Ok(plan)
+    Ok(Some(plan))
+}
+
+/// Reads and validates an exported contract.
+fn read_contract(path: &Path) -> Result<QualificationContract> {
+    let bytes = capture::control_file(path, "qualification contract")?;
+    let contract: QualificationContract = canonical::from_slice(&bytes, "qualification contract")?;
+    contract.validate()?;
+    Ok(contract)
 }
 
 /// Returns the key that signs attestations: `[reviewer]`, else the single

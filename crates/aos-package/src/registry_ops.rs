@@ -73,7 +73,7 @@ mod workflow;
 
 pub use cache_validation::validate;
 pub use channels::run_channel;
-pub use config::{resolve_mirrors, resolve_mirrors_for_registry};
+pub use config::{local_registry_name, resolve_mirrors, resolve_mirrors_for_registry};
 pub use distribution::{run_cache, run_origin, run_web};
 pub(crate) use git::{refresh_registry_object_store, validate_canonical_release_registry_index};
 pub use lifecycle::{LocalRegistry, authoring_clone_precious, create, local_registries};

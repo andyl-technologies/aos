@@ -5,6 +5,7 @@
   runCommand,
   tcl,
   fetchurl,
+  fetchCargoVendor,
   callPackage,
   lib,
   stdenv,
@@ -34,8 +35,22 @@
   glibc-locales,
 } @ packageArgs: let
   version = "1.20260801.1";
+  src = fetchurl {
+    urls = ["https://github.com/cloudflare/workerd/archive/refs/tags/v${version}.tar.gz"];
+    hash = "0w6dy0k7bxr8ar54hw82makqbpp66nj1c6s5q2rfn0r6jx5zxiws";
+  };
   isArmCross = stdenv.isCross && stdenv.hostPlatform.system == "aarch64-linux";
-  crossToolchain = callPackage ./_cross-toolchain.nix {};
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isSupportedCross = isArmCross || isDarwinCross;
+  crossRepositoryName =
+    if isDarwinCross
+    then "aos_darwin_toolchain"
+    else "aos_arm64_toolchain";
+  crossToolchain = callPackage (
+    if isDarwinCross
+    then ./_darwin-toolchain.nix
+    else ./_cross-toolchain.nix
+  ) {};
   targetRustRepository = callPackage ./_rust-repository.nix {};
   targetGcc = stdenv.cc.cc;
   # Generators execute on the build platform even when their output is compiled
@@ -44,6 +59,19 @@
     if stdenv.isCross
     then buildPackages
     else packageArgs;
+  cargoVendorRaw = buildScope.fetchCargoVendor {
+    inherit src;
+    sourceRoot = "workerd-${version}/deps/rust";
+    name = "workerd-modern-cargo-vendor";
+    hash = "sha256-qCOe+muhvyVsxmsQeHPLNgXh6vhyY/XdA5iyz0/G3Zs=";
+  };
+  sourceOnlyCargoVendor = nativeCallPackage ../../build-support/_cargo-source-vendor.nix {};
+  cargoVendor = sourceOnlyCargoVendor {
+    name = "workerd-modern-cargo-source-only";
+    vendor = cargoVendorRaw;
+    # This gzip corruption fixture is not needed for a production runtime.
+    excludedFiles = ["source-registry-0/flate2-1.1.9/tests/corrupt-gz-file.bin"];
+  };
   inherit
     (buildScope)
     runCommand
@@ -112,8 +140,8 @@
       "rules_python++pip+v8_python_deps_314_markupsafe_sdist_594c6780" = "${pythonRepositories}/markupsafe";
       "+pyodide+pyodide-314.0.0" = pyodide;
     }
-    // lib.optionalAttrs isArmCross {
-      "rules_rust++rust+rust_linux_x86_64__aarch64-unknown-linux-gnu__stable_tools" = targetRustRepository;
+    // lib.optionalAttrs isSupportedCross {
+      "rules_rust++rust+rust_linux_x86_64__${stdenv.hostPlatform.config}__stable_tools" = targetRustRepository;
     };
 
   # Keep the dependency archive independent of the source-built tool outputs.
@@ -132,7 +160,7 @@
       "${scrub nativeStdenv.gcc}" = "__AOS_BOOTSTRAP_GCC__";
       "${scrub nativeStdenv.glibc}" = "__AOS_BOOTSTRAP_GLIBC__";
     }
-    // lib.optionalAttrs isArmCross {
+    // lib.optionalAttrs isSupportedCross {
       "${scrub crossToolchain}" = "__AOS_ARM64_TOOLCHAIN__";
     };
 
@@ -141,8 +169,13 @@
       ${python3}/bin/python3 ${./prepare-modern-toolchains.py} \
         --python ${python3}/bin/python3 --rust ${rust} --bash ${bash}/bin/bash
     ''
-    + lib.optionalString isArmCross ''
-      ${python3}/bin/python3 ${./prepare-modern-cross.py} --toolchain ${crossToolchain}
+    + lib.optionalString isSupportedCross ''
+      ${python3}/bin/python3 ${./prepare-modern-cross.py} --toolchain ${crossToolchain} \
+        --repository-name ${crossRepositoryName} --target-os ${
+        if isDarwinCross
+        then "darwin"
+        else "linux"
+      }
     '';
 
   configureEnvironment = ''
@@ -152,14 +185,11 @@
     export LC_ALL=C.UTF-8 LANG=C.UTF-8
   '';
 in
-  assert (!stdenv.isCross && stdenv.hostPlatform.system == "x86_64-linux") || isArmCross;
+  assert (!stdenv.isCross && stdenv.hostPlatform.system == "x86_64-linux") || isSupportedCross;
     mkBazelPackage {
       pname = "workerd-modern-source";
       inherit version;
-      src = fetchurl {
-        urls = ["https://github.com/cloudflare/workerd/archive/refs/tags/v${version}.tar.gz"];
-        hash = "0w6dy0k7bxr8ar54hw82makqbpp66nj1c6s5q2rfn0r6jx5zxiws";
-      };
+      inherit src;
 
       tools = [
         tclBuildTool
@@ -189,7 +219,9 @@ in
       # The linked runtime uses LLVM's C++ ABI and unwind shared libraries.
       # Preserve their runpaths when build-only references are scrubbed.
       runtimeDeps =
-        if isArmCross
+        if isDarwinCross
+        then [stdenv.darwinRuntimes]
+        else if isArmCross
         then [glibc]
         else [llvm];
       inherit scrubMap;
@@ -206,10 +238,10 @@ in
           "rules_cc++cc_configure_extension+local_config_cc"
           "rules_cc++cc_configure_extension+local_config_cc_toolchains"
         ]
-        ++ lib.optionals isArmCross ["+local_repository+aos_arm64_toolchain"];
+        ++ lib.optionals isSupportedCross ["+local_repository+${crossRepositoryName}"];
       # Native and ARM64 analysis produce the same pinned dependency snapshot;
       # local toolchain repositories are regenerated for the selected target.
-      depsHash = "sha256-7vU7V20b8HnQHqpzW+2SuwkZihPmZMoUIpbfWZt+8TQ=";
+      depsHash = "sha256-FGjai5OCbqKGqWMdBnDrpcNsH7MfSk0WaVNPWbrDSqw=";
       bazelTarget = "//src/workerd/server:workerd";
       bazelFlags =
         [
@@ -221,25 +253,30 @@ in
           "--repo_env=CC=${nativeClang}/bin/clang"
         ]
         ++ lib.mapAttrsToList (name: path: "--override_repository=${name}=${path}") repositories
-        ++ lib.optionals isArmCross [
-          "--platforms=@aos_arm64_toolchain//:target-platform"
-          "--extra_toolchains=@aos_arm64_toolchain//:registered-toolchain"
-          "--@v8//bazel/config:v8_target_cpu=arm64"
+        ++ lib.optionals isSupportedCross [
+          "--platforms=@${crossRepositoryName}//:target-platform"
+          "--extra_toolchains=@${crossRepositoryName}//:registered-toolchain"
+          "--@v8//bazel/config:v8_target_cpu=${
+            if stdenv.hostPlatform.isAarch64
+            then "arm64"
+            else "x64"
+          }"
         ];
 
       postPatch = prepareSource;
       fetchPostPatch = configureEnvironment;
       postFetch = ''
         ${python3}/bin/python3 ${./clean-bazel-tool-downloads.py} "$bazelOut/external"
+        ${python3}/bin/python3 ${./strip-opaque-deps.py} "$bazelOut/external"
       '';
       preBazelBuild =
         configureEnvironment
-        + lib.optionalString isArmCross ''
+        + lib.optionalString isSupportedCross ''
           # Shared Bazel setup supplies native compatibility libraries for Rust
-          # generators. Target links must resolve their ARM64 counterparts.
+          # generators. Target links must resolve their own platform libraries.
           sed -i "\\|^build --linkopt=-L$TMPDIR/rust-link-libs$|d" .bazelrc
           if grep -Fqx "build --linkopt=-L$TMPDIR/rust-link-libs" .bazelrc; then
-            echo "Native compatibility libraries leaked into the ARM64 link" >&2
+            echo "Native compatibility libraries leaked into the target link" >&2
             exit 1
           fi
 
@@ -247,6 +284,21 @@ in
           # of depending on transitive includes from the C++ standard library.
           patch -d "$TMPDIR/repo-overrides/+http_archive+v8" -p1 < ${./v8-memcopy-climits.patch}
           patch -d "$TMPDIR/repo-overrides/+http+ncrypto" -p1 < ${./ncrypto-climits.patch}
+          ${lib.optionalString isDarwinCross ''
+            # V8 defaults generator tools to its target configuration to share
+            # compilation. Cross builds must execute those generators on Linux.
+            python3 - "$TMPDIR/repo-overrides/+http_archive+v8/bazel/defs.bzl" <<'PY'
+            from pathlib import Path
+            import sys
+
+            definitions = Path(sys.argv[1])
+            source = definitions.read_text()
+            original = '    return "target"\n'
+            if source.count(original) != 1:
+                raise SystemExit("Unexpected V8 generator configuration")
+            definitions.write_text(source.replace(original, '    return "exec"\n'))
+            PY
+          ''}
         ''
         + ''
           sed -i '1s|^#!/usr/bin/env bash$|#!${bash}/bin/bash|' tools/unix/workspace-status.sh
@@ -257,6 +309,65 @@ in
           sed -i 's|^DEFAULT_STUB_SHEBANG = "#!/usr/bin/env python3"$|DEFAULT_STUB_SHEBANG = "#!${python3}/bin/python3"|' \
             "$TMPDIR/repo-overrides/rules_python+/python/private/py_runtime_info.bzl"
 
+          # The generator is an AOS-built store input. Bazel rejects even a
+          # file:// download when downloads are disabled for the offline build.
+          python3 - "$TMPDIR/repo-overrides/rules_rust+/crate_universe/extensions.bzl" <<'PY'
+          from pathlib import Path
+          import sys
+
+          extension = Path(sys.argv[1])
+          source = extension.read_text()
+          download = "    module_ctx.download(**download_kwargs)\n    return output"
+          local = (
+              "    if generator_url.startswith(\"file://\"):\n"
+              "        return module_ctx.path(generator_url[len(\"file://\"):])\n"
+              "    module_ctx.download(**download_kwargs)\n"
+              "    return output"
+          )
+          if source.count(download) != 1:
+              raise SystemExit("Unexpected rules_rust generator download path")
+          extension.write_text(source.replace(download, local))
+          PY
+
+          # The module extension splices Cargo manifests before generating
+          # Bazel repositories. Feed its manifest the pinned source vendor.
+          sed 's|@vendor@|${cargoVendor}|g' \
+            ${cargoVendor}/.cargo/config.toml > "$TMPDIR/cargo-vendor-config.toml"
+          export CARGO_BAZEL_ISOLATED=false
+          export CARGO_HOME="$TMPDIR/cargo-home"
+          for index in index.crates.io-1949cf8c6b5b557f index.crates.io-6f17d22bba15001f; do
+            mkdir -p "$CARGO_HOME/registry/index/$index"
+            printf '%s\n' '{"dl":"https://static.crates.io/crates/{crate}/{crate}-{version}.crate"}' \
+              > "$CARGO_HOME/registry/index/$index/config.json"
+          done
+          python3 - \
+            "$TMPDIR/repo-overrides/rules_rust+/crate_universe/extensions.bzl" \
+            "$TMPDIR/repo-overrides/rules_rust+/crate_universe/private/common_utils.bzl" \
+            "$TMPDIR/cargo-vendor-config.toml" "$CARGO_HOME" <<'PY'
+          from pathlib import Path
+          import json
+          import sys
+
+          extension = Path(sys.argv[1])
+          source = extension.read_text()
+          config_argument = '            cargo_config = cfg.cargo_config,\n'
+          replacement = f'            cargo_config = {json.dumps(sys.argv[3])},\n'
+          if source.count(config_argument) != 1:
+              raise SystemExit("Unexpected rules_rust Cargo config input")
+          extension.write_text(source.replace(config_argument, replacement))
+
+          common = Path(sys.argv[2])
+          source = common.read_text()
+          rust_environment = '                "RUSTC": str(rustc_path),\n'
+          replacement = (
+              rust_environment
+              + '                "CARGO_NET_OFFLINE": "true",\n'
+              + f'                "CARGO_HOME": {json.dumps(sys.argv[4])},\n'
+          )
+          if source.count(rust_environment) != 1:
+              raise SystemExit("Unexpected rules_rust Cargo environment")
+          common.write_text(source.replace(rust_environment, replacement))
+          PY
 
         '';
       bazelBuildFlags =
@@ -266,7 +377,7 @@ in
           "--java_runtime_version=local_jdk"
           "--tool_java_runtime_version=local_jdk"
         ]
-        ++ lib.optionals (!isArmCross) [
+        ++ lib.optionals (!isSupportedCross) [
           "--linkopt=-lc++abi"
           "--linkopt=-lunwind"
         ]
@@ -279,7 +390,13 @@ in
 
       installPhase =
         (
-          if isArmCross
+          if isDarwinCross
+          then ''
+            mkdir -p "$out/bin" "$out/share/licenses/workerd"
+            cp bazel-bin/src/workerd/server/workerd "$out/bin/workerd"
+            cp LICENSE "$out/share/licenses/workerd/LICENSE"
+          ''
+          else if isArmCross
           then ''
             mkdir -p "$out/bin" "$out/lib" "$out/share/licenses/workerd"
             cp bazel-bin/src/workerd/server/workerd "$out/bin/workerd"

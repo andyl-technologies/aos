@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, bail};
 use aos_core::nar::cache::NarInfoSigner;
 use aos_core::nar::info;
-use aos_package::registry::nixcache::generate_static_cache;
+use aos_package::registry::nixcache::generate_static_cache_with_roots;
 use aos_package::registry::release::verify_release_entries;
 use aos_release::build::BuildReportV1;
 use aos_release::canonical;
@@ -71,7 +71,12 @@ pub(super) async fn run(
         .prefix(".aos-release-cache-")
         .tempdir_in(parent)?;
     let cache = temporary.path().join("cache");
-    let report = generate_static_cache(
+    let source_roots = report
+        .sources
+        .iter()
+        .map(|source| source.store_path.clone())
+        .collect::<Vec<_>>();
+    let report = generate_static_cache_with_roots(
         &args.registry,
         &cache,
         None,
@@ -79,6 +84,7 @@ pub(super) async fn run(
         args.jobs,
         None,
         true,
+        &source_roots,
         printer,
     )
     .await?;

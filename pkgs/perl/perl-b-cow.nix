@@ -2,10 +2,16 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   gnumake,
+  lib,
   perl,
+  stdenv,
 }: let
   version = "0.007";
+  xsCross = import ../build-support/_perl-xs-cross-config.nix {
+    inherit buildPackages lib perl stdenv;
+  };
   runtimeClosureManifest = builtins.toString perl;
 in
   mkDerivation {
@@ -17,47 +23,55 @@ in
       hash = "sha256-EpDa8ifosJiJoxzxguKRBvHPnxpOm/d1L53pLtEVi0Q=";
     };
 
-    buildDeps = [gnumake perl];
+    buildDeps = [gnumake xsCross.buildPerl];
     runtimeDeps = [perl];
     propagatedDeps = [];
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf "$src"
-          cd B-COW-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          ${perl}/bin/perl Makefile.PL INSTALL_BASE="$out" CC="$CC" LD="$CC"
-        '';
-      }
-      {
-        name = "build";
-        script = ''make -j"$NIX_BUILD_CORES"'';
-      }
-      {
-        name = "check";
-        script = ''make test'';
-      }
-      {
-        name = "install";
-        script = ''
-          make install
-          cp -a "$out"/lib/perl5/*-thread-multi/. "$out/lib/perl5/"
-          rm -f "$out"/lib/perl5/*/*/perllocal.pod "$out"/lib/perl5/*/*/.packlist
+    phases =
+      [
+        {
+          name = "unpack";
+          script = ''
+            tar xf "$src"
+            cd B-COW-${version}
+          '';
+        }
+        {
+          name = "configure";
+          script = ''
+            ${xsCross.setup}
+            ${xsCross.buildPerl}/bin/perl Makefile.PL INSTALL_BASE="$out" CC="$CC" LD="$CC"
+          '';
+        }
+        {
+          name = "build";
+          script = ''make -j"$NIX_BUILD_CORES"'';
+        }
+      ]
+      ++ lib.optionals (!stdenv.isCross) [
+        {
+          name = "check";
+          script = ''make test'';
+        }
+      ]
+      ++ [
+        {
+          name = "install";
+          script = ''
+            make install
+            cp -a "$out"/lib/perl5/*-thread-multi*/. "$out/lib/perl5/"
+            rm -f "$out"/lib/perl5/*/*/perllocal.pod "$out"/lib/perl5/*/*/.packlist
 
-          # The XS module does not retain the interpreter used to load it.
-          mkdir -p "$out/nix-support"
-          echo '${runtimeClosureManifest}' > "$out/nix-support/runtime-closure"
+            # The XS module does not retain the interpreter used to load it.
+            mkdir -p "$out/nix-support"
+            echo '${runtimeClosureManifest}' > "$out/nix-support/runtime-closure"
 
-          PERL5LIB="$out/lib/perl5" ${perl}/bin/perl -MB::COW -e 1
-        '';
-      }
-    ];
+            ${lib.optionalString (!stdenv.isCross) ''
+              PERL5LIB="$out/lib/perl5" ${xsCross.buildPerl}/bin/perl -MB::COW -e 1
+            ''}
+          '';
+        }
+      ];
 
     meta = {
       description = "Copy-on-write inspection helpers for Perl internals";

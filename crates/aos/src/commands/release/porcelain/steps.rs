@@ -39,12 +39,6 @@ use crate::cli::{
     ReleasePrepareRegistryArgs, ReleasePublishArgs, ReleaseQualifyRunArgs, ReleaseVerifyArgs,
 };
 
-/// Public Git identity of registry release commits and tags.
-const GIT_NAME: &str = "AOS Release";
-
-/// Public Git email of registry release commits and tags.
-const GIT_EMAIL: &str = "release@aos.andyl.org";
-
 /// Cache priority written into `nix-cache-info`.
 const CACHE_PRIORITY: u32 = 40;
 
@@ -243,8 +237,8 @@ impl Driver<'_> {
                 registry_key: keys::spec(&registry),
                 registry_verification_identity: registry.verification_identity,
                 signer_timeout_seconds: config.signer.timeout_seconds,
-                git_name: GIT_NAME.to_owned(),
-                git_email: GIT_EMAIL.to_owned(),
+                git_name: config.git.name.clone(),
+                git_email: config.git.email.clone(),
                 git_unix_seconds: unix_seconds()?,
                 git_offset_minutes: 0,
             },
@@ -552,11 +546,20 @@ impl Driver<'_> {
             }
             Some(overlay)
         };
+        // A composed overlay is admitted only against the independent TUF
+        // root trust; the TUF steps that composed it already required [tuf].
+        let (trusted_root_keys, trusted_root_threshold) = match (&surface, &config.tuf) {
+            (None, _) => (Vec::new(), 1),
+            (Some(_), Some(tuf)) => (tuf.trusted_root_keys.clone(), tuf.trusted_root_threshold),
+            (Some(_), None) => bail!("publishing a composed surface requires the [tuf] section"),
+        };
         let args = ReleasePublishArgs {
             to: name.to_owned(),
             bundle: work.bundle(),
             journal: journal.clone(),
             surface,
+            trusted_root_keys,
+            trusted_root_threshold,
             trusted_keys: keys::trusted(config)?,
             receipt_keys: keys::receipt(config, destination.surface)?,
             predecessor_receipt: production

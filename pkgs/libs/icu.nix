@@ -1,29 +1,77 @@
 ##! ICU4C — Unicode and globalization support library
 {
   mkDerivation,
-  fetchurl,
+  fetchgit,
   gnumake,
   python3,
   buildPackages,
   stdenv,
 }: let
   version = "78.3";
+  unpackSource = ''
+    cp -a "$src/LICENSE" ./LICENSE
+    cp -a "$src/icu4c" ./icu4c
+    cp -a "$src/tools" ./tools
+    chmod -R u+w icu4c tools
+    cd icu4c/source
+
+    test -f data/locales/root.txt
+    if test -n "$(find . -type f \
+        \( -name '*.dat' -o -name '*.icu' -o -name '*.res' \
+        -o -name '*.class' -o -name '*.jar' -o -name '*.so' \
+        -o -name '*.a' -o -name '*.o' \) -print -quit)"; then
+      echo "ICU source checkout contains prebuilt data or executables" >&2
+      exit 1
+    fi
+  '';
 in
   mkDerivation {
     pname = "icu";
     inherit version;
     outputs = ["out" "cross"];
 
-    src = fetchurl {
-      urls = [
-        "https://github.com/unicode-org/icu/releases/download/release-${version}/icu4c-${version}-sources.tgz"
+    # GNU strip rewrites static archive headers with live timestamps. ICU
+    # already builds its archives deterministically, so retain them intact.
+    dontStrip = true;
+
+    src = fetchgit {
+      url = "https://github.com/unicode-org/icu.git";
+      ref = "release-${version}";
+      rev = "21d1eb0f306e1141c10931e914dfc038c06121da";
+      hash = "sha256-T/WzaAr/i8kOPtIhI/+XvmcLwIQFZegBipb4GlAIFdM=";
+      name = "icu4c-${version}-source-and-data";
+
+      git = buildPackages.git-minimal;
+      caCertificates = buildPackages.ca-certificates;
+      coreutils = buildPackages.coreutils;
+
+      # ICU's release tarball contains a precompiled data library. Fetch
+      # text sources and build tools without any compiled blobs instead.
+      sparsePatterns = [
+        "/LICENSE"
+        "/icu4c/source/"
+        "/icu4c/LICENSE"
+        "/tools/unicode/c/genprops/"
+        "/tools/unicode/c/genuca/"
+        "!*.dat"
+        "!*.icu"
+        "!*.res"
+        "!*.class"
+        "!*.jar"
+        "!*.so"
+        "!*.a"
+        "!*.o"
+        "!*.dll"
+        "!*.dylib"
+        "!*.exe"
+        "!*.bin"
       ];
-      hash = "sha256-Oi56R2BLpwLzRYeDCOb+/sphLuiVz0pfIi55Vfq/4MA=";
     };
 
     buildDeps = [
       gnumake
       python3
+      buildPackages.findutils
     ];
     runtimeDeps = [];
     propagatedDeps = [];
@@ -34,8 +82,7 @@ in
         script =
           if stdenv.hostPlatform.isDarwin && stdenv.isCross
           then ''
-            tar xf $src
-            cd icu/source
+            ${unpackSource}
 
             # Modern public Darwin SDKs no longer install tzfile.h. ICU
             # ships the matching IANA header for its tzcode tools.
@@ -52,8 +99,7 @@ in
           ''
           else if stdenv.hostPlatform.isDarwin
           then ''
-            tar xf $src
-            cd icu/source
+            ${unpackSource}
 
             # Modern public Darwin SDKs no longer install tzfile.h. ICU
             # ships the matching IANA header for its tzcode tools.
@@ -62,8 +108,7 @@ in
               common/putil.cpp
           ''
           else ''
-            tar xf $src
-            cd icu/source
+            ${unpackSource}
           '';
       }
       {
@@ -97,6 +142,82 @@ in
               --prefix=$out \
               --enable-shared \
               --enable-static
+
+            # AOS GNU ar and ranlib default to live archive timestamps.
+            # ICU's central make settings also feed pkgdata's data archive.
+            grep -q '^ARFLAGS = .* r$' icudefs.mk
+            grep -q '^RANLIB = ' icudefs.mk
+            sed -i '/^ARFLAGS = /s/ r$/ rD/' icudefs.mk
+            sed -i '/^RANLIB = /s/$/ -D/' icudefs.mk
+          '';
+      }
+      {
+        name = "generate-data";
+        script =
+          if stdenv.isCross
+          then ''
+            # Native ICU produced this data from the same pinned text tree.
+            mkdir -p data/in
+            cp -a ${buildPackages.icu.cross}/source/data/in/. data/in/
+          ''
+          else ''
+            # ICU's default make expects property data from release binaries.
+            # Build the upstream generators against source-built bootstrap
+            # libraries, then regenerate their inputs from Unicode text.
+            mkdir -p lib bin
+            for component in stubdata common i18n io tools; do
+              make -C "$component" -j"$NIX_BUILD_CORES"
+            done
+
+            # Generator executables link the just-built ICU libraries and
+            # its empty bootstrap data library before packaged data exists.
+            export LD_LIBRARY_PATH="$PWD/lib:$PWD/stubdata"
+
+            tool_sources="$src/tools/unicode/c"
+            mkdir -p data/in/coll generated-tools
+            $CXX -std=c++17 -Icommon -Itools/toolutil \
+              "$tool_sources/genprops/genprops.cpp" \
+              "$tool_sources/genprops/pnamesbuilder.cpp" \
+              "$tool_sources/genprops/corepropsbuilder.cpp" \
+              "$tool_sources/genprops/bidipropsbuilder.cpp" \
+              "$tool_sources/genprops/casepropsbuilder.cpp" \
+              "$tool_sources/genprops/emojipropsbuilder.cpp" \
+              "$tool_sources/genprops/layoutpropsbuilder.cpp" \
+              "$tool_sources/genprops/namespropsbuilder.cpp" \
+              -Llib -Lstubdata -Wl,-rpath,"$PWD/lib" \
+              -licutu -licuuc -licudata \
+              -o generated-tools/genprops
+            $CXX -std=c++17 -Icommon -Ii18n -Itools/toolutil \
+              "$tool_sources/genuca/genuca.cpp" \
+              "$tool_sources/genuca/collationbasedatabuilder.cpp" \
+              -Llib -Lstubdata -Wl,-rpath,"$PWD/lib" \
+              -licutu -licui18n -licuuc -licudata \
+              -o generated-tools/genuca
+
+            norm2="$PWD/data/unidata/norm2"
+            bin/gennorm2 -o common/norm2_nfc_data.h \
+              -s "$norm2" nfc.txt --csource
+            bin/gennorm2 -o data/in/nfc.nrm \
+              -s "$norm2" nfc.txt
+            bin/gennorm2 -o data/in/nfkc.nrm \
+              -s "$norm2" nfc.txt nfkc.txt
+            bin/gennorm2 -o data/in/nfkc_cf.nrm \
+              -s "$norm2" nfc.txt nfkc.txt nfkc_cf.txt
+            bin/gennorm2 -o data/in/nfkc_scf.nrm \
+              -s "$norm2" nfc.txt nfkc.txt nfkc_scf.txt
+            bin/gennorm2 -o data/in/uts46.nrm \
+              -s "$norm2" nfc.txt uts46.txt
+
+            generated-tools/genprops "$PWD/.."
+            generated-tools/genuca \
+              --hanOrder implicit "$PWD/.."
+            generated-tools/genuca \
+              --hanOrder radical-stroke "$PWD/.."
+            generated-tools/genuca \
+              --icu4x --hanOrder implicit "$PWD/.."
+            generated-tools/genuca \
+              --icu4x --hanOrder radical-stroke "$PWD/.."
+            unset LD_LIBRARY_PATH
           '';
       }
       {

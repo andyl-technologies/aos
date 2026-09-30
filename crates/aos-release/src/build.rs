@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::digest::Sha256Digest;
@@ -206,6 +206,9 @@ pub fn planned_nix_outputs(plan: &ReleasePlan) -> Result<BTreeMap<&str, PlannedN
             let crate::platform::MatrixCell::Artifact { artifact } = &cell.decision else {
                 continue;
             };
+            let version = package
+                .version_for(cell.platform)
+                .context("planned output lacks its target package version")?;
             for planned in &artifact.artifacts {
                 let (Some(derivation), Some(output), Some(store_path)) = (
                     planned.derivation.as_deref(),
@@ -219,7 +222,7 @@ pub fn planned_nix_outputs(plan: &ReleasePlan) -> Result<BTreeMap<&str, PlannedN
                         planned.id.as_str(),
                         PlannedNixOutput {
                             package: &package.name,
-                            version: &publication.version,
+                            version,
                             license_expression: &publication.license_expression,
                             source_store_paths: &planned.source_store_paths,
                             platform: cell.platform,

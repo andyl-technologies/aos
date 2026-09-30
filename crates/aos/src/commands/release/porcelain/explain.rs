@@ -379,7 +379,7 @@ fn fitness_statuses(
     )?;
     let attestations = fitness::load_attestations(
         &session.config.fitness_root,
-        plan,
+        &fitness::planned_evidence_keys(plan)?,
         &fitness::trusted_keys(&session.config)?,
     )?;
     plan.qualification

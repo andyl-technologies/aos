@@ -596,7 +596,8 @@ jq -S -n \
           outputPath: $spec[0].nix.outputPath
         },
         metadata: {
-          reproducible: true,
+          # Provenance is emitted before any repeat-build check runs.
+          reproducibility: "not-checked",
           hermetic: true,
           qualification: $qualification[0]
         },

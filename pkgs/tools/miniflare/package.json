@@ -6,9 +6,11 @@
   "dependencies": {
     "wrangler": "4.119.0",
     "miniflare": "3.20240909.0",
-    "better-sqlite3": "11.10.0"
+    "better-sqlite3": "11.10.0",
+    "blake3-wasm": "file:blake3-wasm-2.1.5.tgz"
   },
   "overrides": {
+    "blake3-wasm": "file:blake3-wasm-2.1.5.tgz",
     "miniflare@3.20240909.0": {
       "undici": "6.28.0"
     },

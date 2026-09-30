@@ -41,6 +41,7 @@ pub mod formats;
 pub mod input;
 pub mod module_signature;
 pub mod pcr;
+mod pe_sections;
 pub mod pipeline;
 pub mod recovery;
 pub mod request;

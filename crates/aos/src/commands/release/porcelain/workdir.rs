@@ -41,7 +41,7 @@
 //! publish/<slug>/timestamp.retired-<n>/
 //! publish/<slug>/published/        receipt.json, release-journal.jsonl
 //! qualification/<slug>/<phase>/    prepared/, review-<key>.json, signed/
-//! qualification/<slug>/<phase>.rejected-<n>/
+//! qualification/<slug>/<phase>.retired-<n>/
 //! channels/<slug>/ring-<n>/        channel-receipt.json, release-journal.jsonl
 //! channels/<slug>/completion-<key>.json
 //! channels/<slug>/complete/        completion evidence and journal

@@ -293,8 +293,9 @@ in {
           Measure boot into the TPM and seal `/var` encryption to a
           *signed PCR policy* (RFC-0006 phase 3). The UKI gets a signed
           PCR policy (`.pcrsig`/`.pcrpkey`), and first boot LUKS2-formats
-          `/var` and enrolls a TPM2 token sealed to that policy plus a
-          recovery key. Because the seal tracks the policy key — not a
+          `/var` (and every volume declaring `encryption = "tpm2"` in
+          `aos.provisioning.storage`) and enrolls a TPM2 token sealed to
+          that policy plus a recovery key. Because the seal tracks the policy key — not a
           fixed PCR hash — any db-signed UKI unseals `/var` across OTA
           upgrades, while a tampered/unsigned UKI or an SB-state change
           does not. Requires `aos.boot.secureBoot.enable`.
@@ -356,11 +357,16 @@ in {
         default = "/run/aos-var-recovery.key";
         description = ''
           Where the first-boot sealing writes the generated LUKS recovery
-          passphrase. MUST be off the encrypted volume it unlocks; the
-          default is the `/run` tmpfs. A deployment is expected to escrow
+          passphrase for `/var`. MUST be off the encrypted volume it unlocks;
+          the default is the `/run` tmpfs. A deployment is expected to escrow
           this off-machine (e.g. report it back through the provisioning
           metadata channel) — "escrowed somewhere recoverable, never on
           /var" is the hard requirement (RFC-0006 measured-boot.md).
+
+          Every other volume sealed through
+          `aos.provisioning.storage.*.encryption = "tpm2"` writes its
+          recovery key to `/run/aos-volume-recovery/<name>.key` under the
+          same escrow requirement.
         '';
       };
     };
@@ -533,14 +539,16 @@ in {
       environment.systemPackages = [pkgs.aos-var-policy-migrate];
       environment.etc."aos/pcr-sign.pem".source = "${pcrKeyForInitrd}/pcr.pem";
 
-      # First boot: LUKS2-format /var and enroll a TPM2 token sealed to
-      # the signed PCR policy (PCR 11, signature-flexible) plus PCRs 7 and
-      # 12 pinned by value, and a recovery key escrowed off the volume.
-      # Later boots: unlock via the TPM2 token, no passphrase. Ordered
-      # after aos-repart (which creates the partition) and before
-      # mount-var (which mounts /dev/mapper/var).
+      # First boot: LUKS2-format every TPM-sealed volume (/var and any data
+      # volume declaring `encryption = "tpm2"`) and enroll a TPM2 token
+      # sealed to the signed PCR policy (PCR 11, signature-flexible) plus
+      # PCRs 7 and 12 pinned by value, and a recovery key escrowed off the
+      # volume. Later boots: unlock via the TPM2 token, no passphrase.
+      # Ordered after aos-repart (which creates the partitions) and
+      # aos-storage-topology (which assembles arrays), and before mount-var
+      # (which mounts /dev/mapper/var).
       boot.initrd.systemd.services."aos-var-crypt" = lib.mkIf (!(config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState)) {
-        description = "Encrypt and TPM2-seal /var (measured boot)";
+        description = "Unlock or TPM2-seal encrypted volumes (measured boot)";
         requiredBy = ["initrd-fs.target"];
         requires =
           ["aos-boot-identity-guard.service"]
@@ -548,10 +556,10 @@ in {
         before = ["mount-var.service" "initrd-fs.target"];
         # Only ORDER after the disk carver (aos-repart), don't Require it: on a
         # reboot (var already provisioned) repart is a no-op. No
-        # ConditionPathExists on the var device either — for a crypto_LUKS
+        # ConditionPathExists on a var device either — for a crypto_LUKS
         # partition udev surfaces /dev/disk/by-partlabel/var late, which would
-        # condition-skip this whole unit on the unlock boot; the script waits
-        # for it instead.
+        # condition-skip this whole unit on the unlock boot, and the volume
+        # may be an array rather than a partition; the script waits instead.
         after =
           [
             "aos-boot-identity-guard.service"
@@ -578,13 +586,17 @@ in {
         };
         script = ''
           set -euo pipefail
-          dev=/dev/disk/by-partlabel/var
           pub=${pcrKeyForInitrd}/pcr.pem
           enroll=${pkgs.systemd}/bin/systemd-cryptenroll
           csetup=${pkgs.systemd}/lib/systemd/systemd-cryptsetup
           cs=${pkgs.cryptsetup}/sbin/cryptsetup
           mkfs=${pkgs.e2fsprogs}/sbin/mkfs.ext4
+          mkfs_xfs=${pkgs.xfsprogs}/sbin/mkfs.xfs
+          blkid=${pkgs.util-linux}/sbin/blkid
           sbvar=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
+          volumes=/run/aos-metadata/storage-volumes
+          var_recovery_key=${cfg.measuredBoot.recoveryKeyPath}
+          volume_recovery_dir=/run/aos-volume-recovery
           # Log to /dev/kmsg — the console (ttyS0) is contended by the
           # initrd debug shell whose escape sequences corrupt the serial.
           klog() { echo "aos-var-crypt: $*" > /dev/kmsg 2>/dev/null || echo "aos-var-crypt: $*" >&2; }
@@ -594,54 +606,13 @@ in {
           # configured tokens dir (/run/cryptsetup/tokens — see
           # cryptsetup.nix), but the systemd-tpm2 plugin ships in systemd's
           # store path. Symlink systemd's plugin dir into that search path
-          # so systemd-cryptsetup can use the TPM2 token to unlock /var.
+          # so systemd-cryptsetup can use the TPM2 token to unlock volumes.
           mkdir -p /run/cryptsetup
           ln -sfn ${pkgs.systemd}/lib/cryptsetup /run/cryptsetup/tokens
 
-          # Wait for the var partition to surface — udev is slow to process a
-          # crypto_LUKS partition on the unlock boot, and there is no
-          # ConditionPathExists guarding this unit, so poll (up to ~30s).
-          i=0
-          while [ ! -e "$dev" ] && [ "$i" -lt 60 ]; do i=$((i + 1)); sleep 0.5; done
-          if [ ! -e "$dev" ]; then
-            klog "$dev absent after wait; skipping"
-            exit 0
-          fi
-          klog "device ready: isLuks=$("$cs" isLuks "$dev" && echo Y || echo N)"
-
-          if "$cs" isLuks "$dev"; then
-            # Already sealed: unlock via the signed TPM2 policy. A signed
-            # (public-key) policy needs the PCR *signature* at unlock time;
-            # sd-stub materializes the UKI's .pcrsig at
-            # /run/systemd/tpm2-pcr-signature.json — pass it explicitly. If
-            # the unseal fails (SB-state or appended-input PCR mismatch, or
-            # an unsigned UKI), /var stays locked and recovery is required —
-            # the intended security property. `headless` makes
-            # systemd-cryptsetup FAIL rather than fall back to an
-            # interactive passphrase prompt (which would wedge the boot);
-            # `timeout` bounds it either way.
-            if [ ! -e /dev/mapper/var ]; then
-              sig=""
-              for p in /run/systemd/tpm2-pcr-signature.json \
-                       /.extra/tpm2-pcr-signature.json \
-                       /run/credentials/@system/tpm2-pcr-signature.json; do
-                if [ -r "$p" ]; then sig="$p"; break; fi
-              done
-              klog "unlocking /var via TPM2 (signature=''${sig:-<none>})"
-              opts="tpm2-device=auto,headless"
-              [ -n "$sig" ] && opts="tpm2-device=auto,tpm2-signature=$sig,headless"
-              rc=0
-              timeout 60 "$csetup" attach var "$dev" - "$opts" || rc=$?
-              if [ "$rc" -ne 0 ]; then
-                klog "TPM2 unlock failed (rc=$rc) — /var stays sealed, recovery key required"
-              fi
-            fi
-            exit 0
-          fi
-
-          # Not yet LUKS. Sealing binds PCR 7 (Secure Boot state) and PCR 12
-          # (boot inputs) by value, so it must happen during a clean boot with
-          # SB *enforcing* — otherwise the seal captures an unusable state.
+          # Sealing binds PCR 7 (Secure Boot state) and PCR 12 (boot inputs)
+          # by value, so it must happen during a clean boot with SB
+          # *enforcing* — otherwise the seal captures an unusable state.
           # Read SecureBoot from efivarfs (mount it if the initrd has not yet).
           mount -t efivarfs none /sys/firmware/efi/efivars 2>/dev/null || true
           sb=0
@@ -649,68 +620,201 @@ in {
             sb=$(od -An -tu1 -j4 -N1 "$sbvar" | tr -d ' ' || echo 0)
           fi
 
-          if [ "$sb" != "1" ]; then
-            # Pre-enrollment boot (Setup Mode): SB not enforcing yet. Bring
-            # up a temporary PLAIN ext4 /var so the system reaches
-            # multi-user and an operator/test can enroll PK/KEK/db; the
-            # first enforcing boot below replaces it with the sealed volume.
-            # The measured-boot repart plan initially leaves /var raw. Format
-            # it once and preserve it across further Setup Mode boots so key
-            # enrollment can complete without repeated formatting. This
-            # plaintext state remains disposable: the first enforcing boot
-            # replaces it with the sealed volume below.
-            fs_type=$(${pkgs.util-linux}/sbin/blkid -p -s TYPE -o value "$dev" 2>/dev/null || true)
-            case "$fs_type" in
-              "")
-                klog "SB not enforcing yet — formatting plain ext4 /var (sealed once enforcing)"
-                "$mkfs" -q -L var "$dev"
-                ;;
-              ext4)
-                klog "SB not enforcing yet — preserving existing plain ext4 /var"
-                ;;
-              *)
-                klog "SB not enforcing yet — refusing unexpected /var filesystem type: $fs_type"
-                exit 1
-                ;;
+          # udev is slow to process a crypto_LUKS device on the unlock boot,
+          # and there is no ConditionPathExists guarding this unit, so poll
+          # (up to ~30s) before deciding a device is absent.
+          wait_for() {
+            i=0
+            while [ ! -e "$1" ] && [ "$i" -lt 60 ]; do i=$((i + 1)); sleep 0.5; done
+            [ -e "$1" ]
+          }
+
+          # The inner filesystem of a sealed volume. Tool defaults are the
+          # intended defaults; both detect md stripe geometry on an array.
+          make_filesystem() {
+            case "$1" in
+              ext4) "$mkfs" -q -L "$2" "$3" ;;
+              xfs) "$mkfs_xfs" -q -L "$2" "$3" ;;
+              *) klog "unsupported filesystem $1 for $3"; return 1 ;;
             esac
-            exit 0
-          fi
+          }
+
+          # A signed (public-key) policy needs the PCR *signature* at unlock
+          # time; sd-stub materializes the UKI's .pcrsig at
+          # /run/systemd/tpm2-pcr-signature.json.
+          pcr_signature() {
+            for p in /run/systemd/tpm2-pcr-signature.json \
+                     /.extra/tpm2-pcr-signature.json \
+                     /run/credentials/@system/tpm2-pcr-signature.json; do
+              if [ -r "$p" ]; then echo "$p"; return 0; fi
+            done
+            return 0
+          }
+
+          # Already sealed: unlock via the signed TPM2 policy. If the unseal
+          # fails (SB-state or appended-input PCR mismatch, or an unsigned
+          # UKI), the volume stays locked and recovery is required — the
+          # intended security property. `headless` makes systemd-cryptsetup
+          # FAIL rather than fall back to an interactive passphrase prompt
+          # (which would wedge the boot); `timeout` bounds it either way.
+          unlock_volume() {
+            name=$1
+            dev=$2
+            [ -e "/dev/mapper/$name" ] && return 0
+            sig=$(pcr_signature)
+            klog "unlocking $name from $dev via TPM2 (signature=''${sig:-<none>})"
+            opts="tpm2-device=auto,headless"
+            [ -n "$sig" ] && opts="tpm2-device=auto,tpm2-signature=$sig,headless"
+            rc=0
+            timeout 60 "$csetup" attach "$name" "$dev" - "$opts" || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              klog "TPM2 unlock of $name failed (rc=$rc) — it stays sealed, recovery key required"
+            fi
+            return 0
+          }
 
           # First enforcing boot: format with a throwaway key, seal to the
           # signed PCR policy (PCR 11) + pinned PCRs 7 and 12, add a recovery
           # key, then drop the bootstrap keyslot so only the TPM/recovery paths
-          # remain.
-          keyf=$(mktemp)
-          dd if=/dev/urandom of="$keyf" bs=512 count=1 status=none
-          "$cs" luksFormat --type luks2 --batch-mode "$dev" "$keyf"
-          "$cs" open "$dev" var --key-file "$keyf"
-          "$mkfs" -q -L var /dev/mapper/var
-          "$enroll" --unlock-key-file="$keyf" \
-            --tpm2-device=auto \
-            --tpm2-public-key="$pub" \
-            --tpm2-public-key-pcrs=${cfg.measuredBoot.signedPcrs} \
-            --tpm2-pcrs=${cfg.measuredBoot.pinnedPcrs} \
-            "$dev"
-          # Recovery key — MUST be escrowed off-machine (deployment
-          # decision); written to the /run tmpfs, never to /var. This is
-          # NOT masked: if recovery enrollment fails we must abort BEFORE
-          # wiping the bootstrap slot, otherwise a later TPM unseal failure
-          # (legit firmware/SB or boot-input change → pinned PCR mismatch) would brick /var
-          # with no way in. `set -e` propagates a failure here.
-          # Command substitution removes systemd-cryptenroll's presentation
-          # newline. cryptsetup treats every byte in a key file as key
-          # material, so retaining that newline would make direct exact-slot
-          # recovery verification disagree with systemd's password reader.
-          recovery_key=$("$enroll" --unlock-key-file="$keyf" --recovery-key "$dev")
-          printf '%s' "$recovery_key" > ${cfg.measuredBoot.recoveryKeyPath}
-          unset recovery_key
-          chmod 600 ${cfg.measuredBoot.recoveryKeyPath}
-          # Drop the throwaway bootstrap keyslot by TYPE (a plain
-          # passphrase/keyfile slot), not by a guessed slot number — the
-          # TPM2 and recovery slots carry their own systemd token types and
-          # are left intact.
-          "$enroll" --unlock-key-file="$keyf" --wipe-slot=password "$dev"
-          shred -u "$keyf" 2>/dev/null || rm -f "$keyf"
+          # remain. The LUKS2 label and subsystem identify the volume on a
+          # later boot that has no plan to consult.
+          seal_volume() {
+            name=$1
+            dev=$2
+            label=$3
+            filesystem=$4
+            recovery_path=$5
+            klog "sealing $name on $dev ($filesystem)"
+            keyf=$(mktemp)
+            dd if=/dev/urandom of="$keyf" bs=512 count=1 status=none
+            "$cs" luksFormat --type luks2 --batch-mode \
+              --label "$label" --subsystem aos-volume "$dev" "$keyf"
+            "$cs" open "$dev" "$name" --key-file "$keyf"
+            make_filesystem "$filesystem" "$label" "/dev/mapper/$name"
+            "$enroll" --unlock-key-file="$keyf" \
+              --tpm2-device=auto \
+              --tpm2-public-key="$pub" \
+              --tpm2-public-key-pcrs=${cfg.measuredBoot.signedPcrs} \
+              --tpm2-pcrs=${cfg.measuredBoot.pinnedPcrs} \
+              "$dev"
+            # Recovery key — MUST be escrowed off-machine (deployment
+            # decision); written to the /run tmpfs, never to the volume. This
+            # is NOT masked: if recovery enrollment fails we must abort BEFORE
+            # wiping the bootstrap slot, otherwise a later TPM unseal failure
+            # (legit firmware/SB or boot-input change → pinned PCR mismatch)
+            # would brick the volume with no way in. `set -e` propagates a
+            # failure here.
+            # Command substitution removes systemd-cryptenroll's presentation
+            # newline. cryptsetup treats every byte in a key file as key
+            # material, so retaining that newline would make direct exact-slot
+            # recovery verification disagree with systemd's password reader.
+            recovery_key=$("$enroll" --unlock-key-file="$keyf" --recovery-key "$dev")
+            mkdir -p "$(dirname "$recovery_path")"
+            printf '%s' "$recovery_key" > "$recovery_path"
+            unset recovery_key
+            chmod 600 "$recovery_path"
+            # Drop the throwaway bootstrap keyslot by TYPE (a plain
+            # passphrase/keyfile slot), not by a guessed slot number — the
+            # TPM2 and recovery slots carry their own systemd token types and
+            # are left intact.
+            "$enroll" --unlock-key-file="$keyf" --wipe-slot=password "$dev"
+            shred -u "$keyf" 2>/dev/null || rm -f "$keyf"
+          }
+
+          # Bring one TPM-sealed volume to its state for this boot: unlock a
+          # sealed one, seal a raw one once Secure Boot is enforcing, and keep
+          # the system-state volume usable in plaintext before then.
+          handle_volume() {
+            name=$1
+            dev=$2
+            label=$3
+            filesystem=$4
+            if ! wait_for "$dev"; then
+              klog "$dev for $name absent after wait; skipping"
+              return 0
+            fi
+            klog "$name device ready: $dev isLuks=$("$cs" isLuks "$dev" && echo Y || echo N)"
+            if "$cs" isLuks "$dev"; then
+              unlock_volume "$name" "$dev"
+              return 0
+            fi
+
+            fs_type=$("$blkid" -p -s TYPE -o value "$dev" 2>/dev/null || true)
+            if [ "$sb" != "1" ]; then
+              if [ "$name" != var ]; then
+                klog "SB not enforcing yet — $name stays raw until the first enforcing boot"
+                return 0
+              fi
+              # Pre-enrollment boot (Setup Mode): SB not enforcing yet. Bring
+              # up a temporary PLAIN ext4 /var so the system reaches
+              # multi-user and an operator/test can enroll PK/KEK/db; the
+              # first enforcing boot below replaces it with the sealed
+              # volume. Format it once and preserve it across further Setup
+              # Mode boots so key enrollment can complete without repeated
+              # formatting.
+              case "$fs_type" in
+                "")
+                  klog "SB not enforcing yet — formatting plain ext4 /var (sealed once enforcing)"
+                  "$mkfs" -q -L "$label" "$dev"
+                  ;;
+                ext4)
+                  klog "SB not enforcing yet — preserving existing plain ext4 /var"
+                  ;;
+                *)
+                  klog "SB not enforcing yet — refusing unexpected /var filesystem type: $fs_type"
+                  exit 1
+                  ;;
+              esac
+              return 0
+            fi
+
+            # The system-state volume's plaintext Setup Mode filesystem is
+            # disposable by contract; any other volume must still be blank,
+            # since sealing over a foreign signature would destroy data the
+            # plan never promised to own.
+            if [ "$name" != var ] && [ -n "$fs_type" ]; then
+              klog "refusing to seal $name: $dev already carries $fs_type"
+              exit 1
+            fi
+            if [ "$name" = var ]; then
+              seal_volume "$name" "$dev" "$label" "$filesystem" "$var_recovery_key"
+            else
+              seal_volume "$name" "$dev" "$label" "$filesystem" "$volume_recovery_dir/$name.key"
+            fi
+          }
+
+          if [ -s "$volumes" ]; then
+            # The validated plan names every sealed volume and the device
+            # that carries it (a partition, or an array aos-storage-topology
+            # has assembled).
+            while IFS="$(printf '\t')" read -r name kind device label encryption filesystem; do
+              [ "$encryption" = tpm2 ] || continue
+              handle_volume "$name" "$device" "$label" "$filesystem"
+            done < "$volumes"
+          else
+            # No plan this boot (metadata unavailable after commit). The
+            # system-state volume is found by its fixed identities; every
+            # other sealed volume announces itself through the aos-volume
+            # LUKS2 subsystem tag written when it was sealed. Nothing is
+            # created on this path.
+            var_dev=""
+            for candidate in /dev/md/var /dev/disk/by-partlabel/var; do
+              if [ -e "$candidate" ]; then var_dev="$candidate"; break; fi
+            done
+            if [ -n "$var_dev" ]; then
+              handle_volume var "$var_dev" var ext4
+            fi
+            for dev in $("$blkid" -t TYPE=crypto_LUKS -o device 2>/dev/null || true); do
+              subsystem=$("$blkid" -p -s SUBSYSTEM -o value "$dev" 2>/dev/null || true)
+              label=$("$blkid" -p -s LABEL -o value "$dev" 2>/dev/null || true)
+              [ "$subsystem" = aos-volume ] || continue
+              [ -n "$label" ] || continue
+              [ "$label" = var ] && continue
+              # Discovery only unlocks; the filesystem already exists, so the
+              # type passed here is never used to format.
+              handle_volume "$label" "$dev" "$label" ext4
+            done
+          fi
         '';
       };
     })

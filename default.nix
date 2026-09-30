@@ -30,7 +30,21 @@
   system ? builtins.currentSystem,
   crossSystem ? null,
   containerPublicationInputsOverride ? null,
-}: let
+  sharedGoCacheDir ? null,
+  sharedBazelCacheDir ? null,
+  sharedRustTargetDir ? null,
+  sharedRustIncremental ? false,
+  sharedAccacheDir ? null,
+  sharedAccacheStateDir ? null,
+}:
+assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
+  anySharedCache =
+    sharedGoCacheDir
+    != null
+    || sharedBazelCacheDir != null
+    || sharedRustTargetDir != null
+    || sharedRustIncremental
+    || sharedAccacheDir != null;
   lib = import ./lib {
     inherit system;
     # Every Nix builder executes on buildPlatform, including during a cross
@@ -42,6 +56,9 @@
     if crossSystem != null
     then lib.mkPlatform crossSystem
     else buildPlatform;
+  # An explicit target equal to the builder is still a native build. Release
+  # commands name every platform, including the one executing their tools.
+  isCrossBuild = hostPlatform.system != buildPlatform.system;
 
   # The native stdenv and package set provide tools that execute on the build
   # machine. A cross stdenv uses those tools while producing hostPlatform
@@ -52,17 +69,29 @@
     targetPlatform = buildPlatform;
   };
 
+  # Toolchain outputs stay ordinary in development mode, while other build
+  # dependencies join the shared-cache package set. This lets expensive
+  # intermediate packages reuse compiler work without restarting the ladder.
+  ordinaryBuildPackages = import ./pkgs {
+    inherit lib;
+    stdenv = buildStdenv;
+  };
   buildPackages =
-    if crossSystem == null
+    if !isCrossBuild
     then pkgs
+    else ordinaryBuildPackages;
+  ordinaryToolchainPackages =
+    if !anySharedCache
+    then null
+    else if !isCrossBuild
+    then ordinaryBuildPackages
     else
-      import ./pkgs {
-        inherit lib;
-        stdenv = buildStdenv;
-      };
+      (import ./. {
+        inherit system crossSystem;
+      }).pkgs;
 
   stdenv =
-    if crossSystem == null
+    if !isCrossBuild
     then buildStdenv
     else if hostPlatform.isDarwin
     then
@@ -108,9 +137,27 @@
         hostPlatform = firmwarePlatform;
         targetPlatform = firmwarePlatform;
       };
+      ordinaryFirmwareToolchainPackages =
+        if anySharedCache
+        then
+          (import ./. {
+            inherit system;
+            crossSystem = "aarch64-linux";
+          }).pkgs
+        else null;
     in
       import ./pkgs {
-        inherit lib buildPackages;
+        inherit
+          lib
+          buildPackages
+          sharedGoCacheDir
+          sharedBazelCacheDir
+          sharedRustTargetDir
+          sharedRustIncremental
+          sharedAccacheDir
+          sharedAccacheStateDir
+          ;
+        ordinaryToolchainPackages = ordinaryFirmwareToolchainPackages;
         stdenv = firmwareStdenv;
       }
     else buildPackages;
@@ -119,7 +166,35 @@
   # pkgs.buildPackages for generators, compilers, and other executable build
   # dependencies, and ordinary package arguments for host libraries.
   pkgs = import ./pkgs {
-    inherit lib stdenv buildPackages firmwarePackages;
+    inherit
+      lib
+      stdenv
+      buildPackages
+      firmwarePackages
+      sharedGoCacheDir
+      sharedBazelCacheDir
+      sharedRustTargetDir
+      sharedRustIncremental
+      sharedAccacheDir
+      sharedAccacheStateDir
+      ordinaryToolchainPackages
+      ;
+  };
+
+  allPackages = pkgs.mkDerivation {
+    pname = "aos-all-packages";
+    version = "0";
+    src = null;
+    buildDeps = map (name: pkgs.${name}) pkgs.packageNames;
+    phases = [
+      {
+        name = "assemble";
+        script = ''
+          mkdir -p "$out"
+          echo PASS > "$out/result"
+        '';
+      }
+    ];
   };
 
   # Auto-discovered module list.
@@ -528,6 +603,9 @@
   };
   selinuxBaseCheck = import ./lib/testing/selinux-base.nix {
     inherit pkgs mkSystem testing;
+  };
+  homesEnabledCheck = import ./lib/testing/homes.nix {
+    inherit lib pkgs mkSystem testing;
   };
 
   # Stdenv cross-cutting integration check
@@ -1290,8 +1368,16 @@
     // {
       referenceIntegrity = crucibleReferenceIntegrity;
     };
+
+  # Configuration publication runs on the build platform. Darwin releases
+  # contain packages without a system image, so their configuration companions
+  # use the Linux builder's base library and its frozen system artifacts.
+  releaseConfigurationBaseLib =
+    if stdenv.isCross && hostPlatform.isDarwin
+    then (import ./. {inherit system;}).systems.server.config.aos.config.evalAtBoot.baseLib
+    else discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
 in {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor allPackages;
   packageQualificationCoverage = qualificationPackageCoverageReport;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
@@ -1302,14 +1388,14 @@ in {
     system = hostPlatform.system;
     packages = pkgs;
     names = pkgs.allPackageNames;
-    configurationBaseLib = discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
+    configurationBaseLib = releaseConfigurationBaseLib;
     configurationSources = [./lib ./modules ./systems/server.nix];
   };
   releasePackageDerivationRoots = pkgs.platformSupport.releaseDerivationRoots {
     system = hostPlatform.system;
     packages = pkgs;
     names = pkgs.allPackageNames;
-    configurationBaseLib = discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
+    configurationBaseLib = releaseConfigurationBaseLib;
   };
 
   # Pure package-maintenance content. Git and local-clone identities are added
@@ -1323,6 +1409,41 @@ in {
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
   checks = rec {
+    bootstrap.kotlin-java = import ./pkgs/toolchain/_kotlin-bootstrap-2011.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
+    bootstrap.kotlin-november = import ./pkgs/toolchain/_kotlin-bootstrap-november-2013.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
+    bootstrap.kotlin-stdlib-december = import ./pkgs/toolchain/_kotlin-stdlib-december-2013.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
+    bootstrap.kotlin-december = import ./pkgs/toolchain/_kotlin-bootstrap-december-2013.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
+    bootstrap.kotlin-stdlib-january = import ./pkgs/toolchain/_kotlin-stdlib-january-2014.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
+    bootstrap.kotlin-february = import ./pkgs/toolchain/_kotlin-bootstrap-february-2014.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
+    bootstrap.kotlin-stdlib-february = import ./pkgs/toolchain/_kotlin-stdlib-february-2014.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
     image-matrix = testing.mkImageMatrix {
       systems = discoverSystems;
       sourceIdentity = toString pkgs.aos.src;
@@ -1386,6 +1507,14 @@ in {
       native-sandbox-boundary = import ./tests/build/native-sandbox-boundary.nix {
         pkgs = buildPackages;
       };
+      aos-dev-cli = import ./tests/build/aos-dev-cli.nix {inherit pkgs;};
+      accache = import ./tests/build/accache.nix {
+        inherit lib;
+        pkgs = buildPackages;
+      };
+      aos-dev-cache-identity = import ./tests/build/aos-dev-cache-identity.nix {
+        inherit pkgs system crossSystem;
+      };
       bootstrap-seed =
         if buildPlatform.isLinux && buildPlatform.isx86_64
         then import ./tests/build/bootstrap-seed.nix {pkgs = buildPackages;}
@@ -1446,10 +1575,24 @@ in {
       };
       package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
-      golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
+      # Externally finalized variants have no final image or image-budget
+      # check. Their unsigned assembly is covered by its own build checks.
+      golden-image-budgets = builtins.listToAttrs (builtins.concatMap (
+        name: let
+          system = discoverSystems.${name};
+        in
+          if system.checks ? image-budget
+          then [
+            {
+              inherit name;
+              value = system.checks.image-budget;
+            }
+          ]
+          else []
+      ) (builtins.attrNames discoverSystems));
     in
       {
-        inherit toolchain-boundaries native-sandbox-boundary;
+        inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-dev-cache-identity accache;
         inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-support package-root-image runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
@@ -1462,7 +1605,7 @@ in {
               then [bootstrap-seed]
               else []
             )
-            ++ [toolchain-boundaries.all native-sandbox-boundary critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-hosted-toolchain linux-workerd package-platform-support package-root-image runtime-python-outputs structured-attrs-export systemd-verity]
+            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-dev-cache-identity accache critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-hosted-toolchain linux-workerd package-platform-support package-root-image runtime-python-outputs structured-attrs-export systemd-verity]
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
             ++ builtins.attrValues linux-hosted-rust
@@ -1681,6 +1824,7 @@ in {
         hub-native-operations = hubNativeOperationsTest;
         hub-settings = hubSettingsTest;
         apm-install-at-boot = apmInstallAtBootCheck;
+        homes-enabled = homesEnabledCheck;
         package-expose-lifecycle = packageExposeLifecycleCheck;
         package-preset = packagePresetCheck;
         package-test-http-server = packageTestHttpServerCheck;

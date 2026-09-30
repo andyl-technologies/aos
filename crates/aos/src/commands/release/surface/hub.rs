@@ -61,14 +61,12 @@ impl HubSurface {
         }
     }
 
-    fn authenticated(&self) -> Result<HubClient> {
-        let token = self.token.as_deref().with_context(|| {
-            format!(
-                "{} Hub operation requires an access token",
-                self.planned.role
-            )
-        })?;
-        HubClient::connect_with_token(&self.planned.origin, token)
+    /// Connects with the explicit token, or with the renewable Hub profile
+    /// credentials for this deployment's origin when no token was given.
+    async fn authenticated(&self) -> Result<HubClient> {
+        crate::commands::hub::release_hub_client(&self.planned.origin, self.token.as_deref())
+            .await
+            .with_context(|| format!("{} Hub operation requires credentials", self.planned.role))
     }
 
     /// Hub objects are namespaced below `<hub>/<registry>/`.
@@ -124,7 +122,7 @@ impl SurfaceClient for HubSurface {
 
     async fn receipt(&self, request: &PublicationRequest<'_>) -> Result<SignedReceipt> {
         let plan = request.plan;
-        let hub = self.authenticated()?;
+        let hub = self.authenticated().await?;
         hub.call_topology(
             hub_rpc::BeginReleasePublication,
             &aos_proto_types::BeginReleasePublicationRequest {
@@ -219,7 +217,7 @@ impl SurfaceClient for HubSurface {
     }
 
     async fn advance_ring(&self, request: &ChannelAdvance<'_>) -> Result<SignedReceipt> {
-        let hub = self.authenticated()?;
+        let hub = self.authenticated().await?;
         let signed = hub
             .call_topology(
                 hub_rpc::AdvanceReleaseChannel,
@@ -275,7 +273,7 @@ impl SurfaceClient for HubSurface {
         base_commit: &str,
         printer: &Printer,
     ) -> Result<PublishedSurface> {
-        let hub = self.authenticated()?;
+        let hub = self.authenticated().await?;
         let existing = hub
             .call_topology(
                 hub_rpc::ListRegistryPublications,
@@ -343,7 +341,7 @@ impl SurfaceClient for HubSurface {
             request.snapshot_bytes.len(),
         )?;
 
-        let hub = self.authenticated()?;
+        let hub = self.authenticated().await?;
         let state = hub
             .call_topology(
                 hub_rpc::PublishReleaseTimestamp,

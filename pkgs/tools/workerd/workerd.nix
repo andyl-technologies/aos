@@ -46,7 +46,7 @@ mkDerivation {
       testScript = ''
         OUTPUT=$(workerd --version 2>&1)
         case "$OUTPUT" in
-          *"2024-09-09"*)
+          *"2026-08-01"*)
             echo "==> workerd version: PASS ($OUTPUT)"
             ;;
           *)

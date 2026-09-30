@@ -22,7 +22,9 @@ pub(crate) struct PinnedPublication {
 /// Returns an error if request validation, credential resolution, or a hub API call fails.
 pub(super) const MAX_PUBLICATION_OBJECTS: usize = 50_000;
 
-const MAX_PUBLICATION_ENTRIES: usize = 50_000;
+// Entries include directories. A valid 50,000-object surface needs additional
+// room for its directory structure without relaxing the object limit.
+const MAX_PUBLICATION_ENTRIES: usize = 75_000;
 
 const MAX_PUBLICATION_PATH_BYTES: usize = 512;
 

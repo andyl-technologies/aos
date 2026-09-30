@@ -50,6 +50,10 @@ restricted_operator_policy = "{root}/operator.md"
 tooling_closure = "/nix/store/0000000000000000000000000000000a-aos"
 trusted_keys = ["evidence-1={root}/keys/evidence-1.pub", "evidence-2={root}/keys/evidence-2.pub"]
 
+[git]
+name = "AOS Release"
+email = "release@aos.example"
+
 [surfaces.staging]
 kind = "hub"
 origin = "https://aos.staging.example"

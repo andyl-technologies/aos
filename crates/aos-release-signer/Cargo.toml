@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+aos-oci-types = { workspace = true }
 aos-release = { workspace = true }
 base64 = { workspace = true }
 clap = { workspace = true }

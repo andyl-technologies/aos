@@ -17,14 +17,16 @@ use crate::cli::ReleaseContractArgs;
 
 pub(super) fn run(args: &ReleaseContractArgs, nix: &NixRunner, printer: &Printer) -> Result<()> {
     let contract: QualificationContract = match &args.input {
-        Some(path) => canonical::from_slice(
-            &super::capture::control_file(path, "qualification contract")?,
-            "qualification contract",
-        )?,
-        None => serde_json::from_value(nix.eval_json("releaseQualification")?)
-            .context("decoding Nix qualification contract")?,
+        Some(path) => {
+            let contract: QualificationContract = canonical::from_slice(
+                &super::capture::control_file(path, "qualification contract")?,
+                "qualification contract",
+            )?;
+            contract.validate()?;
+            contract
+        }
+        None => export(nix)?,
     };
-    contract.validate()?;
     let tier = registry_policy(&args.registry)?.tier();
     let bytes = canonical::to_vec(&contract)?;
     if let Some(path) = &args.output {
@@ -145,4 +147,17 @@ pub(super) fn run(args: &ReleaseContractArgs, nix: &NixRunner, printer: &Printer
         "Qualification status: not evaluated. This contract describes requirements, not passing evidence."
     );
     Ok(())
+}
+
+/// Evaluates and validates the repository's exported qualification contract.
+///
+/// # Errors
+/// Returns an error when Nix evaluation fails or the export is not a valid
+/// contract.
+pub(super) fn export(nix: &NixRunner) -> Result<QualificationContract> {
+    let contract: QualificationContract =
+        serde_json::from_value(nix.eval_json("releaseQualification")?)
+            .context("decoding Nix qualification contract")?;
+    contract.validate()?;
+    Ok(contract)
 }

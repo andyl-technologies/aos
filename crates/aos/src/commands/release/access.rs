@@ -1,7 +1,8 @@
 //! Credentials and signers for connecting a leaf command to a planned surface.
 //!
 //! Hub surfaces take a short-lived token from `--token`/`AOS_TOKEN`, or from
-//! the maintainer configuration's `token_credential`. Static surfaces take
+//! the maintainer configuration's `token_credential`; without either, the
+//! renewable Hub login profile for the surface origin is used. Static surfaces take
 //! their transport credentials and the `surface-receipt` (and, for channel
 //! advances, `registry`) signer keys from the maintainer configuration. The
 //! configured surface must equal the plan's frozen surface exactly, so
