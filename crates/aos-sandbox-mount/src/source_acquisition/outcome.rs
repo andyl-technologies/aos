@@ -789,6 +789,41 @@ impl SourceAcquisitionTableV2 {
             );
         }
 
+        let (transaction, tentative) = self.prepare_inventory_disposition_v6(
+            current_head,
+            next_attempt,
+            terminal_ref,
+        )?;
+        journal.commit(&transaction)?;
+        *self = tentative;
+        Ok(())
+    }
+
+    /// Prepares exact ordinary Query owners without taking the generic commit route.
+    ///
+    /// # Errors
+    /// Rejects packet/current-owner mismatch, recovery barriers or invalid graph updates.
+    pub(super) fn prepare_original_inventory_disposition_v6(
+        &self,
+        query: [u8; 32],
+        verified: &VerifiedMountProviderOutcomeV2,
+    ) -> Result<(JournalTransaction, Self)> {
+        let (head, _, attempt, reference) = self.prepare_verified_attempt_v2(query, verified)?;
+        if head.recovery_barrier.is_some()
+            || attempt.method != ProviderMethodV2::Inventory
+            || attempt.owner != ProviderQueryOwnerV2::Inventory
+        {
+            return Err(state_error("ordinary Query disposition differs from exact current owner"));
+        }
+        self.prepare_inventory_disposition_v6(head, attempt, reference)
+    }
+
+    fn prepare_inventory_disposition_v6(
+        &self,
+        current_head: SourceProviderHeadV2,
+        next_attempt: SourceProviderQueryAttemptV2,
+        terminal_ref: RecordRefV2,
+    ) -> Result<(JournalTransaction, Self)> {
         let next_head = derive_inventory_disposition_head_v2(
             &current_head,
             &next_attempt,
@@ -799,9 +834,8 @@ impl SourceAcquisitionTableV2 {
         )
         .map_err(inventory_owner_derivation_error)?;
         let next_head = sealed_head(next_head)?;
-        commit_mutation(
+        prepare_mutation(
             self,
-            journal,
             MutationIdentityV2 {
                 tag: MutationTagV2::CompleteInventory,
                 holder_id: next_head.scope.holder_authority_id,

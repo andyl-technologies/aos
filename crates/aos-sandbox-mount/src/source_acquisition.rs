@@ -50,6 +50,7 @@ mod model;
 mod native_recovery;
 mod native_selection;
 mod original_native_runtime;
+mod original_inventory;
 mod outcome;
 mod projection;
 mod provider_exchange;
@@ -169,6 +170,8 @@ pub(crate) struct SourceAcquisitionRuntimeV2 {
         Option<aos_sandbox_source_provider_security::VerifiedMountProviderOutcomeV2>,
     pending_provider_send: Option<ProviderQuerySendRecoveryV2>,
     pending_original_native: Option<native_selection::OriginalNativeAcquireFlightV5>,
+    pending_original_inventory: Option<original_inventory::OriginalInventoryFlightV6>,
+    retained_original_inventory: Vec<original_inventory::OriginalInventoryFlightV6>,
     original_native_sidecars: BTreeMap<[u8; 32],
         aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::RootNativeHeldSidecarV2>,
     pending_backend_recovery_replacement: Option<BackendRecoveryReplacementV2>,
@@ -788,7 +791,14 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     ) -> std::result::Result<Self, (crate::MountError, SourceAcquisitionRuntimeV2)> {
         // Only an already retained original flight may select the named native
         // reborrow. A replayed row alone cannot reconstruct original custody.
-        let protected = if runtime.pending_original_native.is_some() {
+        let has_query = runtime.pending_original_inventory.is_some()
+            || !runtime.retained_original_inventory.is_empty();
+        if has_query && runtime.pending_original_native.is_none() {
+            return Err((state_error("Query reattach lost actual original owner"), runtime));
+        }
+        let protected = if has_query {
+            aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed_root_original_inventory_v6(journal)
+        } else if runtime.pending_original_native.is_some() {
             aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed_root_original_native_v5(
                 journal,
             )
@@ -845,6 +855,8 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 pending_remote_inventory_outcome: None,
                 pending_provider_send: None,
                 pending_original_native: None,
+                pending_original_inventory: None,
+                retained_original_inventory: Vec::new(),
                 original_native_sidecars: BTreeMap::new(),
                 pending_backend_recovery_replacement,
                 pending_inventory_recovery_replacement,

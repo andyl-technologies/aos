@@ -149,6 +149,47 @@ pub(super) fn validated_mount_state(
     journal.validated_state()
 }
 
+impl MountSourceAcquisitionJournalViewV2
+    for aos_sandbox::MountOriginalInventoryJournalAuthorityV6<'_>
+{
+    fn capture_snapshot(
+        &self,
+    ) -> Result<aos_sandbox::ProtectedJournalSnapshot, SourceProviderSecurityError> {
+        self.snapshot()
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)
+    }
+
+    fn validated_state(
+        &self,
+    ) -> Result<
+        aos_sandbox_protocol::mount_source_acquisition_state::MountSourceAcquisitionStateV2,
+        SourceProviderSecurityError,
+    > {
+        // Full current native graph, ALL families and Query rejoin precede projection.
+        Ok(self
+            .current_graph()
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
+            .legacy()
+            .clone())
+    }
+
+    fn current_value<'view>(
+        &'view self,
+        key: &[u8],
+    ) -> Result<Option<&'view [u8]>, SourceProviderSecurityError> {
+        self.get(key)
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)
+    }
+
+    fn validate_current_snapshot(
+        &self,
+        snapshot: &aos_sandbox::ProtectedJournalSnapshot,
+    ) -> Result<(), SourceProviderSecurityError> {
+        self.validate_snapshot(snapshot)
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)
+    }
+}
+
 pub(super) fn stored_mount_session_matches_projection(
     stored: &aos_sandbox_protocol::mount_source_acquisition_state::SourceProviderSessionV2,
     projected: &MountProviderSessionProjectionV2,
@@ -452,6 +493,24 @@ pub(super) fn trusted_clock_evidence_digest(
     hasher.update(revocation_digest.as_bytes());
     ObjectDigest::from_bytes(hasher.finalize().into())
 }
+
+// Query projection reuses protected authentication-time DATA. This does not
+// replace Session revalidation or the original wall/BOOTTIME deadline guard.
+pub(super) fn query_authentication_time_v6(
+    stored_authenticated_at_seconds: i64,
+    observed_now_seconds: i64,
+) -> Result<i64, SourceProviderSecurityError> {
+    if stored_authenticated_at_seconds < 0
+        || observed_now_seconds < stored_authenticated_at_seconds
+    {
+        return Err(SourceProviderSecurityError::SessionContinuity);
+    }
+
+    Ok(stored_authenticated_at_seconds)
+}
+
+#[cfg(test)]
+mod query_time_tests;
 
 pub(super) fn mount_plan_freshness_digest(
     signed_hellos: (&[u8], &[u8]),
