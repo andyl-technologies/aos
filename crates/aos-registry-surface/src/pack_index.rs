@@ -6,13 +6,18 @@
 //! resolves base and delta objects, and compares the complete computed index.
 
 use std::collections::BTreeMap;
-use std::io::Read as _;
 
 use anyhow::{bail, Context, Result};
 use sha2::{Digest as _, Sha256};
 
 use crate::keymap::is_git_pack_index_path;
 use crate::object::{hash_object, ObjectKind};
+
+pub mod projection;
+mod stream;
+
+#[cfg(test)]
+mod projection_tests;
 
 /// Maximum pack-index size accepted by a publication.
 pub const MAX_PUBLISHED_PACK_INDEX_BYTES: u64 = 4 * 1024 * 1024;
@@ -32,7 +37,6 @@ const HEADER_BYTES: usize = 8;
 const FANOUT_BYTES: usize = 256 * 4;
 const OBJECT_ID_BYTES: usize = 32;
 const TRAILER_BYTES: usize = 64;
-const PACK_TRAILER_BYTES: usize = 32;
 const MAGIC: [u8; 4] = [0xff, b't', b'O', b'c'];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,7 +116,10 @@ pub fn validate_against_pack(path: &str, index: &[u8], pack: &[u8]) -> Result<()
     if packed.len() != expected.len() {
         bail!("pack index object count does not match its companion pack");
     }
-    let mut actual = resolve_pack_entries(packed, &expected)?;
+    let mut actual = resolve_pack_entries(packed, &expected)?
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect::<Vec<_>>();
     actual.sort_by(|left, right| left.oid.cmp(&right.oid));
     if actual != expected {
         bail!("pack index does not describe its companion pack");
@@ -220,136 +227,24 @@ fn parse_pack_entries(path: &str, bytes: &[u8]) -> Result<Vec<PackedEntry>> {
     if bytes.len() as u64 > MAX_PUBLISHED_PACK_BYTES {
         bail!("companion pack exceeds its publication limit");
     }
-    if bytes.len() < 12 + PACK_TRAILER_BYTES || &bytes[..4] != b"PACK" {
-        bail!("companion pack is truncated or has invalid magic");
+    let mut parser = stream::PackStream::new(expected_pack_checksum(path)?);
+    for chunk in bytes.chunks(stream::CHUNK_BYTES) {
+        parser.feed(chunk)?;
     }
-    let version = read_u32(bytes, 4)?;
-    if !matches!(version, 2 | 3) {
-        bail!("companion pack version is unsupported");
-    }
-    let entry_count =
-        usize::try_from(read_u32(bytes, 8)?).context("companion pack entry count is too large")?;
-    if entry_count > MAX_PUBLISHED_PACK_OBJECTS {
-        bail!("companion pack exceeds its object-count limit");
-    }
-    let trailer_start = bytes.len() - PACK_TRAILER_BYTES;
-    let expected_checksum = expected_pack_checksum(path)?;
-    let actual_checksum = Sha256::digest(&bytes[..trailer_start]);
-    if actual_checksum[..] != expected_checksum || bytes[trailer_start..] != expected_checksum {
-        bail!("companion pack bytes do not match their filename checksum");
-    }
-
-    let mut position = 12_usize;
-    let mut decoded_bytes = 0_usize;
-    let mut packed = Vec::with_capacity(entry_count);
-    for _ in 0..entry_count {
-        let start = position;
-        let first = read_byte(bytes, &mut position, trailer_start)?;
-        let type_code = (first >> 4) & 7;
-        let mut declared_size = usize::from(first & 0x0f);
-        let mut shift = 4_u32;
-        let mut continuation = first & 0x80 != 0;
-        while continuation {
-            let byte = read_byte(bytes, &mut position, trailer_start)?;
-            let part = usize::from(byte & 0x7f)
-                .checked_shl(shift)
-                .context("packed object size overflows")?;
-            declared_size = declared_size
-                .checked_add(part)
-                .context("packed object size overflows")?;
-            shift = shift
-                .checked_add(7)
-                .context("packed object size overflows")?;
-            if shift >= usize::BITS && byte & 0x80 != 0 {
-                bail!("packed object size overflows");
-            }
-            continuation = byte & 0x80 != 0;
-        }
-        if declared_size > MAX_PACK_OBJECT_BYTES {
-            bail!("packed object exceeds its decoded-size limit");
-        }
-
-        let kind = match type_code {
-            1 => PackedKind::Base(ObjectKind::Commit),
-            2 => PackedKind::Base(ObjectKind::Tree),
-            3 => PackedKind::Base(ObjectKind::Blob),
-            4 => PackedKind::Base(ObjectKind::Tag),
-            6 => PackedKind::OffsetDelta(parse_offset_delta_base(
-                bytes,
-                &mut position,
-                trailer_start,
-                start,
-            )?),
-            7 => {
-                let end = position
-                    .checked_add(OBJECT_ID_BYTES)
-                    .context("reference-delta header overflows")?;
-                let oid = bytes
-                    .get(position..end)
-                    .context("reference-delta base is truncated")?
-                    .try_into()
-                    .map_err(|_| anyhow::anyhow!("reference-delta base has the wrong length"))?;
-                position = end;
-                PackedKind::ReferenceDelta(oid)
-            }
-            _ => bail!("companion pack contains a reserved object type"),
-        };
-
-        let mut decoder = flate2::bufread::ZlibDecoder::new(std::io::Cursor::new(
-            &bytes[position..trailer_start],
-        ));
-        let mut data = Vec::with_capacity(declared_size);
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let count = decoder
-                .read(&mut buffer)
-                .context("inflating packed object")?;
-            if count == 0 {
-                break;
-            }
-            if data.len().saturating_add(count) > declared_size {
-                bail!("packed object inflates past its declared size");
-            }
-            data.extend_from_slice(&buffer[..count]);
-        }
-        if data.len() != declared_size {
-            bail!("packed object does not match its declared size");
-        }
-        let consumed = usize::try_from(decoder.total_in())
-            .context("compressed packed-object size is too large")?;
-        if consumed == 0 {
-            bail!("packed object has an empty zlib stream");
-        }
-        position = position
-            .checked_add(consumed)
-            .context("packed object position overflows")?;
-        if position > trailer_start {
-            bail!("packed object overlaps the pack trailer");
-        }
-        decoded_bytes = decoded_bytes
-            .checked_add(data.len())
-            .context("decoded pack size overflows")?;
-        if decoded_bytes > MAX_DECODED_PACK_BYTES {
-            bail!("companion pack exceeds its aggregate decoded-size limit");
-        }
-        let crc = crc32fast::hash(&bytes[start..position]);
-        packed.push(PackedEntry {
-            offset: start as u64,
-            crc,
-            kind,
-            data,
-        });
-    }
-    if position != trailer_start {
-        bail!("companion pack has trailing or unparsed entry bytes");
-    }
-    Ok(packed)
+    parser.finish().map(|pack| pack.entries)
 }
 
 fn resolve_pack_entries(
+    entries: Vec<PackedEntry>,
+    expected: &[IndexEntry],
+) -> Result<Vec<(IndexEntry, ResolvedEntry)>> {
+    resolve_pack_entries_measured(entries, expected).map(|(objects, _)| objects)
+}
+
+fn resolve_pack_entries_measured(
     mut entries: Vec<PackedEntry>,
     expected: &[IndexEntry],
-) -> Result<Vec<IndexEntry>> {
+) -> Result<(Vec<(IndexEntry, ResolvedEntry)>, usize)> {
     let offsets = entries
         .iter()
         .enumerate()
@@ -380,6 +275,7 @@ fn resolve_pack_entries(
             .context("decoded pack size overflows")
     })?;
     let mut resolved_bytes = 0_usize;
+    let mut peak_decoded_bytes = unresolved_bytes;
     for start in 0..entries.len() {
         if state[start] == 2 {
             continue;
@@ -424,6 +320,13 @@ fn resolve_pack_entries(
             unresolved_bytes = unresolved_bytes
                 .checked_sub(packed_data.len())
                 .context("decoded pack accounting underflows")?;
+            let retained_bytes = unresolved_bytes
+                .checked_add(resolved_bytes)
+                .and_then(|total| total.checked_add(packed_data.len()))
+                .context("decoded pack accounting overflows")?;
+            let delta_budget = MAX_DECODED_PACK_BYTES
+                .checked_sub(retained_bytes)
+                .context("companion pack exceeds its aggregate decoded-size limit")?;
             let (kind, data) = match packed_kind {
                 PackedKind::Base(kind) => (kind, packed_data),
                 PackedKind::OffsetDelta(base_offset) => {
@@ -431,16 +334,29 @@ fn resolve_pack_entries(
                     let base = resolved[base_index]
                         .as_ref()
                         .context("offset-delta base was not resolved")?;
-                    (base.kind, apply_delta(&base.data, &packed_data)?)
+                    (
+                        base.kind,
+                        apply_delta(&base.data, &packed_data, delta_budget)?,
+                    )
                 }
                 PackedKind::ReferenceDelta(base_oid) => {
                     let base_index = expected_bases[&base_oid];
                     let base = resolved[base_index]
                         .as_ref()
                         .context("reference-delta base was not resolved")?;
-                    (base.kind, apply_delta(&base.data, &packed_data)?)
+                    (
+                        base.kind,
+                        apply_delta(&base.data, &packed_data, delta_budget)?,
+                    )
                 }
             };
+            let live_bytes = match packed_kind {
+                PackedKind::Base(_) => retained_bytes,
+                _ => retained_bytes
+                    .checked_add(data.len())
+                    .context("decoded pack accounting overflows")?,
+            };
+            peak_decoded_bytes = peak_decoded_bytes.max(live_bytes);
             resolved_bytes = resolved_bytes
                 .checked_add(data.len())
                 .context("resolved pack size overflows")?;
@@ -453,26 +369,33 @@ fn resolve_pack_entries(
         }
     }
 
-    entries
+    let objects = entries
         .into_iter()
         .zip(resolved)
         .map(|(packed, resolved)| {
             let resolved = resolved.context("companion pack object was not resolved")?;
-            Ok(IndexEntry {
-                oid: resolved.oid,
-                crc: packed.crc,
-                offset: packed.offset,
-            })
+            Ok((
+                IndexEntry {
+                    oid: resolved.oid,
+                    crc: packed.crc,
+                    offset: packed.offset,
+                },
+                resolved,
+            ))
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok((objects, peak_decoded_bytes))
 }
 
-fn apply_delta(base: &[u8], delta: &[u8]) -> Result<Vec<u8>> {
+fn apply_delta(base: &[u8], delta: &[u8], maximum_result_bytes: usize) -> Result<Vec<u8>> {
     let mut position = 0_usize;
     let base_size = read_delta_varint(delta, &mut position)?;
     let result_size = read_delta_varint(delta, &mut position)?;
     if base_size != base.len() || result_size > MAX_PACK_OBJECT_BYTES {
         bail!("pack delta declares an invalid base or result size");
+    }
+    if result_size > maximum_result_bytes {
+        bail!("pack delta exceeds the remaining decoded-graph budget");
     }
     let mut result = Vec::with_capacity(result_size);
     while position < delta.len() {
@@ -486,6 +409,13 @@ fn apply_delta(base: &[u8], delta: &[u8]) -> Result<Vec<u8>> {
             let end = position
                 .checked_add(length)
                 .context("pack delta insert overflows")?;
+            if result
+                .len()
+                .checked_add(length)
+                .is_none_or(|size| size > result_size)
+            {
+                bail!("pack delta expands past its declared result size");
+            }
             result.extend_from_slice(
                 delta
                     .get(position..end)
@@ -512,6 +442,13 @@ fn apply_delta(base: &[u8], delta: &[u8]) -> Result<Vec<u8>> {
             let end = offset
                 .checked_add(size)
                 .context("pack delta copy overflows")?;
+            if result
+                .len()
+                .checked_add(size)
+                .is_none_or(|length| length > result_size)
+            {
+                bail!("pack delta expands past its declared result size");
+            }
             result.extend_from_slice(
                 base.get(offset..end)
                     .context("pack delta copy exceeds its base")?,
@@ -527,35 +464,19 @@ fn apply_delta(base: &[u8], delta: &[u8]) -> Result<Vec<u8>> {
     Ok(result)
 }
 
-fn parse_offset_delta_base(
-    bytes: &[u8],
-    position: &mut usize,
-    limit: usize,
-    entry_offset: usize,
-) -> Result<u64> {
-    let mut byte = read_byte(bytes, position, limit)?;
-    let mut distance = u64::from(byte & 0x7f);
-    while byte & 0x80 != 0 {
-        byte = read_byte(bytes, position, limit)?;
-        distance = distance
-            .checked_add(1)
-            .and_then(|value| value.checked_shl(7))
-            .and_then(|value| value.checked_add(u64::from(byte & 0x7f)))
-            .context("offset-delta distance overflows")?;
-    }
-    let entry_offset = entry_offset as u64;
-    entry_offset
-        .checked_sub(distance)
-        .context("offset-delta base precedes the pack")
-}
-
 fn read_delta_varint(bytes: &[u8], position: &mut usize) -> Result<usize> {
     let mut value = 0_usize;
     let mut shift = 0_u32;
     loop {
         let byte = read_delta_byte(bytes, position)?;
-        value |= usize::from(byte & 0x7f)
+        let factor = 1_usize
             .checked_shl(shift)
+            .context("pack delta size overflows")?;
+        let part = usize::from(byte & 0x7f)
+            .checked_mul(factor)
+            .context("pack delta size overflows")?;
+        value = value
+            .checked_add(part)
             .context("pack delta size overflows")?;
         if byte & 0x80 == 0 {
             return Ok(value);
@@ -572,15 +493,6 @@ fn read_delta_byte(bytes: &[u8], position: &mut usize) -> Result<u8> {
         .get(*position)
         .copied()
         .context("pack delta is truncated")?;
-    *position += 1;
-    Ok(byte)
-}
-
-fn read_byte(bytes: &[u8], position: &mut usize, limit: usize) -> Result<u8> {
-    if *position >= limit {
-        bail!("companion pack entry is truncated");
-    }
-    let byte = bytes[*position];
     *position += 1;
     Ok(byte)
 }
