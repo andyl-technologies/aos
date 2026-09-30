@@ -115,6 +115,24 @@ pub(super) fn publish_native_artifacts(
     Ok(())
 }
 
+// Qualification selectors name packages. Runtime dependency map keys are local
+// roles, so they cannot authenticate a package coordinate. Build-only bindings
+// remain authorized by the companion's exact signed NAR reference edges above.
+fn check_qualification_runtime_binding(
+    envelope: &Envelope,
+    binding: &aos_release::qualification_document::QualificationBinding,
+) -> Result<()> {
+    for dependency in envelope.runtime_dependencies.values() {
+        if dependency.name == binding.selector.package {
+            ensure!(
+                dependency.outputs.get(&binding.selector.output) == Some(&binding.path),
+                "qualification dependency binding differs from native envelope"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Binds built native artifacts to exact frozen release outputs.
 ///
 /// # Errors
@@ -204,13 +222,8 @@ pub(crate) fn publish_native_documents(
                     outputs.get(&binding.selector.output) == Some(&binding.path),
                     "qualification owner binding differs from frozen output"
                 );
-            } else if let Some(dependency) =
-                envelope.runtime_dependencies.get(&binding.selector.package)
-            {
-                ensure!(
-                    dependency.outputs.get(&binding.selector.output) == Some(&binding.path),
-                    "qualification dependency binding differs from native envelope"
-                );
+            } else {
+                check_qualification_runtime_binding(&envelope, binding)?;
             }
             roots.push(binding.path.clone());
         }
@@ -300,6 +313,48 @@ pub(super) fn inspect_native_artifact(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qualification_package_coordinates_do_not_borrow_runtime_role_names() {
+        use crate::deployment::model::Artifact;
+        use aos_release::qualification_document::{QualificationBinding, QualificationSelector};
+
+        let path = "/nix/store/11111111111111111111111111111111-tool".to_owned();
+        let dependency = Artifact {
+            name: "actual-tool".into(),
+            version: "1".into(),
+            path: path.clone(),
+            outputs: BTreeMap::from([("out".into(), path.clone())]),
+            main_program: None,
+        };
+        let mut envelope = Envelope {
+            schema: "aos.package.deployment".into(),
+            system: "x86_64-linux".into(),
+            package: dependency.clone(),
+            module: None,
+            runtime_dependencies: BTreeMap::from([("lexical-role".into(), dependency.clone())]),
+            module_dependencies: Vec::new(),
+        };
+        let mut binding = QualificationBinding {
+            selector: QualificationSelector {
+                package: "actual-tool".into(),
+                output: "out".into(),
+            },
+            path,
+        };
+        check_qualification_runtime_binding(&envelope, &binding).unwrap();
+
+        binding.path = "/nix/store/22222222222222222222222222222222-other-tool".into();
+        assert!(check_qualification_runtime_binding(&envelope, &binding).is_err());
+        let mut conflicting = dependency;
+        conflicting
+            .outputs
+            .insert("out".into(), binding.path.clone());
+        envelope
+            .runtime_dependencies
+            .insert("second-role".into(), conflicting);
+        assert!(check_qualification_runtime_binding(&envelope, &binding).is_err());
+    }
 
     #[test]
     fn native_catalog_binding_retires_legacy_projection_and_gates_consumption() {

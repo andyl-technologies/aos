@@ -308,6 +308,9 @@ pub fn require_store_path(value: &str, derivation: bool) -> Result<()> {
     if hash.len() != 32 || !hash.bytes().all(|byte| NIX_BASE32.contains(&byte)) {
         bail!("Nix store path has an invalid store hash");
     }
+    if name.contains('/') {
+        bail!("Nix store path must identify a root without member paths or traversal");
+    }
     require_identifier(name, "Nix store path name")?;
     if derivation != name.ends_with(".drv") {
         bail!("Nix store path derivation suffix does not match its field");
@@ -337,6 +340,18 @@ pub fn require_identifier(value: &str, label: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn store_roots_reject_member_paths_and_traversal() {
+        let root = "/nix/store/00000000000000000000000000000000-source";
+        assert!(require_store_path(root, false).is_ok());
+        assert!(require_store_path(&format!("{root}.drv"), true).is_ok());
+
+        for suffix in ["/file.json", "/../other", "/./file", "/", "//member"] {
+            assert!(require_store_path(&format!("{root}{suffix}"), false).is_err());
+        }
+        assert!(require_store_path(&format!("{root}/nested.drv"), true).is_err());
+    }
 
     #[test]
     fn bundle_paths_reject_aliases_and_traversal() {

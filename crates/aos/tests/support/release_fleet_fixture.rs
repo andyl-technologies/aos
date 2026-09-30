@@ -5,6 +5,7 @@
 
 mod artifact_consumption_fixture;
 mod initrd_contract_fixture;
+mod native_deployment_fixture;
 
 use std::env;
 use std::fs::{self, File};
@@ -74,7 +75,8 @@ async fn main() -> Result<()> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     match arguments.first().map(String::as_str) {
         Some("prepare") => prepare(&arguments[1..]),
-        Some("artifact-consumption-bundle") => {
+        Some("adopt-native-fixture") => native_deployment_fixture::adopt(&arguments[1..]),
+        Some("artifact-consumption-evidence") => {
             artifact_consumption_fixture::generate(&arguments[1..])
         }
         Some("initrd-contract") => initrd_contract_fixture::verify(&arguments[1..]),
@@ -149,7 +151,6 @@ fn prepare(arguments: &[String]) -> Result<()> {
             platform: *platform,
             decision: MatrixCell::Artifact {
                 artifact: PlannedArtifactSet {
-                    package_contract: None,
                     artifacts: vec![PlannedArtifact {
                         id: package_id(*platform),
                         derivation: None,
@@ -306,7 +307,6 @@ fn prepare(arguments: &[String]) -> Result<()> {
                     platform: cell.platform,
                     decision: MatrixCell::Artifact {
                         artifact: FinalArtifactSet {
-                            package_contract: None,
                             artifact_ids: vec![package_id(cell.platform)],
                         },
                     },
@@ -321,7 +321,6 @@ fn prepare(arguments: &[String]) -> Result<()> {
                     platform,
                     decision: MatrixCell::Artifact {
                         artifact: FinalArtifactSet {
-                            package_contract: None,
                             artifact_ids: vec![
                                 format!("image/server/{platform}"),
                                 format!("image/server/{platform}/metadata"),
@@ -589,7 +588,6 @@ fn release_plan(
                 platform,
                 decision: MatrixCell::Artifact {
                     artifact: PlannedArtifactSet {
-                        package_contract: None,
                         artifacts: [
                             format!("image/server/{platform}"),
                             format!("image/server/{platform}/metadata"),
