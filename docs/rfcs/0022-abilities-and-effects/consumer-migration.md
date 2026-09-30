@@ -1,9 +1,30 @@
 # Consumer migration handoff
 
-The native infrastructure and documentation inspection provide the foundation
-for this ongoing consumer migration. This is a work checklist, not a claim that
-every consumer already uses the new API. Continue on the same PR with immediate cutovers;
-do not introduce adapters or API generations for the superseded design.
+The native cutover is in progress on the same PR. This checklist records the
+remaining integration and qualification work; it does not establish whole-system
+readiness. Superseded APIs are removed with their callers, without compatibility
+adapters between unreleased designs.
+
+## Current implementation
+
+The package recipe companions, native evaluator, typed graph checker, durable
+activation controller, and generated documentation are implemented. Package
+consumers now include service management, configuration, networking, identity,
+filesystem and storage, databases, orchestration, and execution observation.
+APM uses native evaluation and profile transactions; boot and package operations
+share the system profile path. Rollback replays a retained desired deployment as
+a new transaction rather than rewinding the execution journal.
+
+Hub release ingestion, indexed package documentation, deployment reports, and
+CLI inspection now read native documents. The old inspection crate and its
+provider-plan projections have been removed; standalone realized artifact-use
+evidence remains a separate feature.
+
+Focused Nix, Rust, and handler tests cover these paths. Remaining integration
+work includes authenticated image candidate staging and rollout submission,
+image finalization and boot sequencing, qualification evidence producers, and
+final source-built/VM checks. Passing schema or handler unit tests alone does
+not qualify an image boot or physical image transition.
 
 Read the [target state](13-target-state.md),
 [infrastructure APIs](infrastructure-cutover.md), and
@@ -24,7 +45,7 @@ Read the [target state](13-target-state.md),
   `aos-package::deployment::transaction::Transactions`.
 - Artifact retention: `deployment::retention::{ArtifactAdmission, NixStore}`.
 - Documentation: `aos-doc-model::runtime::RuntimeDocument`, shared by
-  `aos docs runtime` and Hub's native import viewer/API.
+  `aos docs runtime`, signed package references, Hub indexing, and its native viewer/API.
 
 The working integration fixture is `tests/effects/deployment-fixture.nix`;
 `crates/aos-package/examples/package_deployment_check.rs` exercises the entire
@@ -86,12 +107,13 @@ port kernels, toolchains, or the Linux process transport.
 
 ## 4. CLI and Hub release/documentation consumers
 
-The new Hub `/-/runtime-abilities` page and
-`/-/api/runtime-documentation` endpoint inspect supplied artifacts only. They are
-not substitutes for authenticated release ingest or indexed package browsing.
+Hub's `/-/runtime-abilities` page and `/-/api/runtime-documentation` endpoint
+inspect supplied artifacts. Authenticated release ingest, indexed package pages,
+and deployment reports also use the shared native document model. Keep the
+artifact import viewer's caller-supplied context distinct from a signed release.
 
-Migrate installed-package docs, Hub release metadata/ingest, search indexes,
-package pages, and deployed-system inspection to the native documents. Preserve
+Validate installed-package docs, Hub release metadata/ingest, search indexes,
+package pages, and deployed-system inspection against the native documents. Preserve
 release coordinates and provenance when linking packages, operation declarations,
 selected handlers, and configured uses. Source native renderings from the shared
 reader; extend its view model where necessary rather than creating another

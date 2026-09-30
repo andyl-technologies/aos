@@ -7,6 +7,9 @@
 
 mod validation;
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeMap;
 
 use anyhow::{Result, ensure};
