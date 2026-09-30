@@ -105,9 +105,12 @@ ranges inside packs and for partial object reads.
   does not establish whether the atomic write applied (REF-12). It MUST NOT
   be disguised as a mismatch, an absent ref, or success. *Gate:*
   `gate:store-ref-cas`.
-- **[STORE-8]** `ref_log_append` MUST be create-if-absent on `(name, seq)`.
-  A second append to the same `(name, seq)` MUST fail and MUST NOT modify the
-  existing record. *Gate:* `gate:store-ref-log-append-once`.
+- **[STORE-8]** `ref_log_append` MUST be create-if-absent on
+  `(name, seq, candidate_id)` for new proposals, or `(name, seq)` for legacy
+  records. A second append to the same exact key MUST return `exists` and
+  MUST NOT modify the existing record. Different candidate IDs at the same
+  sequence are independent proposals; only whole-record head CAS selects
+  one into committed history. *Gate:* `gate:store-ref-log-append-once`.
 - **[STORE-9]** A store that cannot provide the atomicity in [STORE-7] and
   [STORE-8] MUST report the capability `refs: single-writer` at open time,
   and callers MUST NOT run more than one writer against its refs

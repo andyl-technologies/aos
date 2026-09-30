@@ -189,6 +189,7 @@ RefRecord = {
   3 => epoch,                           ; writer_epoch (REF-6)
   4 => locality,                        ; home (REF-7)
   ? 5 => ref-policy,
+  ? 6 => bstr .size 32,                 ; fresh reflog candidate ID, not a hash
 }
 ref-policy = {
   ? 1 => bool,                          ; multi_writer (REF-17)
@@ -207,7 +208,10 @@ RefLogRecord = {
   3 => tstr,                            ; principal
   4 => reflog-reason,
   5 => timestamp,
+  ? 6 => RefRecord / null,              ; complete expected previous record
 }
+; New candidate-selected logs require key 6 (null only for the first write).
+; Legacy records omit it. Key 2 must agree with key 6's commit or null.
 reflog-reason = "commit" / "merge" / "fold" / "rollback"
               / "job-checkpoint" / "migrate"
 

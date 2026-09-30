@@ -47,7 +47,9 @@ keys are written once and never changed; **create-once** keys are written
 with create-if-absent; **CAS** keys are written only with compare-and-swap.
 `<aa>` is the first two lowercase hexadecimal characters of the pack id;
 `<tenant>` is a registered tenant identifier or `_`; `<seq>` is a
-zero-padded 20-digit decimal.
+zero-padded 20-digit decimal. `<candidate-id>` is the lowercase 64-digit
+hexadecimal form of a secure-random 32-byte reflog proposal ID. The colon
+separator in a candidate filename cannot occur in a valid ref segment.
 
 | Key | Holds | Class | Writer | Owner |
 | --- | --- | --- | --- | --- |
@@ -62,7 +64,8 @@ zero-padded 20-digit decimal.
 | `refs/jobs/<tenant>/<id>` | `RefRecord` of a tree-job branch | CAS | the job | 09, 32 |
 | `refs/conflicts/<tenant>/<ref>/<seq>` | `RefRecord` of an unresolved multi-writer merge | CAS | the losing writer, then resolvers | 09, 20 |
 | `refs/derived/<tenant>/<name>` | `RefRecord` of a ruleset-derived root | CAS | realizing instances | 09, 31 |
-| `logs/refs/heads/<tenant>/<name>/<seq>` | `RefLogRecord` | create-once | the advancing writer | 09, 13 |
+| `logs/refs/heads/<tenant>/<name>/<seq>` | legacy `RefLogRecord` | create-once | legacy writer | 09, 13 |
+| `logs/<ref>/<seq>:<candidate-id>` | selected/proposed `RefLogRecord` | create-once | the advancing writer | 09, 13 |
 | `gc/lease` | `GcLease` | CAS | collector | 17 |
 | `gc/cycle/<n>` | cycle completion marker | create-once | collector | 13, 17 |
 | `gc/<cycle>/roots` | root-set snapshot of a collection (GC-4) | create-once | collector | 17 |
@@ -71,6 +74,11 @@ zero-padded 20-digit decimal.
 | `gc/<cycle>/state` | fenced `GcState` progress and checkpoint pointers | CAS | collector | 17 |
 | `trash/<cycle>/<pack-id>` | `Tombstone` | create-once | collector | 13, 17 |
 | `CAPABILITIES` | `Capabilities`, including the store profile | CAS | the opening store | 13, 04 |
+
+Candidate-log `<ref>` values are registered branch names in `refs/heads/`,
+`refs/jobs/`, `refs/conflicts/` or `refs/derived/`. Tags and advisory notes do
+not acquire candidate logs. A sibling candidate key can coexist with a legacy
+sequence-only file; a nested `<seq>/<candidate-id>` directory cannot.
 
 Registered sidecar kinds under `refs/notes/`: `profiles` (learned access
 profiles, [`../19-tiering-and-topology.md`](../19-tiering-and-topology.md)),

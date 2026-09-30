@@ -52,7 +52,13 @@ data.
 - **[GC-4]** The root set MUST be snapshotted at the start of a collection
   and recorded in the collection's own object under `gc/` so that a resumed
   collection marks from the same roots. A ref moved after the snapshot is
-  covered by the grace window (§Safety).
+  covered by the grace window (§Safety). Candidate-selected head and
+  predecessor records identify committed reflog roots. Never-selected
+  proposals MUST NOT become retained content roots. Candidate metadata needed
+  to traverse a selected chain or an active snapshot MUST remain readable;
+  expired content and never-selected proposals are not made live by that
+  metadata retention. Restarted writers use fresh candidate IDs, so an old
+  abandoned proposal cannot be reused to evade the commit/grace deadline.
 
 ## Mark
 

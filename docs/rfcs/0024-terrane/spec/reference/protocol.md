@@ -49,8 +49,12 @@ message RefValue {
   uint64 sequence = 2;
   uint64 writer_epoch = 3;
   string profile = 4;         // tree encoding and chunk parameter profile name
+  bytes canonical_ref_record = 5; // complete RefRecord CBOR; required for CAS
 }
 
+// The CBOR record is authoritative for whole-record forwarding/CAS. Summary
+// fields must agree with it; profile must agree with the verified commit.
+// A legacy summary alone cannot establish a whole-record CAS expectation.
 message RefState {
   string name = 1;
   RefValue value = 2;         // absent when the ref does not exist
@@ -259,6 +263,7 @@ message RefLogEntry {
   google.protobuf.Timestamp at = 3;
   string principal = 4;
   string message = 5;
+  bytes canonical_ref_log_record = 6; // full new/previous record and selector
 }
 
 message WatchRefsRequest {

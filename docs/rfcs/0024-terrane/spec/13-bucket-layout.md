@@ -40,7 +40,8 @@ nothing else.
     conflicts/<tenant>/<ref>/<seq>       unresolved merge      CAS
     derived/<tenant>/<path>              realization root      CAS
   logs/
-    refs/heads/<tenant>/<name>/<seq>     commit log record     create-once
+    refs/heads/<tenant>/<name>/<seq>     legacy log record     create-once
+    <ref>/<seq>:<candidate-id>            candidate log record  create-once
   gc/
     lease                                collector lease       CAS
     cycle/<n>                            cycle marker          create-once
@@ -53,7 +54,10 @@ nothing else.
 fan-out that keeps listings bounded on filesystems and spreads keys across
 object-store partitions. `<tenant>` is a registered tenant identifier or the
 literal `_` for a single-tenant store. `<seq>` is a zero-padded 20-digit
-decimal so that lexical order is numeric order. The full registry of
+decimal so that lexical order is numeric order. Candidate IDs are secure-random
+32-byte identifiers rendered as 64 lowercase hexadecimal digits. Candidate
+filenames use a colon separator, disjoint from valid ref-name segments; they
+remain siblings of legacy sequence files on `file://`. The full registry of
 prefixes, including reserved ones, is in
 [`reference/bucket-key-registry.md`](reference/bucket-key-registry.md).
 

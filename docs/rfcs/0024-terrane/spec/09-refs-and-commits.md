@@ -50,9 +50,13 @@ has pointed. The object encoding is not git's, for the reasons in
   name, such as ruleset-derived realization roots
   ([`31-routing-rulesets.md`](31-routing-rulesets.md)); like `notes`, its
   loss MUST NOT affect correctness.
-- **[REF-4]** `logs/refs/heads/<path>/<seq>` is the **reflog** of a branch:
-  one immutable log record per sequence number, written by put-if-absent.
-  The reflog is part of the namespace for reading but is not itself a ref.
+- **[REF-4]** The **reflog** of a branch contains one committed record per
+  sequence number, selected from immutable proposals by the head's candidate
+  ID and complete predecessor chain. New proposals use the create-once key
+  `logs/<ref>/<seq>:<candidate-id>` in the key registry; sequence-only keys
+  remain readable as legacy records. A proposal is not committed merely
+  because its sequence is no greater than the current head's. The reflog is
+  part of the namespace for reading but is not itself a ref.
 
 ## Ref record
 
@@ -65,6 +69,7 @@ seq           unsigned, strictly increasing per ref, 1 for the first write
 writer_epoch  unsigned, fencing token for the current writer
 home          locality label of the authority that owns this ref
 policy        optional map: multi-writer policy, retention, conflicted flag
+candidate-id  optional 32-byte selector, required for new branch advances
 ```
 
 - **[REF-5]** `seq` MUST increase by exactly 1 on every successful advance of
@@ -125,8 +130,9 @@ under concurrent garbage collection ([`17-garbage-collection.md`](17-garbage-col
 
 - **[REF-12]** A writer MUST complete these steps in order: (1) write every
   pack the commit needs and its per-pack index; (2) write the commit object;
-  (3) write the reflog record `logs/refs/heads/<path>/<seq+1>` by
-  put-if-absent; (4) compare-and-swap `refs/heads/<path>` from the record it
+  (3) write a reflog candidate at `logs/<ref>/<seq+1>:<candidate-id>` by
+  put-if-absent, including the whole new record and complete expected previous
+  record; (4) compare-and-swap `<ref>` from the record it
   read to the new record. A failure before step (4), or a compare-and-swap
   conflict at step (4), MUST leave the ref unchanged by this writer. An
   unavailable storage or transport result at step (4) can be indeterminate:
@@ -136,11 +142,18 @@ under concurrent garbage collection ([`17-garbage-collection.md`](17-garbage-col
   re-read the authoritative ref after the backend becomes available before
   any further advance; it MUST NOT blindly retry the same transaction. A
   failed re-read remains indeterminate and MUST NOT be interpreted as ref
-  absence. *Gate:* `gate:ref-advance-ordering`.
-- **[REF-13]** Step (3) MUST use put-if-absent on the exact sequence number.
-  A conflict at step (3) or (4) means another writer advanced the ref; the
-  writer MUST re-read the ref, and then either fail (single-writer mode) or
-  rebase by merge (multi-writer mode) and retry from step (2).
+  absence. Every restarted transaction MUST allocate a fresh secure-random
+  32-byte candidate ID; a bounded in-flight attempt may retain its ID. Before
+  applying the CAS, the authority MUST verify that the selected candidate
+  exists and its whole new and previous records equal `new` and `expect`.
+  *Gate:* `gate:ref-advance-ordering`.
+- **[REF-13]** Step (3) MUST use put-if-absent on the exact candidate key.
+  An existing candidate means collision or duplicate append, not proof that
+  the head advanced. The writer MUST re-read the ref; an unchanged head
+  permits a fresh candidate within the original commit deadline. A changed
+  head or CAS mismatch requires either failure (single-writer mode) or rebase
+  by merge (multi-writer mode) and retry from step (2). An abandoned proposal
+  MUST NOT reserve the successor sequence against later writers.
 - **[REF-14]** The compare-and-swap in step (4) MUST compare the whole
   previous record (or its backend version token), not only `seq`.
 - **[REF-15]** A writer MUST abort a commit whose elapsed time since step (1)
@@ -181,14 +194,25 @@ under concurrent garbage collection ([`17-garbage-collection.md`](17-garbage-col
 - **[REF-21]** Every advance of a branch MUST leave a reflog record. The
   record MUST contain the new ref record, the previous commit hash, the
   principal, and a reason string (`commit`, `merge`, `fold`, `rollback`,
-  `job-checkpoint`, `migrate`).
+  `job-checkpoint`, `migrate`). A new candidate record MUST also contain
+  the complete expected previous RefRecord, or null for the first write;
+  its previous-commit field MUST agree with that record. The new RefRecord
+  MUST carry the candidate ID that selects this proposal.
 - **[REF-22]** Reflog records are garbage-collection roots for as long as
   the branch's `reflog_retain` property keeps them
-  ([`08-properties.md`](08-properties.md)). Expiry removes the record; the
-  commit it named becomes unreachable unless another root reaches it.
-- **[REF-23]** Reading `logs/refs/heads/<path>/` MUST return records in
-  sequence order. Gaps MUST be reported; a reader MUST NOT infer a gap means
-  an advance did not occur.
+  ([`08-properties.md`](08-properties.md)). Expiry removes the record from
+  retained content roots; its commit becomes unreachable unless another root
+  reaches it. Candidate metadata still required to traverse a selected
+  chain or an active collection snapshot MUST remain readable. Preserving
+  this chain metadata does not keep expired content live.
+- **[REF-23]** Reading `logs/<ref>/` for a registered branch MUST return
+  records in
+  sequence order. Readers MUST follow the authoritative head's candidate
+  and whole predecessor records, then return that selected chain in ascending
+  order. Legacy numbered records are bounded by the selected legacy record;
+  pending proposals beyond it are not visible. A request beyond the current
+  sequence returns no records. Gaps MUST be reported; a reader MUST NOT infer
+  a gap means an advance did not occur or enumerate proposals using LIST.
 
 ## Merge base and ancestry
 
@@ -217,7 +241,9 @@ under concurrent garbage collection ([`17-garbage-collection.md`](17-garbage-col
 - **[REF-28]** An authority MUST offer a watch on a ref that delivers each
   new record in sequence order without gaps for the duration of the watch.
   A watcher that reconnects MUST receive the current record first and MAY
-  request the reflog from a given `seq` to fill what it missed.
+  request the reflog from a given `seq` to fill what it missed. Branch
+  watches MUST deliver only candidate-selected committed records; an
+  abandoned proposal MUST NOT be delivered as an advance.
 - **[REF-29]** A cache tier serving a ref it does not own MUST report the
   age of its copy and MUST offer a fresh read that consults the authority
   ([`20-consistency.md`](20-consistency.md)).

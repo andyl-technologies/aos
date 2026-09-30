@@ -1037,6 +1037,31 @@ is added rather than editing history.
   - **Affects:** REF-20 and SnapshotEnvelope. Existing field numbers and
     preimage layout remain unchanged; this precedes T1's encoding freeze.
 
+- **[D-65] Select immutable reflog proposals instead of reserving a sequence.**
+  - **Status:** Decided
+  - **Decision:** New branch records carry a secure-random 32-byte candidate
+    ID. A create-once sibling key `logs/<ref>/<seq>:<candidate-id>` stores the
+    whole proposal and complete predecessor. Whole head CAS selects committed
+    history, after exact candidate/expect/new checks. Reads follow selected
+    predecessors without LIST; restarted attempts receive fresh IDs. Wire
+    RefValue and RefLogEntry carry their complete canonical records.
+  - **Rationale:** A sequence-only create-once append abandoned before CAS
+    permanently occupies the next slot, contradicting REF-13 retry progress.
+    Completing or deleting it needs authority and fencing not present in the
+    old record. A commit-only selector still collides across policies,
+    predecessors and reasons. Random proposal IDs avoid self-hash cycles,
+    and the colon sibling filename coexists with old files without colliding
+    with descendant ref names. Full wire records preserve STORE-7/10.
+  - **Retention:** Only selected history supplies content roots. Required
+    selected-chain/snapshot metadata remains readable even when content
+    retention expires; never-selected proposals do not become content roots.
+    Fresh candidates prevent old proposal reuse from bypassing the original
+    commit deadline; they do not refresh the age of deduplicated content.
+  - **Affects:** REF-4, REF-12, REF-13, REF-21 to REF-23, REF-28, STORE-8, BKT-1 to
+    BKT-3, GC-4 and record/key/wire schemas. Optional legacy record fields
+    retain existing bytes; proposal IDs are not immutable content identities.
+    This draft correction precedes T1's record/key and T3's wire freezes.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
