@@ -13,10 +13,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::artifact::{require_identifier, require_store_path};
-use crate::plan::{
-    PackageOutputBinding, PackagePlan, PlannedArtifact, PlannedArtifactSet, PlannedPackageContract,
-    PlatformCell,
-};
+use crate::plan::{PackagePlan, PlannedArtifact, PlannedArtifactSet, PlatformCell};
 use crate::platform::{MatrixCell, Platform};
 
 /// Exact schema emitted by the Nix package inventory.
@@ -98,36 +95,28 @@ pub struct DerivationPackage {
     pub derivation: String,
     /// Every named output produced by the derivation.
     pub outputs: Vec<DerivationOutput>,
-    /// Signed package contract source and its evaluated selector bindings.
-    pub contract: Option<DerivationPackageContract>,
+    /// Evaluated native deployment-envelope derivation and directory root.
+    #[serde(default)]
+    pub deployment: Option<DerivationArtifact>,
+    /// Evaluated module-generated documentation derivation and directory root.
+    #[serde(default)]
+    pub module_documentation: Option<DerivationArtifact>,
+    /// Authenticated native package qualification companion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualification: Option<DerivationArtifact>,
 }
 
-/// Evaluated publication inputs for one canonical package contract.
+/// Exact Nix identity of an independently built publication artifact.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct DerivationPackageContract {
-    /// Context-free PackageDocument file produced by its own derivation.
-    pub document: DerivationContractDocument,
-    /// Exact native package module binding declared by the document, when any.
-    pub package_module: Option<PackageOutputBinding>,
-    /// Exact package outputs selected by the symbolic document.
-    pub selectors: Vec<DerivationSelectorResolution>,
-}
-
-/// Exact Nix identity of a context-free PackageDocument file.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct DerivationContractDocument {
-    /// Derivation that produces the document.
+pub struct DerivationArtifact {
+    /// Derivation that produces the artifact.
     pub derivation: String,
-    /// Named output of the document derivation.
+    /// Named output of the artifact derivation.
     pub output: String,
-    /// Evaluated regular-file store path.
+    /// Evaluated immutable file or directory store root.
     pub store_path: String,
 }
-
-/// Evaluated binding for one symbolic package-output selector.
-pub type DerivationSelectorResolution = PackageOutputBinding;
 
 /// Public distribution metadata required by atomic registry authoring.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -188,6 +177,9 @@ pub struct DerivationOutput {
     pub output: Option<String>,
     /// Evaluated output store path.
     pub store_path: String,
+    /// Native companion selecting this exact named output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<DerivationArtifact>,
 }
 
 impl DerivationInventoryV1 {
@@ -248,76 +240,25 @@ impl DerivationInventoryV1 {
                     bail!("derivation package repeats an output name or store path");
                 }
             }
-            if let Some(contract) = &package.contract {
-                require_store_path(&contract.document.derivation, true)?;
-                require_identifier(&contract.document.output, "contract document output")?;
-                require_store_path(&contract.document.store_path, false)?;
-                if output_paths.contains(&contract.document.store_path) {
-                    bail!("package contract document repeats a payload output path");
-                }
-                if contract.selectors.windows(2).any(|pair| pair[0] >= pair[1]) {
-                    bail!("package contract selectors must be unique and sorted");
-                }
-                for selector in &contract.selectors {
-                    if selector.package != "self" {
-                        require_identifier(&selector.package, "contract selector package")?;
-                    }
-                    require_identifier(&selector.output, "contract selector output")?;
-                    if selector.output == "abilities" {
-                        bail!("package contract cannot select another package contract");
-                    }
-                    require_store_path(&selector.store_path, false)?;
-                }
-                if let Some(package_module) = &contract.package_module {
-                    if package_module.output != "module" {
-                        bail!("package contract native module must select the module output");
-                    }
-                    if package_module.package != "self" && package_module.package != package.name {
-                        bail!("package contract native module must belong to its package");
-                    }
-                    if !contract.selectors.contains(package_module) {
-                        bail!("package contract native module is absent from its selectors");
-                    }
-                }
+            for artifact in [
+                &package.deployment,
+                &package.module_documentation,
+                &package.qualification,
+            ]
+            .into_iter()
+            .flatten()
+            .chain(
+                package
+                    .outputs
+                    .iter()
+                    .filter_map(|output| output.deployment.as_ref()),
+            ) {
+                require_store_path(&artifact.derivation, true)?;
+                require_identifier(&artifact.output, "native artifact output")?;
+                require_store_path(&artifact.store_path, false)?;
             }
         }
 
-        let evaluated_outputs = self
-            .packages
-            .iter()
-            .flat_map(|package| {
-                package.outputs.iter().map(move |output| {
-                    (
-                        (package.name.as_str(), output.name.as_str()),
-                        output.store_path.as_str(),
-                    )
-                })
-            })
-            .collect::<BTreeMap<_, _>>();
-        for package in &self.packages {
-            let Some(contract) = &package.contract else {
-                continue;
-            };
-            for selector in &contract.selectors {
-                let selected_package = if selector.package == "self" {
-                    package.name.as_str()
-                } else {
-                    selector.package.as_str()
-                };
-                let selected = evaluated_outputs
-                    .get(&(selected_package, selector.output.as_str()))
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "package contract selector {}:{} is absent from the derivation inventory",
-                            selector.package,
-                            selector.output
-                        )
-                    })?;
-                if *selected != selector.store_path {
-                    bail!("package contract selector resolution differs from its evaluated output");
-                }
-            }
-        }
         Ok(())
     }
 }
@@ -433,31 +374,46 @@ impl PackageInventoryV1 {
                                 source_store_paths: evaluated.source_store_paths.clone(),
                             })
                             .collect::<Vec<_>>();
-                        if let Some(contract) = &evaluated.contract {
-                            artifacts.push(PlannedArtifact {
-                                id: format!("package/{}/{}/contract", package.name, cell.platform),
-                                derivation: Some(contract.document.derivation.clone()),
-                                output: Some(contract.document.output.clone()),
-                                store_path: Some(contract.document.store_path.clone()),
-                                source_store_paths: evaluated.source_store_paths.clone(),
-                            });
+                        for (name, native) in [
+                            ("deploymentArtifact", &evaluated.deployment),
+                            ("documentationArtifact", &evaluated.module_documentation),
+                            ("qualificationArtifact", &evaluated.qualification),
+                        ] {
+                            if let Some(native) = native {
+                                artifacts.push(PlannedArtifact {
+                                    id: format!(
+                                        "package/{}/{}/{name}",
+                                        package.name, cell.platform
+                                    ),
+                                    derivation: Some(native.derivation.clone()),
+                                    output: Some(native.output.clone()),
+                                    store_path: Some(native.store_path.clone()),
+                                    source_store_paths: evaluated.source_store_paths.clone(),
+                                });
+                            }
+                        }
+                        for output in evaluated
+                            .outputs
+                            .iter()
+                            .filter(|output| output.name != "out")
+                        {
+                            if let Some(native) = &output.deployment {
+                                artifacts.push(PlannedArtifact {
+                                    id: format!(
+                                        "package/{}/{}/deploymentArtifact.{}",
+                                        package.name, cell.platform, output.name
+                                    ),
+                                    derivation: Some(native.derivation.clone()),
+                                    output: Some(native.output.clone()),
+                                    store_path: Some(native.store_path.clone()),
+                                    source_store_paths: evaluated.source_store_paths.clone(),
+                                });
+                            }
                         }
                         artifacts.sort_by(|left, right| left.id.cmp(&right.id));
 
                         MatrixCell::Artifact {
-                            artifact: PlannedArtifactSet {
-                                artifacts,
-                                package_contract: evaluated.contract.as_ref().map(|contract| {
-                                    PlannedPackageContract {
-                                        document_artifact: format!(
-                                            "package/{}/{}/contract",
-                                            package.name, cell.platform
-                                        ),
-                                        package_module: contract.package_module.clone(),
-                                        selectors: contract.selectors.clone(),
-                                    }
-                                }),
-                            },
+                            artifact: PlannedArtifactSet { artifacts },
                         }
                     }
                     InventoryDecision::Eligible {} => MatrixCell::Blocked {
@@ -591,6 +547,29 @@ mod tests {
     }
 
     #[test]
+    fn native_release_models_reject_legacy_contract_slots() {
+        let mut package = serde_json::json!({
+            "name":"example", "publication":null, "source_store_paths":[],
+            "derivation":"/nix/store/11111111111111111111111111111111-example.drv", "outputs":[]
+        });
+        assert!(serde_json::from_value::<DerivationPackage>(package.clone()).is_ok());
+        package["contract"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<DerivationPackage>(package).is_err());
+
+        let mut planned = serde_json::json!({"artifacts":[]});
+        assert!(serde_json::from_value::<PlannedArtifactSet>(planned.clone()).is_ok());
+        planned["package_contract"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<PlannedArtifactSet>(planned).is_err());
+
+        let mut finalized = serde_json::json!({"artifact_ids":[]});
+        assert!(
+            serde_json::from_value::<crate::manifest::FinalArtifactSet>(finalized.clone()).is_ok()
+        );
+        finalized["package_contract"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<crate::manifest::FinalArtifactSet>(finalized).is_err());
+    }
+
+    #[test]
     fn inventory_accepts_target_policy_decision_shape() -> Result<()> {
         let eligible = serde_json::from_value::<InventoryDecision>(serde_json::json!({
             "state": "eligible"
@@ -635,6 +614,7 @@ mod tests {
                         .to_owned(),
                     outputs: vec![
                         DerivationOutput {
+                            deployment: None,
                             name: "out".to_owned(),
                             derivation: Some(
                                 "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv"
@@ -645,6 +625,7 @@ mod tests {
                                 .to_owned(),
                         },
                         DerivationOutput {
+                            deployment: None,
                             name: "module".to_owned(),
                             derivation: None,
                             output: None,
@@ -653,39 +634,25 @@ mod tests {
                                     .to_owned(),
                         },
                     ],
-                    contract: Some(DerivationPackageContract {
-                        document: DerivationContractDocument {
-                            derivation:
-                                "/nix/store/11111111111111111111111111111111-example-contract.drv"
-                                    .to_owned(),
-                            output: "out".to_owned(),
-                            store_path:
-                                "/nix/store/ffffffffffffffffffffffffffffffff-example-contract"
-                                    .to_owned(),
-                        },
-                        package_module: Some(DerivationSelectorResolution {
-                            package: "example".to_owned(),
-                            output: "module".to_owned(),
-                            store_path:
-                                "/nix/store/dddddddddddddddddddddddddddddddd-example-module"
-                                    .to_owned(),
-                        }),
-                        selectors: vec![
-                            DerivationSelectorResolution {
-                                package: "example".to_owned(),
-                                output: "module".to_owned(),
-                                store_path:
-                                    "/nix/store/dddddddddddddddddddddddddddddddd-example-module"
-                                        .to_owned(),
-                            },
-                            DerivationSelectorResolution {
-                                package: "example".to_owned(),
-                                output: "out".to_owned(),
-                                store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example"
-                                    .to_owned(),
-                            },
-                        ],
+                    deployment: Some(DerivationArtifact {
+                        derivation:
+                            "/nix/store/11111111111111111111111111111111-example-deployment.drv"
+                                .to_owned(),
+                        output: "out".to_owned(),
+                        store_path:
+                            "/nix/store/ffffffffffffffffffffffffffffffff-example-deployment"
+                                .to_owned(),
                     }),
+                    module_documentation: Some(DerivationArtifact {
+                        derivation:
+                            "/nix/store/22222222222222222222222222222222-example-documentation.drv"
+                                .to_owned(),
+                        output: "out".to_owned(),
+                        store_path:
+                            "/nix/store/gggggggggggggggggggggggggggggggg-example-documentation"
+                                .to_owned(),
+                    }),
+                    qualification: None,
                 }],
             })
             .collect::<Vec<_>>();
@@ -695,25 +662,21 @@ mod tests {
         let MatrixCell::Artifact { artifact } = &plan[0].platforms[0].decision else {
             panic!("eligible fixture should produce an artifact plan");
         };
-        assert_eq!(artifact.artifacts.len(), 2);
+        assert_eq!(artifact.artifacts.len(), 3);
         assert_eq!(
             artifact.artifacts[0].id,
-            "package/example/x86_64-linux/contract"
+            "package/example/x86_64-linux/deploymentArtifact"
         );
         assert_eq!(artifact.artifacts[0].output.as_deref(), Some("out"));
         assert_eq!(
             artifact.artifacts[0].store_path.as_deref(),
-            Some("/nix/store/ffffffffffffffffffffffffffffffff-example-contract")
+            Some("/nix/store/ffffffffffffffffffffffffffffffff-example-deployment")
         );
-        assert_eq!(artifact.artifacts[1].id, "package/example/x86_64-linux/out");
         assert_eq!(
-            artifact
-                .package_contract
-                .as_ref()
-                .and_then(|contract| contract.package_module.as_ref())
-                .map(|selector| selector.store_path.as_str()),
-            Some("/nix/store/dddddddddddddddddddddddddddddddd-example-module")
+            artifact.artifacts[1].id,
+            "package/example/x86_64-linux/documentationArtifact"
         );
+        assert_eq!(artifact.artifacts[2].id, "package/example/x86_64-linux/out");
         assert_eq!(
             plan[0]
                 .publication
@@ -722,46 +685,6 @@ mod tests {
             Some("1.0.0")
         );
         Ok(())
-    }
-
-    #[test]
-    fn inventory_rejects_a_contract_selector_with_a_different_evaluated_path() {
-        let inventory = DerivationInventoryV1 {
-            schema_version: DERIVATION_INVENTORY_V1.to_owned(),
-            platform: Platform::X86_64Linux,
-            packages: vec![DerivationPackage {
-                name: "example".to_owned(),
-                publication: None,
-                source_store_paths: vec![SOURCE_PATH.to_owned()],
-                derivation: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv".to_owned(),
-                outputs: vec![DerivationOutput {
-                    name: "out".to_owned(),
-                    derivation: Some(
-                        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv".to_owned(),
-                    ),
-                    output: Some("out".to_owned()),
-                    store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example".to_owned(),
-                }],
-                contract: Some(DerivationPackageContract {
-                    document: DerivationContractDocument {
-                        derivation:
-                            "/nix/store/11111111111111111111111111111111-example-contract.drv"
-                                .to_owned(),
-                        output: "out".to_owned(),
-                        store_path: "/nix/store/ffffffffffffffffffffffffffffffff-example-contract"
-                            .to_owned(),
-                    },
-                    package_module: None,
-                    selectors: vec![DerivationSelectorResolution {
-                        package: "example".to_owned(),
-                        output: "out".to_owned(),
-                        store_path: "/nix/store/gggggggggggggggggggggggggggggggg-wrong".to_owned(),
-                    }],
-                }),
-            }],
-        };
-
-        assert!(inventory.validate().is_err());
     }
 
     #[test]
@@ -834,6 +757,7 @@ mod tests {
                     derivation: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv"
                         .to_owned(),
                     outputs: vec![DerivationOutput {
+                        deployment: None,
                         name: "out".to_owned(),
                         derivation: Some(
                             "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv".to_owned(),
@@ -842,7 +766,9 @@ mod tests {
                         store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example"
                             .to_owned(),
                     }],
-                    contract: None,
+                    deployment: None,
+                    module_documentation: None,
+                    qualification: None,
                 }],
             })
             .collect::<Vec<_>>();

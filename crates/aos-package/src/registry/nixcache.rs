@@ -1215,7 +1215,10 @@ fn collect_store_paths_from_package(value: &TomlValue, inventory: &mut CacheRoot
                 inventory.roots.insert(path.to_string());
             }
             if let Some(outputs) = platform.get("named_outputs").and_then(TomlValue::as_table) {
-                for path in outputs.values().filter_map(TomlValue::as_str) {
+                for path in outputs
+                    .values()
+                    .filter_map(|output| output.get("store_path").and_then(TomlValue::as_str))
+                {
                     inventory.roots.insert(path.to_string());
                 }
             }
@@ -1249,6 +1252,16 @@ fn collect_store_paths_from_package(value: &TomlValue, inventory: &mut CacheRoot
                     {
                         inventory.roots.insert(path.to_string());
                     }
+                }
+            }
+            for key in ["deployment", "module_documentation", "qualification"] {
+                if let Some(path) = platform
+                    .get(key)
+                    .and_then(|artifact| artifact.get("store_path"))
+                    .and_then(TomlValue::as_str)
+                {
+                    inventory.roots.insert(path.to_string());
+                    inventory.uncompressed.insert(path.to_string());
                 }
             }
             if let Some(documentation) = platform.get("documentation")
@@ -1674,8 +1687,8 @@ source_nar_hash = "sha256:source"
 references = []
 
 [versions.platforms.x86_64-linux.named_outputs]
-dev = "/nix/store/dev111-kernel"
-tools = "/nix/store/tools111-kernel"
+dev = {store_path = "/nix/store/dev111-kernel"}
+tools = {store_path = "/nix/store/tools111-kernel"}
 
 [[versions.platforms.x86_64-linux.images]]
 format = "qcow2"

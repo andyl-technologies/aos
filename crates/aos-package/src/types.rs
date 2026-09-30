@@ -13,9 +13,8 @@
 //! - **Registry root config** — [`RegistryRootConfig`] (`registry.toml`
 //!   committed inside a registry repo) and its [`CacheEntry`] list.
 //! - **Profile state** — [`InstalledMeta`] / [`ApmMeta`] (per-path
-//!   `meta/{hash}.json` in a profile) and the system-generation records
-//!   [`ConfigGeneration`] / [`ConfigGenerationState`]
-//!   (`/var/lib/profiles/system/state.json`).
+//!   `meta/{hash}.json` in a profile) and [`ImageGenerationState`]. Native
+//!   deployment generations and their journal belong to [`crate::deployment`].
 //! - **Settings and scopes** — [`ApmSettings`] (`apm.conf`) and
 //!   [`ProfileScope`], which maps the user/system scopes onto their config,
 //!   cache, registry-clone, and trusted-key directories.
@@ -35,20 +34,12 @@ pub const PACKAGE_META_FORMAT: u32 = 1;
 /// Registry feature flag for RFC-0001 package attestation metadata.
 pub const FEATURE_ATTESTATION_V1: &str = "attestation-v1";
 
-/// Registry feature flag for canonical RFC-0016 package documentation.
-pub const FEATURE_PACKAGE_DOCUMENTATION_V1: &str = "package-documentation-v1";
-
 /// Registry feature flag for opaque provider-owned image artifact contracts.
 pub const FEATURE_IMAGE_ARTIFACT_CONTRACT_V1: &str = "image-artifact-contract-v1";
 
-pub use aos_ability_model::{FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1};
-
-/// Names the retained derivation output containing an ability manifest.
-pub const PACKAGE_CONTRACT_OUTPUT: &str = "contract";
-
-const SUPPORTED_NON_CONTRACT_FEATURES: &[&str] = &[
+const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_ATTESTATION_V1,
-    FEATURE_PACKAGE_DOCUMENTATION_V1,
+    FEATURE_NATIVE_PACKAGE_MODULES_V1,
     FEATURE_IMAGE_ARTIFACT_CONTRACT_V1,
 ];
 
@@ -427,6 +418,7 @@ fn profiles_base() -> PathBuf {
 
 /// A package version entry for a specific platform, as found in a registry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PackageMeta {
     /// Package name (the registry TOML file name and `apm install` argument).
     pub name: String,
@@ -445,6 +437,10 @@ pub struct PackageMeta {
     pub platform: String,
     /// Full store path of the package output.
     pub store_path: String,
+    /// Authenticated available named outputs and their output-specific evidence.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub named_outputs:
+        std::collections::BTreeMap<String, aos_registry_surface::manifest::OutputMeta>,
     /// Hash of the uncompressed NAR: `"sha256:..."`.
     pub nar_hash: String,
     /// Size of the uncompressed NAR in bytes.
@@ -480,12 +476,15 @@ pub struct PackageMeta {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub requires_features: Vec<String>,
-    /// Canonical package documentation selected for this version/platform.
+    /// Authenticated native package deployment envelope directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub documentation: Option<DocumentationArtifactMeta>,
-    /// Authenticated RFC-0022 ability package companion.
+    pub deployment: Option<NativeArtifactMeta>,
+    /// Authenticated module-generated reference directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contract: Option<PackageContractMeta>,
+    pub module_documentation: Option<NativeArtifactMeta>,
+    /// Authenticated native package qualification companion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualification: Option<NativeArtifactMeta>,
     /// Runtime integrity, attestation, and provenance facts for this package.
     #[serde(default, skip_serializing_if = "AttestationMeta::is_empty")]
     pub attestation: AttestationMeta,
@@ -495,10 +494,7 @@ pub struct PackageMeta {
 // crate so the registry hub and package client consume one contract.
 pub use aos_registry_surface::manifest::AttestationMeta;
 
-pub use aos_registry_surface::manifest::{
-    DocumentationArtifactMeta, PackageContractArtifactMeta, PackageContractClosureMemberMeta,
-    PackageContractDocumentMeta, PackageContractMeta, PackageContractSelectorMeta,
-};
+pub use aos_registry_surface::manifest::{FEATURE_NATIVE_PACKAGE_MODULES_V1, NativeArtifactMeta};
 
 /// Returns the top-level root segment of a dotted option path.
 ///
@@ -506,13 +502,6 @@ pub use aos_registry_surface::manifest::{
 /// root.
 pub fn option_path_root(path: &str) -> &str {
     path.split('.').next().unwrap_or(path)
-}
-
-/// Returns whether package metadata must be backed by DSSE provenance.
-///
-/// Package documentation and package contracts require provenance.
-pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
-    meta.documentation.is_some() || meta.contract.is_some()
 }
 
 /// Validate that a package metadata entry can be safely consumed.
@@ -535,18 +524,10 @@ pub fn validate_supported_package_meta(meta: &PackageMeta) -> Result<()> {
 }
 
 fn supported_package_features() -> Result<Vec<String>> {
-    let mut features = SUPPORTED_NON_CONTRACT_FEATURES
+    Ok(SUPPORTED_PACKAGE_FEATURES
         .iter()
-        .map(|feature| (*feature).to_string())
-        .collect::<Vec<_>>();
-    features.extend(
-        aos_ability_validate::package_source_supported_features()?
-            .into_iter()
-            .map(|feature| feature.as_str().to_string()),
-    );
-    features.sort();
-    features.dedup();
-    Ok(features)
+        .map(|feature| (*feature).to_owned())
+        .collect())
 }
 
 /// Validate a package metadata entry against an explicit format/feature set.
@@ -587,16 +568,25 @@ pub fn validate_supported_package_meta_with(
         validate_attestation_meta(&meta.attestation)
             .with_context(|| format!("invalid attestation metadata for '{}'", meta.name))?;
     }
-    if let Some(documentation) = &meta.documentation {
-        require_feature(meta, FEATURE_PACKAGE_DOCUMENTATION_V1)?;
-        validate_documentation_artifact_meta(documentation).with_context(|| {
-            format!("invalid package-documentation metadata for '{}'", meta.name)
-        })?;
+    let native_feature = meta
+        .requires_features
+        .iter()
+        .any(|feature| feature == FEATURE_NATIVE_PACKAGE_MODULES_V1);
+    if native_feature || meta.module_documentation.is_some() || meta.qualification.is_some() {
+        if meta.deployment.is_none() {
+            bail!("native package metadata is missing its deployment envelope");
+        }
     }
-    if let Some(ability) = &meta.contract {
-        require_feature(meta, FEATURE_ABILITIES_V1)?;
-        crate::package_contract::validate_package_contract_meta(ability)
-            .with_context(|| format!("invalid package contract metadata for '{}'", meta.name))?;
+    for artifact in [
+        &meta.deployment,
+        &meta.module_documentation,
+        &meta.qualification,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        require_feature(meta, FEATURE_NATIVE_PACKAGE_MODULES_V1)?;
+        artifact.validate()?;
     }
     if !meta.images.is_empty() {
         require_feature(meta, FEATURE_IMAGE_ARTIFACT_CONTRACT_V1)?;
@@ -604,19 +594,6 @@ pub fn validate_supported_package_meta_with(
     for image in &meta.images {
         validate_image_entry(image, &meta.version, &meta.platform)
             .with_context(|| format!("invalid sysroot image metadata for '{}'", meta.name))?;
-    }
-    if package_requires_provenance(meta) && meta.attestation.provenance.is_none() {
-        let reason = if meta.documentation.is_some() {
-            "uses package-documentation metadata"
-        } else if meta.contract.is_some() {
-            "uses ability metadata"
-        } else {
-            "uses BPF-LSM metadata"
-        };
-        bail!(
-            "package '{}' {reason} without attestation provenance",
-            meta.name
-        );
     }
 
     Ok(())
@@ -635,83 +612,6 @@ fn require_feature(meta: &PackageMeta, feature: &str) -> Result<()> {
         "package '{}' uses registry feature '{feature}' without declaring it in requires-features",
         meta.name
     )
-}
-
-/// Validates a canonical package-documentation artifact locator.
-///
-/// Version 1 is a single regular-file NAR whose canonical JSON is at most 4
-/// MiB and whose reference set is empty. The NAR may be slightly larger than
-/// the document because of archive framing, but both are independently capped.
-///
-/// # Errors
-///
-/// Returns an error when the format is unsupported, the store/NAR identity is
-/// malformed, either size is zero or exceeds the version-1 limit, the document
-/// digest is malformed, or the object claims any store reference.
-pub fn validate_documentation_artifact_meta(
-    documentation: &DocumentationArtifactMeta,
-) -> Result<()> {
-    if documentation.format != aos_doc_model::DOCUMENT_FORMAT {
-        bail!(
-            "unsupported package-documentation format '{}'",
-            documentation.format
-        );
-    }
-    validate_absolute_path(&documentation.store_path, "documentation store path")?;
-    if store_path_hash_component(&documentation.store_path).is_none() {
-        bail!(
-            "documentation store path is not a Nix-style store path: {}",
-            documentation.store_path
-        );
-    }
-    if !documentation.nar_hash.starts_with("sha256:")
-        && !documentation.nar_hash.starts_with("sha256-")
-    {
-        bail!(
-            "documentation '{}' has invalid NAR hash",
-            documentation.store_path
-        );
-    }
-    const LIMIT: u64 = aos_doc_model::MAX_DOCUMENT_BYTES as u64;
-    if documentation.nar_size == 0 || documentation.nar_size > LIMIT {
-        bail!(
-            "documentation '{}' NAR size {} is outside 1..={LIMIT}",
-            documentation.store_path,
-            documentation.nar_size
-        );
-    }
-    if documentation.document_size == 0 || documentation.document_size > LIMIT {
-        bail!(
-            "documentation '{}' JSON size {} is outside 1..={LIMIT}",
-            documentation.store_path,
-            documentation.document_size
-        );
-    }
-    validate_sha256_hex(
-        "documentation document_sha256",
-        &documentation.document_sha256,
-    )?;
-    validate_sha256_hex(
-        "documentation semantic_schema_sha256",
-        &documentation.semantic_schema_sha256,
-    )?;
-    if !documentation.references.is_empty() {
-        bail!(
-            "documentation '{}' must have an empty reference set",
-            documentation.store_path
-        );
-    }
-    Ok(())
-}
-
-fn validate_sha256_hex(label: &str, digest: &str) -> Result<()> {
-    let Some(hex) = digest.strip_prefix("sha256:") else {
-        bail!("{label} must use sha256:<hex>");
-    };
-    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("{label} is not a 32-byte hexadecimal digest");
-    }
-    Ok(())
 }
 
 /// Validate runtime integrity, attestation, and provenance metadata.
@@ -859,16 +759,6 @@ fn validate_image_entry(image: &SysrootImageEntry, release: &str, platform: &str
     Ok(())
 }
 
-fn store_path_hash_component(path: &str) -> Option<&str> {
-    let basename = path.rsplit('/').next()?;
-    let (hash, _) = basename.split_once('-')?;
-    if hash.len() >= 2 && hash.chars().all(|ch| ch.is_ascii_alphanumeric()) {
-        Some(hash)
-    } else {
-        None
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Installed metadata — per-path JSON in profile `meta/{hash}.json`
 // ---------------------------------------------------------------------------
@@ -904,6 +794,7 @@ pub struct InstalledMeta {
 
 /// APM-specific metadata extension.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApmMeta {
     /// Package name as known to the registry.
     pub name: String,
@@ -923,12 +814,15 @@ pub struct ApmMeta {
     /// NAR hash for the source derivation.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source_nar_hash: String,
-    /// Canonical documentation artifact captured at install time.
+    /// Authenticated native package deployment envelope directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub documentation: Option<DocumentationArtifactMeta>,
-    /// Authenticated ability companion captured at install time.
+    pub deployment: Option<NativeArtifactMeta>,
+    /// Authenticated module-generated reference directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contract: Option<PackageContractMeta>,
+    pub module_documentation: Option<NativeArtifactMeta>,
+    /// Authenticated native package qualification companion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualification: Option<NativeArtifactMeta>,
     /// Runtime integrity, attestation, and provenance facts captured at install time.
     #[serde(default, skip_serializing_if = "AttestationMeta::is_empty")]
     pub attestation: AttestationMeta,
@@ -1441,8 +1335,8 @@ pub enum ProfileScope {
     User,
     /// System-wide scope (requires root).
     ///
-    /// Sysroot generations live at `/var/lib/profiles/system/`; runtime APM
-    /// package generations live at `/var/lib/profiles/system-packages/`.
+    /// Native image bootstrap and package configuration share the authoritative
+    /// deployment journal at `/var/lib/profiles/system/`.
     System,
 }
 
@@ -1482,20 +1376,6 @@ impl ProfileScope {
                 profiles_base().join("per-user").join(user)
             }
             ProfileScope::System => profiles_base().join("system"),
-        }
-    }
-
-    /// Base path for APM package-profile generations in this scope.
-    ///
-    /// The sysroot uses [`ProfileScope::profile_path`] for
-    /// `/var/lib/profiles/system/state.json`, whose schema is
-    /// [`ConfigGenerationState`]. Runtime system packages use a separate
-    /// package-generation database so `apm install --system` cannot corrupt
-    /// or replace the sysroot generation pointer.
-    pub fn package_profile_path(&self) -> PathBuf {
-        match self {
-            ProfileScope::User => self.profile_path(),
-            ProfileScope::System => profiles_base().join("system-packages"),
         }
     }
 
@@ -1710,76 +1590,6 @@ pub use aos_registry_surface::manifest::{
     ImageDelivery, ImageStoreReference, ImageTarget, SysrootImageEntry,
 };
 
-/// The action required to re-activate a config-generation under a (possibly
-/// changed) running image's `module_abi`.
-///
-/// Produced by [`ConfigGeneration::reactivation_plan`] and consumed by the
-/// rollback path. The two arms are the two independent re-bind outcomes the
-/// generations model permits: reactivation of retained material within one
-/// ABI, or deterministic re-evaluation across an ABI boundary.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReactivationPlan {
-    /// Identical module ABI under any running image: re-activate the retained
-    /// non-`@base` overlay, republish credentials and evidence, then commit the
-    /// `current → gen-N` pointer. No eval and no reboot are required.
-    DirectReactivate,
-    /// Different ABI: direct activation is refused; the config-gen must be
-    /// re-evaluated from its retained inputs against the rolled-back image's
-    /// evaluator before it can be committed.
-    CrossAbiReEval(CrossAbiReEvalInputs),
-}
-
-/// One module locator derived from an authenticated package contract.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageModule {
-    /// Package identity declared by the contract document.
-    pub package: String,
-    /// Domain-separated semantic digest of the complete package document.
-    pub document_digest: String,
-    /// Exact artifact root containing the module.
-    pub store_path: String,
-    /// Authenticated NAR identity of the module artifact.
-    pub nar_hash: String,
-    /// Relative module entrypoint below the artifact root.
-    pub entrypoint: String,
-    /// Authority that supplied the authenticated package contract.
-    pub origin: PackageModuleOrigin,
-}
-
-/// Trust origin of one authenticated package contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PackageModuleOrigin {
-    /// Selected from one authenticated registry release.
-    Registry,
-    /// Recovered from the immutable image package catalog.
-    Image,
-}
-
-/// The retained eval inputs a cross-ABI re-activation must replay
-/// using its retained inputs.
-///
-/// All retained store references are kept alive on `/var` by the per-generation
-/// `gen-N/cfgsrc/<hash>` GC root, so the re-eval is satisfiable without any
-/// network round-trip; because eval is pure and content-addressed, the
-/// recomputation is deterministic and usually cache-hits.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CrossAbiReEvalInputs {
-    /// Exact ordered authenticated package modules the evaluator must read.
-    pub package_modules: Vec<PackageModule>,
-    /// Store path of the exact `host.nix` the config-gen was evaluated from.
-    pub host_nix_ref: String,
-    /// Content-address of the resolved instance facts (`facts.json`).
-    pub facts_hash: String,
-    /// Store path containing the exact facts bytes.
-    pub facts_ref: String,
-    /// The ABI the config-gen was originally pinned to.
-    pub from_module_abi: u32,
-    /// The running image ABI the config-gen must be re-evaluated against.
-    pub to_module_abi: u32,
-}
-
 // ---------------------------------------------------------------------------
 // Two-axis generations: image generation (substrate) and configuration generation (overlay).
 // ---------------------------------------------------------------------------
@@ -1795,6 +1605,18 @@ pub struct BootProviderState {
     pub schema: String,
     /// Provider-owned retained state or checked observation evidence.
     pub evidence: serde_json::Value,
+}
+
+/// Identifies the exact authenticated native module library carried by an image.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModuleLibraryIdentity {
+    /// Locates the immutable library artifact root.
+    pub store_path: String,
+    /// Contains the admitted SHA-256 NAR hash in SRI form.
+    pub nar_hash: String,
+    /// Contains the admitted NAR byte length.
+    pub nar_size: u64,
 }
 
 /// One authenticated image-generation independent of its boot implementation.
@@ -1822,15 +1644,10 @@ pub struct ImageGeneration {
     /// Resolved kernel store path (kernel-change detection across generations).
     #[serde(default)]
     pub kernel_path: Option<String>,
-    /// Store path of the base-lib + evaluator closure carried *inside* this
-    /// image. The ABI artifact and GC-root target for
-    /// `image-gen-N/baselib/<module_abi>`.
-    pub evaluator_ref: String,
-    /// The monotonic shared-option-schema ABI this image's base lib exports.
-    /// Mirrors `AOS_MODULE_ABI` in this image's `/etc/os-release`.
-    pub module_abi: u32,
-    /// Canonical hash of the base-lib module ABI and option schema.
-    pub base_lib_abi_hash: String,
+    /// Pins the exact admitted native module library used for image evaluation.
+    pub module_library: ModuleLibraryIdentity,
+    /// Locates the immutable native host evaluation input descriptor.
+    pub evaluation_descriptor: String,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
 }
@@ -1863,18 +1680,6 @@ pub struct ImageRollout {
     pub state_version: String,
     /// Current rollout phase or terminal result.
     pub status: ImageRolloutStatus,
-}
-
-impl ImageGeneration {
-    /// Returns whether a config-gen satisfies this image's ABI portion of the
-    /// reactivation gate.
-    ///
-    /// Equal ABI is sufficient for direct reactivation because retained config
-    /// outputs contain only the non-`@base` overlay; the running image always
-    /// supplies its own base layer.
-    pub fn admits_pin(&self, pinned_abi: u32) -> bool {
-        self.module_abi == pinned_abi
-    }
 }
 
 /// Persistent state for the image-generation axis
@@ -1930,16 +1735,45 @@ impl ImageGenerationState {
             if !generation_numbers.insert(generation.number) {
                 bail!("duplicate image generation {}", generation.number);
             }
-            crate::config_eval::materialize::validate_canonical_store_path(
-                &generation.boot_artifact_contract,
-            )
-            .with_context(|| {
+            validate_image_store_root(&generation.boot_artifact_contract).with_context(|| {
                 format!(
                     "validating image generation {} boot-artifact contract",
                     generation.number
                 )
             })?;
             validate_boot_provider_state(&generation.boot_provider_state)?;
+            for root in [
+                &generation.toplevel,
+                &generation.native_executor_ref,
+                &generation.module_library.store_path,
+            ] {
+                validate_image_store_root(root)?;
+            }
+            let descriptor = std::path::Path::new(&generation.evaluation_descriptor);
+            let (root, suffix) = crate::deployment::nix::store_root_and_suffix(descriptor)?;
+            if suffix.as_os_str().is_empty()
+                || root.join(&suffix) != descriptor
+                || generation.evaluation_descriptor.contains("//")
+                || generation
+                    .evaluation_descriptor
+                    .split('/')
+                    .any(|part| part == "." || part == "..")
+            {
+                bail!("native image evaluation descriptor is not a canonical store member");
+            }
+            use base64::Engine as _;
+            let encoded = generation
+                .module_library
+                .nar_hash
+                .strip_prefix("sha256-")
+                .context("native module library requires an SHA-256 SRI NAR identity")?;
+            let decoded = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+            if decoded.len() != 32
+                || base64::engine::general_purpose::STANDARD.encode(&decoded) != encoded
+                || generation.module_library.nar_size == 0
+            {
+                bail!("native module library NAR identity is malformed or empty");
+            }
         }
 
         if self.generations.is_empty() {
@@ -1969,6 +1803,15 @@ impl ImageGenerationState {
     }
 }
 
+fn validate_image_store_root(value: &str) -> Result<()> {
+    let path = std::path::Path::new(value);
+    let (root, suffix) = crate::deployment::nix::store_root_and_suffix(path)?;
+    if !suffix.as_os_str().is_empty() || root != path || value.contains("//") {
+        bail!("image identity does not name a canonical native store root");
+    }
+    Ok(())
+}
+
 fn validate_boot_provider_state(state: &BootProviderState) -> Result<()> {
     let schema = state.schema.as_bytes();
     if schema.is_empty()
@@ -1982,78 +1825,6 @@ fn validate_boot_provider_state(state: &BootProviderState) -> Result<()> {
         bail!("boot-provider evidence must be a JSON object");
     }
     Ok(())
-}
-
-/// One config-generation: the materialized `/etc` overlay produced by
-/// evaluating the installed set's config modules + `host.nix` against a
-/// specific image generation's base library.
-///
-/// This is the on-disk authority for `/var/lib/profiles/system/state.json`.
-/// Every binding needed to reactivate or re-evaluate the generation is
-/// required by this schema.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigGeneration {
-    /// Config-generation number naming the `gen-N/` directory selected by
-    /// the checked activation transaction.
-    pub number: u32,
-    /// The [`ImageGeneration::number`] this config-gen was evaluated against.
-    pub image_gen_parent: u32,
-    /// The `module_abi` in effect at evaluation time.
-    pub module_abi_pinned: u32,
-    /// Content-address of the canonicalized manifest JSON (the *output*).
-    pub manifest_hash: String,
-    /// Exact evaluator order of authenticated package modules.
-    pub package_modules: Vec<PackageModule>,
-    /// Store path / content hash of the exact `host.nix` evaluated.
-    pub host_nix_ref: String,
-    /// Non-authoritative git commit `host.nix` came from (operator traceability).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host_nix_commit: Option<String>,
-    /// Content-address of the resolved instance facts (`facts.json`).
-    pub facts_hash: String,
-    /// Store path containing the exact facts bytes.
-    pub facts_ref: String,
-    /// Original base-library input store path.
-    pub base_lib_ref: String,
-    /// Original evaluator input store path.
-    pub evaluator_ref: String,
-    /// ISO 8601 creation timestamp.
-    pub created_at: String,
-}
-
-impl ConfigGeneration {
-    /// Decides how this config-generation may be reactivated under a running
-    /// image whose shared-option ABI is `running_abi`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when retained inputs cannot be replayed.
-    pub fn reactivation_plan(&self, running_abi: u32) -> Result<ReactivationPlan> {
-        if self.module_abi_pinned == running_abi {
-            return Ok(ReactivationPlan::DirectReactivate);
-        }
-        Ok(ReactivationPlan::CrossAbiReEval(CrossAbiReEvalInputs {
-            package_modules: self.package_modules.clone(),
-            host_nix_ref: self.host_nix_ref.clone(),
-            facts_hash: self.facts_hash.clone(),
-            facts_ref: self.facts_ref.clone(),
-            from_module_abi: self.module_abi_pinned,
-            to_module_abi: running_abi,
-        }))
-    }
-}
-
-/// Persistent state for the config-generation axis.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConfigGenerationState {
-    /// Number of the currently active generation (`0` = none yet).
-    pub current: u32,
-    /// Number the next created generation will receive.
-    pub next: u32,
-    /// All recorded config-generations, in creation order.
-    #[serde(default)]
-    pub generations: Vec<ConfigGeneration>,
 }
 
 #[cfg(test)]
@@ -2576,10 +2347,6 @@ mod tests {
             scope.profile_path(),
             PathBuf::from("/var/lib/profiles/system")
         );
-        assert_eq!(
-            scope.package_profile_path(),
-            PathBuf::from("/var/lib/profiles/system-packages")
-        );
         assert_eq!(scope.cache_path(), PathBuf::from("/var/lib/apm/remote"));
         assert_eq!(
             scope.registry_cache_path("core"),
@@ -2765,8 +2532,9 @@ last_update = "2026-02-13T10:30:00Z"
                 held: false,
                 source_drv: "/var/lib/store/src123-curl-8.5.0.drv".into(),
                 source_nar_hash: "sha256:source".into(),
-                documentation: None,
-                contract: None,
+                deployment: None,
+                module_documentation: None,
+                qualification: None,
                 attestation: Default::default(),
             }),
         };
@@ -2803,6 +2571,7 @@ last_update = "2026-02-13T10:30:00Z"
     }
     fn attestation_package_meta(requires_features: Vec<&str>) -> PackageMeta {
         PackageMeta {
+            named_outputs: Default::default(),
             name: "verity-app".into(),
             version: "1.0.0".into(),
             description: "Package root with verity attestation".into(),
@@ -2822,8 +2591,9 @@ last_update = "2026-02-13T10:30:00Z"
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: requires_features.into_iter().map(str::to_string).collect(),
-            documentation: None,
-            contract: None,
+            deployment: None,
+            module_documentation: None,
+            qualification: None,
             attestation: AttestationMeta {
                 root_digest: Some(
                     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -2844,8 +2614,21 @@ last_update = "2026-02-13T10:30:00Z"
     }
 
     #[test]
+    fn native_package_metadata_rejects_removed_projection_fields() {
+        let meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        for field in ["contract", "documentation"] {
+            let mut value = serde_json::to_value(&meta).unwrap();
+            value
+                .as_object_mut()
+                .unwrap()
+                .insert(field.into(), serde_json::json!({}));
+            assert!(serde_json::from_value::<PackageMeta>(value).is_err());
+        }
+    }
+
+    #[test]
     fn package_meta_requires_attestation_feature_gate() {
-        let mut meta = attestation_package_meta(vec![FEATURE_ABILITIES_V1]);
+        let mut meta = attestation_package_meta(vec![]);
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
         assert!(err.to_string().contains(FEATURE_ATTESTATION_V1));
@@ -3196,42 +2979,6 @@ pin = "v2026.02"
     // Two-axis generation records.
     // -----------------------------------------------------------------------
 
-    /// A configuration generation carrying the two-axis fields round-trips through serde.
-    /// and the new fields are emitted (and re-read) verbatim.
-    #[test]
-    fn config_gen_axis_fields_round_trip() {
-        let g = ConfigGeneration {
-            number: 7,
-            created_at: "2026-06-01T00:00:00Z".into(),
-            image_gen_parent: 2,
-            module_abi_pinned: 2,
-            manifest_hash: "sha256:beef".into(),
-            package_modules: vec![PackageModule {
-                package: "server".into(),
-                document_digest: format!("sha256:{}", "a".repeat(64)),
-                store_path: "/nix/store/src-cfg".into(),
-                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
-                entrypoint: "module.nix".into(),
-                origin: PackageModuleOrigin::Registry,
-            }],
-            host_nix_ref: "/nix/store/hn-host.nix".into(),
-            host_nix_commit: Some("deadbeef".into()),
-            facts_hash: "sha256:facts".into(),
-            facts_ref: "/nix/store/fa-facts.json".into(),
-            base_lib_ref: "/nix/store/bl-base-lib".into(),
-            evaluator_ref: "/nix/store/ev-evaluator".into(),
-        };
-        let json = serde_json::to_string(&g).unwrap();
-        assert!(json.contains("module_abi_pinned"));
-        assert!(
-            !json.contains("native_executor_ref"),
-            "configuration generations cannot replace the image-owned native executor"
-        );
-        let parsed: ConfigGeneration = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.module_abi_pinned, 2);
-        assert_eq!(parsed.host_nix_ref, "/nix/store/hn-host.nix");
-    }
-
     /// The image-generation axis round-trips provider-neutral identity and opaque provider state.
     #[test]
     fn image_generation_state_round_trip() {
@@ -3267,9 +3014,15 @@ pin = "v2026.02"
                     native_executor_ref: "/nix/store/executor-1".into(),
                     registry: "core".into(),
                     kernel_path: Some("/nix/store/k1-linux".into()),
-                    evaluator_ref: "/nix/store/bl1-aos-base-lib".into(),
-                    module_abi: 1,
-                    base_lib_abi_hash: "sha256:aa".into(),
+                    module_library: ModuleLibraryIdentity {
+                        store_path: "/nix/store/11111111111111111111111111111111-module-library"
+                            .into(),
+                        nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                        nar_size: 1,
+                    },
+                    evaluation_descriptor:
+                        "/nix/store/22222222222222222222222222222222-evaluation/evaluation.json"
+                            .into(),
                     created_at: "2026-06-01T00:00:00Z".into(),
                 },
                 ImageGeneration {
@@ -3287,9 +3040,15 @@ pin = "v2026.02"
                     native_executor_ref: "/nix/store/executor-2".into(),
                     registry: "core".into(),
                     kernel_path: Some("/nix/store/k2-linux".into()),
-                    evaluator_ref: "/nix/store/bl2-aos-base-lib".into(),
-                    module_abi: 2,
-                    base_lib_abi_hash: "sha256:bb".into(),
+                    module_library: crate::types::ModuleLibraryIdentity {
+                        store_path: "/nix/store/11111111111111111111111111111111-module-library"
+                            .into(),
+                        nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                        nar_size: 1,
+                    },
+                    evaluation_descriptor:
+                        "/nix/store/22222222222222222222222222222222-evaluation/evaluation.json"
+                            .into(),
                     created_at: "2026-06-02T00:00:00Z".into(),
                 },
             ],
@@ -3303,9 +3062,8 @@ pin = "v2026.02"
             Some(ImageRolloutStatus::Staged)
         );
         let running = parsed.running_generation().unwrap();
-        assert_eq!(running.module_abi, 1);
-        assert!(running.admits_pin(1));
-        assert!(!running.admits_pin(2));
+        assert_eq!(running.module_library.nar_size, 1);
+        assert!(running.evaluation_descriptor.ends_with("/evaluation.json"));
         assert_eq!(
             parsed.generations[1].boot_provider_state.evidence["installed-entry"],
             "entry-2"
@@ -3322,71 +3080,6 @@ pin = "v2026.02"
                 .expect_err("the final image-generation identity must be complete");
             assert!(error.to_string().contains(required));
         }
-    }
-
-    fn sample_documentation_artifact() -> DocumentationArtifactMeta {
-        DocumentationArtifactMeta {
-            format: aos_doc_model::DOCUMENT_FORMAT.to_string(),
-            store_path: "/nix/store/0000000000000000000000000000000e-firewall-1.4.0-aos-docs.json"
-                .to_string(),
-            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                .to_string(),
-            nar_size: 1024,
-            document_sha256:
-                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                    .to_string(),
-            document_size: 900,
-            semantic_schema_sha256:
-                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-                    .to_string(),
-            references: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn documentation_artifact_is_feature_gated_and_retained() {
-        let mut meta = sample_package_meta();
-        meta.documentation = Some(sample_documentation_artifact());
-        meta.attestation.provenance = Some("provenance/firewall.intoto.jsonl".to_string());
-        meta.requires_features
-            .push(FEATURE_ATTESTATION_V1.to_string());
-
-        let error = validate_supported_package_meta(&meta).expect_err("missing feature");
-        assert!(error.to_string().contains(FEATURE_PACKAGE_DOCUMENTATION_V1));
-
-        meta.requires_features
-            .push(FEATURE_PACKAGE_DOCUMENTATION_V1.to_string());
-        validate_supported_package_meta(&meta).expect("valid documentation metadata");
-
-        let installed = ApmMeta {
-            name: meta.name.clone(),
-            version: meta.version.clone(),
-            explicit: true,
-            registry: "core".to_string(),
-            installed_at: "2026-08-28T00:00:00Z".to_string(),
-            held: false,
-            source_drv: meta.source_drv.clone(),
-            source_nar_hash: meta.source_nar_hash.clone(),
-            documentation: meta.documentation.clone(),
-            contract: None,
-            attestation: meta.attestation.clone(),
-        };
-        let encoded = serde_json::to_vec(&installed).expect("installed metadata");
-        let decoded: ApmMeta = serde_json::from_slice(&encoded).expect("decode installed metadata");
-        assert_eq!(decoded.documentation, meta.documentation);
-    }
-
-    #[test]
-    fn documentation_artifact_rejects_references_and_oversize_objects() {
-        let mut artifact = sample_documentation_artifact();
-        artifact
-            .references
-            .push("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into());
-        assert!(validate_documentation_artifact_meta(&artifact).is_err());
-
-        artifact.references.clear();
-        artifact.document_size = aos_doc_model::MAX_DOCUMENT_BYTES as u64 + 1;
-        assert!(validate_documentation_artifact_meta(&artifact).is_err());
     }
 
     #[test]
@@ -3415,22 +3108,9 @@ pin = "v2026.02"
         );
     }
 
-    #[test]
-    fn package_reader_features_include_the_shared_contract_reader_surface() {
-        let supported = supported_package_features().expect("supported package features");
-        let package_features = aos_ability_validate::package_source_supported_features()
-            .expect("package contract reader features");
-
-        for feature in package_features {
-            assert!(
-                supported
-                    .iter()
-                    .any(|candidate| candidate == feature.as_str())
-            );
-        }
-    }
     fn sample_package_meta() -> PackageMeta {
         PackageMeta {
+            named_outputs: Default::default(),
             name: "firewall".to_string(),
             version: "1.4.0".to_string(),
             description: "host firewall".to_string(),
@@ -3450,8 +3130,9 @@ pin = "v2026.02"
             images: vec![],
             min_format: None,
             requires_features: vec![],
-            documentation: None,
-            contract: None,
+            deployment: None,
+            module_documentation: None,
+            qualification: None,
             attestation: AttestationMeta::default(),
         }
     }

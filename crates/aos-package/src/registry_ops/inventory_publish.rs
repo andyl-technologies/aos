@@ -8,12 +8,12 @@ use anyhow::{Context as _, Result, bail};
 use aos_core::output::Printer;
 
 use super::git::{commit_registry_paths, current_git_head, git, refresh_registry_object_store};
-use super::package_contract::PackageContractSelectorRegistry;
+use super::native_artifacts::publish_native_artifacts;
 use super::provenance::resolve_package_provenance_signer;
 use super::publication_inventory::evaluate_package;
 use super::publish::{
     RegistryPublishLock, ensure_writable_registry_clone, publish_canonical_named_output,
-    publish_package_contract, publish_to_registry_directory,
+    publish_to_registry_directory,
 };
 use super::signing::resolve_producer_signing_key;
 use super::store_paths::{
@@ -70,19 +70,12 @@ pub(super) async fn publish_evaluated_package(
     let info = introspect_store_path(store_path)?;
     validate_store_path_release_policy(&info)?;
     let platform = resolve_publish_platform(&info.path, platform_override)?;
-    let (inventory, package) = evaluate_package(&info.path, &platform)?;
+    let (_inventory, package) = evaluate_package(&info.path, &platform)?;
     let publication = package
         .publication
         .as_ref()
         .context("selected evaluated package lacks publication metadata")?;
     let maintainer = publication.maintainers.join(", ");
-    let selectors = package
-        .contract
-        .as_ref()
-        .map(|_| {
-            PackageContractSelectorRegistry::from_inventory_contract(&inventory, &package.name)
-        })
-        .transpose()?;
 
     let signing_key =
         resolve_producer_signing_key(config, registry_dir, registry_name, key, key_id)?;
@@ -137,19 +130,16 @@ pub(super) async fn publish_evaluated_package(
             )?;
         }
 
-        if let Some(contract) = &package.contract {
-            publish_package_contract(
+        publish_native_artifacts(registry_dir, &package, &platform, &internal_printer)?;
+        for output in &package.outputs {
+            super::output_evidence::publish_output_evidence(
                 registry_dir,
                 registry_name,
-                &contract.document.store_path,
                 &package.name,
                 &publication.version,
                 &platform,
-                selectors
-                    .as_ref()
-                    .context("evaluated package contract lacks selector authority")?,
+                &output.name,
                 &mut provenance_signer,
-                &internal_printer,
             )
             .await?;
         }
@@ -198,7 +188,8 @@ pub(super) async fn publish_evaluated_package(
         "platform": platform,
         "store_path": info.path,
         "outputs": package.outputs,
-        "contract": package.contract,
+        "deployment": package.deployment,
+        "module_documentation": package.module_documentation,
         "committed": true,
         "head": current_git_head(registry_dir)?,
     })) {
@@ -208,8 +199,8 @@ pub(super) async fn publish_evaluated_package(
         "Published authenticated package {} {} ({platform}){}",
         package.name,
         publication.version,
-        if package.contract.is_some() {
-            " with its package contract"
+        if package.deployment.is_some() {
+            " with its native module artifacts"
         } else {
             ""
         }

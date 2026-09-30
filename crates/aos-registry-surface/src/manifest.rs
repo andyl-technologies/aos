@@ -107,19 +107,34 @@ pub struct VersionEntry {
     pub platforms: HashMap<String, PlatformEntry>,
 }
 
+/// Authenticates one explicitly selectable named package output.
+///
+/// NAR identity and dependency edges remain authoritative in the signed store graph.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputMeta {
+    /// Exact immutable payload root selected by this output name.
+    pub store_path: String,
+    /// Native envelope whose package path selects this output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<NativeArtifactMeta>,
+    /// Output-specific root measurement and signed build provenance.
+    #[serde(default, skip_serializing_if = "AttestationMeta::is_empty")]
+    pub attestation: AttestationMeta,
+}
+
 /// A `[versions.platforms.<platform>]` artifact entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformEntry {
     /// Absolute store path of the installable `out` output.
     pub store_path: String,
-    /// Additional retained derivation outputs, keyed by Nix output name.
+    /// Available derivation outputs, keyed by Nix output name.
     ///
-    /// These paths are authenticated release and static-cache roots. Package
-    /// installation continues to select [`Self::store_path`]; build consumers
-    /// may resolve development and tool outputs explicitly from this map.
+    /// Publication authenticates every output independently. Installation
+    /// retains only selected payloads and outputs referenced by the native graph.
     #[serde(default)]
-    pub named_outputs: BTreeMap<String, String>,
+    pub named_outputs: BTreeMap<String, OutputMeta>,
     /// NAR hash of the output (`sha256:...`).
     ///
     /// Legacy (pre-RFC-0005) field: newer registries publish the hash in
@@ -166,12 +181,15 @@ pub struct PlatformEntry {
     /// Golden package measurement tuple.
     #[serde(default)]
     pub measurement: Option<String>,
-    /// Canonical RFC-0016 package documentation store object.
-    #[serde(default)]
-    pub documentation: Option<DocumentationArtifactMeta>,
-    /// Authenticated package contract and its exact selector bindings.
-    #[serde(default)]
-    pub contract: Option<PackageContractMeta>,
+    /// Native package deployment envelope retained by this release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<NativeArtifactMeta>,
+    /// Module-generated options and operation reference retained by this release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_documentation: Option<NativeArtifactMeta>,
+    /// Authenticated native package qualification companion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualification: Option<NativeArtifactMeta>,
 }
 
 impl PlatformEntry {
@@ -1046,8 +1064,8 @@ nar_size = 1
         let valid = package_with_images(
             r#"
 [versions.platforms.x86_64-linux.named_outputs]
-dev = "/aos/store/server-dev"
-tools = "/aos/store/server-tools"
+dev = {store_path = "/aos/store/server-dev"}
+tools = {store_path = "/aos/store/server-tools"}
 "#,
         );
         let parsed = parse_package_file(&valid).expect("valid named outputs");
@@ -1365,6 +1383,7 @@ pub struct RosterKey {
 
 /// A planned retired key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RevokedKey {
     /// Identifier of the roster key being revoked.
     pub id: String,
@@ -1378,13 +1397,6 @@ pub struct RevokedKey {
         skip_serializing_if = "Option::is_none"
     )]
     pub provenance_before_sequence: Option<u64>,
-    /// First package-contract sequence that must not trust this retired key.
-    #[serde(
-        default,
-        rename = "package-contract-before-sequence",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub package_contract_before_sequence: Option<u64>,
     /// Optional human-readable revocation reason.
     #[serde(default)]
     pub reason: Option<String>,
@@ -1489,8 +1501,52 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
     validate_package_name(&toml.package.name)?;
     for version in &toml.versions {
         for (platform, entry) in &version.platforms {
+            let native = entry.deployment.is_some()
+                || entry.module_documentation.is_some()
+                || entry.qualification.is_some()
+                || entry
+                    .named_outputs
+                    .values()
+                    .any(|output| output.deployment.is_some())
+                || entry
+                    .requires_features
+                    .iter()
+                    .any(|feature| feature == FEATURE_NATIVE_PACKAGE_MODULES_V1);
+            if native {
+                if entry.deployment.is_none() {
+                    bail!(
+                        "native package artifact bindings are missing or contain obsolete projections"
+                    );
+                }
+                if !entry
+                    .requires_features
+                    .iter()
+                    .any(|feature| feature == FEATURE_NATIVE_PACKAGE_MODULES_V1)
+                    || !entry
+                        .references
+                        .requires_features()
+                        .iter()
+                        .any(|feature| feature == FEATURE_NATIVE_PACKAGE_MODULES_V1)
+                {
+                    bail!("native package artifacts lack their structural feature gate");
+                }
+                for artifact in [
+                    &entry.deployment,
+                    &entry.module_documentation,
+                    &entry.qualification,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    artifact.validate()?;
+                }
+            }
             let mut output_paths = HashSet::from([entry.store_path.as_str()]);
-            for (output, store_path) in &entry.named_outputs {
+            for (output, metadata) in &entry.named_outputs {
+                let store_path = &metadata.store_path;
+                if let Some(deployment) = &metadata.deployment {
+                    deployment.validate()?;
+                }
                 if output == "out"
                     || output.is_empty()
                     || output.len() > 256
@@ -1663,109 +1719,59 @@ mod root_config_tests {
 // Configuration-module schema represented as pure manifest data.
 // ---------------------------------------------------------------------------
 
-/// Signed identity of a canonical package-documentation Nix store object.
+/// Gates package consumption through native envelopes and ordinary modules.
+pub const FEATURE_NATIVE_PACKAGE_MODULES_V1: &str = "native-package-modules-v1";
+
+/// Authenticated directory artifact containing one native JSON document.
 ///
-/// The object is one non-executable regular-file NAR with no references. Its
-/// JSON bytes describe this exact package version/platform, but deliberately do
-/// not repeat the store path so prose never creates a retention edge.
+/// The signed store graph authenticates the directory and its retained source
+/// closure. The document digest binds the exact JSON bytes within that root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DocumentationArtifactMeta {
-    /// Closed canonical document format identifier.
-    pub format: String,
-    /// Store path of the single-file documentation object.
+pub struct NativeArtifactMeta {
+    /// Immutable directory root retained by the release.
     pub store_path: String,
-    /// Hash of the uncompressed NAR.
+    /// Hash of the directory's uncompressed NAR.
     pub nar_hash: String,
-    /// Uncompressed NAR size in bytes.
+    /// Size of the directory's uncompressed NAR.
     pub nar_size: u64,
-    /// SHA-256 digest of the exact canonical JSON file bytes.
+    /// Sorted unique direct references, encoded as 32-character Nix store hashes.
+    pub references: Vec<String>,
+    /// SHA-256 identity of the JSON document bytes.
     pub document_sha256: String,
-    /// Exact canonical JSON file size in bytes.
+    /// Exact JSON document size in bytes.
     pub document_size: u64,
-    /// Digest over configuration semantics, excluding explanatory prose.
-    pub semantic_schema_sha256: String,
-    /// Direct references. Version 1 requires this to be empty.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub references: Vec<String>,
 }
 
-/// Authenticated metadata for one symbolic package contract.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageContractMeta {
-    /// Exact reference-free regular file containing the canonical projection.
-    pub document: PackageContractDocumentMeta,
-    /// Exact primary package artifact supplied to the projection resolver.
-    pub payload: PackageContractArtifactMeta,
-    /// Exact build-source artifact supplied to the projection resolver.
-    pub source: PackageContractArtifactMeta,
-    /// Exact release output bindings for every symbolic selector.
-    pub selectors: Vec<PackageContractSelectorMeta>,
-    /// Registry-relative dedicated DSSE statement for this contract.
-    pub provenance: String,
-}
-
-/// Authenticates the exact regular file carrying a symbolic package contract.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageContractDocumentMeta {
-    /// Store path of the regular-file contract object.
-    pub store_path: String,
-    /// Hash of the uncompressed regular-file NAR.
-    pub nar_hash: String,
-    /// Uncompressed NAR size in bytes.
-    pub nar_size: u64,
-    /// SHA-256 digest of the exact canonical document bytes.
-    pub document_sha256: String,
-    /// Exact canonical document byte length.
-    pub document_size: u64,
-    /// Direct references; package contract documents require an empty set.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub references: Vec<String>,
-}
-
-/// Binds one symbolic package output selector to an authenticated artifact.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageContractSelectorMeta {
-    /// Package name, or `self` for the contract owner.
-    pub package: String,
-    /// Selected package output name.
-    pub output: String,
-    /// Exact selected artifact and its complete authenticated closure.
-    pub artifact: PackageContractArtifactMeta,
-}
-
-/// Retains one selected package artifact and its complete authenticated closure.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageContractArtifactMeta {
-    /// Domain-specific content identity derived from the selected artifact.
-    pub content: String,
-    /// Exact store path copied from the package manifest.
-    pub store_path: String,
-    /// Exact NAR identity copied from the package manifest.
-    pub nar_hash: String,
-    /// Uncompressed artifact NAR size in bytes.
-    pub nar_size: u64,
-    /// Domain-separated digest of the complete ordered closure catalog.
-    pub closure_digest: String,
-    /// Complete sorted closure, including the artifact root.
-    pub closure: Vec<PackageContractClosureMemberMeta>,
-}
-
-/// Describes one exact realized member of a selected artifact closure.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageContractClosureMemberMeta {
-    /// Exact realized Nix store path.
-    pub store_path: String,
-    /// Hash of the member's uncompressed NAR.
-    pub nar_hash: String,
-    /// Uncompressed member NAR size in bytes.
-    pub nar_size: u64,
-    /// Sorted direct references as exact 32-character Nix store hashes.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub references: Vec<String>,
+impl NativeArtifactMeta {
+    /// Checks the signed locator before any document is opened.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid store root, digest, size, or reference.
+    pub fn validate(&self) -> Result<()> {
+        if crate::store::store_path_hash(&self.store_path)?.len() != 32 {
+            bail!("native artifact root has an invalid store hash");
+        }
+        validate_sha256(
+            self.document_sha256.strip_prefix("sha256:").unwrap_or(""),
+            "native document",
+        )?;
+        crate::store::normalize_digest(&self.nar_hash)?;
+        if self.document_size == 0 || self.document_size > 16 * 1024 * 1024 || self.nar_size == 0 {
+            bail!("native artifact has invalid document or NAR bounds");
+        }
+        for reference in &self.references {
+            if reference.len() != 32
+                || !reference
+                    .bytes()
+                    .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
+            {
+                bail!("native artifact has invalid store reference");
+            }
+        }
+        if self.references.windows(2).any(|pair| pair[0] >= pair[1]) {
+            bail!("native artifact references must be unique and sorted");
+        }
+        Ok(())
+    }
 }

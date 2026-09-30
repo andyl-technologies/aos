@@ -44,22 +44,19 @@
 //! dumb-HTTP object store metadata is refreshed so plain-file origins stay
 //! cloneable.
 
-pub(crate) use package_contract::{
-    PackageContractSelectorRegistry, resolve_store_artifact, resolve_store_artifact_reference,
-};
 mod attestation;
 mod cache_validation;
 mod channels;
 mod config;
 mod distribution;
-mod documentation;
 mod git;
 mod images;
 mod inventory_publish;
 mod lifecycle;
 mod metadata;
-mod package_contract;
-mod package_contract_transparency;
+mod native_artifacts;
+mod output_evidence;
+pub(crate) use output_evidence::publish_output_evidence;
 mod provenance;
 mod publication_inventory;
 mod publish;
@@ -80,16 +77,12 @@ pub use config::{resolve_mirrors, resolve_mirrors_for_registry};
 pub use distribution::{run_cache, run_origin, run_web};
 pub(crate) use git::{refresh_registry_object_store, validate_canonical_release_registry_index};
 pub use lifecycle::{LocalRegistry, authoring_clone_precious, create, local_registries};
-#[cfg(test)]
 pub(crate) use metadata::record_named_output;
-pub(crate) use package_contract_transparency::{
-    PACKAGE_CONTRACT_TRANSPARENCY_LOG, package_contract_transparency_sequence,
-};
+pub(crate) use native_artifacts::publish_native_documents;
+
 pub(crate) use provenance::require_active_registry_key;
 pub use publish::publish;
-pub(crate) use publish::{
-    publish_canonical_named_output, publish_canonical_release_entry, publish_package_contract,
-};
+pub(crate) use publish::{publish_canonical_named_output, publish_canonical_release_entry};
 pub use query::{packages, show, unpublish, verify};
 pub use release::{
     ContainerReleaseAttachment, ReleaseReport, ReleaseStorePublish, ReleaseTreeOptions,

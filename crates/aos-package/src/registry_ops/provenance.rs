@@ -11,10 +11,8 @@
 use crate::provenance::{
     ProvenanceSignature, ProvenanceSigner, TrustedProvenanceKey,
     builder_id as provenance_builder_id, digest_map as provenance_digest_map, sha256_hex_payload,
-    sign_statement_dsse_jsonl_external,
 };
 use crate::registry::keys;
-use crate::registry_ops::attestation::documentation_nar_identity;
 use crate::registry_ops::config::read_registry_toml;
 use crate::registry_ops::git::{git_try, registry_relative_path};
 use crate::registry_ops::provenance::staged::git_tree_file_bytes;
@@ -27,12 +25,10 @@ use crate::registry_ops::store_paths::StorePathInfo;
 use crate::registry_ops::trust::{derive_trust_key, load_committed_roster, validate_roster_key_id};
 use crate::security::parse_signing_key;
 use crate::types::{
-    AttestationMeta, DocumentationArtifactMeta, package_name_bucket, validate_attestation_meta,
-    validate_package_name, validate_platform_name,
+    AttestationMeta, package_name_bucket, validate_package_name, validate_platform_name,
 };
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -159,83 +155,6 @@ pub(in crate::registry_ops) struct PackageTomlPlatformKey {
     pub(in crate::registry_ops) platform: String,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(in crate::registry_ops) async fn publish_documentation_provenance_artifact(
-    registry_name: &str,
-    name: &str,
-    version: &str,
-    platform: &str,
-    info: &StorePathInfo,
-    source_info: Option<&StorePathInfo>,
-    documentation: &DocumentationArtifactMeta,
-    attestation: &AttestationMeta,
-    signer: &mut dyn ProvenanceSigner,
-) -> Result<PublishProvenanceArtifact> {
-    let provenance = attestation
-        .provenance
-        .clone()
-        .context("documentation attestation is missing its provenance reference")?;
-    let binding_digest = format!("sha256:{}", sha256_hex(b"aos.package-runtime-binding/v1"));
-    let mut statement = publish_provenance_statement(
-        registry_name,
-        name,
-        version,
-        platform,
-        info,
-        source_info,
-        &binding_digest,
-        attestation,
-        signer.key_id(),
-    )?;
-    append_documentation_provenance_subject(
-        &mut statement,
-        name,
-        version,
-        platform,
-        documentation,
-    )?;
-    let jsonl = sign_statement_dsse_jsonl_external(&statement, signer).await?;
-    Ok(PublishProvenanceArtifact {
-        path: provenance,
-        jsonl,
-        attestation: attestation.clone(),
-    })
-}
-
-fn append_documentation_provenance_subject(
-    statement: &mut Value,
-    name: &str,
-    version: &str,
-    platform: &str,
-    documentation: &DocumentationArtifactMeta,
-) -> Result<()> {
-    let subjects = statement
-        .get_mut("subject")
-        .and_then(Value::as_array_mut)
-        .context("generated provenance statement has no subject array")?;
-    subjects.push(serde_json::json!({
-        "name": format!("aos:package-documentation:{name}:{version}:{platform}"),
-        "digest": provenance_digest_map(&documentation.nar_hash),
-    }));
-    subjects.push(serde_json::json!({
-        "name": format!("aos:package-document:{name}:{version}:{platform}"),
-        "digest": provenance_digest_map(&documentation.document_sha256),
-    }));
-    subjects.push(serde_json::json!({
-        "name": format!("aos:package-schema:{name}:{version}:{platform}"),
-        "digest": provenance_digest_map(&documentation.semantic_schema_sha256),
-    }));
-    let dependencies = statement
-        .pointer_mut("/predicate/buildDefinition/resolvedDependencies")
-        .and_then(Value::as_array_mut)
-        .context("generated provenance statement has no resolvedDependencies array")?;
-    dependencies.push(serde_json::json!({
-        "uri": documentation.store_path,
-        "digest": provenance_digest_map(&documentation.nar_hash),
-    }));
-    Ok(())
-}
-
 pub(in crate::registry_ops) fn resolve_package_provenance_signer(
     dir: &Path,
     registry_name: &str,
@@ -333,7 +252,6 @@ pub(in crate::registry_ops) fn package_provenance_trusted_keys(
             key_id: entry.id.clone(),
             key: entry.key.clone(),
             retired_before_sequence: None,
-            package_contract_retired_before_sequence: None,
         });
     }
     for entry in &roster.revoked {
@@ -365,7 +283,6 @@ pub(in crate::registry_ops) fn package_provenance_trusted_keys(
             key_id: entry.id.clone(),
             key: key.clone(),
             retired_before_sequence: Some(retired_before_sequence),
-            package_contract_retired_before_sequence: entry.package_contract_before_sequence,
         });
     }
     Ok((registry_name, trusted))
@@ -737,33 +654,6 @@ pub(in crate::registry_ops) fn publish_provenance_ref(
         "provenance/{}/{name}/{platform}/{measurement_hex}.intoto.jsonl",
         package_name_bucket(name)
     ))
-}
-
-pub(in crate::registry_ops) fn bind_documentation_provenance(
-    mut attestation: AttestationMeta,
-    name: &str,
-    platform: &str,
-    documentation: &DocumentationArtifactMeta,
-) -> Result<AttestationMeta> {
-    let measurement = attestation
-        .measurement
-        .as_deref()
-        .context("documented attestation is missing its measurement")?;
-    let measurement_hex = sha256_hex_payload(measurement).with_context(|| {
-        format!("package measurement must be a sha256 digest with 64 hex characters: {measurement}")
-    })?;
-    let documentation_hex =
-        sha256_hex_payload(&documentation_nar_identity(&documentation.nar_hash)?)
-            .context("documentation NAR identity is not a canonical sha256 digest")?;
-
-    validate_package_name(name)?;
-    validate_platform_name(platform)?;
-    attestation.provenance = Some(format!(
-        "provenance/{}/{name}/{platform}/{measurement_hex}-{documentation_hex}.intoto.jsonl",
-        package_name_bucket(name)
-    ));
-    validate_attestation_meta(&attestation)?;
-    Ok(attestation)
 }
 
 #[cfg(test)]

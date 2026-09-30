@@ -1,26 +1,11 @@
 //! Tests for package catalog TOML construction and platform metadata recording.
 
-use super::{
-    build_package_toml, record_named_output, record_package_contract, record_package_documentation,
-};
-use crate::registry_ops::provenance::bind_documentation_provenance;
+use super::{build_package_toml, record_named_output};
 use crate::registry_ops::store_paths::StorePathInfo;
 use crate::registry_ops::test_support::{
     inspect_test_image, rewrite_test_image_parent, write_direct_image_output,
 };
-use crate::types::{
-    AttestationMeta, DocumentationArtifactMeta, FEATURE_ABILITIES_V1,
-    FEATURE_IMAGE_ARTIFACT_CONTRACT_V1, FEATURE_PACKAGE_DOCUMENTATION_V1, PACKAGE_META_FORMAT,
-    PackageContractArtifactMeta, PackageContractClosureMemberMeta, PackageContractDocumentMeta,
-    PackageContractMeta,
-};
-use aos_ability_model::document::PackageSubject;
-use aos_ability_model::{
-    ArtifactClosureMemberInput, ArtifactReference, LocalKey, PackageDocument,
-    PackageImplementation, RequiredFeature, VersionedDocument, artifact_closure_identity,
-};
-use aos_contract::Sha256Digest;
-use std::collections::BTreeMap;
+use crate::types::{FEATURE_IMAGE_ARTIFACT_CONTRACT_V1, PACKAGE_META_FORMAT};
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -63,250 +48,6 @@ fn sysroot_publication_emits_structural_native_rollout_gate() {
     }
     assert_eq!(platform.min_format, Some(PACKAGE_META_FORMAT));
     assert_eq!(platform.references.min_format(), Some(PACKAGE_META_FORMAT));
-}
-
-#[test]
-fn record_ability_preserves_stronger_format_and_feature_gates() {
-    let info = StorePathInfo {
-        path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-demo-1".to_string(),
-        nar_hash: format!("sha256:{}", "1".repeat(64)),
-        nar_size: 1024,
-        references: Vec::new(),
-        closure_size: 1024,
-    };
-    let initial = build_package_toml(
-        "",
-        "demo",
-        "1",
-        "x86_64-linux",
-        &info,
-        Some("Demo"),
-        None,
-        Some("Apache-2.0"),
-        Some("Andyl, Inc."),
-        false,
-        None,
-        &[],
-        None,
-    )
-    .expect("build package metadata");
-    let mut document: toml::Value = toml::from_str(&initial).expect("parse initial metadata");
-    let platform = document["versions"][0]["platforms"]["x86_64-linux"]
-        .as_table_mut()
-        .expect("platform table");
-    let stronger_format = PACKAGE_META_FORMAT + 7;
-    platform.insert(
-        "min-format".to_string(),
-        toml::Value::Integer(i64::from(stronger_format)),
-    );
-    platform.insert(
-        "requires-features".to_string(),
-        toml::Value::Array(vec![toml::Value::String("future-feature".to_string())]),
-    );
-    platform.insert(
-        "references".to_string(),
-        toml::Value::Table(toml::map::Map::from_iter([
-            ("hashes".to_string(), toml::Value::Array(Vec::new())),
-            (
-                "min-format".to_string(),
-                toml::Value::Integer(i64::from(stronger_format)),
-            ),
-            (
-                "requires-features".to_string(),
-                toml::Value::Array(vec![toml::Value::String("future-feature".to_string())]),
-            ),
-        ])),
-    );
-    let closure_digest = artifact_closure_identity(
-        "0123456789abcdfghijklmnpqrsvwxyz",
-        &[ArtifactClosureMemberInput {
-            key: "0123456789abcdfghijklmnpqrsvwxyz".to_string(),
-            nar_hash: Sha256Digest::parse(&info.nar_hash).expect("valid NAR hash"),
-            references: Vec::new(),
-        }],
-    )
-    .expect("valid closure identity");
-    let artifact = PackageContractArtifactMeta {
-        content: format!("sha256:{}", "4".repeat(64)),
-        store_path: info.path.clone(),
-        nar_hash: info.nar_hash.clone(),
-        nar_size: info.nar_size,
-        closure_digest: closure_digest.to_string(),
-        closure: vec![PackageContractClosureMemberMeta {
-            store_path: info.path.clone(),
-            nar_hash: info.nar_hash.clone(),
-            nar_size: info.nar_size,
-            references: Vec::new(),
-        }],
-    };
-    let ability = PackageContractMeta {
-        document: PackageContractDocumentMeta {
-            store_path: "/nix/store/123456789abcdfghijklmnpqrsvwxyz0-demo-contract".to_string(),
-            nar_hash: format!("sha256:{}", "2".repeat(64)),
-            nar_size: 512,
-            document_sha256: format!("sha256:{}", "3".repeat(64)),
-            document_size: 256,
-            references: Vec::new(),
-        },
-        payload: artifact.clone(),
-        source: artifact.clone(),
-        selectors: Vec::new(),
-        provenance: "provenance/demo.ability.intoto.jsonl".to_string(),
-    };
-    let artifact_reference = ArtifactReference {
-        content: Sha256Digest::parse(&artifact.content).expect("valid content digest"),
-        store_path: artifact.store_path.clone(),
-        nar_hash: Sha256Digest::parse(&artifact.nar_hash).expect("valid NAR hash"),
-        closure: closure_digest,
-    };
-    let mut package_document = PackageDocument {
-        schema: PackageDocument::SCHEMA.to_string(),
-        required_features: vec![
-            RequiredFeature::new(FEATURE_ABILITIES_V1).expect("valid feature"),
-            RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)
-                .expect("valid state-format feature"),
-        ],
-        package: PackageSubject {
-            name: LocalKey::new("demo").expect("valid package name"),
-            version: "1".to_string(),
-            payload: artifact_reference.clone(),
-            source: artifact_reference.identity(),
-        },
-        artifacts: Vec::new(),
-        interfaces: BTreeMap::new(),
-        guarantees: BTreeMap::new(),
-        package_module: None,
-        option_declarations: Vec::new(),
-        exports: Vec::new(),
-        requirements: Vec::new(),
-        implementation: PackageImplementation {
-            providers: Vec::new(),
-            handlers: BTreeMap::new(),
-        },
-        qualification: Default::default(),
-    };
-
-    let recorded = record_package_contract(
-        &toml::to_string(&document).expect("serialize initial metadata"),
-        "demo",
-        "1",
-        "x86_64-linux",
-        &ability,
-        &package_document,
-    )
-    .expect("record ability output");
-    let parsed = crate::registry::parse::parse_package_file(&recorded)
-        .expect("parse recorded package metadata");
-    let platform = &parsed.versions[0].platforms["x86_64-linux"];
-
-    assert_eq!(platform.min_format, Some(stronger_format));
-    assert_eq!(platform.references.min_format(), Some(stronger_format));
-    for features in [
-        platform.requires_features.as_slice(),
-        platform.references.requires_features(),
-    ] {
-        assert_eq!(
-            features.iter().map(String::as_str).collect::<Vec<_>>(),
-            vec![
-                FEATURE_ABILITIES_V1,
-                "future-feature",
-                aos_ability_model::PROVIDER_STATE_FORMAT_V1,
-            ]
-        );
-    }
-    assert_eq!(platform.contract.as_ref(), Some(&ability));
-
-    package_document.required_features.clear();
-    let error = record_package_contract(
-        &toml::to_string(&document).expect("serialize initial metadata"),
-        "demo",
-        "1",
-        "x86_64-linux",
-        &ability,
-        &package_document,
-    )
-    .expect_err("a package contract without the base ability feature must fail");
-    assert!(
-        error
-            .to_string()
-            .contains("does not declare its authenticated ability feature")
-    );
-}
-#[test]
-fn checked_package_reference_is_recorded_as_one_signed_platform_artifact() {
-    let info = StorePathInfo {
-        path: "/nix/store/0000000000000000000000000000000d-firewall-1".to_string(),
-        nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            .to_string(),
-        nar_size: 1024,
-        references: vec![],
-        closure_size: 1024,
-    };
-    let documentation = DocumentationArtifactMeta {
-        format: aos_doc_model::DOCUMENT_FORMAT.to_string(),
-        store_path: "/nix/store/0000000000000000000000000000000e-firewall-docs.json".to_string(),
-        nar_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-            .to_string(),
-        nar_size: 512,
-        document_sha256: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-            .to_string(),
-        document_size: 384,
-        semantic_schema_sha256:
-            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_string(),
-        references: vec![],
-    };
-    let attestation = AttestationMeta {
-        root_digest: Some(info.nar_hash.clone()),
-        provenance: Some("provenance/firewall/1/x86_64-linux.jsonl".to_string()),
-        measurement: Some(
-            "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
-        ),
-        ..AttestationMeta::default()
-    };
-
-    let content = build_package_toml(
-        "",
-        "firewall",
-        "1",
-        "x86_64-linux",
-        &info,
-        Some("Firewall configuration"),
-        None,
-        Some("Apache-2.0"),
-        Some("Andyl, Inc."),
-        false,
-        None,
-        &[],
-        None,
-    )
-    .expect("render package metadata");
-    let documented_attestation =
-        bind_documentation_provenance(attestation, "firewall", "x86_64-linux", &documentation)
-            .expect("bind documentation provenance");
-    let content = record_package_documentation(
-        &content,
-        "firewall",
-        "1",
-        "x86_64-linux",
-        &documentation,
-        &documented_attestation,
-    )
-    .expect("record checked package reference");
-
-    let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
-        .expect("parse package metadata")
-        .expect("matching platform");
-    assert_eq!(parsed.documentation, Some(documentation));
-    assert!(
-        parsed
-            .requires_features
-            .iter()
-            .any(|feature| feature == FEATURE_PACKAGE_DOCUMENTATION_V1)
-    );
-    assert_eq!(
-        parsed.attestation.provenance,
-        documented_attestation.provenance
-    );
 }
 
 #[test]
@@ -381,7 +122,10 @@ source_nar_hash = ""
 
     assert_eq!(platform.store_path, "/nix/store/abc123-curl-8.5.0");
     assert_eq!(
-        platform.named_outputs.get("dev").map(String::as_str),
+        platform
+            .named_outputs
+            .get("dev")
+            .map(|metadata| metadata.store_path.as_str()),
         Some("/nix/store/def456-curl-8.5.0-dev")
     );
 

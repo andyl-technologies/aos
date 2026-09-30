@@ -11,11 +11,7 @@
 
 use crate::registry_ops::images::PublishedImage;
 use crate::registry_ops::store_paths::StorePathInfo;
-use crate::types::{
-    AttestationMeta, DocumentationArtifactMeta, FEATURE_ABILITIES_V1, FEATURE_ATTESTATION_V1,
-    FEATURE_IMAGE_ARTIFACT_CONTRACT_V1, FEATURE_PACKAGE_DOCUMENTATION_V1, PACKAGE_META_FORMAT,
-    PackageContractMeta, validate_attestation_meta, validate_documentation_artifact_meta,
-};
+use crate::types::{FEATURE_IMAGE_ARTIFACT_CONTRACT_V1, PACKAGE_META_FORMAT};
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeSet, HashSet};
 
@@ -254,106 +250,59 @@ pub(crate) fn record_named_output(
         .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
         .as_table_mut()
         .context("package platform named_outputs is not a table")?;
-    if let Some(previous) = named_outputs.get(output).and_then(toml::Value::as_str)
+    if let Some(previous) = named_outputs
+        .get(output)
+        .and_then(|value| value.get("store_path"))
+        .and_then(toml::Value::as_str)
         && previous != store_path
     {
         bail!("package {name} {version} {platform} output {output} is already bound to {previous}");
     }
-    named_outputs.insert(
-        output.to_string(),
-        toml::Value::String(store_path.to_string()),
-    );
+    let metadata = named_outputs
+        .entry(output.to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    metadata
+        .as_table_mut()
+        .context("named output metadata is not a table")?
+        .insert(
+            "store_path".to_string(),
+            toml::Value::String(store_path.to_string()),
+        );
 
     toml::to_string_pretty(&document).context("serializing package TOML with supplemental output")
 }
 
-/// Records an authenticated package contract and its fail-closed feature gates.
+/// Records native artifact identities and their structural feature gate.
 ///
 /// # Errors
-///
-/// Returns an error when the package coordinate is absent, contract metadata
-/// is invalid, or structural reference gates cannot be merged safely.
-pub(crate) fn record_package_contract(
+/// Returns an error when the exact package coordinate is missing or malformed,
+/// an artifact locator is invalid, or feature gates cannot be merged.
+pub(crate) fn record_native_artifacts(
     existing: &str,
     name: &str,
     version: &str,
     platform: &str,
-    contract: &PackageContractMeta,
-    package_document: &aos_ability_model::PackageDocument,
+    deployment: &crate::types::NativeArtifactMeta,
+    documentation: Option<&crate::types::NativeArtifactMeta>,
+    qualification: Option<&crate::types::NativeArtifactMeta>,
 ) -> Result<String> {
-    crate::package_contract::validate_package_contract_meta(contract)?;
-    let mut document: toml::Value =
-        toml::from_str(existing).context("parsing package TOML for package contract")?;
-    let platform_entry = document
-        .get_mut("versions")
-        .and_then(toml::Value::as_array_mut)
-        .and_then(|versions| {
-            versions.iter_mut().find(|candidate| {
-                candidate.get("version").and_then(toml::Value::as_str) == Some(version)
-            })
-        })
-        .and_then(|version| version.get_mut("platforms"))
-        .and_then(toml::Value::as_table_mut)
-        .and_then(|platforms| platforms.get_mut(platform))
-        .and_then(toml::Value::as_table_mut)
-        .with_context(|| format!("package {name} {version} is missing platform {platform}"))?;
-
-    let features = package_document
-        .required_features
-        .iter()
-        .map(|feature| feature.as_str().to_string())
-        .collect::<BTreeSet<_>>();
-    if !features.contains(FEATURE_ABILITIES_V1) {
-        bail!(
-            "package {name} {version} contract does not declare its authenticated ability feature"
-        );
+    deployment.validate()?;
+    if let Some(documentation) = documentation {
+        documentation.validate()?;
     }
-    merge_feature_gate(platform_entry, "requires-features", &features)?;
-    merge_minimum_format(platform_entry, "platform")?;
-
-    let prior_references = platform_entry.remove("references");
-    let mut reference_gate = match prior_references {
-        Some(toml::Value::Array(hashes)) => {
-            let mut gate = toml::map::Map::new();
-            gate.insert("hashes".into(), toml::Value::Array(hashes));
-            gate
-        }
-        Some(toml::Value::Table(gate)) => gate,
-        Some(_) => bail!("platform references metadata is neither a hash list nor a gate table"),
-        None => {
-            let mut gate = toml::map::Map::new();
-            gate.insert("hashes".into(), toml::Value::Array(Vec::new()));
-            gate
-        }
-    };
-    merge_feature_gate(&mut reference_gate, "requires-features", &features)?;
-    merge_minimum_format(&mut reference_gate, "platform references")?;
-    platform_entry.insert("references".into(), toml::Value::Table(reference_gate));
-    platform_entry.insert(
-        "contract".into(),
-        toml::Value::try_from(contract).context("serializing package contract metadata")?,
-    );
-
-    toml::to_string_pretty(&document).context("serializing package TOML with package contract")
-}
-
-/// Records the one signed package reference beside its package contract.
-///
-/// # Errors
-///
-/// Returns an error when the package coordinate is absent or either the
-/// reference locator or its provenance metadata is invalid.
-pub(crate) fn record_package_documentation(
-    existing: &str,
-    name: &str,
-    version: &str,
-    platform: &str,
-    documentation: &DocumentationArtifactMeta,
-    attestation: &AttestationMeta,
-) -> Result<String> {
-    let mut document: toml::Value =
-        toml::from_str(existing).context("parsing package TOML for package reference")?;
-    let platform_entry = document
+    if let Some(qualification) = qualification {
+        qualification.validate()?;
+    }
+    let mut document: toml::Value = toml::from_str(existing)?;
+    if document
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(toml::Value::as_str)
+        != Some(name)
+    {
+        bail!("native artifact package coordinate differs from catalog");
+    }
+    let entry = document
         .get_mut("versions")
         .and_then(toml::Value::as_array_mut)
         .and_then(|versions| {
@@ -366,10 +315,42 @@ pub(crate) fn record_package_documentation(
         .and_then(|platforms| platforms.get_mut(platform))
         .and_then(toml::Value::as_table_mut)
         .with_context(|| format!("package {name} {version} is missing platform {platform}"))?;
-
-    record_documentation_platform_fields(platform_entry, documentation)?;
-    record_attestation_platform_fields(platform_entry, attestation)?;
-    toml::to_string_pretty(&document).context("serializing package TOML with package reference")
+    entry.insert("deployment".into(), toml::Value::try_from(deployment)?);
+    if let Some(documentation) = documentation {
+        entry.insert(
+            "module_documentation".into(),
+            toml::Value::try_from(documentation)?,
+        );
+    } else {
+        entry.remove("module_documentation");
+    }
+    if let Some(qualification) = qualification {
+        entry.insert(
+            "qualification".into(),
+            toml::Value::try_from(qualification)?,
+        );
+    } else {
+        entry.remove("qualification");
+    }
+    // Republishing the native coordinate retires the former projection.
+    entry.remove("documentation");
+    entry.remove("contract");
+    let features = BTreeSet::from([crate::types::FEATURE_NATIVE_PACKAGE_MODULES_V1.to_string()]);
+    merge_feature_gate(entry, "requires-features", &features)?;
+    merge_minimum_format(entry, "platform")?;
+    let references = entry.remove("references");
+    let mut gate = match references {
+        Some(toml::Value::Table(gate)) => gate,
+        Some(toml::Value::Array(hashes)) => {
+            toml::map::Map::from_iter([("hashes".into(), toml::Value::Array(hashes))])
+        }
+        None => toml::map::Map::new(),
+        Some(_) => bail!("platform references metadata is malformed"),
+    };
+    merge_feature_gate(&mut gate, "requires-features", &features)?;
+    merge_minimum_format(&mut gate, "native references")?;
+    entry.insert("references".into(), toml::Value::Table(gate));
+    toml::to_string_pretty(&document).context("encoding native package catalog entry")
 }
 
 fn merge_feature_gate(
@@ -519,119 +500,6 @@ fn package_platform_table(
     }
 
     Ok(toml::Value::Table(table))
-}
-
-fn record_documentation_platform_fields(
-    table: &mut toml::map::Map<String, toml::Value>,
-    documentation: &DocumentationArtifactMeta,
-) -> Result<()> {
-    validate_documentation_artifact_meta(documentation)
-        .context("validating package documentation metadata for publish")?;
-    let feature = toml::Value::String(FEATURE_PACKAGE_DOCUMENTATION_V1.to_string());
-    let features = table
-        .entry("requires-features")
-        .or_insert_with(|| toml::Value::Array(Vec::new()))
-        .as_array_mut()
-        .context("platform requires-features metadata is not an array")?;
-    if !features.contains(&feature) {
-        features.push(feature.clone());
-    }
-    table.insert(
-        "min-format".into(),
-        toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-    );
-
-    let references = table
-        .entry("references")
-        .or_insert_with(|| {
-            let mut references = toml::map::Map::new();
-            references.insert("hashes".into(), toml::Value::Array(Vec::new()));
-            toml::Value::Table(references)
-        })
-        .as_table_mut()
-        .context("platform references metadata is not a table")?;
-    references.insert(
-        "min-format".into(),
-        toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-    );
-    let reference_features = references
-        .entry("requires-features")
-        .or_insert_with(|| toml::Value::Array(Vec::new()))
-        .as_array_mut()
-        .context("platform references requires-features metadata is not an array")?;
-    if !reference_features.contains(&feature) {
-        reference_features.push(feature);
-    }
-    table.insert(
-        "documentation".into(),
-        toml::Value::try_from(documentation)
-            .context("serializing package documentation metadata")?,
-    );
-    Ok(())
-}
-
-fn record_attestation_platform_fields(
-    table: &mut toml::map::Map<String, toml::Value>,
-    attestation: &AttestationMeta,
-) -> Result<()> {
-    validate_attestation_meta(attestation)?;
-    let feature = toml::Value::String(FEATURE_ATTESTATION_V1.to_string());
-    for key in ["requires-features"] {
-        let features = table
-            .entry(key)
-            .or_insert_with(|| toml::Value::Array(Vec::new()))
-            .as_array_mut()
-            .with_context(|| format!("platform {key} metadata is not an array"))?;
-        if !features.contains(&feature) {
-            features.push(feature.clone());
-        }
-    }
-    let references = table
-        .get_mut("references")
-        .and_then(toml::Value::as_table_mut)
-        .context("attested platform is missing structural references metadata")?;
-    let reference_features = references
-        .entry("requires-features")
-        .or_insert_with(|| toml::Value::Array(Vec::new()))
-        .as_array_mut()
-        .context("platform references requires-features metadata is not an array")?;
-    if !reference_features.contains(&feature) {
-        reference_features.push(feature);
-    }
-    if let Some(root_digest) = &attestation.root_digest {
-        table.insert(
-            "root_digest".into(),
-            toml::Value::String(root_digest.clone()),
-        );
-    }
-    if let Some(root_hash) = &attestation.root_hash {
-        table.insert("root_hash".into(), toml::Value::String(root_hash.clone()));
-    }
-    if let Some(root_hash_sig) = &attestation.root_hash_sig {
-        table.insert(
-            "root_hash_sig".into(),
-            toml::Value::String(root_hash_sig.clone()),
-        );
-    }
-    table.insert(
-        "provenance".into(),
-        toml::Value::String(
-            attestation
-                .provenance
-                .clone()
-                .context("config-module attestation is missing provenance")?,
-        ),
-    );
-    table.insert(
-        "measurement".into(),
-        toml::Value::String(
-            attestation
-                .measurement
-                .clone()
-                .context("config-module attestation is missing measurement")?,
-        ),
-    );
-    Ok(())
 }
 
 #[cfg(test)]

@@ -143,7 +143,7 @@
         candidate = (builtins.getContext path).${root} or {};
       in
         builtins.any (output: builtins.elem output (candidate.outputs or [])) (context.outputs or []))
-      availableRoots;
+      (availableRoots ++ sourceRoots);
     in
       if context ? outputs
       then

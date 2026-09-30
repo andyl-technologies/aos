@@ -400,7 +400,6 @@ pub(in crate::registry_ops) fn signed_provenance_statement(
         key_id: TEST_PROVENANCE_KEY_ID.to_string(),
         key: test_provenance_signer().trusted_key,
         retired_before_sequence: None,
-        package_contract_retired_before_sequence: None,
     }];
     let (statement, key_id) =
         crate::provenance::verify_statement_dsse_jsonl(&artifact.jsonl, &trusted).unwrap();
@@ -435,7 +434,6 @@ pub(in crate::registry_ops) fn write_test_roster(
                 id: (*id).to_string(),
                 key: None,
                 provenance_before_sequence: None,
-                package_contract_before_sequence: None,
                 reason: Some("test".into()),
             })
             .collect(),
@@ -501,7 +499,7 @@ pub(in crate::registry_ops) fn sample_transparency_provenance()
         references: vec![],
         closure_size: 4096,
     };
-    let root_digest = package_nar_root_digest(&info.nar_hash);
+    let root_digest = package_nar_root_digest(&info.nar_hash).unwrap();
     let binding_digest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
     let measurement = crate::package_attestation::package_measurement_digest(
         "webapp",
@@ -626,12 +624,7 @@ pub(in crate::registry_ops) fn write_sample_package_toml(
              root_digest = \"{}\"\n\
              provenance = \"{}\"\n\
              measurement = \"{}\"\n",
-            info.path,
-            source.path,
-            source.nar_hash,
-            root_digest,
-            provenance,
-            measurement
+            info.path, source.path, source.nar_hash, root_digest, provenance, measurement
         ),
     )
     .unwrap();
