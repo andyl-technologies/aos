@@ -221,12 +221,19 @@ version, and platform, then check the returned commit and digest against the
 result.
 
 The schema-named method returns the package's native reference; it does not
-return an independently authored schema. The generic declaration schema is
-available through local documentation tooling. Native comparison output keeps
+return an independently authored schema. Optional `abilityContracts` maps stable ability names to `{version, owner}` declarations.
+Optional `moduleRequirements` entries preserve the requesting `owner`, dependency
+`package`, ability-name/range map `abilities`, and optional `packageVersion`
+range. Ability versions are independent of package versions. Omitted or empty
+collections are valid for unversioned packages. These fields are generated from
+the same module declarations; they do not report a resolver decision. The generic
+reference schema is available through local documentation tooling. Native comparison output keeps
 option path segments and `[ability, operation]` pairs separate, and compares
 option type/mutability/extension policy and operation input/result types,
-handler availability, and configured instances. Prose changes and observed
-runtime state are outside that comparison.
+handler availability, and configured instances. It also reports ability contract
+version/owner changes by stable name and module requirement changes by exact
+`[owner, package]` pairs. Prose changes and observed runtime state are outside
+that comparison.
 
 ## Read native release declarations and reporter assertions
 

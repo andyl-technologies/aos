@@ -157,7 +157,10 @@ mod tests {
                 "path":["aos","example","settings"],"owner":"@base",
                 "description":"Nested <settings>","visibility":"public","readOnly":false,"extensible":true,
                 "type":{"kind":"submodule","fields":{"enabled":{"kind":"bool"}},"open":false}
-            }], "abilities":{}
+            }], "abilities":{},
+            "abilityContracts":{"service":{"version":"1.2.3","owner":"service-interface"}},
+            "moduleRequirements":[{"owner":"example","package":"service-interface",
+                "abilities":{"service":"^1.2"},"packageVersion":"^7"}]
         });
         let json = serde_json::to_string(&document).unwrap();
         let response = inspect(
@@ -190,6 +193,10 @@ mod tests {
         assert!(html.contains("Base module declarations."));
         assert!(html.contains("Nested &lt;settings&gt;"));
         assert!(html.contains("enabled"));
+        assert!(html.contains("Ability contract version: <code>1.2.3</code>"));
+        assert!(html.contains("Module requirements"));
+        assert!(html.contains("^1.2"));
+        assert!(html.contains("^7"));
 
         let response = inspect(
             axum::extract::Query(std::collections::BTreeMap::from([(

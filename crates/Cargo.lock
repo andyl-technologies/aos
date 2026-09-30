@@ -401,6 +401,7 @@ dependencies = [
  "aos-ability-plan",
  "aos-contract",
  "schemars",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
