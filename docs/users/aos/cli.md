@@ -68,6 +68,11 @@ authoring belongs to `apr`; neither requires an AOS source checkout.
 
 ## Build and inspect source
 
+`aos show` includes the native deployment envelope and generated module
+documentation in JSON, with payload, dependency, option, and operation summaries
+in text. These are local evaluated declarations; they do not authenticate a
+release or prove that a handler ran. `aos graph` shows the built payload closure.
+
 Common repository workflows are:
 
 ```sh
