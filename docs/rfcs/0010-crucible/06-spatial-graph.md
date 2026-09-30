@@ -987,9 +987,9 @@ authority for its shape. The contract those files may rely on:
   lint/test that no layer is folded into another. — satisfies [SPAT-2], [SPAT-33];
   spec §1, §10.
   - Completed by `crates/crucible/src/model.rs`: `ScenarioBuilder` stores world
-    nodes/links, plan entries, property assertions, and seed in separate fields,
+    nodes/links, complete plans, property assertions, and seed in separate fields,
     exposes distinct entry points for each layer, and composes through
-    `World::from_nodes_and_links`, `Plan::from_entries_for_world`,
+    `World::from_nodes_and_links`, world-validated event-graph plans,
     `Properties::from_assertions_for_world`, and
     `World::scenario_def_with_plan_properties_and_seed`. The canonical scenario
     material records only component refs plus seed material, so topology, faults,
@@ -1004,8 +1004,8 @@ authority for its shape. The contract those files may rely on:
   §8.
   - Completed by `crates/crucible/src/model.rs`: `World`, `Plan`, and
     `Properties` each expose independent canonical bytes and BLAKE3 content
-    addresses in separate domains (`crucible.model.world.v1`,
-    `crucible.model.plan.v1`, and `crucible.model.properties.v1`). Scenario
+    addresses in separate domains (`crucible.model.world.v4`,
+    `crucible.model.plan.v5`, and `crucible.model.properties.v1`). Scenario
     identity composes those component refs plus seed material instead of folding
     component material together. The focused
     `spatial_components_have_independent_content_addresses_and_cross_reuse` test
@@ -1118,7 +1118,9 @@ authority for its shape. The contract those files may rely on:
     `World::scenario_def_with_plan` composes the independent world and plan
     hashes without folding plan state into topology. Canonical program and
     binding ordering makes authoring order irrelevant while preserving scenario
-    identity sensitivity to every semantic plan change. The terminal
+    identity sensitivity to every semantic plan change. The focused
+    `checks.crucible.phase1.spatialPlanComponent` gate verifies event-graph order
+    and component reuse. The terminal
     `checks.crucible.phase7.gates.signalFaultSystem` gate covers this contract.
 - [x] **T-SPAT-13** Carry `Properties` as an orthogonal content-addressed component
   (defined in 18) with build-time predicate node-reference validation. — satisfies
@@ -1154,8 +1156,7 @@ authority for its shape. The contract those files may rely on:
   satisfies [SPAT-23]; spec §6, §10.
   - Completed in `crates/crucible/src/model.rs`: `ScenarioBuilder` now exposes
     distinct world-layer entry points (`world`, `node`, `node_like`, `link`,
-    `link_with_transport`, `link_def`), plan-layer entry points (`plan`,
-    `plan_entry`), properties-layer entry points (`properties`, `property`), and
+    `link_with_transport`, `link_def`), the plan-layer entry point (`plan`), properties-layer entry points (`properties`, `property`), and
     `seed`, all flowing through the existing validated component composition path.
     `NodeTemplate` supports reusable node settings and builder-level `node_like`
     templating, with no boot-event topology/assertion folding API. The focused
@@ -1184,10 +1185,10 @@ authority for its shape. The contract those files may rely on:
   topology-size(+shape) producing concrete validated `ScenarioDef`s, with a run
   pinning exactly one instance. — satisfies [SPAT-26], [SPAT-27]; spec §7.
   - Completed in `crates/crucible/src/model.rs`: `ScenarioFamily` now owns a
-    deterministic finite `FamilySpace` over `SeedSpace`, exact fixed-point
-    `FaultDensity`, `TopologySizeRange`, and `TopologyShape`, with bounded
+    deterministic finite `FamilySpace` over `SeedSpace`, `TopologySizeRange`,
+    and `TopologyShape`, with bounded
     cardinality and non-wrapping sample enumeration. Instantiating a `FamilyParams`
-    point builds a concrete `World`, density-scaled `Plan`, and `Properties`,
+    point builds a concrete `World`, an empty `Plan`, and `Properties`,
     validates them through the same component constructors as the code-first
     builder, and returns a `PinnedScenario` carrying only the concrete
     `ScenarioDefForm` plus its parameter point. `PinnedScenario::genesis_configuration`
@@ -1196,7 +1197,7 @@ authority for its shape. The contract those files may rely on:
     executing a family handle. The focused
     `scenario_family_pins_concrete_validated_instances` test and
     `checks.crucible.phase1.spatialScenarioFamily` gate cover deterministic
-    sampling, seed/density/topology identity sensitivity, out-of-space rejection,
+    sampling, seed/topology identity sensitivity, out-of-space rejection,
     and pinned-instance execution.
 - [x] **T-SPAT-18** Implement the self-contained `(seed, scenario, schedule)`
   reproduction artifact, content-addressed and offline-replayable, verified by the
@@ -1239,7 +1240,9 @@ authority for its shape. The contract those files may rely on:
     undeclared targets, incompatible mapping types, malformed effect
     parameters, and exceeded resource ceilings before hashing or execution.
     Typed signal coordinates prevent negative time from entering the runtime,
-    and TOML decoding rejects unknown or unsupported fields. The terminal
+    and TOML decoding rejects unknown or unsupported fields. The focused
+    `checks.crucible.phase1.spatialPlanValidation` gate runs signal-plan admission
+    and codec regressions. The terminal
     `checks.crucible.phase7.gates.signalFaultSystem` gate locks down canonical
     admission and production adapter execution.
 - [x] **T-SPAT-21** Implement the full parse/build-time validation pass (the §9
@@ -1251,8 +1254,8 @@ authority for its shape. The contract those files may rely on:
     `ScenarioDefForm`; the parse paths also validate component content before
     checking serialized ids. The spatial pass rejects duplicate nodes, undeclared
     link endpoints, invalid latency/jitter/loss, bad plan refs,
-    unsupported/unknown plan fault params, dangling heal tags, negative plan
-    times, undeclared property refs, empty compound predicates, white-box ready
+    unsupported/unknown signal-effect fields, invalid world targets and signal
+    coordinates, undeclared property refs, empty compound predicates, white-box ready
     points without opt-in, zero fixed vCPU counts, and out-of-range fixed icount
     shifts. `WorldNode` now carries fixed `smp_vcpus` and `icount_shift`, and
     both fields participate in world/scenario identity; `crucible-qemu`

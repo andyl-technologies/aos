@@ -131,48 +131,36 @@
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
       {
-        label = "form re-export";
-        needle = "ScenarioDefForm";
-      }
-      {
-        label = "blob ref re-export";
-        needle = "ContentAddressedBlobRef";
-      }
-      {
-        label = "focused serialization test";
+        label = "serialization regression";
         needle = "serializable_scenario_form_round_trips_and_rejects_host_paths";
       }
       {
-        label = "test checks TOML round trip";
-        needle = "ScenarioDefForm::from_canonical_toml";
+        label = "canonical TOML decode";
+        needle = "ScenarioDefForm::from_canonical_toml(&toml)";
       }
       {
-        label = "test checks binary round trip";
-        needle = "ScenarioDefForm::from_compact_binary";
+        label = "compact decode";
+        needle = "ScenarioDefForm::from_compact_binary(&binary)";
       }
       {
-        label = "test rejects host path image refs";
-        needle = "ScenarioImageReferenceNotContentAddressed";
-      }
-      {
-        label = "test serializes kernel reference";
-        needle = "kernel = \\\"{}\\\"";
-      }
-      {
-        label = "test serializes root image reference";
-        needle = "root_image = \\\"{}\\\"";
-      }
-      {
-        label = "test serializes initrd reference";
-        needle = "initrd = \\\"{}\\\"";
-      }
-      {
-        label = "test compares canonical hash material bytes";
+        label = "canonical bytes preserved";
         needle = "parsed_binary.canonical_bytes()";
       }
       {
-        label = "test rejects empty world id drift";
+        label = "host path rejected";
+        needle = "ScenarioImageReferenceNotContentAddressed";
+      }
+      {
+        label = "serialized scenario identity mismatch rejected";
+        needle = "ScenarioSerializedIdMismatch";
+      }
+      {
+        label = "empty world identity mismatch rejected";
         needle = "wrong_empty_world_toml";
+      }
+      {
+        label = "truncated binary rejected";
+        needle = "ScenarioDefForm::from_compact_binary(&truncated).is_err()";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
