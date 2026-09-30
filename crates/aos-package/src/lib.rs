@@ -5303,8 +5303,9 @@ pub async fn run_apr(
 /// them, and accepting it would suggest the flag had been considered where it
 /// had not; refusing says plainly that the command never writes anyway.
 ///
-/// `release` is also absent: it carries its own `--dry-run`, which belongs
-/// after the subcommand name and is threaded through separately.
+/// `release` is accepted only when its explicit preview option is set.
+/// Clap propagates that option into the global flag as well, so rejecting
+/// the global value would also reject valid release previews.
 fn implements_global_dry_run(command: &RegistryCommand) -> bool {
     matches!(
         command,
@@ -5324,6 +5325,7 @@ fn implements_global_dry_run(command: &RegistryCommand) -> bool {
             | RegistryCommand::Pull { .. }
             | RegistryCommand::Push { .. }
             | RegistryCommand::Remove { .. }
+            | RegistryCommand::Release { dry_run: true, .. }
             | RegistryCommand::SbCerts { .. }
             | RegistryCommand::Sign { .. }
             | RegistryCommand::Store { .. }
