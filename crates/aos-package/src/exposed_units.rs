@@ -1690,7 +1690,17 @@ fn validate_package_slice_membership(
             .sections
             .get("Service")
             .with_context(|| format!("exposed service unit '{}' is missing [Service]", unit))?;
-        require_service_value(package_name, unit, service, "Slice", package_slice)?;
+        let slice = single_service_value(package_name, unit, service, "Slice")?;
+        let descendant_prefix = format!("{}-", package_slice.trim_end_matches(".slice"));
+        if slice != package_slice
+            && !(slice.starts_with(&descendant_prefix)
+                && slice.ends_with(".slice")
+                && units.contains(slice))
+        {
+            bail!(
+                "exposed service unit '{unit}' for package '{package_name}' must use its package slice or a declared descendant slice"
+            );
+        }
     }
     Ok(())
 }
@@ -5814,6 +5824,43 @@ mod tests {
         let err = exposed_packages(&profile, &[installed]).unwrap_err();
 
         assert!(err.to_string().contains("Unit.Requires"), "{err:?}");
+    }
+
+    #[test]
+    fn package_slice_membership_accepts_only_declared_descendants() {
+        let tmp = TempDir::new().unwrap();
+        let units = BTreeSet::from([
+            "worker.service".to_owned(),
+            "aos-pkg-worker-builds.slice".to_owned(),
+            "aos-pkg-other.slice".to_owned(),
+        ]);
+        let unit_path = tmp.path().join("worker.service");
+
+        for slice in ["aos-pkg-worker.slice", "aos-pkg-worker-builds.slice"] {
+            std::fs::write(&unit_path, format!("[Service]\nSlice={slice}\n")).unwrap();
+            validate_package_slice_membership("worker", tmp.path(), &units, "aos-pkg-worker.slice")
+                .unwrap();
+        }
+
+        for slice in [
+            "system.slice",
+            "aos-pkg-other.slice",
+            "aos-pkg-worker-undeclared.slice",
+            "aos-pkg-worker2-builds.slice",
+        ] {
+            std::fs::write(&unit_path, format!("[Service]\nSlice={slice}\n")).unwrap();
+            let error = validate_package_slice_membership(
+                "worker",
+                tmp.path(),
+                &units,
+                "aos-pkg-worker.slice",
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("declared descendant"),
+                "{error:?}"
+            );
+        }
     }
 
     #[test]

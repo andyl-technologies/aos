@@ -87,6 +87,24 @@
     {aos.users.groups.intruder.gid = 30000;}
   ];
   changed = mkEvaluation {nix-daemon.settings.http-connections = 26;};
+  rejectsSlice = slice:
+    !(builtins.tryEval (builtins.deepSeq
+      (self.overrideAttrs (_: {
+        expose =
+          definition.expose
+          // {
+            units =
+              definition.expose.units
+              // {
+                "nix-daemon.service" =
+                  definition.expose.units."nix-daemon.service"
+                  // {
+                    serviceConfig = definition.expose.units."nix-daemon.service".serviceConfig // {Slice = slice;};
+                  };
+              };
+          };
+      })).expose
+      true)).success;
   legacy = lib.evalModules {
     specialArgs.outputs = packageModule.outputs;
     modules = [
@@ -120,9 +138,30 @@
   nativeFile = pkgs.runCommand "nix-daemon-test.conf" {nativeConfig = native;} ''
     printf '%s' "$nativeConfig" > "$out/nix.conf"
   '';
+  legacyV1 = legacy.extendModules {
+    modules = [
+      {
+        options.aos.system.packageServicePolicyAbi = lib.mkOption {
+          type = lib.types.int;
+          default = 1;
+        };
+      }
+    ];
+  };
+  securityScript = pkgs.writeTextFile {
+    name = "nix-daemon-security-fixture";
+    destination = "/security.sh";
+    text =
+      builtins.replaceStrings
+      ["@nix@" "@util-linux@" "@sed@" "@grep@" "@bash@" "@coreutils@"]
+      (map toString [pkgs.nix pkgs.util-linux pkgs.sed pkgs.grep pkgs.bash pkgs.coreutils])
+      (builtins.readFile ./_nix-daemon-security.sh.in);
+  };
   contract = assert builtins.all fails rejects;
+  assert builtins.all rejectsSlice ["system.slice" "aos-pkg-other.slice" "aos-pkg-nix-daemon-undeclared.slice"];
   assert lib.hasInfix "max-jobs = 0" remoteOnly.config.system.build.configManifest.etc."aos/packages/nix-daemon/nix.conf".text;
   assert !(builtins.tryEval legacy.config.environment.etc."aos/packages/nix-daemon/nix.conf".text).success;
+  assert !(builtins.tryEval legacyV1.config.environment.etc."aos/packages/nix-daemon/nix.conf".text).success;
   assert manifest.ownership.etc."aos/packages/nix-daemon/nix.conf" == "nix-daemon";
   assert manifest.ownership.etc."systemd/system/nix-daemon.service.d/30-aos-mount.conf" == "nix-daemon";
   assert manifest.ownership.users.nixbld64 == "nix-daemon";
@@ -173,8 +212,10 @@ in {
     } ''
       test -f "$nixDaemonExpose/manifest.json"
       ${pkgs.jq}/bin/jq -e '.expose.config.artifacts[0].reload == "restart" and (.expose.config.artifacts[0].units | index("nix-daemon-policy.service")) != null' "$nixDaemonExpose/manifest.json"
-      ${pkgs.jq}/bin/jq -e '.expose.units | index("aos-pkg-nix-daemon.slice") != null' "$nixDaemonExpose/manifest.json"
+      ${pkgs.jq}/bin/jq -e '.expose.units | index("aos-pkg-nix-daemon-builds.slice") != null' "$nixDaemonExpose/manifest.json"
       grep -F 'KillMode=process' "$nixDaemonExpose/units/nix-daemon.service"
+      grep -Fx 'Slice=aos-pkg-nix-daemon-builds.slice' "$nixDaemonExpose/units/nix-daemon.service"
+      grep -Fx 'Slice=aos-pkg-nix-daemon.slice' "$nixDaemonExpose/units/nix-daemon-policy.service"
       grep -F 'ListenStream=/nix/var/nix/daemon-socket/socket' "$nixDaemonExpose/units/nix-daemon.socket"
       grep -F 'ConditionPathExists=/etc/aos/packages/nix-daemon/enabled' "$nixDaemonExpose/units/nix-daemon.socket"
       grep -F 'After=' "$nixDaemonExpose/units/nix-daemon.service"
@@ -184,7 +225,7 @@ in {
   multi-user = testing.mkVMTest {
     name = "nix-daemon-multi-user-builds";
     memory = 1024;
-    rootfsDeps = [self pkgs.nix pkgs.bash pkgs.coreutils pkgs.util-linux nativeFile];
+    rootfsDeps = [self pkgs.nix pkgs.bash pkgs.coreutils pkgs.util-linux pkgs.sed pkgs.grep nativeFile securityScript];
     testScript = ''
       set -euo pipefail
       mkdir -p /dev/pts
@@ -287,6 +328,7 @@ in {
       kill "$daemon_pid"
       wait "$daemon_pid" || true
       echo 'Nix daemon: non-root clients, distinct concurrent build identities, sandbox isolation, and listener restart PASS'
+      source ${securityScript}/security.sh
     '';
   };
 }

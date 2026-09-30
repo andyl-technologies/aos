@@ -22,7 +22,7 @@
         # Set every property on every generation, including disabled states,
         # so rollback resets prior transient policy. Surviving workers stay
         # beneath this slice and continue to obey its aggregate limits.
-        ${systemd}/bin/systemctl set-property --runtime aos-pkg-nix-daemon.slice \
+        ${systemd}/bin/systemctl set-property --runtime aos-pkg-nix-daemon-builds.slice \
           "CPUQuota=$NIX_DAEMON_CPU_QUOTA" \
           "MemoryHigh=$NIX_DAEMON_MEMORY_HIGH" \
           "MemoryMax=$NIX_DAEMON_MEMORY_MAX" \
@@ -73,6 +73,9 @@ in
 
     expose = {
       units = {
+        "aos-pkg-nix-daemon-builds.slice" = {
+          description = "Aggregate Nix daemon and retained build worker resources";
+        };
         "nix-daemon-policy.service" = {
           description = "Apply Nix build resource policy, including retained workers";
           before = ["nix-daemon.service"];
@@ -109,6 +112,7 @@ in
           stopOnRemoval = true;
           serviceConfig = {
             Type = "simple";
+            Slice = "aos-pkg-nix-daemon-builds.slice";
             User = "root";
             Group = "root";
             Environment = "NIX_CONF_DIR=/etc/aos/packages/nix-daemon NIX_REMOTE=local";
@@ -197,7 +201,7 @@ in
           "profile.d/nix-daemon.sh"
           "systemd/system/nix-daemon.service.d/30-aos-mount.conf"
           "systemd/system/nix-daemon.service.d/30-aos-scheduling.conf"
-          "systemd/system/aos-pkg-nix-daemon.slice.d/30-aos-resources.conf"
+          "systemd/system/aos-pkg-nix-daemon-builds.slice.d/30-aos-resources.conf"
         ];
         users = identities;
         groups = ["nixbld"];
