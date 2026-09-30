@@ -1231,6 +1231,31 @@
         (builtins.unsafeDiscardStringContext (builtins.toString marker))
         owner)
       defaultDependencyOwners);
+      # Every nested evaluation uses the same owner-specific marker identity.
+      # Enumerate authenticated owners without forcing their recursive config.
+      provenanceMarkerPaths =
+        builtins.map (owner:
+          builtins.unsafeDiscardStringContext (builtins.toString (builtins.toFile
+            "aos-option-default-${builtins.substring 0 16 (builtins.hashString "sha256" owner)}"
+            owner)))
+        (lists.unique (["@base" "@host"]
+          ++ defaultDependencyOwners
+          ++ builtins.map (record: record.name) validatedPackageModules));
+      withoutProvenance = value: let
+        strip = current:
+          if builtins.isString current
+          then
+            builtins.appendContext (builtins.unsafeDiscardStringContext current)
+            (attrsets.filterAttrs (path: _: !(builtins.elem path provenanceMarkerPaths))
+              (builtins.getContext current))
+          else if builtins.isList current
+          then builtins.map strip current
+          else if builtins.isAttrs current && !(isPackageValue current)
+          then builtins.mapAttrs (_: strip) current
+          else current;
+      in
+        # Authorship validation still sees the original annotated fixed point.
+        builtins.seq configWithFreeform (strip value);
       isPackageValue = value:
         builtins.isAttrs value
         && (
@@ -1363,6 +1388,8 @@
         then peelOrderValue value._value
         else value;
       provenanceQueries = {
+        # Projection strips only this engine's annotations after ownership checks.
+        withoutAnnotations = withoutProvenance;
         # Resolver-authenticated package names in deterministic evaluation
         # order. Manifest renderers use this to discover package-private
         # projection options without granting packages a shared write root.
@@ -1946,6 +1973,8 @@
       ))));
     in {
       config = configWithFreeform;
+      # Serialization discards only exact engine-owned provenance annotations.
+      _withoutProvenance = withoutProvenance;
       # Exposed as the nested options tree (matching nixpkgs'
       # `result.options` shape) so external consumers can introspect
       # with the same `options.path.to.foo.isDefined` pattern that
