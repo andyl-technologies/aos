@@ -2,7 +2,7 @@
 
 use super::NormalRootStartupErrorV1;
 
-pub(super) fn names(maximum: usize) -> Result<Vec<String>, NormalRootStartupErrorV1> {
+pub(crate) fn names(maximum: usize) -> Result<Vec<String>, NormalRootStartupErrorV1> {
     let count = match std::env::var("LISTEN_FDS") {
         Ok(value) => value
             .parse::<usize>()

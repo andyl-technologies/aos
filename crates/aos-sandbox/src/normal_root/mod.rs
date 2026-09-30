@@ -14,10 +14,10 @@
 
 mod client;
 mod controller_peer;
-mod images;
-mod profile;
+pub(crate) mod images;
+pub(crate) mod profile;
 mod service;
-mod startup;
+pub(crate) mod startup;
 #[cfg(test)]
 mod tests;
 

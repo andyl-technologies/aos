@@ -75,7 +75,7 @@ pub(super) fn retain_profile(
     Ok((retained, bytes))
 }
 
-pub(super) fn require_actual_mappings(
+pub(crate) fn require_actual_mappings(
     files: &[RetainedImmutableFileV1],
     required: &[&str],
 ) -> Result<(), NormalRootStartupErrorV1> {

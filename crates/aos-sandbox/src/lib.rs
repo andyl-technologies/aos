@@ -149,10 +149,22 @@ pub mod reconciler;
 pub mod resource_inventory;
 mod role_credential;
 pub mod runtime_authority;
+#[cfg(target_os = "linux")]
+mod runtime_deployment;
 pub mod runtime_execution;
 #[cfg(target_os = "linux")]
 pub mod runtime_scope;
 pub mod sandbox_spec_state;
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub mod tpm_nv_custody;
+
+#[cfg(target_os = "linux")]
+pub use runtime_deployment::{
+    ProductionRuntimeDeploymentStartupCaptureV1, ProductionRuntimeDeploymentStartupPartsV1,
+    ProductionRuntimeDeploymentStartupV1, RuntimeDeploymentStartupErrorV1,
+};
 
 #[cfg(target_os = "linux")]
 pub use attachment_mount::{
