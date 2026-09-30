@@ -399,17 +399,21 @@ async fn held_buckets_cancellation_while_waiting_second_releases_first() {
     assert_eq!(high_fs.acquired.available_permits(), 0);
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
-    tokio::time::timeout(Duration::from_secs(2), put_bytes(low, b"released first"))
+    let released_low = tokio::time::timeout(Duration::from_secs(2), low.exclusive())
         .await
         .unwrap()
         .unwrap();
+    drop(released_low);
+    put_bytes(low, b"released first").await.unwrap();
     drop(held_high);
     // A native blocking lock request may finish after its cancelled async waiter.
     // Its abandoned result releases that guard instead of leaking ownership.
-    tokio::time::timeout(Duration::from_secs(2), put_bytes(high, b"released second"))
+    let released_high = tokio::time::timeout(Duration::from_secs(2), high.exclusive())
         .await
         .unwrap()
         .unwrap();
+    drop(released_high);
+    put_bytes(high, b"released second").await.unwrap();
     tokio::fs::remove_dir_all(left.root()).await.unwrap();
     tokio::fs::remove_dir_all(right.root()).await.unwrap();
 }
