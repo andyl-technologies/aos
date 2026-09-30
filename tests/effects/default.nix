@@ -6,6 +6,7 @@
     modules = import ./modules.nix;
     types = import ./types.nix;
     composition = import ./composition.nix;
+    dependencyBarrier = import ./native-dependency-barrier.nix;
     packages = (import ./packages.nix).checks;
     stages = import ./stages.nix;
     frozenHandler = import ./frozen-handler.nix;
@@ -71,6 +72,8 @@ in
             ${pkgs.python3}/bin/python3 ${./managed-paths-test.py} ${../../pkgs/system/_aos-host-policy/managed-paths.py}
             ${pkgs.python3}/bin/python3 ${./network-handler-test.py} ${../../pkgs/system/_systemd-abilities/network-handler.py}
             ${pkgs.python3}/bin/python3 ${../abilities/reference-nginx}/test-binding-handler.py
+            ${pkgs.python3}/bin/python3 ${../abilities/native-handler-interception}/self-test.py ${../abilities/native-handler-interception}/native-handler-interception.py
+            ${pkgs.python3}/bin/python3 ${../abilities/native-dependency-barrier}/self-test.py ${../abilities/native-dependency-barrier}/native-dependency-barrier.py
             mkdir -p "$out"
             echo PASS > "$out/result"
             ln -s ${fixture}/fixture.json "$out/deployment.json"
