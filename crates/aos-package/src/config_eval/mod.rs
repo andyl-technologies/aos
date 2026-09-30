@@ -46,9 +46,8 @@ mod command_handler;
 pub mod diagnostics;
 pub mod dry_run;
 mod handler_dispatch;
-mod handler_process;
+use crate::deployment::process as handler_process;
 pub mod materialize;
-pub mod module_activation;
 mod native_activation;
 mod protected_fs;
 mod transaction_blob;
@@ -71,7 +70,6 @@ pub mod system_roots;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 use anyhow::{Context, Result};
 use aos_ability_model::VersionedDocument;
@@ -159,23 +157,10 @@ pub struct FixpointInputs {
     pub seed_set: Vec<WorkingSetMember>,
 }
 
-/// Keeps one canonical store identity separate from its selected readable path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EvaluatorInput {
-    /// Canonical package-store identity used by Nix store operations.
-    pub identity: PathBuf,
-    /// Physical immutable path used only for direct byte reads.
-    pub read_path: PathBuf,
-}
+pub use crate::deployment::nix::EvaluatorInput;
+use crate::deployment::nix::retained_store_path_nar_hash_in;
 
 impl EvaluatorInput {
-    pub(crate) fn canonical(path: PathBuf) -> Self {
-        Self {
-            read_path: path.clone(),
-            identity: path,
-        }
-    }
-
     fn in_store_view(identity: PathBuf, store_view: &store_view::StoreViewLocator) -> Result<Self> {
         let read_path = store_view.read_path(&identity)?;
         Ok(Self {
@@ -2126,47 +2111,6 @@ fn retained_eval_store_uri(
     query.append_pair("state", setting("NIX_STATE_DIR")?);
     query.append_pair("log", setting("NIX_LOG_DIR")?);
     Ok(Some(format!("local?{}", query.finish()).into()))
-}
-
-/// Recomputes a store path's NAR hash through one exact evaluator store.
-fn retained_store_path_nar_hash_in(
-    path: &Path,
-    eval_store: Option<&std::ffi::OsStr>,
-) -> Result<String> {
-    let mut command = std::process::Command::new("nix");
-    command
-        .args(["--extra-experimental-features", "nix-command"])
-        .env_remove("LD_LIBRARY_PATH")
-        .env_remove("NIX_REMOTE")
-        .env_remove("NIX_STORE_DIR")
-        .env_remove("NIX_STATE_DIR")
-        .env_remove("NIX_LOG_DIR");
-    if let Some(eval_store) = eval_store {
-        command.arg("--store").arg(eval_store);
-    }
-    let mut child = command
-        .args(["store", "dump-path"])
-        .arg(path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("running nix store dump-path {}", path.display()))?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("nix store dump-path did not provide stdout")?;
-    let hash = crate::verify::sha256_stream(stdout);
-    let output = child
-        .wait_with_output()
-        .with_context(|| format!("waiting for nix store dump-path {}", path.display()))?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "nix store dump-path failed for {}: {}",
-            path.display(),
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    hash
 }
 
 /// Evaluates the closed host package-selection projection before resolution.

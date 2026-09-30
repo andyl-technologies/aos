@@ -221,79 +221,21 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       }
     );
 
-  packageContractDocument = {
-    packageName,
-    version,
-    projection,
-  }: let
-    projectionJson = builtins.unsafeDiscardStringContext (builtins.toJSON projection);
-    source = builtins.toFile "${packageName}-package-projection.json" projectionJson;
-  in
-    if builtins.hasContext projectionJson || lib.hasInfix "/nix/store/" projectionJson
-    then throw "package projection for '${packageName}' contains a store locator"
-    else
-      rawMkDerivation {
-        pname = "${packageName}-package-contract";
-        inherit version;
-        src = null;
-        phases = [
-          {
-            name = "install";
-            script = ''
-              ${stdenv.coreutils}/bin/rm -rf "$out"
-              ${stdenv.coreutils}/bin/cp ${source} "$out"
-            '';
-          }
-        ];
-        outputChecks.out.allowedReferences = [];
-        preferLocalBuild = true;
-        allowSubstitutes = false;
-      };
-
-  probeOnlyPackageContract = {
-    packageName,
-    version,
-    packageProbe,
-  }: let
-    projected = lib.abilities.projectPackage {
-      inherit packageName version packageProbe;
-      evaluated = {
-        guarantees = {};
-        implementations = {};
-        interfaces = {};
-        requirementTemplates = {};
-      };
-    };
-  in {
-    value = projected.value;
-    document = packageContractDocument {
-      inherit packageName version;
-      projection = projected.value;
-    };
-    selectors = projected.selectors;
-  };
-
-  withProbeOnlyPackageContract = {
+  # Qualification metadata is independent of the package deployment interface.
+  withQualification = {
     packageName,
     version,
     packageProbe,
     platformSupport ? null,
-  }: package: let
-    normalizedPlatformSupport =
-      if platformSupport == null
-      then null
-      else lib.packagePlatform.normalize "package '${packageName}' platformSupport" platformSupport;
-  in
-    (builtins.removeAttrs package ["abilities" "module"])
+  }: package:
+    package
     // {
-      pname = packageName;
+      catalogName = packageName;
       inherit version;
-      contract = probeOnlyPackageContract {
-        inherit packageName version packageProbe;
-      };
+      qualification.packageProbe = packageProbe;
     }
-    // lib.optionalAttrs (normalizedPlatformSupport != null) {
-      platformSupport = normalizedPlatformSupport;
+    // lib.optionalAttrs (platformSupport != null) {
+      platformSupport = lib.packagePlatform.normalize "package '${packageName}' platformSupport" platformSupport;
     };
 
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
@@ -306,246 +248,36 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       or args.pname
       or args.name
       or (throw "mkDerivation: package must set pname or name");
-    existingOutputs = args.outputs or ["out"];
-    reservedAbilityOutputs = ["abilities" "module"];
-    conflictingAbilityOutputs =
-      builtins.filter
-      (output: builtins.elem output reservedAbilityOutputs)
-      existingOutputs;
-    authoredAbilities = args.abilities or null;
-    authoredPlatformSupport = args.platformSupport or null;
     packagePlatformSupport =
-      if authoredPlatformSupport == null
+      if (args.platformSupport or null) == null
       then null
-      else lib.packagePlatform.normalize "package '${packageName}' platformSupport" authoredPlatformSupport;
-    authoredQualification = args.qualification or null;
-    authoredPackageProbe =
-      if authoredQualification == null
-      then null
-      else if !builtins.isAttrs authoredQualification
-      then throw "mkDerivation qualification for package '${packageName}' must be an attribute set"
-      else if builtins.attrNames authoredQualification != ["packageProbe"]
-      then throw "mkDerivation qualification for package '${packageName}' supports only packageProbe"
-      else lib.qualification.normalizePackageProbe authoredQualification.packageProbe;
-    abilityModuleSource =
-      if authoredAbilities == null
-      then null
-      else if conflictingAbilityOutputs != []
-      then throw "mkDerivation abilities for package '${packageName}' reserves output names ${builtins.toJSON conflictingAbilityOutputs}"
-      else if !builtins.isPath authoredAbilities
-      then throw "mkDerivation abilities for package '${packageName}' must be a path-backed module directory"
-      else let
-        sourceType = builtins.readFileType authoredAbilities;
-        modulePath = authoredAbilities + "/module.nix";
-      in
-        if sourceType != "directory"
-        then throw "mkDerivation abilities for package '${packageName}' must name a directory"
-        else if !builtins.pathExists modulePath || builtins.readFileType modulePath != "regular"
-        then throw "mkDerivation abilities directory for package '${packageName}' must contain a regular module.nix"
-        else {
-          source = authoredAbilities;
-          path = "module.nix";
-        };
-    abilityModules =
-      if authoredAbilities == null
-      then []
-      else [(abilityModuleSource.source + "/module.nix")];
-    retainedAbilityModule = {imports = abilityModules;};
-    validAbilityModuleTree = path:
-      builtins.all
-      (name: let
-        type = (builtins.readDir path).${name};
-      in
-        type
-        == "regular"
-        || (type == "directory" && validAbilityModuleTree (path + "/${name}")))
-      (builtins.attrNames (builtins.readDir path));
-    abilityModuleArtifact =
-      if abilityModuleSource == null
-      then null
-      else if !validAbilityModuleTree abilityModuleSource.source
-      then throw "mkDerivation abilities for package '${packageName}' may contain only regular files and directories"
-      else
-        lib.throwIf
-        (builtins.elem "module" existingOutputs)
-        "mkDerivation abilities for package '${packageName}' reserve the 'module' output name for the separately built ability module"
-        (
-          if lib.hasPrefix "/nix/store/" (builtins.toString abilityModuleSource.source)
-          then
-            builtins.path {
-              path = abilityModuleSource.source;
-              name = "${packageName}-module";
-            }
-          else
-            (builtins.fetchTree {
-              type = "path";
-              path = builtins.toString abilityModuleSource.source;
-            }).outPath
-        );
-    symbolicAbilityModuleLocator =
-      if abilityModuleArtifact == null
-      then null
-      else {
-        artifact = lib.abilities.packageOutput {output = "module";};
-        inherit (abilityModuleSource) path;
-      };
-    abilityEvaluation =
-      if authoredAbilities == null
-      then null
-      else
-        lib.evalModules {
-          modules = [
-            lib.abilities.module
-            ../modules/_package-domain-options.nix
-            ../modules/abilities/_service.nix
-          ];
-          packageModules = [
-            {
-              name = packageName;
-              module = retainedAbilityModule;
-            }
-          ];
-          inherit lib;
-          pkgs = self;
-          specialArgs = {
-            inherit packageName;
-            packageVersion = args.version or "0";
-          };
-        };
-    evaluatedAbilities =
-      if abilityEvaluation == null
-      then null
-      else abilityEvaluation.config.aos.abilities;
-    projectedAbilities =
-      if evaluatedAbilities != null
-      then evaluatedAbilities
-      else {
-        guarantees = {};
-        implementations = {};
-        interfaces = {};
-        requirementTemplates = {};
-      };
-    normalizeOptionType = value:
-      if builtins.isList value
-      then builtins.map normalizeOptionType value
-      else if builtins.isAttrs value
-      then
-        lib.mapAttrs (_: normalizeOptionType)
-        (lib.filterAttrs (_: field: field != null) value)
-      else value;
-    abilityOptionDeclarations =
-      if abilityEvaluation == null
-      then []
-      else let
-        moduleSource = builtins.toString abilityModuleSource.source;
-        sourceFor = declaration: let
-          source = builtins.toString declaration.source;
-          directoryPrefix = "${moduleSource}/";
-        in
-          if lib.hasPrefix directoryPrefix source
-          then builtins.substring (builtins.stringLength directoryPrefix) (-1) source
-          else throw "ability option '${declaration.pathStr}' for package '${packageName}' is declared outside its authenticated module tree";
-        optionDocumentFor = sourcePath: path: declaration:
-          {
-            inherit (declaration) description visibility extensible;
-            inherit path;
-            type_signature = declaration.typeSig;
-            structured_type = normalizeOptionType declaration.type;
-            read_only = declaration.readOnly;
-            source.path = sourcePath;
-          }
-          // lib.optionalAttrs (declaration.default != null) {inherit (declaration) default;}
-          // lib.optionalAttrs (declaration.example != null) {inherit (declaration) example;}
-          // lib.optionalAttrs (declaration.deprecated != null) {inherit (declaration) deprecated;}
-          // lib.optionalAttrs (declaration.replacement != null) {inherit (declaration) replacement;};
-        packageOptions =
-          builtins.map
-          (declaration: optionDocumentFor (sourceFor declaration) declaration.path declaration)
-          (builtins.filter
-            (declaration:
-              declaration.owner
-              == packageName
-              && declaration.pathStr != "aos.services")
-            abilityEvaluation._optionDecls);
-        serviceType = abilityEvaluation.options.aos.services.type._elementType;
-        serviceOptions = builtins.concatMap (name: let
-          declarations = lib.submoduleOptionDeclarations serviceType ["aos" "services" name];
-          selected =
-            builtins.filter
-            (declaration:
-              declaration.path
-              != []
-              && declaration.owner == packageName)
-            declarations;
-        in
-          builtins.map
-          (declaration:
-            optionDocumentFor
-            (sourceFor declaration)
-            (["aos" "services" name] ++ declaration.path)
-            declaration)
-          selected)
-        (builtins.attrNames abilityEvaluation.config.aos.services);
-      in
-        packageOptions ++ serviceOptions;
-    packageProjectionResult =
-      if builtins.elem "contract" existingOutputs
-      then throw "mkDerivation package contract for '${packageName}' reserves the 'contract' output name"
-      else
-        lib.abilities.projectPackage {
-          inherit packageName;
-          version = args.version or "0";
-          evaluated = projectedAbilities;
-          packageModuleLocator = symbolicAbilityModuleLocator;
-          optionDeclarations = abilityOptionDeclarations;
-          packageProbe = authoredPackageProbe;
-        };
-    packageProjection = packageProjectionResult.value;
-    packageAbilityProjection =
-      if evaluatedAbilities == null
-      then null
-      else packageProjectionResult.abilities;
-    packageProjectionSource = packageContractDocument {
-      inherit packageName;
-      version = args.version or "0";
-      projection = packageProjection;
+      else lib.packagePlatform.normalize "package '${packageName}' platformSupport" args.platformSupport;
+    moduleArtifact = import ../lib/packages/module-source.nix {
+      name = packageName;
+      source = args.module or null;
     };
-    needsRuntimeProjection =
-      evaluatedAbilities
-      != null
-      && (
-        authoredPackageProbe
-        != null
-        || builtins.any
-        (implementation: !implementation.activationAvailable)
-        (builtins.attrValues evaluatedAbilities.implementations)
-      );
-    # Qualification probes and image builders can inspect outputs that a
-    # running system never needs. Derive the deployable view from the same
-    # module evaluation while keeping the complete authoring contract.
-    runtimeProjectionResult =
-      if !needsRuntimeProjection
-      then packageProjectionResult
-      else
-        lib.abilities.projectPackage {
-          inherit packageName;
-          version = args.version or "0";
-          evaluated = projectedAbilities;
-          packageModuleLocator = symbolicAbilityModuleLocator;
-          optionDeclarations = abilityOptionDeclarations;
-          activationOnly = true;
-        };
-    runtimeProjectionSource =
-      if runtimeProjectionResult == null
-      then null
-      else if !needsRuntimeProjection
-      then packageProjectionSource
-      else
-        packageContractDocument {
-          inherit packageName;
-          version = args.version or "0";
-          projection = runtimeProjectionResult.value;
-        };
+    moduleDeps = args.moduleDeps or [];
+    deploymentLib = import ../lib {system = stdenv.hostPlatform.system;};
+    documentation =
+      (deploymentLib.evalPackageModules {
+        scope = ["package" packageName];
+        packages = [result];
+      }).documentation;
+    artifactLib = import ../lib/packages/artifacts.nix {};
+    deployment =
+      if args ? abilities || args ? configModule
+      then throw "Package '${packageName}' must migrate to module/moduleDeps."
+      else artifactLib.envelope result;
+    deploymentArtifact = trivialBuilders.writeTextFile {
+      name = "${packageName}-deployment";
+      destination = "/deployment.json";
+      text = builtins.toJSON deployment;
+    };
+    documentationArtifact = trivialBuilders.writeTextFile {
+      name = "${packageName}-documentation";
+      destination = "/options.json";
+      text = builtins.toJSON documentation;
+    };
     crossFixupPhase =
       if stdenv.hostPlatform.objectFormat == "macho"
       then phases.darwinCrossFixupPhase
@@ -585,9 +317,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       llvmOptions = args.accacheLlvmOptions or {};
     };
     lowerArgs =
-      # Package integration modules are evaluated by this wrapper and never
-      # become low-level derivation attributes.
-      (builtins.removeAttrs args ["abilities" "catalogName" "platformSupport" "qualification" "configModule" "sharedBuildCache" "cacheCCompilers" "accacheLlvmOptions"])
+      # Deployment modules are retained as source artifacts, never evaluated by
+      # the payload builder or passed as low-level derivation attributes.
+      (builtins.removeAttrs args ["abilities" "module" "moduleDeps" "catalogName" "platformSupport" "qualification" "configModule" "sharedBuildCache" "cacheCCompilers" "accacheLlvmOptions"])
       // lib.optionalAttrs cacheCCompilers (builtins.removeAttrs cCompilerCacheEnvironment ["RUSTC_WRAPPER"])
       // {
         meta =
@@ -611,27 +343,17 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         phases = crossPhases;
       };
     drv = rawMkDerivation lowerArgs;
-    abilityAttrs =
+    deploymentAttrs =
       {
         catalogName = packageName;
-        contract = {
-          value = packageProjection;
-          document = packageProjectionSource;
-          selectors = packageProjectionResult.selectors;
-        };
+        inherit moduleDeps deployment documentation deploymentArtifact documentationArtifact;
+        targetSystem = stdenv.hostPlatform.system;
       }
-      // lib.optionalAttrs needsRuntimeProjection {
-        runtimeContract = {
-          value = runtimeProjectionResult.value;
-          document = runtimeProjectionSource;
-          selectors = runtimeProjectionResult.selectors;
-        };
+      // lib.optionalAttrs (moduleArtifact != null) {
+        module = moduleArtifact;
       }
-      // lib.optionalAttrs (evaluatedAbilities != null) {
-        abilities = packageAbilityProjection;
-        # Module selection and artifact binding use the package's real
-        # module output. The static ability view contains semantic data only.
-        module = abilityModuleArtifact;
+      // lib.optionalAttrs (args ? qualification) {
+        inherit (args) qualification;
       };
     platformAttrs = lib.optionalAttrs (packagePlatformSupport != null) {
       platformSupport = packagePlatformSupport;
@@ -650,12 +372,12 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
               meta = drv.meta or {};
             }
             // lib.optionalAttrs (args ? version) {inherit (args) version;}
-            // abilityAttrs
+            // deploymentAttrs
             // platformAttrs
           );
       }) (builtins.filter (outputName: outputName != drv.outputName) drv.outputs)
     );
-    result = drv // secondaryOutputAttrs // abilityAttrs // platformAttrs;
+    result = drv // secondaryOutputAttrs // deploymentAttrs // platformAttrs;
   in
     addBuilderOverrides mkDerivation args result;
 
@@ -1369,7 +1091,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       packageArgumentScope
       // {
         inherit mkDerivation fetchurl fetchgit mkUpstream mkGithubUpstream mkManualUpstream callPackage;
-        inherit withProbeOnlyPackageContract;
+        inherit withQualification;
       }
     );
   in
@@ -1870,7 +1592,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       # depend on itself. Every other package gets nuke-references injected
       # into buildDeps automatically via the wrapped mkDerivation above.
       nuke-references =
-        withProbeOnlyPackageContract {
+        withQualification {
           packageName = "nuke-references";
           platformSupport = {
             build = [
@@ -2182,7 +1904,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       darwin-runtimes =
         if stdenv.hostPlatform.isDarwin
         then
-          withProbeOnlyPackageContract {
+          withQualification {
             packageName = "darwin-runtimes";
             platformSupport = darwinRuntimePlatformSupport;
             version = stdenv.darwinRuntimes.version or "0";
@@ -2250,7 +1972,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
       # --- stdenv packages (linked, not rebuilt) ---
       gcc =
-        withProbeOnlyPackageContract {
+        withQualification {
           packageName = "gcc";
           platformSupport = {
             build = [
@@ -2368,7 +2090,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           // {version = "16.2.0";}
         );
       glibc =
-        withProbeOnlyPackageContract {
+        withQualification {
           packageName = "glibc";
           platformSupport = {
             build = [
@@ -2491,7 +2213,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           // {version = "2.39.0";}
         );
       binutils =
-        withProbeOnlyPackageContract {
+        withQualification {
           packageName = "binutils";
           platformSupport = {
             build = [
@@ -2595,7 +2317,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit appleLibTapi;
       inherit darwinCctoolsLinker;
       cc =
-        withProbeOnlyPackageContract {
+        withQualification {
           packageName = "cc";
           platformSupport = {
             build = [
@@ -2714,7 +2436,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       # and block the unwrapped one, since that's what Configure
       # records via specs/PATH.
       gccUnwrapped =
-        withProbeOnlyPackageContract {
+        withQualification {
           packageName = "gccUnwrapped";
           platformSupport = {
             build = [
@@ -2838,7 +2560,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         else discoveredPackages.gcc-libs
       );
       getent =
-        withProbeOnlyPackageContract {
+        withQualification {
           packageName = "getent";
           platformSupport = {
             build = [

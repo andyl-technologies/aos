@@ -586,10 +586,10 @@
     # provisioning writes can be rejected and input identity remains auditable.
     runtimeModules ? [],
     # Config modules fetched from authenticated package outputs. Each record is
-    # `{ name; module; configRoot; outputs; }`; every field is resolver supplied
+    # `{ name; version; module; configRoot; artifacts; }`; every field is resolver supplied
     # from authenticated package metadata. `module` must be
     # `<configRoot>/module.nix`; recursive imports must remain path literals
-    # below that root. `outputs` contains only `self` and authenticated runtime
+    # below that root. `artifacts` contains only the package and its authenticated runtime
     # dependency outputs, replacing ambient package-set traversal. Definitions
     # from the module and its imports are stamped `package:<name>` for artifact
     # ownership. Write authority comes from the declarations and definition
@@ -684,7 +684,7 @@
         config._module.args = extraArgs // specialArgs;
       };
 
-      # `collectModules provenance importRoot moduleOutputs propagateToImports
+      # `collectModules provenance importRoot artifactContext propagateToImports
       # mods` recursively
       # evaluates modules and stamps each result with resolver-controlled
       # provenance. Package imports retain their authenticated package owner;
@@ -734,10 +734,12 @@
         else
           builtins.map (
             imported:
-              if !builtins.isPath imported
+              if builtins.isAttrs imported || builtins.isFunction imported
+              then imported
+              else if !builtins.isPath imported
               then
                 throw
-                "evalModules: ${provenance} import is not a path literal; package imports must retain a path identity beneath its authenticated config root"
+                "evalModules: ${provenance} import must be a module value or a path beneath its authenticated config root"
               else if
                 builtins.any
                 (component: component == "." || component == "..")
@@ -753,7 +755,7 @@
           )
           imports;
 
-      collectModules = provenance: importRoot: moduleOutputs: packageIdentity: propagateToImports: mods:
+      collectModules = provenance: importRoot: artifactContext: packageIdentity: propagateToImports: mods:
         builtins.concatLists (
           builtins.map (
             mod: let
@@ -762,7 +764,7 @@
                   config = visibleConfigFor provenance;
                   options = optionsTree;
                   pkgs =
-                    if moduleOutputs == null
+                    if artifactContext == null
                     then pkgs
                     else {};
                   lib = moduleLib;
@@ -770,16 +772,6 @@
                     extraArgs
                     // specialArgs
                     // {provenance = provenanceQueries;}
-                    // (
-                      if moduleOutputs == null
-                      then {inherit packageArtifactForOwner;}
-                      else {}
-                    )
-                    // (
-                      if moduleOutputs == null
-                      then {}
-                      else {outputs = moduleOutputs;}
-                    )
                     // (
                       if packageIdentity == null
                       then {}
@@ -789,9 +781,12 @@
                           packageVersion = packageIdentity.version;
                         }
                         // (
-                          if packageIdentity ? packageArtifactFor
-                          then {inherit (packageIdentity) packageArtifactFor packageFor;}
-                          else {}
+                          if artifactContext == null
+                          then {}
+                          else {
+                            package = artifactLib.value artifactContext.package;
+                            dependencies = builtins.mapAttrs (_: artifactLib.value) artifactContext.dependencies;
+                          }
                         )
                     );
                 }
@@ -814,7 +809,7 @@
               )
               (
                 if propagateToImports
-                then moduleOutputs
+                then artifactContext
                 else null
               )
               (
@@ -831,15 +826,12 @@
           mods
         );
 
-      validPackageOutputs = outputs:
-        builtins.isAttrs outputs
-        && builtins.attrNames outputs == ["dependencies" "self"]
-        && builtins.isString outputs.self
-        && strings.hasPrefix "/nix/store/" outputs.self
-        && builtins.isAttrs outputs.dependencies
-        && builtins.all
-        (path: builtins.isString path && strings.hasPrefix "/nix/store/" path)
-        (builtins.attrValues outputs.dependencies);
+      artifactLib = import ./packages/artifacts.nix {};
+      validArtifacts = artifacts:
+        builtins.isAttrs artifacts
+        && builtins.attrNames artifacts == ["dependencies" "package"]
+        && builtins.isAttrs artifacts.dependencies
+        && builtins.all artifactLib.valid (builtins.attrValues artifacts.dependencies ++ [artifacts.package]);
 
       validStoreRoot = root: let
         rootString =
@@ -865,115 +857,33 @@
         && strings.hasPrefix "${rootString}/" moduleString
         && !builtins.any (component: component == "." || component == "..") components;
 
-      packageArtifactFor = package: outputs: selector: let
-        checked =
-          if
-            !builtins.isAttrs selector
-            || builtins.attrNames selector != ["_type" "output" "package"]
-            || (selector._type or null) != "aos-package-output-selector"
-          then throw "evalModules: package '${package}' requested an invalid package-output selector"
-          else builtins.removeAttrs selector ["_type"];
-        selected =
-          checked
-          // {
-            package =
-              if checked.package == "self"
-              then package
-              else checked.package;
-          };
-        key = builtins.toJSON selected;
-        selectsOwnDefault = selected.package == package && selected.output == "out";
-      in
-        outputs.dependencies.${
-          key
-        }
-        or (
-          if selectsOwnDefault
-          then outputs.self
-          else let
-            available = builtins.filter (name:
-              (builtins.fromJSON name).package == selected.package)
-            (builtins.attrNames outputs.dependencies);
-          in
-            throw "evalModules: package '${package}' requested artifact ${builtins.toJSON selected} outside its authenticated dependency view; available outputs for '${selected.package}': ${builtins.toJSON available}"
-        );
-
-      packageFor = package: outputs: selector: let
-        artifact = packageArtifactFor package outputs selector;
-        selectedName =
-          if builtins.elem selector.package ["self" package]
-          then package
-          else selector.package;
-        selectedPackage =
-          pkgs.${selectedName}
-          or (throw "evalModules: package '${package}' selected unknown package '${selectedName}'");
-        defaultOutput = selectedPackage.outputName or "out";
-      in
-        if selector.output != defaultOutput
-        then throw "evalModules: package '${package}' requested package metadata for non-default output '${selector.output}'"
-        else if !builtins.isAttrs selectedPackage || !(selectedPackage ? outPath)
-        then throw "evalModules: authenticated package '${selectedName}' has no native package record"
-        else if builtins.toString selectedPackage != builtins.toString artifact
-        then throw "evalModules: authenticated package '${selectedName}' differs from its selected artifact"
-        else selectedPackage;
-
       validatedPackageModules = builtins.map (record: let
         keys =
           if builtins.isAttrs record
           then builtins.attrNames record
           else [];
         configRoot = record.configRoot or null;
+        artifacts = record.artifacts or null;
       in
         if
-          !builtins.isAttrs record
-          || !(keys
+          !(keys
             == ["module" "name"]
             || keys == ["module" "name" "version"]
-            || keys == ["module" "name" "outputs"]
-            || keys == ["module" "name" "outputs" "version"]
-            || keys == ["configRoot" "module" "name" "outputs"]
-            || keys == ["configRoot" "module" "name" "outputs" "version"])
-        then throw "evalModules: packageModules entries must contain module/name, optionally with outputs, or the resolver-authenticated configRoot/outputs form"
+            || keys == ["artifacts" "configRoot" "module" "name" "version"])
+        then throw "evalModules: packageModules requires a module/name declaration or a resolved package artifact record"
         else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
-        then throw "evalModules: invalid resolver-supplied package provenance name"
+        then throw "evalModules: invalid package provenance name"
         else if
           configRoot
           != null
           && (!validStoreRoot configRoot
-            || !validStoreModule configRoot record.module
-            || (
-              record ? outputs
-              && !builtins.elem
-              (builtins.toString configRoot)
-              ([record.outputs.self] ++ builtins.attrValues record.outputs.dependencies)
-            ))
-        then throw "evalModules: package '${record.name}' module is not module.nix beneath its authenticated configRoot"
-        else if record ? outputs && !validPackageOutputs record.outputs
-        then throw "evalModules: package '${record.name}' has invalid resolver-supplied outputs"
-        else if !builtins.isString (record.version or "0")
-        then throw "evalModules: package '${record.name}' has invalid resolver-supplied version"
-        else record // {inherit configRoot;} // {outputs = record.outputs or null;} // {version = record.version or "0";})
+            || !(validStoreModule configRoot record.module
+              || (packageImportRoots ? ${builtins.unsafeDiscardStringContext (builtins.toString configRoot)} && validStoreModule packageImportRoots.${builtins.unsafeDiscardStringContext (builtins.toString configRoot)} record.module)))
+        then throw "evalModules: package module is outside its resolved source artifact"
+        else if artifacts != null && (!validArtifacts artifacts || artifacts.package.name != record.name || artifacts.package.version != record.version)
+        then throw "evalModules: package artifact context differs from its resolved identity"
+        else record // {inherit configRoot artifacts;} // {version = record.version or "0";})
       packageModules;
-
-      packageOutputsForOwner = owner: let
-        matches =
-          builtins.filter (
-            record: record.name == owner && record.outputs != null
-          )
-          validatedPackageModules;
-        selected =
-          if matches == []
-          then throw "evalModules: package '${owner}' has no authenticated output record"
-          else builtins.head matches;
-      in
-        if !builtins.all (record: record.outputs == selected.outputs) matches
-        then throw "evalModules: package '${owner}' has conflicting authenticated output records"
-        else selected.outputs;
-
-      packageArtifactForOwner = owner: selector:
-        if !builtins.isString owner || builtins.match "[a-z0-9][a-z0-9._+-]*" owner == null
-        then throw "evalModules: artifact request has no authenticated package owner"
-        else packageArtifactFor owner (packageOutputsForOwner owner) selector;
 
       packageOwnedRoots = lists.unique (builtins.map
         (decl: builtins.head decl.path)
@@ -998,10 +908,8 @@
           );
 
       evaluatedPackageModules = builtins.concatLists (builtins.map (record:
-        collectModules "package:${record.name}" (importRootsFor record) record.outputs {
+        collectModules "package:${record.name}" (importRootsFor record) record.artifacts {
           inherit (record) name version;
-          packageArtifactFor = packageArtifactFor record.name record.outputs;
-          packageFor = packageFor record.name record.outputs;
         }
         true [record.module])
       validatedPackageModules);

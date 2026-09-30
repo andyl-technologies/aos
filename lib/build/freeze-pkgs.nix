@@ -7,20 +7,13 @@
 ##! selected by host configuration are therefore computed at image-build time
 ##! without retaining packages that the evaluated image does not select.
 ##!
-##! Freezing replaces each explicitly selected target-compatible derivation
-##! with a plain attrset whose `outPath` (and per-output paths) are
-##! reversibly encoded store-path strings, with `__toString` so `${pkgs.foo}` and
-##! `${pkgs.foo.lib}` interpolate the path exactly as before — but with no
-##! derivation behind them, so the eval never touches the build graph. Literal
-##! store paths cannot appear in the serialized form because Nix scans output
-##! bytes for them and would retain every package in the image closure.
+##! Freezing serializes the selected packages' explicit artifact records with
+##! reversibly encoded store paths. Deployment restores string-coercible artifact
+##! values; lib.getOutput selects named outputs without recreating derivations.
+##! Encoding prevents unselected references from retaining the image closure.
 ##!
-##! Two halves:
-##!   - `freezeSelectedToJSON { packageSet; packageNames; }` — run at stage-1
-##!     (base-lib build): forces the derived target package names once and
-##!     serialises `name → { path; pname; outputs; outPaths; }`.
-##!   - `frozenFromJSON json` — run at stage-2: rebuilds the string-coercible
-##!     frozen set from that JSON; touches no derivation.
+##! freezeSelectedToJSON runs at build time; frozenFromJSON restores those exact
+##! records during deployment without traversing the package build graph.
 ##!
 ##! Frozen packages are data, not functions: `pkgs.foo.override`,
 ##! `pkgs.writeText`, `pkgs.runCommand`, etc. are NOT available. Config modules
@@ -85,28 +78,12 @@
   decodeEmbeddedStorePaths =
     transformEmbeddedPaths "(@nix-store@/[A-Za-z0-9+._?=-]+)" decodePath;
 
-  # Freeze a single derivation to a JSON-safe record. NOTE: the key must NOT be
-  # `outPath` — `builtins.toJSON` coerces any attrset carrying an `outPath` field
-  # to that path string (the derivation coercion), collapsing the record. Use
-  # `path` + an `outPaths` map; `frozenFromJSON` reconstitutes `outPath` from it.
-  freezeDrv = name: drv: let
-    outputs = drv.outputs or ["out"];
-    outPaths = builtins.listToAttrs (builtins.map (o: {
-        name = o;
-        value = encodePath (lib.getOutput o drv).outPath;
-      })
-      outputs);
-  in {
-    path = encodePath drv.outPath;
-    outputs = outputs;
-    outPaths = outPaths;
-    inherit name;
-    pname = drv.pname or name;
-    catalogName = drv.catalogName or name;
-    version = drv.version or null;
-    # Handler resolution must select the same binary before and after freezing.
-    mainProgram = drv.meta.mainProgram or null;
-  };
+  artifacts = import ../packages/artifacts.nix {};
+  freezeDrv = name: drv:
+    encodeStorePaths (artifacts.reference (drv
+      // {
+        catalogName = drv.catalogName or name;
+      }));
 in {
   inherit encodeStorePaths decodeStorePaths encodeEmbeddedStorePaths decodeEmbeddedStorePaths;
 
@@ -147,48 +124,9 @@ in {
       candidates
     ));
 
-  ## Stage-2: rebuild the string-coercible frozen `pkgs` from the JSON. The
-  ## resulting `pkgs.foo` interpolates to its `outPath`; `pkgs.foo.<output>`
-  ## interpolates to that output's path. No derivation is forced.
-  frozenFromJSON = json: let
-    # `builtins.readFile` of a store path (the base-lib `frozen-pkgs.json`)
-    # returns a string carrying that path as string context, and
-    # `builtins.fromJSON` rejects context-bearing strings ("the string '…' is
-    # not allowed to refer to a store path"). The context is irrelevant here —
-    # we only parse the bytes — so discard it.
-    parsed = builtins.fromJSON (builtins.unsafeDiscardStringContext json);
-    mkOutput = nm: p: metadata: {
-      type = "derivation";
-      name = nm;
-      inherit (metadata) pname;
-      meta = lib.optionalAttrs (metadata.mainProgram != null) {inherit (metadata) mainProgram;};
-      outPath = p;
-      __toString = _: p;
-    };
-    mkFrozen = name: e: let
-      outputs = e.outputs or ["out"];
-    in let
-      path = decodePath e.path;
-    in
-      {
-        type = "derivation";
-        name = e.name or name;
-        pname = e.pname or name;
-        catalogName = e.catalogName or name;
-        meta = lib.optionalAttrs ((e.mainProgram or null) != null) {inherit (e) mainProgram;};
-        outPath = path;
-        outputName = builtins.head outputs;
-        __toString = _: path;
-      }
-      // lib.optionalAttrs ((e.version or null) != null) {inherit (e) version;}
-      // builtins.listToAttrs (builtins.map (o: {
-          name = o;
-          value = mkOutput "${name}-${o}" (decodePath ((e.outPaths or {}).${o} or e.path)) {
-            pname = e.pname or name;
-            mainProgram = e.mainProgram or null;
-          };
-        })
-        outputs);
-  in
-    builtins.mapAttrs mkFrozen parsed;
+  ## Stage-2 restores explicit artifact values. No derivation, builder, or
+  ## ambient package metadata is reconstructed during deployment evaluation.
+  frozenFromJSON = json:
+    builtins.mapAttrs (_: reference: artifacts.value (decodeStorePaths reference))
+    (builtins.fromJSON (builtins.unsafeDiscardStringContext json));
 }

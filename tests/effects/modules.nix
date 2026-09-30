@@ -47,7 +47,7 @@ let
     !(builtins.tryEval (builtins.deepSeq (evaluate modules).config.aos.activation.graph true)).success;
   producer = {
     aos.abilities.files.operations.create = {
-      results.path = lib.types.str;
+      result.options.path = lib.mkOption {type = lib.types.str;};
       handler.program = program;
       effects.state = {};
     };
@@ -73,7 +73,7 @@ let
     create = config.aos.abilities.files.operations.create;
   in {
     aos.abilities.files.operations.prepare = {
-      results.path = lib.types.str;
+      result.options.path = lib.mkOption {type = lib.types.str;};
       handler = {children, ...}: {
         children.directory.imports = [create.module];
         exports.path = children.directory.outputs.path;
@@ -120,14 +120,14 @@ in {
     producer
     consumer
     {
-      aos.abilities.files.operations.create.results.path = lib.types.int;
+      aos.abilities.files.operations.create.result.options.path = lib.mkOption {type = lib.types.int;};
     }
   ]; true;
   cycle = assert rejected [
     producer
     consumer
     ({config, ...}: {
-      aos.abilities.files.operations.use.results.done = lib.types.bool;
+      aos.abilities.files.operations.use.result.options.done = lib.mkOption {type = lib.types.bool;};
       aos.abilities.files.operations.create.effects.state.after = [
         config.aos.abilities.files.operations.use.effects.reader.outputs.done
       ];

@@ -31,6 +31,6 @@ let
 in {
   equivalentGraph = assert graphFor program == graphFor frozen.handler; true;
   primaryExecutable = assert lib.getExe frozen.handler == lib.getExe program; true;
-  secondaryExecutable = assert lib.getExe frozen.handler.out == lib.getExe program; true;
+  secondaryExecutable = assert lib.getExe (lib.getOutput "out" frozen.handler) == lib.getExe program; true;
   retainedVersion = assert frozen.handler.version == "1"; true;
 }

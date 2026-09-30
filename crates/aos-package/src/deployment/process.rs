@@ -51,6 +51,7 @@ impl RuntimeControl for FixedBudgetControl {
 pub(crate) struct ProcessOutput {
     pub(crate) status: ExitStatus,
     pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
 }
 
 /// Runs one preconfigured command within the caller's remaining runtime budget.
@@ -61,7 +62,26 @@ pub(crate) fn run_bounded(
     control: &dyn RuntimeControl,
     environment: &[(OsString, OsString)],
 ) -> Result<ProcessOutput, io::Error> {
-    if input.is_some_and(|bytes| bytes.len() > MAX_HELPER_INPUT_BYTES) {
+    run_bounded_with_input_limit(
+        command,
+        input,
+        MAX_HELPER_INPUT_BYTES,
+        output_limit,
+        control,
+        environment,
+    )
+}
+
+/// Runs the same transport with an explicit input bound for module evaluation.
+pub(crate) fn run_bounded_with_input_limit(
+    command: &mut Command,
+    input: Option<&[u8]>,
+    input_limit: usize,
+    output_limit: usize,
+    control: &dyn RuntimeControl,
+    environment: &[(OsString, OsString)],
+) -> Result<ProcessOutput, io::Error> {
+    if input.is_some_and(|bytes| bytes.len() > input_limit) {
         return Err(invalid("native handler input exceeds its size bound"));
     }
     let budget = control
@@ -83,7 +103,7 @@ pub(crate) fn run_bounded(
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     command.envs(environment.iter().cloned());
     let mut child = command.spawn()?;
     let group = match child_process_group(&child) {
@@ -130,6 +150,11 @@ fn exchange_io(
         .take()
         .ok_or_else(|| io::Error::other("native handler stdout is unavailable"))?;
     set_nonblocking(&stdout)?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("process stderr is unavailable"))?;
+    set_nonblocking(&stderr)?;
     let mut stdin = match input {
         Some(_) => {
             let pipe = child
@@ -144,6 +169,8 @@ fn exchange_io(
     let mut input_offset = 0;
     let mut output = Vec::new();
     let mut stdout_eof = false;
+    let mut stderr_eof = false;
+    let mut errors = Vec::new();
     let mut leader_succeeded = None;
     let mut group_terminated = false;
 
@@ -172,25 +199,10 @@ fn exchange_io(
         }
 
         if !stdout_eof {
-            let mut chunk = [0_u8; 16 * 1024];
-            loop {
-                require_budget(control, deadline)?;
-                match stdout.read(&mut chunk) {
-                    Ok(0) => {
-                        stdout_eof = true;
-                        break;
-                    }
-                    Ok(read) => {
-                        if output.len().saturating_add(read) > output_limit {
-                            return Err(invalid("native handler output exceeds its size bound"));
-                        }
-                        output.extend_from_slice(&chunk[..read]);
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(error) => return Err(error),
-                }
-            }
+            stdout_eof = read_available(&mut stdout, &mut output, output_limit, control, deadline)?;
+        }
+        if !stderr_eof {
+            stderr_eof = read_available(&mut stderr, &mut errors, output_limit, control, deadline)?;
         }
 
         if leader_succeeded.is_none() {
@@ -202,7 +214,7 @@ fn exchange_io(
             let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
             group_terminated = true;
         }
-        if stdout_eof && leader_succeeded.is_some() {
+        if stdout_eof && stderr_eof && leader_succeeded.is_some() {
             break;
         }
         std::thread::sleep(POLL_INTERVAL);
@@ -214,7 +226,33 @@ fn exchange_io(
     Ok(ProcessOutput {
         status,
         stdout: output,
+        stderr: errors,
     })
+}
+
+fn read_available(
+    pipe: &mut impl Read,
+    output: &mut Vec<u8>,
+    limit: usize,
+    control: &dyn RuntimeControl,
+    deadline: Instant,
+) -> Result<bool, io::Error> {
+    let mut chunk = [0_u8; 16 * 1024];
+    loop {
+        require_budget(control, deadline)?;
+        match pipe.read(&mut chunk) {
+            Ok(0) => return Ok(true),
+            Ok(read) => {
+                if output.len().saturating_add(read) > limit {
+                    return Err(invalid("process output exceeds its size bound"));
+                }
+                output.extend_from_slice(&chunk[..read]);
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn observe_child_exit(leader: &OwnedFd) -> Result<Option<bool>, io::Error> {
@@ -273,7 +311,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 mod tests {
     use super::*;
 
-    const HELPER_TEST: &str = "config_eval::handler_process::tests::bounded_process_helper";
+    const HELPER_TEST: &str = "deployment::process::tests::bounded_process_helper";
 
     #[test]
     fn bounded_handler_runs_with_usable_control() {
@@ -287,6 +325,12 @@ mod tests {
         assert!(output.status.success());
         assert!(
             output
+                .stderr
+                .windows(marker.len())
+                .any(|window| window == marker)
+        );
+        assert!(
+            output
                 .stdout
                 .windows(marker.len())
                 .any(|window| window == marker)
@@ -296,6 +340,7 @@ mod tests {
     #[test]
     fn bounded_process_helper() {
         print!("postcondition-established");
+        eprint!("postcondition-established");
     }
 
     fn helper_command() -> Command {

@@ -52,13 +52,62 @@ impl Activation {
         adapter: &mut impl ActivationAdapter,
         cancellation: &CancellationToken,
     ) -> Result<ActivationResults> {
+        self.activate_keyed(None, desired, retire, adapter, cancellation)
+    }
+
+    /// Resumes a caller-identified transaction across process restarts.
+    ///
+    /// A completed transaction returns its durable receipt without repeating
+    /// transaction-scoped effects when its caller is recovering a generation commit.
+    /// The receipt covers the most recent transaction; callers must use fresh
+    /// identities for subsequent transactions and recover them in order.
+    ///
+    /// # Errors
+    /// Returns an error when an identity is reused with different content or
+    /// when activation, observation, retention, or journal operations fail.
+    pub fn activate_once(
+        &mut self,
+        transaction: &str,
+        desired: &CheckedModuleGraph,
+        retire: &BTreeSet<String>,
+        adapter: &mut impl ActivationAdapter,
+        cancellation: &CancellationToken,
+    ) -> Result<ActivationResults> {
+        self.activate_keyed(Some(transaction), desired, retire, adapter, cancellation)
+    }
+
+    fn activate_keyed(
+        &mut self,
+        transaction: Option<&str>,
+        desired: &CheckedModuleGraph,
+        retire: &BTreeSet<String>,
+        adapter: &mut impl ActivationAdapter,
+        cancellation: &CancellationToken,
+    ) -> Result<ActivationResults> {
+        let retirement: Vec<_> = retire.iter().cloned().collect();
+        let fingerprint = super::journal::fingerprint(desired, &retirement)?;
+        if let Some((id, content, outputs)) = &self.state.completed {
+            if transaction == Some(id.as_str()) {
+                ensure!(
+                    content == &fingerprint,
+                    "transaction identity reused with different content"
+                );
+                return Ok(outputs.clone());
+            }
+        }
         self.preflight(desired, adapter)?;
         if let Some(active) = self.state.active.clone() {
             self.preflight(&active, adapter)?;
             let same_transaction = active.canonical_bytes()? == desired.canonical_bytes()?
                 && self.state.retire.iter().cloned().collect::<BTreeSet<_>>() == *retire;
+            let same_identity =
+                transaction.is_none() || transaction == self.state.transaction.as_deref();
+            ensure!(
+                !same_identity || same_transaction || transaction.is_none(),
+                "active transaction identity reused with different content"
+            );
             let results = self.run(&active, adapter, cancellation)?;
-            if same_transaction {
+            if same_transaction && same_identity {
                 return Ok(results);
             }
         }
@@ -75,6 +124,9 @@ impl Activation {
         }
         let document = serde_json::from_slice(&desired.canonical_bytes()?)?;
         self.record(Event::Begin {
+            transaction: transaction
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("local-{}", self.state.sequence + 1)),
             document,
             retire: retire.iter().cloned().collect(),
         })?;
@@ -213,6 +265,7 @@ impl Activation {
         for id in temporary {
             self.remove(&id, adapter, cancellation)?;
         }
+        results.retain(|id, _| graph.graph().nodes.contains_key(id));
         self.record(Event::Commit)?;
         Ok(results)
     }
