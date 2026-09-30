@@ -1,242 +1,37 @@
-##! Package-owned zram generator configuration and activation requirements.
+##! Configures compressed swap through its upstream generator and setup template.
 {
   config,
   lib,
+  package,
+  dependencies,
   ...
 }: let
   cfg = config.aos.zram;
-
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
-  interfaces = serviceManagement.interfaces;
-  abilityTypes = lib.abilities.types;
-  filesystemEntry = interfaces.filesystemEntry;
-  systemdPackagedUnitAlias = "systemd-packaged-unit";
-  resultOf = lib.abilities.resultOf;
-  consumerInstance = "zram";
-  kernelModulesRequest = "zram-kernel-modules";
-  generatorConfigurationRequest = "zram-generator-config";
-  generatorExecutableRequest = "zram-generator-executable";
-  generatorConfigurationEntryRequest = "zram-generator-configuration";
-  generatorDirectoryRequest = "zram-generator-directory";
-
-  sizeExpression = abilityTypes.refined {
-    name = "zram size expression";
-    description = "a bounded zram-generator arithmetic expression";
-    type = abilityTypes.string {
-      maxLength = abilityTypes.limits.maxStringLength;
-      syntax = null;
-    };
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[A-Za-z0-9 ()*/+.,_-]+";
-      }
-    ];
-  };
-  compressionAlgorithm = abilityTypes.refined {
-    name = "zram compression algorithm";
-    description = "a zram compression algorithm identifier";
-    type = abilityTypes.string {
-      maxLength = abilityTypes.limits.maxStringLength;
-      syntax = null;
-    };
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[A-Za-z0-9_+().,=-]+";
-      }
-    ];
-  };
-  compressionAlgorithms = abilityTypes.refined {
-    name = "zram compression algorithm list";
-    description = "one or more compression algorithms in priority order";
-    type = abilityTypes.list {
-      element = compressionAlgorithm;
-      maxItems = abilityTypes.limits.maxCollectionItems;
-    };
-    constraints = [
-      {
-        kind = "minimum-size";
-        minimum = 1;
-      }
-    ];
-  };
-  zramGeneratorArtifact = lib.abilities.packageOutput {};
-  utilLinuxArtifact = lib.abilities.packageOutput {
-    package = "util-linux";
-  };
-  generatorDirectory = "/etc/systemd/system-generators";
-  generatorExecutable = "${generatorDirectory}/zram-generator";
-  generatorConfiguration = "/etc/systemd/zram-generator.conf";
-  generatorConfigurationText = ''
-    [zram0]
-    zram-size = ${cfg.size}
-    compression-algorithm = ${lib.concatStringsSep " " cfg.compressionAlgorithms}
-    swap-priority = ${toString cfg.priority}
-  '';
-
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      inherit consumerInstance key interface parameters;
-    };
-  kernelReadiness = resultOf kernelModulesRequest "resource";
-  retainedBy = request: resultOf request "resource";
-  plannedGeneratorExecutable = resultOf generatorExecutableRequest "planned-path";
-  plannedGeneratorConfiguration =
-    resultOf generatorConfigurationEntryRequest "planned-path";
-  packagedUnit = {
-    requirementTemplates.${systemdPackagedUnitAlias} =
-      lib.abilities.interfaceSelector {
-        name = "aos.systemd.packaged-unit";
-        abi = 1;
-      }
-      // {
-        description = "Observe the packaged zram setup unit and its selected augmentation.";
-        methods = ["observe"];
-        guarantees = [];
-        strength = "required";
-        fallback = null;
-      };
-    requests."zram-setup-unit" = {
-      requirement = systemdPackagedUnitAlias;
-      consumer = consumerInstance;
-      scope = ["zram-setup-unit"];
-      parameters = {
-        source = {
-          artifact = zramGeneratorArtifact;
-          unit_file = "lib/systemd/system/systemd-zram-setup@.service";
-        };
-        activation = "reference";
-        prerequisites = [kernelReadiness];
-        dependencies = {
-          after = [];
-          before = [];
-          requires = [];
-          wants = [];
-        };
-        drop_in = {
-          accepted_exit_statuses = [0];
-          reload_triggers = [
-            plannedGeneratorExecutable
-            plannedGeneratorConfiguration
-          ];
-          # The setup helper delegates swap formatting to systemd-makefs, which
-          # resolves mkswap through the inherited unit's execution search path.
-          search_path = [utilLinuxArtifact];
-        };
-      };
-    };
-  };
-  abilityFragments = [
-    (producer kernelModulesRequest interfaces.kernelModules {
-      modules = ["zram"];
-      required = true;
-    })
-    (serviceManagement.forConfiguration {
-      inherit serviceTypes consumerInstance;
-      declaration = {
-        name = generatorConfigurationRequest;
-        source = {
-          kind = "inline-text";
-          content = generatorConfigurationText;
-        };
-        mode = "0444";
-      };
-    })
-    (serviceManagement.forProducers {
-      inherit consumerInstance;
-      interface = filesystemEntry;
-      methods = ["materialize" "observe" "release"];
-      producers = [
-        {
-          key = generatorDirectoryRequest;
-          parameters = {
-            name = "zram-generator-directory";
-            entry.kind = "directory";
-            destination = generatorDirectory;
-            owner = "root";
-            group = "root";
-            mode = "0755";
-            prerequisites = [];
-          };
-        }
-        {
-          key = generatorExecutableRequest;
-          parameters = {
-            name = "zram-generator";
-            entry = {
-              kind = "copied-file";
-              source = {
-                kind = "artifact-file";
-                reference = {
-                  artifact = zramGeneratorArtifact;
-                  path = "bin/zram-generator";
-                };
-              };
-              maximum_size_bytes = lib.abilities.types.limits.maxSafeInteger;
-            };
-            destination = generatorExecutable;
-            owner = "root";
-            group = "root";
-            mode = "0755";
-            prerequisites = [(retainedBy generatorDirectoryRequest)];
-          };
-        }
-        {
-          key = generatorConfigurationEntryRequest;
-          parameters = {
-            name = "zram-generator-configuration";
-            entry = {
-              kind = "copied-file";
-              source = {
-                kind = "execution-path";
-                resource = resultOf generatorConfigurationRequest "resource";
-                path = resultOf generatorConfigurationRequest "planned-path";
-              };
-              maximum_size_bytes = lib.abilities.types.limits.maxSafeInteger;
-            };
-            destination = generatorConfiguration;
-            owner = "root";
-            group = "root";
-            mode = "0444";
-            prerequisites = [(retainedBy generatorConfigurationRequest)];
-          };
-        }
-      ];
-    })
-    packagedUnit
-  ];
+  operations = config.aos.abilities;
+  modules = operations.kernelModules.operations.ensure.effects.zram;
+  generator = operations.filesystem.operations.entry.effects.zram-generator;
+  configuration = operations.configuration.operations.file.effects.zram-generator;
+  sizeType = lib.types.addCheck lib.types.str (value: builtins.match "[A-Za-z0-9 ()*/+.,_-]+" value != null);
+  algorithmType = lib.types.addCheck lib.types.str (value: builtins.match "[A-Za-z0-9_+().,=-]+" value != null);
 in {
   options.aos.zram = {
-    enable = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = false;
-      description = "Create a compressed in-memory swap device.";
-    };
-
+    enable = lib.mkEnableOption "compressed in-memory swap";
     size = lib.mkOption {
-      type = sizeExpression;
+      type = sizeType;
       default = "min(ram / 2, 4096)";
-      description = "Arithmetic expression that sets the zram device size in MiB.";
+      description = "Arithmetic expression setting zram size in MiB.";
     };
-
     compressionAlgorithms = lib.mkOption {
-      type = compressionAlgorithms;
+      type = lib.types.addCheck (lib.types.listOf algorithmType) (value: value != []);
       default = ["zstd"];
       description = "Compression algorithms tried in priority order.";
     };
-
     priority = lib.mkOption {
-      type = abilityTypes.integer {
-        minimum = -1;
-        maximum = 32767;
-      };
+      type = lib.types.ints.between (-1) 32767;
       default = 100;
       description = "Swap priority assigned to the zram device.";
     };
   };
-
   config = lib.mkMerge [
     {
       aos.zram = {
@@ -244,13 +39,8 @@ in {
         size = lib.mkIf config.aos.storage.compressedSwapRecommended (lib.mkDefault "min(ram / 8, 2048)");
       };
     }
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = abilityFragments;
-      enabled = cfg.enable;
-    })
     (lib.mkIf cfg.enable {
-      aos.abilities.runtimeChecks.zram = {
+      system.checks.zram = {
         description = "Compressed swap checks";
         checks = [
           {
@@ -262,6 +52,42 @@ in {
             '';
           }
         ];
+      };
+      aos.abilities = {
+        kernelModules.operations.ensure.effects.zram.input = {
+          modules = ["zram"];
+          required = true;
+        };
+        filesystem.operations.entry.effects.zram-generator = {
+          after = [configuration.outputs.path];
+          input = {
+            path = "/etc/systemd/system-generators/zram-generator";
+            kind = "copied-file";
+            sourcePath = "${package}/bin/zram-generator";
+            mode = "0555";
+          };
+        };
+        configuration.operations.file.effects.zram-generator.input = {
+          path = "/etc/systemd/zram-generator.conf";
+          content = ''
+            [zram0]
+            zram-size = ${cfg.size}
+            compression-algorithm = ${lib.concatStringsSep " " cfg.compressionAlgorithms}
+            swap-priority = ${toString cfg.priority}
+          '';
+        };
+        packagedUnit.operations.ensure.effects.zram-setup = {
+          after = [modules.outputs.loaded];
+          input = {
+            source = "${package}/lib/systemd/system/systemd-zram-setup@.service";
+            activation = "reference";
+            accepted_exit_statuses = [0];
+            reload_triggers = [generator.outputs.path configuration.outputs.path];
+            # Upstream delegates swap formatting to systemd-makefs, which
+            # resolves mkswap through the inherited unit execution search path.
+            search_path = ["${dependencies.util-linux}/bin" "${dependencies.util-linux}/sbin"];
+          };
+        };
       };
     })
   ];

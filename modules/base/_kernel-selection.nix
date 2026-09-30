@@ -31,14 +31,6 @@
     config._module.strict = true;
 
     options = {
-      binding = lib.mkOption {
-        type = lib.types.nonEmptyStr;
-        description = "Checked binding that selected this kernel provider.";
-      };
-      implementation = lib.mkOption {
-        type = lib.types.nonEmptyStr;
-        description = "Qualified selected implementation declaration.";
-      };
       package = lib.mkOption {
         type = lib.types.submodule {
           config._module.strict = true;
@@ -55,10 +47,6 @@
           };
         };
         description = "Authenticated package identity owning the implementation.";
-      };
-      providerInstance = lib.mkOption {
-        type = lib.abilities.types.instanceId;
-        description = "Canonical selected provider instance identity.";
       };
     };
   };
@@ -88,10 +76,6 @@
         _type = lib.mkOption {
           type = lib.types.enum ["aos-selected-kernel"];
           description = "Selected-kernel record discriminator.";
-        };
-        artifact = lib.mkOption {
-          type = lib.abilities.types.packageOutputSelector;
-          description = "Symbolic planning output selecting the authenticated kernel package.";
         };
         configuration = lib.mkOption {
           type = configurationType;
@@ -130,7 +114,7 @@ in {
       readOnly = true;
       internal = true;
       extensible = true;
-      description = "Derived kernel artifact selected by the checked ability binding.";
+      description = "Kernel artifact selected from the exact package module.";
     };
 
     aos.kernel.targetPlatform = lib.mkOption {
@@ -141,8 +125,32 @@ in {
     };
   };
 
-  config.aos.kernel.targetPlatform = {
-    inherit (pkgs.stdenv.hostPlatform) system;
-    inherit (pkgs.stdenv.hostPlatform.constraints) abi cpu os;
+  config.aos.kernel = {
+    targetPlatform = {
+      inherit (pkgs.stdenv.hostPlatform) system;
+      inherit (pkgs.stdenv.hostPlatform.constraints) abi cpu os;
+    };
+
+    selected = let
+      root = config.aos.kernel.packageRoot;
+      name = root.pname;
+      selected = config.aos.kernel.available.${name}
+        or (throw "selected kernel package '${name}' has no native artifact module");
+    in
+      if builtins.toString selected.package != builtins.toString root
+      then throw "selected kernel artifact differs from the retained package output"
+      else {
+        _type = "aos-selected-kernel";
+        inherit name;
+        package = builtins.toString selected.package;
+        targetPlatform = config.aos.kernel.targetPlatform;
+        identity.package = {
+          inherit name;
+          version = selected.release;
+        };
+        configuration = {
+          inherit (selected) bootImage moduleTree release;
+        };
+      };
   };
 }

@@ -51,7 +51,7 @@
     else
       lib.flatten (
         builtins.attrValues
-        initrdAbilityEvaluation.config.aos.initrdRuntime.artifacts
+        (initrdAbilityEvaluation.config.aos.initrdRuntime.artifacts or {})
       );
 in {
   imports = [

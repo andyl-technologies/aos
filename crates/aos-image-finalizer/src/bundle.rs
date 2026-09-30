@@ -116,7 +116,6 @@ struct RecoveryBundleManifest<'a> {
     schema: &'static str,
     release: &'a str,
     platform: Platform,
-    module_abi: u64,
     recovery_abi: u64,
     components: Vec<ArtifactFact>,
 }
@@ -251,7 +250,6 @@ pub async fn seal_image_artifacts(
         schema: "aos.recovery-bundle/v1",
         release: &assembly.version,
         platform: assembly.platform,
-        module_abi: assembly.module_abi,
         recovery_abi: assembly.recovery_abi,
         components,
     };

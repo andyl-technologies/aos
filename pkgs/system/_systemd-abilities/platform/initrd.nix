@@ -27,28 +27,14 @@
 ##!   * `system.build.initrd` — the final gzip+cpio initramfs
 ##!     derivation produced by `_initrd-builder.nix`.
 {
-  abilitySelection ? null,
   config,
-  initrdAbilityEvaluation ? null,
   lib,
-  packageArtifactFor,
-  packageFor,
+  pkgs,
   ...
 }: let
-  managerBindings =
-    if abilitySelection == null
-    then []
-    else abilitySelection.bindingsForImplementation "system-manager";
-  selected = builtins.length managerBindings == 1;
-  packageOutput = package: lib.abilities.packageOutput {inherit package;};
-  packageRootFor = package: packageFor (packageOutput package);
+  selected = true;
   rendererPackages = {
-    bash = packageArtifactFor (packageOutput "bash");
-    coreutils = packageArtifactFor (packageOutput "coreutils");
-    findutils = packageArtifactFor (packageOutput "findutils");
-    grep = packageArtifactFor (packageOutput "grep");
-    sed = packageArtifactFor (packageOutput "sed");
-    systemd = packageArtifactFor (lib.abilities.packageOutput {});
+    inherit (pkgs) bash coreutils findutils grep sed systemd;
   };
   systemdLib = import ./render.nix {
     inherit lib;
@@ -62,7 +48,6 @@
   };
 
   cfg = config.boot.initrd.systemd;
-  providerPlanTypes = import ./render-plan-types.nix {inherit lib;};
 
   # Render each initrd unit category through its stage-1 *-ToUnit
   # renderer and key the result by unit file name (e.g. "foo.service").
@@ -91,14 +76,6 @@
       name = job.scriptName;
     })
   (lib.concatLists (lib.mapAttrsToList (_: service: service.jobScripts) cfg.services)));
-  initrdProviderPlans =
-    if initrdAbilityEvaluation == null
-    then []
-    else initrdAbilityEvaluation.config.systemd.providerUnitPlans or [];
-  initrdProviderNetworkPlans =
-    if initrdAbilityEvaluation == null
-    then []
-    else initrdAbilityEvaluation.config.systemd.providerNetworkConfigurationPlans or [];
 in {
   options.boot.initrd.systemd = {
     services = lib.mkOption {
@@ -177,12 +154,6 @@ in {
       options = {
         etc = lib.mkOption {type = lib.types.attrsOf lib.types.attrs;};
         jobScripts = lib.mkOption {type = lib.types.attrsOf lib.types.attrs;};
-        providerPlans = lib.mkOption {
-          type = lib.types.listOf providerPlanTypes.render;
-        };
-        providerNetworkPlans = lib.mkOption {
-          type = lib.types.listOf providerPlanTypes.network;
-        };
       };
     };
     readOnly = true;
@@ -203,7 +174,7 @@ in {
     # policy contributes only provider-neutral intent; it does not select a
     # manager or a TPM token format from the generic secure-boot module.
     aos.boot.initrd.packageRoots =
-      (builtins.map packageRootFor [
+      (builtins.map (name: pkgs.${name}) [
         "bash"
         "coreutils"
         "cryptsetup"
@@ -216,7 +187,7 @@ in {
         "util-linux"
       ])
       ++ [
-        (packageFor (lib.abilities.packageOutput {}))
+        pkgs.systemd
       ];
 
     # Re-run stage-1 config oneshots against the real /etc in stage-2.
@@ -264,8 +235,6 @@ in {
     system.build.systemdInitrdPlan = {
       etc = systemdLib.unitsToEtc pureInitrdUnits;
       jobScripts = initrdJobScripts;
-      providerPlans = initrdProviderPlans;
-      providerNetworkPlans = initrdProviderNetworkPlans;
     };
   };
 }

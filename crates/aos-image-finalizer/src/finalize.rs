@@ -16,7 +16,7 @@ use crate::filesystem::{
     extract_erofs, extract_initrd, kernel_modules, rebuild_erofs, rebuild_initrd,
 };
 use crate::input::{
-    VerifiedInput, digest_regular_file, digest_regular_file_beneath, verified_tool,
+    VerifiedInput, digest_native_document_beneath, digest_regular_file, verified_tool,
 };
 use crate::module_signature::verify_signed_module;
 use crate::request::{ImageRequestAuthorizer, ImageSigningIntent, verify_intent};
@@ -161,8 +161,14 @@ pub async fn prepare_filesystems(
     )
     .await?;
 
-    if assembly.schema_version == crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V2 {
-        verify_static_ability_contract_attachments(assembly_root, assembly, &input, &initrd_tree)?;
+    if assembly.schema_version == crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V3 {
+        verify_native_deployment_attachments(
+            assembly_root,
+            assembly,
+            &input,
+            &initrd_tree,
+            &root_tree,
+        )?;
     }
 
     let certificate_digest = digest_regular_file(&module_certificate)?.1;
@@ -226,7 +232,7 @@ pub async fn prepare_filesystems(
         .await?;
     }
 
-    let capabilities = if assembly.schema_version == crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V2 {
+    let capabilities = if assembly.schema_version == crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V3 {
         let config = input.join("kernel.config");
         capture_copy(
             assembly_root,
@@ -352,56 +358,52 @@ fn capture_copy(
     Ok(destination.to_path_buf())
 }
 
-/// Captures both stage contracts and binds the initrd contract to its image file.
+/// Captures native stage deployments and binds initrd documents to the archive.
 ///
-/// The initrd comparison opens every embedded path component without following
-/// links. The host contract remains authoritative through its captured store
-/// artifact and selected package-store locator. `captured_inputs` must exist
-/// and must not already contain either captured contract filename.
+/// Both archives must contain the exact captured native inputs. Store aliases
+/// resolve only inside the extracted image, with every target component opened
+/// without following links. `captured_inputs` must exist and must not already
+/// contain either native stage directory.
 ///
 /// # Errors
 ///
 /// Returns an error when an assembly sidecar changed, the embedded initrd
 /// contract is absent or linked, a parent escapes its extracted tree, or its
 /// exact bytes differ.
-pub fn verify_static_ability_contract_attachments(
+pub fn verify_native_deployment_attachments(
     assembly_root: &Path,
     assembly: &UnsignedImageAssemblyV1,
     captured_inputs: &Path,
     initrd_tree: &Path,
+    root_tree: &Path,
 ) -> Result<()> {
-    let initrd_contract = capture_copy(
-        assembly_root,
-        assembly,
-        AssemblyFileKind::InitrdStaticAbilityContract,
-        &captured_inputs.join("initrd-static-ability-contract.json"),
-    )?;
-    require_embedded_contract_matches(
-        &initrd_contract,
-        initrd_tree,
-        Path::new("lib/aos/initrd/static-ability-contract.json"),
-        "initrd static ability contract",
-    )?;
-
-    capture_copy(
-        assembly_root,
-        assembly,
-        AssemblyFileKind::HostStaticAbilityContract,
-        &captured_inputs.join("host-static-ability-contract.json"),
-    )?;
-    Ok(())
-}
-
-fn require_embedded_contract_matches(
-    captured: &Path,
-    tree: &Path,
-    embedded: &Path,
-    label: &str,
-) -> Result<()> {
-    let captured_identity = digest_regular_file(captured)?;
-    let embedded_identity = digest_regular_file_beneath(tree, embedded)?;
-    if captured_identity != embedded_identity {
-        bail!("captured {label} differs from the contract embedded in its filesystem");
+    for stage in ["initrd", "host"] {
+        let destination = captured_inputs.join(format!("{stage}-deployment"));
+        std::fs::create_dir(&destination)?;
+        for (kind, filename) in crate::assembly::native_deployment_files(stage) {
+            let captured =
+                capture_copy(assembly_root, assembly, kind, &destination.join(filename))?;
+            let (tree, relative, store) = if stage == "initrd" {
+                (
+                    initrd_tree,
+                    Path::new("lib/aos/initrd/deployment").join(filename),
+                    Path::new("nix/store"),
+                )
+            } else {
+                (
+                    root_tree,
+                    Path::new("usr/lib/aos/host/deployment").join(filename),
+                    Path::new("nix.lower/store"),
+                )
+            };
+            if digest_regular_file(&captured)?
+                != digest_native_document_beneath(tree, &relative, store)?
+            {
+                bail!(
+                    "captured native {stage} document {filename} differs from embedded deployment"
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -424,12 +426,26 @@ mod tests {
 
     use super::*;
 
+    fn require_embedded_contract_matches(
+        captured: &Path,
+        tree: &Path,
+        embedded: &Path,
+        label: &str,
+    ) -> Result<()> {
+        let captured_identity = digest_regular_file(captured)?;
+        let embedded_identity = crate::input::digest_regular_file_beneath(tree, embedded)?;
+        if captured_identity != embedded_identity {
+            bail!("captured {label} differs from the contract embedded in its filesystem");
+        }
+        Ok(())
+    }
+
     #[test]
     fn rejects_a_sidecar_that_differs_from_the_embedded_contract() -> Result<()> {
         let temporary = tempfile::tempdir()?;
         let sidecar = temporary.path().join("sidecar.json");
         let tree = temporary.path().join("tree");
-        let embedded = tree.join("lib/aos/initrd/static-ability-contract.json");
+        let embedded = tree.join("lib/aos/initrd/deployment/transaction.json");
         fs::create_dir_all(
             embedded
                 .parent()
@@ -441,11 +457,11 @@ mod tests {
         require_embedded_contract_matches(
             &sidecar,
             &tree,
-            Path::new("lib/aos/initrd/static-ability-contract.json"),
+            Path::new("lib/aos/initrd/deployment/transaction.json"),
             "test",
         )?;
         assert_eq!(
-            fs::read(tree.join("usr/lib/aos/initrd/static-ability-contract.json"))?,
+            fs::read(tree.join("usr/lib/aos/initrd/deployment/transaction.json"))?,
             fs::read(&sidecar)?,
         );
 
@@ -453,7 +469,7 @@ mod tests {
         let error = require_embedded_contract_matches(
             &sidecar,
             &tree,
-            Path::new("lib/aos/initrd/static-ability-contract.json"),
+            Path::new("lib/aos/initrd/deployment/transaction.json"),
             "test",
         )
         .expect_err("a changed sidecar must not bind an unchanged filesystem");

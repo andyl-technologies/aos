@@ -13,6 +13,7 @@
   python3,
   libxcrypt,
   audit,
+  service-management,
 }: let
   version = "1.7.1";
 in
@@ -141,8 +142,8 @@ in
       audit
     ];
     propagatedDeps = [];
-
-    abilities = ./_linux-pam;
+    module = ./_linux-pam;
+    moduleDeps = [service-management];
 
     phases = [
       {

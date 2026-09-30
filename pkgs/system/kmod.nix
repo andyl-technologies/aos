@@ -17,8 +17,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -139,7 +150,7 @@ in
       zstd
     ];
 
-    abilities = ./_kmod-abilities;
+    module = ./_kmod-abilities;
 
     phases = [
       {
@@ -188,16 +199,17 @@ in
           export PYTHONPATH="$nativeMesonRoot/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
           ninja -C build install
 
-          mkdir -p $out/libexec
+          mkdir -p $out/bin
           cc -std=c11 -Wall -Wextra -Werror -O2 \
             ${./_kmod-handler.c} \
-            -o $out/libexec/aos-kmod-handler \
+            -o $out/bin/aos-kmod-handler \
             -ljansson -lcrypto
         '';
       }
     ];
 
     meta = {
+      mainProgram = "aos-kmod-handler";
       description = "kmod — Linux kernel module handling tools";
       homepage = "https://git.kernel.org/pub/scm/utils/kernel/kmod/kmod.git";
       license = "LGPL-2.1-or-later";

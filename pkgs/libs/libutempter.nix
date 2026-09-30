@@ -4,6 +4,8 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "1.2.3";
 in
@@ -93,7 +95,8 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
 
-    abilities = ./_libutempter;
+    module = ./_libutempter;
+    moduleDeps = [service-management aos-filesystem-provider];
 
     phases = [
       {

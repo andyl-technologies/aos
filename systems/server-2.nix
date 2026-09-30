@@ -71,5 +71,5 @@
   # configuration changes, preserving the daemon's PID and the live bus. The
   # fleet test asserts exactly that. The added limit is innocuous; only the
   # resulting resource change matters.
-  aos.services.dbus.openFileLimit = 16384;
+  aos.dbus.openFileLimit = 16384;
 }

@@ -8,30 +8,19 @@
 ##! directory matching `/etc/systemd/system/`.
 ##!
 ##! `generateUnits` returns a pure unit-data map. `modules/base/build.nix`
-##! folds its flattened `/etc` entries into `system.build.configManifest`, and
+##! folds its flattened `/etc` entries into the image filesystem projection, and
 ##! the thin `materializeUnits` adapter reconstructs the builder-side unit
 ##! directory from that manifest for `system.build.toplevel`.
 {
-  abilitySelection ? null,
   config,
   lib,
-  packageArtifactFor,
+  pkgs,
   provenance,
   ...
 }: let
-  managerBindings =
-    if abilitySelection == null
-    then []
-    else abilitySelection.bindingsForImplementation "system-manager";
-  selected = builtins.length managerBindings == 1;
-  packageOutput = package: lib.abilities.packageOutput {inherit package;};
+  selected = true;
   rendererPackages = {
-    bash = packageArtifactFor (packageOutput "bash");
-    coreutils = packageArtifactFor (packageOutput "coreutils");
-    findutils = packageArtifactFor (packageOutput "findutils");
-    grep = packageArtifactFor (packageOutput "grep");
-    sed = packageArtifactFor (packageOutput "sed");
-    systemd = packageArtifactFor (lib.abilities.packageOutput {});
+    inherit (pkgs) bash coreutils findutils grep sed systemd;
   };
   systemdLib = import ./render.nix {
     inherit lib;
@@ -45,7 +34,6 @@
   };
 
   cfg = config.systemd;
-  providerPlanTypes = import ./render-plan-types.nix {inherit lib;};
 
   # --- globalEnvironment pre-merge (spec §4.2) --------------------------
   #
@@ -78,33 +66,6 @@
     // lib.listToAttrs (builtins.map (withName systemdLib.automountToUnit) cfg.automounts);
 in {
   options.systemd = {
-    providerUnitPlans = lib.mkOption {
-      type = lib.types.listOf providerPlanTypes.render;
-      default = [];
-      internal = true;
-      extensible = true;
-      description = ''
-        Pure render plans produced by authenticated provider modules. The
-        selected manager materializes and collision-checks them once.
-      '';
-    };
-
-    providerManagerConfigurationPlans = lib.mkOption {
-      type = lib.types.listOf providerPlanTypes.render;
-      default = [];
-      internal = true;
-      extensible = true;
-      description = "Pure manager-configuration plans from authenticated systemd providers.";
-    };
-
-    providerNetworkConfigurationPlans = lib.mkOption {
-      type = lib.types.listOf providerPlanTypes.network;
-      default = [];
-      internal = true;
-      extensible = true;
-      description = "Pure network-configuration plans from the authenticated systemd controller.";
-    };
-
     globalEnvironment = lib.mkOption {
       type = with lib.types; attrsOf (nullOr (oneOf [str path package]));
       default = {};
@@ -188,7 +149,7 @@ in {
   # `generateUnits` is intentionally left untouched (so the built unit
   # directory stays byte-for-byte identical except the documented F2-A
   # job-script ExecStart change); this value surfaces the same rendered
-  # bodies as host-portable data for `system.build.configManifest`. The
+  # bodies as host-portable data for the image filesystem projection. The
   # `text` here is the *manifest* form: job-script store paths are replaced
   # by `#aos-jobscript:<key>#` placeholders. (replaceStrings does not strip
   # string-context, so the value still carries the job-script drvs in context;
@@ -223,32 +184,11 @@ in {
     type = lib.types.attrsOf lib.types.str;
     internal = true;
     readOnly = true;
-    description = "Resolver-authenticated owner of each rendered systemd filesystem entry.";
-  };
-
-  options.system.build.systemdMaterializationData = lib.mkOption {
-    type = lib.types.attrs;
-    internal = true;
-    default = let
-      manifest = config.system.build.configManifest or null;
-    in
-      if manifest == null
-      then {
-        etc = config.system.build.systemdEtcEntries;
-        jobScripts = config.system.build.systemdJobScripts;
-      }
-      else {
-        inherit (manifest) etc jobScripts;
-      };
-    description = ''
-      Manifest-shaped `{ etc; jobScripts; }` data consumed by the builder-side
-      unit materializer. The base build module binds this to configManifest;
-      the default keeps the standalone systemd module testable.
-    '';
+    description = "Image bootstrap owner of each rendered systemd filesystem entry.";
   };
 
   # Every job script's text, keyed `"<unit>:<slot>.<index>"`,
-  # folded across all services. Consumed by `system.build.configManifest`
+  # folded across all services. Consumed by the image filesystem projection
   # (`manifest.jobScripts`); the materializer writes each `text` to a
   # generation-local `aos-job-scripts/<key>` path and rewrites the matching
   # `#aos-jobscript:<key>#` placeholder in the unit body to point there.
@@ -267,14 +207,14 @@ in {
     type = lib.types.attrsOf lib.types.str;
     internal = true;
     readOnly = true;
-    description = "Resolver-authenticated owner of each rendered systemd unit.";
+    description = "Image bootstrap owner of each rendered systemd unit.";
   };
 
   options.system.build.systemdJobScriptOwners = lib.mkOption {
     type = lib.types.attrsOf lib.types.str;
     internal = true;
     readOnly = true;
-    description = "Resolver-authenticated owner of each rendered systemd executable script.";
+    description = "Image bootstrap owner of each rendered systemd executable script.";
   };
 
   options.system.build.systemdUnitActions = lib.mkOption {
@@ -460,17 +400,7 @@ in {
     assertions =
       stopOnReconfAttrAsserts
       ++ stopOnReconfListAsserts
-      ++ targetReloadTriggerAsserts
-      ++ [
-        {
-          assertion = builtins.length config.systemd.providerManagerConfigurationPlans <= 1;
-          message = "systemd manager configuration must have at most one authenticated provider owner";
-        }
-        {
-          assertion = builtins.length config.systemd.providerNetworkConfigurationPlans <= 1;
-          message = "systemd network configuration must have at most one authenticated provider owner";
-        }
-      ];
+      ++ targetReloadTriggerAsserts;
 
     warnings = reloadWithoutExecReloadWarnings;
 
@@ -478,10 +408,6 @@ in {
     # authored units enter through the typed category options above.
     systemd.units = renderedUnits;
 
-    # Provider-owned units are rendered by the same compiled implementation
-    # used at runtime. Its manifest is the only filename authority for those
-    # entries; the assembler validates bytes, links, and collisions with the
-    # ordinary module-rendered tree before publishing the boot unit directory.
     # --- Pure render values ---------------------------------------------
     #
     # Fold every service's F2-A job-script records into the flat

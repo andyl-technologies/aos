@@ -2,7 +2,6 @@
 {
   config,
   initrdAbilityEvaluation,
-  initrdStaticContract,
   lib,
   artifacts,
   systemdArtifact,
@@ -29,7 +28,6 @@
     systemd = systemdArtifact;
     nix = buildContext.packageSet.nix;
   };
-  providerPackage = artifacts.aos-systemd-provider;
   rendererPackages =
     runtimePackages
     // {
@@ -45,72 +43,62 @@
     type = "initrd";
     inherit (plan) etc jobScripts;
   };
-  renderProviderPlan = import ./render-provider-plan.nix {
-    inherit providerPackage;
-    runCommand = buildContext.runCommand;
-  };
-  providerArtifacts = builtins.map renderProviderPlan plan.providerPlans;
-  providerArtifactsJson = builtins.toJSON providerArtifacts;
-  initrdUnits =
-    if providerArtifacts == []
-    then baseUnits
-    else
-      buildContext.runCommand "systemd-initrd-units-with-provider-artifacts" {
-        inherit baseUnits providerArtifactsJson;
-        passAsFile = ["providerArtifactsJson"];
-      } ''
-        providerArtifactsPath="$providerArtifactsJsonPath" \
-            ${providerPackage}/bin/aos-systemd-provider assemble
-      '';
-  providerNetworkArtifacts = builtins.map renderProviderPlan plan.providerNetworkPlans;
-  initrdNetworkDir =
-    if providerNetworkArtifacts == []
-    then null
-    else if builtins.length providerNetworkArtifacts == 1
-    then "${builtins.head providerNetworkArtifacts}/etc/systemd/network"
-    else throw "systemd initrd requires at most one selected network-configuration resource";
-  selectedArtifactBackend = config.aos.artifacts.backend;
-  artifactBackend =
-    if
-      builtins.isAttrs selectedArtifactBackend
-      && (selectedArtifactBackend._type or null) == "aos-package-artifact-backend"
-    then selectedArtifactBackend
-    else throw "systemd initrd requires one selected package-owned artifact backend";
-  staticContractBuild = artifactBackend.buildStaticContract {
-    inherit lib;
-    inherit (buildContext) targetPlatform;
-    inherit (buildContext) ociTools;
-    pname = "aos-initrd-static-abilities";
-    artifactClass = "bootable";
-    executionStage = "initrd";
-    packageRoots = config.aos.boot.initrd.packageRoots;
-  };
-  abilityGraph =
+  stageConfig =
     if initrdAbilityEvaluation == null
-    then throw "systemd initrd requires the completed initrd ability fixed point"
-    else initrdAbilityEvaluation.config.aos.abilities;
-  expectedContractIdentity = "${staticContractBuild.artifact}/contract.json";
-  checkedStaticContract =
-    if initrdStaticContract == null
-    then throw "systemd initrd requires its checked static contract"
-    else if initrdStaticContract.identity == expectedContractIdentity
-    then initrdStaticContract
+    then throw "the initrd requires its completed native module evaluation"
+    else initrdAbilityEvaluation.config;
+  bootstrapJSON = builtins.toJSON (import ../observer-bootstrap.nix {
+    config = stageConfig;
+    inherit lib;
+    pkgs = artifacts;
+  });
+  initrdUnits =
+    buildContext.runCommand "systemd-initrd-native-bootstrap" {
+      inherit bootstrapJSON;
+      passAsFile = ["bootstrapJSON"];
+    } ''
+      ${artifacts.buildPackages.systemd}/bin/aos-service-handler render --output-dir "$out" < "$bootstrapJSONPath"
+      cp -a ${baseUnits}/. "$out/"
+    '';
+  networkInputs =
+    lib.mapAttrsToList (name: effect: {
+      inherit name;
+      file = buildContext.writeTextFile {
+        name = "initrd-network-${builtins.hashString "sha256" name}";
+        text = builtins.toJSON effect.input;
+      };
+    }) (lib.filterAttrs (_: effect: effect.enable)
+      (stageConfig.aos.abilities.network.operations.configure.effects or {}));
+  initrdNetworkDir =
+    if networkInputs == []
+    then null
     else
-      throw
-      "systemd initrd static contract '${initrdStaticContract.identity}' differs from completed fixed point '${expectedContractIdentity}'";
-  sourceStageBundle =
-    (lib.abilities.materializeSourceStage {
-      inherit lib abilityGraph;
-      stage = "initrd";
-      staticContract = checkedStaticContract;
-      baseLib =
-        if buildContext.initrdEvaluationLib == null
-        then throw "systemd initrd requires the frozen initrd evaluation library"
-        else buildContext.initrdEvaluationLib;
-      inherit (buildContext) targetPlatform packageSet runCommand writeTextFile;
-      packageRuntime = buildContext.buildTools.packageRuntime;
-      inherit (staticContractBuild) retainedPackageContractArtifacts selectedOutputArtifacts;
-    }).bundle;
+      buildContext.runCommand "systemd-initrd-native-network" {} ''
+        mkdir -p "$out"
+        ${lib.concatMapStringsSep "\n" (entry: ''
+            rendered="$TMPDIR/network-${builtins.hashString "sha256" entry.name}"
+            ${artifacts.buildPackages.systemd}/bin/aos-network-handler render-network --output-dir "$rendered" < ${entry.file}
+            for file in "$rendered"/etc/systemd/network/*; do
+              test -e "$file" || continue
+              filename=$(basename "$file")
+              if test -e "$out/$filename"; then
+                echo "initrd native network effects collide at $filename" >&2
+                exit 1
+              fi
+              cp -a "$file" "$out/$filename"
+            done
+          '')
+          networkInputs}
+      '';
+
+  deploymentBundle = config.system.build.initrdDeploymentBundle;
+  closureInfoFor = lib.build.closureInfo {
+    pkgs = buildContext.packageSet.buildPackages;
+  };
+  registration = closureInfoFor {
+    rootPaths = lib.unique (config.aos.boot.initrd.runtimeRoots ++ [deploymentBundle initrdUnits]);
+    pname = "aos-initrd-native-registration";
+  };
   handoff = let
     stageConfig = initrdAbilityEvaluation.config;
     parameters = stageConfig.aos.boot.handoffParameters;
@@ -138,12 +126,11 @@
       config.aos.boot.initrd.runtimeRoots
       ++ [
         buildContext.packageSet.nix
-        buildContext.initrdEvaluationLib
+        lib.packageModuleLibrary
+        deploymentBundle
       ]
     );
-    initrdEvaluationLib = buildContext.initrdEvaluationLib;
-    initrdStaticContract = checkedStaticContract;
-    initrdSourceStageBundle = sourceStageBundle;
+    inherit deploymentBundle registration;
     maskedUnits =
       config.boot.initrd.systemd.maskedUnits
       ++ lib.optionals config.aos.security.verity.enable [
@@ -153,7 +140,5 @@
     validateBootIdentity = config.aos.security.verity.enable;
   };
 in {
-  inherit artifact sourceStageBundle;
-  staticAbilityContract = staticContractBuild.artifact;
-  staticAbilityEvidence = staticContractBuild.retainedPackageContractArtifacts;
+  inherit artifact deploymentBundle;
 }

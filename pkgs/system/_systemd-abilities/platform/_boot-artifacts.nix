@@ -73,8 +73,7 @@
       BUG_REPORT_URL="https://aos.dev/issues"
       AOS_RELEASE_ID="${version}"
       AOS_STATE_VERSION=${config.aos.system.stateVersion}
-      AOS_MODULE_ABI=${toString config.aos.system.moduleAbi}
-      AOS_BASELIB_ABI_HASH=${config.aos.config.evalAtBoot.baseLibAbiHash}
+      AOS_PACKAGE_MODULE_LIBRARY=${lib.packageModuleLibrary}
     '';
   };
 
@@ -100,6 +99,10 @@
       pcrPublicKey =
         if sb.measuredBoot.enable && !externalFinalization
         then pcrPublicKey
+        else null;
+      rootVerityUuidFile =
+        if verityEnabled
+        then "${rootfs}/root.verity-uuid"
         else null;
       rootHashFile =
         if verityEnabled
@@ -171,7 +174,6 @@
       recoveryCopy = lib.toUpper copy;
       recoveryAbi = recovery.abi;
       platform = targetPlatform.system;
-      moduleAbi = config.aos.system.moduleAbi;
     };
   recoveryInitrdA =
     if recoveryEnabled
@@ -208,7 +210,11 @@
         if copy == "a"
         then recoveryInitrdA
         else recoveryInitrdB;
-      osRelease = "${if copy == "a" then recoveryOsReleaseA else recoveryOsReleaseB}/os-release";
+      osRelease = "${
+        if copy == "a"
+        then recoveryOsReleaseA
+        else recoveryOsReleaseB
+      }/os-release";
       secureBootKey =
         if localSecureBootSigning
         then sb.dbKey

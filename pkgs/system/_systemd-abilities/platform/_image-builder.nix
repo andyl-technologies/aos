@@ -138,10 +138,15 @@
           cp ${system.config.system.build.initrd}/initrd.img "$out/inputs/initrd.img"
           cp ${system.config.system.build.initrd}/initrd-stage-contract.json \
             "$out/inputs/initrd-stage-contract.json"
-          cp ${system.config.system.build.initrdStaticAbilityContract}/contract.json \
-            "$out/inputs/initrd-static-ability-contract.json"
-          cp ${system.config.system.build.staticAbilityContract}/contract.json \
-            "$out/inputs/host-static-ability-contract.json"
+          mkdir -p "$out/inputs/initrd-deployment" "$out/inputs/host-deployment"
+          for filename in transaction.json packages.json admission.json admission-sha256 evaluation.json; do
+            cp -L ${system.config.system.build.initrdDeploymentBundle}/"$filename" \
+              "$out/inputs/initrd-deployment/$filename"
+            cp -L ${system.config.system.build.hostDeploymentBundle}/"$filename" \
+              "$out/inputs/host-deployment/$filename"
+          done
+          cp -L ${system.config.system.build.hostDeploymentBundle}/installed.json \
+            "$out/inputs/host-deployment/installed.json"
           ${lib.optionalString recoveryEnabled ''
             cp ${recoveryInitrdA}/initrd.img "$out/inputs/recovery-initrd-a.img"
             cp ${recoveryInitrdB}/initrd.img "$out/inputs/recovery-initrd-b.img"
@@ -188,11 +193,12 @@
           # External finalization builds the UKIs from this recipe, so carry
           # the same root hash token that aos-uki adds for locally built UKIs.
           root_hash=$(cat "$out/inputs/root.roothash")
-          kernel_params_a=$(printf '%s roothash=%s' ${lib.escapeShellArg kernelParams} "$root_hash")
-          kernel_params_b=$(printf '%s roothash=%s' ${lib.escapeShellArg kernelParamsB} "$root_hash")
+          verity_uuid=$(cat ${rootfs}/root.verity-uuid)
+          kernel_params_a=$(printf '%s roothash=%s aos.verity-uuid=%s' ${lib.escapeShellArg kernelParams} "$root_hash" "$verity_uuid")
+          kernel_params_b=$(printf '%s roothash=%s aos.verity-uuid=%s' ${lib.escapeShellArg kernelParamsB} "$root_hash" "$verity_uuid")
 
           ${pkgs.jq}/bin/jq -cS -n \
-            --arg schema aos.image.assembly-recipe/v2 \
+            --arg schema aos.image.assembly-recipe/v3 \
             --arg release ${lib.escapeShellArg version} \
             --arg platform ${lib.escapeShellArg targetPlatform.system} \
             --arg variant ${lib.escapeShellArg systemVariant} \
@@ -200,7 +206,6 @@
             --arg kernelParams "$kernel_params_a" \
             --arg kernelParamsB "$kernel_params_b" \
             --arg recoveryCmdline ${lib.escapeShellArg recoveryCmdline} \
-            --argjson moduleAbi ${toString system.config.aos.system.moduleAbi} \
             --argjson recoveryAbi ${toString recovery.abi} \
             --argjson sbatGeneration ${toString system.config.aos.system.stateVersion} \
             --arg sbatComponent aos \
@@ -259,7 +264,7 @@
             --argjson maxConvertedDownloadMiB ${toString budgets.maxConvertedDownloadMiB} \
             --argjson maxRecoveryBundleMiB ${toString budgets.maxRecoveryBundleMiB} \
             '{schema_version:$schema, release:$release, platform:$platform,
-              system_variant:$variant, kernel_release:$kernelRelease, module_abi:$moduleAbi,
+              system_variant:$variant, kernel_release:$kernelRelease,
               recovery_abi:$recoveryAbi, sbat_generation:$sbatGeneration,
               sbat:{component:$sbatComponent,vendor:$sbatVendor,package:$sbatPackage,url:$sbatUrl},
               command_lines:{slot_a:$kernelParams,slot_b:$kernelParamsB,recovery:$recoveryCmdline},
@@ -365,7 +370,6 @@
       MAX_RUNTIME_CLOSURE_MIB = toString budgets.maxRuntimeClosureMiB;
       MAX_DOWNLOAD_MIB = toString budgets.maxDownloadMiB;
       RUNTIME_CLOSURE_REPORT = "${runtimeClosureAudit}/report.json";
-      IMAGE_MODULE_ABI = toString system.config.aos.system.moduleAbi;
       RECOVERY_ENABLE = lib.optionalString recoveryEnabled "1";
       RECOVERY_ABI = toString recovery.abi;
       RECOVERY_CMDLINE = recoveryCmdline;
@@ -668,7 +672,6 @@
               --argjson maxEspMiB "$MAX_ESP_MIB" \
               --argjson maxRuntimeClosureMiB "$MAX_RUNTIME_CLOSURE_MIB" \
               --argjson maxDownloadMiB "$MAX_DOWNLOAD_MIB" \
-              --argjson moduleAbi "$IMAGE_MODULE_ABI" \
               ${lib.optionalString recoveryEnabled ''              --argjson recoveryAbi "$RECOVERY_ABI" \
                             --argjson recoveryASizeBytes "$recovery_a_size_bytes" \
                             --argjson recoveryBSizeBytes "$recovery_b_size_bytes" \
@@ -703,7 +706,6 @@
                   runtimeClosure: $maxRuntimeClosureMiB,
                   download: $maxDownloadMiB
                 },
-                moduleAbi: $moduleAbi,
                 compatibleTargets: ["bare-metal"],
                 uki: {
                   filename: $ukiFilename,
@@ -784,11 +786,10 @@
                 --arg release "$IMAGE_VERSION" \
                 --arg architecture "$IMAGE_ARCHITECTURE" \
                 --arg platform "$IMAGE_PLATFORM" \
-                --argjson module_abi "$IMAGE_MODULE_ABI" \
                 --argjson recovery_abi "$RECOVERY_ABI" \
                 --argjson components "$components" \
                 '{schema: $schema, release: $release, architecture: $architecture,
-                  platform: $platform, module_abi: $module_abi,
+                  platform: $platform,
                   recovery_abi: $recovery_abi, components: $components}' \
                 > $out/recovery-bundle.json
               ${pkgs.openssl}/bin/openssl dgst -sha256 \

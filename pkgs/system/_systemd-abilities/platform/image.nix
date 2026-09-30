@@ -1,47 +1,14 @@
 ##! Package-owned immutable image planning through the systemd boot stack.
 {
-  abilitySelection ? null,
   config,
   lib,
-  packageArtifactFor,
+  pkgs,
   ...
 }: let
-  builderInterface = lib.abilities.interfaces.imageBuilder.interfaces.builder;
-  builderArtifact = lib.abilities.packageOutput {};
-  packageOutput = package: lib.abilities.packageOutput {inherit package;};
-  systemdToolsOutput = lib.abilities.packageOutput {output = "tools";};
-  dependencyNames = [
-    "aos-recovery"
-    "bash"
-    "binutils"
-    "coreutils"
-    "cpio"
-    "cryptsetup"
-    "dosfstools"
-    "e2fsprogs"
-    "erofs-utils"
-    "fakeroot"
-    "findutils"
-    "gcc-libs"
-    "gawk"
-    "gptfdisk"
-    "grep"
-    "jq"
-    "kmod"
-    "mtools"
-    "openssl"
-    "pe-tools"
-    "qemu"
-    "sbsigntools"
-    "tar"
-    "util-linux"
-    "zstd"
-    "zfs"
-  ];
-  dependencyOutputs = builtins.map packageOutput dependencyNames;
-  artifactFor = name: packageArtifactFor (packageOutput name);
-  systemdPackage = packageArtifactFor builderArtifact;
-  systemdTools = packageArtifactFor systemdToolsOutput;
+  artifactFor = name: pkgs.${name};
+  systemdPackage = pkgs.systemd;
+  systemdTools = pkgs.systemd.tools;
+  selected = true;
   testDiskPackagesFor = {
     mkDerivation,
     sshTools,
@@ -91,28 +58,6 @@
       };
     }
     arguments;
-  builderBindings =
-    if abilitySelection == null
-    then []
-    else abilitySelection.bindingsForImplementation "image-builder";
-  selected =
-    builtins.length builderBindings == 1;
-  selectedBinding =
-    if selected
-    then builtins.head builderBindings
-    else null;
-  providerReady =
-    selected
-    && selectedBinding.implementation.value.provide != null;
-  selectedRequest =
-    if selected
-    then selectedBinding.binding.request
-    else null;
-  selectedBuilderOutput =
-    if selected
-    then config.aos.abilities.compositionOutputs.${selectedRequest}."selected-builder".value or null
-    else null;
-
   normalArtifactPath = let
     tries = config.aos.boot.bootAttemptLimit;
   in "EFI/Linux/aos-generation-0000000001${lib.optionalString (tries != null) "+${toString tries}"}.efi";
@@ -265,12 +210,12 @@
 
   authoredPlatform = {
     _type = "aos-image-builder";
-    artifact = selectedBuilderOutput;
+    artifact = builtins.toString systemdPackage;
     identity = {
       schema = "aos.image.identity/v1";
       builder = {
         name = "systemd-boot";
-        artifact = selectedBuilderOutput;
+        artifact = builtins.toString systemdPackage;
       };
       target = {
         inherit (config.aos.kernel.targetPlatform) system cpu;
@@ -279,8 +224,6 @@
         name = config.aos.system.name;
         version = config.aos.system.version;
         "state-version" = config.aos.system.stateVersion;
-        "module-abi" = config.aos.system.moduleAbi;
-        "config-input-abi" = config.aos.system.configInputAbi;
       };
       kernel = config.aos.kernel.selected.identity;
       boot."normal-artifact-path" = normalArtifactPath;
@@ -303,34 +246,9 @@
       "net.ifnames=0"
     ];
   };
-  builderProjectionReady =
-    selectedBuilderOutput
-    != null
-    && selectedBuilderOutput == builderArtifact;
-  checkedProviderReady =
-    providerReady
-    && (
-      if builderProjectionReady
-      then true
-      else throw "selected image builder projection differs from its checked planning output"
-    );
 in {
   config = {
-    aos.abilities.implementations.image-builder = {
-      description = "Builds immutable disk images through the package-owned systemd boot stack.";
-      activationAvailable = false;
-      interface = builderInterface.alias;
-      artifact = builderArtifact;
-      artifacts = [systemdToolsOutput] ++ dependencyOutputs;
-      methods = [];
-      guarantees = [];
-      providerModule = {
-        artifact = lib.abilities.packageOutput {output = "module";};
-        path = "provider/systemd.nix";
-      };
-    };
-
-    aos.image.platform = lib.mkIf checkedProviderReady authoredPlatform;
+    aos.image.platform = authoredPlatform;
 
     assertions =
       lib.optionals (selected && config.aos.boot.storage.backend == "zfs-zvol") [

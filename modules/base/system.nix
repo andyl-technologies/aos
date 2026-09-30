@@ -51,37 +51,6 @@ in {
       '';
     };
 
-    ## Shared-option-schema ABI integer used to validate configuration generations.
-    ##
-    ## A monotonic integer identifying the base-lib option schema this image
-    ## ships. It is written to `/etc/os-release` as `AOS_MODULE_ABI` (and so
-    ## into the UKI `.osrel` section measured into PCR 11), and the on-host
-    ## resolver reads it to gate every config module's `module_abi_compat`
-    ## band before evaluation. Orthogonal to `stateVersion` (a /var
-    ## state-migration trigger) — the two gate different artifacts at
-    ## different phases and need not coincide.
-    moduleAbi = lib.mkOption {
-      type = lib.types.int;
-      default = 1;
-      description = ''
-        Shared-option-schema ABI integer for this image. Emitted as
-        `AOS_MODULE_ABI` in /etc/os-release (and the measured UKI .osrel),
-        used by the on-host resolver as the pre-eval admission gate for
-        config modules. Bump on a breaking change to the shared option
-        schema. Independent of `stateVersion`.
-      '';
-    };
-
-    configInputAbi = lib.mkOption {
-      type = lib.types.int;
-      default = 2;
-      readOnly = true;
-      description = ''
-        Persistent evaluator-input ABI. Version 2 binds a separately
-        authenticated runtime module set and generation compare-and-swap.
-      '';
-    };
-
     ## System locale (LANG environment variable).
     ##
     ## # Examples
@@ -166,8 +135,6 @@ in {
           HOME_URL="https://aos.dev"
           BUG_REPORT_URL="https://aos.dev/issues"
           AOS_STATE_VERSION=${cfg.stateVersion}
-          AOS_MODULE_ABI=${toString cfg.moduleAbi}
-          AOS_CONFIG_INPUT_ABI=${toString cfg.configInputAbi}
           AOS_PACKAGE_MODULE_LIBRARY=${lib.packageModuleLibrary}
           ${releaseOsMetadata}
         '';

@@ -9,17 +9,20 @@
 ##! Buildable with empty config root — all required options have defaults.
 {
   lib,
+  packageModulesAvailable ? false,
   pkgs,
   ...
 }: {
-  imports = [
-    ./_artifact-backend.nix
-    ./_base-packages.nix
-    ./_full-host-budgets.nix
-    ./_image-builder.nix
-    ./_kernel.nix
-    ./_system-manager.nix
-  ];
+  imports =
+    lib.optionals (!packageModulesAvailable) [../pkgs/system/_aos-host-policy/baseline/boot-policy.nix]
+    ++ [
+      ./_artifact-backend.nix
+      ./_base-packages.nix
+      ./_full-host-budgets.nix
+      ./_image-builder.nix
+      ./_kernel.nix
+      ./_system-manager.nix
+    ];
 
   # Image capability: the evaluator, base module library, and activation
   # machinery live on a read-only EROFS root authenticated by dm-verity.
@@ -27,8 +30,6 @@
   aos.filesystems.zfs.enable = lib.mkDefault false;
   aos.filesystems.rootFsType = lib.mkDefault "erofs";
   aos.filesystems.rootReadOnly = lib.mkDefault true;
-  aos.security.verity.enable = lib.mkDefault true;
-  aos.boot.initrd.abilityHandoff.enable = lib.mkDefault true;
   aos.image.budgets = {
     maxVerityMiB = 16;
     maxInitrdMiB = 132;
@@ -40,7 +41,6 @@
   # Give this policy-neutral image a lower-priority disabled baseline. A normal
   # host.nix assignment, or aos.roles.edge's mkDefault, overrides it without
   # rebuilding the image.
-  aos.services.chrony.enable = lib.mkOverride 1500 false;
-  aos.services.ssh.enable = lib.mkOverride 1500 false;
+  aos.activation.stages.host.configuration = ["${pkgs.aos-host-policy.module}/baseline/edge.nix"];
   aos.image.hostConfigClosures = [pkgs.chrony pkgs.openssh];
 }

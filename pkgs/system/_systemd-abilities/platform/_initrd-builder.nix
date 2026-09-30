@@ -18,13 +18,12 @@
 ##!   7. Upstream systemd initrd units symlinked from ${systemd}/lib/systemd/
 ##!      system/ into /etc/systemd/system/. (AOS systemd ships units at
 ##!      lib/systemd/system/, while generateUnits renders the package-owned
-##!      unit declarations composed through the selected provider.)
+##!      image bootstrap unit declarations.)
 ##!   8. The output of `generateUnits` for the rendered initrd units —
 ##!      `boot.initrd.systemd.services` etc. resolved through the stage-1
 ##!      ToUnit renderers.
-##!   9. The canonical initrd-stage static ability contract. It carries
-##!      package declarations and unresolved early-boot obligations, but no
-##!      runtime grants.
+##!   9. The exact native initrd transaction, selected package closure, and
+##!      admission receipt authenticated by the verified image.
 ##! Arguments:
 ##!   pkgs          — AOS package set
 ##!   lib           — AOS library
@@ -34,11 +33,11 @@
 ##!                   /etc/systemd/system directory (from generateUnits)
 ##!   initrdRuntimeRoots — canonical store paths whose closures are copied
 ##!                   into the initrd and exposed on its interactive PATH.
-##!   initrdNetworkDir — selected provider artifact directory containing
+##!   initrdNetworkDir — native network bootstrap directory containing
 ##!                   rendered systemd-networkd `.network` files; copied into
 ##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
-##!   initrdSourceStageBundle — sealed source-stage template from the completed
-##!                  initrd module fixed point; boot admission makes it executable.
+##!   deploymentBundle — immutable native transaction and admission inputs.
+##!   registration — exact Nix registration stream for the copied closure.
 ##!
 ##! Output: $out/initrd.img (zstd-compressed newc cpio archive)
 {
@@ -51,11 +50,10 @@
   loadModules,
   initrdUnits,
   initrdRuntimeRoots,
-  initrdEvaluationLib,
   initrdNetworkDir ? null,
   handoff,
-  initrdSourceStageBundle,
-  initrdStaticContract,
+  deploymentBundle,
+  registration,
   maskedUnits ? [],
   validateBootIdentity ? false,
 }: let
@@ -386,8 +384,6 @@
   requiredUnits = builtins.map (unit: unit.unit_name) handoff.realization.required_units;
   stageInputPaths = handoff.paths.initrd;
   stageBundleDestination = lib.escapeShellArg ("root" + stageInputPaths.bundle);
-  stageIdentityDestination = lib.escapeShellArg ("root" + stageInputPaths.identity);
-  stageContractDestination = lib.escapeShellArg ("root" + stageInputPaths.contract);
   requiredUnitChecks =
     lib.concatMapStringsSep "\n" (unit: ''
       unit_path=root/etc/systemd/system/${unit}
@@ -634,13 +630,12 @@
           OSREL
           cp root/etc/os-release root/etc/initrd-release
 
-          install -D -m 0444 ${initrdStaticContract.path} ${stageContractDestination}
-          mkdir -p "$(dirname ${stageIdentityDestination})"
-          printf '%s' '${initrdStaticContract.identity}' \
-            > ${stageIdentityDestination}
-          chmod 0444 ${stageIdentityDestination}
-
-          install -D -m 0444 ${initrdSourceStageBundle}/source-stage-bundle.json ${stageBundleDestination}
+          mkdir -p ${stageBundleDestination}
+          cp -a ${deploymentBundle}/. ${stageBundleDestination}/
+          install -D -m 0444 ${registration}/registration root/lib/aos/initrd/registration
+          registrationDigest=$(sha256sum root/lib/aos/initrd/registration)
+          printf '%s\n' "''${registrationDigest%% *}" > root/lib/aos/initrd/registration.sha256
+          mkdir -p root/nix/var/nix/db root/nix/var/nix/gcroots
 
           # Make the interactive stage-1 recovery shells usable:
           cat > root/etc/profile <<PROFILE
@@ -724,7 +719,7 @@
             cp -a ${initrdUnits}/. root/etc/systemd/system/ || true
           fi
 
-          # ── 7a. Network configuration rendered by the selected provider.
+          # ── 7a. Network configuration rendered from native bootstrap policy.
           mkdir -p root/etc/systemd/network
           ${lib.optionalString (initrdNetworkDir != null) ''
             if [ -d ${initrdNetworkDir} ]; then
@@ -763,221 +758,23 @@
           # unit files and dependency links after every copy and mask step.
           ${requiredUnitChecks}
 
-          # ── 8. Trim: drop files that only exist in the store for build-
-          #    time or developer use. Packages keep these on disk systemwide;
-          #    this only removes them from the initrd's cpio. Nix's closure
-          #    tracking already ran, so trimming inside the store-path copies
-          #    doesn't affect the derivation's declared references.
-          #
-          #    Per-category rationale below. Each `find` is guarded with
-          #    `-print0 | xargs -0 -r` (Nix sandbox has nullsafe xargs).
-          echo "==> Trimming build-time and dev artifacts from initrd tree"
-
-          # `cp -a` preserves the store's read-only permissions. The trim
-          # steps below need write access to remove files; cpio later uses
-          # -R +0:+0 to force uid/gid 0 regardless of file mode, so making
-          # the copies writable here doesn't affect the archived perms.
-          chmod -R u+w root/nix/store 2>/dev/null || true
-
-          # glibc: headers, static archives, locale source files, gconv
-          # modules for obscure encodings (keep UTF-8 / UNICODE / ISO-8859-*).
-          find root/nix/store -maxdepth 2 -type d -name '*-glibc-*' -print0 \
-            | xargs -0 -r -I{} sh -c '
-                rm -rf "{}/include" "{}/share/i18n" "{}/var" "{}/share/doc" "{}/share/info"
-                find "{}/lib" -maxdepth 1 -name "*.a" -delete 2>/dev/null
-                # gconv: keep the frequently used converters, rm the rest.
-                # systemd + bash + coreutils only ever hit UTF-8 / ANSI_X3.4 /
-                # ISO-8859-1; other encodings are for i18n locale files we
-                # are not shipping anyway.
-                if [ -d "{}/lib/gconv" ]; then
-                  find "{}/lib/gconv" -type f \( -name "*.so" -o -name "gconv-modules*" \) \
-                    ! -name "UTF-8.so" ! -name "UTF-16.so" ! -name "UTF-32.so" \
-                    ! -name "UNICODE.so" ! -name "ISO8859-1.so" ! -name "ISO8859-15.so" \
-                    ! -name "ANSI_X3.110.so" ! -name "gconv-modules*" -delete 2>/dev/null
-                fi
-              ' _
-
-          # systemd: huge kitchen sink. The initrd needs PID 1 (systemd
-          # itself), systemd-udevd, fstab/cryptsetup/sysroot generators,
-          # tmpfiles, and a handful of cgroup/journal helpers — nothing
-          # else. Drop the long tail.
-          find root/nix/store -maxdepth 2 -type d -name '*-systemd-*' -print0 \
-            | xargs -0 -r -I{} sh -c '
-                rm -rf "{}/lib/security" \
-                       "{}/lib/systemd/boot" \
-                       "{}/lib/systemd/catalog" \
-                       "{}/lib/systemd/portable" \
-                       "{}/lib/sysusers.d" \
-                       "{}/lib/kernel" \
-                       "{}/lib/udev/hwdb.d" \
-                       "{}/lib/rpm" \
-                       "{}/share/doc" "{}/share/man" "{}/share/info" \
-                       "{}/share/factory" "{}/share/polkit-1" "{}/share/bash-completion" \
-                       "{}/share/zsh" "{}/share/dbus-1" "{}/share/locale" \
-                       "{}/include"
-                # NSS plugins: keep libnss_resolve (systemd-resolved DNS
-                # lookups) and libnss_myhostname (127.0.0.1/::1 → hostname).
-                # Drop the dynamic-user ones — initrd has no user database.
-                rm -f "{}/lib/libnss_systemd.so."* \
-                      "{}/lib/libnss_mymachines.so."*
-                # Keep: systemd (PID 1), systemd-udevd, systemd-journald,
-                #       systemd-executor, systemd-networkd + systemd-resolved
-                #       (metadata acquisition needs platform networking),
-                #       systemd-fsck, shutdown, and the generator helpers
-                #       invoked by the initrd units.
-                # systemd-creds and systemd-cryptenroll are deliberately KEPT
-                # (RFC-0006 phase 3): first-boot sealing of /var runs in the
-                # initrd after the checked storage transaction and uses
-                # systemd-cryptenroll --tpm2-*; the systemd-cryptsetup
-                # TPM2-token unlock on later boots also runs here.
-                # systemd-measure stays stripped: it is a build-time tool
-                # (predicting PCR-11 for the registry catalog), not needed
-                # inside the initrd. (No apostrophes in this comment — it
-                # lives inside a single-quoted sh -c block.)
-                # systemd-repart is kept because the selected checked storage
-                # provider uses it to commit the admitted partition plan before
-                # mount-var. systemd-firstboot
-                # stays stripped (hostname is manifest-rendered, not firstboot).
-                for tool in systemd-homed systemd-homework systemd-portabled \
-                            systemd-nspawn systemd-importd systemd-pull \
-                            systemd-firstboot systemd-confext \
-                            systemd-sysext systemd-mountfsd systemd-nsresourced \
-                            systemd-measure \
-                            systemd-analyze systemd-run systemd-stdio-bridge \
-                            systemd-vmspawn systemd-vpick systemd-ssh-generator \
-                            systemd-ssh-proxy systemd-update-utmp bootctl \
-                            coredumpctl hostnamectl localectl resolvectl \
-                            timedatectl userdbctl kernel-install \
-                            systemd-logind systemd-timesyncd \
-                            systemd-journal-gatewayd systemd-journal-remote \
-                            systemd-journal-upload systemd-oomd systemd-pstore \
-                            systemd-boot systemd-coredump systemd-nsresourcework; do
-                  rm -f "{}/bin/$tool" "{}/lib/systemd/$tool" \
-                        "{}/lib/systemd/system-generators/$tool"
-                done
-                # PID 1 also searches its compiled-in store directory. Merely
-                # omitting these names from /lib would therefore leave an
-                # attacker-controlled duplicate path active. The retained
-                # /lib copy is the sole verity generator authority.
-                rm -f "{}/lib/systemd/system-generators/systemd-debug-generator" \
-                      "{}/lib/systemd/system-generators/systemd-run-generator" \
-                      "{}/lib/systemd/system-generators/systemd-veritysetup-generator"
-              ' _
-
-          test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-debug-generator
-          test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-run-generator
-          test ! -e root/nix/store/*-systemd-*/lib/systemd/system-generators/systemd-veritysetup-generator
-          ${lib.optionalString validateBootIdentity ''
-            test ! -e root/lib/systemd/system-generators/systemd-veritysetup-generator
-            test -x root/lib/systemd/aos-systemd-veritysetup-generator
-          ''}
-
-          # openssl: static archives (libcrypto.a / libssl.a) are dev-only,
-          # c_rehash is a perl script, cmake/pkgconfig are dev metadata.
-          find root/nix/store -maxdepth 2 -type d -name '*-openssl-*' -print0 \
-            | xargs -0 -r -I{} sh -c '
-                rm -rf "{}/lib/cmake" "{}/lib/pkgconfig" \
-                       "{}/share/doc" "{}/share/man" \
-                       "{}/include"
-                find "{}/lib" -maxdepth 1 -name "*.a" -delete 2>/dev/null
-                rm -f "{}/bin/c_rehash"
-              ' _
-
-          # ukify + its Python dependency closure: only needed at image-
-          # build time to assemble the UKI, never in the initrd. Since
-          # ukify's shebang references python3 directly, the systemd
-          # closure drags in python3-3.14 (~200 MiB), pefile, and
-          # pyelftools.
-          rm -f root/nix/store/*-systemd-*/bin/ukify \
-                root/nix/store/*-systemd-*/bin/.ukify-unwrapped \
-                root/nix/store/*-systemd-*/lib/systemd/ukify
-          rm -rf root/nix/store/*-python3-3.* \
-                 root/nix/store/*-python3-pefile-* \
-                 root/nix/store/*-python3-pyelftools-*
-
-          # Bootstrap toolchain leftovers — intermediate gcc/binutils/
-          # glibc/coreutils versions used to build the current stdenv
-          # but referenced only via embedded debug paths and old
-          # RPATHs. Nothing in the initrd actually exec's them: the
-          # runtime binaries resolve glibc through their current
-          # $out/lib RPATH. Purge aggressively — reclaims roughly
-          # 1 GiB of uncompressed tmpfs footprint, which is what
-          # makes the initramfs extract fit inside a 2 GiB VM.
-          #
-          # Keep: the currently-linked glibc-2.39 (runtime for
-          # everything in the initrd), and all the gcc-wrapped
-          # paths that chain to it.
-          rm -rf root/nix/store/*-gcc-3.*  \
-                 root/nix/store/*-gcc-4.*  \
-                 root/nix/store/*-gcc-8.*  \
-                 root/nix/store/*-gcc-11.* \
-                 root/nix/store/*-gcc-14.3.0-stage2 \
-                 root/nix/store/*-gcc-14.3.0-wrapped \
-                 root/nix/store/*-binutils-2.20* \
-                 root/nix/store/*-binutils-2.25* \
-                 root/nix/store/*-binutils-2.30* \
-                 root/nix/store/*-binutils-2.41* \
-                 root/nix/store/*-glibc-2.12 \
-                 root/nix/store/*-glibc-2.2.5 \
-                 root/nix/store/*-coreutils-8.32 \
-                 root/nix/store/*-bash-4.2 \
-                 root/nix/store/*-linux-headers-2.6.* \
-                 root/nix/store/*-linux-*-dev
-
-          # The frozen initrd module evaluator retains authenticated package
-          # source roots. Its imports must survive the runtime-closure trim.
-          test -f root${initrdEvaluationLib}/default.nix
-          for module_root in root${initrdEvaluationLib}/initrd-authenticated-roots/*; do
-            [ -L "$module_root" ] || continue
-            target=$(readlink "$module_root")
-            test -e "root$target" || {
-              echo "initrd-builder: frozen evaluator root $target was pruned" >&2
-              exit 1
-            }
-          done
-          # util-linux: man pages, zsh completion, etc.
-          find root/nix/store -maxdepth 2 -type d -name '*-util-linux-*' -print0 \
-            | xargs -0 -r -I{} sh -c '
-                rm -rf "{}/share/man" "{}/share/doc" "{}/share/bash-completion" "{}/include"
-              ' _
-
-          # Everything else: kill shared doc/man/info/include. These are
-          # developer artifacts with zero runtime use.
-          find root/nix/store -maxdepth 3 -type d \( -name man -o -name info -o -name doc -o -name include \) \
-            ! -path 'root/nix/store/*/lib/systemd/*' -print0 \
-            | xargs -0 -r rm -rf
-
-          # The initrd executes recovery tools but never links programs. Drop
-          # static link inputs from copied library directories, retaining shared
-          # libraries and nested plugin directories. Do not follow a lib symlink
-          # back into an immutable store output outside this staging tree.
-          for library_dir in root/nix/store/*/lib; do
-            [ -d "$library_dir" ] && [ ! -L "$library_dir" ] || continue
-            find "$library_dir" -maxdepth 1 -type f \
-              \( -name '*.a' -o -name '*.la' \) -delete
-          done
+          # Admission verifies exact NAR identities. Every retained immutable
+          # output must survive assembly byte-for-byte, including nonexecutables.
+          test -f root${lib.packageModuleLibrary}/default.nix
 
           # Stage admission invokes the exact selected package handlers.
           # Resolve them from the sealed package documents after trimming.
           # A symlink could otherwise resolve against the build host's store
           # instead of an entry retained in the archive.
           ${jq}/bin/jq -r \
-            '.packages as $packages
-             | .environment.providers[]
-             | .implementation as $selected
-             | [ $packages[].implementation.handlers[$selected.handler]?
-                 | select(.artifact == $selected.artifact)
-                 | "\(.artifact.store_path)/\(.entry_point)" ]
-             | unique
-             | if length == 1 then .[0]
-               else error("selected initrd handler is absent or ambiguous") end' \
-            ${initrdSourceStageBundle}/source-stage-bundle.json \
+            '.graph.nodes[] | select(.handler.kind == "process") | .handler.executable' \
+            ${deploymentBundle}/transaction.json \
             | sort -u \
             | while IFS= read -r executable; do
                 test ! -L "root$executable" \
                   && test -f "root$executable" \
                   && test -x "root$executable" || {
-                  echo "initrd-builder: selected provider handler $executable is absent" >&2
+                  echo "initrd-builder: native handler $executable is absent" >&2
                   exit 1
                 }
               done
@@ -1075,8 +872,7 @@
           [ "$contract_size" -gt 1 ]
           truncate -s $((contract_size - 1)) "$out/initrd-stage-contract.json.tmp"
           mv "$out/initrd-stage-contract.json.tmp" "$out/initrd-stage-contract.json"
-          cp ${initrdStaticContract.path} \
-            "$out/initrd-static-ability-contract.json"
+          ln -s ${deploymentBundle} "$out/deployment"
 
           echo "==> $archive_size bytes written to $out/initrd.img"
         '';

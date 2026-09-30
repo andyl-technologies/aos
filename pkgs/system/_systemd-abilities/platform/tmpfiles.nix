@@ -1,18 +1,12 @@
 ##! Package-owned tmpfiles policy supplied by the selected systemd manager.
 {
-  abilitySelection ? null,
   lib,
-  packageArtifactFor,
+  pkgs,
   ...
 }: let
-  managerBindings =
-    if abilitySelection == null
-    then []
-    else abilitySelection.bindingsForImplementation "system-manager";
-  selected = builtins.length managerBindings == 1;
-  cryptsetup = packageArtifactFor (lib.abilities.packageOutput {package = "cryptsetup";});
+  cryptsetup = pkgs.cryptsetup;
 in {
-  config.environment.etc = lib.mkIf selected {
+  config.environment.etc = {
     "tmpfiles.d/aos-base.conf" = {
       text = ''
         # /etc/tmpfiles.d/aos-base.conf
