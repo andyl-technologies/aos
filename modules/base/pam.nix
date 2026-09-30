@@ -108,6 +108,16 @@
       }
     ];
     session = autoOrderRules [
+      # A fresh kernel session keyring per login, revoked when the session
+      # ends, so keys one session links (fscrypt, kerberos, dm-crypt) never
+      # leak into another. Optional: a kernel without keyrings just skips it.
+      {
+        name = "keyinit";
+        enable = service.startSession;
+        control = "optional";
+        modulePath = "${pkgs.linux-pam}/lib/security/pam_keyinit.so";
+        args = ["force" "revoke"];
+      }
       {
         name = "env";
         enable = service.setEnvironment;

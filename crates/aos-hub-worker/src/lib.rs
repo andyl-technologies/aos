@@ -1125,6 +1125,17 @@ mod entry {
         .with_kv(Arc::new(crate::workerkv::WorkerKv::new(
             env.kv(crate::handlers::bindings::KV_SESSIONS)?,
         )));
+        if let Ok(keys) = env.var("HUB_REGISTRY_CACHE_PUBLIC_KEYS") {
+            service = service
+                .with_registry_cache_public_keys(
+                    serde_json::from_str(&keys.to_string()).map_err(|error| {
+                        worker::Error::RustError(format!("registry cache public keys: {error}"))
+                    })?,
+                )
+                .map_err(|error| {
+                    worker::Error::RustError(format!("registry cache public keys: {error:#}"))
+                })?;
+        }
         if let Some(authority) = release_evidence {
             service = service.with_release_evidence(authority);
         }
