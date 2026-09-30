@@ -4,10 +4,10 @@
 //! `begin` retains the graph, `started` retains an exact invocation, `finished`
 //! retains checked results, and `commit` closes the active transaction.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use anyhow::{Result, ensure};
-use aos_ability_plan::module_graph::{CheckedModuleGraph, Lifetime, resolve};
+use aos_ability_plan::module_graph::{CheckedModuleGraph, Effect, Handler, Lifetime, resolve};
 use aos_contract::canonical;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -29,6 +29,7 @@ pub(super) enum Event {
     Finished {
         outputs: Value,
     },
+    Released,
     Commit,
 }
 
@@ -44,7 +45,7 @@ impl JournalPayload for Event {
             Self::Begin { document, .. } => vec![document],
             Self::Started { invocation } => vec![&invocation.input],
             Self::Finished { outputs } => vec![outputs],
-            Self::Commit => vec![],
+            Self::Released | Self::Commit => vec![],
         };
         for value in values {
             bounds
@@ -75,17 +76,28 @@ pub(super) struct State {
     pub retained: BTreeMap<String, Retained>,
     pub established: Vec<String>,
     pub transaction_results: BTreeMap<String, Value>,
+    pub releases: VecDeque<Effect>,
 }
 
 impl State {
     pub fn check(&self, event: &Event) -> Result<()> {
         match event {
-            Event::Begin { document, .. } => {
+            Event::Begin { document, retire } => {
                 ensure!(
                     self.active.is_none() && self.pending.is_none(),
                     "activation transaction already active"
                 );
-                CheckedModuleGraph::decode(&canonical::to_vec(document)?)?;
+                let desired = CheckedModuleGraph::decode(&canonical::to_vec(document)?)?;
+                let unique: std::collections::BTreeSet<_> = retire.iter().collect();
+                ensure!(
+                    unique.len() == retire.len(),
+                    "duplicate retirement identity"
+                );
+                ensure!(
+                    retire.iter().all(|id| self.retained.contains_key(id)
+                        && !desired.graph().nodes.contains_key(id)),
+                    "retirement must name retained, unconfigured state"
+                );
             }
             Event::Started { invocation } => {
                 let graph = self
@@ -96,6 +108,7 @@ impl State {
                     self.pending.is_none(),
                     "activation already has a pending dispatch"
                 );
+                ensure!(self.releases.is_empty(), "dispatch before artifact cleanup");
                 invocation.effect.check_input(&invocation.input)?;
                 let expected = match invocation.action {
                     Action::Apply => {
@@ -150,12 +163,17 @@ impl State {
                     ),
                 }
             }
+            Event::Released => ensure!(
+                !self.releases.is_empty(),
+                "artifact release without retained cleanup"
+            ),
             Event::Commit => {
                 let graph = self
                     .active
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("commit outside an activation"))?;
                 ensure!(self.pending.is_none(), "commit with a pending dispatch");
+                ensure!(self.releases.is_empty(), "commit before artifact cleanup");
                 ensure!(
                     self.transaction_results.len() == graph.graph().nodes.len(),
                     "commit before graph completion"
@@ -232,6 +250,14 @@ impl State {
                     .ok_or_else(|| anyhow::anyhow!("completion without dispatch"))?;
                 match invocation.action {
                     Action::Apply => {
+                        if let Some(previous) = self.retained.get(&invocation.id) {
+                            if artifact(&previous.invocation.effect).is_some()
+                                && artifact(&previous.invocation.effect)
+                                    != artifact(&invocation.effect)
+                            {
+                                self.releases.push_back(previous.invocation.effect.clone());
+                            }
+                        }
                         self.retained.insert(
                             invocation.id.clone(),
                             Retained {
@@ -245,11 +271,17 @@ impl State {
                             .insert(invocation.id.clone(), outputs.clone());
                     }
                     Action::Remove => {
+                        if artifact(&invocation.effect).is_some() {
+                            self.releases.push_back(invocation.effect.clone());
+                        }
                         self.retained.remove(&invocation.id);
                         self.established.retain(|id| id != &invocation.id);
                     }
                 }
                 self.pending = None;
+            }
+            Event::Released => {
+                self.releases.pop_front();
             }
             Event::Commit => {
                 self.active = None;
@@ -258,5 +290,12 @@ impl State {
             }
         }
         Ok(())
+    }
+}
+
+fn artifact(effect: &Effect) -> Option<&str> {
+    match &effect.handler {
+        Handler::Process { artifact, .. } => Some(artifact),
+        Handler::Composition { .. } => None,
     }
 }

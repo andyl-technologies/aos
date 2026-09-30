@@ -56,6 +56,8 @@ struct Host {
     interrupt: bool,
     uncertain: bool,
     invalid_output: bool,
+    interrupt_release: bool,
+    releases: usize,
 }
 
 impl ActivationAdapter for Host {
@@ -98,6 +100,10 @@ impl ActivationAdapter for Host {
     }
 
     fn release(&mut self, _: &Effect) -> Result<()> {
+        self.releases += 1;
+        if std::mem::take(&mut self.interrupt_release) {
+            bail!("simulated artifact cleanup failure");
+        }
         Ok(())
     }
 }
@@ -255,4 +261,79 @@ fn transaction_recovery_does_not_repeat_completed_work() {
     assert_eq!(host.mutations, [Action::Apply, Action::Remove]);
     assert_eq!(results.values().next().unwrap(), &json!({"value": "first"}));
     assert!(recovered.retained().is_empty());
+}
+
+#[test]
+fn artifact_cleanup_is_retried_after_durable_teardown() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("journal");
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    let mut host = Host::default();
+    let cancellation = CancellationToken::default();
+    activation
+        .activate(
+            &graph(Some("first"), "instance"),
+            &BTreeSet::new(),
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+
+    host.interrupt_release = true;
+    let empty = graph(None, "instance");
+    assert!(
+        activation
+            .activate(&empty, &BTreeSet::new(), &mut host, &cancellation)
+            .is_err()
+    );
+    assert!(host.resources.is_empty());
+    drop(activation);
+
+    let mut recovered = Activation::open(&path, JournalLimits::default()).unwrap();
+    recovered
+        .activate(&empty, &BTreeSet::new(), &mut host, &cancellation)
+        .unwrap();
+
+    assert_eq!(host.releases, 2);
+    assert_eq!(host.mutations, [Action::Apply, Action::Remove]);
+    assert!(recovered.retained().is_empty());
+}
+
+#[test]
+fn documentation_changes_preserve_the_effect_revision() {
+    let initial = graph(Some("first"), "instance");
+    let id = initial.graph().order[0].clone();
+    let mut document: Value = serde_json::from_slice(&initial.canonical_bytes().unwrap()).unwrap();
+    document["nodes"][&id]["inputs"] = json!({
+        "value": {"description": "An improved description.", "type": {"kind": "string"}}
+    });
+    let revised = CheckedModuleGraph::decode(&serde_json::to_vec(&document).unwrap()).unwrap();
+
+    assert_eq!(
+        initial.graph().nodes[&id].revision,
+        revised.graph().nodes[&id].revision
+    );
+    assert_ne!(
+        initial.canonical_bytes().unwrap(),
+        revised.canonical_bytes().unwrap()
+    );
+}
+
+#[test]
+fn graph_boundary_rejects_inconsistent_content_and_execution_order() {
+    let initial = graph(Some("first"), "instance");
+    let id = initial.graph().order[0].clone();
+    let original: Value = serde_json::from_slice(&initial.canonical_bytes().unwrap()).unwrap();
+
+    let mut changed_content = original.clone();
+    changed_content["nodes"][&id]["input"]["value"] = json!("tampered");
+    assert!(CheckedModuleGraph::decode(&serde_json::to_vec(&changed_content).unwrap()).is_err());
+
+    let mut omitted_node = original.clone();
+    omitted_node["order"] = json!([]);
+    assert!(CheckedModuleGraph::decode(&serde_json::to_vec(&omitted_node).unwrap()).is_err());
+
+    let mut duplicate_node = original;
+    duplicate_node["order"] = json!([id, id]);
+    assert!(CheckedModuleGraph::decode(&serde_json::to_vec(&duplicate_node).unwrap()).is_err());
 }

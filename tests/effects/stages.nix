@@ -6,7 +6,8 @@ let
     name = "stage-module";
   };
   package = {
-    pname = "fixture";
+    pname = "upstream-name";
+    catalogName = "fixture";
     version = "1";
     outPath = moduleRoot;
     module = moduleRoot;

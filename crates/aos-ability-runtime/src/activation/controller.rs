@@ -104,6 +104,9 @@ impl Activation {
         ) {
             adapter.retain(effect)?;
         }
+        for effect in &self.state.releases {
+            adapter.retain(effect)?;
+        }
         if let Some(pending) = &self.state.pending {
             adapter.retain(&pending.effect)?;
         }
@@ -122,6 +125,7 @@ impl Activation {
         adapter: &mut impl ActivationAdapter,
         cancellation: &CancellationToken,
     ) -> Result<ActivationResults> {
+        self.drain_releases(adapter)?;
         if let Some(pending) = self.state.pending.clone() {
             self.recover(&pending, adapter, cancellation)?;
         }
@@ -160,7 +164,7 @@ impl Activation {
             let effect = &graph.graph().nodes[id];
             let invocation = self.state.application(id)?;
 
-            self.journal.ensure_capacity(2)?;
+            self.journal.ensure_capacity(3)?;
             self.record(Event::Started {
                 invocation: Box::new(invocation.clone()),
             })?;
@@ -190,6 +194,7 @@ impl Activation {
             self.record(Event::Finished {
                 outputs: outputs.clone(),
             })?;
+            self.drain_releases(adapter)?;
             results.insert(id.clone(), outputs);
         }
 
@@ -231,7 +236,7 @@ impl Activation {
             .clone();
         invocation.action = Action::Remove;
         invocation.previous = None;
-        self.journal.ensure_capacity(2)?;
+        self.journal.ensure_capacity(3)?;
         self.record(Event::Started {
             invocation: Box::new(invocation.clone()),
         })?;
@@ -240,7 +245,7 @@ impl Activation {
             Handler::Process { .. } => adapter.invoke(&invocation, cancellation)?,
         };
         self.record(Event::Finished { outputs })?;
-        adapter.release(&invocation.effect)
+        self.drain_releases(adapter)
     }
 
     fn recover(
@@ -268,8 +273,14 @@ impl Activation {
             },
         };
         self.record(Event::Finished { outputs })?;
-        if invocation.action == Action::Remove {
-            adapter.release(&invocation.effect)?;
+        self.drain_releases(adapter)
+    }
+
+    fn drain_releases(&mut self, adapter: &mut impl ActivationAdapter) -> Result<()> {
+        while let Some(effect) = self.state.releases.front().cloned() {
+            self.journal.ensure_capacity(1)?;
+            adapter.release(&effect)?;
+            self.record(Event::Released)?;
         }
         Ok(())
     }

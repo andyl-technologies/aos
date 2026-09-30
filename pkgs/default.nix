@@ -613,6 +613,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     drv = rawMkDerivation lowerArgs;
     abilityAttrs =
       {
+        catalogName = packageName;
         contract = {
           value = packageProjection;
           document = packageProjectionSource;

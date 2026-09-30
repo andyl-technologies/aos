@@ -1860,6 +1860,7 @@ in {
     # Pure ability suites evaluate focused module fixed points. Full image
     # construction belongs to the build and qualification checks.
     ability-suites = import ./tests/abilities {inherit pkgs lib;};
+    effects = import ./tests/effects {inherit pkgs;};
     abilities = pkgs.mkDerivation {
       pname = "aos-ability-checks";
       version = "0";

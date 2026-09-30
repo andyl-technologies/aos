@@ -110,7 +110,7 @@ pub trait ActivationAdapter {
         cancellation: &CancellationToken,
     ) -> Result<Value>;
 
-    /// Releases recovery retention after successful teardown is durable.
+    /// Idempotently releases recovery retention after durable teardown or replacement.
     ///
     /// # Errors
     /// Returns an error if the retained artifact cannot be released.
