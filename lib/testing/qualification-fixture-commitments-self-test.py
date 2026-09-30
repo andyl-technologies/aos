@@ -14,6 +14,7 @@ commitments = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(commitments)
 ROOT = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-fixture"
 BUNDLE = "/nix/store/1123456789abcdfghijklmnpqrsvwxyz-bundle"
+ADOPTION = "/nix/store/3123456789abcdfghijklmnpqrsvwxyz-adoption"
 SOURCE = "/nix/store/2123456789abcdfghijklmnpqrsvwxyz-source"
 EXECUTABLE = ROOT + "/bin/scenario"
 
@@ -23,10 +24,14 @@ class FixtureCommitmentTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        self.inventory = {"schema": "aos.reference-graph/v1", "roots": [BUNDLE, SOURCE],
-                          "paths": [{"path": BUNDLE}, {"path": SOURCE}]}
-        self.evaluations = {"controlled": {"role": "scenario", "locator": BUNDLE,
-                                          "scenario_sources": [SOURCE + "/module.nix"]}}
+        self.inventory = {"schema": "aos.reference-graph/v1", "roots": [BUNDLE, SOURCE, ADOPTION],
+                          "paths": [{"path": BUNDLE}, {"path": SOURCE}, {"path": ADOPTION}]}
+        self.evaluations = {"controlled": {
+            "selected_evaluation": {"role": "scenario", "locator": BUNDLE,
+                                    "scenario_sources": [SOURCE + "/module.nix"]},
+            "adoption_evaluation": {"role": "candidate-baseline", "locator": ADOPTION,
+                                    "scenario_sources": []},
+        }}
         self.inputs = {"registry": {"schema_version": "aos.release.qualification-scenarios/v1",
                                     "platform": "x86_64-linux", "scenarios": {"native": EXECUTABLE}},
                        "fixtures": {EXECUTABLE: ROOT}}
@@ -67,13 +72,31 @@ class FixtureCommitmentTests(unittest.TestCase):
             self.collect()
 
     def test_role_and_source_order_remain_explicit(self):
-        self.evaluations["controlled"]["role"] = "candidate-baseline"
+        self.evaluations["controlled"]["selected_evaluation"]["role"] = "candidate-baseline"
         self.write_documents()
         with self.assertRaisesRegex(ValueError, "disagree with its role"):
             self.collect()
-        self.evaluations["controlled"]["scenario_sources"] = []
+        self.evaluations["controlled"]["selected_evaluation"]["scenario_sources"] = []
         self.write_documents()
         self.assertIn(EXECUTABLE, self.collect()["fixture_inputs"])
+
+    def test_adoption_must_be_an_explicit_original_root(self):
+        self.inventory["roots"].remove(ADOPTION)
+        self.write_documents()
+        with self.assertRaisesRegex(ValueError, "absent from the original export roots"):
+            self.collect()
+
+    def test_both_closed_bindings_are_required(self):
+        original = self.evaluations["controlled"].copy()
+        for missing in ("selected_evaluation", "adoption_evaluation"):
+            self.evaluations["controlled"] = {key: value for key, value in original.items() if key != missing}
+            self.write_documents()
+            with self.assertRaisesRegex(ValueError, "requires both evaluation bindings"):
+                self.collect()
+        self.evaluations["controlled"] = original | {"fallback": original["adoption_evaluation"]}
+        self.write_documents()
+        with self.assertRaisesRegex(ValueError, "requires both evaluation bindings"):
+            self.collect()
 
     def test_unconfigured_executable_and_predeclared_commitments_are_rejected(self):
         self.inputs["registry"]["scenarios"] = {}

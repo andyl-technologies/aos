@@ -86,19 +86,27 @@ def validate_evaluations(evaluations: Any, inventory: Any) -> None:
         raise ValueError("fixture inventory omits an explicit root")
     if not isinstance(evaluations, dict) or len(evaluations) > 4096:
         raise ValueError("fixture evaluations are malformed")
-    for cohort, selection in evaluations.items():
-        if not isinstance(cohort, str) or not cohort or not isinstance(selection, dict) or set(selection) != {"role", "locator", "scenario_sources"}:
-            raise ValueError("fixture evaluation binding is malformed")
-        sources = selection["scenario_sources"]
-        if selection["role"] not in {"candidate-baseline", "scenario"} or not isinstance(sources, list) or len(sources) > 4096:
-            raise ValueError("fixture evaluation source role is malformed")
-        if len(set(sources)) != len(sources) or (selection["role"] == "candidate-baseline") != (sources == []):
-            raise ValueError("fixture evaluation sources disagree with its role")
-        locator = selection["locator"]
-        if store_root(locator) != locator:
-            raise ValueError("fixture evaluation locator is not one bundle root")
-        if any(root not in roots for root in [locator, *(store_root(source) for source in sources)]):
-            raise ValueError("fixture evaluation is absent from the original export roots")
+    for cohort, binding in evaluations.items():
+        if not isinstance(cohort, str) or not cohort or not isinstance(binding, dict) or set(binding) != {"selected_evaluation", "adoption_evaluation"}:
+            raise ValueError("fixture cohort requires both evaluation bindings")
+        for selection in binding.values():
+            validate_selection(selection, roots)
+
+
+def validate_selection(selection: Any, roots: list[str]) -> None:
+    """Binds one explicit target or adoption evaluation to original export roots."""
+    if not isinstance(selection, dict) or set(selection) != {"role", "locator", "scenario_sources"}:
+        raise ValueError("fixture evaluation binding is malformed")
+    sources = selection["scenario_sources"]
+    if selection["role"] not in {"candidate-baseline", "scenario"} or not isinstance(sources, list) or len(sources) > 4096:
+        raise ValueError("fixture evaluation source role is malformed")
+    if len(set(sources)) != len(sources) or (selection["role"] == "candidate-baseline") != (sources == []):
+        raise ValueError("fixture evaluation sources disagree with its role")
+    locator = selection["locator"]
+    if store_root(locator) != locator:
+        raise ValueError("fixture evaluation locator is not one bundle root")
+    if any(root not in roots for root in [locator, *(store_root(source) for source in sources)]):
+        raise ValueError("fixture evaluation is absent from the original export roots")
 
 
 def commit_registry(document: Any) -> dict[str, Any]:
