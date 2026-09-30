@@ -219,6 +219,24 @@ mkDerivation {
 separate from `buildDeps` and `runtimeDeps`. An ordinary payload-only package
 needs no module; it still publishes a native deployment envelope.
 
+A runtime dependency list uses each package's name as its module binding.
+Use a named attribute set when dependencies have distinct roles, including two
+artifacts from the same package:
+
+```nix
+runtimeDeps = {
+  predecessor = previousImage;
+  candidate = nextImage;
+};
+```
+
+The retained module receives `dependencies.predecessor` and
+`dependencies.candidate` as artifact values. Each keeps its actual package name,
+version, selected output, and available outputs; the binding name does not
+rename the package. Interpolation such as `"${dependencies.candidate}"` retains
+the selected artifact in the effect graph. The payload builder consumes the
+same dependency values as an ordinary list.
+
 Selecting an output installs that payload. The envelope's `outputs` map describes
 other authenticated outputs that modules may reference; it does not install or
 retain all of them. Module dependencies make configuration available without
@@ -398,6 +416,14 @@ journal as subsequent package changes. The image supplies the initial desired
 state; subsequent boots reconcile the committed profile and recover pending
 work. They must not overwrite an installed profile with the original image's
 package selection. Container images select a smaller package-managed base.
+
+On the first host activation, the image's immutable bootstrap policy says
+whether platform metadata is required. When required, the bootstrap bridge
+checks the exact committed initrd result, retains the accepted host configuration
+and facts with their original receipt, and evaluates them before any host
+effects run. Later boots recover the existing profile and preserve subsequent
+operator changes. They do not reacquire metadata as a replacement for accepted
+configuration.
 
 Configuration-lower construction is an OS-owned operation. Its immutable output
 is retained by the native transaction and mounted before dependent file and
