@@ -15,8 +15,8 @@ use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerMethod, NixBuildRequestV2, NixBuildResponseV2,
 };
 use aos_sandbox_core::{
-    DescriptorRole, NodeId, ObjectDescriptor, ObjectDigest, PortableMediaType, ProjectId,
-    ProtocolId, ResourceId, SandboxId, validate_descriptor_role,
+    DescriptorRole, NodeId, ObjectDescriptor, ObjectDescriptorVerifier, ObjectDigest,
+    PortableMediaType, ProjectId, ProtocolId, ResourceId, SandboxId, validate_descriptor_role,
 };
 use buffa::Message as _;
 use ed25519_dalek::{Signature, VerifyingKey};
@@ -198,8 +198,6 @@ impl NixPreadmittedRecipeV2 {
             || self.derivation_bytes.len() > 131_072
             || self.derivation.portable.media_type().as_str() != PortableMediaType::Content.as_str()
             || self.derivation.portable.encoded_size() != self.derivation_bytes.len() as u64
-            || self.derivation.portable.digest().as_bytes()
-                != &<[u8; 32]>::from(Sha256::digest(&self.derivation_bytes))
             || self.inputs.is_empty()
             || self.inputs.len() > NIX_MAXIMUM_OBJECTS_V2
             || self.outputs.is_empty()
@@ -209,6 +207,8 @@ impl NixPreadmittedRecipeV2 {
         {
             return Err(NixBuildSchemaErrorV2::Invalid);
         }
+
+        verify_portable_object_bytes(&self.derivation.portable, &self.derivation_bytes)?;
         self.derivation.validate()?;
         let mut reconstruction_records = self.derivation.portable_objects.len();
         for input in &self.inputs {
@@ -283,18 +283,30 @@ impl NixStoreObjectV2 {
             if object.bytes.is_empty()
                 || object.bytes.len() > NIX_REQUEST_MAXIMUM_BYTES_V2
                 || object.descriptor.encoded_size() != object.bytes.len() as u64
-                || object.descriptor.digest().as_bytes() != &<[u8; 32]>::from(Sha256::digest(&object.bytes))
                 || !matches!(object.descriptor.media_type().as_str(), value
                     if value == PortableMediaType::Tree.as_str() || value == PortableMediaType::Directory.as_str())
             {
                 return Err(NixBuildSchemaErrorV2::Invalid);
             }
+
+            verify_portable_object_bytes(&object.descriptor, &object.bytes)?;
         }
 
         // The complete graph owns canonical decoding and rejects unused records.
         portable_graph::validate(self)?;
         Ok(())
     }
+}
+
+// Portable identity commits media type and stored size as well as payload bytes.
+// Role/bounds checks and canonical graph decoding remain separate obligations.
+fn verify_portable_object_bytes(
+    descriptor: &ObjectDescriptor,
+    bytes: &[u8],
+) -> Result<(), NixBuildSchemaErrorV2> {
+    let mut verifier = ObjectDescriptorVerifier::new(descriptor.clone());
+    verifier.update(bytes).map_err(|_| NixBuildSchemaErrorV2::Invalid)?;
+    verifier.finish().map_err(|_| NixBuildSchemaErrorV2::Invalid)
 }
 
 /// Retains signature-verified recipe bytes without granting Controller admission.
