@@ -30,7 +30,19 @@
   realmName = types.strMatching "[A-Z0-9][A-Z0-9.-]*";
   hostName = types.strMatching "[A-Za-z0-9][A-Za-z0-9.:-]*";
   duration = types.strMatching "[1-9][0-9]*[smhd]";
-  aclEntry = types.strMatching "[^\n\r]+";
+  aclEntry = types.refined {
+    type = types.str;
+    constraints = [
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+      {
+        kind = "string-excludes";
+        classes = ["line-break"];
+      }
+    ];
+  };
   hostNames = types.listOf hostName;
   aclEntries = types.listOf aclEntry;
   kdcPort = 88;

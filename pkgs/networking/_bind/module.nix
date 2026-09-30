@@ -11,7 +11,19 @@
   port = types.ints.between 1 65535;
   address = types.strMatching "[A-Za-z0-9:.%_-]+";
   addresses = types.listOf address;
-  server = types.strMatching "[^\n\r]+";
+  server = types.refined {
+    type = types.str;
+    constraints = [
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+      {
+        kind = "string-excludes";
+        classes = ["line-break"];
+      }
+    ];
+  };
   dhcpRange = server;
   servers = types.listOf server;
   dhcpRanges = types.listOf dhcpRange;

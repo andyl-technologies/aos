@@ -68,7 +68,13 @@
     bootstrap.password.name = credential "bootstrap-password";
     settings.port = 6000;
   };
+  settingAccepted = value:
+    (builtins.tryEval (builtins.deepSeq
+      (evaluate {settings.application_name = value;}).config.aos.postgresql.settings
+      true)).success;
 in
+  assert settingAccepted "" && settingAccepted "application\tname";
+  assert !(settingAccepted "application\nname") && !(settingAccepted "application\rname");
   assert assertionsHold standalone && assertionsHold standby;
   assert !assertionsHold missingBootstrap && !assertionsHold missingStandby && !assertionsHold invalidTls && !assertionsHold reservedSetting;
   assert (operations disabled).configuration.operations.file.effects == {};
