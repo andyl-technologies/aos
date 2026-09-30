@@ -7,14 +7,14 @@
 //! alternate device, or environment-selected TCTI crosses this boundary.
 
 use std::num::NonZeroU32;
-use std::os::fd::BorrowedFd;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use aos_sandbox::ProtectedJournalLockCustodyV1;
 use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
 use aos_sandbox_linux::seqpacket::{ReceivedRecord, SeqpacketError, SeqpacketSocket};
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
+use rustix::event::PollFlags;
+use crate::tpm_nv_custody::child::{OwnedHelperChildV1, wait_channel};
 use sha2::{Digest as _, Sha256};
 
 use super::super::{FloorErrorV1, FloorProfileV1};
@@ -27,21 +27,6 @@ use super::service_policy::RetainedFloorServicePolicyV1;
 use super::{AuthenticatedNvObservationV1, AuthenticatedTpmNvIoV1, sealed};
 
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Owns the child immediately, so every failed constructor stops/reaps it.
-struct OwnedHelperChildV1(Child);
-
-impl Drop for OwnedHelperChildV1 {
-    fn drop(&mut self) {
-        // Child is the exact spawned process, not a numeric-PID discovery.
-        // Closing/killing this carrier cannot clear, reset, or undefine NV.
-        // A successful wait fences this owned child's kernel-release work.
-        // Daemon-crash restart additionally needs the actual unit population
-        // barrier; shared flock descriptions alone do not order __fput.
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 pub(in crate::recovery::journal::tpm_floor) struct PhysicalTpmNvIoV1 {
     child: OwnedHelperChildV1,
@@ -223,7 +208,8 @@ impl PhysicalTpmNvIoV1 {
                     .map_err(|_| FloorErrorV1::Unavailable)?,
                 PollFlags::OUT,
                 deadline,
-            )?;
+            )
+            .map_err(|_| FloorErrorV1::Unavailable)?;
             let sent = match locks {
                 Some(locks) => self
                     .channel
@@ -247,7 +233,8 @@ impl PhysicalTpmNvIoV1 {
                     .map_err(|_| FloorErrorV1::Unavailable)?,
                 PollFlags::IN,
                 deadline,
-            )?;
+            )
+            .map_err(|_| FloorErrorV1::Unavailable)?;
             let received = match self.channel.receive(maximum) {
                 Ok(received) => received,
                 Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => continue,
@@ -308,22 +295,5 @@ impl AuthenticatedTpmNvIoV1 for PhysicalTpmNvIoV1 {
             return Err(FloorErrorV1::Provisioning);
         }
         Ok(())
-    }
-}
-
-fn wait_channel(
-    fd: BorrowedFd<'_>,
-    interest: PollFlags,
-    deadline: Instant,
-) -> Result<(), FloorErrorV1> {
-    let remaining = deadline
-        .checked_duration_since(Instant::now())
-        .ok_or(FloorErrorV1::Unavailable)?;
-    let timeout = Timespec::try_from(remaining).map_err(|_| FloorErrorV1::Unavailable)?;
-    let mut descriptors = [PollFd::new(&fd, interest)];
-    match poll(&mut descriptors, Some(&timeout)) {
-        Ok(_) if descriptors[0].revents().contains(interest) => Ok(()),
-        Err(rustix::io::Errno::INTR) => Ok(()),
-        _ => Err(FloorErrorV1::Unavailable),
     }
 }

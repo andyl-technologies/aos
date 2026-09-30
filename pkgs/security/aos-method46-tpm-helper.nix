@@ -36,7 +36,7 @@ in
           script = ''
             $CC -std=c17 -O2 -Wall -Wextra -Werror \
               -I${tpm2-tss}/include/tss2 \
-              helper.c -L${tpm2-tss}/lib -ltss2-esys -ltss2-sys -ltss2-tcti-device -ltss2-mu -lcrypto \
+              helper.c nv_esys.c -L${tpm2-tss}/lib -ltss2-esys -ltss2-sys -ltss2-tcti-device -ltss2-mu -lcrypto \
               -Wl,-rpath,${tpm2-tss}/lib -o aos-method46-tpm-helper
 
             # Includes the actual private validator; only an in-memory TCTI runs.
@@ -92,6 +92,14 @@ in
         (builtins.path {
           path = ./aos-method46-tpm-helper/helper.c;
           name = "aos-method46-tpm-helper.c";
+        })
+        (builtins.path {
+          path = ./aos-method46-tpm-helper/nv_esys.c;
+          name = "aos-private-tpm-nv-esys.c";
+        })
+        (builtins.path {
+          path = ./aos-method46-tpm-helper/nv_esys.h;
+          name = "aos-private-tpm-nv-esys.h";
         })
         (builtins.path {
           path = ./aos-method46-tpm-helper/readpublic-cache-test.c;
