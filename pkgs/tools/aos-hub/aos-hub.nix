@@ -59,6 +59,12 @@
         pathString
         == repoRootString
         || lib.hasPrefix "${repoRootString}/crates" pathString
+        # Authority tests load the disposable TLS pair and trust root at runtime.
+        || pathString == "${repoRootString}/tests"
+        || pathString == "${repoRootString}/tests/fixtures"
+        || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-ca.crt"
+        || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-server.crt"
+        || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-server.key"
         || pathString == "${repoRootString}/docs"
         || pathString == "${repoRootString}/docs/rfcs"
         || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
