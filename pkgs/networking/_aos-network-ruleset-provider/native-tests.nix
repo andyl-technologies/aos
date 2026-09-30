@@ -1,4 +1,4 @@
-##! Verifies merged contributions and manager ownership through native evaluation.
+##! Verifies merged definitions and manager ownership through native evaluation.
 {
   lib,
   package,

@@ -67,7 +67,7 @@ in {
         };
       });
       default = {};
-      description = "Named inbound policy contributions merged before ruleset rendering.";
+      description = "Named inbound policy definitions merged before ruleset rendering.";
     };
     input.options.forwarding = mkOption {
       type = types.attrsOf (types.submodule {
@@ -77,7 +77,7 @@ in {
         };
       });
       default = {};
-      description = "Named forwarding contributions enforced together with the base policy.";
+      description = "Named forwarding definitions enforced together with the base policy.";
     };
     result.options.resource = mkOption {
       type = types.str;
