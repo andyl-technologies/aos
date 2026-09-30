@@ -452,6 +452,25 @@ fn require_append<'data>(
     signer: VerifyingKey,
     scope: [u8; 32],
 ) -> Result<(), NvCustodyErrorV1> {
+    validated_append_rows_v1(
+        sequence, records, transaction, exact_genesis, genesis, signer, scope,
+    )
+    .map(|_| ())
+}
+
+/// Retains only borrowed rows after the existing complete append checks.
+///
+/// The private comparison bridge uses this same successful map for its target
+/// head. Existing schema callers still discard it through `require_append`.
+pub(super) fn validated_append_rows_v1<'data>(
+    sequence: u64,
+    records: &BTreeMap<&'data [u8], &'data [u8]>,
+    transaction: &'data JournalTransaction,
+    exact_genesis: &[u8],
+    genesis: &DeploymentGenesisV1,
+    signer: VerifyingKey,
+    scope: [u8; 32],
+) -> Result<(u64, BTreeMap<&'data [u8], &'data [u8]>), NvCustodyErrorV1> {
     require_rows(sequence, records, exact_genesis, genesis, signer, scope)?;
     let next_rows = records.len().checked_add(1).ok_or(NvCustodyErrorV1::Encoding)?;
     require_deployment_row_bound_v1(next_rows)?;
@@ -474,7 +493,32 @@ fn require_append<'data>(
     let mut after = records.clone();
     after.insert(record.key(), value);
     let next_sequence = sequence.checked_add(3).ok_or(NvCustodyErrorV1::Encoding)?;
-    require_rows(next_sequence, &after, exact_genesis, genesis, signer, scope)
+    require_rows(next_sequence, &after, exact_genesis, genesis, signer, scope)?;
+    Ok((next_sequence, after))
+}
+
+/// Compares the target head through the sole validated append and head engines.
+pub(super) fn compared_prospective_deployment_head_v1<'data>(
+    owner: &VerifiedDeploymentGenesisV1<'_>,
+    sequence: u64,
+    records: &BTreeMap<&'data [u8], &'data [u8]>,
+    transaction: &'data JournalTransaction,
+) -> Result<(u64, [u8; 32]), NvCustodyErrorV1> {
+    owner.recheck()?;
+    let (next_sequence, after) = validated_append_rows_v1(
+        sequence,
+        records,
+        transaction,
+        owner.exact_bytes(),
+        owner.claims(),
+        owner.publisher_verifier(),
+        owner.scope(),
+    )?;
+    let head = canonical_purpose_main_head_v1(
+        NvCustodyEndpointV1::RuntimeDeployment, owner.scope(), next_sequence, &after,
+    )?;
+    owner.recheck()?;
+    Ok((next_sequence, head))
 }
 
 fn array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], NvCustodyErrorV1> {
