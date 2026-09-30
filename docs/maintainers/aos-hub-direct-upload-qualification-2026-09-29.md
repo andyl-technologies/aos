@@ -591,7 +591,60 @@ combined into a new full-suite result.
   test completed in 51.460 seconds. These are local inventory measurements.
 
 These checkpoints establish no current VM qualification, 2 GiB provider
-transfer, queue execution, throughput, clock bound, staging privacy or hosted
-Native acceptance. The unsupported emulator global capacity policy remains
-work in progress. The front shield and documentation detail projection also
-remain work in progress and are not qualified here.
+transfer, deployment queue execution, throughput, clock bound, staging privacy
+or hosted Native acceptance.
+
+## Further reviewed source and focused gates
+
+The source through [`9b6b14872c`](https://github.com/andyl-technologies/aos/commit/9b6b14872ced776165f145efa84f17c831e57576)
+includes the following reviewed increments. The counts describe separate focused
+runs, with overlapping scopes; they are not a new combined suite result.
+
+| Source scope | Reviewed gate and limits |
+| --- | --- |
+| [Immutable front cache and Native shielding, `6569f0e54b`](https://github.com/andyl-technologies/aos/commit/6569f0e54b595fc954ea2ae984d506c4dbdc441e) | Five actual HTTP tests and an isolated default Worker Wasm build passed. Cache reuse is restricted to immutable public policy; object-byte cache hits still require fresh Native grants. Local per-isolate bounds do not establish hosted Cache API behavior or global throughput. |
+| [Canonical documentation projection, `5b6ccb9419`](https://github.com/andyl-technologies/aos/commit/5b6ccb9419e766f068ce4476ae5a6f874baa5879) | Fourteen core, one Native and three integration tests passed for typed storage-local projections and their public rendering. |
+| [Independent acceptance review, `e1700d6cae`](https://github.com/andyl-technologies/aos/commit/e1700d6cae46477313b1cd0770ca4689cf2e82ac) | Thirteen tests passed, including the actual prepare/sign CLI, exact reviewed candidate rechecks, independent Ed25519 verification, raw-report substitution refusals and protected key custody. Selected-file commitments and authenticated driver captures still require independent human review of the actual evidence chain. |
+| [Native custody and guarded Worker controls, `7818742a13`](https://github.com/andyl-technologies/aos/commit/7818742a1300e9dd56fe2a3b8c210ad5d1b1144e) | Native bootstrap nine, SQL fence two, frozen-access nine and accounting one tests passed. Guard gates passed five core, two persisted Worker SQLite and one per-key tests. Worker gates passed four provider-pool tests and six controlled HTTPS driver tests. The packaged fixture observed private-namespace 404 refusal and retained guard state across two SIGKILL restarts. These controlled observations do not qualify a deployed provider namespace or its complete writer set. |
+| [External provider observations, `cad69adcd2`](https://github.com/andyl-technologies/aos/commit/cad69adcd267d63199b247911208bc8f8f7774da) | Five actual TLS cases passed for the source-built provider conformance tool. The tool retains observations; it does not issue a provider contract or accepted runtime artifact. |
+
+A separate full hermetic baseline of 24 selected application packages from
+committed `cad69adcd2` passed 4,892 tests across 102 binaries, with zero failures
+and nine tests skipped. Its terminal build, install, fixup and source scrub
+succeeded. The Native release package with PostgreSQL support built from that
+same source, and all six actual installed tools passed
+`--help`, including authority bootstrap, independent review and provider
+conformance. This baseline excludes future custody coalescing and mirror changes;
+it does not qualify a provider deployment or the integrated fleet. Earlier
+failed runs remain recorded above.
+
+Two additional closed contract corrections are committed:
+
+- [`76df675426`](https://github.com/andyl-technologies/aos/commit/76df675426e1dcb9da9ba1fff45b614932fe2711)
+  records the emulator's unsupported global queue invocation bound explicitly.
+  Hosted queue invocation caps remain required, independently selected policies.
+  Object and provider limits apply per participating isolate; no aggregate
+  global concurrency limit is inferred from them.
+- [`bd485532ab`](https://github.com/andyl-technologies/aos/commit/bd485532ab51de7b171fb54d9428c123ad13c244)
+  binds narinfo qualification to the actual 256 KiB production parser ceiling;
+  seven shared boundary tests passed. Full accepted runtime and bulk-object
+  measurement gates remain in force. The separate 12,535-object publication
+  workload is unchanged.
+
+The current source audit still finds no hybrid upstream mirror job or
+pull-through implementation: full-mirror scheduling is skipped in hybrid, and
+the existing mirror writer requires a local filesystem. Deployment R2 placement
+copy, OCI composition and staging cleanup, cache GC and OCI GC have connected
+remote adapters and controller paths. Their presence does not qualify their
+deployed execution. Unsupported external-provider copy, OCI composition and
+conditional deletion remain explicit per-binding capability restrictions under
+[RFC0023's workflow contract](../rfcs/0023-hub-hybrid-topology/04-workflows.md).
+Whole-Hub PostgreSQL/Worker capture and restore remain the later portability
+phase; the current snapshot CLI exposes SQLite capture and verification.
+
+Current integrated VM/fleet execution, actual 2 GiB provider transfer,
+complete queue and mixed-load measurements,
+clock bounds, staging privacy and writer closure, hosted Native acceptance,
+runtime parity, latency and byte-direction budgets remain qualification gates.
+Earlier failed runs and unknown originals remain recorded above. No production
+readiness or hosted performance result follows from these focused source tests.
