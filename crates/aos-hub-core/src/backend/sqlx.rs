@@ -114,7 +114,14 @@ impl SqlxBackend {
             // A `:memory:` database lives in one connection; a larger pool would
             // hand out separate empty databases and break every query that
             // reads back what a prior one wrote.
-            pool_options = pool_options.max_connections(1);
+            // Cancellation during an acquisition health check can discard the
+            // only connection and its database. Keep acquisition free of that
+            // await point, and retain the connection for the pool's lifetime.
+            pool_options = pool_options
+                .max_connections(1)
+                .test_before_acquire(false)
+                .idle_timeout(None)
+                .max_lifetime(None);
         }
         let retry_deadline = tokio::time::Instant::now() + SQLITE_OPEN_LOCK_RETRY_LIMIT;
         let pool = loop {
@@ -285,6 +292,10 @@ impl super::Backend for SqlxBackend {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "sqlx/sqlite_tests.rs"]
+mod sqlite_tests;
 
 /// The sqlite binding, decoding, and statement helpers.
 ///
