@@ -27,7 +27,7 @@
     if cfg.registry == "andyl/main"
     then "andyl"
     else builtins.replaceStrings ["/"] ["-"] cfg.registry;
-  expectedUrl = "https://cdn.aos.andyl.org/${cfg.registry}/";
+  expectedUrl = "${cfg.registryOrigin}/${cfg.registry}/";
 in {
   options.aos.release = {
     enabled = lib.mkOption {
@@ -60,10 +60,22 @@ in {
       description = "Slash-free local APM alias and trust-line prefix.";
     };
 
+    registryOrigin = lib.mkOption {
+      type = lib.types.str;
+      default = "https://cdn.aos.andyl.org";
+      description = "HTTPS delivery origin of the Hub deployment receiving these artifacts.";
+    };
+
+    hubUrl = lib.mkOption {
+      type = lib.types.str;
+      default = "https://aos.andyl.org";
+      description = "HTTPS control origin of the Hub deployment receiving these artifacts.";
+    };
+
     url = lib.mkOption {
       type = lib.types.str;
-      default = "https://cdn.aos.andyl.org/andyl/main/";
-      description = "Canonical same-origin Hub URL baked into both artifact forms.";
+      default = expectedUrl;
+      description = "Canonical registry delivery URL baked into disk and OCI artifacts.";
     };
 
     channel = lib.mkOption {
@@ -88,6 +100,10 @@ in {
   config = lib.mkIf cfg.enabled {
     assertions = [
       {
+        assertion = builtins.all (origin: builtins.match "https://[A-Za-z0-9.-]+(:[0-9]+)?" origin != null) [cfg.registryOrigin cfg.hubUrl];
+        message = "release delivery and Hub origins must be HTTPS origins without credentials or paths";
+      }
+      {
         assertion = cfg.trustKeys != [];
         message = "published release artifacts require at least one baked registry trust key";
       }
@@ -108,7 +124,7 @@ in {
       }
       {
         assertion = cfg.url == expectedUrl;
-        message = "public release artifacts must use the canonical production Hub registry URL";
+        message = "release artifacts must use their deployment delivery origin and signed registry path";
       }
       {
         assertion =
@@ -124,11 +140,14 @@ in {
     ];
 
     aos.apm.registries = lib.mkForce {${cfg.clientName} = registry;};
+    environment.sessionVariables.AOS_HUB = cfg.hubUrl;
 
     environment.etc = {
       "aos/release-profile".text = ''
         tier=${cfg.tier}
         registry=${cfg.registry}
+        registry_url=${cfg.url}
+        hub_url=${cfg.hubUrl}
         client_name=${cfg.clientName}
         channel=${cfg.channel}
         root_epoch=${toString cfg.rootEpoch}
@@ -166,6 +185,7 @@ in {
       runtime.environment = {
         AOS_RELEASE_TIER = cfg.tier;
         AOS_REGISTRY = cfg.registry;
+        AOS_HUB = cfg.hubUrl;
         AOS_CHANNEL = cfg.channel;
       };
       annotations = {
@@ -181,6 +201,8 @@ in {
         );
         "dev.andyl.aos.release.tier" = cfg.tier;
         "dev.andyl.aos.registry" = cfg.registry;
+        "dev.andyl.aos.registry-url" = cfg.url;
+        "dev.andyl.aos.hub-url" = cfg.hubUrl;
         "dev.andyl.aos.channel" = cfg.channel;
         "dev.andyl.aos.registry-root-epoch" = toString cfg.rootEpoch;
       };
