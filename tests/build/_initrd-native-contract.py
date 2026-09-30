@@ -16,7 +16,7 @@ def require(condition, message):
 
 
 def confined(root, relative, store, depth=0):
-    """Resolve only one final immutable store alias inside the archive."""
+    """Resolve fixed bundle directories and bounded immutable member aliases."""
     require(depth < 8, "cyclic native archive alias")
     parts = Path(relative).parts
     require(parts and all(part not in (".", "..", "/") for part in parts), "unnormalized archive path")
@@ -24,10 +24,18 @@ def confined(root, relative, store, depth=0):
     for index, part in enumerate(parts):
         path = path / part
         if path.is_symlink():
-            require(index == len(parts) - 1, "linked archive parent")
+            bundle = str(Path(*parts[:index + 1])) in {
+                "lib/aos/initrd/deployment", "usr/lib/aos/initrd/deployment",
+                "usr/lib/aos/host/deployment",
+            }
+            require(index == len(parts) - 1 or (depth == 0 and bundle), "linked archive parent")
             target = os.readlink(path)
             require(target.startswith("/nix/store/"), "document alias escapes store")
-            return confined(root, str(Path(store) / target.removeprefix("/nix/store/")), store, depth + 1)
+            suffix = target.removeprefix("/nix/store/")
+            if index != len(parts) - 1:
+                require("/" not in suffix and suffix not in ("", ".", ".."), "bundle alias is not a store root")
+            relative_target = Path(store) / suffix
+            return confined(root, str(relative_target.joinpath(*parts[index + 1:])), store, depth + 1)
     require(stat.S_ISREG(path.stat().st_mode), "document is not regular")
     require(path.stat().st_size <= LIMIT, "oversized native document")
     return path
