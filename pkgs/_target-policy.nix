@@ -252,8 +252,25 @@ in rec {
     selectedPackages = map (
       name: packages.${name}
     ) (publicationEligibleNames system names);
-    publicationArtifacts = builtins.concatMap (package:
-      lib.optional (package ? deploymentArtifact) package.deploymentArtifact
+    publicationArtifacts = builtins.concatMap (package: let
+      selectedOutput = package.outputName or "out";
+      outputs =
+        if selectedOutput == "out"
+        then package.outputs or ["out"]
+        else [selectedOutput];
+      # Each published output has its own envelope binding and provenance.
+      # Root those exact companions before the release builder realizes them.
+      deployments = builtins.concatMap (output: let
+        selected = package.${output} or package;
+      in
+        lib.optional (selected ? deploymentArtifact) selected.deploymentArtifact)
+      outputs;
+      deploymentDerivations = map (artifact: builtins.unsafeDiscardStringContext artifact.drvPath) deployments;
+    in
+      deployments
+      ++ lib.optional (package ? deploymentArtifact
+        && !(builtins.elem (builtins.unsafeDiscardStringContext package.deploymentArtifact.drvPath) deploymentDerivations))
+      package.deploymentArtifact
       ++ lib.optional (package ? documentationArtifact) package.documentationArtifact
       ++ lib.optional (package ? qualificationArtifact) package.qualificationArtifact)
     selectedPackages;

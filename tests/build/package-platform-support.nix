@@ -9,7 +9,8 @@
     if decision.state == "eligible"
     then fields == ["state"]
     else
-      decision.state == "not-applicable"
+      decision.state
+      == "not-applicable"
       && fields == ["reason" "rule" "state"];
   publicationMatrix = support.publicationMatrix packageNames;
   releaseInventory = support.releaseInventory packageNames;
@@ -66,91 +67,80 @@
       };
     };
   };
+  nativeArtifact = name:
+    builtins.derivation {
+      inherit name;
+      system = pkgs.stdenv.hostPlatform.system;
+      builder = "${pkgs.bash}/bin/bash";
+      args = ["-c" ''${pkgs.coreutils}/bin/mkdir -p "$out"''];
+    };
+  deployment = nativeArtifact "platform-probe-deployment";
+  documentation = nativeArtifact "platform-probe-documentation";
+  qualification = nativeArtifact "platform-probe-qualification";
+  moduleSource = builtins.path {
+    path = ./fixtures/ability-module-directory;
+    name = "platform-probe-module";
+  };
+  companionPackage =
+    (nativeArtifact "platform-probe")
+    // {
+      pname = "aos";
+      version = "1";
+      src = nestedSource;
+      module = moduleSource;
+      out = (nativeArtifact "platform-probe").out // {deploymentArtifact = deployment;};
+      deploymentArtifact = deployment;
+      documentationArtifact = documentation;
+      qualificationArtifact = qualification;
+      meta = {
+        description = "native companion fixture";
+        license = "MIT";
+        maintainers = ["AOS test"];
+      };
+    };
   companionProbe = support.releaseDerivations {
     system = "x86_64-linux";
     names = ["aos"];
-    packages.aos = {
-      type = "derivation";
-      drvPath = "/nix/store/22222222222222222222222222222222-example.drv";
-      outPath = "/nix/store/33333333333333333333333333333333-example";
-      out = "/nix/store/33333333333333333333333333333333-example";
-      outputs = ["out"];
-      src = nestedSource;
-      pname = "aos";
-      version = "1";
-      meta = {
-        description = "companion fixture";
-        license = "MIT";
-        maintainers = ["AOS test"];
-      };
-      module = "/nix/store/55555555555555555555555555555555-example-module";
-      contract = {
-        value.package_module = {
-          artifact = {
-            package = "aos";
-            output = "module";
-          };
-          path = "module.nix";
-        };
-        document = {
-          type = "derivation";
-          drvPath = "/nix/store/66666666666666666666666666666666-example-contract.drv";
-          outPath = "/nix/store/77777777777777777777777777777777-example-contract";
-          __toString = value: value.outPath;
-        };
-        selectors = [
-          {
-            package = "aos";
-            output = "module";
-          }
-          {
-            package = "aos";
-            output = "out";
-          }
-        ];
-      };
-    };
+    packages.aos = companionPackage;
   };
-  probeOnlyContractProbe = support.releaseDerivations {
+  probeOnlyQualificationProbe = support.releaseDerivations {
     system = "x86_64-linux";
     names = ["aos"];
-    packages.aos = {
-      type = "derivation";
-      drvPath = "/nix/store/88888888888888888888888888888888-probe-only.drv";
-      outPath = "/nix/store/99999999999999999999999999999999-probe-only";
-      out = "/nix/store/99999999999999999999999999999999-probe-only";
-      outputs = ["out"];
-      src = nestedSource;
-      pname = "aos";
-      version = "1";
-      meta = {
-        description = "probe-only fixture";
-        license = "MIT";
-        maintainers = ["AOS test"];
-      };
-      contract = {
-        value.package_module = null;
-        document = {
-          type = "derivation";
-          drvPath = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-probe-contract.drv";
-          outPath = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-probe-contract";
-          __toString = value: value.outPath;
-        };
-        selectors = [
-          {
-            package = "self";
-            output = "out";
-          }
-        ];
-      };
-    };
+    packages.aos = builtins.removeAttrs companionPackage ["module" "documentationArtifact"];
   };
-  abilityModulePayload = abilities:
+  locator = artifact: {
+    derivation = builtins.unsafeDiscardStringContext artifact.drvPath;
+    output = "out";
+    store_path = builtins.unsafeDiscardStringContext (toString artifact);
+  };
+  namedDeployment = nativeArtifact "platform-probe-dev-deployment";
+  multiOutputPayload = builtins.derivation {
+    name = "platform-multi-output-probe";
+    system = pkgs.stdenv.hostPlatform.system;
+    outputs = ["out" "dev"];
+    builder = "${pkgs.bash}/bin/bash";
+    args = ["-c" ''${pkgs.coreutils}/bin/mkdir -p "$out" "$dev"''];
+  };
+  multiOutputPackage =
+    companionPackage
+    // {
+      inherit (multiOutputPayload) drvPath outPath outputs;
+      out = multiOutputPayload.out // {deploymentArtifact = deployment;};
+      dev = multiOutputPayload.dev // {deploymentArtifact = namedDeployment;};
+    };
+  multiOutputSelection = {
+    system = "x86_64-linux";
+    names = ["aos"];
+    packages.aos = multiOutputPackage;
+  };
+  multiOutputInventory = builtins.head (support.releaseDerivations multiOutputSelection).packages;
+  multiOutputRoots = map (artifact: builtins.unsafeDiscardStringContext artifact.drvPath) (support.releaseDerivationRoots multiOutputSelection);
+  abilityModulePayload = module:
     pkgs.mkDerivation {
       pname = "ability-module-layout-probe";
       version = "1";
       src = null;
-      inherit abilities;
+      inherit module;
       phases = [
         {
           name = "install";
@@ -177,10 +167,14 @@
       package:
         [package.derivation]
         ++ builtins.filter (path: path != null) (map (output: output.derivation or null) package.outputs)
+        ++ map (artifact: artifact.derivation) (builtins.filter (artifact: artifact != null) (map (output: output.deployment) package.outputs))
         ++ (
-          if package ? contract && package.contract != null
-          then [package.contract.document.derivation]
-          else []
+          map (artifact: artifact.derivation)
+          (builtins.filter (artifact: artifact != null) [
+            package.deployment
+            package.module_documentation
+            package.qualification
+          ])
         )
     )
     releaseDerivations.packages);
@@ -220,64 +214,30 @@ in
   assert (builtins.head companionProbe.packages).outputs
   == [
     {
-      derivation = "/nix/store/22222222222222222222222222222222-example.drv";
+      derivation = builtins.unsafeDiscardStringContext companionPackage.drvPath;
       name = "out";
       output = "out";
-      store_path = "/nix/store/33333333333333333333333333333333-example";
-    }
-    {
-      derivation = null;
-      name = "module";
-      output = null;
-      store_path = "/nix/store/55555555555555555555555555555555-example-module";
+      store_path = builtins.unsafeDiscardStringContext (toString companionPackage);
+      deployment = locator deployment;
     }
   ];
-  assert (builtins.head companionProbe.packages).contract
-  == {
-    document = {
-      derivation = "/nix/store/66666666666666666666666666666666-example-contract.drv";
-      output = "out";
-      store_path = "/nix/store/77777777777777777777777777777777-example-contract";
-    };
-    package_module = {
-      package = "aos";
-      output = "module";
-      store_path = "/nix/store/55555555555555555555555555555555-example-module";
-    };
-    selectors = [
-      {
-        package = "aos";
-        output = "module";
-        store_path = "/nix/store/55555555555555555555555555555555-example-module";
-      }
-      {
-        package = "aos";
-        output = "out";
-        store_path = "/nix/store/33333333333333333333333333333333-example";
-      }
-    ];
-  };
-  assert (builtins.head probeOnlyContractProbe.packages).contract.package_module == null;
-  assert (builtins.head probeOnlyContractProbe.packages).contract.selectors
+  assert (builtins.head companionProbe.packages).deployment == locator deployment;
+  assert (builtins.head companionProbe.packages).module_documentation == locator documentation;
+  assert (builtins.head companionProbe.packages).qualification == locator qualification;
+  assert builtins.elem (toString moduleSource) (builtins.head companionProbe.packages).source_store_paths;
+  assert (builtins.head probeOnlyQualificationProbe.packages).module_documentation == null;
+  assert (builtins.head probeOnlyQualificationProbe.packages).qualification == locator qualification;
+  assert (builtins.head probeOnlyQualificationProbe.packages).deployment == locator deployment;
+  assert map (output: output.deployment) multiOutputInventory.outputs
   == [
-    {
-      package = "self";
-      output = "out";
-      store_path = "/nix/store/99999999999999999999999999999999-probe-only";
-    }
+    (locator deployment)
+    (locator namedDeployment)
   ];
-  assert (builtins.head probeOnlyContractProbe.packages).outputs
-  == [
-    {
-      derivation = "/nix/store/88888888888888888888888888888888-probe-only.drv";
-      name = "out";
-      output = "out";
-      store_path = "/nix/store/99999999999999999999999999999999-probe-only";
-    }
-  ];
+  assert builtins.elem deployment.drvPath multiOutputRoots;
+  assert builtins.elem namedDeployment.drvPath multiOutputRoots;
   assert fileModuleRejected;
   assert missingEntryRejected;
-  assert builtins.attrNames directoryModulePayload.abilities.interfaces == [];
+  assert directoryModulePayload ? deploymentArtifact && directoryModulePayload ? documentationArtifact;
   assert releaseSourcesComplete;
   assert builtins.length (releasePackageByName "aos").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "docker-compose").source_store_paths >= 2;
@@ -287,9 +247,11 @@ in
   assert releaseInventory.platforms == support.platforms;
   assert builtins.all (
     package:
-      builtins.map (cell: cell.platform) package.platforms == support.platforms
+      builtins.map (cell: cell.platform) package.platforms
+      == support.platforms
       && builtins.all (cell: decisionMatchesRustContract cell.decision) package.platforms
-  ) releaseInventory.packages;
+  )
+  releaseInventory.packages;
   assert !implicitReleaseInventory.success;
   assert eligibleDecision.state == "eligible";
   assert builtins.attrNames eligibleDecision == ["state"];
@@ -309,6 +271,7 @@ in
       derivation = builtins.unsafeDiscardStringContext pkgs.dnsutils.drvPath;
       name = "out";
       output = "dnsutils";
+      deployment = locator pkgs.dnsutils.deploymentArtifact;
       store_path = builtins.unsafeDiscardStringContext (toString pkgs.dnsutils);
     }
   ];
@@ -318,6 +281,7 @@ in
       derivation = builtins.unsafeDiscardStringContext pkgs.getent.drvPath;
       name = "out";
       output = "getent";
+      deployment = locator pkgs.getent.deploymentArtifact;
       store_path = builtins.unsafeDiscardStringContext (toString pkgs.getent);
     }
   ];
@@ -327,7 +291,8 @@ in
   assert builtins.toString pkgs.getent != builtins.toString pkgs.glibc.out;
   assert builtins.all (
     package: builtins.length package.platforms == builtins.length support.platforms
-  ) releaseInventory.packages;
+  )
+  releaseInventory.packages;
   assert (decisionFor "systemd" "x86_64-linux").state == "eligible";
   assert (decisionFor "darwin-runtimes" "x86_64-linux").state == "not-applicable";
   assert (decisionFor "aos-hub-e2e" "x86_64-linux").state == "not-applicable";

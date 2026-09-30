@@ -13,6 +13,13 @@
   sortedPackageNames = builtins.sort builtins.lessThan packageNames;
   mkPackageProbe = import ./qualification-package-probe.nix {inherit pkgs lib;};
   packageProbeSpec = import ./qualification-package-spec.nix {inherit lib;};
+  nativeProbeFor = packageName: let
+    package = pkgs.${packageName};
+    document = package.qualificationDocument or (throw "qualification package '${packageName}' has no native qualification document");
+  in
+    assert package ? qualificationArtifact;
+    assert document.schema == "aos.package.qualification";
+      document.probe;
   harnessNamesIn = value:
     if builtins.isList value
     then builtins.concatMap harnessNamesIn value
@@ -23,7 +30,7 @@
       else builtins.concatMap harnessNamesIn (builtins.attrValues value)
     else [];
   requiredHarnessNames = builtins.sort builtins.lessThan (lib.unique (builtins.concatMap (packageName:
-    harnessNamesIn pkgs.${packageName}.contract.value.qualification.package_probe)
+    harnessNamesIn (nativeProbeFor packageName))
   sortedPackageNames));
   # Python drives every probe. Other tools enter the executor closure only
   # when a typed harness fragment requests them.
@@ -58,14 +65,13 @@
     harness = optionalHarnesses.${name} or (throw "unknown qualification harness '${name}'");
   in "export ${harness.variable}=${lib.escapeShellArg harness.executable}")
   optionalHarnessNames);
-  probeFor = packageName: let
-    package = pkgs.${packageName};
-    contract = package.contract or (throw "qualification package '${packageName}' has no contract");
-    packageProbe = contract.value.qualification.package_probe or (throw "qualification package '${packageName}' has no package probe");
-  in
+  probeFor = packageName:
     mkPackageProbe {
       name = packageName;
-      spec = packageProbeSpec {inherit packageName packageProbe;};
+      spec = packageProbeSpec {
+        inherit packageName;
+        packageProbe = nativeProbeFor packageName;
+      };
     };
   probes = builtins.listToAttrs (map (packageName: {
       name = packageName;
