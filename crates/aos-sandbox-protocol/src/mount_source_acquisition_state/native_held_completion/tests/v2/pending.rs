@@ -5,6 +5,9 @@
 
 use super::*;
 
+#[path = "../../ordinary_inventory_v6/tests.rs"]
+mod ordinary_inventory_vectors;
+
 fn pending_graphs() -> (Fixture, RootNativeHeldGraphV2, RootNativeHeldGraphV2) {
     let fixture = Fixture::new(true);
     let root1 = sign(fixture.prepared());

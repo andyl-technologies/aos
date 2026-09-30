@@ -102,10 +102,34 @@ pub(super) fn validate_lineages(table: &SourceAcquisitionTableV2) -> Result<()> 
         .into_iter()
         .flatten()
         {
-            if successors.contains_key(&reference.id) {
-                return Err(state_error(
-                    "provider head Inventory tail has an unreferenced successor",
-                ));
+            if let Some(successor_id) = successors.get(&reference.id) {
+                // Reservation retains the consumed tail while Head.pending
+                // names its exact Reserved child. Only that immediate current
+                // child may account for the tail's successor; the full pending
+                // chain and Head/predecessor validators still run below.
+                let current_pending_child = head
+                    .pending_attempt
+                    .and_then(|pending| {
+                        table.provider_attempts
+                            .get(&pending.id)
+                            .map(|attempt| (pending, attempt))
+                    })
+                    .is_some_and(|(pending, attempt)| {
+                        pending.id == *successor_id
+                            && pending.revision == attempt.revision
+                            && pending.record_digest == attempt.record_digest
+                            && attempt.method == ProviderMethodV2::Inventory
+                            && attempt.owner == ProviderQueryOwnerV2::Inventory
+                            && attempt.scope == head.scope
+                            && matches!(attempt.state, ProviderAttemptStateV2::Reserved)
+                            && !successors.contains_key(&pending.id)
+                    });
+
+                if !current_pending_child {
+                    return Err(state_error(
+                        "provider head Inventory tail has an unreferenced successor",
+                    ));
+                }
             }
         }
         if let Some(barrier) = &head.recovery_barrier {
