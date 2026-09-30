@@ -2,24 +2,46 @@
 //!
 //! Native package references use a directory containing `options.json` and optional
 //! builder target metadata. The regular-file decoder serves single-document
-//! artifacts. Both preserve exact bytes and reject extra nodes or trailing data.
+//! artifacts. The typed root reader also exposes bounded symlink targets for
+//! consumers that validate and retain those targets before following them. All
+//! readers preserve exact bytes and reject extra nodes or trailing data.
+//!
+//! Each token uses NAR's length-prefixed, eight-byte-aligned string encoding.
+//! The supported single-node profiles have these token sequences:
+//!
+//! ```text
+//! nix-archive-1 ( type regular contents <exact document bytes> )
+//! nix-archive-1 ( type symlink target /nix/store/.../input.json )
+//! ```
 
 use crate::{DocumentationError, MAX_DOCUMENT_BYTES, Result};
 
 const NAR_MAGIC: &[u8] = b"nix-archive-1";
 
-/// Decodes one bounded, non-executable regular-file NAR.
+const MAX_SYMLINK_TARGET_BYTES: usize = 4096;
+
+/// Identifies one checked native document NAR root without following links.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NarRoot<'a> {
+    /// Borrows the exact non-executable regular-file contents.
+    Regular(&'a [u8]),
+    /// Borrows a UTF-8 symlink target whose destination remains unchecked.
+    Symlink(&'a str),
+}
+
+/// Decodes one bounded regular-file or symlink NAR root.
 ///
-/// The returned slice borrows the exact file contents from `input`. Every NAR
-/// string length and padding byte is checked before advancing, and no trailing
-/// bytes are accepted.
+/// Regular files retain the same profile as [`decode_single_file_nar`]. Symlink
+/// targets are nonempty UTF-8 strings of at most 4096 bytes without NUL bytes.
+/// This reader checks archive structure only: callers must validate destination
+/// authority, path normalization, link depth and cycles, and retain each target
+/// before reading it. It never resolves a target on the host filesystem.
 ///
 /// # Errors
-///
-/// Returns [`DocumentationError::Invalid`] when the archive is truncated,
-/// over-sized, non-canonical, executable, not a regular root file, or carries
-/// any additional node or trailing data.
-pub fn decode_single_file_nar(input: &[u8]) -> Result<&[u8]> {
+/// Returns [`DocumentationError::Invalid`] for oversized, malformed, executable,
+/// directory, unknown, truncated, or trailing archive data, invalid padding, or
+/// an empty, oversized, non-UTF-8, or NUL-containing symlink target.
+pub fn decode_document_root_nar(input: &[u8]) -> Result<NarRoot<'_>> {
     let max_nar = MAX_DOCUMENT_BYTES
         .checked_add(512)
         .ok_or_else(|| DocumentationError::Invalid("NAR size limit overflow".into()))?;
@@ -34,32 +56,73 @@ pub fn decode_single_file_nar(input: &[u8]) -> Result<&[u8]> {
     decoder.expect_string(NAR_MAGIC, "archive magic")?;
     decoder.expect_string(b"(", "root open")?;
     decoder.expect_string(b"type", "root type key")?;
-    decoder.expect_string(b"regular", "root type")?;
-    let next = decoder.string("contents key")?;
-    if next == b"executable" {
-        return Err(DocumentationError::Invalid(
-            "documentation NAR root must not be executable".into(),
-        ));
-    }
-    if next != b"contents" {
-        return Err(DocumentationError::Invalid(
-            "documentation NAR root must contain one regular file".into(),
-        ));
-    }
-    let contents = decoder.string("file contents")?;
-    if contents.is_empty() || contents.len() > MAX_DOCUMENT_BYTES {
-        return Err(DocumentationError::Invalid(format!(
-            "documentation file size {} is outside 1..={MAX_DOCUMENT_BYTES}",
-            contents.len()
-        )));
-    }
+    let root = match decoder.string("root type")? {
+        b"regular" => {
+            let next = decoder.string("contents key")?;
+            if next == b"executable" {
+                return Err(DocumentationError::Invalid(
+                    "documentation NAR root must not be executable".into(),
+                ));
+            }
+            if next != b"contents" {
+                return Err(DocumentationError::Invalid(
+                    "documentation NAR root must contain one regular file".into(),
+                ));
+            }
+            let contents = decoder.string("file contents")?;
+            if contents.is_empty() || contents.len() > MAX_DOCUMENT_BYTES {
+                return Err(DocumentationError::Invalid(format!(
+                    "documentation file size {} is outside 1..={MAX_DOCUMENT_BYTES}",
+                    contents.len()
+                )));
+            }
+            NarRoot::Regular(contents)
+        }
+        b"symlink" => {
+            decoder.expect_string(b"target", "symlink target key")?;
+            let bytes = decoder.string("symlink target")?;
+            if bytes.is_empty() || bytes.len() > MAX_SYMLINK_TARGET_BYTES || bytes.contains(&0) {
+                return Err(DocumentationError::Invalid(
+                    "documentation symlink target exceeds its canonical bounds".into(),
+                ));
+            }
+            let target = std::str::from_utf8(bytes).map_err(|_| {
+                DocumentationError::Invalid("documentation symlink target is not UTF-8".into())
+            })?;
+            NarRoot::Symlink(target)
+        }
+        _ => {
+            return Err(DocumentationError::Invalid(
+                "unsupported documentation NAR root type".into(),
+            ));
+        }
+    };
     decoder.expect_string(b")", "root close")?;
     if decoder.offset != input.len() {
         return Err(DocumentationError::Invalid(
             "documentation NAR has trailing data".into(),
         ));
     }
-    Ok(contents)
+    Ok(root)
+}
+
+/// Decodes one bounded, non-executable regular-file NAR.
+///
+/// The returned slice borrows the exact file contents from `input`. Every NAR
+/// string length and padding byte is checked before advancing, and no trailing
+/// bytes are accepted. Symlink roots remain unsupported by this strict reader.
+///
+/// # Errors
+/// Returns [`DocumentationError::Invalid`] when the archive is truncated,
+/// oversized, non-canonical, executable, not a regular root file, or carries
+/// any additional node or trailing data.
+pub fn decode_single_file_nar(input: &[u8]) -> Result<&[u8]> {
+    match decode_document_root_nar(input)? {
+        NarRoot::Regular(contents) => Ok(contents),
+        NarRoot::Symlink(_) => Err(DocumentationError::Invalid(
+            "documentation NAR root must contain one regular file".into(),
+        )),
+    }
 }
 
 /// Extracts `options.json` from a native package documentation directory NAR.
@@ -250,6 +313,91 @@ mod tests {
             push_string(&mut output, value);
         }
         output
+    }
+
+    fn symlink_fixture(target: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+        for value in [
+            NAR_MAGIC, b"(", b"type", b"symlink", b"target", target, b")",
+        ] {
+            push_string(&mut output, value);
+        }
+        output
+    }
+
+    #[test]
+    fn typed_roots_borrow_exact_bytes_and_leave_links_unresolved() {
+        let regular = fixture(b"exact document\n");
+        assert_eq!(
+            decode_document_root_nar(&regular).unwrap(),
+            NarRoot::Regular(b"exact document\n")
+        );
+
+        let target = "/nix/store/00000000000000000000000000000000-evaluation/input.json";
+        let symlink = symlink_fixture(target.as_bytes());
+        assert_eq!(
+            decode_document_root_nar(&symlink).unwrap(),
+            NarRoot::Symlink(target)
+        );
+        assert!(decode_single_file_nar(&symlink).is_err());
+
+        // Destination authority belongs to the store consumer, not the archive
+        // reader. No target is opened or normalized while decoding this node.
+        let relative = symlink_fixture(b"../outside-store");
+        assert_eq!(
+            decode_document_root_nar(&relative).unwrap(),
+            NarRoot::Symlink("../outside-store")
+        );
+    }
+
+    #[test]
+    fn symlink_roots_reject_invalid_targets_padding_and_trailing_data() {
+        for target in [b"".as_slice(), b"invalid\0target", b"\xff"] {
+            assert!(decode_document_root_nar(&symlink_fixture(target)).is_err());
+        }
+        let oversized = vec![b'a'; MAX_SYMLINK_TARGET_BYTES + 1];
+        assert!(decode_document_root_nar(&symlink_fixture(&oversized)).is_err());
+
+        let valid = symlink_fixture(b"x");
+        for length in 0..valid.len() {
+            assert!(decode_document_root_nar(&valid[..length]).is_err());
+        }
+        let mut trailing = valid.clone();
+        trailing.extend_from_slice(&[0; 8]);
+        assert!(decode_document_root_nar(&trailing).is_err());
+
+        let mut padding = valid;
+        let target_offset = padding
+            .windows(6)
+            .position(|value| value == b"target")
+            .unwrap();
+        let contents_offset = (target_offset + 6 + 7) & !7;
+        padding[contents_offset + 8 + 1] = 1;
+        assert!(decode_document_root_nar(&padding).is_err());
+    }
+
+    #[test]
+    fn symlink_roots_reject_reordered_or_additional_fields() {
+        for fields in [
+            vec![
+                NAR_MAGIC,
+                b"(",
+                b"type",
+                b"symlink",
+                b"contents",
+                b"x",
+                b")",
+            ],
+            vec![
+                NAR_MAGIC, b"(", b"type", b"symlink", b"target", b"x", b"target", b"y", b")",
+            ],
+        ] {
+            let mut archive = Vec::new();
+            for field in fields {
+                push_string(&mut archive, field);
+            }
+            assert!(decode_document_root_nar(&archive).is_err());
+        }
     }
 
     #[test]
