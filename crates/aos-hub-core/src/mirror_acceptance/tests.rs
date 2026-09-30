@@ -46,7 +46,11 @@ fn profile() -> DirectProtectedProfile {
     .unwrap()
 }
 
-fn roundtrip(kind: &str, profile_digest: &str, prefix: &str) -> MirrorRoundtripMeasurement {
+pub(super) fn roundtrip(
+    kind: &str,
+    profile_digest: &str,
+    prefix: &str,
+) -> MirrorRoundtripMeasurement {
     let sha = "55".repeat(32);
     let verification = if kind == "metadata" {
         MirrorVerification::Sha256 {
@@ -126,7 +130,7 @@ fn roundtrip(kind: &str, profile_digest: &str, prefix: &str) -> MirrorRoundtripM
     }
 }
 
-fn artifact() -> MirrorAcceptanceArtifact {
+pub(super) fn artifact() -> MirrorAcceptanceArtifact {
     use MirrorSafetyCase::*;
     let profile = profile();
     let pin = profile.digest().unwrap();

@@ -26,6 +26,8 @@ use crate::mirror_work::{MIRROR_MAX_OBJECT_BYTES, MIRROR_MAX_PARTS_PER_STEP, MIR
 mod evidence;
 pub use evidence::*;
 
+pub mod pack;
+
 #[cfg(test)]
 mod tests;
 
