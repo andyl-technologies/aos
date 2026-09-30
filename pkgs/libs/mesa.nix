@@ -25,6 +25,7 @@
   libunwind,
   systemd,
   gcc-libs,
+  rust,
   llvm-graphics,
   spirv-llvm-translator-graphics,
   spirv-tools,
@@ -50,24 +51,26 @@ in
       hash = "sha256-BycFyqmt9HQPFIkZSxPieK2VkWaGO1Jx/kI6hjU8mrY=";
     };
 
-    buildDeps = [
-      buildPackages.meson
-      buildPackages.ninja
-      buildPackages.pkg-config
-      buildPackages.python3
-      buildPackages.python3-mako
-      buildPackages.python3-markupsafe
-      buildPackages.packaging
-      buildPackages.python3-pyyaml
-      buildPackages.flex
-      buildPackages.bison
-      buildPackages.rust
-      buildPackages.bindgen
-      buildPackages.cbindgen
-      buildPackages.glslang
-      buildPackages.wayland
-      buildPackages.llvm-graphics
-    ];
+    buildDeps =
+      [
+        buildPackages.meson
+        buildPackages.ninja
+        buildPackages.pkg-config
+        buildPackages.python3
+        buildPackages.python3-mako
+        buildPackages.python3-markupsafe
+        buildPackages.packaging
+        buildPackages.python3-pyyaml
+        buildPackages.flex
+        buildPackages.bison
+        buildPackages.rust
+        buildPackages.bindgen
+        buildPackages.cbindgen
+        buildPackages.glslang
+        buildPackages.wayland
+        buildPackages.llvm-graphics
+      ]
+      ++ lib.optionals stdenv.isCross [buildPackages.cmake rust.passthru.buildTool];
     runtimeDeps = [
       libdrm
       libglvnd
@@ -119,18 +122,36 @@ in
             test "$(grep -c '^#include <libunwind.h>$' src/util/u_debug_stack.h)" -eq 1
             sed -i 's|^#include <libunwind.h>$|#include "${libunwind}/include/libunwind.h"|' \
               src/util/u_debug_stack.h
+
+            ${lib.optionalString stdenv.isCross ''
+              # Mesa otherwise invokes a build-host llvm-config for target
+              # headers and libraries. Its CMake resolver reads the target
+              # LLVM package metadata with the cross compiler instead.
+              test "$(grep -c "method : host_machine.system() == 'windows' ? 'auto' : 'config-tool'," meson.build)" -eq 1
+              sed -i "s|method : host_machine.system() == 'windows' ? 'auto' : 'config-tool',|method : host_machine.system() == 'windows' ? 'auto' : 'cmake',|" meson.build
+
+              # The Linux cross Rust package keeps a native compiler with the
+              # target standard library. Meson must use that compiler and the
+              # target C linker for Rusticl, not the native Rust default.
+              cat > mesa-cross-rust.ini <<'MESON_RUST'
+              [binaries]
+              rust = ['${rust.passthru.buildTool}/bin/rustc', '--target', '${stdenv.hostPlatform.config}', '-C', 'linker=${stdenv.cc}/bin/cc']
+              MESON_RUST
+            ''}
           '';
         }
         {
           name = "configure";
           script = ''
-            export LLVM_CONFIG=${buildPackages.llvm-graphics}/bin/llvm-config
+            ${lib.optionalString (!stdenv.isCross) ''
+              export LLVM_CONFIG=${buildPackages.llvm-graphics}/bin/llvm-config
+            ''}
             export NIX_LDFLAGS="$NIX_LDFLAGS -L${gcc-libs}/lib -Wl,-rpath,${gcc-libs}/lib"
             # Keep the complete upstream platform and driver selections.
             # Explicitly enable the public dispatch, video and OpenCL APIs.
             # Mesa's C++ RTTI setting must match LLVM's library ABI.
             ${buildPackages.python3}/bin/python3 -m mesonbuild.mesonmain \
-              setup build $mesonFlags --prefix="$out" --libdir=lib \
+              setup build $mesonFlags ${lib.optionalString stdenv.isCross "--cross-file=mesa-cross-rust.ini -Dcmake_prefix_path=${llvm-graphics}"} --prefix="$out" --libdir=lib \
               --buildtype=release --wrap-mode=nodownload \
               -Dcpp_rtti=false \
               -Dglvnd=enabled -Degl=enabled -Dgbm=enabled \
