@@ -146,6 +146,8 @@ impl HybridDirectUploadAcceptanceConfig {
         ensure!(
             queues.bulk == evidence.bulk_queue.queue_name
                 && queues.metadata == evidence.metadata_queue.queue_name
+                && queues.bulk_delivery_policy == evidence.bulk_queue.delivery_policy
+                && queues.metadata_delivery_policy == evidence.metadata_queue.delivery_policy
                 && u64::from(queues.maximum_parallel_objects)
                     == evidence.runtime.maximum_parallel_objects.get(),
             "direct verification queue bindings differ from independent acceptance"
@@ -163,6 +165,10 @@ pub struct HybridDirectUploadQueueConfig {
     pub metadata: String,
     /// Consumer concurrency ceiling that must match the independent acceptance.
     pub maximum_parallel_objects: u32,
+    /// Independently selected global bulk invocation and batch limits.
+    pub bulk_delivery_policy: aos_hub_core::direct_upload::DirectQueueDeliveryPolicy,
+    /// Independently selected global metadata invocation and batch limits.
+    pub metadata_delivery_policy: aos_hub_core::direct_upload::DirectQueueDeliveryPolicy,
 }
 
 impl HybridDirectUploadQueueConfig {
@@ -174,24 +180,32 @@ impl HybridDirectUploadQueueConfig {
                 && (2..=32).contains(&self.maximum_parallel_objects),
             "direct verification queue coordinates invalid"
         );
+        self.bulk_delivery_policy
+            .validate(u64::from(self.maximum_parallel_objects - 1))?;
+        self.metadata_delivery_policy
+            .validate(u64::from(self.maximum_parallel_objects))?;
         Ok(())
     }
 
     pub(in crate::cloudflare) fn render_bindings(&self) -> String {
         let mut rendered = String::new();
-        for (binding, name) in [
-            ("HUB_DIRECT_VERIFY_BULK", &self.bulk),
-            ("HUB_DIRECT_VERIFY_METADATA", &self.metadata),
+        for (binding, name, policy) in [
+            (
+                "HUB_DIRECT_VERIFY_BULK",
+                &self.bulk,
+                &self.bulk_delivery_policy,
+            ),
+            (
+                "HUB_DIRECT_VERIFY_METADATA",
+                &self.metadata,
+                &self.metadata_delivery_policy,
+            ),
         ] {
-            let maximum = if binding == "HUB_DIRECT_VERIFY_BULK" {
-                self.maximum_parallel_objects - 1
-            } else {
-                1
-            };
             rendered.push_str(&format!(
-                "\n[[queues.producers]]\nbinding = {}\nqueue = {}\n\n[[queues.consumers]]\nqueue = {}\nmax_batch_size = 1\nmax_batch_timeout = 1\nmax_concurrency = {}\nmax_retries = 3\n",
+                "\n[[queues.producers]]\nbinding = {}\nqueue = {}\n\n[[queues.consumers]]\nqueue = {}\nmax_batch_size = {}\nmax_batch_timeout = 1\nmax_concurrency = {}\nmax_retries = 3\n",
                 crate::cloudflare::toml_string(binding), crate::cloudflare::toml_string(name),
-                crate::cloudflare::toml_string(name), maximum,
+                crate::cloudflare::toml_string(name), policy.maximum_batch_size.get(),
+                policy.maximum_concurrent_invocations.get(),
             ));
         }
         rendered

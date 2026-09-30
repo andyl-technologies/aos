@@ -11,6 +11,66 @@ fn resign(artifact: &mut DirectWorkerQualificationArtifact) {
 }
 
 #[test]
+fn actual_public_refusal_classifications_bind_the_exact_managed_policy_readback() {
+    for status in [401, 403, 404] {
+        let (mut artifact, key) = fixtures::direct_worker_qualification_fixture();
+        artifact
+            .evidence
+            .privacy
+            .as_mut()
+            .unwrap()
+            .public_read_rejection_status = status;
+        resign(&mut artifact);
+        artifact
+            .verify("deployment-1", "https://hub.example.test", &key, 100)
+            .unwrap();
+    }
+
+    for mutation in 0..3 {
+        let (mut artifact, key) = fixtures::direct_worker_qualification_fixture();
+        let privacy = artifact.evidence.privacy.as_mut().unwrap();
+        match mutation {
+            0 => privacy.public_read_rejection_status = 400,
+            1 => privacy.provider_bucket_name = "different-bucket".into(),
+            2 => privacy.provider_policy_readback_sha256.clear(),
+            _ => unreachable!(),
+        }
+        resign(&mut artifact);
+        assert!(artifact
+            .verify("deployment-1", "https://hub.example.test", &key, 100)
+            .is_err());
+    }
+}
+
+#[test]
+fn unsigned_review_and_emulated_identity_never_supply_acceptance_authority() {
+    let (mut artifact, key) = fixtures::direct_worker_qualification_fixture();
+    artifact.signature.clear();
+    artifact
+        .validate_unsigned("deployment-1", "https://hub.example.test", 100)
+        .unwrap();
+    assert!(artifact
+        .verify("deployment-1", "https://hub.example.test", &key, 100)
+        .is_err());
+
+    assert_eq!(
+        direct_worker_emulated_script_id(&artifact.source_digest).unwrap(),
+        format!("emulated-{}", artifact.source_digest),
+    );
+    assert!(direct_worker_emulated_script_id(&"AB".repeat(32)).is_err());
+    assert!(direct_worker_emulated_script_id("configured-script").is_err());
+    artifact.script_version = direct_worker_emulated_script_id(&artifact.source_digest).unwrap();
+    resign(&mut artifact);
+    assert!(artifact
+        .verify("deployment-1", "https://hub.example.test", &key, 100)
+        .is_err());
+    assert!(emulated_dns_host("storage.example.test"));
+    assert!(emulated_dns_host("localhost"));
+    assert!(!emulated_dns_host("storage.example.com"));
+    assert!(!emulated_dns_host("test"));
+}
+
+#[test]
 fn verifies_independently_signed_exact_measured_profile_and_current_version() {
     let (artifact, key) = fixtures::direct_worker_qualification_fixture();
 
@@ -70,7 +130,7 @@ fn changed_measurement_digest_and_self_selected_reviewer_cannot_enable_dispatch(
 
 #[test]
 fn even_trusted_signature_refuses_unknown_sdk_effects_or_inadequate_queue_capacity() {
-    for mutation in 0..9 {
+    for mutation in 0..13 {
         let (mut artifact, key) = fixtures::direct_worker_qualification_fixture();
         match mutation {
             0 => {
@@ -113,6 +173,25 @@ fn even_trusted_signature_refuses_unknown_sdk_effects_or_inadequate_queue_capaci
             }
             7 => artifact.execution_kind = DirectWorkerExecutionKind::EmulatedExternal,
             8 => artifact.evidence.runtime.maximum_parallel_provider_requests = WireInteger::new(1),
+            9 => artifact.evidence.metadata_queue.peak_parallel_objects = WireInteger::new(1),
+            10 => {
+                artifact
+                    .evidence
+                    .metadata_queue
+                    .metadata_progress_during_bulk = WireInteger::new(0)
+            }
+            11 => {
+                artifact
+                    .evidence
+                    .metadata_queue
+                    .delivery_policy
+                    .maximum_batch_size = WireInteger::new(5)
+            }
+            12 => artifact
+                .evidence
+                .metadata_queue
+                .configuration_readback_sha256
+                .clear(),
             _ => unreachable!(),
         }
         resign(&mut artifact);

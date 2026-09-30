@@ -59,21 +59,12 @@ pub struct DirectWorkerQualificationArtifact {
 }
 
 impl DirectWorkerQualificationArtifact {
-    /// Verifies the independent reviewer, audience, current validity and evidence.
-    ///
-    /// The trusted public key must come from an independently installed trust
-    /// source; it is deliberately absent from the signed operator artifact.
+    /// Checks an unsigned review candidate without granting runtime acceptance.
     ///
     /// # Errors
-    /// Returns a value-free error for invalid signatures, changed bindings,
+    /// Returns a value-free error for changed bindings,
     /// malformed or insufficient measurements, expired evidence or unknown fields.
-    pub fn verify(
-        &self,
-        deployment: &str,
-        public_origin: &str,
-        trusted_public_hex: &str,
-        now: u64,
-    ) -> Result<()> {
+    pub fn validate_unsigned(&self, deployment: &str, public_origin: &str, now: u64) -> Result<()> {
         ensure!(
             self.version == 1
                 && self.deployment_id == deployment
@@ -102,6 +93,36 @@ impl DirectWorkerQualificationArtifact {
             direct_qualification_digest(&self.evidence)? == self.evidence_sha256,
             "direct accepted measurement commitment differs"
         );
+        match self.execution_kind {
+            DirectWorkerExecutionKind::Hosted => ensure!(
+                !self.script_version.starts_with("emulated-"),
+                "hosted Worker cannot accept emulated identity"
+            ),
+            DirectWorkerExecutionKind::EmulatedExternal => ensure!(
+                self.script_version == direct_worker_emulated_script_id(&self.source_digest)?
+                    && origin.host_str().is_some_and(emulated_dns_host),
+                "emulated Worker source identity or reserved origin differs"
+            ),
+        }
+        self.evidence.validate(self, now)
+    }
+
+    /// Verifies independent reviewer trust, exact audience and measured evidence.
+    ///
+    /// The trusted public key is independently installed and never learned from
+    /// the operator artifact. Unsigned candidate validation grants no authority.
+    ///
+    /// # Errors
+    /// Returns a value-free error for changed bindings, invalid signatures,
+    /// unsupported execution identities or expired/insufficient measurements.
+    pub fn verify(
+        &self,
+        deployment: &str,
+        public_origin: &str,
+        trusted_public_hex: &str,
+        now: u64,
+    ) -> Result<()> {
+        self.validate_unsigned(deployment, public_origin, now)?;
         ensure!(
             valid_direct_digest(trusted_public_hex)
                 && self.signature.len() == 128
@@ -124,7 +145,7 @@ impl DirectWorkerQualificationArtifact {
             .verify_strict(&self.signing_bytes()?, &signature)
             .map_err(|_| anyhow::anyhow!("direct acceptance signature invalid"))?;
 
-        self.evidence.validate(self, now)
+        Ok(())
     }
 
     /// Encodes the domain-separated identity accepted by an independent reviewer.
@@ -166,6 +187,8 @@ impl DirectWorkerQualificationArtifact {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectWorkerQualificationEvidence {
+    /// Independently observed installed bytes, mandatory for emulator acceptance.
+    pub installation: Option<DirectWorkerInstallationMeasurement>,
     /// Immutable conservative clock policy installed before measurements.
     pub clock_policy: DirectClockPolicy,
     /// Exact separately opted-in isolated fixture bounds installed before measurement.
@@ -198,6 +221,14 @@ pub struct DirectWorkerQualificationEvidence {
 
 impl DirectWorkerQualificationEvidence {
     fn validate(&self, artifact: &DirectWorkerQualificationArtifact, now: u64) -> Result<()> {
+        if let Some(installation) = &self.installation {
+            installation.validate(artifact)?;
+        }
+        ensure!(
+            artifact.execution_kind != DirectWorkerExecutionKind::EmulatedExternal
+                || self.installation.is_some(),
+            "direct emulator installation observations absent"
+        );
         let clock_policy_commitment = self.clock_policy.commitment()?;
         self.runtime.validate()?;
         if let Some(limits) = &self.qualification_limits {
@@ -290,6 +321,8 @@ impl DirectWorkerQualificationEvidence {
                     && profile.clock_qualification == clock_policy_commitment
                     && profile.clock_uncertainty_seconds == self.clock.uncertainty_seconds
                     && privacy.namespace == profile.bucket_namespace
+                    && privacy.provider_account_id == profile.account_id
+                    && privacy.provider_bucket_name == profile.bucket_name
                     && privacy.policy_id == policy.policy_id
                     && policy.policy_digest
                         == direct_private_stage_policy_commitment(
@@ -297,16 +330,30 @@ impl DirectWorkerQualificationEvidence {
                             &policy.namespace
                         )?
                     && privacy.independent_writer_count.get() == 0
-                    && matches!(privacy.public_read_rejection_status, 403 | 404)
+                    && matches!(privacy.public_read_rejection_status, 401 | 403 | 404)
                     && matches!(privacy.worker_namespace_rejection_status, 403 | 404)
-                    && valid_direct_digest(&privacy.observation_sha256),
+                    && valid_direct_digest(&privacy.observation_sha256)
+                    && valid_direct_digest(&privacy.provider_policy_readback_sha256),
                 "direct accepted managed privacy or clock differs"
+            );
+            let public_endpoint = url::Url::parse(&privacy.public_endpoint)
+                .map_err(|_| anyhow::anyhow!("direct privacy public endpoint invalid"))?;
+            ensure!(
+                public_endpoint.scheme() == "https"
+                    && public_endpoint.host_str().is_some()
+                    && public_endpoint.username().is_empty()
+                    && public_endpoint.password().is_none()
+                    && public_endpoint.path() == "/"
+                    && public_endpoint.query().is_none()
+                    && public_endpoint.fragment().is_none(),
+                "direct privacy public endpoint invalid"
             );
             sdk.validate(artifact, profile)?;
         }
         let mut selectors = std::collections::BTreeSet::new();
         for external in &self.external_profiles {
             external.validate()?;
+            validate_direct_worker_external_execution(artifact.execution_kind, &external.profile)?;
             ensure!(
                 external.runtime_qualification == self.runtime
                     && u64::try_from(external.profile.clock_uncertainty.get()).ok()
@@ -320,6 +367,51 @@ impl DirectWorkerQualificationEvidence {
         }
         Ok(())
     }
+}
+
+/// Derives the explicit emulator identity from the actual compiled source digest.
+///
+/// # Errors
+/// Returns an error for malformed or noncanonical source identities.
+pub fn direct_worker_emulated_script_id(source: &str) -> Result<String> {
+    ensure!(
+        valid_direct_digest(source),
+        "emulated Worker source identity invalid"
+    );
+    Ok(format!("emulated-{source}"))
+}
+
+/// Checks a full external profile against the independently accepted execution mode.
+///
+/// Actual service routing and installed executable hashes remain independently
+/// measured report inputs. Issuer identity strings are not inferred hostnames.
+///
+/// # Errors
+/// Returns an error for emulator contracts in hosted use or nonreserved storage
+/// aliases in explicit emulator qualification.
+pub fn validate_direct_worker_external_execution(
+    kind: DirectWorkerExecutionKind,
+    profile: &DirectExternalStorageCapabilities,
+) -> Result<()> {
+    use crate::storage_authority::StorageAuthorityHost;
+
+    let emulated_contract = profile.provider_contract_id.starts_with("emulated-");
+    let reserved_alias = |host: &StorageAuthorityHost| matches!(host, StorageAuthorityHost::Dns(name) if emulated_dns_host(name));
+    ensure!(
+        match kind {
+            DirectWorkerExecutionKind::Hosted => !emulated_contract,
+            DirectWorkerExecutionKind::EmulatedExternal =>
+                emulated_contract
+                    && reserved_alias(&profile.write_cohort.alias.spec.host)
+                    && reserved_alias(&profile.read_cohort.alias.spec.host),
+        },
+        "direct external execution mode or actual storage aliases differ"
+    );
+    Ok(())
+}
+
+fn emulated_dns_host(name: &str) -> bool {
+    name.ends_with(".test") || name == "localhost" || name.ends_with(".localhost")
 }
 
 /// Installed mutation-clock policy whose commitment excludes observed reports.
@@ -423,6 +515,14 @@ pub struct DirectPrivacyMeasurement {
     pub namespace: String,
     /// Exact operator-selected privacy policy identity.
     pub policy_id: String,
+    /// Actual provider account correlated with the policy API readback.
+    pub provider_account_id: String,
+    /// Actual provider bucket correlated with the policy API readback.
+    pub provider_bucket_name: String,
+    /// Actual managed public endpoint reported by the provider policy API.
+    pub public_endpoint: String,
+    /// Commitment to actual public-domain/custom-domain policy API readback.
+    pub provider_policy_readback_sha256: String,
     /// Actual anonymous provider read refusal status.
     pub public_read_rejection_status: u16,
     /// Actual unauthorized Worker staging namespace read refusal status.
@@ -435,6 +535,10 @@ pub struct DirectPrivacyMeasurement {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectQueueMeasurement {
+    /// Exact installed per-queue global invocation and batch delivery policy.
+    pub delivery_policy: DirectQueueDeliveryPolicy,
+    /// Commitment to retained actual provider/emulator consumer configuration readback.
+    pub configuration_readback_sha256: String,
     /// Commitment to the independently retained queue observation report.
     pub observation_sha256: String,
     /// Actual hosted queue name, also used by the producer and consumer bindings.
@@ -451,6 +555,10 @@ pub struct DirectQueueMeasurement {
     pub source_digest: String,
     /// Actual hosted script version under which jobs ran.
     pub script_version: String,
+    /// Positive same-isolate metadata progress samples overlapping active bulk work.
+    pub metadata_progress_during_bulk: WireInteger,
+    /// Retained same-isolate overlap report commitment, required for metadata.
+    pub mixed_load_observation_sha256: Option<String>,
 }
 
 impl DirectQueueMeasurement {
@@ -468,18 +576,33 @@ impl DirectQueueMeasurement {
         let class_limit = if phase == "content" {
             runtime.maximum_parallel_objects.get().saturating_sub(1)
         } else {
-            1
+            runtime.maximum_parallel_objects.get()
         };
+        self.delivery_policy.validate(class_limit)?;
         ensure!(
             valid_direct_queue_name(&self.queue_name)
                 && self.dependency_phase == phase
                 && valid_direct_digest(&self.observation_sha256)
+                && valid_direct_digest(&self.configuration_readback_sha256)
                 && self.completed_jobs.get() >= class_limit
                 && self.peak_parallel_objects.get() == class_limit
                 && self.maximum_verified_object_bytes.get() >= minimum_size
                 && self.source_digest == artifact.source_digest
                 && self.script_version == artifact.script_version,
             "direct accepted queue observations insufficient or changed"
+        );
+        ensure!(
+            if phase == "metadata" {
+                self.metadata_progress_during_bulk.get() > 0
+                    && self
+                        .mixed_load_observation_sha256
+                        .as_deref()
+                        .is_some_and(valid_direct_digest)
+            } else {
+                self.metadata_progress_during_bulk.get() == 0
+                    && self.mixed_load_observation_sha256.is_none()
+            },
+            "direct metadata progress under bulk load unmeasured"
         );
         Ok(())
     }

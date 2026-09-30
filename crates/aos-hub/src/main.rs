@@ -396,6 +396,18 @@ struct HybridConfigArgs {
     /// Set the bounded queue concurrency ceiling to measure and accept.
     #[arg(long, requires_all = ["direct_upload_bulk_queue", "direct_upload_metadata_queue"])]
     direct_upload_maximum_parallel_objects: Option<u32>,
+    /// Set the global bulk queue invocation ceiling independently of isolate pools.
+    #[arg(long, requires = "direct_upload_bulk_queue")]
+    direct_upload_bulk_maximum_concurrent_invocations: Option<u32>,
+    /// Set the global metadata queue invocation ceiling independently of isolate pools.
+    #[arg(long, requires = "direct_upload_metadata_queue")]
+    direct_upload_metadata_maximum_concurrent_invocations: Option<u32>,
+    /// Set bulk batch size; default to the isolate bulk class ceiling.
+    #[arg(long, requires = "direct_upload_bulk_queue")]
+    direct_upload_bulk_maximum_batch_size: Option<u32>,
+    /// Set metadata batch size; default to the isolate aggregate object ceiling.
+    #[arg(long, requires = "direct_upload_metadata_queue")]
+    direct_upload_metadata_maximum_batch_size: Option<u32>,
     /// Enable the separately authenticated hosted SDK measurement endpoint.
     #[arg(long)]
     direct_upload_conformance: bool,
@@ -435,10 +447,37 @@ impl HybridConfigArgs {
             self.direct_upload_maximum_parallel_objects,
         ) {
             (Some(bulk), Some(metadata), Some(maximum_parallel_objects)) => {
+                let bulk_invocations = self
+                    .direct_upload_bulk_maximum_concurrent_invocations
+                    .context(
+                        "direct bulk queue requires an independently selected invocation ceiling",
+                    )?;
+                let metadata_invocations = self.direct_upload_metadata_maximum_concurrent_invocations
+                    .context("direct metadata queue requires an independently selected invocation ceiling")?;
+                let delivery_policy = |batch: u32, invocations: u32| {
+                    aos_hub_core::direct_upload::DirectQueueDeliveryPolicy {
+                        maximum_batch_size: aos_hub_core::direct_upload::WireInteger::new(
+                            u64::from(batch),
+                        ),
+                        maximum_concurrent_invocations:
+                            aos_hub_core::direct_upload::WireInteger::new(u64::from(invocations)),
+                    }
+                };
+
                 Some(cloudflare::HybridDirectUploadQueueConfig {
                     bulk: bulk.clone(),
                     metadata: metadata.clone(),
                     maximum_parallel_objects,
+                    bulk_delivery_policy: delivery_policy(
+                        self.direct_upload_bulk_maximum_batch_size
+                            .unwrap_or(maximum_parallel_objects.saturating_sub(1)),
+                        bulk_invocations,
+                    ),
+                    metadata_delivery_policy: delivery_policy(
+                        self.direct_upload_metadata_maximum_batch_size
+                            .unwrap_or(maximum_parallel_objects),
+                        metadata_invocations,
+                    ),
                 })
             }
             (None, None, None) => None,

@@ -25,6 +25,31 @@ pub const DIRECT_WORKER_DEPLOYMENT_SIGNATURE_HEADER: &str = "x-aos-direct-deploy
 const REQUEST_DOMAIN: &[u8] = b"aos.direct-upload.deployment-identity-request.v1\0";
 const RESPONSE_DOMAIN: &[u8] = b"aos.direct-upload.deployment-identity-response.v1\0";
 
+/// Independently selected queue delivery bounds, separate from isolate pools.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DirectQueueDeliveryPolicy {
+    /// Maximum jobs delivered in one queue invocation.
+    pub maximum_batch_size: WireInteger,
+    /// Maximum concurrent invocations for this global queue.
+    pub maximum_concurrent_invocations: WireInteger,
+}
+
+impl DirectQueueDeliveryPolicy {
+    /// Checks delivery bounds against the participating isolate's class ceiling.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported invocation bounds or excessive batch sizes.
+    pub fn validate(&self, class_ceiling: u64) -> Result<()> {
+        ensure!(
+            (1..=class_ceiling).contains(&self.maximum_batch_size.get())
+                && (1..=32).contains(&self.maximum_concurrent_invocations.get()),
+            "direct queue delivery policy invalid"
+        );
+        Ok(())
+    }
+}
+
 /// Candidate bounds installed for explicitly isolated qualification fixtures.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -124,6 +149,10 @@ pub struct DirectWorkerDeploymentIdentity {
     pub bulk_queue: String,
     /// Actual metadata queue binding's distinct name.
     pub metadata_queue: String,
+    /// Actual configured bulk queue delivery bounds.
+    pub bulk_queue_policy: DirectQueueDeliveryPolicy,
+    /// Actual configured metadata queue delivery bounds.
+    pub metadata_queue_policy: DirectQueueDeliveryPolicy,
     /// Actual configured consumer parallelism ceiling.
     pub maximum_parallel_objects: WireInteger,
     /// Explicit isolated fixture bounds, absent unless separately enabled.
@@ -174,6 +203,8 @@ impl DirectWorkerQualificationArtifact {
                 && actual.external_profiles == external
                 && actual.bulk_queue == evidence.bulk_queue.queue_name
                 && actual.metadata_queue == evidence.metadata_queue.queue_name
+                && actual.bulk_queue_policy == evidence.bulk_queue.delivery_policy
+                && actual.metadata_queue_policy == evidence.metadata_queue.delivery_policy
                 && actual.maximum_parallel_objects == evidence.runtime.maximum_parallel_objects,
             "direct accepted bindings differ from actual unchanged deployment"
         );
@@ -298,6 +329,8 @@ mod tests {
             external_profiles: Vec::new(),
             bulk_queue: evidence.bulk_queue.queue_name.clone(),
             metadata_queue: evidence.metadata_queue.queue_name.clone(),
+            bulk_queue_policy: evidence.bulk_queue.delivery_policy.clone(),
+            metadata_queue_policy: evidence.metadata_queue.delivery_policy.clone(),
             maximum_parallel_objects: evidence.runtime.maximum_parallel_objects,
             qualification_limits: evidence.qualification_limits.clone(),
         }
@@ -410,7 +443,7 @@ mod tests {
             .verify_deployment_identity(&actual, &reviewer)
             .unwrap();
 
-        for mutation in 0..7 {
+        for mutation in 0..8 {
             let mut changed = actual.clone();
             match mutation {
                 0 => changed.script_version = "new-version".into(),
@@ -426,6 +459,10 @@ mod tests {
                 4 => changed.qualification_public_key = "ab".repeat(32),
                 5 => changed.metadata_queue = changed.bulk_queue.clone(),
                 6 => changed.maximum_parallel_objects = WireInteger::new(8),
+                7 => {
+                    changed.metadata_queue_policy.maximum_concurrent_invocations =
+                        WireInteger::new(3)
+                }
                 _ => unreachable!(),
             }
             assert!(

@@ -29,6 +29,7 @@ mod selected_complete;
 mod service;
 mod wire;
 mod worker_deployment;
+mod worker_installation;
 mod worker_qualification;
 
 pub use actor::*;
@@ -51,6 +52,7 @@ pub use selected_complete::*;
 pub use service::*;
 pub use wire::*;
 pub use worker_deployment::*;
+pub use worker_installation::*;
 pub use worker_qualification::*;
 
 #[cfg(feature = "test-fixtures")]

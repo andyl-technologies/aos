@@ -44,6 +44,10 @@ pub fn direct_worker_qualification_fixture() -> (DirectWorkerQualificationArtifa
         observation_sha256: "33".repeat(32),
         namespace: "private-objects".into(),
         policy_id: "private-stage".into(),
+        provider_account_id: "0123456789abcdef0123456789abcdef".into(),
+        provider_bucket_name: "hub-private-objects".into(),
+        public_endpoint: "https://disabled-public.example.test".into(),
+        provider_policy_readback_sha256: "3a".repeat(32),
         public_read_rejection_status: 403,
         worker_namespace_rejection_status: 404,
         independent_writer_count: WireInteger::new(0),
@@ -76,14 +80,21 @@ pub fn direct_worker_qualification_fixture() -> (DirectWorkerQualificationArtifa
     let source_digest = "44".repeat(32);
     let script_version = "script-1".to_string();
     let queue = |phase: &str| DirectQueueMeasurement {
+        delivery_policy: DirectQueueDeliveryPolicy {
+            maximum_batch_size: WireInteger::new(if phase == "content" { 3 } else { 4 }),
+            maximum_concurrent_invocations: WireInteger::new(2),
+        },
+        configuration_readback_sha256: "9a".repeat(32),
         observation_sha256: "55".repeat(32),
         queue_name: format!("direct-{phase}"),
         dependency_phase: phase.into(),
         completed_jobs: WireInteger::new(16),
-        peak_parallel_objects: WireInteger::new(if phase == "content" { 3 } else { 1 }),
+        peak_parallel_objects: WireInteger::new(if phase == "content" { 3 } else { 4 }),
         maximum_verified_object_bytes: WireInteger::new(1024 * 1024),
         source_digest: source_digest.clone(),
         script_version: script_version.clone(),
+        metadata_progress_during_bulk: WireInteger::new(if phase == "metadata" { 1 } else { 0 }),
+        mixed_load_observation_sha256: (phase == "metadata").then(|| "9b".repeat(32)),
     };
     let sdk = DirectHostedSdkProbeDocument {
         version: 1,
@@ -123,6 +134,7 @@ pub fn direct_worker_qualification_fixture() -> (DirectWorkerQualificationArtifa
         cleanup_state: "retained_known_objects".into(),
     };
     let evidence = DirectWorkerQualificationEvidence {
+        installation: None,
         clock_policy,
         qualification_limits: None,
         clock,

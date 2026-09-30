@@ -41,6 +41,7 @@ nor the registry supplies its own verifier.
 Set these operator-selected values and file paths before running the example:
 `WORKER_NAME`, `BUCKET`, `DEPLOYMENT_ID`, `PUBLIC_ORIGIN`, `NATIVE_ORIGIN`,
 `ACCEPTANCE_NAMESPACE_ID`, `BULK_QUEUE`, `METADATA_QUEUE`, `MAX_PARALLEL_OBJECTS`,
+`BULK_MAX_INVOCATIONS`, `METADATA_MAX_INVOCATIONS`,
 `PROFILE_FILE`, `REVIEWER_PUBLIC_KEY_FILE`, `INGRESS_KEY_FILE`,
 `STORAGE_WORK_KEY_FILE`, `GUARD_KEY_FILE`, `JOURNAL_KEY_FILE`,
 `S3_ACCESS_KEY_FILE`, `S3_SECRET_KEY_FILE` and `CONFORMANCE_KEY_FILE`.
@@ -62,6 +63,8 @@ hybrid_config=(
   --direct-upload-bulk-queue "$BULK_QUEUE"
   --direct-upload-metadata-queue "$METADATA_QUEUE"
   --direct-upload-maximum-parallel-objects "$MAX_PARALLEL_OBJECTS"
+  --direct-upload-bulk-maximum-concurrent-invocations "$BULK_MAX_INVOCATIONS"
+  --direct-upload-metadata-maximum-concurrent-invocations "$METADATA_MAX_INVOCATIONS"
   --direct-upload-conformance
   --direct-upload-qualification
   --direct-upload-qualification-maximum-provider-requests "$MAX_PROVIDER_REQUESTS"
@@ -83,9 +86,17 @@ The installer attaches the stable reviewer verifier, acceptance KV binding,
 version metadata, physical journal classes and separate queues. It ensures a
 bounded abandoned-multipart cleanup policy on the selected bucket. Configure
 and independently inspect provider privacy and exact-origin browser upload CORS
-before qualification. The aggregate object ceiling is between two and thirty-two;
-bulk verification uses at most one less than that ceiling and metadata has one
-reserved slot. Those configured ceilings require measured independent acceptance.
+before qualification. Each participating isolate has one aggregate object and
+provider pool. Bulk uses at most one less than its object/request ceiling;
+metadata borrows unused slots up to the same ceiling and can still progress
+while bulk holds its full allowance. Separate global queue invocation limits
+are explicitly selected between one and thirty-two. Batch sizes default to the
+bulk class ceiling and metadata aggregate ceiling; optional batch overrides
+must fit those bounds. With invocation limits `Ib`/`Im` and batch sizes
+`Bb`/`Bm`, up to `Ib + Im` global invocations and `Ib*Bb + Im*Bm` delivered jobs
+can coexist across isolates. The isolate ceiling is not a global job limit.
+Independent evidence must cover actual consumer configuration readback,
+all-metadata parallel capacity and metadata progress under bulk load.
 
 Keep the completed Worker version unchanged throughout measurement and
 activation. Updating code, bindings or secrets changes the hosted script version
@@ -128,6 +139,14 @@ reports must identify the actual same compiled source and current hosted version
 The private namespace report must establish zero independent writers bypassing
 the guard. Retain the raw reports whose SHA-256 commitments appear in the closed
 measurement documents.
+
+For managed public-read privacy, retain the actual bucket public/custom-domain
+policy API readback, an authenticated-positive exact existing object and the
+complete anonymous reply from that same object's managed public endpoint.
+Correlate the account, bucket and endpoint explicitly. Denials `401`, `403` or
+`404` can be reviewed; a bare S3 endpoint's missing-authentication `400` does not
+qualify disabled public access. A substring check cannot certify absence of
+partial leaks or exclusive physical writers.
 
 An independent reviewer accepts the full
 [`DirectWorkerQualificationArtifact`](../../../crates/aos-hub-core/src/direct_upload/worker_qualification.rs).

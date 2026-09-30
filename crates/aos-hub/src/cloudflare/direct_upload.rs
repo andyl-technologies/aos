@@ -306,6 +306,18 @@ mod tests {
                 bulk: "direct-content".into(),
                 metadata: "direct-metadata".into(),
                 maximum_parallel_objects: 4,
+                bulk_delivery_policy: aos_hub_core::direct_upload::DirectQueueDeliveryPolicy {
+                    maximum_batch_size: aos_hub_core::direct_upload::WireInteger::new(3),
+                    maximum_concurrent_invocations: aos_hub_core::direct_upload::WireInteger::new(
+                        2,
+                    ),
+                },
+                metadata_delivery_policy: aos_hub_core::direct_upload::DirectQueueDeliveryPolicy {
+                    maximum_batch_size: aos_hub_core::direct_upload::WireInteger::new(4),
+                    maximum_concurrent_invocations: aos_hub_core::direct_upload::WireInteger::new(
+                        2,
+                    ),
+                },
             }),
             direct_upload_acceptance: None,
             direct_upload_conformance: false,
@@ -412,6 +424,51 @@ mod tests {
     }
 
     #[test]
+    fn independent_global_queue_invocation_limits_preserve_elastic_local_metadata_capacity() {
+        use aos_hub_core::direct_upload::WireInteger;
+
+        let mut cfg = config();
+        let queues = cfg.direct_upload_queues.as_mut().unwrap();
+        queues.bulk_delivery_policy.maximum_concurrent_invocations = WireInteger::new(1);
+        queues
+            .metadata_delivery_policy
+            .maximum_concurrent_invocations = WireInteger::new(8);
+        let source = render_hybrid_wrangler_toml(&cfg).unwrap();
+        let rendered: toml::Value = toml::from_str(&source).unwrap();
+        assert_eq!(
+            rendered["queues"]["consumers"][0]["max_concurrency"].as_integer(),
+            Some(1)
+        );
+        assert_eq!(
+            rendered["queues"]["consumers"][1]["max_concurrency"].as_integer(),
+            Some(8)
+        );
+        assert_eq!(
+            rendered["queues"]["consumers"][1]["max_batch_size"].as_integer(),
+            Some(4)
+        );
+        assert_eq!(
+            rendered["vars"]["HUB_DIRECT_VERIFY_MAX_PARALLEL_OBJECTS"].as_str(),
+            Some("4")
+        );
+        assert_eq!(
+            rendered["vars"]["HUB_DIRECT_VERIFY_METADATA_MAX_CONCURRENT_INVOCATIONS"].as_str(),
+            Some("8")
+        );
+
+        for (batch, invocations) in [(0, 1), (5, 1), (4, 0), (4, 33)] {
+            let policy = &mut cfg
+                .direct_upload_queues
+                .as_mut()
+                .unwrap()
+                .metadata_delivery_policy;
+            policy.maximum_batch_size = WireInteger::new(batch);
+            policy.maximum_concurrent_invocations = WireInteger::new(invocations);
+            assert!(render_hybrid_wrangler_toml(&cfg).is_err());
+        }
+    }
+
+    #[test]
     fn isolated_qualification_requires_explicit_bounded_candidate_configuration() {
         use aos_hub_core::direct_upload::{WireInteger, MAX_DIRECT_OBJECT_BYTES};
 
@@ -444,11 +501,11 @@ mod tests {
         );
         assert_eq!(
             rendered["queues"]["consumers"][0]["max_concurrency"].as_integer(),
-            Some(3)
+            Some(2)
         );
         assert_eq!(
             rendered["queues"]["consumers"][1]["max_concurrency"].as_integer(),
-            Some(1)
+            Some(2)
         );
         assert!(!source.contains("ACCEPTED_QUALIFICATION"));
 
@@ -516,11 +573,11 @@ mod tests {
         assert_eq!(rendered["queues"]["producers"].as_array().unwrap().len(), 2);
         assert_eq!(
             rendered["queues"]["consumers"][0]["max_concurrency"].as_integer(),
-            Some(3)
+            Some(2)
         );
         assert_eq!(
             rendered["queues"]["consumers"][1]["max_batch_size"].as_integer(),
-            Some(1)
+            Some(4)
         );
         assert!(!source.contains("signature"));
         assert!(!source.contains("HUB_DIRECT_UPLOAD_ACCEPTED_QUALIFICATION"));

@@ -400,6 +400,19 @@ pub fn render_hybrid_wrangler_toml(cfg: &HybridDeployConfig) -> Result<String> {
             .context("direct upload requires separate bounded verification queues")?;
         trust.validate()?;
         queues.validate()?;
+        for (binding, policy) in [
+            ("HUB_DIRECT_VERIFY_BULK", &queues.bulk_delivery_policy),
+            (
+                "HUB_DIRECT_VERIFY_METADATA",
+                &queues.metadata_delivery_policy,
+            ),
+        ] {
+            direct_variables.push_str(&format!(
+                "{binding}_MAX_BATCH_SIZE = {}\n{binding}_MAX_CONCURRENT_INVOCATIONS = {}\n",
+                toml_string(&policy.maximum_batch_size.get().to_string()),
+                toml_string(&policy.maximum_concurrent_invocations.get().to_string()),
+            ));
+        }
         if let Some(limits) = &cfg.direct_upload_qualification {
             limits.validate()?;
             direct_variables.push_str(&format!(

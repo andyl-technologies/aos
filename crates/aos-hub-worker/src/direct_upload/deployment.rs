@@ -98,6 +98,18 @@ async fn discover(request: &mut Request, env: &Env) -> Result<Response> {
         external_profiles,
         bulk_queue: env.var("HUB_DIRECT_VERIFY_BULK_NAME")?.to_string(),
         metadata_queue: env.var("HUB_DIRECT_VERIFY_METADATA_NAME")?.to_string(),
+        bulk_queue_policy: config::queue_policy(
+            env,
+            super::verification::BULK_QUEUE,
+            config::integer(env, "HUB_DIRECT_VERIFY_MAX_PARALLEL_OBJECTS")?
+                .get()
+                .saturating_sub(1),
+        )?,
+        metadata_queue_policy: config::queue_policy(
+            env,
+            super::verification::METADATA_QUEUE,
+            config::integer(env, "HUB_DIRECT_VERIFY_MAX_PARALLEL_OBJECTS")?.get(),
+        )?,
         maximum_parallel_objects: config::integer(env, "HUB_DIRECT_VERIFY_MAX_PARALLEL_OBJECTS")?,
         qualification_limits: config::qualification_limits(env)?,
     };

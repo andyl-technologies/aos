@@ -89,6 +89,19 @@ impl QualifiedConfig {
                 env.var(&format!("{binding}_NAME"))?.to_string() == queue.queue_name,
                 "direct measured queue binding differs"
             );
+            let ceiling = if binding == super::verification::BULK_QUEUE {
+                facts
+                    .runtime
+                    .maximum_parallel_objects
+                    .get()
+                    .saturating_sub(1)
+            } else {
+                facts.runtime.maximum_parallel_objects.get()
+            };
+            ensure!(
+                queue_policy(env, binding, ceiling)? == queue.delivery_policy,
+                "direct actual queue delivery policy differs from accepted readback"
+            );
             env.queue(binding)?;
         }
         if facts.managed_profile.is_some() {
@@ -191,7 +204,7 @@ pub(crate) fn runtime_script_version(env: &Env) -> Result<String> {
             .ok_or_else(|| anyhow::anyhow!("emulated source-built Worker identity absent"))?;
         // Emulator evidence additionally records the installed Wasm hash in its
         // independently reviewed report. No configured Cloudflare ID is read.
-        return Ok(format!("emulated-{source}"));
+        return direct_worker_emulated_script_id(source);
     }
     use wasm_bindgen::JsValue;
     let metadata = js_sys::Reflect::get(env, &JsValue::from_str("CF_VERSION_METADATA"))
@@ -252,6 +265,23 @@ pub(crate) fn integer(env: &Env, name: &str) -> Result<WireInteger> {
         "direct configured counter invalid"
     );
     Ok(WireInteger::new(number))
+}
+
+/// Reads fixed delivery bounds separately from participating-isolate capacity.
+pub(crate) fn queue_policy(
+    env: &Env,
+    binding: &str,
+    class_ceiling: u64,
+) -> Result<DirectQueueDeliveryPolicy> {
+    let policy = DirectQueueDeliveryPolicy {
+        maximum_batch_size: integer(env, &format!("{binding}_MAX_BATCH_SIZE"))?,
+        maximum_concurrent_invocations: integer(
+            env,
+            &format!("{binding}_MAX_CONCURRENT_INVOCATIONS"),
+        )?,
+    };
+    policy.validate(class_ceiling)?;
+    Ok(policy)
 }
 
 /// Resolves actual protected material without granting qualification.
