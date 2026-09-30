@@ -18,7 +18,8 @@ mod nar;
 pub mod runtime;
 
 pub use nar::{
-    decode_native_artifact_nar, decode_native_documentation_nar, decode_single_file_nar,
+    NarRoot, decode_document_root_nar, decode_native_artifact_nar, decode_native_documentation_nar,
+    decode_single_file_nar,
 };
 
 /// Bounds a single-document regular-file NAR.
