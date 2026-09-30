@@ -50,6 +50,7 @@ in {
   metadataHasNoPayloadContexts = assert builtins.getContext (builtins.toJSON bindings) == {}; true;
   secondaryOutput = assert owner.tools.deployment.runtimeDependencies == bindings;
   assert (lib.packageModules.recordFor owner.tools).artifacts.dependencies == record.artifacts.dependencies; true;
+  staleCatalogRejected = assert !(builtins.tryEval (builtins.deepSeq (artifacts.canonicalReference (owner // {tools = candidate;})) true)).success; true;
   overrides = assert builtins.attrNames replaced.deployment.runtimeDependencies == ["current"];
   assert builtins.length replaced.runtimeDeps == 1; true;
   ambiguousListRejected = assert !(builtins.tryEval (builtins.deepSeq (artifacts.keyed [predecessor candidate]) true)).success; true;
