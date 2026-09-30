@@ -13,10 +13,7 @@ use aos_ability_runtime::adapter::CancellationToken;
 use serde_json::Value;
 
 use super::model::{Deployment, Envelope, ModuleSource, ResolvedPackages};
-use super::nix::{
-    EvaluatorInput, locked_evaluator_input_in, nix_string, pure_eval_command_in,
-    store_root_and_suffix,
-};
+use super::nix::{nix_string, pure_eval_command_in, store_root_and_suffix};
 use super::process::{FixedBudgetControl, run_bounded_with_input_limit};
 
 /// Resolves authenticated native envelopes for one pinned package release set.
@@ -106,28 +103,12 @@ pub struct Evaluation {
 }
 
 impl Evaluation {
-    /// Renders a native transaction or generated reference expression.
-    ///
-    /// # Errors
-    /// Returns an error if source inputs cannot be retained by fixed NAR identity
-    /// or if the evaluation context cannot be serialized.
-    pub fn expression(&self, documentation: bool) -> Result<String> {
-        self.expression_for(if documentation {
-            "evaluated.documentation"
-        } else {
-            "evaluated.deployment"
-        })
-    }
-
-    fn expression_for(&self, output: &str) -> Result<String> {
-        let store = evaluator_store()?;
-        let lock = |path: &Path| {
-            locked_evaluator_input_in(
-                &EvaluatorInput::canonical(path.to_path_buf()),
-                None,
-                store.as_deref(),
-            )
-        };
+    fn expression_for(
+        &self,
+        output: &str,
+        views: &super::source_views::SourceViews,
+    ) -> Result<String> {
+        let lock = |path: &Path| views.expression(path);
         let library = lock(&self.library)?;
         let roots: BTreeSet<_> = self
             .packages
@@ -160,7 +141,11 @@ impl Evaluation {
         let evaluation_input = self
             .evaluation_input
             .as_ref()
-            .map(|path| lock(path))
+            .map(|path| {
+                path.to_str()
+                    .map(nix_string)
+                    .context("evaluation descriptor is not UTF-8")
+            })
             .transpose()?
             .unwrap_or_else(|| "null".into());
         Ok(format!(
@@ -257,10 +242,9 @@ impl Evaluation {
             "configuration projection requires nonempty path segments"
         );
         let path = nix_string(&serde_json::to_string(path)?);
-        let expression = self.expression_for(&format!(
+        self.run_output(staging, timeout_ms, cancellation, &format!(
             "builtins.foldl' (value: key: builtins.getAttr key value) evaluated.config (builtins.fromJSON {path})"
-        ))?;
-        self.run_expression(staging, timeout_ms, cancellation, &expression)
+        ))
     }
 
     /// Projects an optional configuration path from the immutable module fixed point.
@@ -283,10 +267,9 @@ impl Evaluation {
             "configuration projection requires nonempty path segments"
         );
         let path = nix_string(&serde_json::to_string(path)?);
-        let expression = self.expression_for(&format!(
+        self.run_output(staging, timeout_ms, cancellation, &format!(
             "builtins.foldl' (value: key: if builtins.isAttrs value && builtins.hasAttr key value then builtins.getAttr key value else null) evaluated.config (builtins.fromJSON {path})"
-        ))?;
-        self.run_expression(staging, timeout_ms, cancellation, &expression)
+        ))
     }
 
     fn inputs(&self) -> Result<Vec<String>> {
@@ -312,25 +295,48 @@ impl Evaluation {
         cancellation: &CancellationToken,
         documentation: bool,
     ) -> Result<Value> {
-        let expression = self.expression(documentation)?;
-        self.run_expression(staging, timeout_ms, cancellation, &expression)
+        self.run_output(
+            staging,
+            timeout_ms,
+            cancellation,
+            if documentation {
+                "evaluated.documentation"
+            } else {
+                "evaluated.deployment"
+            },
+        )
     }
 
-    fn run_expression(
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "evaluation uses one monotonic subprocess deadline"
+    )]
+    fn run_output(
         &self,
         staging: &Path,
         timeout_ms: u64,
         cancellation: &CancellationToken,
-        expression: &str,
+        output: &str,
     ) -> Result<Value> {
         ensure!(!cancellation.is_cancelled(), "package evaluation cancelled");
-        let store = evaluator_store()?;
-        let mut command = pure_eval_command_in(store.as_deref(), None, staging)?;
-        command.arg("-");
         let control = EvaluationBudget {
             cancellation,
             budget: FixedBudgetControl::new(timeout_ms),
+            started: std::time::Instant::now(),
         };
+        let paths = std::iter::once(self.library.as_path())
+            .chain(self.configuration.iter().map(PathBuf::as_path))
+            .chain(
+                self.packages
+                    .modules
+                    .iter()
+                    .map(|module| Path::new(&module.config_root)),
+            );
+        let views = super::source_views::SourceViews::prepare(paths, staging, &control)?;
+        let expression = self.expression_for(output, &views)?;
+        let store = evaluator_store()?;
+        let mut command = pure_eval_command_in(store.as_deref(), Some(views.directory()), staging)?;
+        command.arg("-");
         let environment: Vec<_> = command
             .get_envs()
             .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value.to_owned())))
@@ -357,20 +363,26 @@ impl Evaluation {
 struct EvaluationBudget<'a> {
     cancellation: &'a CancellationToken,
     budget: FixedBudgetControl,
+    started: std::time::Instant,
 }
 
 impl aos_ability_runtime::adapter::RuntimeControl for EvaluationBudget<'_> {
     fn is_cancelled(&self) -> bool {
         self.cancellation.is_cancelled()
     }
+
     fn elapsed_millis(&self) -> u64 {
         0
     }
+
     fn attempt_remaining_millis(&self) -> u64 {
-        self.budget.attempt_remaining_millis()
+        self.budget
+            .attempt_remaining_millis()
+            .saturating_sub(self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
     }
+
     fn recovery_remaining_millis(&self) -> u64 {
-        self.budget.recovery_remaining_millis()
+        self.attempt_remaining_millis()
     }
 }
 
