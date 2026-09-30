@@ -39,9 +39,13 @@
       path = restore declared.path;
       outputs = builtins.mapAttrs (_: restore) declared.outputs;
     };
-  canonicalReference = package:
-    canonical (sourceContexts
-      (package.deployment.package or (reference package)) (reference package));
+  canonicalReference = package: let
+    source = reference package;
+    declared = package.deployment.package or source;
+  in
+    if metadata (canonical declared) != metadata (canonical source)
+    then throw "Package '${nameFor package}' deployment catalog differs from its actual artifact outputs. Regenerate native companions when changing outputs."
+    else canonical (sourceContexts declared source);
   # Runtime bindings may name roles independently of the artifact's identity.
   # Builders consume the values; retained modules consume the same named map.
   dependencyValues = packages:
