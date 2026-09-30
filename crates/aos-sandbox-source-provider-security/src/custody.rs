@@ -239,6 +239,16 @@ impl ProtectedCustodyV1 {
         self.files.manifest()
     }
 
+    pub(crate) fn public_archive_capture(
+        &mut self,
+        now_seconds: i64,
+    ) -> Result<crate::protected_files::PublicConfigurationCaptureV5, SourceProviderSecurityError> {
+        self.revalidate_at(now_seconds)?;
+        let capture = self.files.public_archive_capture()?;
+        self.revalidate_at(now_seconds)?;
+        Ok(capture)
+    }
+
     pub(crate) const fn trust(&self) -> &SourceProviderTrustSetV1 {
         self.files.trust().trust_set()
     }

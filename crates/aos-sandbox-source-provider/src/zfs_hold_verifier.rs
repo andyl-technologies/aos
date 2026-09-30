@@ -75,6 +75,22 @@ pub(crate) struct ProtectedStorageZfsHoldVerifierV1 {
 }
 
 impl ProtectedStorageZfsHoldVerifierV1 {
+    /// Captures public enrollment bytes from the actual unchanged verifier epoch.
+    pub(crate) fn original_enrollment_v5(&self) -> Result<&[u8], ProviderLedgerError> {
+        self.revalidate()?;
+        Ok(&self.exact_manifest)
+    }
+
+    /// Rejects archive enrollment outside the currently held closed verifier epoch.
+    pub(crate) fn require_original_enrollment_v5(
+        &self,
+        archived: &[u8],
+    ) -> Result<(), ProviderLedgerError> {
+        self.revalidate()?;
+        require_original_enrollment_bytes_v5(&self.exact_manifest, archived)?;
+        self.revalidate()
+    }
+
     /// Opens the dedicated manifest only beneath the already protected owner.
     pub(crate) fn load(
         backend: Arc<ProtectedBackendVerifierV1>,
@@ -249,6 +265,14 @@ fn u64_at(bytes: &[u8; MANIFEST_BYTES], offset: usize) -> Result<u64, ProviderLe
     Ok(u64::from_be_bytes(array(bytes, offset)?))
 }
 
+fn require_original_enrollment_bytes_v5(
+    current: &[u8; MANIFEST_BYTES],
+    archived: &[u8],
+) -> Result<(), ProviderLedgerError> {
+    if archived != current { return Err(ProviderLedgerError::ConfigurationMismatch); }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::SigningKey;
@@ -268,6 +292,20 @@ mod tests {
         bytes[96..128].copy_from_slice(&public);
         bytes[128..160].copy_from_slice(&Sha256::digest(public));
         bytes
+    }
+
+    #[test]
+    fn original_enrollment_requires_exact_closed_epoch_not_merely_valid_schema() {
+        let current = manifest();
+        require_original_enrollment_bytes_v5(&current, &current).unwrap();
+
+        for index in [16, 32, 40, 72, 88] {
+            let mut different_epoch = current;
+            different_epoch[index] ^= 1;
+            assert!(decode_manifest(&different_epoch).is_ok());
+            assert!(require_original_enrollment_bytes_v5(&current, &different_epoch).is_err());
+        }
+        assert!(require_original_enrollment_bytes_v5(&current, &current[..159]).is_err());
     }
 
     #[test]

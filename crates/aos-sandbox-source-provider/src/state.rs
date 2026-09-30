@@ -224,6 +224,48 @@ impl ProtectedProviderConfigurationV1 {
         catalog: crate::VerifiedCatalogPublicationV1,
         limits: ProviderLedgerLimits,
     ) -> Result<Self, ProviderLedgerError> {
+        Self::from_public_configuration_data_v5(
+            custody.public_configuration_data_v5(),
+            &catalog,
+            limits,
+        )
+    }
+
+    /// Reconstructs replay-only configuration from genuine immutable archive readback.
+    pub(crate) fn from_original_archive_v5(
+        archived: &aos_sandbox_source_provider_security::ProtectedOriginalDeploymentV5,
+    ) -> Result<Self, ProviderLedgerError> {
+        let limits = ProviderLedgerLimits::default();
+        if archived.limits_digest() != limits.deployment_digest() {
+            return Err(ProviderLedgerError::ConfigurationMismatch);
+        }
+        let configuration = Self::from_public_configuration_data_v5(
+            archived.public_projection(),
+            archived.catalog(),
+            limits,
+        )?;
+        if configuration.deployment_digest() != archived.identities().1 {
+            return Err(ProviderLedgerError::ConfigurationMismatch);
+        }
+        Ok(configuration)
+    }
+
+    pub(crate) fn from_current_capture_v5(
+        custody: &aos_sandbox_source_provider_security::RevalidatedProviderConfigurationV1,
+        catalog: &crate::VerifiedCatalogPublicationV1,
+    ) -> Result<Self, ProviderLedgerError> {
+        Self::from_public_configuration_data_v5(
+            custody.public_configuration_data_v5(), catalog, ProviderLedgerLimits::default(),
+        )
+    }
+
+    // Current capture and archived replay use one field/eligibility policy. Only
+    // their independently sealed input provenance and owner routes differ.
+    fn from_public_configuration_data_v5(
+        custody: &aos_sandbox_source_provider_security::ProviderConfigurationDataV5,
+        catalog: &crate::VerifiedCatalogPublicationV1,
+        limits: ProviderLedgerLimits,
+    ) -> Result<Self, ProviderLedgerError> {
         // AOSSPL01 version 3 fixes deployment ceilings into the format contract. Until
         // a later version journals an explicit deployment-policy digest,
         // accepting caller-specific ceilings would make recovery ambiguous.
@@ -773,6 +815,11 @@ pub(crate) struct DetachedProviderLedgerV1 {
 }
 
 impl DetachedProviderLedgerV1 {
+    /// Borrows the actual saved publication without rebuilding configuration.
+    pub(crate) fn original_catalog_publication_v5(&self) -> &[u8] {
+        &self.configuration.canonical_catalog_publication
+    }
+
     /// Borrows only current configuration, graph and an existing genuine Session.
     ///
     /// The original-pair owner cannot obtain a mutable ledger or an effect

@@ -72,6 +72,211 @@ struct RetainedPublicFile {
     label: &'static str,
 }
 
+/// Retains exact non-secret bytes captured from revalidated protected files.
+#[derive(Clone)]
+pub(crate) struct PublicConfigurationCaptureV5 {
+    pub(crate) manifest: Vec<u8>,
+    pub(crate) trust: Vec<u8>,
+    pub(crate) route: Vec<u8>,
+}
+
+/// Pins the private fixed public-only configuration archive directory.
+pub(crate) struct ProtectedPublicArchiveDirectoryV5 {
+    directory: OwnedFd,
+    metadata: MetadataSnapshot,
+    group: u32,
+}
+
+/// Retains an immutable public archive inode and its bounded exact bytes.
+pub(crate) struct ProtectedPublicArchiveFileV5 {
+    file: RetainedPublicFile,
+    name: String,
+}
+
+impl ProtectedPublicArchiveDirectoryV5 {
+    pub(crate) fn bounded_size(
+        &self,
+        name: &str,
+        maximum: usize,
+    ) -> Result<usize, SourceProviderSecurityError> {
+        self.revalidate()?;
+        require_archive_name(name)?;
+        let descriptor = protected_file::open_nofollow_child(&self.directory, name)
+            .map_err(|_| SourceProviderSecurityError::filesystem("configuration archive", "inspect size"))?;
+        let metadata = validate_child(&descriptor, self.group, 1, maximum, "configuration archive")?;
+        usize::try_from(metadata.size).map_err(|_| SourceProviderSecurityError::Currentness)
+    }
+
+    pub(crate) fn open_fixed() -> Result<Self, SourceProviderSecurityError> {
+        let group = rustix::process::getegid().as_raw();
+        let pinned = open_directory(Path::new(
+            "/var/lib/aos/source-provider/configuration-history",
+        ))?;
+        let directory = rustix::fs::openat(
+            &pinned,
+            ".",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|_| SourceProviderSecurityError::filesystem("configuration archive", "open"))?;
+        rustix::fs::flock(&directory, FlockOperation::NonBlockingLockExclusive)
+            .map_err(|_| SourceProviderSecurityError::AlreadyInUse)?;
+
+        let metadata = validate_archive_directory(&directory, group)?;
+        let retained = Self { directory, metadata, group };
+        retained.revalidate()?;
+        Ok(retained)
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<(), SourceProviderSecurityError> {
+        if rustix::process::geteuid().as_raw() != 0
+            || rustix::process::getegid().as_raw() != self.group
+            || validate_archive_directory(&self.directory, self.group)? != self.metadata
+        {
+            return Err(SourceProviderSecurityError::Currentness);
+        }
+        let reopened = open_directory(Path::new(
+            "/var/lib/aos/source-provider/configuration-history",
+        ))?;
+        if validate_archive_directory(&reopened, self.group)? != self.metadata {
+            return Err(SourceProviderSecurityError::Currentness);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn read(
+        &self,
+        name: &str,
+        maximum: usize,
+    ) -> Result<ProtectedPublicArchiveFileV5, SourceProviderSecurityError> {
+        self.revalidate()?;
+        require_archive_name(name)?;
+        let descriptor = protected_file::open_nofollow_child(&self.directory, name)
+            .map_err(|_| SourceProviderSecurityError::filesystem("configuration archive", "read"))?;
+        let metadata = validate_child(&descriptor, self.group, 1, maximum, "configuration archive")?;
+        let exact = read_archive_bytes(&descriptor, &metadata)?;
+        let file = ProtectedPublicArchiveFileV5 {
+            name: name.to_owned(),
+            file: RetainedPublicFile {
+                descriptor,
+                metadata,
+                digest: Sha256::digest(&exact).into(),
+                exact,
+                label: "configuration archive",
+            },
+        };
+        self.validate_file(&file)?;
+        Ok(file)
+    }
+
+    pub(crate) fn install(
+        &self,
+        name: &str,
+        exact: &[u8],
+        maximum: usize,
+    ) -> Result<ProtectedPublicArchiveFileV5, SourceProviderSecurityError> {
+        self.revalidate()?;
+        require_archive_name(name)?;
+        if exact.is_empty() || exact.len() > maximum {
+            return Err(SourceProviderSecurityError::format("configuration archive", "size"));
+        }
+
+        // No overwrite or rename can replace immutable evidence. A failed
+        // install may leave an orphan, which is never Journal membership.
+        match rustix::fs::openat(
+            &self.directory,
+            name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o440),
+        ) {
+            Ok(descriptor) => {
+                rustix::fs::fchmod(&descriptor, Mode::from_raw_mode(0o440))
+                    .map_err(|_| SourceProviderSecurityError::filesystem("configuration archive", "mode"))?;
+                let mut remainder = exact;
+                while !remainder.is_empty() {
+                    let written = rustix::io::write(&descriptor, remainder)
+                        .map_err(|_| SourceProviderSecurityError::filesystem("configuration archive", "write"))?;
+                    if written == 0 {
+                        return Err(SourceProviderSecurityError::Currentness);
+                    }
+                    remainder = &remainder[written..];
+                }
+                rustix::fs::fsync(&descriptor)
+                    .map_err(|_| SourceProviderSecurityError::filesystem("configuration archive", "sync"))?;
+                rustix::fs::fsync(&self.directory)
+                    .map_err(|_| SourceProviderSecurityError::filesystem("configuration archive", "sync directory"))?;
+            }
+            Err(rustix::io::Errno::EXIST) => {}
+            Err(_) => {
+                return Err(SourceProviderSecurityError::filesystem("configuration archive", "create"));
+            }
+        }
+
+        let file = self.read(name, maximum)?;
+        if file.exact() != exact {
+            return Err(SourceProviderSecurityError::Currentness);
+        }
+        Ok(file)
+    }
+
+    pub(crate) fn validate_file(
+        &self,
+        file: &ProtectedPublicArchiveFileV5,
+    ) -> Result<(), SourceProviderSecurityError> {
+        self.revalidate()?;
+        validate_retained_public(&file.file, self.group)?;
+        let reopened = protected_file::open_nofollow_child(&self.directory, &file.name)
+            .map_err(|_| SourceProviderSecurityError::filesystem("configuration archive", "reopen"))?;
+        if validate_child(&reopened, self.group, file.exact().len(), file.exact().len(), "configuration archive")?
+            != file.file.metadata
+            || read_exact_size(&reopened, file.exact().len(), "configuration archive")? != file.exact()
+        {
+            return Err(SourceProviderSecurityError::Currentness);
+        }
+        self.revalidate()
+    }
+}
+
+impl ProtectedPublicArchiveFileV5 {
+    pub(crate) fn exact(&self) -> &[u8] {
+        &self.file.exact
+    }
+}
+
+fn require_archive_name(name: &str) -> Result<(), SourceProviderSecurityError> {
+    if name.len() != 66
+        || !matches!(name.get(..2), Some("e-") | Some("o-") | Some("c-"))
+        || !name.as_bytes()[2..].iter().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+    {
+        return Err(SourceProviderSecurityError::DirectoryPath);
+    }
+    Ok(())
+}
+
+fn validate_archive_directory(
+    descriptor: &OwnedFd,
+    group: u32,
+) -> Result<MetadataSnapshot, SourceProviderSecurityError> {
+    let stat = rustix::fs::fstat(descriptor)
+        .map_err(|_| SourceProviderSecurityError::filesystem("configuration archive", "inspect"))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::Directory
+        || stat.st_uid != 0
+        || stat.st_gid != group
+        || stat.st_mode & 0o7777 != 0o700
+    {
+        return Err(SourceProviderSecurityError::Metadata { object: "configuration archive" });
+    }
+    // Entries are intentionally added; directory timestamps/size are not
+    // immutable identity. Device, inode, ownership and mode remain pinned.
+    let mut identity = MetadataSnapshot::capture(&stat);
+    identity.size = 0;
+    identity.modified_seconds = 0;
+    identity.modified_nanoseconds = 0;
+    identity.changed_seconds = 0;
+    identity.changed_nanoseconds = 0;
+    Ok(identity)
+}
+
 pub(crate) struct RetainedSecret {
     descriptor: OwnedFd,
     metadata: MetadataSnapshot,
@@ -108,6 +313,23 @@ pub(crate) struct ProtectedSourceProviderFiles {
 }
 
 impl ProtectedSourceProviderFiles {
+    pub(crate) fn public_archive_capture(
+        &self,
+    ) -> Result<PublicConfigurationCaptureV5, SourceProviderSecurityError> {
+        self.revalidate()?;
+
+        // These retained values were bounded before allocation on load. No
+        // secret file or process/session authority leaves protected custody.
+        let capture = PublicConfigurationCaptureV5 {
+            manifest: self.manifest_file.exact.clone(),
+            trust: self.trust_file.exact.clone(),
+            route: self.route_file.exact.clone(),
+        };
+
+        self.revalidate()?;
+        Ok(capture)
+    }
+
     pub(crate) fn load(
         path: &Path,
         role: SourceProviderSecurityRoleV1,
@@ -254,7 +476,7 @@ impl ProtectedSourceProviderFiles {
     }
 }
 
-fn validate_manifest_projections(
+pub(crate) fn validate_manifest_projections(
     manifest: &SourceProviderSecurityManifestV1,
     trust: &SourceProviderTrustFileV1,
     route: &SourceProviderRouteFileV1,
@@ -586,6 +808,18 @@ fn read_exact_size(
     Ok(output)
 }
 
+// The archive reader passes the same bounded metadata observation that admitted
+// this inode. Later growth or shrinkage fails the exact read, never enlarging
+// its allocation to a separately observed size.
+fn read_archive_bytes(
+    descriptor: &OwnedFd,
+    metadata: &MetadataSnapshot,
+) -> Result<Vec<u8>, SourceProviderSecurityError> {
+    let size = usize::try_from(metadata.size)
+        .map_err(|_| SourceProviderSecurityError::Currentness)?;
+    read_exact_size(descriptor, size, "configuration archive")
+}
+
 fn read_exact_array<const N: usize>(
     descriptor: &OwnedFd,
     label: &'static str,
@@ -726,6 +960,7 @@ fn compare_reopened_secret(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::Write;
     use std::os::unix::fs::symlink;
 
     use super::*;
@@ -743,5 +978,48 @@ mod tests {
         assert!(open_directory(&endpoint).is_ok());
         assert!(open_directory(&temporary.path().join("parent-link/endpoint")).is_err());
         assert!(open_directory(&parent.join("endpoint-link")).is_err());
+    }
+
+    // These temporary descriptors test exact bounded-extent reading only. They
+    // are not genuine fixed-root protected archive owners or admissions.
+    #[test]
+    fn archive_read_uses_the_admitted_metadata_extent() {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"data").unwrap();
+        let descriptor: OwnedFd = file.try_clone().unwrap().into();
+        let metadata = MetadataSnapshot::capture(&rustix::fs::fstat(&descriptor).unwrap());
+
+        let exact = read_archive_bytes(&descriptor, &metadata).unwrap();
+
+        assert_eq!(metadata.size, 4);
+        assert_eq!(exact.as_slice(), b"data");
+    }
+
+    #[test]
+    fn archive_read_refuses_growth_or_shrinkage_after_admitted_metadata() {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"data").unwrap();
+        let descriptor: OwnedFd = file.try_clone().unwrap().into();
+        let metadata = MetadataSnapshot::capture(&rustix::fs::fstat(&descriptor).unwrap());
+
+        file.set_len(8).unwrap();
+        assert!(read_archive_bytes(&descriptor, &metadata).is_err());
+
+        file.set_len(2).unwrap();
+        assert!(read_archive_bytes(&descriptor, &metadata).is_err());
+        assert_eq!(metadata.size, 4);
+    }
+
+    #[test]
+    fn archive_read_refuses_an_unrepresentable_metadata_extent() {
+        let file = tempfile::tempfile().unwrap();
+        let descriptor: OwnedFd = file.into();
+        let mut metadata = MetadataSnapshot::capture(&rustix::fs::fstat(&descriptor).unwrap());
+        metadata.size = -1;
+
+        assert!(matches!(
+            read_archive_bytes(&descriptor, &metadata),
+            Err(SourceProviderSecurityError::Currentness),
+        ));
     }
 }

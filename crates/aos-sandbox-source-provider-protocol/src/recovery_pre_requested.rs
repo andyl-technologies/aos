@@ -428,6 +428,42 @@ pub struct SignedRootNoEscapeAckV1 {
 }
 
 impl SignedRootNoEscapeAckV1 {
+    /// Borrows the retained signer reference as nonauthorizing DATA.
+    #[must_use]
+    pub const fn signer(&self) -> &SourceProviderSigningKeyV1 {
+        &self.signer
+    }
+
+    /// Checks only retained signature equality against an independent role pin.
+    ///
+    /// This does not establish the actual query, current Session, Root terminal,
+    /// protected cut, archive membership or pin retirement.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed facts, a substituted pin, wrong role or invalid signature.
+    pub fn verify_retained_signature_claim(
+        &self,
+        expected_signer: &SourceProviderSigningKeyV1,
+        public_key: &[u8; 32],
+    ) -> Result<(), PreRequestedRecoveryErrorV1> {
+        if !self.facts.valid()
+            || &self.signer != expected_signer
+            || expected_signer.usage() != SourceProviderKeyUsageV1::RootMountRecord
+        {
+            return Err(PreRequestedRecoveryErrorV1::Stale);
+        }
+        verify_bytes(
+            ACK_SIGNATURE_DOMAIN,
+            ACK_KIND,
+            &self.subject_bytes(),
+            &self.signer,
+            &self.signature,
+            public_key,
+        )?;
+        Ok(())
+    }
+
     /// Signs only the canonical DATA shape, not a Root readback or current pin.
     ///
     /// # Errors

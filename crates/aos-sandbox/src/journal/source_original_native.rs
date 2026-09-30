@@ -1,8 +1,10 @@
-//! Private original Source coupled-transaction and retained-candidate comparisons.
+//! Original Source canonical comparisons and same-held physical replay bridge.
 //!
-//! All inputs and outputs are DATA. Even exact transaction, origin and readback
-//! comparisons prove neither physical membership nor currentness. There is no
-//! writer claim, receipt mint, preflight, commit, replay route or effect capability.
+//! The pure comparison layer remains DATA, with no conversion to live authority.
+//! The separately named writer/replay route binds actual fixed ledger and
+//! challenge owners, exact complete cut references and current opened headroom.
+//! Source still authenticates public archived/current configurations and every
+//! original signature. Neither layer lends Ready or an external effect capability.
 //! Applying uses the complete before-to-after Ledger reservation proposal.
 //!
 //! The two coupled shapes are:
@@ -33,6 +35,18 @@ use super::{
 type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
 
 mod union;
+pub(super) mod challenge;
+pub(super) mod replay;
+pub(super) mod writer;
+pub use challenge::{
+    SourceOriginalChallengeCheckpointV5, SourceOriginalChallengeHistoryViewV5,
+};
+pub use replay::SourceOriginalPhysicalCutV5;
+pub use writer::{
+    OriginalSourceProtectedReadbackV5, PreparedOriginalSourceAppendV5,
+    SourceOriginalAppendSubjectV5,
+    SourceOriginalNativeJournalAuthorityV5, SourceOriginalReplayViewV5,
+};
 pub use union::{
     SOURCE_NATIVE_DISPATCH_TERMINAL_BYTES_V1, SOURCE_NATIVE_DISPATCH_TERMINAL_RECORDS_V1,
     SOURCE_NATIVE_NO_DISPATCH_TERMINAL_BYTES_V1,

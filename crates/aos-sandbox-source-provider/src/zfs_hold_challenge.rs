@@ -130,6 +130,17 @@ enum ChallengeJournalLocationV1 {
 }
 
 impl ProtectedZfsHoldChallengesV1 {
+    /// Lends actual uncompacted history only after the existing codec validates it.
+    pub(crate) fn original_history_v5(
+        &mut self,
+    ) -> Result<aos_sandbox::journal::SourceOriginalChallengeHistoryViewV5<'_>, ProviderLedgerError> {
+        let (_, current) = self.validate_records()?;
+        let history = self.journal.source_original_challenge_history_v5()?;
+        validate_original_history_v5(&history, &current)?;
+        history.validate_current()?;
+        Ok(history)
+    }
+
     pub(crate) fn open_fixed() -> Result<Self, ProviderLedgerError> {
         let (journal, _) = Journal::open_protected_at(Path::new(ROOT), FILE, limits())?;
         let mut owner = Self {
@@ -450,6 +461,55 @@ impl ProtectedZfsHoldChallengesV1 {
     }
 }
 
+fn validate_original_history_v5(
+    history: &aos_sandbox::journal::SourceOriginalChallengeHistoryViewV5<'_>,
+    current: &ChallengeAttemptIndexV1,
+) -> Result<(), ProviderLedgerError> {
+    validate_original_checkpoint_rows_v5(
+        history.checkpoints()?.map(|checkpoint| (checkpoint.key(), checkpoint.value())), current,
+    )
+}
+
+fn validate_original_checkpoint_rows_v5<'row>(
+    rows: impl IntoIterator<Item = (&'row [u8], &'row [u8])>,
+    current: &ChallengeAttemptIndexV1,
+) -> Result<(), ProviderLedgerError> {
+    let mut retained = BTreeMap::new();
+    let mut issued_attempts = BTreeMap::new();
+    for (key, value) in rows {
+        let record = ChallengeRecordV1::decode(key, value)?;
+        let nonce = record.challenge.nonce();
+        match retained.get(&nonce).copied() {
+            None => {
+                if record.state != ISSUED || issued_attempts.len() >= MAXIMUM_CHALLENGES {
+                    return Err(ProviderLedgerError::Corrupt("original challenge issue history"));
+                }
+                let attempt = (record.provider_id, record.holder_id, record.challenge.attempt_digest);
+                if issued_attempts.insert(attempt, nonce).is_some() {
+                    return Err(ProviderLedgerError::Corrupt("duplicate original challenge attempt"));
+                }
+            }
+            Some(previous) => {
+                let previous: ChallengeRecordV1 = previous;
+                if previous.state != ISSUED
+                    || record.state != SPENT
+                    || !previous.same_subject(record)
+                {
+                    return Err(ProviderLedgerError::Corrupt("original challenge spend history"));
+                }
+            }
+        }
+        retained.insert(nonce, record);
+    }
+
+    if retained.len() != current.len()
+        || current.values().any(|record| retained.get(&record.challenge.nonce()) != Some(record))
+    {
+        return Err(ProviderLedgerError::Corrupt("original challenge current materialization"));
+    }
+    Ok(())
+}
+
 fn validate_record_set<'a>(
     records: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
 ) -> Result<(usize, ChallengeAttemptIndexV1), ProviderLedgerError> {
@@ -511,6 +571,55 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
         directory
+    }
+
+    #[test]
+    fn original_history_requires_actual_issued_then_exact_spent_without_reconstruction() {
+        let issued = issued_record();
+        let mut spent = issued;
+        spent.state = SPENT;
+        spent.receipt_digest = digest(9);
+        let key = key(issued.challenge.nonce());
+        let issued_bytes = issued.encode();
+        let spent_bytes = spent.encode();
+        let current = validate_record_set([(key.as_slice(), spent_bytes.as_slice())]).unwrap().1;
+
+        validate_original_checkpoint_rows_v5([
+            (key.as_slice(), issued_bytes.as_slice()), (key.as_slice(), spent_bytes.as_slice()),
+        ], &current).unwrap();
+        assert!(validate_original_checkpoint_rows_v5([
+            (key.as_slice(), spent_bytes.as_slice()),
+        ], &current).is_err());
+        assert!(validate_original_checkpoint_rows_v5([
+            (key.as_slice(), issued_bytes.as_slice()),
+            (key.as_slice(), spent_bytes.as_slice()),
+            (key.as_slice(), spent_bytes.as_slice()),
+        ], &current).is_err());
+    }
+
+    #[test]
+    fn original_history_refuses_changed_subject_duplicate_attempt_and_lost_current_row() {
+        let issued = issued_record();
+        let key = key(issued.challenge.nonce());
+        let encoded = issued.encode();
+        let current = validate_record_set([(key.as_slice(), encoded.as_slice())]).unwrap().1;
+        let mut changed = issued;
+        changed.state = SPENT;
+        changed.receipt_digest = digest(9);
+        changed.acquisition_id = digest(10);
+        let changed = changed.encode();
+
+        assert!(validate_original_checkpoint_rows_v5([
+            (key.as_slice(), encoded.as_slice()), (key.as_slice(), changed.as_slice()),
+        ], &current).is_err());
+        assert!(validate_original_checkpoint_rows_v5(std::iter::empty(), &current).is_err());
+        let mut duplicate = issued;
+        duplicate.challenge.nonce = [11; 32];
+        let second_key = super::key(duplicate.challenge.nonce());
+        let second = duplicate.encode();
+        assert!(validate_original_checkpoint_rows_v5([
+            (key.as_slice(), encoded.as_slice()), (second_key.as_slice(), second.as_slice()),
+        ], &current).is_err());
     }
 
     #[test]

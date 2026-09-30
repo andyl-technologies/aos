@@ -57,6 +57,11 @@ pub use source_original_native::{
     SOURCE_NATIVE_NO_DISPATCH_TERMINAL_BYTES_V1,
     source_native_ordinary_capacity_request_v1,
     source_native_release_status_capacity_request_v1,
+    OriginalSourceProtectedReadbackV5, PreparedOriginalSourceAppendV5,
+    SourceOriginalAppendSubjectV5,
+    SourceOriginalChallengeCheckpointV5, SourceOriginalChallengeHistoryViewV5,
+    SourceOriginalNativeJournalAuthorityV5, SourceOriginalPhysicalCutV5,
+    SourceOriginalReplayViewV5,
 };
 pub use mount_manager_startup::MountManagerStartupPolicyReceiptV1;
 pub(crate) use mount_manager_startup::{
@@ -671,6 +676,8 @@ struct PendingTransaction {
     expected_records: usize,
     records: Vec<JournalRecord>,
     digest: Sha256,
+    begin_sequence: u64,
+    begin_offset: u64,
 }
 
 /// Owns one exclusively locked, append-only journal and its replayed indexes.
@@ -691,6 +698,9 @@ pub struct Journal {
     protected: Option<ProtectedJournalLocation>,
     cache_policy_gate: Option<(PathBuf, u32)>,
     authority_instance: Arc<JournalAuthorityInstance>,
+    source_challenge_history: Vec<source_original_native::SourceOriginalChallengeCheckpointV5>,
+    source_original_replay: source_original_native::replay::SourceOriginalReplayCacheV5,
+    source_history_compacted: bool,
 }
 
 /// Retains only an existing protected writer's lock open-file description.
@@ -982,6 +992,7 @@ enum ProtectedAuthorityScope {
     RootOriginalNativeV5,
     RootOriginalInventoryV6,
     SourceProviderHeldReadOnly,
+    SourceOriginalNativeV5,
     MountSourceConsumption,
     MountSourceMigration,
     MountManagerStartup,
@@ -990,6 +1001,7 @@ enum ProtectedAuthorityScope {
 
 #[derive(Clone, Copy)]
 enum RootOwnerEdge {
+    SourceOriginal,
     Local(root_local_recovery::Edge),
     OriginalNative([u8; 32]),
     OriginalInventory {
@@ -1006,6 +1018,9 @@ fn validate_root_owner_edge(
     limits: JournalLimits,
 ) -> Result<Option<[u8; 32]>, JournalError> {
     let settling = match edge {
+        // The Source route also needs actual replay/challenge witnesses, so its
+        // caller uses the Journal-owned branch rather than a state-only check.
+        RootOwnerEdge::SourceOriginal => return Err(JournalError::ProtectedBoundary),
         RootOwnerEdge::Local(edge) => root_local_recovery::validate_edge(state, transaction, edge),
         RootOwnerEdge::OriginalNative(attempt) => {
             root_original_native::validate_edge(state, transaction, attempt, limits)
@@ -1877,6 +1892,9 @@ impl Journal {
                 protected,
                 cache_policy_gate: None,
                 authority_instance: Arc::new(JournalAuthorityInstance),
+                source_challenge_history: replay.source_challenge_history,
+                source_original_replay: replay.source_original_replay,
+                source_history_compacted: replay.source_history_compacted,
             },
             report,
         ))
@@ -1950,40 +1968,11 @@ impl Journal {
             .next_sequence
             .checked_add(added_frames)
             .ok_or(JournalError::SequenceExhausted)?;
-        let materialized_bytes = comparison.after().iter().try_fold(
-            0_usize,
-            |total, ((_, key), value)| {
-                total
-                    .checked_add(key.len())
-                    .and_then(|bytes| bytes.checked_add(value.len()))
-                    .ok_or(JournalError::LimitExceeded("materialized state bytes"))
-            },
-        )?;
-
         // The complete union already checked every exact changed floor. Reuse
         // the shared all-family fold on the after cut, with no pretend generic
         // settlement identifier or weaker legacy decoder.
-        validate_reserved_capacity(
-            comparison.after(),
-            materialized_bytes,
-            &[],
-            None,
-            journal_bytes,
-            transactions,
-            self.limits,
-            None,
-        )?;
-        root_original_inventory::require_sequence_headroom(comparison.after(), next_sequence)?;
-        comparison.require_geometry_headroom(
-            self.limits,
-            native_held::NativeHeldCapacityUsageV3 {
-                journal_bytes,
-                transactions: transactions as u64,
-                materialized_bytes: materialized_bytes as u64,
-                materialized_records: comparison.after().len() as u64,
-                ..native_held::NativeHeldCapacityUsageV3::default()
-            },
-            next_sequence,
+        source_original_native::replay::require_advisory_bounds(
+            &comparison, self.limits, journal_bytes, transactions, next_sequence,
         )?;
         Ok(comparison)
     }
@@ -2623,9 +2612,20 @@ impl Journal {
         mut cache_gate: CacheMutationGateV1<'_>,
     ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
-        let settling_reservation = if let Some(edge) = root_local_edge {
+        let settling_reservation = if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
+            let (_, comparison) = self.source_original_replay.preview_transaction(
+                &self.state, transaction, self.limits,
+            )?;
+            if comparison.before() != &self.state {
+                return Err(JournalError::StaleAuthoritySnapshot);
+            }
+            None
+        } else if let Some(edge) = root_local_edge {
             validate_root_owner_edge(&self.state, transaction, edge, self.limits)?
         } else {
+            if self.source_original_replay.has_dependencies() {
+                return Err(JournalError::ProtectedBoundary);
+            }
             root_local_recovery::require_fences(&self.state, transaction)?;
             root_original_native::require_generic_transaction(&self.state, transaction)?;
             root_original_inventory::require_generic_transaction(
@@ -2715,6 +2715,21 @@ impl Journal {
         root_original_inventory::require_append_sequence_headroom(
             &self.state, transaction, following_sequence,
         )?;
+        if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
+            let (_, comparison) = self.source_original_replay.preview_transaction(
+                &self.state, transaction, self.limits,
+            )?;
+            source_original_native::replay::require_advisory_bounds(
+                &comparison,
+                self.limits,
+                self.file.metadata()?.len().checked_add(
+                    encoded_transaction_append_bytes(transaction)?,
+                ).ok_or(JournalError::JournalTooLarge)?,
+                self.committed_transactions.checked_add(1)
+                    .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
+                following_sequence,
+            )?;
+        }
         let additional_bytes = frames
             .iter()
             .try_fold(0_u64, |total, frame| total.checked_add(frame.len() as u64));
@@ -2945,9 +2960,17 @@ impl Journal {
         let mut expected_length = self.file.metadata()?.len();
 
         for (index, transaction) in transactions.iter().enumerate() {
-            let settling_reservation = if let Some(edge) = root_local_edge {
+            let settling_reservation = if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
+                self.source_original_replay.preview_transaction(
+                    &state, transaction, self.limits,
+                )?;
+                None
+            } else if let Some(edge) = root_local_edge {
                 validate_root_owner_edge(&state, transaction, edge, self.limits)?
             } else {
+                if self.source_original_replay.has_dependencies() {
+                    return Err(JournalError::ProtectedBoundary);
+                }
                 root_local_recovery::require_fences(&state, transaction)?;
                 root_original_native::require_generic_transaction(&state, transaction)?;
                 root_original_inventory::require_generic_transaction(
@@ -3029,6 +3052,20 @@ impl Journal {
                 return Err(JournalError::JournalTooLarge);
             }
 
+            if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
+                let (_, comparison) = self.source_original_replay.preview_transaction(
+                    &state, transaction, self.limits,
+                )?;
+                source_original_native::replay::require_advisory_bounds(
+                    &comparison,
+                    self.limits,
+                    expected_length,
+                    committed_transactions.checked_add(1)
+                        .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
+                    next_sequence.checked_add(frame_count).ok_or(JournalError::SequenceExhausted)?,
+                )?;
+            }
+
             validate_reserved_capacity(
                 &state,
                 materialized_bytes,
@@ -3069,6 +3106,15 @@ impl Journal {
     /// Effect fence is held.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        if self.source_original_replay.has_dependencies()
+            || source_original_native::replay::has_original_rows(&self.state)
+            || self.state.keys().any(|(namespace, key)| {
+                *namespace == RecordNamespace::SourceProviderAuthority
+                    && source_original_native::challenge::is_challenge_key(key)
+            })
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
         root_local_recovery::pending(&self.state)?;
         root_original_native::pending(&self.state, self.limits)?;
         root_original_inventory::validate_rejoined_capacity(
@@ -3118,6 +3164,9 @@ impl Journal {
             self.state = replay.state;
             self.materialized_bytes = replay.materialized_bytes;
             self.idempotency = replay.idempotency;
+            self.source_challenge_history = replay.source_challenge_history;
+            self.source_original_replay = replay.source_original_replay;
+            self.source_history_compacted = replay.source_history_compacted;
             self.authority_instance = Arc::new(JournalAuthorityInstance);
             return Ok(());
         }
@@ -3148,6 +3197,9 @@ impl Journal {
         self.state = replay.state;
         self.materialized_bytes = replay.materialized_bytes;
         self.idempotency = replay.idempotency;
+        self.source_challenge_history = replay.source_challenge_history;
+        self.source_original_replay = replay.source_original_replay;
+        self.source_history_compacted = replay.source_history_compacted;
         self.authority_instance = Arc::new(JournalAuthorityInstance);
         Ok(())
     }
@@ -3258,7 +3310,9 @@ impl ProtectedJournalAuthority<'_> {
         &self,
         handoff: &FixedSourceProviderJournalHandoffV1<'_, '_>,
     ) -> Result<(), JournalError> {
-        if self.scope == ProtectedAuthorityScope::SourceProviderHeldReadOnly {
+        if self.scope == ProtectedAuthorityScope::SourceOriginalNativeV5 {
+            source_original_native::writer::require_fixed(self.journal)?;
+        } else if self.scope == ProtectedAuthorityScope::SourceProviderHeldReadOnly {
             source_provider_readonly::validate_current_authority(self)?;
         } else {
             self.validate_fixed_source_provider_storage()?;
@@ -4474,9 +4528,20 @@ struct ReplayState {
     state: BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     materialized_bytes: usize,
     idempotency: BTreeMap<Vec<u8>, IdempotencyDecision>,
+    source_challenge_history: Vec<source_original_native::SourceOriginalChallengeCheckpointV5>,
+    source_original_replay: source_original_native::replay::SourceOriginalReplayCacheV5,
+    source_history_compacted: bool,
 }
 
 fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, JournalError> {
+    replay_with_source_original(file, limits, None)
+}
+
+fn replay_with_source_original(
+    file: &mut File,
+    limits: JournalLimits,
+    challenges: Option<&source_original_native::SourceOriginalChallengeHistoryViewV5<'_>>,
+) -> Result<ReplayState, JournalError> {
     file.seek(SeekFrom::Start(0))?;
     let mut offset = 0_u64;
     let mut durable_end = 0_u64;
@@ -4494,6 +4559,12 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
     let mut compaction_index = 1_u64;
     let mut compaction_last_key = None;
     let mut materialized_compaction = false;
+    let mut source_challenge_history = Vec::new();
+    let mut source_challenge_history_bytes = 0;
+    let mut source_original_replay =
+        source_original_native::replay::SourceOriginalReplayCacheV5::default();
+    let mut source_history_compacted = false;
+    let source_journal_identity = FileIdentity::of(file)?;
 
     loop {
         let Some((frame, bytes_read)) = read_frame(file, offset, limits)? else {
@@ -4523,6 +4594,9 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
                     expected_records: count,
                     records: Vec::with_capacity(count),
                     digest: transaction_hasher(),
+                    begin_sequence: frame.sequence,
+                    begin_offset: offset.checked_sub(bytes_read)
+                        .ok_or(JournalError::JournalTooLarge)?,
                 });
             }
             FrameKind::Record => {
@@ -4554,6 +4628,8 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
                     ));
                 }
                 validate_commit(&frame.payload, &transaction)?;
+                let begin_sequence = transaction.begin_sequence;
+                let begin_offset = transaction.begin_offset;
                 let replay_transaction = JournalTransaction {
                     id: transaction.id,
                     records: transaction.records,
@@ -4585,6 +4661,10 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
                         .checked_add(1)
                         .ok_or(JournalError::SequenceExhausted)?;
                     materialized_compaction = true;
+                    source_history_compacted = true;
+                    source_original_replay.observe_compaction(
+                        &root_original_inventory::materialize(&state, &replay_transaction),
+                    );
                 } else {
                     if materialized_compaction {
                         root_local_recovery::pending(&state)?;
@@ -4597,24 +4677,49 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
                     }
                     compaction_prefix = false;
                     logical_replay = true;
-                    query_edge = root_original_inventory::replay_edge(
-                        &state, &replay_transaction, limits,
+                    let source_edge = source_original_replay.replay_transaction(
+                        &state,
+                        &replay_transaction,
+                        challenges,
+                        limits,
+                        begin_sequence,
+                        frame.sequence,
+                        begin_offset,
+                        offset,
+                        committed_transactions.checked_add(1)
+                            .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
+                        (source_journal_identity.device, source_journal_identity.inode),
                     )?;
-                    if query_edge.is_none()
-                        && !root_original_native::validate_replayed_transaction(
-                            &state, &replay_transaction, limits, expected_sequence,
-                        )?
-                    {
-                        root_local_recovery::validate_replayed_transaction(
-                            &state,
-                            &replay_transaction,
-                        )?;
-                    }
-                    if query_edge.is_none() {
-                        root_original_inventory::preserve_other_owner(
+                    if !source_edge {
+                        query_edge = root_original_inventory::replay_edge(
                             &state, &replay_transaction, limits,
                         )?;
+                        if query_edge.is_none()
+                            && !root_original_native::validate_replayed_transaction(
+                                &state, &replay_transaction, limits, expected_sequence,
+                            )?
+                        {
+                            root_local_recovery::validate_replayed_transaction(
+                                &state,
+                                &replay_transaction,
+                            )?;
+                        }
+                        if query_edge.is_none() {
+                            root_original_inventory::preserve_other_owner(
+                                &state, &replay_transaction, limits,
+                            )?;
+                        }
                     }
+                    source_original_native::challenge::capture_checkpoint(
+                        &mut source_challenge_history,
+                        &mut source_challenge_history_bytes,
+                        &replay_transaction,
+                        begin_sequence,
+                        frame.sequence,
+                        begin_offset,
+                        offset,
+                        limits,
+                    )?;
                 }
                 if !transaction_ids.insert(replay_transaction.id) {
                     return Err(JournalError::DuplicateTransaction);
@@ -4686,6 +4791,9 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
         state,
         materialized_bytes,
         idempotency,
+        source_challenge_history,
+        source_original_replay,
+        source_history_compacted,
     })
 }
 
@@ -4882,7 +4990,14 @@ fn validate_reserved_capacity(
                 }
             }
             None => {
-                let identifier = settling_reservation.ok_or(JournalError::ProtectedBoundary)?;
+                let identifier = if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
+                    let value = state.get(&(record.namespace(), record.key().to_vec()))
+                        .ok_or(JournalError::ProtectedBoundary)?;
+                    capacity_reservation::accounting_reservation(record.key(), value)?
+                        .reservation_id
+                } else {
+                    settling_reservation.ok_or(JournalError::ProtectedBoundary)?
+                };
                 if record.key()
                     != capacity_reservation::reservation_key_for_validation(identifier).as_slice()
                     || reservations.remove(&identifier).is_none()

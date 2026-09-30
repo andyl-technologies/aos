@@ -1,8 +1,9 @@
 //! Prospective genuine Session custody kept outside the mutable Ready ledger.
 //!
-//! The mixed graph remains structural DATA: Storage/control archive eligibility
-//! and full original/intermediate geometry are unresolved. This state exposes
-//! observations only; it cannot lend a ledger, sign, send, mutate or run a backend.
+//! The public surface reports observations only. The private original bridge
+//! can authenticate retained archive cuts and append exact metadata through the
+//! same held writer; it cannot lend Ready, sign, send or run a backend. Native3
+//! intermediate associations remain unsupported.
 
 use aos_sandbox::ProtectedJournalSnapshot;
 use aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1;
@@ -19,9 +20,9 @@ use crate::{
 
 /// Reports only counts from an exact currently held mixed structural snapshot.
 ///
-/// Archive eligibility, original admission and full remaining geometry are
-/// unresolved. This observation grants no effect, signing, send, FD, cleanup,
-/// floor credit or Storage retirement authority.
+/// A named original observation additionally checks its archive/current bridge.
+/// Counts still grant no effect, signing, send, FD, cleanup, floor credit or
+/// Storage retirement authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FixedProviderHeldReadOnlyObservationV1 {
     /// Counts complete retained owner rows, including exact archive-bearing rows.
@@ -35,11 +36,30 @@ pub struct FixedProviderHeldReadOnlyObservationV1 {
 }
 
 pub(super) struct HeldReadOnlyV1 {
-    session: CurrentProviderIngressSessionV1,
-    publication: Vec<u8>,
+    pub(super) session: CurrentProviderIngressSessionV1,
+    pub(super) publication: Vec<u8>,
     configuration: Option<ProtectedProviderConfigurationV1>,
     profile: Option<RecoveredNativeProfileV1>,
     snapshot: Option<ProtectedJournalSnapshot>,
+    pub(super) original: Option<super::original_journal::OriginalJournalV5>,
+}
+
+impl HeldReadOnlyV1 {
+    /// Retains the same genuine Session after a first-birth runtime is parked.
+    pub(super) fn retain_original_v5(
+        session: CurrentProviderIngressSessionV1,
+        publication: Vec<u8>,
+        original: super::original_journal::OriginalJournalV5,
+    ) -> Self {
+        Self {
+            session,
+            publication,
+            configuration: None,
+            profile: None,
+            snapshot: None,
+            original: Some(original),
+        }
+    }
 }
 
 impl FixedProviderOwnerV1 {
@@ -71,10 +91,11 @@ impl FixedProviderOwnerV1 {
             let held = journal
                 .security_view()?
                 .records()?
-                .any(|(_, value)| native_profile::is_held(value));
+                .any(|(_, value)| native_profile::is_held(value)
+                    || value.get(8..10) == Some(&9_u16.to_be_bytes()));
             let native = journal.capacity_records()?.iter().any(|row| {
                 row.value()
-                    .is_some_and(|value| value.get(8..10) == Some(&3_u16.to_be_bytes()))
+                    .is_some_and(|value| matches!(value.get(8..10), Some([0, 3]) | Some([0, 5])))
             });
             Ok::<_, ProviderLedgerError>(held || native)
         })();
@@ -116,6 +137,7 @@ impl FixedProviderOwnerV1 {
                 configuration: None,
                 profile: None,
                 snapshot: None,
+                original: None,
             },
         )));
         self.observe_held_readonly()?;
@@ -137,6 +159,13 @@ impl FixedProviderOwnerV1 {
     pub fn observe_held_readonly(
         &mut self,
     ) -> Result<FixedProviderHeldReadOnlyObservationV1, ProviderLedgerError> {
+        let retained_original = matches!(self.state.as_ref(),
+            Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) if held.original.is_some());
+        if retained_original
+            || self.journal.as_ref().is_some_and(|journal| journal.source_original_replay_required_v5())
+        {
+            return self.observe_original_journal_v5();
+        }
         let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
             return Err(ProviderLedgerError::InvalidTransition(
                 "owner is not held read-only",
