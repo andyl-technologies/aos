@@ -159,12 +159,14 @@ data.
   bit `n % 8` in byte `n / 8`. Readers MUST reconstruct and compare this
   filter from the sorted hashes; a positive hint still requires exact hash
   membership. Checkpoint pointers are strictly ordered by distinct shard
-  numbers (0 to 255); expanded contexts are strictly ordered by distinct
-  commit hashes. A pending item retains its traversal flags and cutoff.
+  numbers (0 to 255); commit expansion contexts are strictly ordered by
+  distinct `(commit hash, optional proof context)` pairs under GC-30. A pending
+  item retains its traversal flags, cutoff and optional proof context.
   Phase progress is a strictly sorted, unique list of pack IDs. State key 9
-  persists distinct `(kind, hash, flags)` metadata expansion contexts in
-  unsigned lexicographic order. Its flags contain only root-node, index-tree
-  and witness-only bits; full commit cutoff visits are governed by key 7.
+  persists distinct `(kind, hash, flags, optional proof context)` metadata
+  expansion contexts in GC-30's unsigned fieldwise order. Its flags contain
+  only root-node, index-tree and witness-only bits; full commit cutoff visits
+  are governed by key 7.
   Witness-only contexts cannot name a data chunk. The `retention-witness`
   reason starts witness-only marking; its cutoff is not an unbounded full
   content-retention request.
