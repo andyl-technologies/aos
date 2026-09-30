@@ -137,11 +137,40 @@
       then throw "Activation graph contains a dependency cycle."
       else order (completed ++ ready) (builtins.removeAttrs pending ready);
   executionOrder = order [] dependencies;
+  # Schemas describe available choices; they do not select runtime artifacts.
+  # Keep their exact JSON values while retaining contexts on concrete inputs
+  # and handler programs. Authoring and reference checks use indexed above.
+  schemaMetadata = value:
+    builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.toJSON value));
+  operationalValue = value:
+    if builtins.isAttrs value && (value._type or null) == "aos-effect-output"
+    then value // {schema = schemaMetadata value.schema;}
+    else if builtins.isAttrs value
+    then builtins.mapAttrs (_: operationalValue) value
+    else if builtins.isList value
+    then builtins.map operationalValue value
+    else value;
+  serializedNode = node:
+    node
+    // {
+      inputs = schemaMetadata node.inputs;
+      input_type = schemaMetadata node.input_type;
+      results = schemaMetadata node.results;
+      input = operationalValue node.input;
+      after = operationalValue node.after;
+      handler =
+        if node.handler.kind == "composition"
+        then node.handler // {exports = operationalValue node.handler.exports;}
+        else node.handler;
+    };
   checkedNodes = builtins.mapAttrs (key: node:
-    builtins.seq (checkExports node) (node
+    builtins.seq (checkExports node) (let
+      normalized = serializedNode node;
+    in
+      normalized
       // {
         dependencies = dependencies.${key};
-        revision = builtins.hashString "sha256" (builtins.toJSON (builtins.removeAttrs node ["inputs"]));
+        revision = builtins.hashString "sha256" (builtins.toJSON (builtins.removeAttrs normalized ["inputs"]));
       }))
   indexed;
 in
