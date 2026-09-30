@@ -1,65 +1,42 @@
-##! Selects the package-owned fleet execution observer in test systems.
+##! Selects an explicit native observer endpoint in admitted test configuration.
 {
   lib,
   pkgs,
   external ? false,
   forwardToCrucible ? false,
+  crucibleSocket ? "/run/aos/ability-crucible/controller.sock",
 }: let
   package = pkgs.aos-ability-boundary-observer;
   settings = import ../../pkgs/tests/_aos-ability-boundary-observer/settings.nix;
-  mode =
-    if external
-    then "external-test-mount"
-    else "managed-service";
   observerConfig = {
     enable = true;
-    inherit mode;
-    forwardToSelectedEndpoint = forwardToCrucible;
-  };
-  endpointRequest = {
-    request = "aos-ability-boundary-observer:endpoint";
-    resourceOutput = "resource";
-    socketOutput = "socket-path";
-  };
-  endpointBinding = {
-    inherit (endpointRequest) request;
-    implementation = "aos-ability-boundary-observer:execution-observer-endpoint";
-    providerInstance = "aos-ability-boundary-observer:boundary-observer";
-    slot = "observer";
-  };
-  forwardBinding = {
-    request = "aos-ability-boundary-observer:forward-endpoint";
-    implementation = "aos-ability-crucible:execution-observation-endpoint";
-    providerInstance = "aos-ability-crucible:ability-crucible";
-    slot = "forward-observer";
-  };
-  bindings =
-    {"fleet-observer:endpoint" = endpointBinding;}
-    // lib.optionalAttrs forwardToCrucible {
-      "fleet-observer:forward-endpoint" = forwardBinding;
-    };
-  stageSettings = {
-    aos.tests.executionObserver = observerConfig;
-    aos.abilities.executionObserver = endpointRequest;
-    aos.abilities.bindings = bindings;
+    activationOwner = "manager";
+    mode =
+      if external
+      then "external-test-mount"
+      else "managed-service";
+    forwardSocketPath =
+      if forwardToCrucible
+      then crucibleSocket
+      else null;
   };
   asNix = value: "builtins.fromJSON ${builtins.toJSON (builtins.toJSON value)}";
+  source = builtins.toFile "aos-execution-observer-policy.nix" ''
+    { ... }: {
+      aos.tests.executionObserver = ${asNix observerConfig};
+    }
+  '';
 in {
-  inherit package settings stageSettings;
+  inherit package settings source;
   controller = package;
-
   module = {
     aos.packages.aos-ability-boundary-observer = {
       inherit package;
       bundle = true;
     };
-    aos.abilities.stages.host.modules = [stageSettings];
+    aos.activation.stages.host.configuration = [source];
   };
-
   hostModule = ''
-    aos.apm.desiredPackages = lib.mkAfter [ "aos-ability-boundary-observer" ];
-    aos.tests.executionObserver = ${asNix observerConfig};
-    aos.abilities.executionObserver = ${asNix endpointRequest};
-    aos.abilities.bindings = ${asNix bindings};
+    imports = [ ${builtins.toJSON (builtins.toString source)} ];
   '';
 }
