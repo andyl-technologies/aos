@@ -30,6 +30,7 @@
   bootArtifacts,
   rawDiskFilename,
   rawMetadataFilename,
+  rawDeliveryFilename ? "image-delivery.json",
   rootfs,
   targetPlatform,
 }: let
@@ -330,6 +331,8 @@
           pkgs.mtools # mcopy
           pkgs.coreutils
           pkgs.jq
+          pkgs.aos
+          pkgs.openssl
           pkgs.zstd
           runtimeClosureAudit
         ]
@@ -351,6 +354,12 @@
       RECOVERY_B_PATH =
         if recoveryEnabled
         then "${recoveryUkiB}/aos-${name}-recovery-b-${version}.efi"
+        else "";
+      UKI_B_MEASUREMENT_PATH = "${ukiB}/${ukiBStoreFilename}.measurement";
+      UKI_B_MEASUREMENT_SIG_PATH = "${ukiB}/${ukiBStoreFilename}.measurement.sig";
+      PCR_PUBLIC_KEY =
+        if sb.measuredBoot.enable
+        then pcrPublicKey
         else "";
       UKI_MEASUREMENT_PATH = "${ukiA}/${ukiAStoreFilename}.measurement";
       UKI_MEASUREMENT_SIG_PATH = "${ukiA}/${ukiAStoreFilename}.measurement.sig";
@@ -562,6 +571,18 @@
             mv root.img $out/root.img
             cp "$UKI_PATH" $out/uki-a.efi
             cp "$UKI_B_PATH" $out/uki-b.efi
+            cp "esp/$IMAGE_SDBOOT_PATH" $out/systemd-boot.efi
+            ${lib.optionalString sb.measuredBoot.enable ''
+              cp "$UKI_MEASUREMENT_PATH" $out/uki-a.efi.measurement
+              cp "$UKI_MEASUREMENT_SIG_PATH" $out/uki-a.efi.measurement.sig
+              cp "$UKI_B_MEASUREMENT_PATH" $out/uki-b.efi.measurement
+              cp "$UKI_B_MEASUREMENT_SIG_PATH" $out/uki-b.efi.measurement.sig
+              for slot in a b; do
+                ${pkgs.openssl}/bin/openssl dgst -sha256 -verify "$PCR_PUBLIC_KEY" \
+                  -signature "$out/uki-$slot.efi.measurement.sig" \
+                  "$out/uki-$slot.efi.measurement"
+              done
+            ''}
             ${lib.optionalString recoveryEnabled ''
               cp "$RECOVERY_A_PATH" $out/recovery-a.efi
               cp "$RECOVERY_B_PATH" $out/recovery-b.efi
@@ -574,43 +595,11 @@
               cp "$ROOT_HASH_SIG_FILE" $out/root.roothash.p7s
             ''}
 
-            # Image metadata is part of the signed sysroot image catalog's
-            # publication input. Keep it next to the exact disk bytes so apr
-            # can validate both before committing the catalog entry.
-            root_size_bytes=$(cat root-size-bytes)
-            root_size_mib=$(( root_size_bytes / 1048576 ))
             virtual_size_bytes=$(stat -c %s image.raw)
-            disk_size_mib=$(( virtual_size_bytes / 1048576 ))
-            logical_disk_sha256=$(sha256sum image.raw | cut -d ' ' -f1)
-            uki_size_bytes=$(stat -c %s "$UKI_PATH")
-            uki_sha256=$(sha256sum "$UKI_PATH" | cut -d ' ' -f1)
-            ${lib.optionalString recoveryEnabled ''
-              recovery_a_size_bytes=$(stat -c %s "$RECOVERY_A_PATH")
-              recovery_b_size_bytes=$(stat -c %s "$RECOVERY_B_PATH")
-              recovery_a_sha256=$(sha256sum "$RECOVERY_A_PATH" | cut -d ' ' -f1)
-              recovery_b_sha256=$(sha256sum "$RECOVERY_B_PATH" | cut -d ' ' -f1)
-            ''}
-            if [ -n "$SB_ENABLE" ]; then uki_signed=true; else uki_signed=false; fi
-            if [ -n "$UKI_MEASURED" ]; then uki_measured=true; else uki_measured=false; fi
-            esp_size_mib=$(cat esp-size-mib)
             esp_content_bytes=$(cat esp-content-bytes)
             esp_transaction_bytes=$(cat esp-transaction-bytes)
             esp_required_bytes=$(cat esp-required-bytes)
-            esp_offset_bytes=$(cat esp-offset-bytes)
             esp_partition_size_bytes=$(cat esp-partition-size-bytes)
-            root_offset_bytes=$(cat root-offset-bytes)
-            root_partition_size_bytes=$(cat root-partition-size-bytes)
-            rootfs_sha256=$(dd if=image.raw \
-              iflag=skip_bytes,count_bytes \
-              skip="$root_offset_bytes" count="$root_partition_size_bytes" \
-              status=none | sha256sum | cut -d ' ' -f1)
-            root_b_offset_bytes=$(cat root-b-offset-bytes)
-            root_b_partition_size_bytes=$(cat root-b-partition-size-bytes)
-            ${lib.optionalString verityEnabled ''hash_size_mib=$(cat hash-size-mib)''}
-            ${lib.optionalString verityEnabled ''hash_offset_bytes=$(cat hash-offset-bytes)''}
-            ${lib.optionalString verityEnabled ''hash_partition_size_bytes=$(cat hash-partition-size-bytes)''}
-            ${lib.optionalString verityEnabled ''hash_b_offset_bytes=$(cat hash-b-offset-bytes)''}
-            ${lib.optionalString verityEnabled ''hash_b_partition_size_bytes=$(cat hash-b-partition-size-bytes)''}
 
             # The direct-delivery object is compressed as a whole so empty
             # inactive slots and fixed partition headroom cost almost nothing
@@ -624,137 +613,75 @@
               exit 1
             fi
             disk_sha256=$(sha256sum "$out/$IMAGE_FILENAME" | cut -d ' ' -f1)
-            ${pkgs.jq}/bin/jq -S -n \
-              --arg name "$IMAGE_NAME" \
-              --arg version "$IMAGE_VERSION" \
-              --arg architecture "$IMAGE_ARCHITECTURE" \
-              --arg platform "$IMAGE_PLATFORM" \
-              --arg filename "$IMAGE_FILENAME" \
-              --arg mediaType 'application/vnd.aos.disk-image.raw+zstd' \
-              --arg sha256 "$disk_sha256" \
-              --arg logicalDiskSha256 "$logical_disk_sha256" \
-              --arg rootfsSha256 "$rootfs_sha256" \
-              --arg ukiFilename "$IMAGE_UKI_FILENAME" \
-              --arg ukiEspPath "$IMAGE_UKI_PATH" \
-              --arg ukiSha256 "$uki_sha256" \
-              --arg kernelParams "$IMAGE_KERNEL_PARAMS" \
-              --arg rootFsType "$IMAGE_ROOT_FS_TYPE" \
-              --arg recoveryRelease "$IMAGE_VERSION" \
-              --arg recoveryCmdline "$RECOVERY_CMDLINE" \
-              --arg recoveryAEspPath "$RECOVERY_A_ESP_PATH" \
-              --arg recoveryBEspPath "$RECOVERY_B_ESP_PATH" \
-              --arg recoveryEntryAPath "$RECOVERY_ENTRY_A_PATH" \
-              --arg recoveryEntryBPath "$RECOVERY_ENTRY_B_PATH" \
-              --arg uki "$IMAGE_UKI_PATH" \
-              --arg sdBoot "$IMAGE_SDBOOT_PATH" \
-              --argjson diskSizeMiB "$disk_size_mib" \
-              --argjson diskSizeBytes "$virtual_size_bytes" \
-              --argjson byteSize "$disk_size_bytes" \
-              --argjson espSizeMiB "$esp_size_mib" \
-              --argjson espContentBytes "$esp_content_bytes" \
-              --argjson espTransactionBytes "$esp_transaction_bytes" \
-              --argjson espRequiredBytes "$esp_required_bytes" \
-              --argjson rootSizeMiB "$root_size_mib" \
-              --argjson rootPartitionSizeMiB "$ROOT_PARTITION_MIB" \
-              --argjson espOffsetBytes "$esp_offset_bytes" \
-              --argjson espPartitionSizeBytes "$esp_partition_size_bytes" \
-              --argjson rootOffsetBytes "$root_offset_bytes" \
-              --argjson rootPartitionSizeBytes "$root_partition_size_bytes" \
-              --argjson rootBOffsetBytes "$root_b_offset_bytes" \
-              --argjson rootBPartitionSizeBytes "$root_b_partition_size_bytes" \
-              --argjson ukiSizeBytes "$uki_size_bytes" \
-              --argjson ukiSigned "$uki_signed" \
-              --argjson ukiMeasured "$uki_measured" \
-              --argjson maxRootMiB "$MAX_ROOT_MIB" \
-              --argjson maxVerityMiB "$MAX_VERITY_MIB" \
-              --argjson maxInitrdMiB "$MAX_INITRD_MIB" \
-              --argjson maxUkiMiB "$MAX_UKI_MIB" \
-              --argjson maxEspMiB "$MAX_ESP_MIB" \
-              --argjson maxRuntimeClosureMiB "$MAX_RUNTIME_CLOSURE_MIB" \
-              --argjson maxDownloadMiB "$MAX_DOWNLOAD_MIB" \
-              ${lib.optionalString recoveryEnabled ''              --argjson recoveryAbi "$RECOVERY_ABI" \
-                            --argjson recoveryASizeBytes "$recovery_a_size_bytes" \
-                            --argjson recoveryBSizeBytes "$recovery_b_size_bytes" \
-                            --arg recoveryASha256 "$recovery_a_sha256" \
-                            --arg recoveryBSha256 "$recovery_b_sha256" \
-            ''}${lib.optionalString verityEnabled ''              --argjson hashSizeMiB "$hash_size_mib" \
-                            --argjson hashOffsetBytes "$hash_offset_bytes" \
-                            --argjson hashPartitionSizeBytes "$hash_partition_size_bytes" \
-                            --argjson hashBOffsetBytes "$hash_b_offset_bytes" \
-                            --argjson hashBPartitionSizeBytes "$hash_b_partition_size_bytes" \
-            ''}'{
-                schemaVersion: 2,
-                name: $name,
-                version: $version,
-                architecture: $architecture,
-                platform: $platform,
-                format: "raw",
-                filename: $filename,
-                mediaType: $mediaType,
-                compression: "zstd",
-                byteSize: $byteSize,
-                virtualSizeBytes: $diskSizeBytes,
-                sha256: $sha256,
-                logicalDiskSha256: $logicalDiskSha256,
-                rootfsSha256: $rootfsSha256,
-                artifactBudgetsMiB: {
-                  root: $maxRootMiB,
-                  verity: $maxVerityMiB,
-                  initrd: $maxInitrdMiB,
-                  uki: $maxUkiMiB,
-                  esp: $maxEspMiB,
-                  runtimeClosure: $maxRuntimeClosureMiB,
-                  download: $maxDownloadMiB
-                },
-                compatibleTargets: ["bare-metal"],
-                uki: {
-                  filename: $ukiFilename,
-                  espPath: $ukiEspPath,
-                  byteSize: $ukiSizeBytes,
-                  sha256: $ukiSha256,
-                  signed: $ukiSigned,
-                  measured: $ukiMeasured
-                },
-                diskSizeMiB: $diskSizeMiB,
-                espSizeMiB: $espSizeMiB,
-                espBudget: {
-                  installedBytes: $espContentBytes,
-                  transactionBytes: $espTransactionBytes,
-                  requiredBytes: $espRequiredBytes,
-                  partitionBytes: $espPartitionSizeBytes
-                },
-                rootSizeMiB: $rootSizeMiB,
-                partitionTable: "gpt",
-                kernelParams: $kernelParams,
-                partitions: [
-                  {number: 1, label: "ESP", type: "esp", filesystem: "vfat", sizeMiB: $espSizeMiB, offsetBytes: $espOffsetBytes, sizeBytes: $espPartitionSizeBytes},
-                  {number: 2, label: "root-a", type: "root", filesystem: $rootFsType, sizeMiB: $rootPartitionSizeMiB, offsetBytes: $rootOffsetBytes, sizeBytes: $rootPartitionSizeBytes},
-                  {number: ${
+            # Canonical provider facts bind actual finalized files and the
+            # observed GPT. The delivery envelope describes their encoding.
+            ${pkgs.util-linux}/sbin/sfdisk --json image.raw > partition-table.json
+            fat_volume_id=$(${pkgs.util-linux}/sbin/blkid -p -s UUID -o value esp.img)
+            ${pkgs.jq}/bin/jq -n \
+              --arg version "$IMAGE_VERSION" --arg variant ${lib.escapeShellArg systemVariant} \
+              --arg platform "$IMAGE_PLATFORM" --arg out "$out" \
+              --arg filename "$IMAGE_FILENAME" --arg fat "$fat_volume_id" \
+              --arg certificate "$SB_CERT" \
+              --argjson verity ${
               if verityEnabled
-              then "4"
-              else "3"
-            }, label: "root-b", type: "root", filesystem: $rootFsType, sizeMiB: $rootPartitionSizeMiB, offsetBytes: $rootBOffsetBytes, sizeBytes: $rootBPartitionSizeBytes}
-                ],
-                esp: {uki: $uki, sdBoot: $sdBoot}
-              }${lib.optionalString recoveryEnabled ''
-              | .recovery = {
-                  abi: $recoveryAbi,
-                  release: $recoveryRelease,
-                  commandLine: $recoveryCmdline,
-                  copies: {
-                    A: {espPath: $recoveryAEspPath, byteSize: $recoveryASizeBytes, sha256: $recoveryASha256},
-                    B: {espPath: $recoveryBEspPath, byteSize: $recoveryBSizeBytes, sha256: $recoveryBSha256}
-                  },
-                  entries: {
-                    A: $recoveryEntryAPath,
-                    B: $recoveryEntryBPath
-                  }
-                }''}${lib.optionalString verityEnabled ''
-              | .partitions += [
-                  {number: 3, label: "root-a-hash", type: "verity", filesystem: "dm-verity", sizeMiB: $hashSizeMiB, offsetBytes: $hashOffsetBytes, sizeBytes: $hashPartitionSizeBytes},
-                  {number: 5, label: "root-b-hash", type: "verity", filesystem: "dm-verity", sizeMiB: $hashSizeMiB, offsetBytes: $hashBOffsetBytes, sizeBytes: $hashBPartitionSizeBytes}
-                ]''}' \
-              > $out/${rawMetadataFilename}
+              then "true"
+              else "false"
+            } \
+              --argjson measured ${
+              if sb.measuredBoot.enable
+              then "true"
+              else "false"
+            } \
+              --argjson recovery ${
+              if recoveryEnabled
+              then "true"
+              else "false"
+            } \
+              '{version:$version,system_variant:$variant,platform:$platform,
+                root_filesystem:($out+"/root.img"),
+                verity_tree:(if $verity then $out+"/root.verity" else null end),
+                root_hash:(if $verity then $out+"/root.roothash" else null end),
+                normal_a:{artifact:($out+"/uki-a.efi"),
+                  measurement:(if $measured then $out+"/uki-a.efi.measurement" else null end),
+                  measurement_signature:(if $measured then $out+"/uki-a.efi.measurement.sig" else null end)},
+                normal_b:{artifact:($out+"/uki-b.efi"),
+                  measurement:(if $measured then $out+"/uki-b.efi.measurement" else null end),
+                  measurement_signature:(if $measured then $out+"/uki-b.efi.measurement.sig" else null end)},
+                recovery_a:(if $recovery then $out+"/recovery-a.efi" else null end),
+                recovery_b:(if $recovery then $out+"/recovery-b.efi" else null end),
+                bootloader:($out+"/systemd-boot.efi"),logical_disk:"image.raw",
+                partition_table:"partition-table.json",fat_volume_id:$fat,
+                raw_format:($out+"/"+$filename),raw_filename:$filename,
+                secure_boot_certificate:(if $certificate=="" then null else $certificate end)}' \
+              > metadata-input.json
+            ${pkgs.aos}/bin/aos-image-metadata "$out/${rawMetadataFilename}" < metadata-input.json
+            logical_disk_sha256=$(${pkgs.jq}/bin/jq -r '.disk.logical.sha256 | ltrimstr("sha256:")' "$out/${rawMetadataFilename}")
+            ${pkgs.jq}/bin/jq -S -n \
+              --arg name "$IMAGE_NAME" --arg version "$IMAGE_VERSION" \
+              --arg architecture "$IMAGE_ARCHITECTURE" --arg platform "$IMAGE_PLATFORM" \
+              --arg filename "$IMAGE_FILENAME" --arg sha256 "$disk_sha256" \
+              --arg logical "$logical_disk_sha256" \
+              --argjson size "$disk_size_bytes" --argjson virtual "$virtual_size_bytes" \
+              --argjson installed "$esp_content_bytes" --argjson transaction "$esp_transaction_bytes" \
+              --argjson required "$esp_required_bytes" --argjson partition "$esp_partition_size_bytes" \
+              --argjson budgets '${builtins.toJSON {
+              root = budgets.maxRootMiB;
+              verity = budgets.maxVerityMiB;
+              initrd = budgets.maxInitrdMiB;
+              uki = budgets.maxBootExecutableMiB;
+              esp = budgets.maxFirmwarePartitionMiB;
+              runtimeClosure = budgets.maxRuntimeClosureMiB;
+              download = budgets.maxDownloadMiB;
+            }}' \
+              '{schemaVersion:2,name:$name,version:$version,architecture:$architecture,
+                platform:$platform,format:"raw",filename:$filename,
+                mediaType:"application/vnd.aos.disk-image.raw+zstd",compression:"zstd",
+                byteSize:$size,virtualSizeBytes:$virtual,sha256:$sha256,
+                logicalDiskSha256:$logical,compatibleTargets:["bare-metal"],
+                artifactBudgetsMiB:$budgets,
+                espBudget:{installedBytes:$installed,transactionBytes:$transaction,
+                  requiredBytes:$required,partitionBytes:$partition}}' \
+              > "$out/${rawDeliveryFilename}"
 
             ${lib.optionalString recoveryEnabled ''
               component() {

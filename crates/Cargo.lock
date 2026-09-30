@@ -1080,6 +1080,7 @@ dependencies = [
  "aos-ability-runtime",
  "aos-boot-identity",
  "aos-contract",
+ "aos-release",
  "aos-systemd",
  "hex",
  "rustix 1.1.4",

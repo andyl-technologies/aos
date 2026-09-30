@@ -9,9 +9,9 @@ use crate::registry::parse::{
     ImageDelivery, ImageStoreReference, ImageTarget,
 };
 use crate::registry_ops::images::files::{
-    ValidatedImageDirectory, ValidatedImageFile, file_identity, open_canonical_store_regular_file,
-    open_stable_regular_file_at_with_links, sha256_open_file, validate_lower_sha256,
-    validate_single_filename, verify_stable_regular_file,
+    FileIdentity, ValidatedImageDirectory, ValidatedImageFile, file_identity,
+    open_canonical_store_regular_file, open_stable_regular_file_at_with_links, sha256_open_file,
+    validate_lower_sha256, validate_single_filename, verify_stable_regular_file,
 };
 use crate::registry_ops::store_paths::{StorePathInfo, store_dir_from_store_path};
 use crate::types::validate_package_name;
@@ -37,6 +37,8 @@ pub(in crate::registry_ops) struct PublishedImage {
     pub(in crate::registry_ops) disk: ValidatedImageFile,
     /// Exact validated contract store output retained through commit.
     pub(in crate::registry_ops) image_info: ValidatedImageFile,
+    /// Neutral delivery envelope retained to detect replacement.
+    pub(in crate::registry_ops) producer_delivery: ValidatedImageFile,
     /// Contract copy in the provider artifact set, retained to detect replacement.
     pub(in crate::registry_ops) producer_image_info: ValidatedImageFile,
 }
@@ -106,35 +108,27 @@ pub(in crate::registry_ops) fn inspect_published_image(
         bail!("image artifact set identity changed while opening");
     }
 
-    let info_path = root_path.join("image-info.json");
-    let (mut info_file, info_identity) =
-        open_stable_regular_file_at_with_links(&root_file, "image-info.json", &info_path, true)?;
-    if info_identity.len == 0 || info_identity.len > MAX_IMAGE_INFO_BYTES {
-        bail!("image artifact contract size is outside its bound");
-    }
-    let mut info_bytes = Vec::with_capacity(info_identity.len as usize);
-    (&mut info_file)
-        .take(MAX_IMAGE_INFO_BYTES + 1)
-        .read_to_end(&mut info_bytes)
-        .with_context(|| format!("reading image artifact contract {}", info_path.display()))?;
-    if info_bytes.len() as u64 != info_identity.len {
-        bail!("image artifact contract length changed while it was read");
-    }
-    verify_stable_regular_file(&info_path, &info_file, &info_identity)?;
-
-    let producer: ProducerImageInfo = serde_json::from_slice(&info_bytes)
-        .with_context(|| format!("parsing delivery envelope in {}", info_path.display()))?;
+    // Delivery facts and provider facts have separate owners. The registry
+    // interprets the former while authenticating the latter as opaque bytes.
+    let delivery_path = root_path.join("image-delivery.json");
+    let (mut delivery_file, delivery_identity) = open_stable_regular_file_at_with_links(
+        &root_file,
+        "image-delivery.json",
+        &delivery_path,
+        true,
+    )?;
+    let delivery_bytes =
+        read_bounded_document(&mut delivery_file, &delivery_path, &delivery_identity)?;
+    let producer: ProducerImageInfo = serde_json::from_slice(&delivery_bytes)
+        .with_context(|| format!("parsing delivery envelope in {}", delivery_path.display()))?;
     if producer.schema_version != 2 {
         bail!("image delivery schemaVersion must be 2");
     }
-    let public_text =
-        std::str::from_utf8(&info_bytes).context("image artifact contract is not UTF-8")?;
-    if public_text.contains("/nix/store/")
-        || public_text.contains("/aos/store/")
-        || public_text.contains("file://")
-    {
-        bail!("image artifact contract contains a private build or filesystem path");
-    }
+
+    let info_path = root_path.join("image-info.json");
+    let (mut info_file, info_identity) =
+        open_stable_regular_file_at_with_links(&root_file, "image-info.json", &info_path, true)?;
+    let info_bytes = read_bounded_document(&mut info_file, &info_path, &info_identity)?;
     validate_package_name(&producer.name).context("validating image contract package name")?;
     if producer.name != name
         || producer.version != release
@@ -181,14 +175,9 @@ pub(in crate::registry_ops) fn inspect_published_image(
 
     let (mut canonical_info_file, canonical_info_identity, canonical_info_path) =
         open_canonical_store_regular_file(&info_store, "image artifact contract")?;
-    let mut published_info_bytes = Vec::with_capacity(canonical_info_identity.len as usize);
-    (&mut canonical_info_file)
-        .take(MAX_IMAGE_INFO_BYTES + 1)
-        .read_to_end(&mut published_info_bytes)
-        .with_context(|| format!("reading image contract {}", canonical_info_path.display()))?;
-    verify_stable_regular_file(
+    let published_info_bytes = read_bounded_document(
+        &mut canonical_info_file,
         &canonical_info_path,
-        &canonical_info_file,
         &canonical_info_identity,
     )?;
     if published_info_bytes != info_bytes {
@@ -257,6 +246,12 @@ pub(in crate::registry_ops) fn inspect_published_image(
             identity: canonical_info_identity,
             path_bound: true,
         },
+        producer_delivery: ValidatedImageFile {
+            path: delivery_path,
+            file: delivery_file,
+            identity: delivery_identity,
+            path_bound: true,
+        },
         producer_image_info: ValidatedImageFile {
             path: info_path,
             file: info_file,
@@ -264,6 +259,34 @@ pub(in crate::registry_ops) fn inspect_published_image(
             path_bound: true,
         },
     })
+}
+
+/// Reads one pinned public document without weakening either ownership boundary.
+fn read_bounded_document(
+    file: &mut fs::File,
+    path: &std::path::Path,
+    identity: &FileIdentity,
+) -> Result<Vec<u8>> {
+    if identity.len == 0 || identity.len > MAX_IMAGE_INFO_BYTES {
+        bail!("image document size is outside its bound");
+    }
+    let mut bytes = Vec::with_capacity(identity.len as usize);
+    (&mut *file)
+        .take(MAX_IMAGE_INFO_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading image document {}", path.display()))?;
+    if bytes.len() as u64 != identity.len {
+        bail!("image document length changed while it was read");
+    }
+    verify_stable_regular_file(path, file, identity)?;
+    let public_text = std::str::from_utf8(&bytes).context("image document is not UTF-8")?;
+    if public_text.contains("/nix/store/")
+        || public_text.contains("/aos/store/")
+        || public_text.contains("file://")
+    {
+        bail!("image document contains a private build or filesystem path");
+    }
+    Ok(bytes)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -284,6 +307,7 @@ impl PublishedImage {
         }
         self.disk.recheck()?;
         self.image_info.recheck()?;
+        self.producer_delivery.recheck()?;
         self.producer_image_info.recheck()?;
         Ok(())
     }

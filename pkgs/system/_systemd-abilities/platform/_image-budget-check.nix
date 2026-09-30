@@ -4,7 +4,7 @@
   lib,
   pkgs,
   image,
-  metadataFilename,
+  deliveryFilename,
   rootfs,
   uki,
   name,
@@ -29,7 +29,7 @@ in
       ROOT_SIZE_FILE = "${rootfs}/rootfs-size-bytes";
       INITRD = "${config.system.build.initrd}/initrd.img";
       UKI = uki;
-      IMAGE_INFO = "${image}/${metadataFilename}";
+      IMAGE_DELIVERY = "${image}/${deliveryFilename}";
       MAX_ROOT_BYTES = toString (budgets.maxRootMiB * mib);
       MAX_INITRD_BYTES = toString (budgets.maxInitrdMiB * mib);
       MAX_UKI_BYTES = toString (budgets.maxBootExecutableMiB * mib);
@@ -47,7 +47,7 @@ in
             initrd_bytes=$(stat -c %s "$INITRD")
             uki_bytes=$(stat -c %s "$UKI")
             closure_bytes=$(jq -er '.actual.closureBytes' "$RUNTIME_CLOSURE_REPORT")
-            download_bytes=$(jq -er '.byteSize' "$IMAGE_INFO")
+            download_bytes=$(jq -er '.byteSize' "$IMAGE_DELIVERY")
             ${lib.optionalString verityEnabled ''verity_bytes=$(stat -c %s ${rootfs}/root.verity)''}
             ${lib.optionalString (!verityEnabled) ''verity_bytes=0''}
 
@@ -66,6 +66,7 @@ in
             check_budget "UKI" "$uki_bytes" "$MAX_UKI_BYTES"
             check_budget "runtime closure" "$closure_bytes" "$MAX_RUNTIME_CLOSURE_BYTES"
             check_budget "verity tree" "$verity_bytes" "${toString (budgets.maxVerityMiB * mib)}"
+            check_budget "download" "$download_bytes" "${toString (budgets.maxDownloadMiB * mib)}"
 
             jq -S -n \
               --arg name ${lib.escapeShellArg name} \

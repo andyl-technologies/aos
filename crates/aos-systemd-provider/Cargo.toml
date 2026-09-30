@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 aos-ability-runtime.workspace = true
 aos-contract.workspace = true
+aos-release.workspace = true
 aos-boot-identity.workspace = true
 zstd.workspace = true
 aos-systemd.workspace = true

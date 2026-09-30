@@ -153,10 +153,7 @@ def validate_metadata(
     require(metadata.get("format") == image_format, f"{context}: metadata format differs")
     require(metadata.get("platform") == manifest["platform"], f"{context}: platform differs")
     require(metadata.get("version") == system["expected"]["version"], f"{context}: version differs")
-    require(
-        metadata.get("moduleAbi") == system["expected"]["moduleAbi"],
-        f"{context}: module ABI differs",
-    )
+    require("moduleAbi" not in metadata, f"{context}: retired module ABI remains")
     compression = "zstd" if image_format == "raw" else "none"
     require(metadata.get("compression") == compression, f"{context}: compression differs")
     require(path.is_file(), f"{context}: artifact file is missing")
@@ -174,15 +171,77 @@ def validate_metadata(
     budget = metadata.get("artifactBudgetsMiB", {}).get("download")
     require(type(budget) is int and budget > 0, f"{context}: missing artifact budget")
     require(metadata["byteSize"] <= budget * 1024 * 1024, f"{context}: artifact exceeds budget")
+    require(not ({"root", "efi", "disk", "rootfsSha256", "uki", "capabilities"} & metadata.keys()),
+            f"{context}: provider facts leaked into the delivery envelope")
+
+
+def validate_contract(
+    manifest: dict[str, Any], system: dict[str, Any], contract: dict[str, Any],
+    delivery: dict[str, Any], directory: Path,
+) -> None:
+    """Checks canonical geometry and retained provider artifacts independently of delivery."""
+
+    context = system["name"]
+    require(contract.get("schema_version") in {"aos.image.metadata/v1", "aos.image.metadata/v2"},
+            f"{context}: unknown provider contract")
+    require(contract.get("platform") == manifest["platform"], f"{context}: provider platform differs")
+    require(contract.get("version") == system["expected"]["version"], f"{context}: provider version differs")
+    require(not ({"virtualSizeBytes", "artifactBudgetsMiB", "schemaVersion", "partitions"} & contract.keys()),
+            f"{context}: delivery facts leaked into the provider contract")
+    disk = contract.get("disk", {})
+    logical = disk.get("logical", {})
+    sectors = disk.get("layout", {}).get("disk_sectors")
+    require(type(sectors) is int and sectors > 0, f"{context}: invalid canonical disk geometry")
+    require(logical.get("size_bytes") == sectors * 512 == delivery["virtualSizeBytes"],
+            f"{context}: delivery virtual size differs from canonical geometry")
+    require(logical.get("sha256") == "sha256:" + delivery["logicalDiskSha256"],
+            f"{context}: delivery logical hash differs from provider contract")
+
+    def artifact(fact: dict[str, Any]) -> None:
+        path = fact.get("path")
+        require(isinstance(path, str) and path not in {"", ".", ".."} and Path(path).name == path,
+                f"{context}: unsafe provider artifact path")
+        source = directory / path
+        size = fact.get("size_bytes")
+        require(type(size) is int and size > 0 and source.is_file() and source.stat().st_size == size,
+                f"{context}: provider artifact size differs")
+        require(fact.get("sha256") == "sha256:" + hash_file(source),
+                f"{context}: provider artifact hash differs")
+
+    root = contract.get("root", {})
+    artifact({"path": "root.img", "size_bytes": root.get("filesystem_size_bytes"),
+              "sha256": root.get("filesystem_sha256")})
     security = system["expected"]["security"]
-    require(
-        metadata.get("uki", {}).get("signed") is security["secureBoot"],
-        f"{context}: signing expectation differs",
-    )
-    require(
-        metadata.get("uki", {}).get("measured") is security["measuredBoot"],
-        f"{context}: measurement expectation differs",
-    )
+    require((root.get("root_hash") is not None) is security["verity"],
+            f"{context}: verity artifact expectation differs")
+    if security["verity"]:
+        artifact({"path": "root.verity", "size_bytes": root.get("verity_size_bytes"),
+                  "sha256": root.get("verity_sha256")})
+    certificate = contract.get("secure_boot_certificate_sha256")
+    require((certificate is not None) is security["secureBoot"],
+            f"{context}: signing artifact expectation differs")
+    if certificate is not None:
+        require(isinstance(certificate, str) and certificate.startswith("sha256:") and is_sha256(certificate[7:]),
+                f"{context}: invalid signing certificate identity")
+    efi = contract.get("efi", {})
+    artifact(efi.get("bootloader", {}))
+    for slot in ("normal_a", "normal_b"):
+        uki = efi.get(slot, {})
+        artifact(uki.get("artifact", {}))
+        measurement_fields = ("measurement", "measurement_signature", "expected_ready_pcr11")
+        present = [uki.get(field) is not None for field in measurement_fields]
+        require(all(present) or not any(present), f"{context}: incomplete measurement artifact binding")
+        measured = all(present)
+        require(measured is security["measuredBoot"], f"{context}: measurement artifact expectation differs")
+        if measured:
+            pcr = uki["expected_ready_pcr11"]
+            require(isinstance(pcr, str) and pcr.startswith("sha256:") and is_sha256(pcr[7:]),
+                    f"{context}: invalid measured PCR identity")
+            artifact(uki["measurement"])
+            artifact(uki["measurement_signature"])
+    for slot in ("recovery_a", "recovery_b"):
+        if efi.get(slot) is not None:
+            artifact(efi[slot])
 
 
 def verify_formats(
@@ -193,7 +252,9 @@ def verify_formats(
     artifacts = {}
     for image_format in FORMATS:
         directory = Path(system["images"][image_format])
-        metadata_path = directory / "image-info.json"
+        metadata_path = directory / "image-delivery.json"
+        contract_path = directory / "image-info.json"
+        contract = read_json(contract_path)
         metadata = read_json(metadata_path)
         filename = metadata.get("filename")
         require(
@@ -204,9 +265,10 @@ def verify_formats(
         )
         artifact = directory / filename
         validate_metadata(manifest, system, image_format, metadata, artifact)
-        artifacts[image_format] = (metadata, artifact, metadata_path)
+        validate_contract(manifest, system, contract, metadata, directory)
+        artifacts[image_format] = (metadata, artifact, metadata_path, contract_path, contract)
 
-    raw, raw_path, _ = artifacts["raw"]
+    raw, raw_path, _, raw_contract_path, raw_contract = artifacts["raw"]
     logical = work / "logical.raw"
     run([manifest["tools"]["zstd"], "-q", "-d", "-f", str(raw_path), "-o", str(logical)])
     require(logical.stat().st_size == raw["virtualSizeBytes"], "decoded raw geometry differs")
@@ -214,8 +276,10 @@ def verify_formats(
 
     cells = []
     for image_format in FORMATS:
-        metadata, artifact, metadata_path = artifacts[image_format]
-        for field in ("logicalDiskSha256", "virtualSizeBytes", "rootfsSha256", "name", "uki"):
+        metadata, artifact, metadata_path, contract_path, contract = artifacts[image_format]
+        require(contract_path.read_bytes() == raw_contract_path.read_bytes(),
+                f"{system['name']}/{image_format}: canonical provider contract bytes differ")
+        for field in ("logicalDiskSha256", "virtualSizeBytes", "name"):
             require(
                 metadata.get(field) == raw.get(field),
                 f"{system['name']}/{image_format}: {field} differs from raw",
@@ -243,7 +307,7 @@ def verify_formats(
             "logicalDiskSha256": raw["logicalDiskSha256"],
             "equivalent": True,
         })
-    return cells, logical, raw
+    return cells, logical, raw_contract
 
 
 def validate_security(expected: dict[str, Any], observed: dict[str, Any]) -> None:
@@ -321,12 +385,15 @@ def validate_subject_report(
     )
     configured = boot.get("configuration", {})
     require(type(configured.get("generation")) is int, "committed configuration generation is missing")
-    for field in ("runtimeModulesDigest", "hostNixDigest"):
+    for field in ("runtimeModulesDigest", "baselineModulesDigest"):
         require(is_sha256(configured.get(field)), f"configuration input is missing: {field}")
+    library_hash = configured.get("libraryNarHash")
+    require(isinstance(library_hash, str) and library_hash.startswith("sha256:")
+            and is_sha256(library_hash[7:]), "configuration evaluator NAR identity is missing")
     machine = "x86_64" if manifest["platform"] == "x86_64-linux" else "aarch64"
     for observation in observations:
         require(observation.get("machine") == machine, "guest architecture differs")
-        for field in ("toplevel", "version", "kernel", "moduleAbi"):
+        for field in ("toplevel", "version", "kernel"):
             require(observation.get(field) == system["expected"][field], f"guest identity differs: {field}")
         validate_security(system["expected"]["security"], observation.get("security", {}))
         if observation["phase"] != "initial":
@@ -336,7 +403,7 @@ def validate_subject_report(
                 and current["generation"] >= configured["generation"],
                 "reboot reverted configuration generation",
             )
-            for field in ("runtimeModulesDigest", "hostNixDigest"):
+            for field in ("runtimeModulesDigest", "baselineModulesDigest", "libraryNarHash"):
                 require(current.get(field) == configured[field], f"reboot changed configuration input: {field}")
     require(boot.get("imageUpdateClaims") is False, "boot evidence must not claim image transitions")
 

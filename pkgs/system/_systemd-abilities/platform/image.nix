@@ -79,6 +79,7 @@
         sbsigntools = imagePackages.sbsigntools;
         openssl = imagePackages.openssl;
       };
+      aos = (pkgs.buildPackages or pkgs).aos;
       aos-recovery = artifactFor "aos-recovery";
       bash = artifactFor "bash";
       binutils = artifactFor "binutils";
@@ -119,6 +120,7 @@
     trustBundle = rootfsArtifacts.activeImageDbCerts;
     rawDiskFilename = "aos-${name}.img.zst";
     rawMetadataFilename = "image-info.json";
+    rawDeliveryFilename = "image-delivery.json";
     bootArtifacts = import ./_boot-artifacts.nix {
       pkgs = imagePackages;
       inherit kernel lib name rootfs normalArtifactPath targetPlatform;
@@ -127,7 +129,7 @@
     };
     imageBuild = import ./_image-builder.nix {
       pkgs = imagePackages;
-      inherit kernel lib bootArtifacts rawDiskFilename rawMetadataFilename rootfs runtimeClosureAudit targetPlatform;
+      inherit kernel lib bootArtifacts rawDiskFilename rawMetadataFilename rawDeliveryFilename rootfs runtimeClosureAudit targetPlatform;
       system = {inherit config;};
       inherit name;
     };
@@ -140,7 +142,7 @@
           pkgs = imagePackages;
           inherit config lib runtimeClosureAudit;
           image = rawImage;
-          metadataFilename = rawMetadataFilename;
+          deliveryFilename = rawDeliveryFilename;
           inherit name rootfs;
           uki = "${imageBuild.artifacts.ukiA}/${imageBuild.artifacts.ukiAStoreFilename}";
         };
@@ -169,6 +171,10 @@
       if externalFinalization
       then null
       else rawMetadataFilename;
+    rawDeliveryFilename =
+      if externalFinalization
+      then null
+      else rawDeliveryFilename;
     finishConvertedImage =
       if externalFinalization
       then null

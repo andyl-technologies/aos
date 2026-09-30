@@ -190,6 +190,10 @@
           type = lib.types.nullOr artifactFilenameType;
           description = "Optional filename of image metadata inside the raw artifact.";
         };
+        rawDeliveryFilename = lib.mkOption {
+          type = lib.types.nullOr artifactFilenameType;
+          description = "Optional filename of the delivery envelope inside the raw artifact.";
+        };
         recoveryBootExecutableA = lib.mkOption {
           type = nullableArtifact;
           description = "Optional recovery boot executable for slot A.";
@@ -223,6 +227,7 @@
         value.rawDiskFilename
         value.rawImage
         value.rawMetadataFilename
+        value.rawDeliveryFilename
       ];
       recoveryArtifacts = [
         value.recoveryBootExecutableA
@@ -246,6 +251,8 @@
         == null
         && lib.all (value: value) selfContainedPresent
         && value.rawDiskFilename != value.rawMetadataFilename
+        && value.rawDiskFilename != value.rawDeliveryFilename
+        && value.rawMetadataFilename != value.rawDeliveryFilename
         && (lib.all (value: value) present || lib.all (value: !value) present));
 in {
   options.aos.image.platform = lib.mkOption {
