@@ -53,7 +53,9 @@ use crate::store::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use terrane_core::bucket::{BucketCapabilities, BucketKey, StoreProfile};
+#[cfg(all(test, feature = "tokio"))]
+use terrane_core::bucket::BucketCapabilities;
+use terrane_core::bucket::{BucketKey, StoreProfile};
 use terrane_core::chunking::ChunkProfile;
 use terrane_core::refs::Locality;
 
@@ -123,17 +125,19 @@ impl<F, C, V> Clone for FileBucket<F, C, V> {
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
     FileBucket<F, C, V>
 {
-    /// Opens writable layout two, atomically creating its absent root.
+    /// Opens a registered writable bucket, atomically creating its absent root.
     ///
-    /// The configured root's parent must exist. Only the successful root creator
-    /// initializes a complete empty ref inventory. An existing root must already
-    /// carry its durable capability
-    /// record. Version one requires explicit read-only access; built-in migration
-    /// is unsupported without whole-namespace completeness and external writer fencing.
+    /// The configured root's parent must exist, and protected publication
+    /// ownership must be configured independently. Only the successful root
+    /// creator may initialize the empty selected inventory. Existing roots must
+    /// recover their exact protected registration and selected publication chain
+    /// before probes or cache reads. Version one requires explicit read-only
+    /// access; migration requires complete inventory and external writer fencing.
     ///
     /// # Errors
-    /// Refuses malformed or incompatible layout/profile records, failed probes,
-    /// unsupported profile parameters, unsafe paths, and unavailable durable I/O.
+    /// Refuses absent protected configuration, malformed or incompatible
+    /// registration/profile records, failed probes, unsupported profile
+    /// parameters, unsafe paths, and unavailable durable I/O.
     pub async fn open(
         config: FileBucketConfig,
         fs: F,
@@ -141,6 +145,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         validator: V,
     ) -> Result<Self, StoreFailure> {
         if !config.root.is_absolute()
+            || config.publication_control.is_none()
             || config.chunk_profile_name != "cdc-1m"
             || config.chunk_profile != ChunkProfile::cdc_1m(config.chunk_profile.seed())
         {
@@ -203,11 +208,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             Err(error) => return Err(files::io_failure(error)),
         };
         bucket.check_directory(&bucket.inner.config.root).await?;
-        if !freshly_created {
-            // Refuse v1 before write probes or coordination-file creation.
-            bucket.ensure_layout().await?;
-        }
-        bucket.probe(freshly_created).await?;
+        bucket.open_publication(freshly_created).await?;
         {
             let _guard = bucket.exclusive().await?;
             bucket.catalog().await?;
@@ -292,95 +293,6 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             chunk: self.inner.config.chunk_profile_name.clone(),
             seed: self.inner.config.chunk_profile.seed(),
         }
-    }
-
-    async fn probe(&self, freshly_created: bool) -> Result<(), StoreFailure> {
-        let key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
-        let _guard = self.exclusive().await?;
-        let old = self.read_optional(&key).await?;
-        let mut generation = None;
-        let mut ref_names = freshly_created.then(Vec::new);
-        if let Some(bytes) = &old {
-            let record = BucketCapabilities::decode(bytes).map_err(|_| files::layout_corrupt())?;
-            self.validate_layout(&record)?;
-            generation = record.generation;
-            ref_names = record.ref_names;
-        } else if !freshly_created {
-            // An existing root is never proof of an empty authoritative prefix.
-            return Err(files::layout_corrupt());
-        }
-
-        let timestamp = self
-            .inner
-            .clock
-            .now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .map_err(|_| files::malformed())?
-            .as_secs();
-        let record = BucketCapabilities {
-            layout_version: 2,
-            create_if_absent: true,
-            compare_and_swap: true,
-            ranges: true,
-            presign: false,
-            multi_writer: true,
-            probed_at: timestamp,
-            generation,
-            ref_names,
-            publication_protocol: None,
-            profile: self.profile(),
-        };
-        let bytes = record.encode().map_err(|_| files::malformed())?;
-        if old.is_none() {
-            self.install(&key, &bytes, false).await?;
-        }
-
-        // Both probes operate on the actual persisted key through the same
-        // conditional primitives used by ordinary writes.
-        if self
-            .install(&key, b"must never become visible", false)
-            .await?
-        {
-            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-        }
-        let current = self
-            .read_optional(&key)
-            .await?
-            .ok_or_else(files::layout_corrupt)?;
-        let mut stale = current.clone();
-        stale.push(0);
-        if self
-            .replace_conditionally(&key, Some(&stale), b"must never become visible")
-            .await?
-        {
-            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-        }
-        let path = self.path(&key);
-        let range = self
-            .inner
-            .fs
-            .read_range(
-                &path,
-                crate::store::ByteRange {
-                    start: 0,
-                    length: 1,
-                },
-            )
-            .await
-            .map_err(files::io_failure)?;
-        if range != current[..1] {
-            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-        }
-        if !self
-            .replace_conditionally(&key, Some(&current), &bytes)
-            .await?
-        {
-            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-        }
-        if freshly_created {
-            self.initialize_fresh_catalog(self.catalog().await?).await?;
-        }
-        Ok(())
     }
 
     /// Borrows the actual configured filesystem binding for internal authority checks.
