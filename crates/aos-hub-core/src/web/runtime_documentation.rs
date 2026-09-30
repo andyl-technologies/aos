@@ -117,7 +117,7 @@ pub async fn inspect(
                 [(header::CACHE_CONTROL, "no-store")],
                 axum::Json(serde_json::json!({"error":error.to_string()})),
             )
-                .into_response()
+                .into_response();
         }
     };
     match format {
@@ -153,7 +153,11 @@ mod tests {
             "scope":["package","example"],
             "system":"x86_64-linux",
             "packages":[{"name":"example", "version":"1"}],
-            "options":[], "abilities":{}
+            "options":[{
+                "path":["aos","example","settings"],"owner":"@base",
+                "description":"Nested <settings>","visibility":"public","readOnly":false,"extensible":true,
+                "type":{"kind":"submodule","fields":{"enabled":{"kind":"bool"}},"open":false}
+            }], "abilities":{}
         });
         let json = serde_json::to_string(&document).unwrap();
         let response = inspect(
@@ -181,6 +185,30 @@ mod tests {
             .unwrap();
         let html = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(html.contains("Packages and environment"));
+        assert!(html.contains("Generated options"));
+        assert!(html.contains("aos.example.settings"));
+        assert!(html.contains("Base module declarations."));
+        assert!(html.contains("Nested &lt;settings&gt;"));
+        assert!(html.contains("enabled"));
+
+        let response = inspect(
+            axum::extract::Query(std::collections::BTreeMap::from([(
+                "format".into(),
+                "html".into(),
+            )])),
+            Bytes::from(json),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(bytes.to_vec()).unwrap(),
+            RuntimeDocument::from_json(&serde_json::to_vec(&document).unwrap())
+                .unwrap()
+                .render_html()
+        );
         assert!(html.contains(&aos_doc_model::documentation_anchor(
             "runtime-owner",
             "example"

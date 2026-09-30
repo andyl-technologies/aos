@@ -12382,6 +12382,20 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::ListPackageOptionsRequest,
     ) -> Result<pb::ListPackageOptionsResponse, RpcError> {
+        self.list_package_options_at_release(auth, req, None).await
+    }
+
+    /// Lists native options from an explicit completed release when selected.
+    ///
+    /// # Errors
+    ///
+    /// Returns visibility, exact-selection, integrity, filter, or pagination errors.
+    pub(crate) async fn list_package_options_at_release(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListPackageOptionsRequest,
+        release: Option<&str>,
+    ) -> Result<pb::ListPackageOptionsResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
         let (locator, document) = self
@@ -12390,7 +12404,7 @@ impl RpcService {
                 &req.package,
                 &req.version,
                 &req.platform,
-                None,
+                release,
             )
             .await?;
         let identity = native_documentation_identity(&locator);

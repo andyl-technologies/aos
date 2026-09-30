@@ -67,7 +67,7 @@ pub(crate) async fn browse(
 }
 
 /// Resolves a coordinate URL to its exact native signed release reference.
-pub(crate) async fn legacy(
+pub(crate) async fn package_reference(
     svc: &RpcService,
     headers: &HeaderMap,
     slug: &str,

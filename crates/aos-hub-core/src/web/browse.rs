@@ -59,12 +59,12 @@
 
 use crate::clock::Instant;
 
-use axum::http::{HeaderMap, header};
+use axum::http::{header, HeaderMap};
 
 use aos_proto_types as pb;
 
 use crate::db::{IndexStatus, RegistryRecord};
-use crate::domain::{Permission, Principal, Scope, iam};
+use crate::domain::{iam, Permission, Principal, Scope};
 use crate::ratelimit::{RateClass, RateDecision};
 use crate::service::RpcService;
 use crate::web::browse_pages as pages;
@@ -269,7 +269,6 @@ async fn bearer_allows(
 async fn bearer_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope) -> bool {
     bearer_allows(svc, headers, scope, Permission::Read).await
 }
-
 
 /// Whether the caller in `headers` may see `registry` at all (the session-aware
 /// visibility filter; see the module-level "Visibility" docs for the matrix).
@@ -730,7 +729,7 @@ pub async fn packages(
     .await
 }
 
-/// The release-wide ability contract, provider, and consumer browser.
+/// Browses authenticated native operation declarations and their module owners.
 pub async fn abilities(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -1259,7 +1258,7 @@ async fn package_index_html(
     session: &SessionIndicator,
 ) -> Rendered {
     use crate::db::PackageRow;
-    use crate::filter::{Filter, version_key};
+    use crate::filter::{version_key, Filter};
 
     let context = match super::release_browse::ReleaseContext::load(
         db,
@@ -1547,8 +1546,10 @@ pub async fn documentation(
     platform: &str,
     query: &BrowseQuery,
 ) -> Rendered {
-    super::documentation_browser::legacy(svc, headers, slug, package, version, platform, query)
-        .await
+    super::documentation_browser::package_reference(
+        svc, headers, slug, package, version, platform, query,
+    )
+    .await
 }
 
 fn resolved_cache_urls(
@@ -2039,9 +2040,18 @@ pub async fn api_cache_objects(svc: &RpcService, slug: &str, query: &BrowseQuery
 
 /// Fetch one registry by slug for the JSON API, or a browse miss.
 async fn registry(svc: &RpcService, slug: &str) -> Option<pb::Registry> {
+    registry_with_auth(svc, None, slug).await
+}
+
+/// Applies the existing registry read policy to bearer-only documentation APIs.
+async fn registry_with_auth(
+    svc: &RpcService,
+    auth: Option<&str>,
+    slug: &str,
+) -> Option<pb::Registry> {
     or_not_found(
         svc.get_registry(
-            None,
+            auth,
             pb::GetRegistryRequest {
                 slug: slug.to_string(),
             },
@@ -2116,15 +2126,16 @@ pub async fn api_package(svc: &RpcService, slug: &str, name: &str) -> Rendered {
 /// `GET /{slug}/-/api/docs/search` — ranked documentation results (JSON).
 pub async fn api_documentation_search(
     svc: &RpcService,
+    auth: Option<&str>,
     slug: &str,
     query: &BrowseQuery,
 ) -> Rendered {
-    if registry(svc, slug).await.is_none() {
+    if registry_with_auth(svc, auth, slug).await.is_none() {
         return Rendered::NotFound;
     }
     match svc
         .search_package_documentation(
-            None,
+            auth,
             pb::SearchPackageDocumentationRequest {
                 registry: slug.to_string(),
                 query: query.query().unwrap_or_default().to_string(),
@@ -2143,17 +2154,18 @@ pub async fn api_documentation_search(
 /// `GET /{slug}/-/api/docs/{package}/{version}/{platform}` — canonical JSON.
 pub async fn api_documentation(
     svc: &RpcService,
+    auth: Option<&str>,
     slug: &str,
     package: &str,
     version: &str,
     platform: &str,
 ) -> Rendered {
-    if registry(svc, slug).await.is_none() {
+    if registry_with_auth(svc, auth, slug).await.is_none() {
         return Rendered::NotFound;
     }
     let Some(response) = or_not_found(
         svc.get_package_documentation(
-            None,
+            auth,
             pb::GetPackageDocumentationRequest {
                 registry: slug.to_string(),
                 package: package.to_string(),
@@ -2175,13 +2187,14 @@ pub async fn api_documentation(
 /// `GET /{slug}/-/api/v1/packages/{package}/documentation` — selected JSON.
 pub async fn api_package_documentation(
     svc: &RpcService,
+    auth: Option<&str>,
     slug: &str,
     package: &str,
     query: &BrowseQuery,
 ) -> Rendered {
     let Some(response) = or_not_found(
         svc.get_package_documentation(
-            None,
+            auth,
             pb::GetPackageDocumentationRequest {
                 registry: slug.to_string(),
                 package: package.to_string(),
@@ -2206,13 +2219,14 @@ pub async fn api_package_documentation(
 /// `GET /{slug}/-/api/v1/packages/{package}/abilities` — signed reference JSON.
 pub async fn api_package_ability_reference(
     svc: &RpcService,
+    auth: Option<&str>,
     slug: &str,
     package: &str,
     query: &BrowseQuery,
 ) -> Rendered {
     let Some(response) = or_not_found(
         svc.get_package_ability_reference(
-            None,
+            auth,
             pb::GetPackageAbilityReferenceRequest {
                 registry: slug.to_string(),
                 package: package.to_string(),
@@ -2237,12 +2251,13 @@ pub async fn api_package_ability_reference(
 /// `GET /{slug}/-/api/v1/abilities` — canonical release ability graph JSON.
 pub async fn api_release_ability_graph(
     svc: &RpcService,
+    auth: Option<&str>,
     slug: &str,
     query: &BrowseQuery,
 ) -> Rendered {
     let Some(response) = or_not_found(
         svc.get_release_ability_graph(
-            None,
+            auth,
             pb::GetReleaseAbilityGraphRequest {
                 registry: slug.to_string(),
                 release: query.release.clone().unwrap_or_default(),
@@ -2265,13 +2280,14 @@ pub async fn api_release_ability_graph(
 /// `GET /{slug}/-/api/v1/packages/{package}/options` — structured options.
 pub async fn api_package_options(
     svc: &RpcService,
+    auth: Option<&str>,
     slug: &str,
     package: &str,
     query: &BrowseQuery,
 ) -> Rendered {
     let response = svc
-        .list_package_options(
-            None,
+        .list_package_options_at_release(
+            auth,
             pb::ListPackageOptionsRequest {
                 registry: slug.to_string(),
                 package: package.to_string(),
@@ -2284,6 +2300,7 @@ pub async fn api_package_options(
                 page_size: 1_000,
                 page_token: String::new(),
             },
+            query.release.as_deref(),
         )
         .await;
     match or_not_found(response) {
@@ -2295,12 +2312,13 @@ pub async fn api_package_options(
 /// `GET /{slug}/-/api/v1/packages/{package}/options/{path}` — one option.
 pub async fn api_package_option(
     svc: &RpcService,
+    auth: Option<&str>,
     slug: &str,
     package: &str,
     display_path: &str,
     query: &BrowseQuery,
 ) -> Rendered {
-    if registry(svc, slug).await.is_none() {
+    if registry_with_auth(svc, auth, slug).await.is_none() {
         return Rendered::NotFound;
     }
     let Some(registry) = svc.db.registry_by_slug(slug).await.ok().flatten() else {
@@ -2334,6 +2352,7 @@ pub async fn api_package_option(
 /// `GET /{slug}/-/api/v1/packages/{package}/compare` — semantic comparison.
 pub async fn api_documentation_compare(
     svc: &RpcService,
+    auth: Option<&str>,
     slug: &str,
     package: &str,
     query: &BrowseQuery,
@@ -2347,7 +2366,7 @@ pub async fn api_documentation_compare(
     };
     match or_not_found(
         svc.compare_package_documentation(
-            None,
+            auth,
             pb::ComparePackageDocumentationRequest {
                 registry: slug.to_string(),
                 package: package.to_string(),
@@ -2367,10 +2386,15 @@ pub async fn api_documentation_compare(
 }
 
 /// `GET /{slug}/-/api/v1/documentation/{sha256}` — immutable canonical object.
-pub async fn api_documentation_artifact(svc: &RpcService, slug: &str, digest: &str) -> Rendered {
+pub async fn api_documentation_artifact(
+    svc: &RpcService,
+    auth: Option<&str>,
+    slug: &str,
+    digest: &str,
+) -> Rendered {
     match or_not_found(
         svc.get_documentation_artifact(
-            None,
+            auth,
             pb::GetDocumentationArtifactRequest {
                 registry: slug.to_string(),
                 document_sha256: digest.to_string(),
@@ -2389,9 +2413,13 @@ pub async fn api_documentation_artifact(svc: &RpcService, slug: &str, digest: &s
     }
 }
 
-/// `GET /{slug}/-/api/docs/schema` — the package metadata JSON Schema.
-pub async fn api_documentation_schema(svc: &RpcService, slug: &str) -> Rendered {
-    if registry(svc, slug).await.is_none() {
+/// `GET /{slug}/-/api/docs/schema` — the native recursive declaration JSON Schema.
+pub async fn api_documentation_schema(
+    svc: &RpcService,
+    auth: Option<&str>,
+    slug: &str,
+) -> Rendered {
+    if registry_with_auth(svc, auth, slug).await.is_none() {
         return Rendered::NotFound;
     }
     let Ok(schema) = aos_doc_model::runtime::module_documentation_json_schema() else {

@@ -39,7 +39,13 @@ shows up to 1,000 matching entries from the selected release. Each result opens
 its exact package version and platform with the release and document digest in
 the URL. Detail pages show option types, descriptions, and mutability, together
 with operation inputs/results and links between operations and their owning
-packages. The package detail page embeds the same native reference.
+packages or base modules. Each owner lists exposed input/result contracts,
+handled operations, and consumed operations configured by its effects. Follow
+these links in either direction to inspect the selected handler owner. Complete
+input/result contracts retain recursive fields and constraints. Generated
+options have a dedicated table with owner links, types, descriptions,
+read-only policy, and extensibility; hidden plumbing is omitted. The package
+detail page embeds the same native reference.
 
 Hub verifies the signed documentation directory and exact `options.json` bytes
 before rendering a detail page. A package without a native documentation
@@ -251,7 +257,10 @@ Use `options.json` from a native `documentationArtifact` to browse option types,
 descriptions, operation inputs/results, and links between package/environment
 owners and the operations they declare, handle, or configure. Import an
 `aos.package.transaction` to see effects in execution order, with dependency
-links, implementation programs, owners, and lifetimes.
+links, implementation programs, owners, lifetimes, exact selected inputs, and
+desired revisions. Composition links identify child effects and the producers
+of exported results. These identities describe the checked selected graph;
+they do not prove a handler ran.
 
 These are evaluated declarations and desired execution paths, not live state.
 Imported documents do not authenticate a publisher. Published native references

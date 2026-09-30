@@ -412,6 +412,7 @@ async fn browse_dispatch(
             browse_page_response(rendered)
         };
     }
+    let api_auth = auth_header(&headers);
     let api_rest = rest
         .strip_prefix("api/v1/")
         .or_else(|| rest.strip_prefix("api/"));
@@ -419,9 +420,15 @@ async fn browse_dispatch(
         Some(api) => match api {
             "registry" => browse::api_registry(&svc, &slug).await,
             "packages" => browse::api_packages(&svc, &slug).await,
-            "abilities" => browse::api_release_ability_graph(&svc, &slug, &q).await,
-            "docs/search" => browse::api_documentation_search(&svc, &slug, &q).await,
-            "docs/schema" => browse::api_documentation_schema(&svc, &slug).await,
+            "abilities" => {
+                browse::api_release_ability_graph(&svc, api_auth.as_deref(), &slug, &q).await
+            }
+            "docs/search" => {
+                browse::api_documentation_search(&svc, api_auth.as_deref(), &slug, &q).await
+            }
+            "docs/schema" => {
+                browse::api_documentation_schema(&svc, api_auth.as_deref(), &slug).await
+            }
             "channels" => browse::api_channels(&svc, &slug).await,
             "releases" => browse::api_releases(&svc, &slug).await,
             other => {
@@ -429,7 +436,8 @@ async fn browse_dispatch(
                     .strip_prefix("documentation/")
                     .filter(|digest| !digest.is_empty() && !digest.contains('/'))
                 {
-                    browse::api_documentation_artifact(&svc, &slug, digest).await
+                    browse::api_documentation_artifact(&svc, api_auth.as_deref(), &slug, digest)
+                        .await
                 } else if let Some(name) = other
                     .strip_prefix("packages/")
                     .filter(|name| !name.is_empty())
@@ -437,21 +445,49 @@ async fn browse_dispatch(
                     if let Some((package, suffix)) = name.split_once('/') {
                         match suffix {
                             "documentation" => {
-                                browse::api_package_documentation(&svc, &slug, package, &q).await
+                                browse::api_package_documentation(
+                                    &svc,
+                                    api_auth.as_deref(),
+                                    &slug,
+                                    package,
+                                    &q,
+                                )
+                                .await
                             }
                             "abilities" => {
-                                browse::api_package_ability_reference(&svc, &slug, package, &q)
-                                    .await
+                                browse::api_package_ability_reference(
+                                    &svc,
+                                    api_auth.as_deref(),
+                                    &slug,
+                                    package,
+                                    &q,
+                                )
+                                .await
                             }
                             "options" => {
-                                browse::api_package_options(&svc, &slug, package, &q).await
+                                browse::api_package_options(
+                                    &svc,
+                                    api_auth.as_deref(),
+                                    &slug,
+                                    package,
+                                    &q,
+                                )
+                                .await
                             }
                             "compare" => {
-                                browse::api_documentation_compare(&svc, &slug, package, &q).await
+                                browse::api_documentation_compare(
+                                    &svc,
+                                    api_auth.as_deref(),
+                                    &slug,
+                                    package,
+                                    &q,
+                                )
+                                .await
                             }
                             option if option.starts_with("options/") => {
                                 browse::api_package_option(
                                     &svc,
+                                    api_auth.as_deref(),
                                     &slug,
                                     package,
                                     option.trim_start_matches("options/"),
@@ -465,8 +501,15 @@ async fn browse_dispatch(
                         browse::api_package(&svc, &slug, name).await
                     }
                 } else if let Some(selection) = documentation_selection(other, "docs/") {
-                    browse::api_documentation(&svc, &slug, selection.0, selection.1, selection.2)
-                        .await
+                    browse::api_documentation(
+                        &svc,
+                        api_auth.as_deref(),
+                        &slug,
+                        selection.0,
+                        selection.1,
+                        selection.2,
+                    )
+                    .await
                 } else {
                     Rendered::NotFound
                 }
@@ -522,7 +565,20 @@ async fn browse_dispatch(
         },
     };
     if api_rest.is_some() {
-        browse_response(rendered)
+        let mut response = browse_response(rendered);
+        if api_auth.is_some() {
+            // Exact document identity never grants another caller read access.
+            // Credentialed reads must not inherit public immutable cache policy.
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-store"),
+            );
+            response.headers_mut().insert(
+                header::VARY,
+                HeaderValue::from_static("Cookie, Authorization"),
+            );
+        }
+        response
     } else {
         browse_page_response(rendered)
     }

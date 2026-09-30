@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use aos_ability_plan::module_graph::Handler;
 
-use super::{DefinitionSource, ModuleReference, Source};
+use super::{DefinitionSource, ModuleReference, NativeOption, Source};
 use crate::OptionType;
 
 pub(super) fn type_label(option: &OptionType) -> String {
@@ -55,13 +55,15 @@ pub(super) fn plain(source: &Source) -> String {
                 for (operation, contract) in operations {
                     let _ = writeln!(
                         output,
-                        "\n{ability}.{operation}\n  Declares input: {}\n  Declares result: {}\n  Handles: {}\n  Configures effects: {}\n  Handler selected: {}\n  Configured instances: {}",
+                        "\n{ability}.{operation}\n  Exposes input: {}\n  Exposes result: {}\n  Handles: {}\n  Consumes (configured effects): {}\n  Handler selected: {}\n  Configured instances: {}\n  Complete input contract: {}\n  Complete result contract: {}",
                         owners(&contract.sources.input),
                         owners(&contract.sources.result),
                         owners(&contract.sources.handler),
                         owners(&contract.sources.effects),
                         contract.handler_available,
-                        contract.configured_effects.join(", ")
+                        contract.configured_effects.join(", "),
+                        type_label(&contract.input_type),
+                        type_label(&contract.result_type)
                     );
                     for (label, fields) in
                         [("Input", &contract.input), ("Result", &contract.result)]
@@ -78,13 +80,19 @@ pub(super) fn plain(source: &Source) -> String {
                 }
             }
             output.push_str("\nOptions\n");
-            for option in &reference.options {
+            for option in reference
+                .options
+                .iter()
+                .filter(|option| option.visibility != crate::Visibility::Hidden)
+            {
                 let _ = writeln!(
                     output,
-                    "  {} [{}]: {}\n    {}",
+                    "  {} [{}]: {} (read-only: {}, extensible: {})\n    {}",
                     option.path.join("."),
                     option.owner,
                     type_label(&option.option_type),
+                    option.read_only,
+                    option.extensible,
                     option.description
                 );
             }
@@ -125,7 +133,16 @@ pub(super) fn plain(source: &Source) -> String {
                         let _ = writeln!(output, "   Composes: {}", children.join(", "));
                     }
                 }
-                let _ = writeln!(output, "   Revision: {}", effect.revision);
+                for (name, contract) in &effect.results {
+                    let _ = writeln!(output, "   Result {name}: {}", type_label(contract));
+                }
+                let _ = writeln!(
+                    output,
+                    "   Logical ID: {id}\n   Revision: {}\n   Input: {}\n   Complete input contract: {}",
+                    effect.revision,
+                    effect.input,
+                    type_label(&effect.input_type)
+                );
             }
         }
     }
@@ -138,15 +155,20 @@ fn escape(value: &str) -> String {
     escaped
 }
 
-fn operation_anchor(ability: &str, operation: &str) -> String {
+fn scoped_anchor(namespace: &str, kind: &str, key: &str) -> String {
+    format!("{namespace}-{}", crate::documentation_anchor(kind, key))
+}
+
+fn operation_anchor(namespace: &str, ability: &str, operation: &str) -> String {
     // Length framing keeps dotted ability/operation names distinct.
-    crate::documentation_anchor(
+    scoped_anchor(
+        namespace,
         "runtime-operation",
         &format!("{}:{ability}{operation}", ability.len()),
     )
 }
 
-fn owner_links(definitions: &[DefinitionSource]) -> String {
+fn owner_links(namespace: &str, definitions: &[DefinitionSource]) -> String {
     definitions
         .iter()
         .map(|definition| definition.owner.as_str())
@@ -155,7 +177,7 @@ fn owner_links(definitions: &[DefinitionSource]) -> String {
         .map(|owner| {
             format!(
                 "<a href=\"#{}\">{}</a>",
-                crate::documentation_anchor("runtime-owner", owner),
+                scoped_anchor(namespace, "runtime-owner", owner),
                 escape(owner)
             )
         })
@@ -169,16 +191,20 @@ fn owner_relations(reference: &ModuleReference) -> BTreeMap<&str, BTreeSet<(&str
     for package in &reference.packages {
         owners.entry(&package.name).or_default();
     }
-    for option in &reference.options {
+    for option in reference
+        .options
+        .iter()
+        .filter(|option| option.visibility != crate::Visibility::Hidden)
+    {
         owners.entry(&option.owner).or_default();
     }
     for (ability, operations) in &reference.abilities {
         for (name, operation) in operations {
             for (role, definitions) in [
-                ("Declares", &operation.sources.input),
-                ("Returns", &operation.sources.result),
+                ("Exposes input", &operation.sources.input),
+                ("Exposes result", &operation.sources.result),
                 ("Handles", &operation.sources.handler),
-                ("Configures", &operation.sources.effects),
+                ("Consumes", &operation.sources.effects),
             ] {
                 for definition in definitions {
                     owners
@@ -192,7 +218,57 @@ fn owner_relations(reference: &ModuleReference) -> BTreeMap<&str, BTreeSet<(&str
     owners
 }
 
+/// Frames identities so references embedded together retain distinct fragments.
+fn document_namespace(source: &Source) -> String {
+    let (scope, system) = match source {
+        Source::ModuleReference(reference) => (&reference.scope, &reference.system),
+        Source::Transaction { scope, system, .. } => (scope, system),
+    };
+    let mut identity = format!("scope:{}:", scope.len());
+    for segment in scope {
+        let _ = write!(identity, "{}:{segment}", segment.len());
+    }
+    let _ = write!(identity, "system:{}:{system}", system.len());
+    match source {
+        Source::ModuleReference(reference) => {
+            let _ = write!(identity, "packages:{}:", reference.packages.len());
+            for package in &reference.packages {
+                let _ = write!(
+                    identity,
+                    "{}:{}{}:{}",
+                    package.name.len(),
+                    package.name,
+                    package.version.len(),
+                    package.version
+                );
+            }
+        }
+        Source::Transaction { graph, retire, .. } => {
+            let _ = write!(identity, "effects:{}:", graph.graph().order.len());
+            for id in &graph.graph().order {
+                let revision = &graph.graph().nodes[id].revision;
+                let _ = write!(identity, "{}:{id}{revision}", id.len());
+            }
+            let _ = write!(identity, "retire:{}:", retire.len());
+            for id in retire {
+                let _ = write!(identity, "{}:{id}", id.len());
+            }
+        }
+    }
+    crate::documentation_anchor("runtime-document", &identity)
+}
+
+fn option_key(path: &[String]) -> String {
+    let mut key = String::new();
+    for segment in path {
+        let _ = write!(key, "{}:{segment}", segment.len());
+    }
+    key
+}
+
 pub(super) fn html(source: &Source) -> String {
+    let namespace = document_namespace(source);
+    let namespace = namespace.as_str();
     let mut html = String::from(
         "<section class=\"runtime-documentation\"><h2>Runtime abilities</h2><p>Imported configuration document; not live runtime state.</p>",
     );
@@ -214,41 +290,65 @@ pub(super) fn html(source: &Source) -> String {
                 .iter()
                 .map(|package| (package.name.as_str(), package.version.as_str()))
                 .collect();
-            html.push_str("<h3>Packages and environment</h3>");
+            let mut options_by_owner = BTreeMap::<&str, Vec<&NativeOption>>::new();
+            for option in reference
+                .options
+                .iter()
+                .filter(|option| option.visibility != crate::Visibility::Hidden)
+            {
+                options_by_owner
+                    .entry(&option.owner)
+                    .or_default()
+                    .push(option);
+            }
+            html.push_str("<h3>Packages and environment</h3><p>Exposed contracts come from input/result declarations; consumed operations come from configured effects. Handler definitions link implementation ownership; Handler selected records availability in this fixed point. Configured instances may be disabled; only a checked transaction identifies the selected execution path.</p>");
             for (owner, relations) in owner_relations(reference) {
                 let _ = write!(
                     html,
                     "<details id=\"{}\"><summary>{}</summary><ul>",
-                    crate::documentation_anchor("runtime-owner", owner),
+                    scoped_anchor(namespace, "runtime-owner", owner),
                     escape(owner)
                 );
                 for (role, ability, operation) in relations {
                     let _ = write!(
                         html,
                         "<li>{role} <a href=\"#{}\">{}</a></li>",
-                        operation_anchor(ability, operation),
+                        operation_anchor(namespace, ability, operation),
                         escape(&format!("{ability}.{operation}"))
                     );
                 }
+                for option in options_by_owner.get(owner).into_iter().flatten() {
+                    let _ = write!(
+                        html,
+                        "<li>Option <a href=\"#{}\">{}</a></li>",
+                        scoped_anchor(namespace, "runtime-option", &option_key(&option.path)),
+                        escape(&option.path.join("."))
+                    );
+                }
                 html.push_str("</ul>");
+                if owner == "@base" {
+                    html.push_str("<p>Base module declarations.</p>");
+                } else if owner.starts_with('@') {
+                    html.push_str("<p>Environment module declarations.</p>");
+                }
                 if let Some(version) = versions.get(owner) {
-                    let _ = write!(html, "<p>PackageIdentity version: {}</p>", escape(version));
+                    let _ = write!(html, "<p>Package version: {}</p>", escape(version));
                 }
                 html.push_str("</details>");
             }
             for (ability, operations) in &reference.abilities {
                 for (name, operation) in operations {
-                    let anchor = operation_anchor(ability, name);
+                    let anchor = operation_anchor(namespace, ability, name);
                     let name = format!("{ability}.{name}");
                     let _ = write!(
                         html,
                         "<article id=\"{}\"><h3>{}</h3><dl><dt>Input declared by</dt><dd>{}</dd><dt>Result declared by</dt><dd>{}</dd><dt>Handled by</dt><dd>{}</dd><dt>Effects configured by</dt><dd>{}</dd><dt>Handler selected</dt><dd>{}</dd></dl>",
                         anchor,
                         escape(&name),
-                        owner_links(&operation.sources.input),
-                        owner_links(&operation.sources.result),
-                        owner_links(&operation.sources.handler),
-                        owner_links(&operation.sources.effects),
+                        owner_links(namespace, &operation.sources.input),
+                        owner_links(namespace, &operation.sources.result),
+                        owner_links(namespace, &operation.sources.handler),
+                        owner_links(namespace, &operation.sources.effects),
                         operation.handler_available
                     );
                     let _ = write!(
@@ -256,6 +356,19 @@ pub(super) fn html(source: &Source) -> String {
                         "<p>Configured instances: {}</p>",
                         escape(&operation.configured_effects.join(", "))
                     );
+                    for (label, contract) in [
+                        ("Complete input contract", &operation.input_type),
+                        ("Complete result contract", &operation.result_type),
+                    ] {
+                        let _ = write!(
+                            html,
+                            "<details><summary>{label}</summary><pre>{}</pre></details>",
+                            escape(
+                                &serde_json::to_string_pretty(contract)
+                                    .unwrap_or_else(|_| type_label(contract))
+                            )
+                        );
+                    }
                     for (label, fields) in
                         [("Inputs", &operation.input), ("Results", &operation.result)]
                     {
@@ -277,6 +390,30 @@ pub(super) fn html(source: &Source) -> String {
                     html.push_str("</article>");
                 }
             }
+            html.push_str("<h3>Generated options</h3><table><thead><tr><th>Option</th><th>Owner</th><th>Type</th><th>Read-only</th><th>Extensible</th><th>Description</th></tr></thead><tbody>");
+            for option in reference
+                .options
+                .iter()
+                .filter(|option| option.visibility != crate::Visibility::Hidden)
+            {
+                let _ = write!(
+                    html,
+                    "<tr id=\"{}\"><td>{}<br><small>Segments: <code>{}</code></small></td><td><a href=\"#{}\">{}</a></td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    scoped_anchor(namespace, "runtime-option", &option_key(&option.path)),
+                    escape(&option.path.join(".")),
+                    escape(
+                        &serde_json::to_string(&option.path)
+                            .unwrap_or_else(|_| format!("{:?}", option.path))
+                    ),
+                    scoped_anchor(namespace, "runtime-owner", &option.owner),
+                    escape(&option.owner),
+                    escape(&type_label(&option.option_type)),
+                    option.read_only,
+                    option.extensible,
+                    escape(&option.description)
+                );
+            }
+            html.push_str("</tbody></table>");
         }
         Source::Transaction { graph, retire, .. } => {
             html.push_str("<h3>Explicit retirement decisions</h3><p>Desired intent; no live-state verification.</p><ul>");
@@ -290,17 +427,64 @@ pub(super) fn html(source: &Source) -> String {
                 let _ = write!(
                     html,
                     "<li id=\"{}\"><strong>{}</strong><p>Owner: {}. Lifetime: {:?}.</p>",
-                    crate::documentation_anchor("runtime-effect", id),
+                    scoped_anchor(namespace, "runtime-effect", id),
                     escape(&effect.identity.join(" / ")),
                     escape(&effect.owner),
                     effect.lifetime
+                );
+                let _ = write!(
+                    html,
+                    "<p>Logical ID: <code>{}</code>. Desired revision: <code>{}</code>. Attempt timeout: {} ms.</p><details><summary>Selected input</summary><pre>{}</pre></details><details><summary>Complete input contract</summary><pre>{}</pre></details>",
+                    escape(id),
+                    escape(&effect.revision),
+                    effect.timeout_ms,
+                    escape(
+                        &serde_json::to_string_pretty(&effect.input)
+                            .unwrap_or_else(|_| effect.input.to_string())
+                    ),
+                    escape(
+                        &serde_json::to_string_pretty(&effect.input_type)
+                            .unwrap_or_else(|_| type_label(&effect.input_type))
+                    )
+                );
+                let _ = write!(
+                    html,
+                    "<details><summary>Declared result contract</summary><pre>{}</pre></details>",
+                    escape(
+                        &serde_json::to_string_pretty(&effect.results)
+                            .unwrap_or_else(|_| format!("{:?}", effect.results))
+                    )
                 );
                 match &effect.handler {
                     Handler::Process { executable, .. } => {
                         let _ = write!(html, "<p>Program: <code>{}</code></p>", escape(executable));
                     }
-                    Handler::Composition { children, .. } => {
-                        let _ = write!(html, "<p>Composes {} child effects.</p>", children.len());
+                    Handler::Composition { children, exports } => {
+                        html.push_str("<p>Composes: ");
+                        for child in children {
+                            let _ = write!(
+                                html,
+                                "<a href=\"#{}\">{}</a> ",
+                                scoped_anchor(namespace, "runtime-effect", child),
+                                escape(&graph.graph().nodes[child].identity.join(" / "))
+                            );
+                        }
+                        html.push_str("</p><ul>");
+                        for (name, reference) in exports {
+                            let child =
+                                aos_ability_plan::module_graph::identity_key(&reference.identity);
+                            if let Ok(child) = child {
+                                let _ = write!(
+                                    html,
+                                    "<li>Result {} from <a href=\"#{}\">{} / {}</a></li>",
+                                    escape(name),
+                                    scoped_anchor(namespace, "runtime-effect", &child),
+                                    escape(&reference.identity.join(" / ")),
+                                    escape(&reference.output)
+                                );
+                            }
+                        }
+                        html.push_str("</ul>");
                     }
                 }
                 if !effect.dependencies.is_empty() {
@@ -309,7 +493,7 @@ pub(super) fn html(source: &Source) -> String {
                         let _ = write!(
                             html,
                             "<a href=\"#{}\">{}</a> ",
-                            crate::documentation_anchor("runtime-effect", dependency),
+                            scoped_anchor(namespace, "runtime-effect", dependency),
                             escape(&graph.graph().nodes[dependency].identity.join(" / "))
                         );
                     }
@@ -326,4 +510,167 @@ pub(super) fn html(source: &Source) -> String {
         escape(&plain(source))
     );
     html
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::RuntimeDocument;
+    use serde_json::json;
+
+    fn document(value: serde_json::Value) -> RuntimeDocument {
+        RuntimeDocument::from_json(&serde_json::to_vec(&value).unwrap()).unwrap()
+    }
+
+    fn reference(package: &str) -> RuntimeDocument {
+        let source = |owner: &str| json!({"owner":owner,"file":"module.nix","priority":100,"provenance":"module"});
+        let nested = json!({"kind":"submodule","fields":{
+            "addresses":{"kind":"list","element":{"kind":"string"},"max_items":8}
+        },"open":false});
+        let option = |path: &str, visibility: &str| {
+            json!({"path":["aos",path],"owner":"@base","description":"A <declaration>",
+                "type":nested,"visibility":visibility,"readOnly":true,"extensible":false})
+        };
+        let field = json!({"description":"Nested settings","type":nested});
+        document(json!({
+            "schema":"aos.module.documentation","scope":["package",package],
+            "system":"x86_64-linux","packages":[{"name":package,"version":"1"}],
+            "options":[option("settings","public"),option("secret-plumbing","hidden")],
+            "abilities":{"network":{"configure":{
+                "input":{"settings":field},"result":{},
+                "inputType":{"kind":"submodule","fields":{"settings":nested},"open":false},
+                "resultType":{"kind":"submodule","fields":{},"open":false},
+                "handlerAvailable":true,"configuredEffects":["main"],
+                "sources":{"input":[source("@base")],"result":[source("@base")],
+                    "handler":[source("implementation")],"effects":[source(package)]}
+            }}}
+        }))
+    }
+
+    fn attribute_values<'a>(html: &'a str, attribute: &str) -> Vec<&'a str> {
+        html.split(attribute)
+            .skip(1)
+            .map(|rest| rest.split('"').next().unwrap())
+            .collect()
+    }
+
+    fn require_fragment_links_resolve(html: &str) {
+        let ids = attribute_values(html, "id=\"");
+        let unique: BTreeSet<_> = ids.iter().copied().collect();
+        assert_eq!(ids.len(), unique.len(), "embedded documents repeat an ID");
+        for link in attribute_values(html, "href=\"#") {
+            assert!(unique.contains(link), "missing fragment target {link}");
+        }
+    }
+
+    #[test]
+    fn recursive_reference_shows_options_contracts_and_inverse_owner_roles() {
+        let document = reference("consumer");
+        let html = document.render_html();
+        for label in [
+            "Generated options",
+            "Read-only",
+            "Extensible",
+            "Complete input contract",
+            "Complete result contract",
+            "Exposes input",
+            "Exposes result",
+            "Consumes",
+            "Handles",
+            "Base module declarations.",
+            "aos.settings",
+            "addresses",
+            "max_items",
+        ] {
+            assert!(html.contains(label), "missing {label}");
+        }
+        assert!(html.contains("A &lt;declaration&gt;"));
+        assert!(!html.contains("A <declaration>"));
+        assert!(!html.contains("secret-plumbing"));
+        let plain = document.render_plain();
+        assert!(plain.contains("read-only: true, extensible: false"));
+        assert!(plain.contains("Complete input contract:"));
+        assert!(plain.contains("max_items"));
+        assert!(!plain.contains("secret-plumbing"));
+        require_fragment_links_resolve(&html);
+    }
+
+    #[test]
+    fn shared_base_and_operation_links_stay_inside_each_package_reference() {
+        let first = reference("first").render_html();
+        let second = reference("second").render_html();
+        require_fragment_links_resolve(&format!("{first}{second}"));
+        let first_ids: BTreeSet<_> = attribute_values(&first, "id=\"").into_iter().collect();
+        let second_ids: BTreeSet<_> = attribute_values(&second, "id=\"").into_iter().collect();
+        assert!(first_ids.is_disjoint(&second_ids));
+        require_fragment_links_resolve(&first);
+        require_fragment_links_resolve(&second);
+    }
+
+    #[test]
+    fn checked_selection_shows_actual_inputs_revisions_and_composed_result_links() {
+        let mut child = json!({
+            "identity":["host","main","test","echo","child"],"owner":"@environment",
+            "input":{"message":"<chosen>"},
+            "inputs":{"message":{"description":"Selected text","type":{"kind":"string"}}},
+            "input_type":{"kind":"submodule","fields":{"message":{"kind":"string"}}},
+            "after":[],"results":{"value":{"kind":"string"}},
+            "handler":{"kind":"process","artifact":"/nix/store/00000000000000000000000000000000-handler",
+                "executable":"/nix/store/00000000000000000000000000000000-handler/bin/run"},
+            "dependencies":[],"lifetime":"instance","timeout_ms":1000
+        });
+        let child_identity: Vec<String> =
+            serde_json::from_value(child["identity"].clone()).unwrap();
+        let child_id = aos_ability_plan::module_graph::identity_key(&child_identity).unwrap();
+        let mut parent = child.clone();
+        parent["identity"][4] = "parent".into();
+        parent["handler"] = json!({"kind":"composition","children":[child_id],
+            "exports":{"value":{"_type":"aos-effect-output","identity":child_identity,
+                "output":"value","schema":{"kind":"string"}}}});
+        parent["dependencies"] = json!([child_id]);
+        let parent_id = aos_ability_plan::module_graph::identity_key(
+            &serde_json::from_value::<Vec<String>>(parent["identity"].clone()).unwrap(),
+        )
+        .unwrap();
+        for node in [&mut child, &mut parent] {
+            let mut semantic = node.as_object().unwrap().clone();
+            for key in ["inputs", "dependencies"] {
+                semantic.remove(key);
+            }
+            node["revision"] =
+                aos_contract::Sha256Digest::of_bytes(serde_json::to_vec(&semantic).unwrap())
+                    .hex()
+                    .into();
+        }
+        let document = document(json!({
+            "schema":"aos.package.transaction","scope":["host","main"],"system":"x86_64-linux",
+            "retire":["previous-instance"],"graph":{"schema":"aos.activation.graph",
+                "order":[child_id,parent_id],"nodes":{(child_id.clone()):child,(parent_id.clone()):parent}}
+        }));
+        let html = document.render_html();
+        for label in [
+            "Selected input",
+            "&lt;chosen&gt;",
+            "Logical ID",
+            "Desired revision",
+            "Attempt timeout: 1000 ms",
+            "Composes:",
+            "Result value from",
+            "previous-instance",
+        ] {
+            assert!(html.contains(label), "missing {label}");
+        }
+        assert!(!html.contains("<chosen>"));
+        assert!(
+            document
+                .render_plain()
+                .contains("Input: {\"message\":\"<chosen>\"}")
+        );
+        require_fragment_links_resolve(&html);
+        // Rendering never substitutes a reference catalog for the selected graph.
+        assert_eq!(
+            document.value()["graph"]["order"],
+            json!([child_id, parent_id])
+        );
+    }
 }
