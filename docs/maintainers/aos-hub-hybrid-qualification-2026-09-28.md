@@ -1333,23 +1333,21 @@ runtime acceptance. Multipart staging/promotion, retained Native callers, all
 alternate writers and historical capabilities, permanent provider exclusivity,
 hosted clocks and actual provider qualification remain required before activation.
 
-## Staging infrastructure prerequisites and remaining deployment block
+## Historical checkpoint: staging prerequisites and deployment block
 
-Infrastructure PRs 1025 and 957 merged after their required checks passed. The
-new delivery authority project `andyl-iac-aos-hub-stg` (108379227229) is provisioned
-through the independent delivery-boundary prerequisite. Its encrypted state has
-lineage `57f2bd4b-9929-4368-b2bb-2463313b5747`, serial 4. Exact plan
-`20260929T084320Z-ef688b4d1d928eb8` selected eight creates and no updates,
-replacements or deletes; apply `20260929T084602Z-0d818d4d1c237d11` succeeded.
-The recovery secret container exists, but its identity payload is not published.
-This prerequisite does not deploy or qualify a serving revision.
+The independent infrastructure prerequisites merged after their required checks
+passed. A separate delivery authority project was provisioned with encrypted
+state retained. Its reviewed plan selected eight creates and no updates,
+replacements or deletes; apply succeeded. The recovery secret container exists,
+but its identity payload is not published. This prerequisite does not deploy or
+qualify a serving revision.
 
 The subsequent execution-engine publication stopped before publication at its
 capacity guard. A read-only inventory found 1,904 existing Cloud Run jobs against
 the configured limit of 2,000: 96 slots are available, while the complete new
-generation requires 99. Read-only retirement inspection 36544712823 produced no
-eligible plans; generation 145 was blocked because a captured job was absent
-before its first retirement claim. No jobs were deleted and no capacity or
+generation requires 99. Read-only retirement inspection produced no eligible
+plans; a captured generation was blocked because a job was absent before its
+first retirement claim. No jobs were deleted and no capacity or
 retirement guard was bypassed. The hosted Worker/Native pair remains unqualified.
 
 The four direct-upload RFC sections now describe intended behavior, including
@@ -1416,23 +1414,23 @@ no registry package version changes. Git patch framing was normalized separately
 without changing source bytes. Actual provider checksums, CORS, private staging,
 closure/promotion, connected callers and hosted throughput remain unqualified.
 
-## Native staging contract bootstrap
+## Historical checkpoint: Native staging contract bootstrap
 
-Infrastructure PR 1028 replaces a bootstrap dependency on the later typed
+The infrastructure bootstrap change replaces a dependency on the later typed
 delivery document with reads of three existing artifact repository resources.
 The Google provider exposes the full resource path as `id` and the short name as
 `name`; both identities, format and ownership labels are verified. The first
 live plan's incorrect name assumption and a later development-shell ADC discovery
-failure remain retained. The successful retry explicitly selects the already
-authenticated host ADC file.
+failure remain retained. The successful retry explicitly selects an already
+authenticated credential file.
 
-Exact plan `20260929T100517Z-f369fcf6a97fe54d` is promotable and reviewed: 46
-foundation no-ops, zero Google resource changes and one nonsensitive contract
-output. Apply `20260929T100943Z-a43b5e368cc269b5` succeeds with existing encrypted
-state preserved. All four local gates, seven module fixtures, the complete
-OpenTofu module policy check and the required CI gate pass. PR 1028 has not been
-merged; merge approval is pending. This does not deploy a serving revision or
-resolve the separate execution-engine publication capacity block.
+The reviewed plan is promotable: 46 foundation no-ops, zero Google resource
+changes and one nonsensitive contract output. Apply succeeds with existing
+encrypted state preserved. All four local gates, seven module fixtures, the
+complete OpenTofu module policy check and the required CI gate pass. The
+bootstrap change has not been merged; merge approval is pending. This does not
+deploy a serving revision or resolve the separate execution-engine publication
+capacity block.
 
 ## Direct broker deployment configuration
 
