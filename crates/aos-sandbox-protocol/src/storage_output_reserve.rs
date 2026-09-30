@@ -6,6 +6,8 @@
 //! Host readback, and the exclusively held Storage output writer. No production
 //! method advertises or dispatches this request yet.
 
+pub mod authority_archive;
+
 use aos_proto::aos::sandbox::local::v1::{
     Audience, QueryStorageExecutionOutputRequestV1, ReserveStorageExecutionOutputRequestV1,
 };
