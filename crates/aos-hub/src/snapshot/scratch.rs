@@ -255,10 +255,15 @@ where
         .map_err(|_| budget.error_or(ScratchVerificationError::Schema))?;
     budget.check()?;
 
+    let generation6 = CompiledSqliteSnapshotCatalogue::load_generation(6)
+        .await
+        .map_err(|_| budget.error_or(ScratchVerificationError::Schema))?;
+    budget.check()?;
+
     tokio::task::spawn_blocking(move || {
         replay::verify(
             inputs,
-            [generation3, generation4, generation5],
+            [generation3, generation4, generation5, generation6],
             limits,
             budget,
         )

@@ -1,4 +1,4 @@
-//! Real generation-5 mirror captures and paired hostile foreign-key originals.
+//! Real generation-6 mirror captures and paired hostile foreign-key originals.
 
 use aos_hub_core::backend::SqlxBackend;
 use aos_hub_core::db::Database;
@@ -15,6 +15,7 @@ fn original(registry_id: i64) -> MirrorOriginal {
     let mut original = MirrorOriginal {
         version: 1,
         job_id: String::new(),
+        copy_operation_id: Some("4".repeat(32)),
         registry_id,
         registry_resource_version: 1,
         mirror_resource_version: 1,
@@ -93,8 +94,8 @@ async fn mirror_fixture() -> (Fixture, MirrorOriginal) {
     sqlx::query(
         "INSERT INTO mirror_import_objects
              (job_id, registry_id, original_digest, original_json, progress_json,
-              state, commit_digest, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'committed', ?6, 1, 2)",
+              state, commit_digest, created_at, updated_at, source_path, source_path_digest, copy_operation_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'committed', ?6, 1, 2, ?7, ?8, ?9)",
     )
     .bind(&original.job_id)
     .bind(registry_id)
@@ -102,6 +103,9 @@ async fn mirror_fixture() -> (Fixture, MirrorOriginal) {
     .bind(serde_json::to_string(&original).unwrap())
     .bind(serde_json::to_string(&progress).unwrap())
     .bind(progress.commit_digest(&original).unwrap())
+    .bind(&original.path)
+    .bind(original.source_path_digest())
+    .bind(&original.copy_operation_id)
     .execute(&pool)
     .await
     .unwrap();
@@ -122,13 +126,20 @@ fn mirror_row(original: &MirrorOriginal) -> Row {
         Value::Text(progress.commit_digest(original).unwrap()),
         Value::Int(1),
         Value::Int(2),
+        Value::Text(original.path.clone()),
+        Value::Text(original.source_path_digest()),
+        original
+            .copy_operation_id
+            .clone()
+            .map(Value::Text)
+            .unwrap_or(Value::Null),
     ])
 }
 
 // Rebuild every locator and commitment using the real classifier, then reseal
 // both streams. The hostile orphan remains a valid complete mirror record.
 fn replace_mirror_original(metadata: &mut [Json], private: &mut [Json], original: &MirrorOriginal) {
-    let capture = SnapshotClassifier::for_supported_generation(5)
+    let capture = SnapshotClassifier::for_supported_generation(6)
         .unwrap()
         .capture_private_row("mirror_import_objects", &mirror_row(original))
         .unwrap();
@@ -185,7 +196,7 @@ fn replace_mirror_original(metadata: &mut [Json], private: &mut [Json], original
 }
 
 #[tokio::test]
-async fn generation5_replays_mirror_child_before_registry_with_exact_private_originals() {
+async fn generation6_replays_mirror_child_before_registry_with_exact_private_originals() {
     let (fixture, original) = mirror_fixture().await;
     let mut recovered = Vec::new();
     aos_hub_core::snapshot::archive::records::verify_database_capture(
@@ -261,4 +272,35 @@ async fn changed_private_mirror_progress_cannot_return_a_scratch_report() {
         scratch(&fixture).await.unwrap_err(),
         ScratchVerificationError::Records
     );
+}
+
+#[tokio::test]
+async fn authenticated_capture_with_changed_mirror_index_is_refused() {
+    for column in ["source_path_digest", "copy_operation_id"] {
+        let (mut fixture, _) = mirror_fixture().await;
+        let (metadata, private) = plaintext(&fixture);
+        let mut metadata = lines(&metadata);
+        let start = metadata
+            .iter()
+            .position(|line| {
+                line["kind"] == "table_start" && line["table"] == "mirror_import_objects"
+            })
+            .unwrap();
+        let cell = metadata[start + 1..]
+            .iter_mut()
+            .find(|line| line["kind"] == "cell" && line["column"] == column)
+            .unwrap();
+        cell["scalar"]["value"] = json!("5".repeat(if column == "copy_operation_id" {
+            32
+        } else {
+            64
+        }));
+        // This correctly signed archive fails record reconstruction itself.
+        // The SQL-only mutation helper intentionally requires that to succeed.
+        reseal(&mut fixture, metadata, lines(&private));
+        assert_eq!(
+            scratch(&fixture).await.unwrap_err(),
+            ScratchVerificationError::Records
+        );
+    }
 }

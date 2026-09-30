@@ -532,3 +532,72 @@ async fn truncated_generation4_capture_cannot_return_a_constraint_report() {
 
     assert!(result.is_err());
 }
+
+// Captured by the committed generation-5 production implementation before
+// migration 006. Its committed mirror row has no copy operation or index cells.
+fn historical_generation5_inputs() -> ScratchVerificationInputs<Cursor<Vec<u8>>, Cursor<Vec<u8>>> {
+    let signer = ArchiveSigningKey::from_seed("snapshot-operator", [1; 32]).unwrap();
+
+    ScratchVerificationInputs {
+        root: include_bytes!("fixtures/generation5-root.json").to_vec(),
+        trust: ArchiveSignerTrust::new([(signer.id().to_owned(), signer.public_key())]).unwrap(),
+        wrapping: ArchiveWrappingKeys::new(
+            ArchiveWrappingKey::from_bytes("metadata-wrap", [2; 32]).unwrap(),
+            ArchiveWrappingKey::from_bytes("private-wrap", [3; 32]).unwrap(),
+        )
+        .unwrap(),
+        exclusions: Vec::new(),
+        metadata: Cursor::new(include_bytes!("fixtures/generation5-metadata.enc").to_vec()),
+        private: Cursor::new(include_bytes!("fixtures/generation5-private.enc").to_vec()),
+    }
+}
+
+#[tokio::test]
+async fn genuine_generation5_capture_replays_original_without_future_index_or_operation() {
+    let inputs = historical_generation5_inputs();
+    let mut originals = Vec::new();
+    aos_hub_core::snapshot::archive::records::verify_database_capture(
+        &inputs.root,
+        &inputs.trust,
+        &inputs.wrapping,
+        &inputs.exclusions,
+        inputs.metadata,
+        inputs.private,
+        Default::default(),
+        |table, _, row| {
+            if table == "mirror_import_objects" {
+                row.with_private_row(|row| originals.push(row.clone()));
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(originals.len(), 1);
+    assert_eq!(originals[0].len(), 9);
+    let original_json: String = originals[0].get(3).unwrap();
+    let original: aos_hub_core::mirror_work::MirrorOriginal =
+        serde_json::from_str(&original_json).unwrap();
+    assert!(original.copy_operation_id.is_none());
+    assert_eq!(serde_json::to_string(&original).unwrap(), original_json);
+    let report = verify_capture_in_scratch(
+        historical_generation5_inputs(),
+        Default::default(),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(report.records().counts().tables, 276);
+    assert_eq!(report.checked_tables(), 266);
+    assert_eq!(report.synthetic_lineage_rows(), 2);
+}
+
+#[tokio::test]
+async fn truncated_generation5_capture_cannot_return_a_constraint_report() {
+    let mut inputs = historical_generation5_inputs();
+    inputs.private.get_mut().pop();
+
+    let result = verify_capture_in_scratch(inputs, Default::default(), Default::default()).await;
+
+    assert!(result.is_err());
+}

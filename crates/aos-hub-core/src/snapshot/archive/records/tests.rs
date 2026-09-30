@@ -21,7 +21,7 @@ struct Fixture {
 
 #[test]
 fn historical_wire_arrays_round_trip_without_rewriting_and_unknown_lengths_fail() {
-    for version in [3, 4, 5] {
+    for version in [3, 4, 5, 6] {
         let classifier = SnapshotClassifier::for_supported_generation(version).unwrap();
         let schema = schema(&classifier).unwrap();
         let original = serde_json::to_vec(&schema).unwrap();
@@ -36,7 +36,7 @@ fn historical_wire_arrays_round_trip_without_rewriting_and_unknown_lengths_fail(
 
     let mut value = serde_json::to_value(schema(&current_classifier().unwrap()).unwrap()).unwrap();
 
-    for count in [0, 1, 2, 6] {
+    for count in [0, 1, 2, 7] {
         value["migration_digests"] = json!(vec!["1".repeat(64); count]);
         assert!(serde_json::from_value::<Schema>(value.clone()).is_err());
     }
@@ -57,7 +57,7 @@ async fn schema_callback_runs_after_both_headers_and_before_any_row() {
         Cursor::new(&f.output.private),
         StreamLimits::default(),
         |manifest| {
-            assert_eq!(manifest.version, 5);
+            assert_eq!(manifest.version, 6);
             assert!(!called.replace(true));
             Ok(())
         },

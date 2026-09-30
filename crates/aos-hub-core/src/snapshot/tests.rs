@@ -12,11 +12,20 @@ mod privacy;
 fn historical_contract_keeps_exact_digests_and_refuses_mixed_generations() {
     let historical = SnapshotClassifier::for_supported_generation(3).unwrap();
     let generation4 = SnapshotClassifier::for_supported_generation(4).unwrap();
-    let current = SnapshotClassifier::for_supported_generation(5).unwrap();
+    let generation5 = SnapshotClassifier::for_supported_generation(5).unwrap();
+    let current = SnapshotClassifier::for_supported_generation(6).unwrap();
 
     assert_eq!(historical.tables.len(), 267);
     assert_eq!(generation4.tables.len(), 275);
+    assert_eq!(generation5.tables.len(), 276);
     assert_eq!(current.tables.len(), 276);
+    assert_eq!(generation5.manifest().migration_digests, digests()[..5]);
+    assert_eq!(
+        generation5.manifest().classification_digest,
+        hex::encode(Sha256::digest(GENERATION5_CONTRACT))
+    );
+    assert_eq!(generation5.tables["mirror_import_objects"].columns.len(), 9);
+    assert_eq!(current.tables["mirror_import_objects"].columns.len(), 12);
     assert!(!historical.tables.contains_key("direct_upload_sessions"));
     assert_eq!(historical.manifest().migration_digests, digests()[..3]);
     assert_eq!(generation4.manifest().migration_digests, digests()[..4]);
@@ -34,7 +43,7 @@ fn historical_contract_keeps_exact_digests_and_refuses_mixed_generations() {
     assert!(SnapshotClassifier::new(SCHEMA_IDENTITY, 3, &digests(), &shapes()).is_err());
     assert!(SnapshotClassifier::new(SCHEMA_IDENTITY, 4, &digests()[..3], &shapes()).is_err());
     assert!(SnapshotClassifier::new(SCHEMA_IDENTITY, 5, &digests()[..4], &shapes()).is_err());
-    for version in [0, 1, 2, 6, usize::MAX] {
+    for version in [0, 1, 2, 7, usize::MAX] {
         assert!(SnapshotClassifier::for_supported_generation(version).is_err());
     }
 }
@@ -176,7 +185,7 @@ async fn contract_covers_the_actual_production_initializer() {
             .values()
             .map(|table| table.columns.len())
             .sum::<usize>(),
-        2697
+        2700
     );
     assert_eq!(tables.len(), contracts.len());
 

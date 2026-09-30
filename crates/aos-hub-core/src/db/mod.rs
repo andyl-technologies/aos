@@ -603,6 +603,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("003-physical-storage-authorities.sql"),
     include_str!("004-direct-upload-sessions.sql"),
     include_str!("005-mirror-imports.sql"),
+    include_str!("006-mirror-import-generations.sql"),
 ];
 
 // Shared by production initialization and trusted disposable schema compilation.
@@ -3827,6 +3828,7 @@ impl Database {
             }
             self.require_schema_identity().await?;
         }
+        self.backfill_mirror_import_index().await?;
         Ok(())
     }
 
@@ -27497,7 +27499,7 @@ source_nar_hash = ""
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            5,
+            6,
             "production baseline plus retained R2, physical authority, direct-upload and mirror originals"
         );
         let connection = Connection::open_in_memory().unwrap();

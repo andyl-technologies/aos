@@ -105,6 +105,24 @@ impl MirrorImportRecord {
             updated_at,
         })
     }
+    /// Validates generation 6 indexed identity against the complete original.
+    ///
+    /// # Errors
+    /// Returns an error for missing backfill, changed paths/digests or operation.
+    pub fn validate_index(
+        &self,
+        source_path: Option<&str>,
+        source_path_digest: Option<&str>,
+        copy_operation_id: Option<&str>,
+    ) -> Result<()> {
+        ensure!(
+            source_path == Some(self.original.path.as_str())
+                && source_path_digest == Some(self.original.source_path_digest().as_str())
+                && copy_operation_id == self.original.copy_operation_id.as_deref(),
+            "mirror indexed identity changed its retained original"
+        );
+        Ok(())
+    }
 }
 
 impl Database {
@@ -169,13 +187,13 @@ impl Database {
         self.backend
             .query_opt(
                 "SELECT job_id, registry_id, original_digest, original_json, progress_json,
-                    state, commit_digest, created_at, updated_at
+                    state, commit_digest, created_at, updated_at, source_path, source_path_digest, copy_operation_id
                FROM mirror_import_objects WHERE job_id = ?1",
                 &vals![job_id],
             )
             .await?
             .map(|row| {
-                MirrorImportRecord::decode(
+                let record = MirrorImportRecord::decode(
                     &row.get::<String>(0)?,
                     row.get(1)?,
                     &row.get::<String>(2)?,
@@ -185,9 +203,78 @@ impl Database {
                     row.get::<Option<String>>(6)?.as_deref(),
                     row.get(7)?,
                     row.get(8)?,
-                )
+                )?;
+                record.validate_index(row.get::<Option<String>>(9)?.as_deref(), row.get::<Option<String>>(10)?.as_deref(), row.get::<Option<String>>(11)?.as_deref())?;
+                Ok(record)
             })
             .transpose()
+    }
+
+    /// Loads the single retained business operation for an exact registry path.
+    ///
+    /// # Errors
+    /// Returns an error for a changed index or malformed retained original.
+    pub async fn mirror_import_for_path(
+        &self,
+        registry_id: i64,
+        path: &str,
+    ) -> Result<Option<MirrorImportRecord>> {
+        use sha2::{Digest as _, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(b"aos.hub.mirror-source-path.v1\0");
+        hash.update(path.as_bytes());
+        let digest = hex::encode(hash.finalize());
+        let row = self.backend.query_opt("SELECT job_id FROM mirror_import_objects WHERE registry_id = ?1 AND source_path_digest = ?2", &vals![registry_id, digest]).await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let record = self
+            .mirror_import(&row.get::<String>(0)?)
+            .await?
+            .context("mirror path index lost its original")?;
+        ensure!(
+            record.original.path == path && record.original.registry_id == registry_id,
+            "mirror path index changed exact source identity"
+        );
+        Ok(Some(record))
+    }
+
+    /// Backfills legacy exact path indexes before any initialized DB is exposed.
+    ///
+    /// Each bounded keyset page is decoded through the historical typed model.
+    /// A conflict leaves all originals intact and refuses startup; a restart
+    /// repeats only missing metadata indexes, never provider operations.
+    pub(super) async fn backfill_mirror_import_index(&self) -> Result<()> {
+        let mut cursor = String::new();
+        loop {
+            let rows = self.backend.query("SELECT job_id, registry_id, original_digest, original_json, progress_json, state, commit_digest, created_at, updated_at, copy_operation_id FROM mirror_import_objects WHERE source_path IS NULL AND job_id > ?1 ORDER BY job_id LIMIT 128", &vals![cursor]).await?;
+            if rows.is_empty() {
+                break;
+            }
+            let mut statements = Vec::with_capacity(rows.len());
+            for row in rows {
+                let record = MirrorImportRecord::decode(
+                    &row.get::<String>(0)?,
+                    row.get(1)?,
+                    &row.get::<String>(2)?,
+                    &row.get::<String>(3)?,
+                    row.get::<Option<String>>(4)?.as_deref(),
+                    &row.get::<String>(5)?,
+                    row.get::<Option<String>>(6)?.as_deref(),
+                    row.get(7)?,
+                    row.get(8)?,
+                )?;
+                ensure!(
+                    record.original.copy_operation_id.is_none()
+                        && row.get::<Option<String>>(9)?.is_none(),
+                    "mirror generation 6 operation is missing its atomic source index"
+                );
+                cursor = record.original.job_id.clone();
+                statements.push(CheckedStatement::exact("UPDATE mirror_import_objects SET source_path = ?2, source_path_digest = ?3, copy_operation_id = ?4 WHERE job_id = ?1 AND original_digest = ?5 AND source_path IS NULL", vals![record.original.job_id, record.original.path, record.original.source_path_digest(), record.original.copy_operation_id, digest(&record.original)?], 1));
+            }
+            self.backend.checked_batch(&statements).await?;
+        }
+        Ok(())
     }
 
     /// Checks the original against current Native mirror and writer authority.
@@ -243,6 +330,10 @@ impl Database {
         now: i64,
     ) -> Result<MirrorImportRecord> {
         self.validate_mirror_import_authority(original).await?;
+        ensure!(
+            original.copy_operation_id.is_some(),
+            "fresh mirror admission requires a retained Native business operation"
+        );
         ensure!(now > 0, "mirror admission time is invalid");
         let original_json = serde_json::to_string(original)?;
         ensure!(
@@ -252,8 +343,8 @@ impl Database {
         let original_digest = digest(original)?;
         self.backend.execute(
             "INSERT INTO mirror_import_objects
-                 (job_id, registry_id, original_digest, original_json, state, created_at, updated_at)
-             SELECT ?1, ?2, ?3, ?4, 'admitted', ?5, ?5
+                 (job_id, registry_id, original_digest, original_json, state, created_at, updated_at, source_path, source_path_digest, copy_operation_id)
+             SELECT ?1, ?2, ?3, ?4, 'admitted', ?5, ?5, ?15, ?16, ?17
              WHERE EXISTS (SELECT 1 FROM registries r JOIN mirror_sources m ON m.registry_id = r.id
                            WHERE r.id = ?2 AND r.resource_version = ?6
                              AND m.resource_version = ?7 AND m.upstream_url = ?8)
@@ -267,7 +358,7 @@ impl Database {
             &vals![original.job_id, original.registry_id, original_digest, original_json, now,
                 original.registry_resource_version, original.mirror_resource_version, original.upstream_base,
                 original.placement_id, original.placement_resource_version, original.write_spec_version,
-                original.placement_prefix, original.binding_id, original.binding_resource_version],
+                original.placement_prefix, original.binding_id, original.binding_resource_version, original.path, original.source_path_digest(), original.copy_operation_id],
         ).await?;
         let retained = self
             .mirror_import(&original.job_id)

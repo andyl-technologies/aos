@@ -3,7 +3,7 @@
 //! These checks preserve the original private bytes. They do not authenticate
 //! provider proof, renew authority or permit a restored job to resume effects.
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, ensure};
 
 use crate::db::MirrorImportRecord;
 use crate::value::{FromValue, Row};
@@ -16,7 +16,7 @@ pub(super) fn validate_row(name: &str, table: &TableContract, row: &Row) -> Resu
     }
 
     let cells = Cells { table, row };
-    MirrorImportRecord::decode(
+    let record = MirrorImportRecord::decode(
         &cells.get::<String>("job_id")?,
         cells.get("registry_id")?,
         &cells.get::<String>("original_digest")?,
@@ -28,6 +28,26 @@ pub(super) fn validate_row(name: &str, table: &TableContract, row: &Row) -> Resu
         cells.get("updated_at")?,
     )
     .map_err(|_| anyhow::anyhow!("snapshot mirror original or lifecycle differs"))?;
+    if table
+        .columns
+        .iter()
+        .any(|column| column.name == "source_path")
+    {
+        record
+            .validate_index(
+                cells.get::<Option<String>>("source_path")?.as_deref(),
+                cells
+                    .get::<Option<String>>("source_path_digest")?
+                    .as_deref(),
+                cells.get::<Option<String>>("copy_operation_id")?.as_deref(),
+            )
+            .map_err(|_| anyhow::anyhow!("snapshot mirror source index differs"))?;
+    } else {
+        ensure!(
+            record.original.copy_operation_id.is_none(),
+            "historical snapshot mirror operation differs"
+        );
+    }
     Ok(())
 }
 

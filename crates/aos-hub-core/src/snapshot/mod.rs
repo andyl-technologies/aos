@@ -45,7 +45,8 @@ mod capture_tests;
 const CLASSIFICATION_VERSION: &str = "aos-hub.snapshot-classification/v1";
 const LEGACY_CONTRACT: &str = include_str!("schema-v3.tsv");
 const GENERATION4_CONTRACT: &str = include_str!("schema-v4.tsv");
-const CONTRACT: &str = include_str!("schema-v5.tsv");
+const GENERATION5_CONTRACT: &str = include_str!("schema-v5.tsv");
+const CONTRACT: &str = include_str!("schema-v6.tsv");
 const LEGACY_CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
     "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
     "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
@@ -57,12 +58,20 @@ const GENERATION4_MIGRATION_DIGESTS: &[&str] = &[
     "1378ed62ac1a61f2abaf960d64a4617bdf523a437dcf326f3cb083f7e75ccdb1",
     "aed8c7be101fe114a4b989184d79c5224fb27ba0b1065b881f1a0779b71d09c3",
 ];
+const GENERATION5_MIGRATION_DIGESTS: &[&str] = &[
+    "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
+    "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
+    "1378ed62ac1a61f2abaf960d64a4617bdf523a437dcf326f3cb083f7e75ccdb1",
+    "aed8c7be101fe114a4b989184d79c5224fb27ba0b1065b881f1a0779b71d09c3",
+    "a65b54c031446a5960de39354623d8e9ce22bc116ce3f735ae065cf96d54faf4",
+];
 const CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
     "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
     "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
     "1378ed62ac1a61f2abaf960d64a4617bdf523a437dcf326f3cb083f7e75ccdb1",
     "aed8c7be101fe114a4b989184d79c5224fb27ba0b1065b881f1a0779b71d09c3",
     "a65b54c031446a5960de39354623d8e9ce22bc116ce3f735ae065cf96d54faf4",
+    "24ad86fc4c15974cdacbb0d3f1374c7b2061778777e97fa78e0fb9673171bc26",
 ];
 
 const MAX_CELL_BYTES: usize = 1024 * 1024;
@@ -169,7 +178,7 @@ pub struct SnapshotSchemaManifest {
     pub classification_version: String,
     /// Exact compiled production lineage, never inferred from a migration count.
     pub identity: String,
-    /// Exact supported source generation, currently three, four or five.
+    /// Exact supported source generation, currently three through six.
     pub version: usize,
     /// Ordered SHA-256 hashes of the compiled schema scripts.
     pub migration_digests: Vec<String>,
@@ -419,7 +428,8 @@ fn generation_contract(version: usize) -> Result<(&'static str, &'static [&'stat
     match version {
         3 => Ok((LEGACY_CONTRACT, LEGACY_CONTRACT_MIGRATION_DIGESTS)),
         4 => Ok((GENERATION4_CONTRACT, GENERATION4_MIGRATION_DIGESTS)),
-        5 => Ok((CONTRACT, CONTRACT_MIGRATION_DIGESTS)),
+        5 => Ok((GENERATION5_CONTRACT, GENERATION5_MIGRATION_DIGESTS)),
+        6 => Ok((CONTRACT, CONTRACT_MIGRATION_DIGESTS)),
         _ => anyhow::bail!("snapshot generation is unsupported"),
     }
 }

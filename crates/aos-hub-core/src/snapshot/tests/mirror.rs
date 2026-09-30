@@ -10,6 +10,7 @@ fn original() -> MirrorOriginal {
     let mut original = MirrorOriginal {
         version: 1,
         job_id: String::new(),
+        copy_operation_id: Some("4".repeat(32)),
         registry_id: 7,
         registry_resource_version: 2,
         mirror_resource_version: 1,
@@ -103,6 +104,19 @@ fn source(original: &MirrorOriginal, progress: Option<&MirrorProgress>, state: &
             ),
             ("created_at", Value::Int(1)),
             ("updated_at", Value::Int(2)),
+            ("source_path", Value::Text(original.path.clone())),
+            (
+                "source_path_digest",
+                Value::Text(original.source_path_digest()),
+            ),
+            (
+                "copy_operation_id",
+                original
+                    .copy_operation_id
+                    .clone()
+                    .map(Value::Text)
+                    .unwrap_or(Value::Null),
+            ),
         ],
     )
 }
@@ -145,7 +159,7 @@ fn mirror_original_and_all_positive_phases_preserve_exact_private_bytes() {
             .unwrap();
         assert_eq!(
             capture.private_cells().len(),
-            if progress.is_some() { 2 } else { 1 }
+            if progress.is_some() { 3 } else { 2 }
         );
         let SnapshotRowDisposition::Retained(classified) = capture.classified() else {
             panic!("mirror original omitted")
@@ -155,6 +169,7 @@ fn mirror_original_and_all_positive_phases_preserve_exact_private_bytes() {
             "upstream.example.invalid",
             "private-stage-upload",
             "final-incarnation",
+            "nar/source.nar.zst",
         ] {
             assert!(!public.contains(private));
         }
@@ -178,6 +193,12 @@ fn mirror_scalar_identity_phase_and_terminal_proof_cannot_disagree() {
         ("created_at", Value::Int(0)),
         ("updated_at", Value::Int(0)),
         ("progress_json", Value::Null),
+        ("source_path", Value::Null),
+        ("source_path", Value::Text("nar/other.nar.zst".into())),
+        ("source_path_digest", Value::Null),
+        ("source_path_digest", Value::Text("b".repeat(64))),
+        ("copy_operation_id", Value::Null),
+        ("copy_operation_id", Value::Text("5".repeat(32))),
     ] {
         assert!(
             classifier()
@@ -312,4 +333,69 @@ fn missing_or_duplicate_mirror_private_originals_cannot_reconstruct() {
             .reconstruct_private_row(classified, &duplicates)
             .is_err()
     );
+}
+
+#[test]
+fn historical5_original_bytes_remain_canonical_and_backfilled6_indexes_are_exact() {
+    let mut original = original();
+    original.copy_operation_id = None;
+    original.job_id = original.identity().unwrap();
+    let canonical = serde_json::to_string(&original).unwrap();
+    assert!(!canonical.contains("copy_operation_id"));
+
+    let current = source(&original, None, "admitted");
+    let legacy = Row::new(
+        (0..9)
+            .map(|index| current.value(index).unwrap().clone())
+            .collect(),
+    );
+    let historical = SnapshotClassifier::for_supported_generation(5).unwrap();
+    let capture = historical
+        .capture_private_row("mirror_import_objects", &legacy)
+        .unwrap();
+    let SnapshotRowDisposition::Retained(classified) = capture.classified() else {
+        panic!("historical mirror original omitted")
+    };
+    historical
+        .reconstruct_private_row(classified, capture.private_cells())
+        .unwrap()
+        .with_private_row(|recovered| assert_eq!(recovered, &legacy));
+    assert!(
+        classifier()
+            .classify("mirror_import_objects", &current)
+            .is_ok()
+    );
+
+    // A future operation cannot enter the closed historical schema by hiding
+    // its index fields. Migrated old originals retain their omitted field.
+    let fresh = source(&self::original(), None, "admitted");
+    let disguised = Row::new(
+        (0..9)
+            .map(|index| fresh.value(index).unwrap().clone())
+            .collect(),
+    );
+    assert!(
+        historical
+            .classify("mirror_import_objects", &disguised)
+            .is_err()
+    );
+}
+
+#[test]
+fn mirror_index_preserves_full_maximum_path_without_truncation() {
+    let mut original = original();
+    original.path = format!("nar/{}", "x".repeat(2044));
+    original.job_id = original.identity().unwrap();
+    let source = source(&original, None, "admitted");
+    let capture = classifier()
+        .capture_private_row("mirror_import_objects", &source)
+        .unwrap();
+    let SnapshotRowDisposition::Retained(classified) = capture.classified() else {
+        panic!("mirror original omitted")
+    };
+    classifier()
+        .reconstruct_private_row(classified, capture.private_cells())
+        .unwrap()
+        .with_private_row(|recovered| assert_eq!(recovered, &source));
+    assert_eq!(original.path.len(), 2048);
 }

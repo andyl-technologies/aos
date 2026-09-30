@@ -134,6 +134,7 @@ async fn original(db: &Database) -> MirrorOriginal {
     let mut original = MirrorOriginal {
         version: 1,
         job_id: String::new(),
+        copy_operation_id: Some("4".repeat(32)),
         registry_id,
         registry_resource_version: registry.resource_version,
         mirror_resource_version: 1,
@@ -611,7 +612,7 @@ async fn upgrades_actual_sqlite_generation_four_without_changing_old_rows() {
         .unwrap()
         .get(0)
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     let original = original(&db).await;
     assert_eq!(
         db.admit_mirror_import(&original, 1).await.unwrap().state,
@@ -638,7 +639,7 @@ async fn live_postgres_generation_four_upgrade_and_exact_mirror_lifecycle() {
         .unwrap()
         .get(0)
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     let original = original(&db).await;
     let progress = progress(&original);
     db.admit_mirror_import(&original, 1).await.unwrap();
@@ -675,4 +676,106 @@ async fn live_postgres_generation_four_upgrade_and_exact_mirror_lifecycle() {
         .await
         .unwrap();
     delete_after_existing_gc_fences(&db, &original).await;
+}
+
+#[tokio::test]
+async fn unresolved_path_reuses_its_operation_and_positive_retirement_allows_a_new_one() {
+    let db = Database::open_in_memory().await.unwrap();
+    let first = original(&db).await;
+    db.admit_mirror_import(&first, 1).await.unwrap();
+    let mut next = first.clone();
+    next.copy_operation_id = Some("5".repeat(32));
+    next.job_id = next.identity().unwrap();
+
+    assert_ne!(first.job_id, next.job_id);
+    assert!(db.admit_mirror_import(&next, 2).await.is_err());
+    assert_eq!(
+        db.mirror_import_for_path(first.registry_id, &first.path)
+            .await
+            .unwrap()
+            .unwrap()
+            .original,
+        first
+    );
+    let final_progress = progress(&first);
+    db.record_mirror_import_progress(&first, &final_progress, true, 3)
+        .await
+        .unwrap();
+    db.retire_acknowledged_mirror_import(&first, &final_progress)
+        .await
+        .unwrap();
+
+    db.admit_mirror_import(&next, 4).await.unwrap();
+    assert_eq!(
+        db.mirror_import_for_path(next.registry_id, &next.path)
+            .await
+            .unwrap()
+            .unwrap()
+            .original,
+        next
+    );
+    assert!(db.mirror_import(&first.job_id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn indexed_identity_preserves_long_legacy_paths_and_rejects_changed_scalars() {
+    let db = Database::open_in_memory().await.unwrap();
+    let mut legacy = original(&db).await;
+    legacy.copy_operation_id = None;
+    legacy.path = format!("nar/{}.nar", "a".repeat(1800));
+    legacy.job_id = legacy.identity().unwrap();
+    let canonical = serde_json::to_string(&legacy).unwrap();
+    assert!(!canonical.contains("copy_operation_id"));
+    assert!(db.admit_mirror_import(&legacy, 1).await.is_err());
+    db.backend.execute("INSERT INTO mirror_import_objects (job_id,registry_id,original_digest,original_json,state,created_at,updated_at) VALUES (?1,?2,?3,?4,'admitted',1,1)", &vals![legacy.job_id,legacy.registry_id,digest(&legacy).unwrap(),canonical]).await.unwrap();
+
+    db.backfill_mirror_import_index().await.unwrap();
+    let record = db
+        .mirror_import_for_path(legacy.registry_id, &legacy.path)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.original, legacy);
+    record
+        .validate_index(Some(&legacy.path), Some(&legacy.source_path_digest()), None)
+        .unwrap();
+    assert!(record
+        .validate_index(
+            Some("nar/other.nar"),
+            Some(&legacy.source_path_digest()),
+            None
+        )
+        .is_err());
+    assert!(record
+        .validate_index(Some(&legacy.path), Some(&"0".repeat(64)), None)
+        .is_err());
+    assert!(record
+        .validate_index(
+            Some(&legacy.path),
+            Some(&legacy.source_path_digest()),
+            Some(&"4".repeat(32))
+        )
+        .is_err());
+    assert_eq!(serde_json::to_string(&record.original).unwrap(), canonical);
+}
+
+#[tokio::test]
+async fn actual_generation_five_upgrade_backfills_a_legacy_original_without_reencoding() {
+    let backend = SqlxBackend::connect_sqlite(":memory:").await.unwrap();
+    initialize_generation_four(&backend).await;
+    backend.execute_batch(super::super::MIGRATIONS[4]).await.unwrap();
+    backend.execute("UPDATE schema_version SET version = 5", &[]).await.unwrap();
+    let legacy_db = Database { backend: Box::new(backend) };
+    let mut legacy = original(&legacy_db).await;
+    legacy.copy_operation_id = None;
+    legacy.job_id = legacy.identity().unwrap();
+    let canonical = serde_json::to_string(&legacy).unwrap();
+    legacy_db.backend.execute("INSERT INTO mirror_import_objects (job_id,registry_id,original_digest,original_json,state,created_at,updated_at) VALUES (?1,?2,?3,?4,'admitted',1,1)", &vals![legacy.job_id,legacy.registry_id,digest(&legacy).unwrap(),canonical]).await.unwrap();
+
+    let upgraded = Database::with_backend(legacy_db.backend).await.unwrap();
+    let retained = upgraded.mirror_import_for_path(legacy.registry_id, &legacy.path).await.unwrap().unwrap();
+    assert_eq!(retained.original, legacy);
+    assert_eq!(serde_json::to_string(&retained.original).unwrap(), canonical);
+    assert!(retained.original.copy_operation_id.is_none());
+    retained.validate_index(Some(&legacy.path), Some(&legacy.source_path_digest()), None).unwrap();
 }

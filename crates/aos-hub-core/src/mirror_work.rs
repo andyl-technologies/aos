@@ -103,6 +103,10 @@ pub struct MirrorOriginal {
     pub version: u32,
     /// Deterministic SHA-256 identity of this immutable original.
     pub job_id: String,
+    /// Native business operation retained independently of leases and retries.
+    /// Absent only in canonical originals admitted before generation 6.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_operation_id: Option<String>,
     /// Registry whose Native controller selected the source.
     pub registry_id: i64,
     /// Current registry configuration version at original admission.
@@ -142,6 +146,15 @@ impl MirrorOriginal {
         digest(&original)
     }
 
+    /// Commits the complete source path without shortening its existing bound.
+    #[must_use]
+    pub fn source_path_digest(&self) -> String {
+        let mut hash = Sha256::new();
+        hash.update(b"aos.hub.mirror-source-path.v1\0");
+        hash.update(self.path.as_bytes());
+        hex::encode(hash.finalize())
+    }
+
     /// Validates a retained original independently of an invocation lease.
     ///
     /// # Errors
@@ -151,6 +164,13 @@ impl MirrorOriginal {
         ensure!(
             self.version == 1
                 && self.job_id == self.identity()?
+                && self
+                    .copy_operation_id
+                    .as_ref()
+                    .is_none_or(|id| id.len() == 32
+                        && id
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
                 && self.registry_id > 0
                 && self.registry_resource_version > 0
                 && self.mirror_resource_version > 0

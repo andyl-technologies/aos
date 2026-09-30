@@ -25,7 +25,7 @@ const PAGE_BYTES: u64 = 4096;
 
 pub(super) fn verify<M: Read, P: Read>(
     inputs: ScratchVerificationInputs<M, P>,
-    catalogues: [CompiledSqliteSnapshotCatalogue; 3],
+    catalogues: [CompiledSqliteSnapshotCatalogue; 4],
     limits: ScratchVerificationLimits,
     budget: WorkBudget,
 ) -> ScratchResult<VerifiedRetainedSqliteCapture> {
