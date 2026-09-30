@@ -15,9 +15,9 @@ impl ContentValidator for Validator {
     }
 }
 
-type Bucket = FileBucket<TokioLocalFs, TokioClock, Validator>;
+pub(super) type Bucket = FileBucket<TokioLocalFs, TokioClock, Validator>;
 
-async fn fixture() -> Bucket {
+pub(super) async fn fixture() -> Bucket {
     let entropy = TokioLocalFs.random_bytes(16).await.unwrap();
     let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
     let root = std::env::temp_dir().join(format!("terrane-bucket-{suffix}"));
@@ -369,6 +369,15 @@ async fn missing_reflog_with_committed_horizon_is_corruption() {
         .install(&key, &first.encode().unwrap(), false)
         .await
         .unwrap();
+    let cap_key = BucketKey::parse("CAPABILITIES").unwrap();
+    let mut capabilities =
+        BucketCapabilities::decode(&bucket.read_optional(&cap_key).await.unwrap().unwrap())
+            .unwrap();
+    capabilities.ref_names = Some(vec!["refs/heads/_/main".into()]);
+    bucket
+        .install(&cap_key, &capabilities.encode().unwrap(), true)
+        .await
+        .unwrap();
     drop(_guard);
     assert!(matches!(
         bucket
@@ -397,6 +406,15 @@ async fn committed_reflog_must_match_the_complete_ref_record() {
     let _guard = bucket.exclusive().await.unwrap();
     bucket
         .install(&key, &committed.encode().unwrap(), false)
+        .await
+        .unwrap();
+    let cap_key = BucketKey::parse("CAPABILITIES").unwrap();
+    let mut capabilities =
+        BucketCapabilities::decode(&bucket.read_optional(&cap_key).await.unwrap().unwrap())
+            .unwrap();
+    capabilities.ref_names = Some(vec!["refs/heads/_/main".into()]);
+    bucket
+        .install(&cap_key, &capabilities.encode().unwrap(), true)
         .await
         .unwrap();
     drop(_guard);
@@ -437,221 +455,4 @@ async fn missing_capabilities_never_reinitializes_existing_portable_state() {
         record.encode().unwrap()
     );
     tokio::fs::remove_dir_all(root).await.unwrap();
-}
-
-#[tokio::test]
-async fn abandoned_candidates_leave_the_same_sequence_available_to_a_new_writer() {
-    let bucket = fixture().await;
-    let name = "refs/heads/_/main";
-    let abandoned = RefRecord::first([7; 32], 1, Locality::default()).selected();
-    bucket
-        .ref_log_append(name, 1, &log(abandoned.clone(), None))
-        .await
-        .unwrap();
-    assert!(bucket.ref_log_read(name, 1).await.unwrap().is_empty());
-
-    let mut chosen = abandoned.clone();
-    chosen.candidate_id = Some([8; 32]);
-    chosen.writer_epoch = 2;
-    let chosen_log = log(chosen.clone(), None);
-    bucket.ref_log_append(name, 1, &chosen_log).await.unwrap();
-    assert_eq!(
-        bucket.ref_cas(name, None, &chosen).await.unwrap(),
-        RefCasOutcome::Applied
-    );
-    assert_eq!(
-        bucket.ref_log_read(name, 1).await.unwrap(),
-        vec![chosen_log.clone()]
-    );
-    assert!(bucket.ref_log_read(name, 2).await.unwrap().is_empty());
-
-    let reopened = FileBucket::open(
-        config(bucket.root().to_owned()),
-        TokioLocalFs,
-        TokioClock,
-        Validator,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        reopened.ref_log_read(name, 1).await.unwrap(),
-        vec![chosen_log]
-    );
-    assert_eq!(reopened.ref_get(name).await.unwrap(), Some(chosen.clone()));
-    // A caller that lost the successful response re-reads the authority. An
-    // obsolete expectation cannot apply the same proposal again.
-    assert_eq!(
-        reopened.ref_cas(name, None, &chosen).await.unwrap(),
-        RefCasOutcome::Conflict(Some(Box::new(chosen)))
-    );
-    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
-}
-
-#[tokio::test]
-async fn candidates_bind_the_complete_proposal_and_predecessor_before_head_cas() {
-    let bucket = fixture().await;
-    let name = "refs/jobs/_/work";
-    let first = RefRecord::first([1; 32], 1, Locality::default()).selected();
-    assert!(bucket.ref_cas(name, None, &first).await.is_err());
-    bucket.prepared_cas(name, None, &first).await.unwrap();
-
-    let mut wrong_previous = first.clone();
-    wrong_previous.policy = Some(terrane_core::refs::RefPolicy::default());
-    let next = first.advance([2; 32], 2).unwrap().selected();
-    bucket
-        .ref_log_append(name, 2, &log(next.clone(), Some(wrong_previous)))
-        .await
-        .unwrap();
-    assert!(bucket.ref_cas(name, Some(&first), &next).await.is_err());
-    assert_eq!(bucket.ref_get(name).await.unwrap(), Some(first.clone()));
-
-    let mut correct = next.clone();
-    correct.candidate_id = Some([42; 32]);
-    bucket
-        .ref_log_append(name, 2, &log(correct.clone(), Some(first.clone())))
-        .await
-        .unwrap();
-    let mut unproposed_policy = correct.clone();
-    unproposed_policy.policy = Some(terrane_core::refs::RefPolicy::default());
-    assert!(
-        bucket
-            .ref_cas(name, Some(&first), &unproposed_policy)
-            .await
-            .is_err()
-    );
-    assert_eq!(bucket.ref_get(name).await.unwrap(), Some(first.clone()));
-    assert_eq!(
-        bucket.ref_cas(name, Some(&first), &correct).await.unwrap(),
-        RefCasOutcome::Applied
-    );
-    assert_eq!(
-        bucket.ref_log_read(name, 1).await.unwrap(),
-        vec![
-            log(first.clone(), None),
-            log(correct.clone(), Some(first.clone()))
-        ]
-    );
-    let mut changed_policy = correct.clone();
-    changed_policy.policy = Some(terrane_core::refs::RefPolicy::default());
-    assert_eq!(
-        bucket
-            .ref_log_append(name, 2, &log(changed_policy, Some(first)))
-            .await
-            .unwrap(),
-        RefLogAppendOutcome::Exists
-    );
-    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
-}
-
-#[tokio::test]
-async fn independent_candidates_select_one_history_under_concurrent_cas() {
-    let bucket = fixture().await;
-    let other = FileBucket::open(
-        config(bucket.root().to_owned()),
-        TokioLocalFs,
-        TokioClock,
-        Validator,
-    )
-    .await
-    .unwrap();
-    for name in [
-        "refs/heads/_/main",
-        "refs/jobs/_/work",
-        "refs/conflicts/_/main/00000000000000000001",
-        "refs/derived/_/index",
-    ] {
-        let a = RefRecord::first([1; 32], 1, Locality::default()).selected();
-        let b = RefRecord::first([2; 32], 1, Locality::default()).selected();
-        let a_log = log(a.clone(), None);
-        let b_log = log(b.clone(), None);
-        let (one, two) = tokio::join!(
-            bucket.ref_log_append(name, 1, &a_log),
-            other.ref_log_append(name, 1, &b_log)
-        );
-        assert_eq!(one.unwrap(), RefLogAppendOutcome::Appended);
-        assert_eq!(two.unwrap(), RefLogAppendOutcome::Appended);
-        let (one, two) = tokio::join!(
-            bucket.ref_cas(name, None, &a),
-            other.ref_cas(name, None, &b)
-        );
-        assert_eq!(
-            usize::from(matches!(one.unwrap(), RefCasOutcome::Applied))
-                + usize::from(matches!(two.unwrap(), RefCasOutcome::Applied)),
-            1
-        );
-        let chosen = bucket.ref_get(name).await.unwrap().unwrap();
-        assert_eq!(
-            bucket.ref_log_read(name, 1).await.unwrap(),
-            vec![if chosen == a { a_log } else { b_log }]
-        );
-    }
-    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
-}
-
-#[tokio::test]
-async fn selected_candidates_coexist_with_legacy_numbered_files() {
-    let bucket = fixture().await;
-    let name = "refs/heads/_/legacy";
-    let first = RefRecord::first([1; 32], 1, Locality::default());
-    let mut first_log = log(first.clone(), None);
-    first_log.expected_previous = None;
-    bucket.ref_log_append(name, 1, &first_log).await.unwrap();
-    let key = BucketKey::parse(name).unwrap();
-    let guard = bucket.exclusive().await.unwrap();
-    bucket
-        .install(&key, &first.encode().unwrap(), false)
-        .await
-        .unwrap();
-    drop(guard);
-
-    // An orphaned legacy file already occupies the next sequence. The selected
-    // sibling has a different filename, and never inherits that orphan's body.
-    let orphan = first.advance([3; 32], 2).unwrap();
-    let mut orphan_log = log(orphan, Some(first.clone()));
-    orphan_log.expected_previous = None;
-    bucket.ref_log_append(name, 2, &orphan_log).await.unwrap();
-    assert_eq!(
-        bucket.ref_log_read(name, 1).await.unwrap(),
-        vec![first_log.clone()]
-    );
-    assert!(bucket.ref_log_read(name, 2).await.unwrap().is_empty());
-    let next = first.advance([2; 32], 2).unwrap().selected();
-    bucket
-        .prepared_cas(name, Some(&first), &next)
-        .await
-        .unwrap();
-    let selected_log = log(next.clone(), Some(first));
-    assert_eq!(
-        bucket.ref_log_read(name, 1).await.unwrap(),
-        vec![first_log.clone(), selected_log.clone()]
-    );
-    assert!(
-        bucket
-            .root()
-            .join(BucketKey::reflog(name, 2).unwrap().as_str())
-            .is_file()
-    );
-    assert!(
-        bucket
-            .root()
-            .join(
-                BucketKey::reflog_candidate(name, 2, &next.candidate_id.unwrap())
-                    .unwrap()
-                    .as_str()
-            )
-            .is_file()
-    );
-    let reopened = FileBucket::open(
-        config(bucket.root().to_owned()),
-        TokioLocalFs,
-        TokioClock,
-        Validator,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        reopened.ref_log_read(name, 1).await.unwrap(),
-        vec![first_log, selected_log]
-    );
-    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
 }

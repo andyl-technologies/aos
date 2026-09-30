@@ -5,7 +5,7 @@ use crate::store::{
     Clock, ContentValidator, CorruptSubject, LocalFs, RefCasOutcome, RefLogAppendOutcome, RefStore,
     RefWatch, StoreErrorKind, StoreFailure,
 };
-use terrane_core::bucket::{BucketKey, Mutability};
+use terrane_core::bucket::{BucketCapabilities, BucketKey, Mutability};
 use terrane_core::refs::{RefClass, RefLogRecord, RefName, RefRecord};
 
 fn ref_key(name: &str) -> Result<BucketKey, StoreFailure> {
@@ -40,11 +40,103 @@ fn log_key(name: &str, record: &RefRecord) -> Result<BucketKey, StoreFailure> {
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
     FileBucket<F, C, V>
 {
+    /// Returns the authoritative complete ref-name inventory.
+    ///
+    /// Names may survive a losing first write or deletion. Completeness is
+    /// never inferred from directory listing or from individually read refs.
+    ///
+    /// # Errors
+    /// Returns `Unsupported` for an unmigrated legacy inventory, corruption for
+    /// invalid capability bytes, and the configured binding's storage failures.
+    pub async fn ref_names(&self) -> Result<Vec<String>, StoreFailure> {
+        let _guard = self.exclusive().await?;
+        let key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
+        let bytes = self
+            .read_optional(&key)
+            .await?
+            .ok_or_else(files::layout_corrupt)?;
+        let capabilities =
+            BucketCapabilities::decode(&bytes).map_err(|_| files::layout_corrupt())?;
+        if capabilities.profile != self.profile() {
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+        }
+        capabilities
+            .ref_names
+            .ok_or_else(|| StoreFailure::new(StoreErrorKind::Unsupported))
+    }
+
+    // Registration precedes the head installation while retaining the same
+    // exclusion guard, so any possibly applied ref has durable inventory reachability.
+    async fn register_ref_name(
+        &self,
+        name: &str,
+        already_exists: bool,
+    ) -> Result<(), StoreFailure> {
+        let key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
+        let bytes = self
+            .read_optional(&key)
+            .await?
+            .ok_or_else(files::layout_corrupt)?;
+        let mut capabilities =
+            BucketCapabilities::decode(&bytes).map_err(|_| files::layout_corrupt())?;
+        if capabilities.profile != self.profile() {
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+        }
+        let Some(names) = capabilities.ref_names.as_mut() else {
+            return if already_exists {
+                Ok(())
+            } else {
+                Err(StoreFailure::new(StoreErrorKind::Unsupported))
+            };
+        };
+        match names.binary_search_by(|existing| existing.as_bytes().cmp(name.as_bytes())) {
+            Ok(_) => Ok(()),
+            Err(_) if already_exists => Err(files::layout_corrupt()),
+            Err(position) => {
+                names.insert(position, name.into());
+                let replacement = capabilities.encode().map_err(|_| files::layout_corrupt())?;
+                if !self
+                    .replace_conditionally(&key, Some(&bytes), &replacement)
+                    .await?
+                {
+                    return Err(StoreFailure::new(StoreErrorKind::Unavailable {
+                        retry_after: None,
+                    }));
+                }
+                Ok(())
+            }
+        }
+    }
+
     async fn read_ref(&self, key: &BucketKey) -> Result<Option<RefRecord>, StoreFailure> {
-        self.read_optional(key)
+        let record = self
+            .read_optional(key)
             .await?
             .map(|bytes| RefRecord::decode(&bytes).map_err(|_| corrupt(key.as_str())))
-            .transpose()
+            .transpose()?;
+        if record.is_some() {
+            // A visible first head is preceded by its durable registration.
+            // Read the head before capabilities so concurrent registration
+            // cannot produce a spurious missing-name report.
+            let cap_key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
+            let bytes = self
+                .read_optional(&cap_key)
+                .await?
+                .ok_or_else(files::layout_corrupt)?;
+            let capabilities =
+                BucketCapabilities::decode(&bytes).map_err(|_| files::layout_corrupt())?;
+            if capabilities.profile != self.profile() {
+                return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+            }
+            if capabilities.ref_names.as_ref().is_some_and(|names| {
+                names
+                    .binary_search_by(|name| name.as_bytes().cmp(key.as_str().as_bytes()))
+                    .is_err()
+            }) {
+                return Err(corrupt(key.as_str()));
+            }
+        }
+        Ok(record)
     }
 
     async fn read_log(
@@ -146,6 +238,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 .map_err(|_| files::malformed())?;
         }
         let bytes = new.encode().map_err(|_| files::malformed())?;
+        self.register_ref_name(name, current.is_some()).await?;
         if !self.install(&key, &bytes, current.is_some()).await? {
             return Ok(RefCasOutcome::Conflict(
                 self.read_ref(&key).await?.map(Box::new),

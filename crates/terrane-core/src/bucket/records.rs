@@ -72,20 +72,30 @@ pub struct BucketCapabilities {
     pub profile: StoreProfile,
     /// The authoritative published index generation, absent for an empty catalog.
     pub generation: Option<u64>,
+    /// Complete sorted, unique registered ref names; absence means unknown completeness.
+    /// Names remain after losing publication attempts or ref deletion.
+    pub ref_names: Option<Vec<String>>,
 }
 
 impl BucketCapabilities {
     /// Encodes the complete canonical probe record.
     ///
     /// # Errors
-    /// Returns [`RecordError::Schema`] for an unsupported layout version.
+    /// Returns [`RecordError::Schema`] for an unsupported layout version or an
+    /// unsorted, duplicate, or unregistered ref inventory.
     pub fn encode(&self) -> Result<Vec<u8>, RecordError> {
         if self.layout_version != 1 {
             return Err(RecordError::Schema);
         }
 
+        if let Some(names) = &self.ref_names {
+            validate_ref_names(names)?;
+        }
         let mut bytes = Vec::new();
-        cbor::write_map(&mut bytes, 8 + usize::from(self.generation.is_some()));
+        cbor::write_map(
+            &mut bytes,
+            8 + usize::from(self.generation.is_some()) + usize::from(self.ref_names.is_some()),
+        );
         uint_field(&mut bytes, 1, self.layout_version);
         for (key, value) in [
             (2, self.create_if_absent),
@@ -113,6 +123,13 @@ impl BucketCapabilities {
         if let Some(generation) = self.generation {
             uint_field(&mut bytes, 9, generation);
         }
+        if let Some(names) = &self.ref_names {
+            cbor::write_uint(&mut bytes, 10);
+            cbor::write_array(&mut bytes, names.len());
+            for name in names {
+                cbor::write_text(&mut bytes, name);
+            }
+        }
         Ok(bytes)
     }
 
@@ -123,8 +140,8 @@ impl BucketCapabilities {
     /// noncanonical encoding, or trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, RecordError> {
         let mut decoder = Decoder::new(bytes);
-        let fields = decoder.map(9)?;
-        if !matches!(fields, 8 | 9) {
+        let fields = decoder.map(10)?;
+        if !(8..=10).contains(&fields) {
             return Err(RecordError::Schema);
         }
         key(&mut decoder, 1)?;
@@ -161,12 +178,29 @@ impl BucketCapabilities {
         let chunk = decoder.text(decoder.remaining().len())?.to_string();
         key(&mut decoder, 4)?;
         let seed = digest(&mut decoder)?;
-        let generation = if fields == 9 {
-            key(&mut decoder, 9)?;
-            Some(decoder.uint()?)
-        } else {
-            None
-        };
+        let mut generation = None;
+        let mut ref_names = None;
+        let mut previous_key = 8;
+        for _ in 8..fields {
+            let field = decoder.uint()?;
+            if field <= previous_key {
+                return Err(RecordError::Schema);
+            }
+            previous_key = field;
+            match field {
+                9 => generation = Some(decoder.uint()?),
+                10 => {
+                    let count = decoder.array(decoder.remaining().len())?;
+                    let mut names = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        names.push(decoder.text(decoder.remaining().len())?.to_string());
+                    }
+                    validate_ref_names(&names)?;
+                    ref_names = Some(names);
+                }
+                _ => return Err(RecordError::Schema),
+            }
+        }
         decoder.finish()?;
 
         Ok(Self {
@@ -178,6 +212,7 @@ impl BucketCapabilities {
             multi_writer,
             probed_at,
             generation,
+            ref_names,
             profile: StoreProfile {
                 identity,
                 algorithm,
@@ -186,6 +221,21 @@ impl BucketCapabilities {
             },
         })
     }
+}
+
+fn validate_ref_names(names: &[String]) -> Result<(), RecordError> {
+    if names
+        .windows(2)
+        .any(|pair| pair[0].as_bytes() >= pair[1].as_bytes())
+    {
+        return Err(RecordError::Schema);
+    }
+    for name in names {
+        if !name.starts_with("refs/") || super::keys::BucketKey::parse(name).is_err() {
+            return Err(RecordError::Schema);
+        }
+    }
+    Ok(())
 }
 
 /// Identifies one shard and the optional filter belonging to it.
@@ -485,6 +535,7 @@ mod tests {
             multi_writer: true,
             probed_at: 7,
             generation: Some(8),
+            ref_names: Some(alloc::vec!["refs/heads/_/main".into()]),
             profile: StoreProfile {
                 identity: "terrane-v1".into(),
                 algorithm: "blake3".into(),
@@ -504,6 +555,52 @@ mod tests {
         let mut unknown = encoded;
         unknown[1] = 0;
         assert!(BucketCapabilities::decode(&unknown).is_err());
+    }
+
+    #[test]
+    fn capability_inventory_distinguishes_complete_empty_from_legacy_unknown() {
+        let mut record = BucketCapabilities {
+            layout_version: 1,
+            create_if_absent: true,
+            compare_and_swap: true,
+            ranges: true,
+            presign: false,
+            multi_writer: true,
+            probed_at: 1,
+            generation: None,
+            ref_names: Some(Vec::new()),
+            profile: StoreProfile {
+                identity: "terrane-v1".into(),
+                algorithm: "blake3".into(),
+                chunk: "cdc-1m".into(),
+                seed: [0; 32],
+            },
+        };
+        let complete = record.encode().unwrap();
+        assert_eq!(
+            BucketCapabilities::decode(&complete).unwrap().ref_names,
+            Some(Vec::new())
+        );
+        record.ref_names = None;
+        let unknown = record.encode().unwrap();
+        assert_ne!(complete, unknown);
+        assert_eq!(
+            BucketCapabilities::decode(&unknown).unwrap().ref_names,
+            None
+        );
+        for names in [
+            alloc::vec!["refs/heads/_/b".into(), "refs/heads/_/a".into()],
+            alloc::vec!["refs/heads/_/a".into(), "refs/heads/_/a".into()],
+            alloc::vec!["CAPABILITIES".into()],
+            alloc::vec!["refs/unknown/_/a".into()],
+        ] {
+            record.ref_names = Some(names);
+            assert!(record.encode().is_err());
+        }
+        let mut nullable = complete;
+        nullable.pop();
+        nullable.push(0xf6);
+        assert!(BucketCapabilities::decode(&nullable).is_err());
     }
 
     #[test]

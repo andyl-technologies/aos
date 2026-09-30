@@ -13,6 +13,9 @@ mod quarantine;
 mod refs;
 
 #[cfg(all(test, feature = "tokio"))]
+mod selection_tests;
+
+#[cfg(all(test, feature = "tokio"))]
 mod tests;
 
 #[cfg(all(test, feature = "tokio"))]
@@ -86,7 +89,11 @@ impl<F, C, V> Clone for FileBucket<F, C, V> {
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
     FileBucket<F, C, V>
 {
-    /// Opens and probes a bucket without trusting persisted capabilities.
+    /// Opens and probes a bucket, atomically creating its absent root.
+    ///
+    /// Only the successful root creator initializes a complete empty ref
+    /// inventory. An existing root must already carry its durable capability
+    /// record; a legacy record retains unknown inventory completeness.
     ///
     /// # Errors
     /// Refuses malformed or incompatible layout/profile records, failed probes,
@@ -123,14 +130,43 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             }),
         };
 
-        bucket
+        let freshly_created = match bucket
             .inner
             .fs
-            .create_dir_all(&bucket.inner.config.root)
+            .symlink_metadata(&bucket.inner.config.root)
             .await
-            .map_err(files::io_failure)?;
+        {
+            Ok(_) => false,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match bucket
+                    .inner
+                    .fs
+                    .create_dir_new(&bucket.inner.config.root)
+                    .await
+                {
+                    Ok(()) => {
+                        let parent = bucket
+                            .inner
+                            .config
+                            .root
+                            .parent()
+                            .ok_or_else(files::malformed)?;
+                        bucket
+                            .inner
+                            .fs
+                            .sync_directory(parent)
+                            .await
+                            .map_err(files::io_failure)?;
+                        true
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+                    Err(error) => return Err(files::io_failure(error)),
+                }
+            }
+            Err(error) => return Err(files::io_failure(error)),
+        };
         bucket.check_directory(&bucket.inner.config.root).await?;
-        bucket.probe().await?;
+        bucket.probe(freshly_created).await?;
         {
             let _guard = bucket.exclusive().await?;
             bucket.catalog().await?;
@@ -147,32 +183,22 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         }
     }
 
-    async fn probe(&self) -> Result<(), StoreFailure> {
+    async fn probe(&self, freshly_created: bool) -> Result<(), StoreFailure> {
         let key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
         let _guard = self.exclusive().await?;
         let old = self.read_optional(&key).await?;
         let mut generation = None;
+        let mut ref_names = freshly_created.then(Vec::new);
         if let Some(bytes) = &old {
             let record = BucketCapabilities::decode(bytes).map_err(|_| files::layout_corrupt())?;
             generation = record.generation;
+            ref_names = record.ref_names;
             if record.profile != self.profile() {
                 return Err(StoreFailure::new(StoreErrorKind::Unsupported));
             }
-        } else {
-            // Existing portable state without its layout/profile binding is
-            // never reinterpreted as a new empty store.
-            for prefix in ["objects", "refs", "logs", "gc", "trash"] {
-                match self
-                    .inner
-                    .fs
-                    .symlink_metadata(&self.inner.config.root.join(prefix))
-                    .await
-                {
-                    Ok(_) => return Err(files::layout_corrupt()),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(files::io_failure(error)),
-                }
-            }
+        } else if !freshly_created {
+            // An existing root is never proof of an empty authoritative prefix.
+            return Err(files::layout_corrupt());
         }
 
         let timestamp = self
@@ -191,6 +217,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             multi_writer: true,
             probed_at: timestamp,
             generation,
+            ref_names,
             profile: self.profile(),
         };
         let bytes = record.encode().map_err(|_| files::malformed())?;

@@ -39,6 +39,10 @@ impl LocalFs for FaultFs {
         TokioLocalFs.write_new(path, bytes).await
     }
 
+    async fn create_dir_new(&self, path: &Path) -> std::io::Result<()> {
+        TokioLocalFs.create_dir_new(path).await
+    }
+
     async fn create_dir_all(&self, path: &Path) -> std::io::Result<()> {
         TokioLocalFs.create_dir_all(path).await
     }
@@ -339,7 +343,10 @@ async fn failed_final_cas_sync_requires_authoritative_reread_after_possible_appl
         .fail_ref_directory_sync
         .store(true, Ordering::SeqCst);
     let failure = bucket.ref_cas(name, Some(&first), &next).await.unwrap_err();
-    assert_eq!(failure.kind(), &StoreErrorKind::Unavailable);
+    assert_eq!(
+        failure.kind(),
+        &StoreErrorKind::Unavailable { retry_after: None }
+    );
     assert_eq!(bucket.ref_get(name).await.unwrap(), Some(next.clone()));
     let reopened = FileBucket::open(
         config(bucket.root().to_owned()),
@@ -358,5 +365,39 @@ async fn failed_final_cas_sync_requires_authoritative_reread_after_possible_appl
         reopened.ref_cas(name, Some(&first), &next).await.unwrap(),
         crate::store::RefCasOutcome::Conflict(Some(Box::new(next)))
     );
+    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+}
+
+#[tokio::test]
+async fn first_ref_inventory_is_durable_before_an_indeterminate_head_install() {
+    let bucket = content_fixture(true).await;
+    let name = "refs/heads/_/main";
+    let first = RefRecord::first([1; 32], 1, Locality::default()).selected();
+    bucket
+        .ref_log_append(name, 1, &super::tests::log(first.clone(), None))
+        .await
+        .unwrap();
+    bucket
+        .inner
+        .fs
+        .fail_ref_directory_sync
+        .store(true, Ordering::SeqCst);
+    assert_eq!(
+        bucket.ref_cas(name, None, &first).await.unwrap_err().kind(),
+        &StoreErrorKind::Unavailable { retry_after: None }
+    );
+    assert_eq!(bucket.ref_names().await.unwrap(), vec![name.to_string()]);
+    assert_eq!(bucket.ref_get(name).await.unwrap(), Some(first.clone()));
+
+    let reopened = FileBucket::open(
+        config(bucket.root().to_owned()),
+        TokioLocalFs,
+        TokioClock,
+        Validator,
+    )
+    .await
+    .unwrap();
+    assert_eq!(reopened.ref_names().await.unwrap(), vec![name.to_string()]);
+    assert_eq!(reopened.ref_get(name).await.unwrap(), Some(first));
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
 }
