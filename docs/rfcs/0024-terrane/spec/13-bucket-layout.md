@@ -117,6 +117,15 @@ and their matching indexes before using an inventory entry; normal content
 reads also honor the selected generation's tombstones. Container publication
 does not make content excluded by those tombstones visible again.
 
+Optional manifest key 6 binds every active physical pack exclusion to its
+collection cycle and fencing epoch. It is a complete set sorted uniquely by
+pack id; a present empty array establishes that no exclusion is active.
+An absent legacy field does not establish that the set is empty. New catalog
+publications preserve the exact complete set, including ordinary uploads that
+readmit an identity into a fresh pack. The active binding governs whole-pack
+and detached-index inventory lookup as well as member lookup. Its restore,
+crash-recovery and deletion rules are GC-29.
+
 ### `refs/heads/`
 
 One canonical CBOR ref record per branch

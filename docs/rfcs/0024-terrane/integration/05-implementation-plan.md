@@ -263,7 +263,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `ttl`, `forever`, and ordinary reflog duration/count selection. Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,
-  GC-28; `checks.terrane.gates.gc-roots-complete`,
+  GC-28, GC-29; `checks.terrane.gates.gc-roots-complete`,
   `checks.terrane.gates.gc-mark-reachability`,
   `checks.terrane.gates.gc-grace-window`,
   `checks.terrane.gates.gc-two-phase-delete`,

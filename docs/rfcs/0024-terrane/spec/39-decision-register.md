@@ -1186,6 +1186,25 @@ is added rather than editing history.
     fold preprocessing remain unchanged where no additional evidence is
     needed. This correction precedes T1's initial encoding freeze.
 
+- **[D-73] Bind physical pack retirement to an active incarnation.**
+  - **Status:** Decided
+  - **Decision:** Register complete active `[pack-id, cycle, epoch]` bindings
+    in authoritative index manifest key 6. Publish the binding before trash;
+    restore clears it with the serving index change. Re-exclusion requires a
+    fresh cycle, tombstone and backend-derived deletion window. Final deletion
+    checks the current exact binding and durable trash evidence while fenced
+    against restore. All inventory and member paths honor the same exclusion.
+  - **Rationale:** A crash after restore can leave an old mature tombstone.
+    Reusing it during a later retirement deletes the pack before the new
+    recovery window expires. Tombstoning selected members alone also leaves
+    whole-pack/index inventory fallbacks able to serve the old physical pack.
+    An explicit current incarnation separates stale historical trash from
+    active exclusion without making GC retirement an identity quarantine.
+  - **Affects:** GC-15 to GC-17, GC-29, BKT-4, PACK-18 and index manifest CDDL.
+    Existing manifest fields and unaffected identities retain their meanings;
+    an absent legacy field means unknown exclusion completeness, never known
+    empty. This correction precedes T1's initial encoding freeze.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

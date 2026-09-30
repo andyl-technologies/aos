@@ -183,6 +183,37 @@ data.
   MUST report a tombstone hit through
   [`34-observability.md`](34-observability.md) because it indicates either a
   stale reader or a marking defect.
+- **[GC-29]** A physical pack exclusion MUST be bound to its active
+  `[pack-id, cycle, epoch]` incarnation in authoritative manifest key 6.
+  The complete binding and selected exclusion generation MUST be published
+  before the corresponding immutable tombstone. A missing tombstone after a
+  crash MUST leave the pack excluded and undeletable. Restoring a pack MUST
+  clear its active binding in the same generation that restores its index
+  entries, while preserving any fresh live placement and identity quarantine.
+  Only otherwise-unserved eligible members are restored; any leftover old
+  tombstone then becomes stale. An incarnation
+  MUST NOT be reused for that pack. A later exclusion MUST use a fresh cycle
+  and tombstone with a fresh deletion window, even when old trash remains.
+  Recovering an exclusion whose tombstone is missing MUST repeat exact mark
+  and age qualification in a fresh fenced cycle before replacing its binding
+  and creating fresh trash. It MUST NOT backfill the old incarnation or time.
+
+  The deletion window MUST start no earlier than the tombstone's durable
+  creation time obtained from its backend. When stored timestamps use whole
+  seconds, rounding MUST be upward. Deletion MUST verify the exact active
+  binding, tombstone bytes, backend version and creation time under the same
+  backend exclusion that prevents concurrent restore or republication. A stale
+  candidate MUST be skipped without marking that pack's deletion progress
+  complete. Missing or unknown incarnation evidence MUST NOT authorize
+  deletion. All content-facing member, whole-pack and detached-index read,
+  existence, listing and import paths MUST honor the active physical exclusion;
+  a fresh upload MUST NOT resurrect an old placement. Collector-only fenced
+  metadata observation of a retired pack's index remains permitted for
+  qualification and restore, without exposing it through `ContentStore`.
+  Unknown legacy exclusion completeness
+  MUST fail destructive collection as `unsupported` and MUST NOT permit an
+  inventory fallback to bypass a known retired placement. *Gate:*
+  `gate:gc-two-phase-delete`.
 
 ## Compaction
 

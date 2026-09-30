@@ -361,11 +361,16 @@ IndexGenerationManifest = {
   3 => timestamp,                       ; written at
   4 => cycle,                           ; collection cycle that produced it
   ? 5 => [ * pack-inventory-entry ],    ; authoritative published containers
+  ? 6 => [ * pack-exclusion ],          ; complete active physical exclusions
 }
 shard-entry = [ shard: uint, idx-hash: digest32, idx-size: uint,
                 ? (flt-hash: digest32, flt-size: uint) ]
 pack-inventory-entry = [ pack-id: bstr .size 16, pack-hash: digest32,
                          pack-size: uint, idx-hash: digest32, idx-size: uint ]
+pack-exclusion = [ pack-id, cycle, epoch ]
+; Exclusions sort uniquely by pack id. The cycle/epoch pair identifies the
+; current trash incarnation for that physical pack. New publications preserve
+; the complete set; [] means known empty, absence means legacy unknown.
 
 ; ---------------------------------------------------------------------------
 ; Store records (13-bucket-layout.md, 17-garbage-collection.md)
