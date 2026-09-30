@@ -358,6 +358,13 @@ in {
           '';
         }
         {
+          name = "sshd-pam-keyinit-rule";
+          description = "sshd PAM session stack starts a per-session kernel keyring";
+          script = ''
+            assert "pam_keyinit.so force revoke" in vm.succeed("cat /etc/pam.d/sshd")
+          '';
+        }
+        {
           name = "sshd-pam-limits-rule";
           description = "sshd PAM session stack invokes pam_limits";
           script = ''

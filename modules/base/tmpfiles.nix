@@ -40,11 +40,12 @@
     # provision.conf tries to create /root/.ssh from credentials. AOS keeps
     # / read-only and routes SSH authorization through /etc/ssh/authorized_keys,
     # so mask those snippets by basename in the higher-priority /etc directory.
-    # /srv exists as an empty mount point baked into the image and is bound to
-    # /var/srv by modules/services/storage-topology.nix; /home is not created.
+    # /srv and /home are empty mount points baked into the image: /srv is bound
+    # to /var/srv by modules/services/storage-topology.nix and /home to the
+    # state volume by modules/base/homes.nix when persistent homes are enabled.
     environment.etc."tmpfiles.d/home.conf" = {
       text = ''
-        # Masked by modules/base/tmpfiles.nix; /home is not created on AOS and /srv is an image mount point.
+        # Masked by modules/base/tmpfiles.nix; /home and /srv are image mount points bound from /var.
       '';
     };
     environment.etc."tmpfiles.d/provision.conf" = {

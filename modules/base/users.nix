@@ -4,6 +4,10 @@
 ##! and /etc/shadow entries. On an immutable system these are baked into
 ##! the image; on-host configuration can layer additional users.
 ##!
+##! Home directories are owned by modules/base/homes.nix: interactive
+##! accounts default to a home under `aos.homes.directory` when persistent
+##! homes are enabled, and `createHome` marks the homes that module creates.
+##!
 ##! Absorbed TOML config values:
 ##!   [users.*] uid, group, home, shell, description, extra_groups
 ##!   [groups.*] gid, members
@@ -14,6 +18,11 @@
   ...
 }: let
   cfg = config.aos.users;
+  homes = config.aos.homes;
+
+  # Interactive accounts start at UID 1000; system accounts below that keep
+  # the placeholder home unless a module sets one explicitly.
+  interactiveUidStart = 1000;
 
   # Generate a passwd(5) line for a user.
   mkPasswdLine = name: u: "${name}:x:${toString u.uid}:${
@@ -60,7 +69,11 @@ in {
     ## - `aos.users.groups`
     users = lib.mkOption {
       type = lib.types.attrsOf (
-        lib.types.submodule {
+        lib.types.submodule ({
+          name,
+          config,
+          ...
+        }: {
           options = {
             ## User ID (UID). System users should use UIDs below 1000.
             uid = lib.mkOption {
@@ -74,10 +87,30 @@ in {
               description = "Primary group name for this user.";
             };
             ## Home directory path.
+            ##
+            ## Interactive accounts (UID 1000 and above) default to a
+            ## directory under `aos.homes.directory` once `aos.homes.enable`
+            ## is set; every other account defaults to the placeholder "/".
             home = lib.mkOption {
               type = lib.types.str;
-              default = "/";
+              default =
+                if homes.enable && config.uid >= interactiveUidStart
+                then "${homes.directory}/${name}"
+                else "/";
+              defaultText = lib.literalExpression ''"''${aos.homes.directory}/<name>" for interactive accounts when aos.homes.enable is set, otherwise "/"'';
               description = "Home directory path.";
+            };
+            ## Whether the home directory is created and owned by this account.
+            ##
+            ## Defaults to true exactly when the home lies under
+            ## `aos.homes.directory`, so homes on the state volume are
+            ## created at boot and on activation (modules/base/homes.nix)
+            ## while service accounts manage their own state directories.
+            createHome = lib.mkOption {
+              type = lib.types.bool;
+              default = homes.enable && lib.hasPrefix "${homes.directory}/" config.home;
+              defaultText = lib.literalExpression "aos.homes.enable && lib.hasPrefix aos.homes.directory home";
+              description = "Create the home directory on the persistent state volume with this account's ownership.";
             };
             ## Login shell. Use /sbin/nologin for system accounts.
             shell = lib.mkOption {
@@ -98,7 +131,7 @@ in {
               description = "Additional groups this user belongs to.";
             };
           };
-        }
+        })
       );
       default = {};
       description = "System user accounts.";
