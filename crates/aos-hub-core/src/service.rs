@@ -26311,6 +26311,10 @@ impl RpcService {
                 )
                 .await
                 .map_err(RpcError::internal)?;
+            self.db
+                .refresh_registry_publication_delivery_manifests(&req.publication_id)
+                .await
+                .map_err(RpcError::internal)?;
             self.refresh_registry_index_after_publication(&registry, &req.publication_id)
                 .await;
             return self
@@ -26457,6 +26461,10 @@ impl RpcService {
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        self.db
+            .refresh_registry_publication_delivery_manifests(&req.publication_id)
+            .await
+            .map_err(RpcError::internal)?;
         self.lease.release(registry.id, &req.publication_id).await;
         self.refresh_registry_index_after_publication(&registry, &req.publication_id)
             .await;
