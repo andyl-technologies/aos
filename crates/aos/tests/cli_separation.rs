@@ -72,12 +72,9 @@ fn commands_do_not_cross_public_cli_boundaries() -> Result<()> {
             .success()
     );
     assert!(
-        !run(
-            env!("CARGO_BIN_EXE_apm"),
-            &["apply-deployment", "--help"]
-        )?
-        .status
-        .success()
+        !run(env!("CARGO_BIN_EXE_apm"), &["apply-deployment", "--help"])?
+            .status
+            .success()
     );
     assert!(
         !run(
@@ -155,5 +152,41 @@ fn native_deployment_dispatch_stays_private_and_rejects_retired_stage_commands()
         }
     }
 
+    Ok(())
+}
+
+#[test]
+fn image_preparation_is_public_and_rejects_container_before_state_access() -> Result<()> {
+    let help = require_success(
+        run(env!("CARGO_BIN_EXE_apm"), &["image", "prepare", "--help"])?,
+        "apm image prepare help",
+    )?;
+    assert!(help.contains("--qualified"));
+    assert!(
+        !run(env!("CARGO_BIN_EXE_aos"), &["image", "prepare", "--help"])?
+            .status
+            .success()
+    );
+    assert!(
+        !run(
+            env!("CARGO_BIN_EXE_aos-package-runtime"),
+            &["image", "prepare", "--help"]
+        )?
+        .status
+        .success()
+    );
+
+    let home = tempdir()?;
+    let output = Command::new(env!("CARGO_BIN_EXE_apm"))
+        .args(["image", "prepare", "server", "--dry-run", "--yes"])
+        .env_clear()
+        .env("HOME", home.path())
+        .env("AOS_RUNTIME", "container")
+        .output()?;
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("AOS containers support only user-scope")
+    );
+    assert_eq!(std::fs::read_dir(home.path())?.count(), 0);
     Ok(())
 }

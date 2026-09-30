@@ -1,4 +1,4 @@
-//! Native reference, desired transaction, and retained-output inspection commands.
+//! Native source replay, reference, and retained-output inspection commands.
 
 use clap::{Args, Subcommand, ValueEnum};
 use std::net::SocketAddr;
@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 #[derive(Subcommand)]
 pub enum AbilityCommand {
+    /// Replay immutable evaluation inputs into a desired transaction without activation
+    Evaluate(AbilityEvaluateArgs),
     /// Validate and render native module declarations or a desired transaction
     Inspect(AbilityInspectArgs),
     /// Inspect a checked native activation journal without mutation
@@ -20,6 +22,18 @@ pub enum AbilityCommand {
     Compare(AbilityCompareArgs),
     /// Preview effects depending on an exact desired effect identity
     RemovalPreview(AbilityRemovalPreviewArgs),
+}
+
+#[derive(Args)]
+pub struct AbilityEvaluateArgs {
+    /// Read this immutable native evaluation input descriptor
+    pub input: PathBuf,
+    /// Select the absolute source-built nix-store executable (or set AOS_NIX_STORE)
+    #[arg(long)]
+    pub nix_store: Option<PathBuf>,
+    /// Bound pure evaluation time in milliseconds
+    #[arg(long, default_value_t = 60_000, value_parser = clap::value_parser!(u64).range(1..))]
+    pub timeout_ms: u64,
 }
 
 #[derive(Args)]
@@ -147,4 +161,82 @@ pub enum AbilityDiagnosticAudience {
     Redacted,
     /// Include native desired inputs and retained operation results
     Deployment,
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::AbilityCommand;
+    use crate::cli::{Cli, Commands};
+
+    #[test]
+    fn evaluate_defaults_to_bounded_source_replay() {
+        let parsed =
+            Cli::try_parse_from(["aos", "ability", "evaluate", "evaluation-input.json"]).unwrap();
+        let Commands::Ability {
+            command: AbilityCommand::Evaluate(arguments),
+        } = parsed.command
+        else {
+            panic!("expected native source replay");
+        };
+
+        assert_eq!(
+            arguments.input,
+            std::path::Path::new("evaluation-input.json")
+        );
+        assert_eq!(arguments.timeout_ms, 60_000);
+        assert!(arguments.nix_store.is_none());
+    }
+
+    #[test]
+    fn evaluate_accepts_explicit_store_tool_and_timeout() {
+        let parsed = Cli::try_parse_from([
+            "aos",
+            "ability",
+            "evaluate",
+            "evaluation-input.json",
+            "--timeout-ms",
+            "1234",
+            "--nix-store",
+            "/nix/store/tool/bin/nix-store",
+        ])
+        .unwrap();
+        let Commands::Ability {
+            command: AbilityCommand::Evaluate(arguments),
+        } = parsed.command
+        else {
+            panic!("expected native source replay");
+        };
+
+        assert_eq!(arguments.timeout_ms, 1234);
+        assert_eq!(
+            arguments.nix_store.as_deref(),
+            Some(std::path::Path::new("/nix/store/tool/bin/nix-store"))
+        );
+    }
+
+    #[test]
+    fn evaluate_rejects_zero_timeout_and_activation_flags() {
+        for arguments in [
+            [
+                "aos",
+                "ability",
+                "evaluate",
+                "evaluation-input.json",
+                "--timeout-ms",
+                "0",
+            ],
+            [
+                "aos",
+                "ability",
+                "evaluate",
+                "evaluation-input.json",
+                "--profile",
+                "/var/lib/profiles/system",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(arguments).is_err());
+        }
+    }
 }

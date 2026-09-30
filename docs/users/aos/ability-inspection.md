@@ -1,8 +1,9 @@
 # Inspect runtime abilities and retained execution
 
 `aos ability` reads native module documentation, desired transactions, and
-retained execution records. It validates the input before rendering it and does
-not evaluate Nix or invoke handlers. See [Runtime abilities](runtime-abilities.md)
+retained execution records. Its `evaluate` command also replays immutable Nix
+sources into a desired transaction. These commands do not invoke handlers or
+activate a deployment. See [Runtime abilities](runtime-abilities.md)
 for the Nix interfaces and the build, packaging, and activation flow.
 
 Use the development shell or the separately built `aos` binary:
@@ -11,6 +12,33 @@ Use the development shell or the separately built `aos` binary:
 nix develop
 aos ability --help
 ```
+
+## Replay immutable evaluation inputs
+
+Replay an `aos.package.evaluation-input` descriptor into canonical native
+transaction JSON:
+
+```sh
+aos ability evaluate "$EVALUATION_INPUT" --timeout-ms 60000 > transaction.json
+```
+
+The descriptor and its retained library, package modules, and configuration
+sources must be immutable store inputs. The evaluator verifies the descriptor
+and library NAR integrity, protects the retained inputs during pure evaluation,
+and validates the resulting transaction. It builds no packages and writes no
+activation journal. SIGINT or SIGTERM cancels the replay.
+Temporary retention ends when replay returns; callers must retain and recheck
+their source artifacts before a later activation.
+
+Set `AOS_NIX_STORE` to the absolute source-built `nix-store` executable, or pass
+`--nix-store "$NIX_STORE_EXECUTABLE"` explicitly when using a directly built CLI.
+The default timeout is 60,000 milliseconds. Stdout contains only the canonical
+transaction JSON, including when global output flags are supplied.
+
+Integrity checks and successful replay do not authenticate a descriptor's
+publisher or authorize activation. The caller must authenticate the descriptor
+and its admission proofs independently. The returned graph describes desired
+effects; it provides no evidence that those effects ran.
 
 ## Browse declarations and desired effects
 
