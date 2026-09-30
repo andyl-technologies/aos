@@ -610,6 +610,47 @@
         "aos-provisioning-eval.service"
         system.config.boot.initrd.systemd.services.aos-repart.after)
     then throw "aos-repart.service must run after restricted provisioning evaluation"
+    else if !(builtins.hasAttr "aos-storage-topology" system.config.boot.initrd.systemd.services)
+    then throw "the stock system must emit aos-storage-topology.service"
+    else if
+      !(builtins.elem
+        "aos-repart.service"
+        system.config.boot.initrd.systemd.services."aos-storage-topology".requires)
+    then throw "array assembly must require the partition layer"
+    else if
+      !(builtins.elem
+        "aos-storage-topology.service"
+        system.config.boot.initrd.systemd.services."mount-var".requires)
+    then throw "the persistent /var mount must require array assembly"
+    else if
+      containsStr
+      "sfdisk --part-label"
+      system.config.boot.initrd.systemd.services.aos-repart.script
+    then throw "the provenance marker must commit after arrays and filesystems exist, not in aos-repart"
+    else if
+      !(containsStr
+        "aos-provenance-operator-v1"
+        system.config.boot.initrd.systemd.services."aos-storage-topology".script)
+    then throw "aos-storage-topology.service must commit the provenance marker"
+    else if
+      !(builtins.elem
+        "systemd-veritysetup@root.service"
+        system.config.boot.initrd.systemd.services."aos-storage-topology".before)
+    then throw "the marker relabel rescans the partition table, so dm-verity must open root-a only after aos-storage-topology"
+    else if
+      !(containsStr
+        "refusing to overwrite"
+        system.config.boot.initrd.systemd.services."aos-storage-topology".script)
+    then throw "array creation must refuse members that already carry a signature"
+    else if
+      !(builtins.any
+        (mount: mount.where == "/srv" && mount.what == "/var/srv")
+        system.config.systemd.mounts)
+    then throw "every host must bind the persistent /var/srv over the image's /srv mount point"
+    else if !(builtins.elem "raid1" system.config.aos.boot.initrd.modules)
+    then throw "the initrd must carry the MD RAID personalities"
+    else if !(builtins.elem "xfs" system.config.aos.boot.initrd.modules)
+    then throw "the initrd must carry xfs so a declared xfs volume can be created before switch-root"
     else "ok";
 
   # The edge release artifact is an authenticated capability

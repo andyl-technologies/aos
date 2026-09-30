@@ -12,6 +12,11 @@ promise.
 | Raw, QCOW2, VMDK, dynamic VHD output | Implemented |
 | Build-time system modules | Implemented |
 | Runtime `host.nix` storage provisioning | Implemented, first boot only |
+| ext4 state on repart partitions | Stable; the default for every image (see [filesystem tiers](#filesystem-support-tiers)) |
+| xfs data volumes | Supported on partitions and arrays, plain or TPM-sealed; `/var` remains ext4 |
+| MD RAID arrays for `/var` and data volumes | Implemented; raid1 fleet-tested, raid0/10/5/6 validated and assembled by the same path |
+| TPM-sealed LUKS2 data volumes | Implemented on measured-boot images; fleet-tested on an MD mirror |
+| Recovery maintenance of a mirrored `/var` | Not implemented; the recovery console supports only the root-disk `var` partition |
 | Other runtime `host.nix` settings | Early-preview configuration generations implemented |
 | Platform-trusted metadata | Implemented for documented transports |
 | Native AWS, GCP, Azure, DigitalOcean, OpenStack metadata | Implemented |
@@ -32,11 +37,37 @@ promise.
 | Package supply-chain and runtime attestation | Fleet-test implementation for exposed system packages |
 | SELinux module | Present, not enabled by presets |
 | Audit, firewall, kernel hardening | Implemented in server baseline |
-| Encrypted ZFS bare-metal storage | Early-preview installer and boot path implemented |
-| [ZFS memory bounding and dataset policy](storage-zfs.md) | Implemented; budget, geometry gates, and boot-time verification |
+| Encrypted ZFS bare-metal storage | Supported when configured, at the lowest stability tier (see [filesystem tiers](#filesystem-support-tiers)) |
+| [ZFS memory bounding and dataset policy](storage-zfs.md) | Implemented; does not bound every OpenZFS structure |
 | ZFS pool lifecycle (event daemon, scrub, trim, health, metrics) | Implemented |
 | ZFS pool creation outside the installer | Not implemented; the installer is the only path that creates a pool |
 | NVIDIA GPU support | Open kernel modules and matching GSP firmware implemented |
 | In-band IPMI | Kernel interfaces and `ipmitool` module implemented |
 | Hardware watchdog and SMART monitoring | Opt-in |
 | Remote log shipping | No complete module |
+
+## Filesystem support tiers
+
+AOS ranks persistent-state filesystems by maturity. Each tier is opt-in from
+`host.nix` (or, for ZFS, from the image definition); nothing below the first
+tier is selected by default.
+
+| Tier | Filesystem | What it means |
+| --- | --- | --- |
+| Stable, default | ext4 | The only filesystem for `/var` and the default for data volumes. On the boot, sealing, growth, and recovery paths; qualified by every fleet test. |
+| Supported | xfs | Data volumes on partitions or MD arrays, plain or TPM-sealed, with tool defaults. Exercised by the provisioning fleet test. In-tree kernel code. |
+| Supported with caveats | ZFS | The `aos.profiles.bareMetalZfs` installer and dataset modules. OpenZFS is an out-of-tree module; qualify it on the exact host and kernel before relying on it, and expect its stability tier to stay below the in-tree filesystems. |
+
+The ZFS caveat is not theoretical. On large hosts, the OpenZFS Linux
+integration has shown failure classes that AOS cannot bound from
+configuration: kernel memory retained far above the configured ARC ceiling
+under metadata pressure, multi-minute write stalls with idle disk queues while
+time is spent inside ZFS code paths, and kernel panics in the write and
+encryption paths. Public reports of the same classes include
+[openzfs/zfs#18893](https://github.com/openzfs/zfs/issues/18893) and
+[openzfs/zfs#17516](https://github.com/openzfs/zfs/issues/17516). AOS keeps
+the ZFS modules and installer maintained and tested, but the release
+qualification bar is the ext4 and xfs paths.
+
+For redundant or encrypted state without ZFS, declare MD arrays and TPM-sealed
+volumes through [`host.nix`](host-nix.md#mirror-the-system-state).

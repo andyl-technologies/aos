@@ -100,6 +100,22 @@
         }
       ];
     };
+  # Blank GPT fixtures for the sealed data mirror's two members. The
+  # provisioning transaction seeds repart from each target's GPT UUID, so the
+  # disks carry a primary table with distinct GUIDs before first boot.
+  mkEmptyDiskGpt = name: diskGuid:
+    pkgs.runCommand "aos-measured-boot-empty-${name}-gpt" {
+      buildDeps = [pkgs.gptfdisk];
+    } ''
+        work_disk="$TMPDIR/empty-disk.img"
+        truncate -s 1024M "$work_disk"
+        ${pkgs.gptfdisk}/sbin/sgdisk --clear \
+          --disk-guid=${diskGuid} \
+          "$work_disk"
+      dd if="$work_disk" of="$out/disk.gpt" bs=512 count=34 status=none
+    '';
+  sealedMemberAGpt = mkEmptyDiskGpt "sealed-a" "22222222-3333-4444-8555-666666666661";
+  sealedMemberBGpt = mkEmptyDiskGpt "sealed-b" "22222222-3333-4444-8555-666666666662";
   recoveryMedia = effectiveSystem: let
     recoveryBundle = effectiveSystem.config.system.build.recoveryBundle;
   in
@@ -170,6 +186,20 @@ in {
           # boot corrupt its manifest and prove signature rejection.
           readOnly = false;
         }
+        # Two members of a TPM-sealed data mirror declared from host.nix. The
+        # array is created in the first-boot transaction, stays raw through
+        # Setup Mode, and is LUKS2-sealed by the same enforcing boot that
+        # seals /var.
+        {
+          serial = "aos-sealed-a";
+          sizeMiB = 1024;
+          source = "${sealedMemberAGpt}/disk.gpt";
+        }
+        {
+          serial = "aos-sealed-b";
+          sizeMiB = 1024;
+          source = "${sealedMemberBGpt}/disk.gpt";
+        }
       ];
       # Keep the control-plane unit in every evaluated /etc generation. The
       # package payload is image-bundled test infrastructure, not a runtime
@@ -178,6 +208,26 @@ in {
       metadata."host.nix" = ''
         { config, pkgs, ... }: {
           aos.apm.desiredPackages = [ "test-http-server" ];
+          aos.provisioning.storage = {
+            partitions = {
+              sealed-a = {
+                device = "/dev/disk/by-id/virtio-aos-sealed-a";
+                sizeMin = "512M";
+                sizeMax = "512M";
+              };
+              sealed-b = {
+                device = "/dev/disk/by-id/virtio-aos-sealed-b";
+                sizeMin = "512M";
+                sizeMax = "512M";
+              };
+            };
+            arrays.sealed = {
+              level = "raid1";
+              members = [ "sealed-a" "sealed-b" ];
+              encryption = "tpm2";
+            };
+          };
+          aos.filesystems.volumes.sealed.mountPoint = "/srv/sealed";
           systemd.services.aos-test-agent = {
             description = "AOS VM Test Guest Agent";
             wantedBy = [ "multi-user.target" ];
@@ -955,6 +1005,13 @@ in {
       target.succeed(
           "test -e /dev/disk/by-partlabel/aos-provenance-operator-v1"
       )
+      # The sealed data mirror exists from the first-boot transaction but
+      # carries nothing yet: sealing waits for enforcing Secure Boot, and the
+      # wanted-only mount unit leaves the boot healthy without it.
+      target.succeed("test -e /dev/md/sealed")
+      target.fail(f"{CS} isLuks /dev/md/sealed")
+      assert mount_source("/srv/sealed") == "", "sealed volume mounted before it was sealed"
+      target.succeed("test ! -e /dev/mapper/sealed")
       target.succeed("test -s /var/lib/aos-provisioning/audit.json")
       measurement_unit = "aos-image-measurement-index.service"
       try:
@@ -1176,6 +1233,27 @@ in {
       sealed_luks_digest = hashlib.sha256(dump.encode()).hexdigest()
       src = var_source()
       assert src == "/dev/mapper/var", f"/var not on the LUKS mapper: {src!r}"
+
+      # The same enforcing boot sealed the data mirror: LUKS2 on the array,
+      # tagged so a plan-less boot can still recognise it, its own recovery
+      # key off the volume, and the filesystem mounted by label.
+      target.succeed(f"{CS} isLuks /dev/md/sealed")
+      sealed_export = target.succeed(
+          f"${pkgs.util-linux}/sbin/blkid -c /dev/null -p -o export /dev/md/sealed"
+      )
+      assert "LABEL=sealed" in sealed_export, sealed_export
+      assert "SUBSYSTEM=aos-volume" in sealed_export, sealed_export
+      sealed_metadata = json.loads(target.succeed(
+          f"{CS} luksDump --dump-json-metadata /dev/md/sealed"
+      ))
+      assert [
+          token["type"] for token in sealed_metadata["tokens"].values()
+      ].count("systemd-tpm2") == 1, sealed_metadata["tokens"]
+      target.succeed("test -s /run/aos-volume-recovery/sealed.key")
+      assert mount_source("/srv/sealed") == "/dev/mapper/sealed", (
+          "sealed data volume not mounted from its mapper"
+      )
+      target.succeed("echo sealed-probe > /srv/sealed/probe && sync")
       seal_log = target.succeed(
           "journalctl -b -k --no-pager 2>&1"
       )
@@ -1238,6 +1316,14 @@ in {
       assert_verified_root()
       assert_tamper_rejected(root_hash, root_data, root_hash_device)
       print("=== /var unsealed UNATTENDED via TPM2 across reboot ===")
+
+      # The data mirror unlocked unattended in the same pass and kept its
+      # contents.
+      assert mount_source("/srv/sealed") == "/dev/mapper/sealed", (
+          "sealed data volume did not unlock via TPM2 on reboot"
+      )
+      target.succeed("test \"$(cat /srv/sealed/probe)\" = sealed-probe")
+      assert "unlocking sealed from /dev/md/sealed via TPM2" in unlock_log, unlock_log
 
       # ════ 5. A/B and counted-candidate PCR-12 qualification ════════
       # Populate the initially empty B data/hash partitions from the verified
