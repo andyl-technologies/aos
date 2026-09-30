@@ -10,16 +10,26 @@ use terrane_core::bucket::{
 };
 use terrane_core::identity::{Identity, IdentityKind, TERRANE_V1};
 
+/// Holds one verified selection and its complete conditional-write preimage.
 pub(super) struct Catalog {
+    /// The persisted profile, capabilities, and selected generation.
     pub capabilities: BucketCapabilities,
+    /// The opaque complete bytes expected when advancing the generation pointer.
     pub capability_bytes: Vec<u8>,
+    /// The exact immutable shards selected by the generation manifest.
     pub shards: Vec<MergedShard>,
+    /// The separately admitted whole-pack and detached-index containers.
     pub inventory: Option<Vec<PackInventoryEntry>>,
 }
 
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
     FileBucket<F, C, V>
 {
+    /// Verifies the explicitly selected manifest and all its listed artifacts.
+    ///
+    /// # Errors
+    /// Rejects broken layout, profile, generation, or artifact bindings and
+    /// propagates unavailable I/O. Listing never discovers a generation.
     pub(super) async fn catalog(&self) -> Result<Catalog, StoreFailure> {
         let key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
         let capability_bytes = self
@@ -108,6 +118,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(bytes)
     }
 
+    /// Installs an immutable artifact or verifies identical existing bytes.
+    ///
+    /// # Errors
+    /// Rejects non-immutable keys and differing existing bytes, and propagates
+    /// durable filesystem failures.
     pub(super) async fn immutable(
         &self,
         key: &BucketKey,
@@ -128,6 +143,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(())
     }
 
+    /// Chooses a newer generation by skipping directly observed partial writes.
+    ///
+    /// # Errors
+    /// Returns corruption on counter exhaustion and propagates failed exact
+    /// key reads. Callers retain exclusion through subsequent publication.
     pub(super) async fn next_generation(&self, catalog: &Catalog) -> Result<u64, StoreFailure> {
         let mut generation = catalog
             .capabilities
@@ -151,6 +171,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         }
     }
 
+    /// Adds admitted bodies while retaining all prior exact placements and tombstones.
+    ///
+    /// # Errors
+    /// Rejects inconsistent pack, shard, or inventory records and propagates
+    /// publication failures. The caller retains stable exclusion throughout.
     pub(super) async fn publish_pack_catalog(
         &self,
         mut catalog: Catalog,
@@ -198,6 +223,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         self.publish_shards(catalog, generation, &shards).await
     }
 
+    /// Adds a uniquely named container without replacing a different binding.
+    ///
+    /// # Errors
+    /// Returns corruption when an existing pack ID has different artifact metadata.
     pub(super) fn add_inventory(
         &self,
         catalog: &mut Catalog,
@@ -214,6 +243,12 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         }
     }
 
+    /// Publishes verified shards, then the final manifest, then the selected pointer.
+    ///
+    /// # Errors
+    /// Rejects broken bindings or a changed complete pointer preimage, and
+    /// propagates durable I/O failures. Callers hold exclusion through the final
+    /// directory sync; an I/O error after replacement can have visible effects.
     pub(super) async fn publish_shards(
         &self,
         mut catalog: Catalog,

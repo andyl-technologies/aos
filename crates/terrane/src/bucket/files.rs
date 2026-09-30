@@ -32,6 +32,10 @@ pub(super) fn layout_corrupt() -> StoreFailure {
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
     FileBucket<F, C, V>
 {
+    /// Requires an existing real directory rather than a symlink or other node.
+    ///
+    /// # Errors
+    /// Returns corruption for an incompatible node and propagates metadata failures.
     pub(super) async fn check_directory(&self, path: &Path) -> Result<(), StoreFailure> {
         let metadata = self
             .inner
@@ -74,6 +78,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(path)
     }
 
+    /// Acquires the stable exclusion inode shared by all bucket mutations.
+    ///
+    /// # Errors
+    /// Rejects unsafe coordination paths and propagates unavailable lock or
+    /// synchronization primitives. The inode is never unlinked or replaced.
     pub(super) async fn exclusive(&self) -> Result<F::Lock, StoreFailure> {
         let locks = self.inner.config.root.join(".terrane-locks");
         self.inner
@@ -111,6 +120,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(guard)
     }
 
+    /// Reads a registered regular file while rejecting symlinked layout nodes.
+    ///
+    /// # Errors
+    /// Returns corruption for incompatible nodes and propagates read failures;
+    /// a missing registered key returns `None`.
     pub(super) async fn read_optional(
         &self,
         key: &BucketKey,
@@ -140,6 +154,12 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         }
     }
 
+    /// Syncs a private sibling and atomically installs it before syncing the directory.
+    ///
+    /// # Errors
+    /// Rejects replacement of non-CAS keys and unsupported entropy bindings, and
+    /// propagates filesystem failures. A failure after rename can leave the new
+    /// bytes visible, so callers must not infer a rejected conditional outcome.
     pub(super) async fn install(
         &self,
         key: &BucketKey,
@@ -204,6 +224,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     // The caller owns the exclusion guard across this comparison and the
     // installation's directory sync. Conditions compare bytes, never hashes
     // or interpretations of provider version tokens.
+    /// Compares complete opaque bytes and installs a conditional replacement.
+    ///
+    /// # Errors
+    /// Propagates invalid layout and filesystem failures. Callers hold stable
+    /// exclusion across this method and its final directory synchronization.
     pub(super) async fn replace_conditionally(
         &self,
         key: &BucketKey,

@@ -9,6 +9,10 @@ use terrane_core::identity::{Identity, TERRANE_V1};
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
     FileBucket<F, C, V>
 {
+    /// Tests an exact identity's tombstone independently of container inventory.
+    ///
+    /// # Errors
+    /// Rejects identities outside the configured initial identity profile.
     pub(super) fn is_excluded(
         &self,
         catalog: &Catalog,

@@ -158,6 +158,12 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok((encoded, entry.plaintext_len() as usize))
     }
 
+    /// Verifies an entire live identity before exposing any encoded bytes.
+    ///
+    /// # Errors
+    /// Returns typed absence for excluded or unpublished identities, corruption
+    /// for invalid persisted bytes, and binding failures when verification cannot
+    /// complete. Dictionary chains must be acyclic and independently verified.
     pub(super) async fn verified_body(
         &self,
         catalog: &Catalog,
@@ -242,6 +248,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(encoded)
     }
 
+    /// Resolves a verified dictionary chain without recursive decoder calls.
+    ///
+    /// # Errors
+    /// Rejects missing, cyclic, corrupt, or inadmissible dictionary dependencies.
     pub(super) async fn dictionary_plaintext(
         &self,
         catalog: &Catalog,

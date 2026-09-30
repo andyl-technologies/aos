@@ -14,6 +14,10 @@ use terrane_core::bucket::PackInventoryEntry;
 use terrane_core::codec::{Codec, parse_envelope};
 use terrane_core::identity::{Identity, IdentityKind, TERRANE_V1};
 
+/// Computes the immutable identity and size bindings of a sealed container pair.
+///
+/// # Errors
+/// Rejects artifacts outside the initial registered identity profile.
 pub(super) fn inventory_entry(
     id: PackId,
     pack: &[u8],
@@ -41,6 +45,11 @@ pub(super) fn inventory_entry(
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
     FileBucket<F, C, V>
 {
+    /// Verifies both retained artifacts against their authoritative inventory row.
+    ///
+    /// # Errors
+    /// Returns corruption for missing or mismatched bytes, pack IDs, or detached
+    /// indexes, and propagates failed filesystem reads.
     pub(super) async fn verified_container(
         &self,
         entry: &PackInventoryEntry,
@@ -79,6 +88,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok((pack, index))
     }
 
+    /// Resolves a named container only from the selected inventory.
+    ///
+    /// # Errors
+    /// Rejects incompatible profiles and propagates artifact verification or I/O
+    /// failures. Callers check exact tombstones before using the returned bytes.
     pub(super) async fn container(
         &self,
         catalog: &Catalog,
