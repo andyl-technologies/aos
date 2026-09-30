@@ -147,7 +147,10 @@ in
                 fuse3 = null;
                 gcc-libs = null;
                 bash = null;
-                stdenv = {isCross = false;};
+                stdenv = {
+                  isCross = false;
+                  hostPlatform.isLinux = true;
+                };
                 buildPackages = null;
                 pname = "qemu-crucible";
                 enablePlugins = true;
