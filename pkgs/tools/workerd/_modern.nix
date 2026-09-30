@@ -245,7 +245,7 @@ in
       depsHash =
         if isDarwinCross
         then "sha256-pWz9mz8EtXsux1K9bQlViPpX/89BzmtqsOiRFBDgiLE="
-        else "sha256-FGjai5OCbqKGqWMdBnDrpcNsH7MfSk0WaVNPWbrDSqw=";
+        else "sha256-B2XsKE5brhw4DMbw0F8VHfKzVm2N6VR2ptqZIEp+FS8=";
       bazelTarget = "//src/workerd/server:workerd";
       bazelFlags =
         [
