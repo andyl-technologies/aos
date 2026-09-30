@@ -6,6 +6,9 @@
   gnumake,
   runc,
   lib,
+  service-management,
+  aos-filesystem-provider,
+  kmod,
 }: let
   version = "2.3.5";
   payload = mkDerivation {
@@ -68,8 +71,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -130,7 +144,8 @@ in
     runtimeDeps = [payload runc];
     propagatedDeps = [];
 
-    abilities = ./_containerd-config;
+    module = ./_containerd-config;
+    moduleDeps = [service-management aos-filesystem-provider kmod];
 
     passthru.evidenceSources = [
       ./containerd.nix

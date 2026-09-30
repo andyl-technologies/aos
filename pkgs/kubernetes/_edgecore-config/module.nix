@@ -2,29 +2,24 @@
 {
   config,
   lib,
+  package,
   packageName,
   packageVersion,
   ...
 }: let
-  cfg = config.edgecore;
-  serviceEnabled = config.aos.services."service.edgecore".enable;
+  cfg = config.aos.edgecore;
+  serviceEnabled = config.aos.services.edgecore.enable;
   inherit (lib) mkOption;
-  abilityTypes = lib.abilities.types;
-  positiveInt = abilityTypes.integer {
-    minimum = 1;
-    maximum = abilityTypes.limits.maxSafeInteger;
-  };
-  refinedString = name: description: pattern:
-    abilityTypes.refined {
-      inherit name description;
-      type = abilityTypes.runtimeString;
-      constraints = [
-        {
-          kind = "string-pattern";
-          pattern = pattern;
-        }
-      ];
-    };
+  positiveInt = lib.types.ints.between 1 9007199254740991;
+  refinedString = name: description: pattern: lib.types.strMatching pattern;
+  address = lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9.:-]*";
+  nonWhitespace = lib.types.strMatching "[^[:space:]]+";
+  port = lib.types.ints.between 1 65535;
+  bool = value:
+    if value
+    then "true"
+    else "false";
+  credentialType = lib.types.nullOr (lib.types.submodule config.aos.abilities.credential.operations.deliver.input);
   credentials = {
     ca-certificate = cfg.tls.caCertificate;
     client-certificate = cfg.tls.clientCertificate;
@@ -109,64 +104,13 @@
     }
   ];
   requiredRefs = builtins.attrValues credentials;
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  kernelTunables = lib.abilities.interfaces.kernelTunables.interface;
-  serviceTypes = serviceManagement.types;
-  resultOf = lib.abilities.resultOf;
-  credentialPath = name: resultOf "${name}-delivery" "credential-path";
-  producer = key: interface: parameters:
-    serviceManagement.forProducer {
-      consumerInstance = "service";
-      inherit key interface parameters;
-    };
+  deliveries = config.aos.abilities.credential.operations.deliver.effects;
+  credentialPath = name: deliveries."edgecore-${name}".outputs.path;
   configuredCredentials = lib.filterAttrs (_: ref: ref != null) credentials;
-  credentialRequests = serviceManagement.forCredentialReferences {
-    consumerInstance = "service";
-    references =
-      lib.mapAttrsToList (name: reference: {
-        key = "${name}-delivery";
-        inherit name reference;
-      })
-      configuredCredentials;
-  };
-  network = producer "network" serviceManagement.interfaces.networkReadiness {
-    scope = "configured-connectivity";
-    address_families = [
-      "ipv4"
-      "ipv6"
-    ];
-  };
-  modules = producer "kernel-modules" serviceManagement.interfaces.kernelModules {
-    modules = [
-      "overlay"
-      "br_netfilter"
-    ];
-    required = true;
-  };
-  tunables =
-    producer "kernel-tunables" {
-      alias = kernelTunables.alias;
-      declaration = kernelTunables.declaration;
-    } {
-      values = {
-        "net.ipv4.ip_forward" = "1";
-        "net.ipv6.conf.all.forwarding" = "1";
-      };
-      dependencies = [];
-    };
-  configuration = serviceManagement.forConfiguration {
-    inherit serviceTypes;
-    consumerInstance = "service";
-    declaration = {
-      name = "configuration";
-      source = {
-        kind = "interpolated-text";
-        fragments = configurationFragments;
-        maximum_size_bytes = lib.abilities.types.limits.maxDocumentBytes;
-      };
-      mode = "0444";
-    };
-  };
+  network = config.aos.abilities.network.operations.ready.effects.edgecore;
+  configuration = config.aos.abilities.configuration.operations.file.effects.edgecore;
+  modules = config.aos.abilities.kernelModules.operations.ensure.effects.edgecore;
+  tunables = config.aos.abilities.kernelTunables.operations.ensure.effects.settings;
   service = {
     policy.devicePolicy = {
       baseline_access = "standard-runtime-devices";
@@ -229,7 +173,6 @@
       operation_profile = "privileged";
       isolated_identity_mapping = "none";
     };
-    consumerInstance = "service";
     service = "edgecore";
     lifecycle = {
       description = "KubeEdge edge node agent (${packageName} ${packageVersion})";
@@ -240,11 +183,10 @@
       start = [
         {
           executable = {
-            artifact = lib.abilities.packageOutput {};
-            entry_point = "bin/edgecore";
+            path = "${package}/bin/edgecore";
             arguments = [
               "--config"
-              (resultOf "configuration" "planned-path")
+              configuration.outputs.path
             ];
           };
           ignore_failure = false;
@@ -261,16 +203,11 @@
     };
     dependencies = {
       after = [
-        (resultOf "network" "resource")
-        (resultOf "kernel-modules" "resource")
-        (resultOf "kernel-tunables" "resource")
+        network.outputs.resource
       ];
       before = [];
-      requires = [
-        (resultOf "kernel-modules" "resource")
-        (resultOf "kernel-tunables" "resource")
-      ];
-      wants = [(resultOf "network" "resource")];
+      requires = [];
+      wants = [network.outputs.resource];
     };
     resources = {
       open_files = {
@@ -309,14 +246,14 @@
     configuration.views = [
       {
         name = "configuration";
-        source = resultOf "configuration" "planned-path";
+        source = configuration.outputs.path;
         optional = false;
       }
     ];
     credentials.views =
       lib.mapAttrsToList (name: reference: {
         inherit name;
-        reference = resultOf "${name}-delivery" "credential-path";
+        reference = credentialPath name;
         inherit (reference) encrypted;
         optional = true;
       })
@@ -368,20 +305,8 @@
       permit_core_dumps = true;
     };
   };
-  producers = [
-    network
-    modules
-    tunables
-    configuration
-    credentialRequests
-  ];
 in {
-  options.edgecore = {
-    enable = mkOption {
-      type = abilityTypes.boolean;
-      default = false;
-      description = "Enable the package-owned KubeEdge EdgeCore service.";
-    };
+  options.aos.edgecore = {
     nodeName = mkOption {
       type =
         refinedString "EdgeCore node name" "a DNS-label-compatible Kubernetes node name"
@@ -411,7 +336,7 @@ in {
       description = "CRI runtime and image service endpoint.";
     };
     cgroupDriver = mkOption {
-      type = abilityTypes.enum [
+      type = lib.types.enum [
         "cgroupfs"
         "systemd"
       ];
@@ -432,17 +357,17 @@ in {
     };
     tls = {
       caCertificate = mkOption {
-        type = abilityTypes.optional serviceTypes.credentialReference;
+        type = credentialType;
         default = null;
         description = "Opaque credential reference for the CloudHub certificate authority certificate.";
       };
       clientCertificate = mkOption {
-        type = abilityTypes.optional serviceTypes.credentialReference;
+        type = credentialType;
         default = null;
         description = "Opaque credential reference for this edge node's CloudHub client certificate.";
       };
       clientPrivateKey = mkOption {
-        type = abilityTypes.optional serviceTypes.credentialReference;
+        type = credentialType;
         default = null;
         description = "Opaque credential reference for this edge node's CloudHub client private key.";
       };
@@ -459,16 +384,44 @@ in {
             (reference:
               reference
               != null
-              && serviceManagement.credentialReferenceConfigured reference)
+              && ((reference.name != null) != (reference.resource != null)))
             requiredRefs;
           message = "edgecore.enable requires CA, client certificate, and client private-key references";
         }
       ];
-      aos.services."service.edgecore" = service // {enable = cfg.enable;};
+      aos.services.edgecore = lib.mkDefault service;
     }
-    (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = serviceEnabled;
+    (lib.mkIf serviceEnabled {
+      aos.services.edgecore.activationAfter = [modules.outputs.loaded tunables.outputs.values];
+      aos.kernel.tunablePrerequisites = [modules.outputs.loaded];
+      aos.kernel.sysctl = {
+        "net.ipv4.ip_forward" = "1";
+        "net.ipv6.conf.all.forwarding" = "1";
+      };
+      aos.abilities = {
+        network.operations.ready.effects.edgecore.input = {
+          scope = "address-configured";
+          families = ["ipv4" "ipv6"];
+        };
+        configuration.operations.file.effects.edgecore.input = {
+          path = "/etc/edgecore/config.yaml";
+          fragments = map (fragment:
+            if fragment.kind == "literal"
+            then fragment.text
+            else fragment.value)
+          configurationFragments;
+          mode = "0444";
+        };
+        credential.operations.deliver.effects = builtins.listToAttrs (lib.mapAttrsToList (credentialName: input: {
+            name = "edgecore-${credentialName}";
+            value = {inherit input;};
+          })
+          configuredCredentials);
+        kernelModules.operations.ensure.effects.edgecore.input = {
+          modules = ["overlay" "br_netfilter"];
+          required = true;
+        };
+      };
     })
   ];
 }

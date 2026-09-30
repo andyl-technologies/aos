@@ -1,6 +1,8 @@
 ##! Builds digest-addressed images for every default K3s addon from AOS sources.
 {
   lib,
+  runCommand,
+  writeTextFile,
   callPackage,
   buildPackages,
   stdenv,
@@ -79,24 +81,15 @@
       roots = imageRoots;
       maxDevelopmentPayloadMiB = 1;
     };
-    packageProjections = builtins.map
-      lib.abilities.authenticatedPackageProjectionFor
-      (builtins.filter
-        (package:
-          builtins.isAttrs package
-          && package ? abilities
-          && package ? contract
-          && package ? module
-          && package.contract.value.package_module != null)
-        imageRoots);
-    abilityContract = ociTools.mkStaticAbilityContract {
-      pname = "k3s-${name}-static-abilities";
+    deploymentArtifact = ociTools.mkDeploymentArtifact {
+      pkgs = {inherit buildPackages runCommand writeTextFile;};
+      pname = "k3s-${name}-deployment";
       platform = {
         os = "linux";
         inherit architecture;
       };
-      inherit packageProjections;
-      runtimeRoots = imageRoots;
+      packages = imageRoots;
+      scope = ["container" "k3s" name];
     };
   in {
     inherit reference;
@@ -112,7 +105,7 @@
     image = ociTools.mkImageLayout {
       pname = "k3s-${name}-image";
       layers = [payload metadata];
-      inherit runtimeAudit abilityContract;
+      inherit runtimeAudit deploymentArtifact;
       referenceName = "${reference}:${version}";
       config = {
         inherit entrypoint user;

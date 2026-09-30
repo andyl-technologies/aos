@@ -3,6 +3,10 @@
   mkDerivation,
   k3s,
   aos-kubernetes-provider,
+  kubernetes-interface,
+  service-management,
+  aos-kernel-tunable-provider,
+  nftables,
   containerd,
   runc,
   cni-plugins,
@@ -16,14 +20,17 @@
   kmod,
   coreutils,
   writeShellScriptBin,
-}:
-let
+}: let
   mkK3sRolePackage = import ./_k3s-role-package.nix {
     inherit
       lib
       mkDerivation
       k3s
       aos-kubernetes-provider
+      kubernetes-interface
+      service-management
+      aos-kernel-tunable-provider
+      nftables
       containerd
       runc
       cni-plugins
@@ -40,13 +47,24 @@ let
       ;
   };
 in
-mkK3sRolePackage {
-  platformSupport = {
-    build = [{abi = ["gnu"]; os = ["linux"];}];
-    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
-    target = [];
-    role = "public-package";
-  };
-  pname = "k3s-worker";
-  evidenceSources = [ ./k3s-worker.nix ];
-}
+  mkK3sRolePackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+    pname = "k3s-worker";
+    evidenceSources = [./k3s-worker.nix];
+  }
