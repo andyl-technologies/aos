@@ -101,6 +101,62 @@ fn resolution_registry_defaults_and_path_overrides() {
 }
 
 #[test]
+fn resolution_attr_by_requires_registered_attribute_names() {
+    let selector = |name: &str| {
+        let mut bytes = Vec::new();
+        cbor::write_array(&mut bytes, 3);
+        cbor::write_text(&mut bytes, "attr-by");
+        cbor::write_text(&mut bytes, name);
+        cbor::write_array(&mut bytes, 2);
+        cbor::write_text(&mut bytes, "preset");
+        cbor::write_text(&mut bytes, "any");
+        bytes
+    };
+
+    let maximum_tag = alloc::format!("tag.{}", "x".repeat(251));
+    let maximum_unicode_tag = alloc::format!("tag.{}x", "é".repeat(125));
+    for name in [
+        "hash.sha256",
+        "class.elf",
+        "provenance.reintroduced-from",
+        "nar.size",
+        "tag.custom",
+        maximum_tag.as_str(),
+        maximum_unicode_tag.as_str(),
+    ] {
+        let value = selector(name);
+        assert!(
+            validate_property(&Property {
+                name: "trust",
+                value: &value
+            })
+            .is_ok(),
+            "registered attribute {name}"
+        );
+    }
+
+    let oversized_tag = alloc::format!("tag.{}", "x".repeat(252));
+    for name in [
+        "",
+        "unknown",
+        "nar.custom",
+        "hash.custom",
+        "tag.",
+        oversized_tag.as_str(),
+    ] {
+        let value = selector(name);
+        assert!(
+            validate_property(&Property {
+                name: "trust",
+                value: &value
+            })
+            .is_err(),
+            "unregistered attribute {name}"
+        );
+    }
+}
+
+#[test]
 fn resolution_rejects_unregistered_and_invalid_values() {
     assert_eq!(
         validate_property(&Property {

@@ -173,7 +173,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [x] **T-PROP-1** Property resolution, types, boundary properties,
   completeness, commit-time requirement checks, and strict attribute-name
-  validation. This task provides pure resolution and validation. Actual
+  validation. The shared trust-property validator also rejects unregistered
+  `attr-by` names, matching the provenance selector parser. This task provides
+  pure resolution and validation. Actual
   commit admission and graft checks are joint with T-REF-2 and T-CRATE-1;
   trust and flatten policy with T-PROV-1 and T-ALG-2; placement, domains,
   retention, and durability with the corresponding store, domain, GC,

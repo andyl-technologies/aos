@@ -387,7 +387,9 @@ fn selector(decoder: &mut Decoder<'_>) -> Result<(), Error> {
                 pending = pending.checked_add(1).ok_or(Error::Limit)?;
             }
             "attr-by" => {
-                nonempty(decoder.text(255)?)?;
+                if !super::registered_attribute(decoder.text(255)?) {
+                    return Err(Error::InvalidValue);
+                }
                 pending = pending.checked_add(1).ok_or(Error::Limit)?;
             }
             "all" | "any" => {
