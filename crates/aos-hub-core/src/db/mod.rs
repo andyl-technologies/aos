@@ -4299,7 +4299,12 @@ impl Database {
                         catalog_artifacts
                             .push(("documentation", documentation.store_path.as_str()));
                     }
-                    for (artifact_kind, store_path) in catalog_artifacts {
+                    // Disk encodings can share metadata, and named outputs can
+                    // repeat the primary output. Project each role/path once.
+                    let distinct_artifacts = catalog_artifacts
+                        .into_iter()
+                        .collect::<std::collections::BTreeSet<_>>();
+                    for (artifact_kind, store_path) in distinct_artifacts {
                         let store_hash = store_hash_component(store_path);
                         let metadata_digest = hex::encode(sha2::Sha256::digest(
                             serde_json::to_vec(&serde_json::json!({
