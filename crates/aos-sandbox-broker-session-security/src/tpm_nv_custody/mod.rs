@@ -11,6 +11,17 @@ pub(crate) mod framing;
 pub(crate) mod child;
 pub(crate) mod physical;
 
+mod floor;
+
+// Sibling owners share only canonical DATA, never physical or durable permits.
+pub(crate) use floor::{
+    CHECKPOINT_BYTES, FloorCheckpointV1, FloorCutV1, FloorEndpointV1, FloorErrorV1,
+    FloorIntentV1, FloorProfileV1, FloorRecoveryV1, HostFloorCheckpointDataV1,
+    HostFloorIntentDataV1, INTENT_BYTES, NV_ATTRIBUTES_DEFINED, NV_ATTRIBUTES_WRITTEN,
+    PROFILE_BYTES, broker_cut_from_records_v1, broker_transaction_digest_v1, hash_parts,
+    reconcile_floor_v1, reconcile_host_floor_data_v1, sidecar_sequence_v1, successor_sequence,
+};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NvCustodyEndpointV1 {
     ControllerStorageClient,
