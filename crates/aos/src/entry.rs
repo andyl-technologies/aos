@@ -6,7 +6,7 @@ use std::{ffi::OsStr, ffi::OsString, io::Write};
 use anyhow::{Result, bail};
 use clap::{CommandFactory, Parser};
 
-use crate::cli::{ApmCli, AprCli, Cli, ColorChoice, Commands, ProgressChoice};
+use crate::cli::{AbilityCommand, ApmCli, AprCli, Cli, ColorChoice, Commands, ProgressChoice};
 use crate::commands;
 use aos_core::error::AosError;
 use aos_core::nix::NixRunner;
@@ -17,7 +17,21 @@ pub async fn aos_main() {
     install_panic_hook("aos");
     let cli = Cli::parse();
     let (progress, color) = maintenance_output_policy(&cli);
-    let printer = printer(cli.verbose, cli.quiet, cli.json, progress, color);
+    // Replay reserves stdout for exact transaction bytes, including on error.
+    // Keep diagnostics on stderr even when global JSON output was requested.
+    let native_replay = matches!(
+        &cli.command,
+        Commands::Ability {
+            command: AbilityCommand::Evaluate(_),
+        }
+    );
+    let printer = printer(
+        cli.verbose,
+        cli.quiet,
+        cli.json && !native_replay,
+        progress,
+        color,
+    );
     if let Commands::Maintain(args) = &cli.command {
         let result = tokio::select! {
             result = commands::maintain::run(&cli, args, &printer) => result,
@@ -214,8 +228,8 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         return Ok(());
     }
 
-    // Portable inspection revalidates captured pure inputs without Nix or a
-    // live provider connection.
+    // Ability commands do not require a repository-rooted NixRunner. Pure
+    // source replay selects its store tool explicitly; inspection needs none.
     if let Commands::Ability { command } = &cli.command {
         return commands::ability::run(command, printer).await;
     }
