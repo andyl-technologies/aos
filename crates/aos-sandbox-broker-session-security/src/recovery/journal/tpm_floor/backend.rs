@@ -5,7 +5,7 @@
 //! device. Plain tool stdout, caller scalars, PCR sealing, or an emulator cannot
 //! fill this seam.
 
-use super::format::NV_ATTRIBUTES_WRITTEN;
+pub(crate) use super::format::NV_ATTRIBUTES_WRITTEN;
 use super::{FloorErrorV1, FloorIntentV1, FloorProfileV1};
 
 pub(super) mod confinement;
@@ -15,6 +15,18 @@ mod physical;
 mod service_policy;
 
 pub(super) use physical::PhysicalTpmNvIoV1;
+
+pub(crate) use confinement::{
+    require_helper as require_broker_floor_helper_v1,
+    require_owner as require_broker_floor_owner_v1,
+};
+pub(crate) use helper_protocol::{
+    HelperObservationV1, HelperOperationV1, LOCK_ACK_BYTES, RESPONSE_BYTES, decode_response_v2,
+    encode_auth_v2, encode_hello_v2, encode_request_v2, require_lock_ack_v2,
+};
+pub(crate) use image::MeasuredHelperImageV1;
+pub(crate) use physical::BrokerPhysicalOpenV1;
+pub(crate) use service_policy::RetainedFloorServicePolicyV1;
 
 /// Seals the transport boundary to this module's sole physical producer.
 mod sealed {
@@ -34,15 +46,15 @@ pub(super) trait AuthenticatedTpmNvIoV1: sealed::Sealed {
     fn extend(&mut self, index: u32, input: &[u8; 32]) -> Result<(), FloorErrorV1>;
 }
 
-pub(super) struct AuthenticatedNvObservationV1 {
-    salt_key_name_digest: [u8; 32],
-    index: u32,
-    name: [u8; 34],
-    name_algorithm: u16,
-    attributes: u32,
-    size: u16,
-    empty_auth_policy: bool,
-    value: [u8; 32],
+pub(crate) struct AuthenticatedNvObservationV1 {
+    pub(crate) salt_key_name_digest: [u8; 32],
+    pub(crate) index: u32,
+    pub(crate) name: [u8; 34],
+    pub(crate) name_algorithm: u16,
+    pub(crate) attributes: u32,
+    pub(crate) size: u16,
+    pub(crate) empty_auth_policy: bool,
+    pub(crate) value: [u8; 32],
 }
 
 /// Retains the fixed provisioning pin but grants no journal/readiness authority.

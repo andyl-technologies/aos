@@ -24,13 +24,13 @@ use crate::immutable_image::require_readonly_launch_flags;
 
 const MAXIMUM_MAPS_BYTES: u64 = 64 * 1024;
 
-pub(super) struct MeasuredHelperImageV1 {
+pub(crate) struct MeasuredHelperImageV1 {
     executable: MeasuredFileV1,
     loader: MeasuredFileV1,
 }
 
 impl MeasuredHelperImageV1 {
-    pub(super) fn open() -> Result<Self, FloorErrorV1> {
+    pub(crate) fn open() -> Result<Self, FloorErrorV1> {
         let path =
             PathBuf::from(option_env!("AOS_METHOD46_TPM_HELPER").ok_or(FloorErrorV1::Unavailable)?);
         let relative = path
@@ -69,11 +69,11 @@ impl MeasuredHelperImageV1 {
         Ok(image)
     }
 
-    pub(super) fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         self.executable.path()
     }
 
-    pub(super) fn require_executed(&self, pid: u32) -> Result<(), FloorErrorV1> {
+    pub(crate) fn require_executed(&self, pid: u32) -> Result<(), FloorErrorV1> {
         self.executable.require_executed(pid)?;
         let mut maps = String::new();
         File::open(format!("/proc/{pid}/maps"))
@@ -115,7 +115,7 @@ impl MeasuredHelperImageV1 {
         Ok(())
     }
 
-    pub(super) fn revalidate(&mut self) -> Result<(), FloorErrorV1> {
+    pub(crate) fn revalidate(&mut self) -> Result<(), FloorErrorV1> {
         self.executable.revalidate()?;
         self.loader.revalidate().map_err(Into::into)
     }

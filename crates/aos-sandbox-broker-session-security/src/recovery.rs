@@ -39,6 +39,14 @@ use sha2::{Digest as _, Sha256};
 use crate::BrokerSessionSecurityError;
 
 mod journal;
+// These closed Broker inputs and comparisons serve the one shared physical owner.
+pub(crate) use journal::{
+    AuthenticatedNvObservationV1, BrokerPhysicalOpenV1, FloorErrorV1, FloorProfileV1,
+    HelperObservationV1, HelperOperationV1, LOCK_ACK_BYTES, MeasuredHelperImageV1,
+    NV_ATTRIBUTES_WRITTEN, RESPONSE_BYTES, RetainedFloorServicePolicyV1, decode_response_v2,
+    encode_auth_v2, encode_hello_v2, encode_request_v2, require_broker_floor_helper_v1,
+    require_broker_floor_owner_v1, require_lock_ack_v2,
+};
 pub(crate) use journal::require_launch_image_presence;
 mod role_direction;
 
