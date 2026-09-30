@@ -28,6 +28,13 @@
   disableDarwinLld ? disableLld,
   qualification ? null,
 }: let
+  mkRustDerivation = attrs:
+    mkDerivation (attrs
+      // (
+        if qualification == null
+        then {}
+        else {inherit qualification;}
+      ));
   configFileName =
     if useBootstrapToml
     then "bootstrap.toml"
@@ -84,8 +91,8 @@ in
       description = "Rust ${version} — bootstrap chain intermediate";
     }
   else
-    mkDerivation {
-      inherit pname version src qualification platformSupport;
+    mkRustDerivation {
+      inherit pname version src platformSupport;
 
       buildDeps = [
         gnumake
