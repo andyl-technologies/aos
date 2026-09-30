@@ -189,7 +189,7 @@ pub struct SnapshotSchemaManifest {
     pub classification_version: String,
     /// Exact compiled production lineage, never inferred from a migration count.
     pub identity: String,
-    /// Exact supported source generation, currently three through six.
+    /// Exact supported source generation, currently three through seven.
     pub version: usize,
     /// Ordered SHA-256 hashes of the compiled schema scripts.
     pub migration_digests: Vec<String>,
