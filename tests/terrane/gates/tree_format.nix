@@ -7,6 +7,7 @@ in {
   canonical-cbor = sourceGate "canonical-cbor" ''
     cd crates
     ${runTests "cbor::tests"}
+    ${runTests "gc::lease::tests"}
     ${runTests "tree_format::tests::golden_leaf_round_trips_byte_exactly -- --exact"}
     printf 'PASS: canonical CBOR and golden leaf encoding\n' > "$out/result"
   '';

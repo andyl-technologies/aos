@@ -61,6 +61,14 @@ impl BucketKey {
         }
         let class = match parts.as_slice() {
             ["CAPABILITIES"] => Mutability::CompareAndSwap,
+            ["publication", "SELECTED-HISTORY" | "PORTABLE"] => Mutability::CompareAndSwap,
+            ["publication", "snapshots", selector] => {
+                let (revision, operation) = selector.split_once(':').ok_or(KeyError)?;
+                if !decimal(revision) || !hex(operation, 64) {
+                    return Err(KeyError);
+                }
+                Mutability::CreateOnce
+            }
             ["objects", "pack", fanout, file] => {
                 let id = file
                     .strip_suffix(".pack")
@@ -254,6 +262,50 @@ fn hex(value: &str, length: usize) -> bool {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publication_payload_keys_preserve_mutability_and_control_separation() {
+        for name in ["SELECTED-HISTORY", "PORTABLE"] {
+            assert_eq!(
+                BucketKey::parse(&alloc::format!("publication/{name}"))
+                    .unwrap()
+                    .mutability(),
+                Mutability::CompareAndSwap
+            );
+        }
+
+        let operation = "ab".repeat(32);
+        for revision in ["0", "1", "18446744073709551615"] {
+            let key = alloc::format!("publication/snapshots/{revision}:{operation}");
+            assert_eq!(
+                BucketKey::parse(&key).unwrap().mutability(),
+                Mutability::CreateOnce
+            );
+        }
+        for revision in ["", "+1", "01", "-1", "18446744073709551616"] {
+            let key = alloc::format!("publication/snapshots/{revision}:{operation}");
+            assert!(BucketKey::parse(&key).is_err(), "{key}");
+        }
+        for operation in ["AB".repeat(32), "ab".repeat(31), "ab".repeat(33)] {
+            let key = alloc::format!("publication/snapshots/0:{operation}");
+            assert!(BucketKey::parse(&key).is_err(), "{key}");
+        }
+
+        // Ordinary payload key validation never exposes protected control.
+        for key in [
+            "publication/commits/0".into(),
+            alloc::format!("publication/transactions/{operation}"),
+            alloc::format!("publication/guards/{operation}"),
+            alloc::format!("publication/lineage/{operation}"),
+            "publication/STATE".into(),
+            "publication/CURRENT".into(),
+            "backend-registration.cbor".into(),
+            "publication/snapshots/0".into(),
+            alloc::format!("publication/snapshots/0:{operation}:extra"),
+        ] {
+            assert!(BucketKey::parse(&key).is_err(), "{key}");
+        }
+    }
 
     #[test]
     fn registry_decimal_segments_reject_plus_aliases_and_preserve_boundaries() {

@@ -302,6 +302,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Canonical reflogs distinguish an absent current CAS expectation from a
   retained committed predecessor without resetting its sequence or epoch;
   native selection of that retained history remains joint work.
+  The portable history, snapshot and pointer payload keys have registered
+  mutability; protected publication control remains outside ordinary key I/O.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,
@@ -312,6 +314,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
   `ttl`, `forever`, and ordinary reflog duration/count selection. D-78
   registers physical creation journals and recoverable deletion intent;
+  the shared canonical collector lease preserves whole-value proposal and
+  fencing checks. Actual selected lease authority remains joint native work;
   native integration, actual crash/timer/restore qualification and complete
   current-root/publication fencing remain pending. Physical intent alone
   cannot qualify deletion.

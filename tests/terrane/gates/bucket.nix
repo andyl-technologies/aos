@@ -61,6 +61,7 @@ in {
     ${focusedTests}
     run_bucket_test bucket::tests::unknown_keys_are_not_refs_and_symlinks_fail_closed
     run_core_bucket_test bucket::keys::tests::protected_delete_operations_require_canonical_cas_keys
+    run_core_bucket_test bucket::keys::tests::publication_payload_keys_preserve_mutability_and_control_separation
     printf 'PASS: bucket-key-registry native layout and pure protected-key conformance\n' > "$out/result"
   '';
   bucket-file-layout = gate "bucket-file-layout" ["selection_tests::nested_ref_names_coexist_without_changing_refname_grammar" "version_tests::v2_migrated_numbered_log_coexists_with_a_numeric_descendant_ref" "version_tests::v2_registered_ref_classes_preserve_public_names_and_reopen" "content_tests::portable_copy_reopens_as_the_same_bucket_layout"];
