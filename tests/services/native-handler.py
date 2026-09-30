@@ -235,6 +235,45 @@ class NativeHandlerTests(unittest.TestCase):
             self.assertFalse(new_path.exists())
             self.assertFalse(instance.receipt_path.exists())
 
+    def test_remove_observation_retries_owned_configuration_then_proves_absence(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "example.conf"
+            value = {"path": str(path), "content": "owned", "mode": "0600"}
+            state = Path(root) / "state"
+            instance = handler_module.Handler(invocation("configuration", "file", value), "unused", root, state)
+            instance.file("apply")
+            removal = invocation("configuration", "file", value)
+            removal["action"] = "remove"
+            recovered = handler_module.Handler(removal, "unused", root, state)
+
+            self.assertEqual(recovered.file("observe")["status"], "retry-safe")
+            recovered.file("remove")
+            settled = handler_module.Handler(removal, "unused", root, state)
+            self.assertEqual(settled.file("observe")["status"], "absent")
+
+    def test_remove_observation_never_repeats_an_uncertain_stop(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = dict(service(), auto_start=False)
+            state = Path(root) / "state"
+            instance = handler_module.Handler(invocation("serviceManagement", "realize", value), "unused", root, state)
+            instance.manager = lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", "")
+            instance.service("apply")
+            removal = invocation("serviceManagement", "realize", value)
+            removal["action"] = "remove"
+            recovered = handler_module.Handler(removal, "unused", root, state)
+
+            self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+
+            def fail_stop(*args, **kwargs):
+                raise RuntimeError("unknown partial stop")
+
+            recovered.manager = fail_stop
+            with self.assertRaises(RuntimeError):
+                recovered.service("remove")
+            pending = handler_module.Handler(removal, "unused", root, state)
+            self.assertEqual(pending.service("observe")["status"], "indeterminate")
+            self.assertTrue((Path(root) / "example.service").exists())
+
     def test_mac_enforcement_uses_an_actual_state_condition(self):
         handler_module.MAC_CONDITION_EXECUTABLE = "/nix/store/service/bin/aos-service-handler"
         value = service()
