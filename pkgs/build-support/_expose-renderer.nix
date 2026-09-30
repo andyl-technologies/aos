@@ -1682,6 +1682,21 @@ in rec {
       authoredServiceConfig = unit.serviceConfig or {};
       checkedAuthoredServiceConfig =
         validateNoPrivilegedExecPrefixes packageName unitName authoredServiceConfig;
+      # Authored sub-slices stay under the package's confinement boundary. A
+      # separate child lets resource controllers recover an exhausted workload.
+      serviceSlice = let
+        requested = checkedAuthoredServiceConfig.Slice or packageSlice;
+        descendantPrefix = "${lib.removeSuffix ".slice" packageSlice}-";
+      in
+        throwIfNot
+        (builtins.isString requested
+          && (requested
+            == packageSlice
+            || (lib.hasPrefix descendantPrefix requested
+              && lib.hasSuffix ".slice" requested
+              && builtins.elem requested authoredUnitNames)))
+        "mkDerivation expose.units.${unitName} Slice must be the package slice or a declared package descendant slice"
+        requested;
       unconfined = confinementClass == "unconfined";
       hasStaticUser = checkedAuthoredServiceConfig ? User;
       authoredUser =
@@ -1755,7 +1770,7 @@ in rec {
                 StateDirectory = checkedAuthoredServiceConfig.StateDirectory;
               }
               // lib.optionalAttrs unconfined {
-                Slice = packageSlice;
+                Slice = serviceSlice;
               }
               // lib.optionalAttrs (unconfined && cgroupDelegate) {
                 Delegate = true;
@@ -1795,7 +1810,7 @@ in rec {
                 RestrictAddressFamilies = addressFamilies;
                 RestrictNamespaces = !privilegedUsers;
                 RestrictRealtime = true;
-                Slice = packageSlice;
+                Slice = serviceSlice;
               }
               // lib.optionalAttrs (verityRootConfig != null) {
                 PermissionsStartOnly = true;
