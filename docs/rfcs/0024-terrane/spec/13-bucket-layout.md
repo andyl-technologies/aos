@@ -312,6 +312,10 @@ A `bucket(file://<root>)` is the same layout on a local filesystem.
   the observed inode. A filesystem that provides neither MUST be reported
   as `refs: single-writer`. *Gate:* `gate:bucket-file-cas`.
 Filesystem coordination files are separate from logical bucket keys.
+Protected `.terrane-creation/<key-digest>` journals retain D-78's local
+physical incarnation evidence for collector artifacts. They are not content,
+catalog members, imported snapshot authority or logical listing results;
+only held backend exclusion may mutate them under GC-29's protocol.
 The reserved `.terrane-locks/<key-digest>` files provide stable exclusion
 inodes; `.terrane-tmp:<random-id>` files in a destination's directory hold
 unpublished writes. Readers and logical listings ignore both, and scrub

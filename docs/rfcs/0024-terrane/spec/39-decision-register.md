@@ -1298,6 +1298,32 @@ is added rather than editing history.
     token patterns, candidate keys and ref/log record bytes are unchanged.
     This correction precedes T1's initial freeze.
 
+- **[D-78] Retain physical incarnations and recoverable deletion intent.**
+  - **Status:** Decided
+  - **Decision:** Register protected creation journals with secure fresh
+    incarnation nonces and durable Pending-before-mutation ordering. Qualify
+    local trash age with a full same-instance monotonic wait after exact
+    committed observation. Retain immutable deletion intent, index witnesses
+    and exact journal ownership so partial unlink recovery can finish under
+    current lease and complete current-root authorization. Synchronize the
+    expected nofollow regular object through one descriptor; keep restore
+    cancellation ordered before serving-generation changes.
+  - **Rationale:** Equal bytes, reused inodes, filesystem timestamps and
+    Tombstone fields do not prove a recovery window for a current physical
+    incarnation. Invalidating age before unlink without durable operation
+    ownership strands extant files after a crash. Secure versions, a
+    conservative elapsed wait and exact recoverable intent prevent early
+    deletion while preserving eventual reclamation and single-operation
+    restore. Physical intent never substitutes for current marks or resolves
+    the concurrent publication/dedup race on its own.
+  - **Affects:** GC-10 to GC-16, GC-22 to GC-24, GC-29, BKT-13, BKT-14,
+    the control-key registry, collector CDDL and configured filesystem binding.
+    Requirement IDs, gates, immutable identities, existing Tombstone bytes and
+    D-73 exclusions remain unchanged. This correction precedes T1's initial
+    encoding and store-trait freeze. Native journal integration and complete
+    current-root/publication fencing remain required before physical gates
+    can qualify.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

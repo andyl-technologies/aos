@@ -80,6 +80,7 @@ mutable authorities in version 2.
 | `gc/<cycle>/mark/<shard>` | final mark-set checkpoint (GC-7) | create-once | collector | 17 |
 | `gc/<cycle>/mark/<shard>/<revision>` | immutable incremental `GcMark` checkpoint | create-once | collector | 17 |
 | `gc/<cycle>/state` | fenced `GcState` progress and checkpoint pointers | CAS | collector | 17 |
+| `gc/<cycle>/delete/<pack-id>/<operation-id>` | protected `DeleteOperation` physical intent | CAS | fenced collector | 17 |
 | `trash/<cycle>/<pack-id>` | `Tombstone` | create-once | collector | 13, 17 |
 | `CAPABILITIES` | `Capabilities`, including the store profile | CAS | the opening store | 13, 04 |
 
@@ -107,12 +108,19 @@ buckets, authoritative catalogs, or logical listings.
 | Name | Holds | Rule |
 | --- | --- | --- |
 | `.terrane-locks/<key-digest>` | local exclusion inode | stable while writers can hold it; never replaced or unlinked |
+| `.terrane-creation/<key-digest>` | protected `CreationJournal` incarnation evidence | replaced only under backend exclusion; never exposed or imported as content |
 | `<directory>/.terrane-tmp:<random-id>` | unpublished staged bytes | synced before atomic publication; never readable as content |
 
 `<key-digest>` is lowercase hexadecimal BLAKE3-256 of the logical key's
 ASCII bytes; `<random-id>` is lowercase hexadecimal of 16 secure random
 bytes. Coordination files have no content identity or cross-provider
-version token.
+version token. Creation journals supply only backend-local incarnation evidence.
+
+Deletion `<operation-id>` is the lowercase 64-digit hexadecimal spelling of
+a fresh secure 32-byte nonce. Immutable operation authorization and exact
+journal ownership permit physical recovery only; they never replace current
+complete root, lease, catalog or exclusion checks. Ordinary logical writes
+and content import MUST NOT create or replace this protected authority.
 
 The colon in staging names is forbidden by REF-1, so a staged file cannot
 alias a valid ref segment.

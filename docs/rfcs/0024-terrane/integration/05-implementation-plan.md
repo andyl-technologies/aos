@@ -279,7 +279,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.ref-epoch-fencing`, `checks.terrane.gates.ref-watch`.
 - [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
-  `ttl`, `forever`, and ordinary reflog duration/count selection. Narrowed
+  `ttl`, `forever`, and ordinary reflog duration/count selection. D-78
+  registers physical creation journals and recoverable deletion intent;
+  native integration, actual crash/timer/restore qualification and complete
+  current-root/publication fencing remain pending. Physical intent alone
+  cannot qualify deletion. Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,
   GC-28 to GC-30; `checks.terrane.gates.gc-roots-complete`,

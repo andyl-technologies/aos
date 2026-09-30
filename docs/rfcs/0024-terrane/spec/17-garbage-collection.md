@@ -250,6 +250,80 @@ data.
   inventory fallback to bypass a known retired placement. *Gate:*
   `gate:gc-two-phase-delete`.
 
+## Physical incarnation evidence and recoverable deletion
+
+The following completes GC-15, GC-16, GC-24 and GC-29 under D-78. It does
+not replace current reachability, retention or lease authorization.
+
+Filesystem backends MUST retain a protected `CreationJournal` for each pack,
+detached index and tombstone they can delete. Its fresh secure 32-byte nonce
+identifies the physical incarnation; equal bytes, path, device and inode MUST
+NOT reuse a nonce after recreation. Under stable backend exclusion, a writer
+MUST durably install and synchronize Pending before mutation. It MUST then
+install verified final bytes, synchronize the same nofollow regular-file
+descriptor and containing/required ancestor directories, observe that exact
+file identity, and durably install Committed. Pending, Invalidated, missing,
+malformed or mismatched evidence is unknown and MUST NOT authorize deletion.
+Content import and snapshot restoration MUST NOT import journal authority.
+CDDL field combinations and registered artifact associations MUST be checked;
+decoded file identities remain untrusted until compared with the backend.
+
+Committed proves a current version, never an absolute creation time. A local
+backend MAY conservatively qualify `D` by observing the exact Committed trash
+incarnation under exclusion and waiting a FULL `D` afterward using one injected
+monotonic clock instance. Elapsed subtraction and `D` conversion MUST be
+checked. No monotonic tick persists. Reopen, reboot, changed clock instance,
+root, version, binding or exclusion, restore, clock regression, or failed or
+cancelled timing MUST invalidate the witness. Wall time, mtime, inode birth
+time, staging time and the Tombstone timestamp MUST NOT shorten this wait.
+This stronger delay does not replace GC-12's backend last-modified observation
+for ordinary grace qualification. A local implementation MUST support actual
+eventual deletion under stable valid roots and lease; unsupported-only refusal
+tests do not qualify `gate:gc-two-phase-delete`.
+
+Before retiring a journal or unlinking an artifact, the collector MUST durably
+install `DeleteOperation` Authorized. Its immutable authorization binds the
+secure operation nonce, exact active pack/cycle/epoch, original whole lease,
+`D`, ordered pack/index/trash versions, verified detached-index witness and
+completed elapsed lower bound. Its key and all artifact associations MUST
+match. The witness obeys the existing detached-index parser's size/count bounds
+and MUST match the index identity/size. Trash bytes MUST decode to the exact
+active exclusion. Revisions MUST increment without wrap; authorization MUST
+never change. Its digest is raw BLAKE3 of exact canonical authorization bytes.
+This protected intent establishes physical ownership, never reusable marks.
+
+Under the same exclusion the collector MUST conditionally retain DeleteOwned
+journals with their exact operation key and authorization digest, synchronize
+each, then record Invalidated after all three are durable. It MUST compare
+current owned identity/binding before each unlink, synchronize that directory,
+and advance PackAbsent, then IndexAbsent. Crash recovery MAY confirm exact
+owned absence by directory resynchronization; it MUST NOT delete a replacement
+object. ContainersConfirmed requires both container names durably absent and
+an exact authoritative catalog confirmation before trash cleanup and Done.
+The operation and owner evidence MUST remain until recovery needs no further
+evidence; a phase number alone never authorizes absence or replacement.
+
+EVERY effect and restart MUST acquire a CURRENT live whole lease and complete
+current-root/catalog/retention/trust authorization under the same backend
+exclusion as final checked head publication. An original lease, old marks,
+returned receipt or operation digest MUST NOT replace these checks. A changed
+root/admission fence requires fresh complete reconciliation using the retained
+verified index witness, even after physical containers are absent. Missing
+current authorization MUST refuse effects; physical journal implementation
+alone does not establish it. GC-1 to GC-7 and GC-30 still apply. Finite failures
+with stable valid qualification MUST permit recovery to finish exact owned
+artifacts, rather than strand them indefinitely as generic unknown versions.
+
+Restore or recreation MUST durably cancel the exact owning operation and
+invalidate its ownership BEFORE clearing the serving exclusion or mutating
+objects. Failure to persist cancellation forbids those effects. Restore MUST
+remain available with unknown trash age when its actual maintenance index and
+active exclusion qualify. Once a container is absent it MUST NOT advertise
+that old unavailable placement; fresh live placements remain usable. A fresh
+exclusion/incarnation waits its own `D`. Stale replay MUST neither touch a
+replacement nor advance its deletion progress. Explicit layout-version-1
+read-only access MUST refuse every journal and maintenance mutation.
+
 ## Compaction
 
 - **[GC-18]** A pack whose live fraction (marked bytes over total bytes) is

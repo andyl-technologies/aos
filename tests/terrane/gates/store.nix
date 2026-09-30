@@ -48,6 +48,7 @@ in {
     run_store_test store::tests::native_clock_ticks_do_not_move_backward --features tokio
     run_store_test store::bindings::tests::native_timer_waits_and_rejects_duration_overflow --features tokio
     run_store_test store::bindings::tests::native_metadata_preserves_links_permissions_and_nofollow_attributes --features tokio
+    run_store_test store::bindings::tests::native_nofollow_sync_rejects_replacement_symlink_and_nonregular_files --features tokio
     run_store_test store::tests::native_http_client_is_send_and_sync --features tokio
     printf 'PASS: portable store traits and native binding compile\n' > "$out/result"
   '';

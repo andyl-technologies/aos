@@ -230,6 +230,54 @@ impl LocalFs for TokioLocalFs {
         tokio::fs::File::open(path).await?.sync_all().await
     }
 
+    async fn sync_file_nofollow(
+        &self,
+        path: &std::path::Path,
+        expected: &std::fs::Metadata,
+    ) -> std::io::Result<std::fs::Metadata> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            tokio::runtime::Handle::try_current().map_err(std::io::Error::other)?;
+            let mut options = tokio::fs::OpenOptions::new();
+            options.read(true);
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+            let file = options.open(path).await?;
+            let before = file.metadata().await?;
+            if !expected.is_file()
+                || !before.is_file()
+                || (before.dev(), before.ino()) != (expected.dev(), expected.ino())
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "regular file identity changed before synchronization",
+                ));
+            }
+
+            // Sync and inspect the opened object, rather than resolving the
+            // pathname again after its identity has been checked.
+            file.sync_all().await?;
+            let after = file.metadata().await?;
+            if !after.is_file() || (after.dev(), after.ino()) != (before.dev(), before.ino()) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "regular file identity changed during synchronization",
+                ));
+            }
+            Ok(after)
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = (path, expected);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "nofollow file synchronization unavailable",
+            ))
+        }
+    }
+
     async fn sync_directory(&self, path: &std::path::Path) -> std::io::Result<()> {
         tokio::fs::File::open(path).await?.sync_all().await
     }
@@ -400,6 +448,67 @@ mod tests {
                 clock.sleep(Duration::MAX).await.unwrap_err().kind(),
                 std::io::ErrorKind::InvalidInput
             );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_nofollow_sync_rejects_replacement_symlink_and_nonregular_files() {
+        use std::os::unix::fs::MetadataExt;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let fs = TokioLocalFs;
+            let suffix: String = fs
+                .random_bytes(16)
+                .await
+                .unwrap()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            let root = std::env::temp_dir().join(format!("terrane-nofollow-sync-{suffix}"));
+            fs.create_dir_new(&root).await.unwrap();
+            let original = root.join("original");
+            let replacement = root.join("replacement");
+            let link = root.join("link");
+            fs.write_new(&original, b"durable incarnation")
+                .await
+                .unwrap();
+            fs.write_new(&replacement, b"durable incarnation")
+                .await
+                .unwrap();
+            fs.symlink(std::path::Path::new("original"), &link)
+                .await
+                .unwrap();
+            let expected = fs.symlink_metadata(&original).await.unwrap();
+
+            let actual = fs.sync_file_nofollow(&original, &expected).await.unwrap();
+            assert_eq!(
+                (actual.dev(), actual.ino()),
+                (expected.dev(), expected.ino())
+            );
+            assert!(
+                fs.sync_file_nofollow(&replacement, &expected)
+                    .await
+                    .is_err()
+            );
+            assert!(fs.sync_file_nofollow(&link, &expected).await.is_err());
+            assert!(fs.sync_file_nofollow(&root, &expected).await.is_err());
+            let directory = fs.symlink_metadata(&root).await.unwrap();
+            assert!(fs.sync_file_nofollow(&original, &directory).await.is_err());
+
+            // Preserve the old inode at another name so equal bytes cannot
+            // accidentally make replacement appear to be the observed object.
+            fs.rename(&original, &root.join("old")).await.unwrap();
+            fs.rename(&replacement, &original).await.unwrap();
+            assert!(fs.sync_file_nofollow(&original, &expected).await.is_err());
+            fs.remove_file(&link).await.unwrap();
+            fs.remove_file(&original).await.unwrap();
+            fs.remove_file(&root.join("old")).await.unwrap();
+            fs.remove_dir(&root).await.unwrap();
         });
     }
 

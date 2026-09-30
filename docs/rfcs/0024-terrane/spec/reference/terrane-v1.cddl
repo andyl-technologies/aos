@@ -498,6 +498,52 @@ Tombstone = {
   5 => epoch,                           ; collector fencing epoch (GC-23)
 }
 
+; D-78: protected filesystem evidence, never content or absolute age authority.
+; .terrane-creation/<raw-BLAKE3-256-of-logical-key>.
+CreationJournal = {
+  0 => 1,
+  1 => tstr,                            ; exact registered artifact key
+  2 => bstr .size 32,                   ; secure fresh incarnation nonce
+  3 => 0 / 1 / 2 / 3,                  ; Pending / Committed / DeleteOwned / Invalidated
+  ? 4 => gc-artifact-binding,
+  ? 5 => bstr .size (1..128),           ; opaque backend regular-file identity
+  ? 6 => [ operation-key: tstr, authorization: digest32 ],
+}
+; Keys 4/5 are required exactly for Committed and DeleteOwned. Key 6 is
+; required exactly for DeleteOwned. Pending/Invalidated omit keys 4..6.
+gc-artifact-binding = [ 0, digest32, uint ] ; whole pack identity and size
+                    / [ 1, digest32, uint ] ; detached index identity and size
+                    / [ 2, bstr .size (1..128) ] ; exact canonical Tombstone bytes
+
+; gc/<cycle>/delete/<pack-id>/<operation-id>. Physical intent alone never
+; authorizes an effect: every effect requires complete CURRENT-root proof.
+DeleteOperation = {
+  0 => 1,
+  1 => gc-delete-authorization,
+  2 => 0 / 1 / 2 / 3 / 4 / 5 / 6,
+       ; Authorized / Invalidated / PackAbsent / IndexAbsent /
+       ; ContainersConfirmed / Done / Cancelled
+  3 => uint,                           ; checked CAS revision, initially zero
+  4 => GcLease,                        ; current effect lease, not original authority
+}
+gc-delete-authorization = {
+  0 => bstr .size 32,                   ; nonce, matches operation-id
+  1 => [ pack-id, cycle, epoch ],       ; exact active physical exclusion
+  2 => GcLease,                        ; original authorizing lease
+  3 => uint,                           ; exact deletion window D, whole seconds
+  4 => [ gc-artifact-version, gc-artifact-version, gc-artifact-version ],
+       ; pack, detached index, trash in that order
+  5 => bstr,                           ; exact verified detached-index witness
+  6 => uint,                           ; completed elapsed lower bound, nanoseconds
+}
+gc-artifact-version = [ key: tstr, nonce: bstr .size 32,
+                        binding: gc-artifact-binding,
+                        file-identity: bstr .size (1..128) ]
+; Witness bytes obey existing detached-index parser size/count bounds.
+; Exact keys/kinds, pack/cycle/epoch, identity/size and nonce associations
+; must agree. Key 6 must be >= checked D * 1e9. Authorization is immutable;
+; its digest is raw BLAKE3 over these exact canonical authorization bytes.
+
 ; ---------------------------------------------------------------------------
 ; Capability token (22-authentication-and-authorization.md AUTH-7..AUTH-18)
 ; ---------------------------------------------------------------------------

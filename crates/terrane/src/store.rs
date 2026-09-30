@@ -819,6 +819,29 @@ pub trait LocalFs {
     /// Returns an I/O error if durability cannot be established.
     async fn sync_file(&self, path: &std::path::Path) -> std::io::Result<()>;
 
+    /// Synchronizes the expected regular file through one nofollow descriptor.
+    ///
+    /// The opened descriptor must match the expected physical identity before
+    /// synchronization. The returned metadata describes that same descriptor
+    /// after synchronization. Callers retain backend exclusion and separately
+    /// synchronize directories; this operation establishes neither creation age
+    /// nor a secure incarnation version.
+    ///
+    /// # Errors
+    /// Returns an I/O error for a symlink, nonregular or replaced file, failed
+    /// synchronization, an unavailable required runtime, or an unsupported
+    /// identity or nofollow implementation.
+    async fn sync_file_nofollow(
+        &self,
+        _path: &std::path::Path,
+        _expected: &std::fs::Metadata,
+    ) -> std::io::Result<std::fs::Metadata> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "nofollow file synchronization unavailable",
+        ))
+    }
+
     /// Synchronizes directory entries after a rename or removal.
     ///
     /// # Errors
