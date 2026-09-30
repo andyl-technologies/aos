@@ -32,7 +32,7 @@
   storage = config.aos.provisioning.storage;
 
   # A pool that carries /var owns the whole system-state path; the md layer
-  # is then never part of the boot substrate.
+  # is then never part of the boot-time storage chain.
   zfsState = config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState;
   measured = config.aos.boot.secureBoot.measuredBoot.enable;
 

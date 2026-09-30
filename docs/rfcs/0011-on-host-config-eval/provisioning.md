@@ -187,7 +187,7 @@ stricter contract prevents a transient kernel name or an ambiguous
 that need repeated human-facing names use distinct GPT labels and mount by
 their explicit UUIDs.
 
-`/var` remains fixed substrate in v1: the root-disk `var` partition always
+`/var` keeps a fixed root-disk footing in v1: the root-disk `var` partition always
 exists, either as the volume itself or as a member of the `var` array. The
 renderer omits `Format=` for a TPM-sealed volume so `aos-var-crypt` can create
 LUKS2 and enroll the TPM token; plain volumes are formatted by repart

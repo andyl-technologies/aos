@@ -77,7 +77,7 @@
         # switch-root from whichever device carries the filesystem: the repart
         # partition, the `var` MD array that partition is a member of, or the
         # LUKS2 mapper on either (modules/services/boot-substrate.nix). Stage-2
-        # systemd adopts that live mount; this entry names the substrate
+        # systemd adopts that live mount; this entry names the root-disk
         # partition, which exists in every topology, so the generated device
         # dependency is always satisfiable.
         /dev/disk/by-partlabel/var  /var  ext4  rw,relatime,nosuid,nodev  0  2
