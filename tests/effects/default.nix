@@ -26,6 +26,7 @@
     serviceSetMerging = import ./service-set-merge.nix;
     serviceFlights = import ./native-service-flights.nix;
     filesystemFirewallFlights = import ../fleet/native-reference-filesystem-fixture-self-test.nix {inherit lib;};
+    filesystemFirewallDependencies = import ../fleet/native-reference-domain-graphs.nix {inherit lib pkgs;};
     databaseConsumers = import ./database-consumers.nix;
     runtimeChecks = import ./runtime-checks.nix;
     referenceNginx = import ./reference-nginx.nix;
