@@ -56,7 +56,7 @@
   authorizedInput = builtins.head (builtins.filter (node: (node.input.name or "") == "authorized-provisioning-input") nodes);
   marker = byName "provisioningMarker";
   evaluate = byName "evaluate";
-  transaction = builtins.head (builtins.filter (node: (node.input.name or "") == "authorized-provisioning-transaction") nodes);
+  planReceipt = builtins.head (builtins.filter (node: (node.input.name or "") == "authorized-provisioning-plan") nodes);
   commit = builtins.head (builtins.filter (node: builtins.elem "storageProvisioning" node.identity && builtins.elem "commit" node.identity) nodes);
   includes = node: producer: builtins.elem (fixture.identity producer) node.dependencies;
   disabled = fixture.evaluate {
@@ -91,9 +91,14 @@ in
   assert authorizedInput.lifetime == "persistent";
   assert includes evaluate authorizedInput && includes evaluate marker;
   assert evaluate.handler.executable == "${fixture.aos.packageRuntime}/bin/aos-provisioning-configuration-evaluator";
-  assert includes transaction evaluate;
-  assert transaction.lifetime == "persistent";
-  assert includes commit evaluate && includes commit transaction;
+  assert includes planReceipt evaluate;
+  assert planReceipt.lifetime == "persistent";
+  assert planReceipt.input.media_type == "application/vnd.aos.provisioning-plan+json";
+  assert planReceipt.input.content.identity == evaluate.identity;
+  assert planReceipt.input.content.output == "canonical_plan";
+  assert prepare.handler.exports.committed_plan.identity == planReceipt.identity;
+  assert prepare.handler.exports.committed_plan.output == "path";
+  assert includes commit evaluate && includes commit planReceipt;
   assert commit.lifetime == "persistent";
   assert commit.input.request.policy.initialize == "if-unprovisioned";
   assert commit.input.request.policy.committed_divergence == "require-factory-reset";
