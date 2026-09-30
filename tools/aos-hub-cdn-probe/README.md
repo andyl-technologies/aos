@@ -25,6 +25,12 @@ Attach a Worker route for the exact hostname and
 a catch-all route. Register and activate delivery through the supported Hub
 delivery workflow after its observations are ready. Direct route observation
 also requires the controller's signed publication manifest for the exact route
-generation and current publication. Remove that temporary controller manifest
-after observation rather than leaving an expired manifest in runtime startup
+generation and current publication. Remove both `HUB_ROUTE_PUBLICATION_MANIFEST` and
+`HUB_ROUTE_PUBLICATION_PUBLIC_KEY` after observation rather than leaving an expired manifest in runtime startup
 configuration; prepare a fresh one when the publication or route changes.
+
+For registry setup instructions, configure `HUB_REGISTRY_CACHE_PUBLIC_KEYS` on
+the Hub Worker as a JSON object mapping registry slugs to lists of Nix public
+keys (`name:base64-of-raw-32-byte-Ed25519-key`). These public keys must match the
+`Sig` identifiers and signing keys in the uploaded narinfos. Registry SSH trust
+keys remain separate and are used only in the APM and module instructions.

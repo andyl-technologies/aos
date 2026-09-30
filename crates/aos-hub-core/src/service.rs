@@ -2511,6 +2511,8 @@ pub struct RpcService {
     pub jwt_keys: JwtKeys,
     /// Externally reachable base URL, used to build the canonical upload URL.
     pub external_url: String,
+    /// Cache-specific Nix public keys published in each registry's setup instructions.
+    pub(crate) registry_cache_public_keys: BTreeMap<String, Vec<String>>,
     /// Public base URL exposing the instance-default storage binding directly.
     ///
     /// When configured, public registries on a reconciled complete placement
@@ -10118,6 +10120,7 @@ impl RpcService {
             db,
             jwt_keys,
             external_url,
+            registry_cache_public_keys: BTreeMap::new(),
             default_public_delivery_url: None,
             container_rollout: crate::container_rollout::ContainerRollout::default(),
             ratelimit,
@@ -10136,6 +10139,33 @@ impl RpcService {
             release_evidence: None,
             pack_validation: pack_validation_gate(),
         }
+    }
+
+    /// Attaches the Nix cache public keys advertised for each registry.
+    ///
+    /// Registry SSH signing keys authenticate Git objects. Cache keys authenticate
+    /// NAR archives and use Nix's raw Ed25519 key format instead.
+    ///
+    /// # Errors
+    /// Returns an error if a cache key is unnamed, malformed, or noncanonical.
+    pub fn with_registry_cache_public_keys(
+        mut self,
+        keys: BTreeMap<String, Vec<String>>,
+    ) -> anyhow::Result<Self> {
+        for registry_keys in keys.values() {
+            for key in registry_keys {
+                let (name, encoded) = key
+                    .split_once(':')
+                    .context("Nix cache public key requires name:base64")?;
+                anyhow::ensure!(!name.is_empty(), "Nix cache public key name is empty");
+                let canonical =
+                    crate::nix_sign::nix_public_key_from_raw(name, encoded.trim_end_matches('='))?;
+                anyhow::ensure!(canonical == *key, "Nix cache public key is noncanonical");
+            }
+        }
+
+        self.registry_cache_public_keys = keys;
+        Ok(self)
     }
 
     /// Attaches the public origin for the instance-default storage binding.
