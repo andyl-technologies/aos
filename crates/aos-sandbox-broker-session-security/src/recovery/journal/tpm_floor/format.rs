@@ -11,20 +11,20 @@ pub(super) const PROFILE_BYTES: usize = 112;
 pub(super) const CHECKPOINT_BYTES: usize = 156;
 pub(super) const INTENT_BYTES: usize = 12 + 2 * CHECKPOINT_BYTES;
 pub(super) const NV_ATTRIBUTES_DEFINED: u32 = 0x0004_0044;
-pub(super) const NV_ATTRIBUTES_WRITTEN: u32 = NV_ATTRIBUTES_DEFINED | 0x2000_0000;
+pub(crate) const NV_ATTRIBUTES_WRITTEN: u32 = NV_ATTRIBUTES_DEFINED | 0x2000_0000;
 const SCOPE_DOMAIN: &[u8] = b"aos.sandbox.broker-session.tpm-floor.scope.v1\0";
 const EXTEND_DOMAIN: &[u8] = b"aos.sandbox.broker-session.tpm-floor.extend.v1\0";
 
 /// Selects a fixed endpoint and a collision-checked local owner NV handle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum FloorEndpointV1 {
+pub(crate) enum FloorEndpointV1 {
     ControllerStorageClient = 1,
     StorageBroker = 2,
 }
 
 impl FloorEndpointV1 {
     /// These are local owner assignments, not globally registered TCG handles.
-    pub(super) const fn nv_index(self) -> u32 {
+    pub(crate) const fn nv_index(self) -> u32 {
         match self {
             Self::ControllerStorageClient => 0x0180_a046,
             Self::StorageBroker => 0x0180_a047,
@@ -34,7 +34,7 @@ impl FloorEndpointV1 {
 
 /// Pins one already provisioned deployment, endpoint, and TPM salt key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct FloorProfileV1 {
+pub(crate) struct FloorProfileV1 {
     endpoint: FloorEndpointV1,
     node: [u8; 16],
     deployment_epoch: [u8; 16],
@@ -67,7 +67,7 @@ impl FloorProfileV1 {
         })
     }
 
-    pub(super) const fn endpoint(self) -> FloorEndpointV1 {
+    pub(crate) const fn endpoint(self) -> FloorEndpointV1 {
         self.endpoint
     }
 
@@ -79,7 +79,7 @@ impl FloorProfileV1 {
         self.node
     }
 
-    pub(super) const fn salt_key_name_digest(self) -> [u8; 32] {
+    pub(crate) const fn salt_key_name_digest(self) -> [u8; 32] {
         self.salt_key_name_digest
     }
 
@@ -118,7 +118,7 @@ impl FloorProfileV1 {
     }
 
     /// Computes the Name of the exact written TPMS_NV_PUBLIC, without a TPM2B prefix.
-    pub(super) fn nv_name(self) -> [u8; 34] {
+    pub(crate) fn nv_name(self) -> [u8; 34] {
         let mut public = [0; 14];
         public[0..4].copy_from_slice(&self.endpoint.nv_index().to_be_bytes());
         public[4..6].copy_from_slice(&0x000b_u16.to_be_bytes());

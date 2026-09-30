@@ -33,7 +33,16 @@ pub(super) mod runtime;
 
 use sha2::{Digest as _, Sha256};
 
-use format::{FloorCheckpointV1, FloorCutV1, FloorIntentV1, FloorProfileV1};
+use format::{FloorCheckpointV1, FloorCutV1, FloorIntentV1};
+
+pub(crate) use format::FloorProfileV1;
+pub(crate) use backend::{
+    AuthenticatedNvObservationV1, BrokerPhysicalOpenV1, HelperObservationV1, HelperOperationV1,
+    LOCK_ACK_BYTES, MeasuredHelperImageV1, NV_ATTRIBUTES_WRITTEN, RESPONSE_BYTES,
+    RetainedFloorServicePolicyV1, decode_response_v2, encode_auth_v2, encode_hello_v2,
+    encode_request_v2, require_broker_floor_helper_v1, require_broker_floor_owner_v1,
+    require_lock_ack_v2,
+};
 
 /// Classifies one exact recovery cut without granting journal or effect authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,7 +59,7 @@ enum FloorRecoveryV1 {
 
 /// Reports redacted failures without exposing index auth or configured identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub(in crate::recovery::journal) enum FloorErrorV1 {
+pub(crate) enum FloorErrorV1 {
     #[error("TPM floor encoding is noncanonical")]
     Encoding,
     #[error("TPM floor provisioning does not match")]
