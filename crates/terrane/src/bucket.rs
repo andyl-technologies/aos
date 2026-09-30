@@ -306,6 +306,19 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         &self.inner.fs
     }
 
+    /// Returns configured operator ownership without deriving it from payload metadata.
+    ///
+    /// This trusted input supplies no physical registration or exclusion proof.
+    /// Actual authority checks independently compare the opened namespace,
+    /// protected control and held coordination identity against it.
+    pub(crate) fn publication_operator_uid(&self) -> Option<u32> {
+        self.inner
+            .config
+            .publication_control
+            .as_ref()
+            .map(|control| control.operator_uid)
+    }
+
     fn path(&self, key: &BucketKey) -> PathBuf {
         self.inner.config.root.join(key.as_str())
     }

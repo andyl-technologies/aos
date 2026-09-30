@@ -9,7 +9,16 @@
 pub(crate) mod native_guard;
 
 use crate::bucket::publication::SelectedObservation;
+use crate::store::StoreFailure;
 use terrane_core::gc::publication::{LogicalChange, PublicationProof, PublicationState};
+
+/// Retains genuine request checks for the final selected-slot dispatch.
+#[cfg(feature = "send")]
+type FinalCheck<'operation> = dyn Fn() -> Result<(), StoreFailure> + Send + Sync + 'operation;
+
+/// Retains genuine request checks without imposing native runtime bounds.
+#[cfg(not(feature = "send"))]
+type FinalCheck<'operation> = dyn Fn() -> Result<(), StoreFailure> + 'operation;
 
 /// Binds one checked transition to its actual retained backend observations.
 ///
@@ -22,6 +31,7 @@ pub(crate) struct CheckedMutation<'operation, 'held> {
     next: PublicationState,
     changes: Vec<LogicalChange>,
     evidence: CheckedEvidence,
+    final_check: Box<FinalCheck<'operation>>,
 }
 
 /// Distinguishes genuine Guard installation from checked candidate admission.
@@ -31,6 +41,21 @@ enum CheckedEvidence {
 }
 
 impl<'operation, 'held> CheckedMutation<'operation, 'held> {
+    /// Rechecks genuine operation authority immediately before slot dispatch.
+    ///
+    /// The backend invokes this after every asynchronous staging operation and
+    /// before dispatching its final create-once primitive. The producer retains
+    /// actual authenticated requests, trusted selected configuration and clock;
+    /// backend and protected-control exclusions remain held through acknowledgment.
+    /// This synchronous check performs no I/O or recursive lock acquisition.
+    ///
+    /// # Errors
+    /// Rejects expired or retired capability keys, expired tokens, request
+    /// caveat failures, or an elapsed operation deadline at the actual clock.
+    pub(crate) fn recheck_before_slot(&self) -> Result<(), StoreFailure> {
+        (self.final_check)()
+    }
+
     /// Borrows the exact destination observation checked by the producer.
     pub(crate) fn observed(&self) -> &'operation SelectedObservation<'held> {
         self.observed

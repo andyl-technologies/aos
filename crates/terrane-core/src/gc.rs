@@ -7,7 +7,12 @@
 //! ```text
 //! GcLease = {1: holder, 2: epoch, 3: expiry}
 //! ```
+//!
+//! Publication codecs carry untrusted record data; native current-root and
+//! destructive-effect authorization remain independent backend obligations.
 
 mod lease;
+
+pub mod publication;
 
 pub use lease::{GcError, GcLease};
