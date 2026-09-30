@@ -75,6 +75,7 @@ fn retryable_read_operation(operation: &StorageWorkOperation) -> bool {
             | StorageWorkOperation::InspectMetadata { .. }
             | StorageWorkOperation::InspectMetadataObjects { .. }
             | StorageWorkOperation::InspectDocumentation { .. }
+            | StorageWorkOperation::InspectDocumentationContent { .. }
             | StorageWorkOperation::InspectOciRange { .. }
             | StorageWorkOperation::HashOciRange { .. }
     )
@@ -765,11 +766,12 @@ impl RemoteStorageWorkClient {
             exchange.finish("http_rejected");
             bail!("storage Worker returned HTTP {status}");
         }
-        let body = read_observed_response(response, MAX_RESULT_BYTES, |length| {
-            exchange.observe_body(length);
-        })
-        .await
-        .inspect_err(|_| exchange.finish("response_read_failed"))?;
+        let body =
+            read_observed_response(response, plan.operation.maximum_result_bytes(), |length| {
+                exchange.observe_body(length);
+            })
+            .await
+            .inspect_err(|_| exchange.finish("response_read_failed"))?;
         let response_bytes = body.len();
         let result: StorageWorkResult = serde_json::from_slice(&body)
             .context("decoding storage work result")
@@ -890,6 +892,7 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "inspect_metadata",
                 "inspect_metadata_objects",
                 "inspect_documentation",
+                "inspect_documentation_content",
                 "inspect_oci_range",
                 "hash_oci_range",
                 "copy_object",
@@ -913,6 +916,15 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
         "hybrid storage Worker protocol, deployment, or R2 binding mismatch"
     );
     Ok(())
+}
+
+/// Runs production storage-result validation for cross-runtime test fixtures.
+///
+/// # Errors
+/// Returns an error for changed fences, invalid outcomes or exceeded costs.
+#[cfg(feature = "test-support")]
+pub fn validate_result_for_test(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result<()> {
+    validate_result(plan, result)
 }
 
 fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result<()> {
@@ -1197,6 +1209,32 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
             );
         }
         (
+            StorageWorkOperation::InspectDocumentationContent {
+                package_name,
+                package_version,
+                platform,
+                artifact,
+            },
+            StorageWorkOutcome::DocumentationContent { document },
+        ) => {
+            anyhow::ensure!(
+                result.source_bytes >= artifact.nar_size
+                    && result.source_bytes
+                        <= artifact
+                            .nar_size
+                            .checked_add(MAX_METADATA_BYTES as u64)
+                            .context("documentation content source limit overflowed")?,
+                "documentation content source accounting exceeded its admitted limit"
+            );
+            aos_hub_core::indexer::validate_package_documentation_content(
+                document,
+                package_name,
+                package_version,
+                platform,
+                artifact,
+            )?;
+        }
+        (
             StorageWorkOperation::InspectOciRange { path, start, end },
             StorageWorkOutcome::OciRange {
                 source,
@@ -1343,6 +1381,10 @@ impl HybridSurfaceProvider {
 
 #[async_trait]
 impl SurfaceProvider for HybridSurfaceProvider {
+    fn storage_local_documentation_inspection(&self) -> bool {
+        true
+    }
+
     fn storage_local_git_inspection(&self) -> bool {
         true
     }
@@ -1670,6 +1712,31 @@ impl SurfaceFetch for HybridSurfaceFetch {
             return complete.context("documentation inspection returned no pages");
         }
         bail!("documentation inspection exceeded its page limit")
+    }
+
+    async fn package_documentation_content(
+        &self,
+        package_name: &str,
+        package_version: &str,
+        platform: &str,
+        artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+    ) -> Result<aos_doc_model::PackageDocumentation> {
+        let plan = self.work.plan_for_placement(
+            &self.placement,
+            &self.binding,
+            StorageWorkOperation::InspectDocumentationContent {
+                package_name: package_name.into(),
+                package_version: package_version.into(),
+                platform: platform.into(),
+                artifact: artifact.clone(),
+            },
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let result = self.execute(&plan).await?;
+        let StorageWorkOutcome::DocumentationContent { document } = result.outcome else {
+            bail!("storage Worker returned an unexpected documentation content result");
+        };
+        Ok(document)
     }
 
     async fn inspect_git_object(
@@ -2871,6 +2938,7 @@ mod tests {
                 "inspect_metadata".into(),
                 "inspect_metadata_objects".into(),
                 "inspect_documentation".into(),
+                "inspect_documentation_content".into(),
                 "inspect_oci_range".into(),
                 "hash_oci_range".into(),
                 "copy_object".into(),

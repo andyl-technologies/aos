@@ -23,6 +23,9 @@ pub const MAX_PLAN_BYTES: usize = 1024 * 1024;
 const MAX_MULTIPART_PART_ETAG_BYTES: usize = 1024;
 /// Maximum semantic response size sent back to Native.
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
+/// Maximum canonical documentation query output plus its fixed result envelope.
+/// All other operations retain [`MAX_RESULT_BYTES`]; NAR bytes stay at storage.
+pub const MAX_DOCUMENTATION_CONTENT_RESULT_BYTES: usize = aos_doc_model::MAX_DOCUMENT_BYTES + 1024;
 /// Maximum full-object verification size in the streaming R2 executor.
 pub const MAX_VERIFY_SOURCE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 /// Maximum decoded Git object content returned by one storage-local inspection.
@@ -170,6 +173,17 @@ pub enum StorageWorkOperation {
         /// Zero-based position in the deterministic search-then-option rows.
         cursor: usize,
     },
+    /// Parses one signed documentation NAR and returns its canonical document.
+    InspectDocumentationContent {
+        /// Exact package name selected from the signed release.
+        package_name: String,
+        /// Exact package version selected from the signed release.
+        package_version: String,
+        /// Exact selected platform.
+        platform: String,
+        /// Immutable signed source and canonical document identities.
+        artifact: aos_registry_surface::manifest::DocumentationArtifactMeta,
+    },
     /// Reads one bounded range from a canonical OCI content-addressed blob.
     InspectOciRange {
         /// Canonical OCI blob key.
@@ -291,6 +305,15 @@ pub enum StorageWorkOperation {
 }
 
 impl StorageWorkOperation {
+    /// Returns the response limit for this exact admitted query.
+    #[must_use]
+    pub const fn maximum_result_bytes(&self) -> usize {
+        match self {
+            Self::InspectDocumentationContent { .. } => MAX_DOCUMENTATION_CONTENT_RESULT_BYTES,
+            _ => MAX_RESULT_BYTES,
+        }
+    }
+
     /// Returns the sorted provider credential purposes needed by an external binding.
     #[must_use]
     pub const fn credential_purposes(&self) -> &'static [&'static str] {
@@ -302,6 +325,7 @@ impl StorageWorkOperation {
             | Self::InspectMetadata { .. }
             | Self::InspectMetadataObjects { .. }
             | Self::InspectDocumentation { .. }
+            | Self::InspectDocumentationContent { .. }
             | Self::InspectOciRange { .. }
             | Self::HashOciRange { .. } => &["read"],
             Self::ListPage { .. } => &["list"],
@@ -329,6 +353,7 @@ impl StorageWorkOperation {
             Self::InspectMetadata { .. } => "inspect_metadata",
             Self::InspectMetadataObjects { .. } => "inspect_metadata_objects",
             Self::InspectDocumentation { .. } => "inspect_documentation",
+            Self::InspectDocumentationContent { .. } => "inspect_documentation_content",
             Self::InspectOciRange { .. } => "inspect_oci_range",
             Self::HashOciRange { .. } => "hash_oci_range",
             Self::CopyObject { .. } => "copy_object",
@@ -542,6 +567,11 @@ pub enum StorageWorkOutcome {
     Documentation {
         /// Fields parsed beside the selected storage placement.
         page: StorageDocumentationPage,
+    },
+    /// Canonical documentation query output, excluding its source NAR wrapper.
+    DocumentationContent {
+        /// Closed canonical model parsed and verified beside storage.
+        document: aos_doc_model::PackageDocumentation,
     },
     /// One exact bounded OCI range from a versioned object snapshot.
     OciRange {
@@ -863,7 +893,13 @@ impl StorageWorkPlan {
                 package_version,
                 platform,
                 artifact,
-                cursor,
+                ..
+            }
+            | StorageWorkOperation::InspectDocumentationContent {
+                package_name,
+                package_version,
+                platform,
+                artifact,
             } => {
                 let valid_selection =
                     [package_name, package_version, platform]
@@ -887,7 +923,13 @@ impl StorageWorkPlan {
                     && artifact.nar_size <= (aos_doc_model::MAX_DOCUMENT_BYTES + 512) as u64
                     && artifact.document_size > 0
                     && artifact.document_size <= aos_doc_model::MAX_DOCUMENT_BYTES as u64;
-                if !valid_selection || !valid_artifact || *cursor > MAX_DOCUMENTATION_ROWS {
+                let valid_cursor = match &self.operation {
+                    StorageWorkOperation::InspectDocumentation { cursor, .. } => {
+                        *cursor <= MAX_DOCUMENTATION_ROWS
+                    }
+                    _ => true,
+                };
+                if !valid_selection || !valid_artifact || !valid_cursor {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }

@@ -90,6 +90,7 @@ pub(crate) async fn execute_external_storage_work(
         | StorageWorkOperation::InspectGitObject { .. }
         | StorageWorkOperation::InspectGitObjects { .. }
         | StorageWorkOperation::InspectDocumentation { .. }
+        | StorageWorkOperation::InspectDocumentationContent { .. }
         | StorageWorkOperation::InspectOciRange { .. }
         | StorageWorkOperation::HashOciRange { .. } => "read",
         StorageWorkOperation::PutMetadata { .. }
@@ -397,6 +398,21 @@ pub(crate) async fn execute_external_storage_work(
             )
             .await?
         }
+        StorageWorkOperation::InspectDocumentationContent {
+            package_name,
+            package_version,
+            platform,
+            artifact,
+        } => {
+            crate::documentation_projection::inspect_content(
+                &fetcher,
+                package_name,
+                package_version,
+                platform,
+                artifact,
+            )
+            .await?
+        }
         StorageWorkOperation::InspectOciRange { path, start, end } => {
             inspect_oci_range(&fetcher, plan, path, *start, *end).await?
         }
@@ -577,6 +593,21 @@ pub(crate) async fn execute_r2_storage_work(
         }
         StorageWorkOperation::InspectMetadataObjects { paths, cursor } => {
             return metadata_batch::inspect(&fetcher, plan, paths, *cursor).await;
+        }
+        StorageWorkOperation::InspectDocumentationContent {
+            package_name,
+            package_version,
+            platform,
+            artifact,
+        } => {
+            crate::documentation_projection::inspect_content(
+                &fetcher,
+                package_name,
+                package_version,
+                platform,
+                artifact,
+            )
+            .await?
         }
         StorageWorkOperation::InspectDocumentation {
             package_name,

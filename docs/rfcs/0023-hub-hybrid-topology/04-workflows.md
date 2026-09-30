@@ -92,9 +92,14 @@ JSON, and builds search/options projections. In hybrid mode the Worker performs
 the NAR read, hash, decode, and schema validation. It returns bounded search
 and option projections plus exact signed-locator evidence for Native to check
 against the release metadata before writing the SQL documentation index. Search
-and navigation then run against Native SQL. A document detail request may use
-the Worker to deliver the verified document after Native authorization rather
-than round-tripping its full NAR or JSON through GCP.
+and navigation then run against Native SQL. Authorized detail and artifact
+requests use the closed `inspect_documentation_content` query. The Worker
+reads and parses the signed NAR once and returns only the canonical document
+model, bounded by the existing 4 MiB document limit plus a 1 KiB result
+envelope. Native reconstructs canonical JSON and rechecks its exact signed
+digest, size, package selection and semantic schema. Source NAR and narinfo
+bytes remain beside storage. Every other semantic result retains its 256 KiB
+limit; generic Native object fetch and streaming remain unavailable.
 
 Parsed object caches are optional and disposable. A Worker may address a
 Durable Object by immutable store-object identity plus parser version to

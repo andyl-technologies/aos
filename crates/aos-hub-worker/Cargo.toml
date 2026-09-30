@@ -103,6 +103,7 @@ futures-util = "0.3"
 send_wrapper = { version = "0.6", features = ["futures"] }
 
 [dev-dependencies]
+aos-doc-model = { workspace = true }
 aos-hub = { workspace = true, features = ["test-support"] }
 aos-proto-types = { workspace = true }
 # Drives the native unit test for the pure Worker request-routing seam.

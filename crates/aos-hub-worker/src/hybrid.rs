@@ -1004,6 +1004,7 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
             "inspect_metadata".into(),
             "inspect_metadata_objects".into(),
             "inspect_documentation".into(),
+            "inspect_documentation_content".into(),
             "inspect_oci_range".into(),
             "hash_oci_range".into(),
             "copy_object".into(),
@@ -1251,7 +1252,7 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
     };
     let bytes = serde_json::to_vec(&result)
         .map_err(|error| worker::Error::RustError(format!("storage result encoding: {error}")))?;
-    if bytes.len() > MAX_RESULT_BYTES {
+    if bytes.len() > plan.operation.maximum_result_bytes() {
         return Response::error("storage work result exceeds its limit", 413);
     }
     worker::console_log!(

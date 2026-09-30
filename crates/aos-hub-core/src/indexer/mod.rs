@@ -2538,6 +2538,20 @@ pub async fn fetch_package_documentation(
     platform: &str,
     artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
 ) -> Result<aos_doc_model::PackageDocumentation> {
+    if fetch.storage_local_documentation_inspection() {
+        let document = fetch
+            .package_documentation_content(package_name, package_version, platform, artifact)
+            .await?;
+        validate_package_documentation_content(
+            &document,
+            package_name,
+            package_version,
+            platform,
+            artifact,
+        )?;
+        return Ok(document);
+    }
+
     let store_hash = aos_registry_surface::store::store_path_hash(&artifact.store_path)?;
     let narinfo_key = format!("{store_hash}.narinfo");
     let narinfo_bytes = fetch
@@ -2601,6 +2615,35 @@ pub async fn fetch_package_documentation(
     );
     document.verify_semantic_schema_sha256()?;
     Ok(document)
+}
+
+/// Revalidates a typed documentation result against its signed artifact.
+///
+/// # Errors
+/// Returns an error for invalid canonical content, changed size or digest,
+/// foreign package selection, or inconsistent semantic schema identity.
+pub fn validate_package_documentation_content(
+    document: &aos_doc_model::PackageDocumentation,
+    package_name: &str,
+    package_version: &str,
+    platform: &str,
+    artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+) -> Result<()> {
+    let bytes = document.canonical_json()?;
+    anyhow::ensure!(
+        artifact.format == aos_doc_model::DOCUMENT_FORMAT
+            && bytes.len() as u64 == artifact.document_size
+            && hex::encode(Sha256::digest(&bytes))
+                == aos_registry_surface::store::canonical_digest_hex(&artifact.document_sha256)?
+            && document.package.name == package_name
+            && document.package.version == package_version
+            && document.package.platform == platform
+            && document.identity.semantic_schema_sha256 == artifact.semantic_schema_sha256
+            && document.identity.system_module_nar_hash == artifact.system_module_nar_hash,
+        "documentation content disagrees with the signed artifact"
+    );
+    document.verify_semantic_schema_sha256()?;
+    Ok(())
 }
 
 async fn verify_package_documentation(

@@ -454,6 +454,7 @@ name = "aos-hub-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-doc-model",
  "aos-hub",
  "aos-hub-core",
  "aos-oci-types",

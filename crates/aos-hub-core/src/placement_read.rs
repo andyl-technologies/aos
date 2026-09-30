@@ -87,6 +87,96 @@ impl TopologySurfaceFetch {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl SurfaceFetch for TopologySurfaceFetch {
+    fn storage_local_documentation_inspection(&self) -> bool {
+        self.provider.storage_local_documentation_inspection()
+    }
+
+    async fn package_documentation_content(
+        &self,
+        package_name: &str,
+        package_version: &str,
+        platform: &str,
+        artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+    ) -> Result<aos_doc_model::PackageDocumentation> {
+        let path = format!(
+            "{}.narinfo",
+            aos_registry_surface::store::store_path_hash(&artifact.store_path)?
+        );
+        let plan = self
+            .db
+            .readable_surface_placements(self.surface, self.requirement(&path))
+            .await?;
+        let mut last_retryable = None;
+        for placement in plan.candidates {
+            let attempt = async {
+                self.provider
+                    .placement_fetcher(&placement)
+                    .await?
+                    .package_documentation_content(
+                        package_name,
+                        package_version,
+                        platform,
+                        artifact,
+                    )
+                    .await
+            }
+            .await;
+            match attempt {
+                Ok(document) => return Ok(document),
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_retryable.unwrap_or_else(|| {
+            terminal_read_error("documentation has no readable complete placement")
+        }))
+    }
+
+    async fn inspect_package_documentation(
+        &self,
+        package_name: &str,
+        package_version: &str,
+        platform: &str,
+        artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+    ) -> Result<crate::fetch::DocumentationInspection> {
+        let path = format!(
+            "{}.narinfo",
+            aos_registry_surface::store::store_path_hash(&artifact.store_path)?
+        );
+        let plan = self
+            .db
+            .readable_surface_placements(self.surface, self.requirement(&path))
+            .await?;
+        let mut last_retryable = None;
+        for placement in plan.candidates {
+            let attempt = async {
+                self.provider
+                    .placement_fetcher(&placement)
+                    .await?
+                    .inspect_package_documentation(
+                        package_name,
+                        package_version,
+                        platform,
+                        artifact,
+                    )
+                    .await
+            }
+            .await;
+            match attempt {
+                Ok(inspection) => return Ok(inspection),
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_retryable.unwrap_or_else(|| {
+            terminal_read_error("documentation has no readable complete placement")
+        }))
+    }
+
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
         let plan = self
             .db

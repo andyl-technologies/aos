@@ -434,6 +434,21 @@ pub trait SurfaceFetch: BackendBounds {
         bail!("this surface does not support storage-local documentation inspection")
     }
 
+    /// Returns the canonical document parsed and verified beside storage.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported projection, invalid source identity,
+    /// oversized content, or a document inconsistent with the signed artifact.
+    async fn package_documentation_content(
+        &self,
+        _package_name: &str,
+        _package_version: &str,
+        _platform: &str,
+        _artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+    ) -> Result<aos_doc_model::PackageDocumentation> {
+        bail!("this surface does not support storage-local documentation content")
+    }
+
     /// Reads one verified Git object through a storage-local inspection port.
     ///
     /// Only providers returning `true` from
@@ -917,6 +932,11 @@ pub trait OriginFetch: BackendBounds {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceProvider: BackendBounds {
+    /// Whether readers parse documentation NARs beside object storage.
+    fn storage_local_documentation_inspection(&self) -> bool {
+        false
+    }
+
     /// Whether readers from this provider support storage-local Git inspection.
     fn storage_local_git_inspection(&self) -> bool {
         false
