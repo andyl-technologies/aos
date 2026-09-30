@@ -1102,6 +1102,7 @@ in {
     environment.systemPackages = [
       pkgs.bash
       pkgs.coreutils
+      pkgs.glibc-tools
       pkgs.findutils
       pkgs.grep
       pkgs.sed
