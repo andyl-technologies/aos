@@ -10,10 +10,11 @@ loop. The generated graph retains the exact selected implementation and typed
 dependencies. An enabled effect without a handler fails before host mutation.
 Unused interfaces and reference-only evaluation need no selected handler.
 
-The publishing/installing consumer supplies authenticated release resolution and
-artifact admission. The generic evaluator does not infer authorization from an
-import, store path, or declaration. Production registry integration is a remaining
-consumer migration.
+APR authenticates exact deployment and documentation companions in release
+metadata. APM resolves the selected module closure and admits its retained
+artifacts before execution. Module-only dependencies remain available for
+offline reconfiguration without installing their payloads. The generic evaluator
+does not infer authorization from an import, store path, or declaration.
 
 See the [target state](13-target-state.md) and the
 [end-to-end code examples](../../users/aos/runtime-abilities.md).

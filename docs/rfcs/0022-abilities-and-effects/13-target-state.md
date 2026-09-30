@@ -3,7 +3,7 @@
 This is the normative target for RFC-0022. It supersedes the earlier static
 registry/provider model. The [infrastructure cutover](infrastructure-cutover.md)
 describes implemented mechanisms; [consumer migration](consumer-migration.md)
-separates the remaining integrations. The [end-to-end guide](../../users/aos/runtime-abilities.md)
+records implementation checks and qualification limits. The [end-to-end guide](../../users/aos/runtime-abilities.md)
 is the central source of author-facing examples.
 
 ## Ownership and composition
@@ -127,7 +127,9 @@ for the obsolete registry schemas is not the target.
 ## Completion boundary
 
 The native infrastructure, package domains, publication, APM, and generated
-documentation paths are implemented. Final boot handoff and qualification
-consumer integration remain tracked in the migration checklist. No qualification or platform support
-claim follows merely from having the interface. Current journals are bounded
-without automatic compaction; current process transport uses Linux facilities.
+documentation paths are implemented. The isolated boot-to-APM handoff check
+covers adoption, reconfiguration, repeated boot, and recovery. Image consumers
+use canonical provider metadata and separate delivery records. Qualification
+cohorts retain independently checked adopted and selected evaluations.
+No qualification or platform support claim follows merely from having the
+interface. Current journals are bounded without automatic compaction; current process transport uses Linux facilities.

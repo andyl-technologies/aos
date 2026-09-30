@@ -27,6 +27,6 @@ presentation client. Build, publication, deployment evaluation, and runtime
 execution remain distinct phases. The caller owns release authentication and
 profile publication; the generation journal owns the committed transaction.
 
-[Consumer migration](consumer-migration.md) records remaining integration and
-qualification work. The source-built `checks.effects`
+[Consumer migration](consumer-migration.md) records implementation checks and
+qualification limits. The source-built `checks.effects`
 fixture and `package_deployment_check` example exercise the new path independently.

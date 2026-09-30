@@ -1,7 +1,7 @@
 # Migration status and qualification
 
-The native cutover is being completed in the same PR. Superseded APIs are
-removed with their callers; there are no compatibility adapters between the
+The native infrastructure and consumer cutover are implemented in the same PR.
+Superseded APIs are removed with their callers; there are no compatibility adapters between the
 unreleased designs. This page separates implementation from qualification of
 an actual system image.
 
@@ -48,17 +48,33 @@ model. Release ownership and source provenance link packages, operations,
 selected handlers, and configured effects. Desired configuration, journal
 receipts, and observed live state remain distinct.
 
-## Integration being closed
+## Completed integration checks
 
-- Complete the actual first-host adoption check through repeated boot, operator
-  reconfiguration with module-only dependencies, and recovery.
-- Finish shared canonical image metadata production and its delivery-record,
-  conversion, publication, and staging consumers.
-- Finish qualification callers with independently committed adopted-baseline
-  and selected-target evaluations. Run their bounded schema, source-custody,
-  and graph checks after the final consumer cutover.
-- Remove the remaining obsolete public CLI/test callers and check the final
-  generated documentation and PR description against the implemented APIs.
+Image production, conversion, publication inspection, and staging share canonical
+provider metadata with a separate neutral delivery record. Finalization uses the
+same serializer for observed filesystem, GPT, and EFI facts. Conversion preserves
+the provider document rather than copying its schema into a second representation.
+The source-built metadata fixture checks actual filesystem, GPT, FAT, and EFI
+artifacts and rejects a changed payload outside the committed partition.
+
+Qualification retains independent adopted-baseline and selected-target evaluations.
+The bounded registry checks 15 required operations across six domain cohorts.
+Actual image graph assertions verify that adoption does not execute the future
+transition, the selected graph contains its required operation, and source custody
+survives the switch. Ordinary service baselines retain their handler and dependency
+configuration. These are construction and source checks, not executed release claims.
+
+The package and release Rust suites pass 1,102 tests; focused model, handler,
+metadata, Hub, and CLI suites cover their own boundaries. Source-built effects
+checks cover module merging, portable constraints, generated references, source
+retention, and domain handlers. The package-wide platform and generated-companion
+evaluation also passes. Build and runtime validators share nonempty and single-line
+string constraints, including after deferred result substitution.
+
+The isolated first-host check passes authorized metadata adoption before effects,
+repeat boot without duplicate dispatch, operator reconfiguration with module-only
+dependencies, preservation of operator sources across boot, and observation-based
+recovery after an interrupted effect.
 
 Source-built checks already exercise retained-source evaluation, actual garbage
 collection, EROFS materialization, and signed publication companions. Realized
