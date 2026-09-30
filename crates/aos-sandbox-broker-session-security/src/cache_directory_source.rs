@@ -22,7 +22,8 @@ use aos_filesystem_view_core::ObjectSource;
 use aos_sandbox_core::{ObjectDescriptor, ProjectId};
 use aos_sandbox_linux::immutable_file::{
     FsVerityPublicationRoot, InvalidPublicationName, ObserveSealedPublicationError,
-    ObservedSealedPublicationReader, PublicationName, PublicationRootError,
+    ObservedSealedPublicationFile, ObservedSealedPublicationReader, PublicationName,
+    PublicationRootError,
 };
 use aos_sandbox_linux::path::{BeneathRoot, ResolvedFile};
 
@@ -82,6 +83,42 @@ impl ProjectSealedViewObjectSourceV1 {
     pub const fn project(&self) -> ProjectId {
         self.project
     }
+
+    /// Pins a descriptor-selected sealed input without creating effect authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns the ordinary source error for an unsafe root/name/inode or an
+    /// absent object. The private input owner separately requires exact length.
+    pub(crate) fn open_retained_nix_input_v2(
+        &self,
+        descriptor: &ObjectDescriptor,
+    ) -> Result<ObservedSealedPublicationFile<'_>, ProjectSealedViewSourceErrorV1> {
+        self.open_staged_object(descriptor)
+    }
+
+    /// Rechecks the original fixed project directory, not its publication authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns the existing root error when the retained protected path changed.
+    pub(crate) fn recheck_retained_nix_input_root_v2(
+        &self,
+    ) -> Result<(), ProjectSealedViewSourceErrorV1> {
+        self.root.recheck_protected_path()?;
+        Ok(())
+    }
+
+    fn open_staged_object(
+        &self,
+        descriptor: &ObjectDescriptor,
+    ) -> Result<ObservedSealedPublicationFile<'_>, ProjectSealedViewSourceErrorV1> {
+        let basename = staged_object_name(descriptor);
+        let name = PublicationName::new(OsStr::new(&basename))?;
+        self.root
+            .open_named_sealed(&name, descriptor.encoded_size())?
+            .ok_or(ProjectSealedViewSourceErrorV1::Missing)
+    }
 }
 
 impl ObjectSource for ProjectSealedViewObjectSourceV1 {
@@ -89,12 +126,7 @@ impl ObjectSource for ProjectSealedViewObjectSourceV1 {
     type Reader<'source> = ObservedSealedPublicationReader<'source>;
 
     fn open(&mut self, descriptor: &ObjectDescriptor) -> Result<Self::Reader<'_>, Self::Error> {
-        let basename = staged_object_name(descriptor);
-        let name = PublicationName::new(OsStr::new(&basename))?;
-        let file = self
-            .root
-            .open_named_sealed(&name, descriptor.encoded_size())?
-            .ok_or(ProjectSealedViewSourceErrorV1::Missing)?;
+        let file = self.open_staged_object(descriptor)?;
         Ok(file.into_reader())
     }
 }
