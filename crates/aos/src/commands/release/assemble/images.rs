@@ -13,14 +13,14 @@ use aos_image_finalizer::result::{FinalizedImageKind, FinalizedImageSetV1};
 use aos_release::artifact::{ArtifactKind, ArtifactRelation, ArtifactRelationship, Compression};
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
-use aos_release::plan::{PlannedArtifact, ReleasePlanV1};
+use aos_release::plan::{PlannedArtifact, ReleasePlan};
 use aos_release::platform::{MatrixCell, Platform};
 
 use super::{ArtifactAttributes, PayloadBuilder};
 
 pub(super) fn assemble(
     roots: &[PathBuf],
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
     nix: &NixRunner,
     payload: &mut PayloadBuilder,
 ) -> Result<()> {
@@ -224,7 +224,7 @@ fn tool_owner_nar_hash(
 }
 
 fn planned_cell<'a>(
-    plan: &'a ReleasePlanV1,
+    plan: &'a ReleasePlan,
     variant: &str,
     platform: Platform,
 ) -> Result<&'a [PlannedArtifact]> {
@@ -245,7 +245,7 @@ fn planned_cell<'a>(
 }
 
 fn planned_nar_hashes(
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
     nix: &NixRunner,
 ) -> Result<BTreeMap<String, Sha256Digest>> {
     let paths = plan

@@ -78,12 +78,24 @@
 
   makeBinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/bin") pkgsList);
   makeSbinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/sbin") pkgsList);
+
+  # Both image construction and on-host manifest evaluation must enforce the
+  # same package/module invariants before publishing an activation candidate.
+  failedAssertions = builtins.filter (assertion: !assertion.assertion) config.assertions;
+  assertionCheck =
+    if failedAssertions == []
+    then null
+    else
+      throw ''
+        Failed assertions:
+        ${lib.concatStringsSep "\n" (builtins.map (assertion: "  - ${assertion.message}") failedAssertions)}
+      '';
 in {
   options = {
     ## Assertions checked during system build. If any assertion is
-    ## false, evaluating `system.build.toplevel` throws with every
-    ## failing assertion's message. The config itself is still
-    ## inspectable — only *building* the system fails — so `aos repl`,
+    ## false, evaluating `system.build.toplevel` or the activation manifest
+    ## throws with every failing assertion's message. Other config values remain
+    ## inspectable, so `aos repl`,
     ## `aos show`, and similar introspection tools can still work on a
     ## broken config to help debug the problem.
     assertions = lib.mkOption {
@@ -546,23 +558,10 @@ in {
           mv "$TMPDIR/image.erofs" "$out"
         '';
 
-    # Enforce `config.assertions` and surface `config.warnings` at
-    # `system.build.toplevel` construction time. Matches the nixpkgs
-    # convention (`nixos/modules/system/activation/top-level.nix`):
-    # a broken config is still inspectable via `config.*` — only
-    # forcing `system.build.toplevel` triggers the assertion throw,
-    # which lets `aos repl` / `aos show` / debugging tools still work
-    # on a config that would refuse to build.
+    # Both build and on-host manifest boundaries enforce assertions. Other
+    # config values remain inspectable when diagnosing an invalid candidate.
+    # The image build additionally surfaces non-fatal warnings.
     system.build.toplevel = let
-      failedAssertions = builtins.filter (a: !a.assertion) config.assertions;
-      assertionCheck =
-        if failedAssertions == []
-        then null
-        else
-          throw ''
-            Failed assertions:
-            ${lib.concatStringsSep "\n" (builtins.map (a: "  - ${a.message}") failedAssertions)}
-          '';
       # Emit every warning via `builtins.trace` in a single fold. The
       # trace writes to stderr during evaluation and returns its second
       # argument unchanged, so the chain produces a sentinel value we
@@ -1028,56 +1027,57 @@ in {
         ]
         else [])
       provenance.packageNames);
-    in ({
-        schema = "aos.config-manifest/v1";
-        inherit etc users presets storePaths;
-        jobScripts = jobScripts;
-        units = config.system.build.systemdUnitActions;
-        module_abi = config.aos.system.moduleAbi or 1;
-        inputs = {
-          base_lib = {
-            store_path = baseLibPath;
-            abi_hash = config.aos.config.evalAtBoot.baseLibAbiHash;
-            module_abi = config.aos.system.moduleAbi or 1;
+    in
+      builtins.seq assertionCheck ({
+          schema = "aos.config-manifest/v1";
+          inherit etc users presets storePaths;
+          jobScripts = jobScripts;
+          units = config.system.build.systemdUnitActions;
+          module_abi = config.aos.system.moduleAbi or 1;
+          inputs = {
+            base_lib = {
+              store_path = baseLibPath;
+              abi_hash = config.aos.config.evalAtBoot.baseLibAbiHash;
+              module_abi = config.aos.system.moduleAbi or 1;
+            };
+            evaluator = {
+              store_path = evaluatorPath;
+              store_hash = evaluatorStoreHash;
+            };
+            config_modules = {
+              closure_hash = hashIdentity "[]";
+              count = 0;
+              store_paths = [];
+              nar_hashes = [];
+              package_names = [];
+              origins = [];
+              module_abi_compat = [];
+            };
+            host_nix = {
+              content_hash = hashIdentity "{}";
+              trust_mode = "image";
+              platform = "image";
+              signer_key = null;
+              store_path = emptyHostPath;
+            };
+            instance_facts = {
+              facts_hash = hashIdentity defaultFacts;
+              platform = "image";
+              store_path = pathString defaultFactsFile;
+            };
           };
-          evaluator = {
-            store_path = evaluatorPath;
-            store_hash = evaluatorStoreHash;
-          };
-          config_modules = {
-            closure_hash = hashIdentity "[]";
-            count = 0;
-            store_paths = [];
-            nar_hashes = [];
-            package_names = [];
-            origins = [];
-            module_abi_compat = [];
-          };
-          host_nix = {
-            content_hash = hashIdentity "{}";
-            trust_mode = "image";
-            platform = "image";
-            signer_key = null;
-            store_path = emptyHostPath;
-          };
-          instance_facts = {
-            facts_hash = hashIdentity defaultFacts;
-            platform = "image";
-            store_path = pathString defaultFactsFile;
-          };
-        };
-        packages = [];
-        packageOutputs = {};
-        graph.edges = {};
-        config = builtins.mapAttrs (_: binding: binding.desired) exposeProjectionBindings;
-        credentials = builtins.mapAttrs (_: binding: binding.credentials) exposeProjectionBindings;
-        inherit ownership;
-      }
-      // lib.optionalAttrs (exposeProjectionBindings != {}) {
-        configProjectionBindings = builtins.mapAttrs (_: binding:
-          builtins.removeAttrs binding ["desired" "credentials"])
-        exposeProjectionBindings;
-      });
+          packages = [];
+          packageOutputs = {};
+          graph.edges = {};
+          config = builtins.mapAttrs (_: binding: binding.desired) exposeProjectionBindings;
+          credentials = builtins.mapAttrs (_: binding: binding.credentials) exposeProjectionBindings;
+          inherit ownership;
+        }
+        // lib.optionalAttrs (exposeProjectionBindings != {}) {
+          configProjectionBindings = builtins.mapAttrs (_: binding:
+            builtins.removeAttrs binding ["desired" "credentials"])
+          exposeProjectionBindings;
+        });
 
     # Route builder-side systemd assembly through the emitted manifest. The
     # systemd module's equivalent default exists only so its standalone test
@@ -1121,6 +1121,13 @@ in {
 
         export PATH="${config.system.build.systemPath}"
         export PAGER=less
+
+        for aos_profile_fragment in /etc/profile.d/*.sh; do
+          if [ -r "$aos_profile_fragment" ]; then
+            . "$aos_profile_fragment"
+          fi
+        done
+        unset aos_profile_fragment
 
         if [ -f /etc/profile.local ]; then
           . /etc/profile.local

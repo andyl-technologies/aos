@@ -1,6 +1,6 @@
 //! External signer boundary for image finalization.
 //!
-//! The finalizer constructs complete [`SigningRequestV1`] values and supplies
+//! The finalizer constructs complete [`SigningRequest`] values and supplies
 //! exact input and output paths. Implementations may speak to a hardware token,
 //! PKCS#11 provider, or remote signing service, but never expose private-key
 //! material to this crate.
@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use aos_release::signing::{SignatureResponseV1, SigningRequestV1};
+use aos_release::signing::{SignatureResponse, SigningRequest};
 use async_trait::async_trait;
 
 /// Bounded transformations and detached signatures supplied by a key provider.
@@ -27,11 +27,11 @@ pub trait ImageSigner: Send + Sync {
     /// changes, output limits are exceeded, or response verification fails.
     async fn transform(
         &self,
-        request: &SigningRequestV1,
+        request: &SigningRequest,
         input: &Path,
         output: &Path,
         maximum_output_bytes: u64,
-    ) -> Result<SignatureResponseV1>;
+    ) -> Result<SignatureResponse>;
 
     /// Produces a detached signature over one exact regular input file.
     ///
@@ -45,7 +45,7 @@ pub trait ImageSigner: Send + Sync {
     /// changes, or response verification fails.
     async fn sign_detached(
         &self,
-        request: &SigningRequestV1,
+        request: &SigningRequest,
         input: &Path,
-    ) -> Result<SignatureResponseV1>;
+    ) -> Result<SignatureResponse>;
 }

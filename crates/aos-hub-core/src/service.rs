@@ -38,6 +38,8 @@ mod publication_manifest;
 mod registry_metadata;
 mod registry_policy;
 mod release_publication;
+#[cfg(test)]
+mod release_publication_tests;
 mod surface_topology;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -36666,6 +36668,12 @@ mod cache_upload_tests {
     pub(super) async fn delivery_test_service() -> (RpcService, Arc<Database>) {
         let (service, database, _, _) = injected_service(vec![], vec![]).await;
         (service, database)
+    }
+
+    /// Builds a service and a bearer token holding instance-wide `publish`.
+    pub(super) async fn release_test_service() -> (RpcService, Arc<Database>, String) {
+        let (service, database, _, auth) = injected_service(vec![], vec![]).await;
+        (service, database, auth)
     }
 
     async fn injected_service_with_sealer(

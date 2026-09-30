@@ -23,6 +23,7 @@
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        Environment = "NIX_CONF_DIR=/etc/nix NIX_REMOTE=local";
       };
       script = ''
         set -euo pipefail

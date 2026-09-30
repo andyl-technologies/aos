@@ -4,9 +4,11 @@
 //! the signed plan. Offline consumers need neither Nix nor the source checkout.
 //!
 //! ```text
-//! qualification-contract/v2
+//! qualification-contract
 //!   promises + exclusions + typed targets + claims + requirements + package_rules
-//!   thresholds[edge | candidate | stable | emergency]
+//!   profiles[build | smoke | functional | soak]
+//!   destinations[(surface, tier, channel kind) -> profile]
+//!   fitness[storage-restore | alert-delivery | authority-recovery | hub-restore | key-rotation]
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,23 +20,37 @@ use crate::artifact::require_identifier;
 use crate::digest::Sha256Digest;
 use crate::evidence::GateRequirement;
 use crate::plan::{
-    QUALIFICATION_SNAPSHOT_RELEASE_PREFIX, QUALIFICATION_SNAPSHOT_TAG_PREFIX, ReleaseClass,
-    ReleasePlanV1,
+    QUALIFICATION_SNAPSHOT_RELEASE_PREFIX, QUALIFICATION_SNAPSHOT_TAG_PREFIX, ReleasePlan,
+    SurfaceRole,
 };
 use crate::platform::Platform;
+use crate::registry::RegistryTier;
 
 pub mod capabilities;
+pub mod change_scope;
 pub mod claims;
 pub mod environment;
+mod floors;
+pub mod limits;
+pub mod profiles;
 
 #[cfg(test)]
 mod plan_tests;
 
-/// Schema of archived qualification contracts with untyped environments.
-pub const CONTRACT_V1: &str = "aos.release.qualification-contract/v1";
+pub use change_scope::ChangeScope;
+pub use profiles::{
+    ClaimSelection, ContractDestination, EffectiveProfile, FitnessBinding, FitnessKind,
+    ProfileFitness, ProfileOverridePolicy, QualificationProfile, RolloutPolicy, RolloutRing,
+};
 
-/// Schema of current contracts with typed scopes and assurance obligations.
-pub const CONTRACT_V2: &str = "aos.release.qualification-contract/v2";
+/// Schema of the qualification contract.
+pub const QUALIFICATION_CONTRACT: &str = "aos.release.qualification-contract/v1";
+
+/// Reviewed identity every qualification contract carries.
+pub const QUALIFICATION_CONTRACT_ID: &str = "aos-system";
+
+/// Digest domain for requirement and claim gate policies.
+pub const GATE_POLICY_DOMAIN: &str = "aos.release.gate-policy/v1";
 
 /// Hold point at which evidence authorizes the next release operation.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -86,12 +102,8 @@ pub struct QualificationTarget {
     pub kind: TargetKind,
     /// Whether an absent artifact blocks this contract.
     pub required: bool,
-    /// Archived v1 machine and runtime requirements; forbidden in v2 policy.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub configuration: BTreeMap<String, String>,
-    /// Typed current environment scope, including execution topology.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment: Option<environment::EnvironmentProfile>,
+    /// Typed environment scope, including execution topology.
+    pub environment: environment::EnvironmentProfile,
 }
 
 /// Reference environment kind.
@@ -184,7 +196,7 @@ pub struct PackageRule {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QualificationRequirement {
-    /// Stable requirement identity across release classes.
+    /// Stable requirement identity across destinations.
     pub id: String,
     /// Hold point that requires the result.
     pub phase: QualificationPhase,
@@ -192,8 +204,6 @@ pub struct QualificationRequirement {
     pub scope: QualificationScope,
     /// Required observation method.
     pub method: QualificationMethod,
-    /// Includes the requirement only for the main registry, including edge releases.
-    pub production_only: bool,
     /// Named acceptance conditions; each requires an affirmative observation.
     pub checks: Vec<String>,
     /// Existing Nix regression coverage; never substitutes for live evidence.
@@ -203,20 +213,6 @@ pub struct QualificationRequirement {
     /// Numeric acceptance bounds checked independently of textual assertions.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub measurements: BTreeMap<String, claims::MeasurementRequirement>,
-}
-
-/// Class-dependent obligations in the same server contract.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct QualificationThresholds {
-    /// Required measured mixed-workload observation duration.
-    pub soak_seconds: u64,
-    /// Maximum age of an operational exercise at admission.
-    pub exercise_max_age_seconds: u64,
-    /// Requires a separately signed reviewer attestation.
-    pub require_independent_review: bool,
-    /// Rejects every blocked required package/image cell.
-    pub require_complete_matrix: bool,
 }
 
 /// One authoritative qualification policy for testing and production.
@@ -231,60 +227,41 @@ pub struct QualificationContract {
     pub promises: Vec<String>,
     /// Explicit boundaries of the claims.
     pub exclusions: Vec<String>,
-    /// Thresholds keyed by the closed release-class vocabulary.
-    pub thresholds: BTreeMap<String, QualificationThresholds>,
     /// Required reference environments.
     pub targets: Vec<QualificationTarget>,
     /// Classification of every package eligible on at least one platform.
     pub package_rules: Vec<PackageRule>,
     /// Shared gate catalog.
     pub requirements: Vec<QualificationRequirement>,
-    /// Scoped assurance obligations; absent only in archival v1 contracts.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Scoped assurance obligations.
     pub claims: Vec<claims::QualificationClaim>,
     /// Release-train support promise, copied verbatim into the signed
-    /// registry's `[support]` table; absent only in archival v1 contracts.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub support: Option<aos_registry_surface::support::SupportPolicy>,
+    /// registry's `[support]` table.
+    pub support: aos_registry_surface::support::SupportPolicy,
+    /// Named obligation bundles.
+    pub profiles: Vec<QualificationProfile>,
+    /// Publication table selecting a profile per surface, tier, and channel kind.
+    pub destinations: Vec<ContractDestination>,
+    /// Recurring environment exercises that profiles may require.
+    pub fitness: Vec<FitnessKind>,
 }
 
 impl QualificationContract {
     /// Validates the catalog and minimum server-contract obligations.
     ///
     /// # Errors
-    /// Returns an error for unknown schemas, missing classifications, duplicate
-    /// identities, weakened baseline thresholds, or absent mandatory gates.
+    /// Returns an error for an unknown schema or identity, missing
+    /// classifications, duplicate identities, absent mandatory gates, weakened
+    /// assurance floors, or an invalid support policy, profile, destination,
+    /// or fitness table.
     pub fn validate(&self) -> Result<()> {
-        let current = self.schema_version == CONTRACT_V2;
-        if !matches!(self.schema_version.as_str(), CONTRACT_V1 | CONTRACT_V2)
-            || self.id
-                != if current {
-                    "aos-system-v2"
-                } else {
-                    "aos-server-v1"
-                }
-        {
+        if self.schema_version != QUALIFICATION_CONTRACT || self.id != QUALIFICATION_CONTRACT_ID {
             bail!("unsupported qualification contract");
         }
-        if !current
-            && (!self.claims.is_empty()
-                || self.support.is_some()
-                || self
-                    .requirements
-                    .iter()
-                    .any(|gate| !gate.measurements.is_empty()))
-        {
-            bail!("archival contracts cannot carry current assurance semantics");
-        }
-        if current {
-            let support = self
-                .support
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("current contracts must state a support policy"))?;
-            support
-                .validate()
-                .map_err(|error| anyhow::anyhow!("invalid support policy: {error}"))?;
-        }
+        self.support
+            .validate()
+            .map_err(|error| anyhow::anyhow!("invalid support policy: {error}"))?;
+
         nonempty_strings(&self.promises, "contract promises")?;
         nonempty_strings(&self.exclusions, "contract exclusions")?;
         unique(
@@ -299,6 +276,24 @@ impl QualificationContract {
             self.requirements.iter().map(|gate| gate.id.as_str()),
             "requirement",
         )?;
+        self.validate_package_rules()?;
+        self.validate_targets()?;
+        for gate in &self.requirements {
+            nonempty_strings(&gate.checks, "acceptance conditions")?;
+            claims::merge_measurements(&mut BTreeMap::new(), &gate.measurements)?;
+            for identity in ["subject", "policy", "executor", "environment"] {
+                if !gate.invalidated_by.iter().any(|value| value == identity) {
+                    bail!("requirement {} omits invalidation by {identity}", gate.id);
+                }
+            }
+        }
+        floors::validate_requirement_floors(self)?;
+        claims::validate_claims(self)?;
+        floors::validate_assurance_floors(self)?;
+        profiles::validate_tables(self)
+    }
+
+    fn validate_package_rules(&self) -> Result<()> {
         if self.package_rules.is_empty()
             || self
                 .package_rules
@@ -308,54 +303,37 @@ impl QualificationContract {
             bail!("qualification must classify packages and inherit dependency obligations");
         }
         for rule in &self.package_rules {
-            if let Some(execution) = &rule.execution {
-                if !current {
-                    bail!("archival contracts cannot select package execution environments");
+            let Some(execution) = &rule.execution else {
+                continue;
+            };
+            require_identifier(
+                execution.system_variant(),
+                "package execution image variant",
+            )?;
+            if let PackageExecution::K3sFleet { topology, .. } = execution {
+                if !topology.packages().contains(&rule.name.as_str()) {
+                    bail!("K3s fleet topology does not exercise package {}", rule.name);
                 }
-                require_identifier(
-                    execution.system_variant(),
-                    "package execution image variant",
-                )?;
-                if let PackageExecution::K3sFleet { topology, .. } = execution {
-                    if !topology.packages().contains(&rule.name.as_str()) {
-                        bail!("K3s fleet topology does not exercise package {}", rule.name);
-                    }
-                    for package in topology.packages() {
-                        if !self.package_rules.iter().any(|rule| rule.name == package) {
-                            bail!("K3s fleet lacks its companion package rule {package}");
-                        }
+                for package in topology.packages() {
+                    if !self.package_rules.iter().any(|rule| rule.name == package) {
+                        bail!("K3s fleet lacks its companion package rule {package}");
                     }
                 }
             }
         }
+        Ok(())
+    }
+
+    fn validate_targets(&self) -> Result<()> {
         for target in &self.targets {
             if !target.platform.supports_images() {
                 bail!("reference image/container targets require Linux and explicit configuration");
             }
-            if current {
-                if !target.configuration.is_empty() {
-                    bail!(
-                        "current contracts require typed environments, not legacy configuration strings"
-                    );
-                }
-                let environment = target
-                    .environment
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("target lacks its typed environment"))?;
-                environment.validate(target.platform)?;
-                match (target.kind, environment.boot) {
-                    (TargetKind::Image, environment::BootImplementation::SystemdBootUki)
-                    | (TargetKind::Container, environment::BootImplementation::LinuxContainer) => {}
-                    _ => bail!("target boot implementation differs from its artifact kind"),
-                }
-            } else if target.configuration.is_empty() || target.environment.is_some() {
-                bail!("archival targets require their original configuration representation");
-            }
-            for (key, value) in &target.configuration {
-                require_identifier(key, "target configuration key")?;
-                if value.trim().is_empty() {
-                    bail!("empty target configuration value");
-                }
+            target.environment.validate(target.platform)?;
+            match (target.kind, target.environment.boot) {
+                (TargetKind::Image, environment::BootImplementation::SystemdBootUki)
+                | (TargetKind::Container, environment::BootImplementation::LinuxContainer) => {}
+                _ => bail!("target boot implementation differs from its artifact kind"),
             }
         }
         for platform in [Platform::X86_64Linux, Platform::Aarch64Linux] {
@@ -367,120 +345,10 @@ impl QualificationContract {
                 }
             }
         }
-        for gate in &self.requirements {
-            nonempty_strings(&gate.checks, "acceptance conditions")?;
-            claims::merge_measurements(&mut BTreeMap::new(), &gate.measurements)?;
-            for identity in ["subject", "policy", "executor", "environment"] {
-                if !gate.invalidated_by.iter().any(|value| value == identity) {
-                    bail!("requirement {} omits invalidation by {identity}", gate.id);
-                }
-            }
-        }
-        // These are admission floors, not a second configurable catalog. An
-        // operator cannot select a contract with only an easy smoke gate.
-        for (id, phase, scope, production_only) in [
-            (
-                "build-integrity",
-                QualificationPhase::Build,
-                QualificationScope::Release,
-                false,
-            ),
-            (
-                "package-function",
-                QualificationPhase::Staging,
-                QualificationScope::Packages,
-                false,
-            ),
-            (
-                "image-installation",
-                QualificationPhase::Staging,
-                QualificationScope::Images,
-                false,
-            ),
-            (
-                "image-lifecycle",
-                QualificationPhase::Staging,
-                QualificationScope::Images,
-                false,
-            ),
-            (
-                "image-update-recovery",
-                QualificationPhase::Staging,
-                QualificationScope::Images,
-                false,
-            ),
-            (
-                "container-lifecycle",
-                QualificationPhase::Staging,
-                QualificationScope::Containers,
-                false,
-            ),
-            (
-                "staging-delivery",
-                QualificationPhase::Staging,
-                QualificationScope::Release,
-                false,
-            ),
-            (
-                "operator-recovery",
-                QualificationPhase::Staging,
-                QualificationScope::Release,
-                false,
-            ),
-            (
-                "production-recovery",
-                QualificationPhase::Staging,
-                QualificationScope::Release,
-                true,
-            ),
-            (
-                "rollout-health",
-                QualificationPhase::Rollout,
-                QualificationScope::Release,
-                false,
-            ),
-            (
-                "rollout-observation",
-                QualificationPhase::Complete,
-                QualificationScope::Release,
-                false,
-            ),
-        ] {
-            if !self.requirements.iter().any(|gate| {
-                gate.id == id
-                    && gate.phase == phase
-                    && gate.scope == scope
-                    && gate.production_only == production_only
-            }) {
-                bail!("qualification contract lacks mandatory requirement {id}");
-            }
-        }
-        let classes = ["edge", "candidate", "stable", "emergency"];
-        if self.thresholds.len() != classes.len() {
-            bail!("qualification thresholds must cover exactly four release classes");
-        }
-        for (class, minimum_soak) in classes.into_iter().zip([86400, 604800, 1209600, 1209600]) {
-            let value = self
-                .thresholds
-                .get(class)
-                .ok_or_else(|| anyhow::anyhow!("missing {class} thresholds"))?;
-            if value.soak_seconds < minimum_soak
-                || value.exercise_max_age_seconds == 0
-                || value.exercise_max_age_seconds > 2592000
-                || (class != "edge" && !value.require_independent_review)
-                || (matches!(class, "stable" | "emergency") && !value.require_complete_matrix)
-            {
-                bail!("{class} qualification thresholds weaken the server contract");
-            }
-        }
-        if current {
-            claims::validate_claims(self)?;
-            self.validate_current_floors()?;
-        }
         Ok(())
     }
 
-    /// Computes the policy identity using its original schema domain.
+    /// Computes the policy identity under its schema domain.
     ///
     /// # Errors
     /// Returns an error if canonical encoding fails.
@@ -488,90 +356,185 @@ impl QualificationContract {
         Sha256Digest::of_canonical(&self.schema_version, self)
     }
 
-    /// Returns maturity obligations with registry-specific pipeline assurance.
+    /// Returns the named profile.
     ///
     /// # Errors
-    /// Returns an error for an unknown registry or missing class thresholds.
-    pub fn thresholds_for(
-        &self,
-        registry: &str,
-        class: ReleaseClass,
-    ) -> Result<QualificationThresholds> {
-        let name = match class {
-            ReleaseClass::Edge => "edge",
-            ReleaseClass::Candidate => "candidate",
-            ReleaseClass::Stable => "stable",
-            ReleaseClass::Emergency => "emergency",
-        };
-        let policy = crate::registry::registry_policy(registry)?;
-        let mut thresholds = self
-            .thresholds
-            .get(name)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("missing {name} qualification thresholds"))?;
-        // Software soak and matrix obligations still follow maturity. Review
-        // authority follows the registry even when its software channel is edge.
-        if self.schema_version == CONTRACT_V2 {
-            thresholds.require_independent_review = policy.requires_production_assurance();
-        }
-        Ok(thresholds)
+    /// Returns an error when no profile has that name.
+    pub fn profile(&self, name: &str) -> Result<&QualificationProfile> {
+        self.profiles
+            .iter()
+            .find(|profile| profile.name == name)
+            .ok_or_else(|| anyhow::anyhow!("unknown qualification profile {name}"))
     }
 
-    /// Selects requirements without allowing per-release manual deselection.
+    /// Returns the destination cell for a tier, surface, and channel kind.
     ///
     /// # Errors
-    /// Returns an error for an unknown registry identity.
-    pub fn selected(
+    /// Returns an error when the contract has no such destination.
+    pub fn destination(
         &self,
-        registry: &str,
-        class: ReleaseClass,
-    ) -> Result<impl Iterator<Item = &QualificationRequirement>> {
-        let policy = crate::registry::registry_policy(registry)?;
-        let production = if self.schema_version == CONTRACT_V2 {
-            policy.requires_production_assurance()
-        } else {
-            class != ReleaseClass::Edge
+        tier: RegistryTier,
+        surface: SurfaceRole,
+        channel_kind: &str,
+    ) -> Result<&ContractDestination> {
+        self.destinations
+            .iter()
+            .find(|destination| {
+                destination.registry_tier == tier
+                    && destination.surface == surface
+                    && destination.channel == channel_kind
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!("{surface}/{channel_kind} is not a destination on the {tier} tier")
+            })
+    }
+
+    /// Returns every destination carried by registries of one tier, in contract order.
+    pub fn destinations_for(
+        &self,
+        tier: RegistryTier,
+    ) -> impl Iterator<Item = &ContractDestination> {
+        self.destinations
+            .iter()
+            .filter(move |destination| destination.registry_tier == tier)
+    }
+
+    /// Returns the named fitness kind.
+    ///
+    /// # Errors
+    /// Returns an error when no fitness kind has that identifier.
+    pub fn fitness_kind(&self, kind: &str) -> Result<&FitnessKind> {
+        self.fitness
+            .iter()
+            .find(|fitness| fitness.kind == kind)
+            .ok_or_else(|| anyhow::anyhow!("unknown fitness kind {kind}"))
+    }
+
+    /// Returns the requirement ids every profile requires: the destination-
+    /// independent baseline used for build evidence and snapshots.
+    #[must_use]
+    pub fn baseline_requirements(&self) -> BTreeSet<&str> {
+        let mut profiles = self.profiles.iter();
+        let Some(first) = profiles.next() else {
+            return BTreeSet::new();
         };
-        Ok(self
+        let mut baseline: BTreeSet<&str> = first.requirements.iter().map(String::as_str).collect();
+        for profile in profiles {
+            baseline.retain(|id| profile.requires(id));
+        }
+        baseline
+    }
+
+    /// Derives the gate identity of one requirement.
+    ///
+    /// # Errors
+    /// Returns an error if the requirement cannot be canonically encoded.
+    pub fn requirement_gate(
+        &self,
+        requirement: &QualificationRequirement,
+    ) -> Result<GateRequirement> {
+        Ok(GateRequirement {
+            policy_id: requirement.id.clone(),
+            policy_digest: Sha256Digest::of_canonical(GATE_POLICY_DOMAIN, requirement)?,
+            blocking: true,
+        })
+    }
+
+    /// Derives the gate identity of one claim, bound to its target and
+    /// the referenced requirements in contract order.
+    ///
+    /// # Errors
+    /// Returns an error for an unknown target or requirement, or a failed
+    /// canonical encoding.
+    pub fn claim_gate(&self, claim: &claims::QualificationClaim) -> Result<GateRequirement> {
+        let target = self
+            .targets
+            .iter()
+            .find(|target| target.id == claim.target)
+            .ok_or_else(|| anyhow::anyhow!("claim {} references an unknown target", claim.id))?;
+        let requirements: Vec<_> = self
             .requirements
             .iter()
-            .filter(move |gate| !gate.production_only || production))
+            .filter(|requirement| claim.requirements.contains(&requirement.id))
+            .collect();
+        if requirements.len() != claim.requirements.len() {
+            bail!("claim {} references an unknown requirement", claim.id);
+        }
+        Ok(GateRequirement {
+            policy_id: format!("claim-{}", claim.id),
+            policy_digest: Sha256Digest::of_canonical(
+                GATE_POLICY_DOMAIN,
+                &(claim, target, requirements),
+            )?,
+            blocking: claim.blocks_release,
+        })
     }
 
-    /// Derives the exact gate identities bound into a release plan.
+    /// Returns whether a claim applies under a profile's selection and change scope.
     ///
     /// # Errors
-    /// Returns an error if a requirement cannot be canonically encoded.
-    pub fn gates(&self, registry: &str, class: ReleaseClass) -> Result<Vec<GateRequirement>> {
+    /// Returns an error for an unknown claim target, or a change-scoped profile
+    /// evaluated without a recorded change scope.
+    pub fn claim_applies(
+        &self,
+        profile: &QualificationProfile,
+        claim: &claims::QualificationClaim,
+        scope: Option<&ChangeScope>,
+    ) -> Result<bool> {
+        let selected = match profile.claims {
+            ClaimSelection::None => false,
+            ClaimSelection::Functional => claim.phase == QualificationPhase::Staging,
+            ClaimSelection::Qualified => true,
+        };
+        if !selected {
+            return Ok(false);
+        }
+        if !profile.change_scoped {
+            return Ok(true);
+        }
+        let scope = scope.ok_or_else(|| {
+            anyhow::anyhow!(
+                "change-scoped profile {} requires a recorded change scope",
+                profile.name
+            )
+        })?;
+        let target = self
+            .targets
+            .iter()
+            .find(|target| target.id == claim.target)
+            .ok_or_else(|| anyhow::anyhow!("claim {} references an unknown target", claim.id))?;
+        Ok(match target.kind {
+            TargetKind::Image => scope.image_affecting,
+            TargetKind::Container => scope.container_affecting,
+        })
+    }
+
+    /// Derives the exact gate identities of one destination under a change scope.
+    ///
+    /// Requirement gates follow the profile's requirement list; claim gates
+    /// follow its claim selection, narrowed by the change scope when the
+    /// profile is change-scoped. `scope` may be `None` only for profiles that
+    /// are not change-scoped.
+    ///
+    /// # Errors
+    /// Returns an error for an unknown profile, a change-scoped profile
+    /// without a scope, or a failed canonical encoding.
+    pub fn gates(
+        &self,
+        destination: &ContractDestination,
+        scope: Option<&ChangeScope>,
+    ) -> Result<Vec<GateRequirement>> {
+        let profile = self.profile(&destination.profile)?;
         let mut gates = self
-            .selected(registry, class)?
-            .filter(|requirement| {
-                self.schema_version != CONTRACT_V2
-                    || !matches!(
-                        requirement.scope,
-                        QualificationScope::Images | QualificationScope::Containers
-                    )
-            })
-            .map(|requirement| {
-                Ok(GateRequirement {
-                    policy_id: requirement.id.clone(),
-                    policy_digest: Sha256Digest::of_canonical(
-                        &self.schema_version,
-                        &(requirement, self.thresholds_for(registry, class)?),
-                    )?,
-                    required_for_stable: true,
-                })
-            })
+            .requirements
+            .iter()
+            .filter(|requirement| profile.requires(&requirement.id))
+            .map(|requirement| self.requirement_gate(requirement))
             .collect::<Result<Vec<_>>>()?;
         for claim in &self.claims {
-            gates.push(GateRequirement {
-                policy_id: format!("claim-{}", claim.id),
-                policy_digest: Sha256Digest::of_canonical(
-                    CONTRACT_V2,
-                    &(self, claim, self.thresholds_for(registry, class)?),
-                )?,
-                required_for_stable: claim.blocks_release,
-            });
+            if self.claim_applies(profile, claim, scope)? {
+                gates.push(self.claim_gate(claim)?);
+            }
         }
         Ok(gates)
     }
@@ -579,15 +542,15 @@ impl QualificationContract {
     /// Requires the plan's gate and package populations to match this contract.
     ///
     /// # Errors
-    /// Returns an error for policy drift, missing packages, omitted images, or
-    /// blocked cells where the selected thresholds require completeness.
-    pub fn validate_plan(&self, plan: &ReleasePlanV1) -> Result<()> {
+    /// Returns an error for policy drift, missing packages, omitted images,
+    /// invalid destinations, or blocked cells where a selected profile requires
+    /// completeness.
+    pub fn validate_plan(&self, plan: &ReleasePlan) -> Result<()> {
         self.validate()?;
         let snapshot_release_id =
             format!("{QUALIFICATION_SNAPSHOT_RELEASE_PREFIX}{}", plan.version);
         let snapshot_source_tag = format!("{QUALIFICATION_SNAPSHOT_TAG_PREFIX}{}", plan.version);
         match &plan.qualification_predecessor {
-            None if plan.staging_only => {}
             Some(prior)
                 if prior.registry == plan.registry
                     && prior.release_id != plan.release_id
@@ -603,18 +566,18 @@ impl QualificationContract {
             }
             None if plan.release_id == snapshot_release_id
                 && plan.source.source_tag == snapshot_source_tag
-                && plan.intended_channels.is_empty() => {}
+                && plan.destinations.is_empty() => {}
             _ => {
                 bail!(
                     "server contract requires a distinct same-registry predecessor or an explicitly reserved non-public qualification snapshot"
                 )
             }
         }
-        if plan.gates != self.gates(&plan.registry, plan.release_class)?
-            || plan.public_evidence_policy_digest != self.digest()?
-        {
-            bail!("release gates or evidence policy differ from the frozen qualification contract");
+        if plan.public_evidence_policy_digest != self.digest()? {
+            bail!("release evidence policy differs from the frozen qualification contract");
         }
+        crate::plan::destinations::validate_planned_destinations(plan, self)?;
+
         // The complete inventory also retains packages excluded from every
         // publication target. Blocked eligible targets still require rules.
         let packages: BTreeSet<_> = plan
@@ -653,9 +616,7 @@ impl QualificationContract {
             }
         }
         self.validate_package_execution_images(plan)?;
-        if self
-            .thresholds_for(&plan.registry, plan.release_class)?
-            .require_complete_matrix
+        if self.requires_complete_matrix(plan)?
             && plan.packages.iter().any(|package| {
                 package
                     .platforms
@@ -668,8 +629,21 @@ impl QualificationContract {
         Ok(())
     }
 
+    /// Returns whether any selected obligation rejects blocked matrix cells.
+    ///
+    /// # Errors
+    /// Returns an error for an unknown destination profile.
+    pub fn requires_complete_matrix(&self, plan: &ReleasePlan) -> Result<bool> {
+        for destination in &plan.destinations {
+            if self.profile(&destination.profile)?.require_complete_matrix {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Rejects missing package execution images before builds or signatures.
-    fn validate_package_execution_images(&self, plan: &ReleasePlanV1) -> Result<()> {
+    fn validate_package_execution_images(&self, plan: &ReleasePlan) -> Result<()> {
         use crate::platform::MatrixCell;
 
         for package in &plan.packages {
@@ -707,77 +681,6 @@ impl QualificationContract {
                         cell.platform,
                     );
                 }
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_current_floors(&self) -> Result<()> {
-        use environment::{Accelerator, Backend};
-
-        for (platform, accelerator) in [
-            (Platform::X86_64Linux, Accelerator::Kvm),
-            (Platform::Aarch64Linux, Accelerator::Tcg),
-        ] {
-            if !self.targets.iter().any(|target| {
-                target.required
-                    && target.platform == platform
-                    && target.kind == TargetKind::Image
-                    && target.environment.as_ref().is_some_and(|scope| {
-                        scope.layers.last().is_some_and(|layer| {
-                            matches!(&layer.backend,
-                            Backend::Qemu { accelerator: actual, .. } if *actual == accelerator)
-                        }) && scope.security.secure_boot
-                            && scope.security.measured_boot
-                            && scope.security.verity
-                            && scope.security.encrypted_state
-                            && scope.security.persistent_firmware
-                    })
-            }) {
-                bail!("required QEMU/security baseline is missing for {platform}");
-            }
-        }
-        for (id, scope) in [
-            ("image-observation", QualificationScope::Images),
-            ("container-observation", QualificationScope::Containers),
-        ] {
-            if !self.requirements.iter().any(|gate| {
-                gate.id == id
-                    && gate.scope == scope
-                    && gate.phase == QualificationPhase::Complete
-                    && !gate.production_only
-            }) {
-                bail!("current contract lacks per-configuration observation: {id}");
-            }
-        }
-        for (requirement, measurement, minimum, maximum) in [
-            ("image-installation", "reboot_cycles", 10, None),
-            ("image-installation", "cold_boot_cycles", 3, None),
-            ("image-update-recovery", "update_rollback_cycles", 3, None),
-            ("container-lifecycle", "lifecycle_cycles", 10, None),
-            ("image-observation", "workload_operations", 1, None),
-            ("container-observation", "workload_operations", 1, None),
-            ("image-observation", "data_integrity_failures", 0, Some(0)),
-            (
-                "container-observation",
-                "data_integrity_failures",
-                0,
-                Some(0),
-            ),
-        ] {
-            let bound = self
-                .requirements
-                .iter()
-                .find(|gate| gate.id == requirement)
-                .and_then(|gate| gate.measurements.get(measurement))
-                .ok_or_else(|| {
-                    anyhow::anyhow!("missing required measurement {requirement}/{measurement}")
-                })?;
-            if bound.minimum < minimum
-                || maximum
-                    .is_some_and(|maximum| bound.maximum.is_none_or(|actual| actual > maximum))
-            {
-                bail!("measurement weakens the release baseline: {requirement}/{measurement}");
             }
         }
         Ok(())

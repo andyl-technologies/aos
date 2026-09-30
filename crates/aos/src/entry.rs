@@ -288,108 +288,12 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         return commands::sandbox::run(cli, args).await;
     }
 
-    // Offline release verification uses captured files and public keys only.
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::Verify(args),
-    } = &cli.command
+    // Release steps that need no Nix evaluation (verification, signing,
+    // publication, qualification) run without constructing a Nix environment.
+    if let Commands::Release { command } = &cli.command
+        && !commands::release::requires_nix(command)
     {
-        return commands::release::verify_offline(args, printer);
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::Status(args),
-    } = &cli.command
-    {
-        return commands::release::status_offline(args, printer);
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::ComposeSurface(args),
-    } = &cli.command
-    {
-        return commands::release::compose_surface_offline(args, printer);
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::Signer { command },
-    } = &cli.command
-    {
-        return commands::release::signer_offline(command, printer).await;
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::Stage(args),
-    } = &cli.command
-    {
-        return commands::release::stage_offline(args, printer).await;
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::Qualify(args),
-    } = &cli.command
-    {
-        return commands::release::qualify_offline(args, printer).await;
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::Qualification { command },
-    } = &cli.command
-    {
-        return commands::release::qualification_offline(command, printer).await;
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::QualifyRun(args),
-    } = &cli.command
-    {
-        return commands::release::qualification_run_offline(args, printer).await;
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::Promote(args),
-    } = &cli.command
-    {
-        return commands::release::promote_offline(args, printer).await;
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::Bootstrap(args),
-    } = &cli.command
-    {
-        return commands::release::bootstrap_offline(args, printer).await;
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::Channel { command },
-    } = &cli.command
-    {
-        return commands::release::channel_offline(command, printer).await;
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::Timestamp { command },
-    } = &cli.command
-    {
-        return commands::release::timestamp_offline(command, printer).await;
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::Tuf(args),
-    } = &cli.command
-    {
-        return commands::release::tuf_offline(args, printer).await;
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::PrepareRegistry(args),
-    } = &cli.command
-    {
-        return commands::release::prepare_registry(args, printer).await;
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::FinalizeRegistry(args),
-    } = &cli.command
-    {
-        return commands::release::finalize_registry(args, printer).await;
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::Finalize(args),
-    } = &cli.command
-    {
-        return commands::release::finalize(args, printer).await;
-    }
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::FinalizeCache(args),
-    } = &cli.command
-    {
-        return commands::release::finalize_cache(args, printer).await;
+        return commands::release::run_offline(command, printer).await;
     }
 
     // Local VM runs use downloaded artifacts and host-side QEMU tools.
@@ -398,13 +302,6 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
     }
 
     let nix = NixRunner::new(cli.verbose, cli.quiet)?;
-
-    if let Commands::Release {
-        command: crate::cli::ReleaseCommand::FinalizeImage(args),
-    } = &cli.command
-    {
-        return commands::release::finalize_image(args, &nix, printer).await;
-    }
 
     match &cli.command {
         Commands::Build {
@@ -489,7 +386,9 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
             *min_speed,
         ),
         Commands::Fmt { check, files } => commands::fmt::run(&nix, printer, *check, files),
-        Commands::Release { command } => commands::release::run(command, &nix, printer),
+        Commands::Release { command } => {
+            commands::release::run_with_nix(command, &nix, printer).await
+        }
         Commands::Maintain(_) => unreachable!(),
         Commands::Doc {
             source,

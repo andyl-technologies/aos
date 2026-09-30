@@ -110,9 +110,12 @@ mod tests {
     use aos_hub_core::value::Value;
 
     #[test]
-    fn worker_sql_accepts_production_baseline() {
-        assert_eq!(MIGRATIONS.len(), 1);
-        for statement in split_statements(MIGRATIONS[0]) {
+    fn worker_sql_accepts_every_migration() {
+        assert_eq!(MIGRATIONS.len(), 2);
+        for statement in MIGRATIONS
+            .iter()
+            .flat_map(|migration| split_statements(migration))
+        {
             let (translated, parameters) =
                 prepare(Dialect::Sqlite, &statement, &[]).expect("Worker SQLite translation");
             let (positional, bound) = numbered_to_positional(&translated, &parameters);

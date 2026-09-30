@@ -1,4 +1,8 @@
 //! S3 (`s3://`) cache backend.
+//!
+//! Conditional writes map onto `PutObject` with `If-Match` /
+//! `If-None-Match: *`, so the service evaluates the precondition atomically.
+//! Object versions are `ETag`s; see [`super::conditional`].
 
 use std::io::Write as _;
 use std::sync::Arc;
@@ -6,10 +10,15 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
+use aos_net::protocol::conditional::ETAG;
 use aos_net::{TransferEngine, TransferRequest};
 
+use super::conditional::{
+    ConditionalResponse, read_small_object, send_conditional_put, validate_relative_path,
+};
 use super::{
-    CacheBackend, IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL, add_static_metadata_headers,
+    CacheBackend, ConditionalOutcome, Expectation, IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL,
+    ObjectVersion, add_static_metadata_headers,
 };
 
 /// S3 cache backend.
@@ -42,6 +51,24 @@ impl S3Backend {
         } else {
             format!("s3://{}/{}/{}", self.bucket, self.prefix, path)
         }
+    }
+
+    /// Returns the current `ETag` of the object at `url`, or `None` when it
+    /// does not exist.
+    async fn current_version(&self, url: &str) -> Result<Option<ObjectVersion>> {
+        let head = self
+            .engine
+            .head(url)
+            .await
+            .with_context(|| format!("S3 HeadObject {url}"))?;
+        if head.status == 404 {
+            return Ok(None);
+        }
+
+        let etag = head
+            .header(ETAG)
+            .with_context(|| format!("S3 HeadObject {url} returned no ETag"))?;
+        Ok(Some(ObjectVersion(etag.to_string())))
     }
 }
 
@@ -223,5 +250,61 @@ impl CacheBackend for S3Backend {
             .await
             .with_context(|| format!("S3 PutObject {url}"))?;
         Ok(())
+    }
+
+    async fn get_static_object(
+        &self,
+        relative_path: &str,
+        max_bytes: usize,
+    ) -> Result<Option<(Vec<u8>, ObjectVersion)>> {
+        validate_relative_path(relative_path)?;
+        let url = self.s3_url(relative_path);
+
+        let Some(object) = read_small_object(&self.engine, &url, max_bytes).await? else {
+            return Ok(None);
+        };
+        let etag = object
+            .etag
+            .with_context(|| format!("S3 GetObject {url} returned no ETag"))?;
+        Ok(Some((object.bytes, ObjectVersion(etag))))
+    }
+
+    async fn put_static_file_conditional(
+        &self,
+        relative_path: &str,
+        source: &std::path::Path,
+        content_type: Option<&str>,
+        cache_control: Option<&str>,
+        expect: Expectation,
+    ) -> Result<ConditionalOutcome> {
+        validate_relative_path(relative_path)?;
+        let url = self.s3_url(relative_path);
+
+        let response = send_conditional_put(
+            &self.engine,
+            &url,
+            source,
+            content_type,
+            cache_control,
+            &expect,
+        )
+        .await?;
+
+        match response {
+            ConditionalResponse::Written(Some(etag)) => {
+                Ok(ConditionalOutcome::Written(ObjectVersion(etag)))
+            }
+            // The write is durable, but without its version the caller
+            // cannot chain the next compare-and-swap; fail closed.
+            ConditionalResponse::Written(None) => {
+                anyhow::bail!("S3 PutObject {url} committed but returned no ETag")
+            }
+            // S3 does not report the current ETag with a 412, so re-read it.
+            // It may change again before the caller acts; the caller's next
+            // conditional write detects that.
+            ConditionalResponse::Refused(_) => Ok(ConditionalOutcome::PreconditionFailed {
+                current: self.current_version(&url).await?,
+            }),
+        }
     }
 }

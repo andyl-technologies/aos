@@ -18,6 +18,6 @@ pub mod env;
 pub mod runner;
 pub mod store;
 
-pub use env::aos_nix_env;
+pub use env::{aos_management_nix_env, aos_nix_env};
 pub use runner::NixRunner;
 pub use store::{NixCli, PathInfo};
