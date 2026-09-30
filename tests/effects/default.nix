@@ -38,6 +38,7 @@
     provenanceProjection = import ./provenance-projection.nix;
     selectedOutputContexts = builtins.isString (import ./selected-output-fixture.nix {inherit pkgs lib;}).drvPath;
     selectedQualificationContexts = builtins.isString (import ./selected-qualification-fixture.nix {inherit pkgs lib;}).drvPath;
+    pki = import ./pki.nix {inherit lib pkgs;};
     configurationLower = import ./configuration-lower.nix {inherit lib pkgs;};
   };
   # Force truth as well as evaluation: false regression predicates must fail.

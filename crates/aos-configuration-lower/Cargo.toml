@@ -24,3 +24,7 @@ path = "src/mount_main.rs"
 [[bin]]
 name = "aos-configuration-boot"
 path = "src/boot_main.rs"
+
+[[bin]]
+name = "aos-certificate-bundle"
+path = "src/certificate_main.rs"
