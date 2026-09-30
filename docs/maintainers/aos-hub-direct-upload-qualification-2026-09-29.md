@@ -558,3 +558,40 @@ staging privacy, capacity, throughput or the full fleet. Installer and local
 runtime gates do not supply that independent provider qualification. Current
 integrated fleet and hosted Native acceptance remain pending; no hosted
 performance result is claimed.
+
+## Published follow-up source checkpoints
+
+These source-built gates cover separate runs and scopes; their counts are not
+combined into a new full-suite result.
+
+- [TLS fixtures and snapshot census, `b80ce0d7`](https://github.com/andyl-technologies/aos/commit/b80ce0d7c7bed293e35c17d5cefe308765525f65):
+  the original sandbox run passed 4,831 of 4,835 tests. Its four failed cases
+  subsequently passed in a separate corrected sandbox run. Twenty-one Native
+  scratch tests also passed. The original failures remain recorded.
+- [Acceptance and installer checkpoint, `88a6b8bf17`](https://github.com/andyl-technologies/aos/commit/88a6b8bf170bac83845825d9e49cad9ac6bd7025):
+  12 shared qualification tests and 37 installer tests passed, and the Hub CLI
+  binary compiled. The isolated source set comprised 11 installer/shared files
+  and two Worker integration files. Its default Worker Wasm build passed in
+  1 minute 32 seconds. These gates qualify the tested contracts and compilation.
+- [Authority bootstrap, `4fb8a9fe81`](https://github.com/andyl-technologies/aos/commit/4fb8a9fe81bf486c2dda8d6a9387b5dbf1eb9a64):
+  five tests actually executed and passed, covering real root Plan/Apply,
+  private canonical export, read-only SQLite attachment, stale-pin refusal,
+  authenticated TLS hydration and credential/authority races with revocation.
+  The live PostgreSQL case derived and hydrated through a role restricted to
+  the documented table reads. The standalone binary compiled and its top-level,
+  Export and Hydrate help commands passed. The
+  [operator guide](../users/aos-hub/authority-bootstrap.md) describes the
+  interface; installed package availability remains a fleet gate.
+- [Metadata inventory measurement, `352cbb71d3`](https://github.com/andyl-technologies/aos/commit/352cbb71d3f8aad38c9652855e639068fad59f05):
+  the opt-in Native router/local filesystem fixture actually wrote and
+  SHA-verified 12,535 metadata objects, using 196 Append calls. Seal and Commit
+  reply bodies were 4,202,537 and 4,403,116 bytes; each remained below 8 MiB.
+  Metadata bodies totalled 1,066,900 bytes. Inventory control request and reply
+  body aggregates were 2,598,606 and 8,665,015 bytes respectively. The actual
+  test completed in 51.460 seconds. These are local inventory measurements.
+
+These checkpoints establish no current VM qualification, 2 GiB provider
+transfer, queue execution, throughput, clock bound, staging privacy or hosted
+Native acceptance. The unsupported emulator global capacity policy remains
+work in progress. The front shield and documentation detail projection also
+remain work in progress and are not qualified here.
