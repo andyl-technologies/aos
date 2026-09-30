@@ -1,9 +1,9 @@
-//! Exercises paired native exclusions with independent handles and cancellation.
+//! Exercises single and paired exclusions with independent handles and cancellation.
 
 #![allow(clippy::unwrap_used, reason = "Fixture failures intentionally panic.")]
 
 use super::content_tests::{chunk_identity, raw, upload};
-use super::held::HeldBuckets;
+use super::held::{HeldBuckets, SingleHeld};
 use super::tests::{Selected, Validator, config, fixture, log};
 use super::*;
 use crate::store::{
@@ -497,6 +497,143 @@ async fn held_buckets_identity_matches_independently_opened_physical_namespace()
         pair.destination().physical_identity()
     );
     drop(pair);
+    exercise_single_namespace(&independent_source, &source).await;
     tokio::fs::remove_dir_all(source.root()).await.unwrap();
     tokio::fs::remove_dir_all(destination.root()).await.unwrap();
+}
+
+/// Verifies the gate-selected path performs real single-namespace publication.
+async fn exercise_single_namespace(
+    holder_bucket: &FileBucket<TokioLocalFs, TokioClock, Validator>,
+    independent: &FileBucket<TokioLocalFs, TokioClock, Validator>,
+) {
+    let observed_fs = ObservedFs::new();
+    let writer_bucket = observed_handle(independent, observed_fs.clone()).await;
+    let held = SingleHeld::acquire(holder_bucket).await.unwrap();
+    let source = held.source();
+    let destination = held.destination();
+    assert_eq!(
+        source.identity_proof().physical_identity(),
+        destination.identity_proof().physical_identity()
+    );
+    assert!(!source.identity_proof().writable());
+    assert!(destination.identity_proof().writable());
+    assert_eq!(source.identity_proof().root(), independent.root());
+
+    let name = "refs/heads/_/single";
+    let record = RefRecord::first([7; 32], 1, Locality::default()).selected();
+    assert_eq!(source.ref_get(name).await.unwrap(), None);
+    assert!(matches!(
+        source
+            .ref_cas(name, None, &record)
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::ReadOnly
+    ));
+
+    observed_fs.arm();
+    let mut writer =
+        tokio::spawn(async move { put_bytes(&writer_bucket, b"independent writer").await });
+    tokio::time::timeout(Duration::from_secs(2), observed_fs.attempts.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut writer)
+            .await
+            .is_err()
+    );
+    assert_eq!(observed_fs.acquired.available_permits(), 0);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        destination
+            .ref_log_append(name, 1, &log(record.clone(), None))
+            .await
+            .unwrap();
+        assert!(matches!(
+            destination.ref_cas(name, None, &record).await.unwrap(),
+            RefCasOutcome::Applied
+        ));
+        assert_eq!(source.ref_get(name).await.unwrap(), Some(record.clone()));
+    })
+    .await
+    .unwrap();
+    assert!(!writer.is_finished());
+    drop(held);
+    tokio::time::timeout(Duration::from_secs(2), writer)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+
+    let reopened = FileBucket::open(
+        config(independent.root().to_owned()),
+        TokioLocalFs,
+        TokioClock,
+        Validator,
+    )
+    .await
+    .unwrap();
+    assert_eq!(reopened.ref_get(name).await.unwrap(), Some(record));
+}
+
+#[tokio::test]
+async fn single_held_cancellation_releases_namespace_guard() {
+    let bucket = fixture().await;
+    let task_bucket = bucket.clone();
+    let (ready, received) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let _held = SingleHeld::acquire(&task_bucket).await.unwrap();
+        ready.send(()).unwrap();
+        std::future::pending::<()>().await;
+    });
+    received.await.unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        put_bytes(&bucket, b"after cancellation"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+}
+
+#[tokio::test]
+async fn single_held_refuses_legacy_before_coordination_effects() {
+    use terrane_core::bucket::BucketCapabilities;
+
+    let bucket = fixture().await;
+    let capability_path = bucket.root().join("CAPABILITIES");
+    let mut capabilities =
+        BucketCapabilities::decode(&TokioLocalFs.read(&capability_path).await.unwrap()).unwrap();
+    capabilities.layout_version = 1;
+    capabilities.ref_names = None;
+    let original = capabilities.encode().unwrap();
+    tokio::fs::write(&capability_path, &original).await.unwrap();
+    tokio::fs::remove_dir_all(bucket.root().join(".terrane-locks"))
+        .await
+        .unwrap();
+    let observed_fs = ObservedFs::new();
+    let legacy = FileBucket::open_legacy_read_only(
+        config(bucket.root().to_owned()),
+        observed_fs.clone(),
+        TokioClock,
+        Validator,
+    )
+    .await
+    .unwrap();
+    observed_fs.arm();
+
+    let error = match SingleHeld::acquire(&legacy).await {
+        Ok(_) => panic!("legacy namespace acquired writable exclusion"),
+        Err(error) => error,
+    };
+    assert!(matches!(error.kind(), StoreErrorKind::ReadOnly));
+    assert_eq!(observed_fs.attempts.available_permits(), 0);
+    assert!(!bucket.root().join(".terrane-locks").exists());
+    assert_eq!(TokioLocalFs.read(&capability_path).await.unwrap(), original);
+    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
 }
