@@ -39,6 +39,7 @@ mod evidence;
 mod graph;
 mod graph_v2;
 mod no_escape_terminal;
+mod ordinary_inventory_v6;
 mod original_v5;
 mod pending_v5;
 mod recovery_v2;
@@ -63,6 +64,10 @@ pub use evidence::{MAXIMUM_ROOT_NATIVE_VERIFIER_BYTES_V1, RootNativeTerminalVeri
 pub use graph::{RootNativeHeldGraphV1, validate_native_root_graph_v1};
 pub use graph_v2::{RootNativeDataClassV2, RootNativeHeldGraphV2, validate_native_root_graph_v2};
 pub use no_escape_terminal::{ROOT_NATIVE_NO_ESCAPE_TERMINAL_BYTES_V2, RootNativeNoEscapeTerminalV2};
+pub use ordinary_inventory_v6::{
+    OriginalInventoryTransitionKindV6, OriginalInventoryTransitionV6,
+    validate_original_inventory_transition_v6,
+};
 pub use original_v5::{
     original_root_remaining_v5, validate_original_root_preparation_v5,
     validate_original_root_transition_v5,

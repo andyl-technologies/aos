@@ -547,7 +547,7 @@ pub(super) fn validate_no_interest_cleanup(
     )
 }
 
-fn preserve_attempt(
+pub(super) fn preserve_attempt(
     old: &SourceProviderQueryAttemptV2,
     next: &SourceProviderQueryAttemptV2,
 ) -> Result<()> {
@@ -619,7 +619,7 @@ fn reference(attempt: &SourceProviderQueryAttemptV2) -> RecordRefV2 {
     }
 }
 
-fn head_predecessor(head: &SourceProviderHeadV2) -> ProviderHeadPredecessorWitnessV2 {
+pub(super) fn head_predecessor(head: &SourceProviderHeadV2) -> ProviderHeadPredecessorWitnessV2 {
     let mut id = [0; 32];
     id[..16].copy_from_slice(&head.scope.holder_authority_id);
     id[16..].copy_from_slice(&head.scope.provider_authority_id);

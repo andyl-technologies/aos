@@ -1,6 +1,7 @@
 //! Journal adapter for the shared pure `AOSMSA02` codec.
 
 use aos_sandbox::journal::{JournalRecord, RecordNamespace};
+use aos_sandbox_protocol::mount_source_acquisition_state::InventoryOwnerDerivationErrorV2;
 
 pub(super) use aos_sandbox_protocol::mount_source_acquisition_state::format::*;
 
@@ -9,6 +10,13 @@ use crate::{MountError, Result};
 
 pub(super) fn state_error(message: impl Into<String>) -> MountError {
     MountError::State(message.into())
+}
+
+pub(super) fn inventory_owner_derivation_error(error: InventoryOwnerDerivationErrorV2) -> MountError {
+    match error {
+        InventoryOwnerDerivationErrorV2::Invariant(reason) => state_error(reason),
+        InventoryOwnerDerivationErrorV2::Canonical(error) => error.into(),
+    }
 }
 
 pub(super) fn put_record(record: &StoredRecordV2) -> Result<JournalRecord> {

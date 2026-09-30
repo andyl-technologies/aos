@@ -8,6 +8,7 @@
 
 use aos_sandbox::journal::ProtectedJournalAuthority;
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_protocol::mount_source_acquisition_state::derive_inventory_reservation_head_v2;
 use aos_sandbox_source_provider_protocol::{
     InventoryLeaseStateV1, InventorySourceRequestV1, SignedSourceProviderInventoryV1,
     SignedSourceProviderRequestV1, SourceProviderAuthorityV1, SourceProviderMethod,
@@ -18,8 +19,8 @@ use aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV
 use super::SourceAcquisitionTableV2;
 use super::format::{
     MAXIMUM_LINEAGE_ATTEMPTS, MutationTagV2, acquisition_key, attempt_id, intent_digest,
-    inventory_correlation_set_v2, materialized_record, provider_head_key, provider_session_key,
-    put_record, request_id, state_error,
+    inventory_correlation_set_v2, inventory_owner_derivation_error, materialized_record,
+    provider_head_key, provider_session_key, put_record, request_id, state_error,
 };
 use super::model::*;
 use super::projection::{
@@ -237,14 +238,8 @@ impl SourceAcquisitionTableV2 {
         let attempt_reference = record_ref(&StoredRecordV2::ProviderQueryAttempt {
             value: attempt.clone(),
         })?;
-        let mut next_head = current_head.clone();
-        next_head.revision = next_revision(current_head.revision)?;
-        next_head.next_request_sequence = current_head
-            .next_request_sequence
-            .checked_add(1)
-            .ok_or_else(|| state_error("provider request sequence is exhausted"))?;
-        next_head.pending_attempt = Some(attempt_reference);
-        next_head.record_digest = [0; 32];
+        let next_head = derive_inventory_reservation_head_v2(&current_head, attempt_reference)
+            .map_err(inventory_owner_derivation_error)?;
         let next_head = sealed_head(next_head)?;
         commit_mutation(
             self,
