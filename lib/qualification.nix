@@ -1,6 +1,13 @@
 ##! Closed package-owned qualification probe authoring and projection.
-{abilities}: let
-  limits = abilities.types.limits;
+{}: let
+  limits.maxStringLength = 1048576;
+  packageOutput = {
+    package ? null,
+    output ? "out",
+  }: {
+    _type = "aos-package-output-selector";
+    inherit package output;
+  };
   fail = message: throw "qualification: ${message}";
 
   requireAttrs = context: required: optional: value: let
@@ -34,7 +41,13 @@
       } string";
 
   requireRelativePath = context: value:
-    if abilities.types.relativePath.check value
+    if
+      builtins.isString value
+      && value != ""
+      && builtins.stringLength value <= 4096
+      && builtins.substring 0 1 value != "/"
+      && builtins.all (part: part != "" && part != "." && part != "..")
+      (builtins.filter builtins.isString (builtins.split "/" value))
     then value
     else fail "${context} must be a normalized relative path";
 
@@ -43,6 +56,10 @@
       builtins.isAttrs value
       && builtins.attrNames value == ["_type" "output" "package"]
       && value._type == "aos-package-output-selector"
+      && (value.package == null || (builtins.isString value.package && builtins.stringLength value.package <= 256 && builtins.match "[A-Za-z0-9][A-Za-z0-9+._-]*" value.package != null))
+      && builtins.isString value.output
+      && builtins.stringLength value.output <= 256
+      && builtins.match "[A-Za-z_][A-Za-z0-9_'-]*" value.output != null
     then value
     else fail "${context} must be an exact package-output selector";
 
@@ -153,7 +170,7 @@
     then let
       checked = requireAttrs context ["digest" "kind" "path"] [] value;
     in
-      if !abilities.types.digest.check checked.digest
+      if !(builtins.isString checked.digest && builtins.match "sha256:[0-9a-f]{64}" checked.digest != null)
       then fail "${context}.digest must be a sha256 digest"
       else {
         inherit (checked) kind digest;
@@ -218,10 +235,14 @@
         selectors = [];
       }
       else let
-        normalized = abilities.normalizePackageOutputSelectors {
-          inherit owner;
-          value = fragment.artifact;
-        };
+        normalized =
+          fragment.artifact
+          // {
+            package =
+              if fragment.artifact.package == null
+              then owner
+              else fragment.artifact.package;
+          };
         selector = builtins.removeAttrs normalized ["_type"];
       in {
         value = fragment // {artifact = selector;};
@@ -276,44 +297,18 @@
       ++ builtins.concatMap (entry: entry.selectors) projectedSteps;
   };
 in rec {
-  abilityObserver = {
-    artifact ? abilities.packageOutput {},
-    entryPoint,
-  }: {
-    inherit artifact entryPoint;
-    arguments = abilities.types.record {
-      fields.request_path = abilities.types.string {
-        maxLength = 4096;
-        syntax = null;
-      };
-      optional = [];
-    };
-    result = abilities.types.record {
-      fields = {
-        provider = abilities.types.localKey;
-        kind = abilities.types.localKey;
-        scope = abilities.types.localKey;
-        observation = abilities.types.string {
-          maxLength = 1048576;
-          syntax = null;
-        };
-      };
-      optional = [];
-    };
-  };
-
   literal = text:
     normalizeFragment "literal fragment" {
       kind = "literal";
       inherit text;
     };
-  artifactRoot = {artifact ? abilities.packageOutput {}}:
+  artifactRoot = {artifact ? packageOutput {}}:
     normalizeFragment "artifact-root fragment" {
       kind = "artifact-root";
       inherit artifact;
     };
   artifactPath = {
-    artifact ? abilities.packageOutput {},
+    artifact ? packageOutput {},
     path,
   }:
     normalizeFragment "artifact-path fragment" {
@@ -387,7 +382,7 @@ in rec {
         if namedOutput != null
         then
           artifactPath {
-            artifact = abilities.packageOutput {output = builtins.elemAt namedOutput 0;};
+            artifact = packageOutput {output = builtins.elemAt namedOutput 0;};
             path = builtins.elemAt namedOutput 1;
           }
         else if outputPath != null
@@ -489,6 +484,9 @@ in rec {
       primary = primary.value;
       bad_input = badInput.value;
     };
-    selectors = abilities.canonicalizePackageOutputSelectors (primary.selectors ++ badInput.selectors);
+    selectors = builtins.attrValues (builtins.listToAttrs (map (selector: {
+      name = builtins.toJSON selector;
+      value = selector;
+    }) (primary.selectors ++ badInput.selectors)));
   };
 }

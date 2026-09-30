@@ -246,7 +246,6 @@
           lib = finalLib;
         }
       );
-    storeView = import ./build/store-view.nix {lib = finalLib;};
   };
 
   platformMod = import ./platform.nix;
