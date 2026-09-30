@@ -17,5 +17,5 @@
 mod file;
 mod frame;
 
-pub use file::{FileJournal, JournalOpenResult, JournalSnapshot};
+pub use file::{FileJournal, JournalOpenResult, JournalReader, JournalSnapshot};
 pub use frame::{JournalError, JournalLimits, JournalPayload, JournalRecord, RecoveryReport};
