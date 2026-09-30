@@ -341,8 +341,34 @@ impl LocalFs for TokioLocalFs {
             .map_err(std::io::Error::other)?
     }
 
+    async fn set_permissions_and_sync(
+        &self,
+        path: &std::path::Path,
+        permissions: std::fs::Permissions,
+    ) -> std::io::Result<()> {
+        // Keep the descriptor open across the mode change: reopening a
+        // restrictive final mode may fail for the unprivileged owner.
+        let file = tokio::fs::File::open(path).await?;
+
+        file.set_permissions(permissions).await?;
+        file.sync_all().await
+    }
+
     async fn create_dir_new(&self, path: &std::path::Path) -> std::io::Result<()> {
-        tokio::fs::create_dir(path).await
+        #[cfg(unix)]
+        {
+            let mut builder = tokio::fs::DirBuilder::new();
+            builder.mode(0o700);
+            builder.create(path).await
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "private directory creation unavailable",
+            ))
+        }
     }
 
     async fn remove_dir(&self, path: &std::path::Path) -> std::io::Result<()> {
@@ -392,6 +418,10 @@ mod tests {
             let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
             let root = std::path::PathBuf::from(format!("/tmp/terrane-native-metadata-{suffix}"));
             fs.create_dir_new(&root).await.unwrap();
+            assert_eq!(
+                fs.metadata(&root).await.unwrap().permissions().mode() & 0o777,
+                0o700
+            );
             assert_eq!(
                 fs.create_dir_new(&root).await.unwrap_err().kind(),
                 std::io::ErrorKind::AlreadyExists
@@ -445,6 +475,24 @@ mod tests {
                 Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::Unsupported),
             }
             assert!(fs.remove_dir(&root).await.is_err());
+
+            fs.set_permissions_and_sync(&source, std::fs::Permissions::from_mode(0o0))
+                .await
+                .unwrap();
+            assert_eq!(
+                fs.metadata(&alias).await.unwrap().permissions().mode() & 0o777,
+                0
+            );
+            fs.set_permissions(&source, std::fs::Permissions::from_mode(0o640))
+                .await
+                .unwrap();
+
+            fs.set_permissions_and_sync(&root, std::fs::Permissions::from_mode(0o0))
+                .await
+                .unwrap();
+            fs.set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+                .await
+                .unwrap();
 
             fs.remove_file(&link).await.unwrap();
             fs.remove_file(&alias).await.unwrap();

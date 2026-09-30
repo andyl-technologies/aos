@@ -21,6 +21,15 @@ use alloc::{string::String, vec::Vec};
 use core::fmt;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
+/// Derives the Ed25519 public key for a caller-supplied private seed.
+///
+/// This pure operation performs no entropy or key storage I/O. The caller
+/// supplies and retains the secret through its host binding.
+#[must_use]
+pub fn public_key_from_secret(secret: &[u8; 32]) -> [u8; 32] {
+    SigningKey::from_bytes(secret).verifying_key().to_bytes()
+}
+
 /// Denies authentication or authorization without revealing its cause (AUTH-12).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Unauthorized;

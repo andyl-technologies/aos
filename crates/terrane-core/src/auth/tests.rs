@@ -32,9 +32,7 @@ fn delegate_secret() -> [u8; 32] {
 }
 
 fn delegate_public() -> [u8; 32] {
-    SigningKey::from_bytes(&delegate_secret())
-        .verifying_key()
-        .to_bytes()
+    public_key_from_secret(&delegate_secret())
 }
 
 fn grant(pattern: &str, mask: u8) -> Grant {
@@ -89,6 +87,11 @@ fn request<'a>(locality: &'a Locality, roots: &'a [RequestRoot<'a>]) -> Request<
 
 #[test]
 fn auth_token_chain_golden_preimages_and_signatures() {
+    assert_eq!(
+        public_key_from_secret(&delegate_secret()).as_slice(),
+        hex("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c")
+    );
+
     let token = token();
     assert_eq!(
         format::authority_preimage(&token.authority),

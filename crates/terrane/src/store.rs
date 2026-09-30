@@ -906,7 +906,29 @@ pub trait LocalFs {
         ))
     }
 
-    /// Creates one directory atomically and refuses an existing path.
+    /// Applies permissions and syncs their metadata through the same owned handle.
+    ///
+    /// The binding opens the path before restricting its permissions, so even
+    /// an unreadable final mode can be made durable without reopening it.
+    ///
+    /// # Errors
+    /// Returns an I/O error if opening, changing permissions, or syncing fails.
+    /// The default reports `Unsupported`.
+    async fn set_permissions_and_sync(
+        &self,
+        _path: &std::path::Path,
+        _permissions: std::fs::Permissions,
+    ) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "durable permissions unavailable",
+        ))
+    }
+
+    /// Creates one private directory atomically and refuses an existing path.
+    ///
+    /// A native Unix directory initially excludes group and other access;
+    /// realization may later apply its final permissions.
     ///
     /// # Errors
     /// Returns an I/O error if the operation fails. A binding that does not
