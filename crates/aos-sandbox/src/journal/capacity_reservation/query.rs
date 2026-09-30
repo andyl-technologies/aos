@@ -270,7 +270,10 @@ impl QueryCapacityRecordV6 {
         self.identity
     }
 
-    /// Encodes DATA; global dispatch and generic admission stay closed.
+    /// Encodes canonical Query6 DATA without granting generic admission.
+    ///
+    /// Global family dispatch recognizes this DATA for accounting; named
+    /// authority and owner/reference rejoin remain separately required.
     #[must_use]
     pub(in crate::journal) fn to_journal_record(&self) -> JournalRecord {
         let mut value = self.data.identity_payload();
@@ -301,7 +304,10 @@ impl QueryCapacityRecordV6 {
         )
     }
 
-    /// Decodes the exact key and value without accepting a global family route.
+    /// Decodes exact Query6 DATA for canonical family dispatch and accounting.
+    ///
+    /// Generic admission remains closed; named authority and owner/reference
+    /// rejoin are separate from this key/value validation.
     ///
     /// # Errors
     ///
