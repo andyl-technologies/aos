@@ -45,6 +45,10 @@
     if isDarwin
     then stdenv.cc
     else gccUnwrapped;
+  recordedBinutils =
+    if stdenv.isCross
+    then stdenv.binutils
+    else binutils;
   # Linux cross compilation uses the construction libc. Its public utilities are
   # completed with target Perl later, so recording that public package here
   # would introduce an interpreter/libc dependency cycle.
@@ -92,7 +96,7 @@ in
     # the original configuration for inspection.
     outputChecks = {
       out = {
-        disallowedReferences = [recordedGcc recordedGccUnwrapped recordedCc gnumake];
+        disallowedReferences = [recordedGcc recordedGccUnwrapped recordedCc recordedBinutils gnumake];
       };
     };
 
@@ -310,6 +314,7 @@ in
               "${recordedCc}" \
               "${recordedGcc}" \
               "${recordedGccUnwrapped}" \
+              "${recordedBinutils}" \
               "${recordedLibc}" \
               "${recordedLibc.dev}" \
               "${recordedLibc.static}" \
