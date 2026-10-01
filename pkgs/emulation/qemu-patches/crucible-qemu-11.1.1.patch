@@ -1,4 +1,4 @@
-From b1d2117f5b5e6d2b1092f1cb02e82bbcb4103c2d Mon Sep 17 00:00:00 2001
+From ba5604dd75cda9f20826bacb09d7aa0c1bb4a1fd Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -12,10 +12,15 @@ for deterministic sim and ordinary TCG. Preserve generic TCG's long timer
 horizon, carry exact ns-plus-phase device state through migration, and
 ceil-project that state when crossing to a non-TCG accelerator.
 
-Represent ordinary TCG shifts in picoseconds per instruction, retain the
-wide virtual clock horizon, and validate fixed and adaptive clock models
-before accepting migrated timer state. Preserve fractional virtual timer
+Interpret ordinary TCG -icount shifts as nanoseconds per instruction
+at the public option boundary while retaining the picosecond internal
+clock and wide virtual horizon. Validate fixed and adaptive models
+under the versioned migration contract, and preserve fractional timer
 phase across adaptive migration and device deadlines.
+
+Exercise ordinary shift rates, deadline rounding and sim's fixed 50 ps
+model. Load and resave an armed fractional timer through actual QEMU
+migration instead of relying on an incidental adaptive timer phase.
 
 Keep RISC-V instruction triggers tied to retired instruction counts when
 adaptive icount changes its picosecond shift. Exercise fixed and adaptive
@@ -2044,7 +2049,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  
  uint8_t cpu_ldb_code_mmu(CPUArchState *env, vaddr addr,
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a74617ab804cb 100644
+index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2921d4cb89afee634cda514344bdc7d59f67327 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -24,11 +24,18 @@
@@ -2126,7 +2131,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
  static void icount_enable_precise(void)
  {
 -    /* Fixed conversion of insn to ns via "shift" option */
-+    /* Fixed conversion of instructions to picoseconds via "shift". */
++    /* Public shifts remain nanoseconds; the internal clock stores picoseconds. */
      use_icount = ICOUNT_PRECISE;
  }
  
@@ -2505,7 +2510,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
  }
  
  int64_t icount_get_raw(void)
-@@ -139,23 +528,262 @@ int64_t icount_get_raw(void)
+@@ -139,23 +528,263 @@ int64_t icount_get_raw(void)
      return icount;
  }
  
@@ -2603,10 +2608,12 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
 +                 CRUCIBLE_SIM_TICKS_PER_NS;
 +        return icount;
 +    }
-+    if (shift < 0 || shift > ICOUNT_MAX_SHIFT_PS) {
++    if (shift < 0 || shift > ICOUNT_MAX_SHIFT_NS) {
 +        return -1;
 +    }
-+    if (__builtin_add_overflow(bias_ps, ((__int128)icount << shift),
++    if (__builtin_add_overflow(bias_ps,
++                               (__int128)icount *
++                                   icount_instruction_ps(false, shift),
 +                               &now_ps)) {
 +        return -1;
 +    }
@@ -2754,8 +2761,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
 +    if (icount_crucible_sim_mode()) {
 +        return (__int128)icount * CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;
 +    }
-+    g_assert(shift >= 0 && shift <= ICOUNT_MAX_SHIFT_PS);
-+    return (__int128)icount * ((__int128)1 << shift);
++    return (__int128)icount * icount_instruction_ps(false, shift);
 +}
 +
  int64_t icount_to_ns(int64_t icount)
@@ -2772,7 +2778,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
  }
  
  /*
-@@ -171,6 +799,7 @@ static void icount_adjust(void)
+@@ -171,6 +800,7 @@ static void icount_adjust(void)
      int64_t cur_time;
      int64_t cur_icount;
      int64_t delta;
@@ -2780,7 +2786,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
  
      /* If the VM is not running, then do nothing.  */
      if (!runstate_is_running()) {
-@@ -182,6 +811,7 @@ static void icount_adjust(void)
+@@ -182,6 +812,7 @@ static void icount_adjust(void)
      cur_time = REPLAY_CLOCK_LOCKED(REPLAY_CLOCK_VIRTUAL_RT,
                                     cpu_get_clock_locked());
      cur_icount = icount_get_locked();
@@ -2788,12 +2794,12 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
  
      delta = cur_icount - cur_time;
      /* FIXME: This is a very crude algorithm, somewhat prone to oscillation.  */
-@@ -194,15 +824,14 @@ static void icount_adjust(void)
+@@ -194,15 +825,14 @@ static void icount_adjust(void)
      }
      if (delta < 0
          && timers_state.last_delta - ICOUNT_WOBBLE > delta * 2
 -        && timers_state.icount_time_shift < MAX_ICOUNT_SHIFT) {
-+        && timers_state.icount_time_shift < ICOUNT_MAX_SHIFT_PS) {
++        && timers_state.icount_time_shift < ICOUNT_MAX_SHIFT_NS) {
          /* The guest is getting too far behind.  Speed time up.  */
          qatomic_set(&timers_state.icount_time_shift,
                      timers_state.icount_time_shift + 1);
@@ -2807,7 +2813,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
      seqlock_write_unlock(&timers_state.vm_clock_seqlock,
                           &timers_state.vm_clock_lock);
  }
-@@ -216,16 +845,22 @@ static void icount_adjust_rt(void *opaque)
+@@ -216,16 +846,18 @@ static void icount_adjust_rt(void *opaque)
  
  static void icount_adjust_vm(void *opaque)
  {
@@ -2824,19 +2830,15 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
  {
 -    int shift = qatomic_read(&timers_state.icount_time_shift);
 -    return (count + (1 << shift) - 1) >> shift;
-+    int64_t instruction_ps = icount_crucible_sim_mode() ?
-+        CRUCIBLE_SIM_TICKS_PER_INSTRUCTION :
-+        INT64_C(1) << qatomic_read(&timers_state.icount_time_shift);
++    int64_t instruction_ps = icount_instruction_ps(
++        icount_crucible_sim_mode(),
++        qatomic_read(&timers_state.icount_time_shift));
 +
-+    if (deadline_ps <= 0) {
-+        return 0;
-+    }
-+    return deadline_ps / instruction_ps +
-+           (deadline_ps % instruction_ps != 0);
++    return icount_round_duration_ps(deadline_ps, instruction_ps);
  }
  
  static void icount_warp_rt(void)
-@@ -268,8 +903,9 @@ static void icount_warp_rt(void)
+@@ -268,8 +900,9 @@ static void icount_warp_rt(void)
              }
              warp_delta = MIN(warp_delta, delta);
          }
@@ -2848,7 +2850,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
      }
      timers_state.vm_clock_warp_start = -1;
      seqlock_write_unlock(&timers_state.vm_clock_seqlock,
-@@ -292,7 +928,7 @@ static void icount_timer_cb(void *opaque)
+@@ -292,7 +925,7 @@ static void icount_timer_cb(void *opaque)
  void icount_start_warp_timer(void)
  {
      int64_t clock;
@@ -2857,7 +2859,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
  
      assert(icount_enabled());
  
-@@ -331,18 +967,32 @@ void icount_start_warp_timer(void)
+@@ -331,18 +964,32 @@ void icount_start_warp_timer(void)
          }
      }
  
@@ -2895,7 +2897,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
          /*
           * Ensure QEMU_CLOCK_VIRTUAL proceeds even when the virtual CPU goes to
           * sleep.  Otherwise, the CPU might be waiting for a future timer
-@@ -360,12 +1010,17 @@ void icount_start_warp_timer(void)
+@@ -360,12 +1007,17 @@ void icount_start_warp_timer(void)
               */
              seqlock_write_lock(&timers_state.vm_clock_seqlock,
                                 &timers_state.vm_clock_lock);
@@ -2915,7 +2917,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
              /*
               * We do stop VCPUs and only advance QEMU_CLOCK_VIRTUAL after some
               * "real" time, (related to the time left until the next event) has
-@@ -382,10 +1037,12 @@ void icount_start_warp_timer(void)
+@@ -382,10 +1034,12 @@ void icount_start_warp_timer(void)
              }
              seqlock_write_unlock(&timers_state.vm_clock_seqlock,
                                   &timers_state.vm_clock_lock);
@@ -2930,7 +2932,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
          qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
      }
  }
-@@ -421,15 +1078,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -421,15 +1075,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      bool sleep = qemu_opt_get_bool(opts, "sleep", true);
      bool align = qemu_opt_get_bool(opts, "align", false);
      long time_shift = -1;
@@ -2958,16 +2960,16 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
      if (align && !sleep) {
          error_setg(errp, "align=on and sleep=off are incompatible");
          return false;
-@@ -437,7 +1106,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -437,7 +1103,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
  
      if (strcmp(option, "auto") != 0) {
          if (qemu_strtol(option, NULL, 0, &time_shift) < 0
 -            || time_shift < 0 || time_shift > MAX_ICOUNT_SHIFT) {
-+            || time_shift < 0 || time_shift > ICOUNT_MAX_SHIFT_PS) {
++            || time_shift < 0 || time_shift > ICOUNT_MAX_SHIFT_NS) {
              error_setg(errp, "icount: Invalid shift value");
              return false;
          }
-@@ -450,6 +1119,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -450,6 +1116,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      }
  
      icount_sleep = sleep;
@@ -2975,7 +2977,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
      if (icount_sleep) {
          timers_state.icount_warp_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL_RT,
                                           icount_timer_cb, NULL);
-@@ -459,6 +1129,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -459,6 +1126,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
  
      if (time_shift >= 0) {
          timers_state.icount_time_shift = time_shift;
@@ -2983,16 +2985,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
          icount_enable_precise();
          return true;
      }
-@@ -469,7 +1140,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
-      * 125MIPS seems a reasonable initial guess at the guest speed.
-      * It will be corrected fairly quickly anyway.
-      */
--    timers_state.icount_time_shift = 3;
-+    timers_state.icount_time_shift = 13;
- 
-     /*
-      * Have both realtime and virtual time triggers for speed adjustment.
-@@ -485,12 +1156,22 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -485,12 +1153,22 @@ bool icount_configure(QemuOpts *opts, Error **errp)
                     qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL_RT) + 1000);
      timers_state.icount_vm_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                          icount_adjust_vm, NULL);
@@ -12015,10 +12008,10 @@ index b629575fcf808d6ee0c3e3d724d49d521dc2bb6a..78c06d8272a8f57713b64e99d776e6db
  {
      SocketChardev *s = SOCKET_CHARDEV(chr);
 diff --git a/docs/devel/tcg-icount.rst b/docs/devel/tcg-icount.rst
-index a1dcd79e0fdd5142d6e876466e397cf8a25d6d89..424662a344ef479b89de1b35609010403995c441 100644
+index a1dcd79e0fdd5142d6e876466e397cf8a25d6d89..d2420c492edc78614bf9bf6956c4ca47e51f6757 100644
 --- a/docs/devel/tcg-icount.rst
 +++ b/docs/devel/tcg-icount.rst
-@@ -29,9 +29,17 @@ is stored in the TimersState of QEMU's timer sub-system. The number of
+@@ -29,9 +29,18 @@ is stored in the TimersState of QEMU's timer sub-system. The number of
  executed instructions can then be used to calculate QEMU_CLOCK_VIRTUAL
  which represents the amount of elapsed time in the system since
  execution started. Depending on the icount mode this may either be a
@@ -12026,11 +12019,12 @@ index a1dcd79e0fdd5142d6e876466e397cf8a25d6d89..424662a344ef479b89de1b3560901040
 +fixed number of ps per instruction or adjusted as execution continues
  to keep wall clock time and virtual time in sync.
  
-+For ordinary TCG, ``-icount shift=N`` assigns ``2^N`` picoseconds to
-+each retired instruction. Thus ``shift=0`` is 1 ps per instruction,
-+while ``shift=10`` is 1,024 ps per instruction. The internal virtual
-+clock and its timer deadlines retain fractional nanoseconds; public
-+nanosecond clock APIs project that coordinate down to nanoseconds.
++For ordinary TCG, ``-icount shift=N`` assigns ``2^N`` nanoseconds to
++each retired instruction. Thus ``shift=0`` is 1 ns per instruction,
++while ``shift=10`` is 1,024 ns per instruction. The internal virtual
++clock and its timer deadlines use picoseconds, preserving fractional
++nanosecond deadlines; public nanosecond clock APIs project that
++coordinate down to nanoseconds.
 +The Crucible ``sim`` accelerator uses its separate fixed model of
 +50 ps per retired instruction and requires ``shift=0``.
 +
@@ -54203,29 +54197,21 @@ index d6d13ad37f978ea8dcf816b66d06f3bf9645ffd7..8bc71b897f77ecbe385f3ea65e12fd83
                           TYPE_CHARDEV_SOCKET)
  
 diff --git a/include/exec/icount.h b/include/exec/icount.h
-index 7a26b40084dbf8c14560607f3350b89b49fa41bd..161fe76aaabd8bacbf5acecbcd3bfe78943042fe 100644
+index 7a26b40084dbf8c14560607f3350b89b49fa41bd..884c97ad13a3ac7177fbe3c0b082f84e964d8e7a 100644
 --- a/include/exec/icount.h
 +++ b/include/exec/icount.h
-@@ -13,7 +13,7 @@
-  * ICountMode: icount enablement state:
-  *
-  * @ICOUNT_DISABLED: Disabled - Do not count executed instructions.
-- * @ICOUNT_PRECISE: Enabled - Fixed conversion of insn to ns via "shift" option
-+ * @ICOUNT_PRECISE: Enabled - Fixed conversion of insn to ps via "shift" option
-  * @ICOUNT_ADAPTATIVE: Enabled - Runtime adaptive algorithm to compute shift
-  */
- typedef enum {
-@@ -22,6 +22,9 @@ typedef enum {
+@@ -22,6 +22,10 @@ typedef enum {
      ICOUNT_ADAPTATIVE,
  } ICountMode;
  
-+/* Picoseconds per instruction are 2^shift in ordinary TCG. */
-+#define ICOUNT_MAX_SHIFT_PS 20
++/* Ordinary -icount shift=N means 2^N ns per instruction. */
++#define ICOUNT_MAX_SHIFT_NS 10
++#define ICOUNT_PS_PER_NS 1000LL
 +
  #ifdef CONFIG_TCG
  extern ICountMode use_icount;
  #define icount_enabled() (use_icount)
-@@ -46,14 +49,48 @@ void icount_update(CPUState *cpu);
+@@ -46,14 +50,69 @@ void icount_update(CPUState *cpu);
  /* get raw icount value */
  int64_t icount_get_raw(void);
  
@@ -54236,8 +54222,29 @@ index 7a26b40084dbf8c14560607f3350b89b49fa41bd..161fe76aaabd8bacbf5acecbcd3bfe78
 +int64_t icount_get_observed(void);
 +
 +/* Sim uses exact picoseconds, with a fixed 20 GIPS instruction model. */
-+#define CRUCIBLE_SIM_TICKS_PER_NS 1000
++#define CRUCIBLE_SIM_TICKS_PER_NS ICOUNT_PS_PER_NS
 +#define CRUCIBLE_SIM_TICKS_PER_INSTRUCTION 50
++
++static inline int64_t icount_instruction_ps(bool sim, int shift)
++{
++    if (sim) {
++        return CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;
++    }
++
++    g_assert(shift >= 0 && shift <= ICOUNT_MAX_SHIFT_NS);
++    return ICOUNT_PS_PER_NS << shift;
++}
++
++static inline int64_t icount_round_duration_ps(int64_t deadline_ps,
++                                               int64_t instruction_ps)
++{
++    g_assert(instruction_ps > 0);
++    if (deadline_ps <= 0) {
++        return 0;
++    }
++    return deadline_ps / instruction_ps +
++           (deadline_ps % instruction_ps != 0);
++}
 +
 +/* True only for Crucible's precise single-threaded sim accelerator. */
 +bool icount_crucible_sim_mode(void);
@@ -54275,7 +54282,7 @@ index 7a26b40084dbf8c14560607f3350b89b49fa41bd..161fe76aaabd8bacbf5acecbcd3bfe78
  int64_t icount_to_ns(int64_t icount);
  
  /**
-@@ -65,8 +102,23 @@ int64_t icount_to_ns(int64_t icount);
+@@ -65,8 +124,23 @@ int64_t icount_to_ns(int64_t icount);
   */
  bool icount_configure(QemuOpts *opts, Error **errp);
  
@@ -116851,7 +116858,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..ace9077a405c0a00cff6e41d3f1d6278
  # @SHUTDOWN:
  #
 diff --git a/qemu-options.hx b/qemu-options.hx
-index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..d0dc1975879b7f65daa8f226992d32a63978b4f2 100644
+index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..12c2dfaf3f82ad3fe317f9c6939a75da9011c71b 100644
 --- a/qemu-options.hx
 +++ b/qemu-options.hx
 @@ -232,7 +232,7 @@ SRST
@@ -116863,13 +116870,14 @@ index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..d0dc1975879b7f65daa8f226992d32a6
      "                select accelerator (kvm, xen, hvf, nitro, nvmm, whpx, mshv or tcg; use 'help' for a list)\n"
      "                igd-passthru=on|off (enable Xen integrated Intel graphics passthrough, default=off)\n"
      "                kernel-irqchip=on|off|split controls accelerated irqchip support (default=on)\n"
-@@ -5314,15 +5314,18 @@ SRST
+@@ -5314,15 +5314,19 @@ SRST
  ERST
  
  DEF("icount", HAS_ARG, QEMU_OPTION_icount, \
 -    "-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr=record|replay,rrfile=<filename>[,rrsnapshot=<snapshot>]]\n" \
+-    "                enable virtual instruction counter with 2^N clock ticks per\n" \
 +    "-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr_switch_quantum=N][,rr=record|replay,rrfile=<filename>[,rrsnapshot=<snapshot>]]\n" \
-     "                enable virtual instruction counter with 2^N clock ticks per\n" \
++    "                enable virtual instruction counter with 2^N ns per\n" \
      "                instruction, enable aligning the host and virtual clocks\n" \
      "                or disable real time cpu sleeping, and optionally enable\n" \
      "                record-and-replay mode\n", QEMU_ARCH_ALL)
@@ -116878,14 +116886,15 @@ index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..d0dc1975879b7f65daa8f226992d32a6
 +``-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr_switch_quantum=N][,rr=record|replay,rrfile=filename[,rrsnapshot=snapshot]]``
      Enable virtual instruction counter. The virtual cpu will execute one
 -    instruction every 2^N ns of virtual time. If ``auto`` is specified
-+    instruction every 2^N ps of virtual time in ordinary TCG. For
-+    example, ``shift=0`` means 1 ps per instruction and ``shift=10``
-+    means 1,024 ps per instruction. The ``sim`` accelerator instead
-+    uses 50 ps per instruction and requires ``shift=0``. If ``auto`` is specified
++    instruction every 2^N ns of virtual time in ordinary TCG. For
++    example, ``shift=0`` means 1 ns per instruction and ``shift=10``
++    means 1,024 ns per instruction. Internally, deadlines retain
++    picosecond precision. The ``sim`` accelerator instead uses 50 ps
++    per instruction and requires ``shift=0``. If ``auto`` is specified
      then the virtual cpu speed will be automatically adjusted to keep
      virtual time within a few seconds of real time.
  
-@@ -5348,7 +5351,14 @@ SRST
+@@ -5348,7 +5352,14 @@ SRST
      option. Whenever the guest clock is behind the host clock and if
      ``align=on`` is specified then we print a message to the user to
      inform about the delay. Currently this option does not work when
@@ -117008,7 +117017,7 @@ index 14437b32566b71f2b889215be45eaef22a93b781..d3119bb7d0d49faea64333604c20b852
      } else if (!strcmp(rr, "record")) {
          mode = REPLAY_MODE_RECORD;
 diff --git a/system/cpu-timers.c b/system/cpu-timers.c
-index 9919b46230f1caf8be1a1b6ef00acd94678437ce..ae7674abf176d1a3f655c078abb267df920bcc9a 100644
+index 9919b46230f1caf8be1a1b6ef00acd94678437ce..5688cd190ad09880d4faa1af38d86d39e75bbfb5 100644
 --- a/system/cpu-timers.c
 +++ b/system/cpu-timers.c
 @@ -25,11 +25,16 @@
@@ -117054,7 +117063,7 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..ae7674abf176d1a3f655c078abb267df
      .fields = (const VMStateField[]) {
          VMSTATE_INT64(vm_clock_warp_start, TimersState),
          VMSTATE_TIMER_PTR(icount_warp_timer, TimersState),
-@@ -174,57 +186,261 @@ static const VMStateDescription icount_vmstate_warp_timer = {
+@@ -174,57 +186,262 @@ static const VMStateDescription icount_vmstate_warp_timer = {
  
  static const VMStateDescription icount_vmstate_adjust_timers = {
      .name = "timer/icount/timers",
@@ -117074,9 +117083,6 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..ae7674abf176d1a3f655c078abb267df
  
 -static const VMStateDescription icount_vmstate_shift = {
 -    .name = "timer/icount/shift",
--    .version_id = 2,
--    .minimum_version_id = 2,
--    .needed = icount_shift_state_needed,
 +static int icount_state_pre_save(void *opaque)
 +{
 +    TimersState *state = opaque;
@@ -117105,7 +117111,7 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..ae7674abf176d1a3f655c078abb267df
 +        return -EINVAL;
 +    }
 +    if (state->icount_time_shift < 0 ||
-+        state->icount_time_shift > ICOUNT_MAX_SHIFT_PS ||
++        state->icount_time_shift > ICOUNT_MAX_SHIFT_NS ||
 +        (icount_crucible_sim_mode() && state->icount_time_shift != 0)) {
 +        error_report("icount migration has invalid clock coordinates");
 +        return -EINVAL;
@@ -117123,8 +117129,10 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..ae7674abf176d1a3f655c078abb267df
 +
 +static const VMStateDescription icount_vmstate_model = {
 +    .name = "timer/icount/model",
-+    .version_id = 1,
-+    .minimum_version_id = 1,
++    /* Version 2 identifies public nanosecond shifts in the ps clock. */
+     .version_id = 2,
+     .minimum_version_id = 2,
+-    .needed = icount_shift_state_needed,
 +    .needed = icount_state_needed,
 +    .post_load = icount_model_post_load,
      .fields = (const VMStateField[]) {
@@ -117331,7 +117339,7 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..ae7674abf176d1a3f655c078abb267df
          VMSTATE_END_OF_LIST()
      },
      .subsections = (const VMStateDescription * const []) {
-@@ -252,6 +468,17 @@ void qemu_timer_notify_cb(void *opaque, QEMUClockType type)
+@@ -252,6 +469,17 @@ void qemu_timer_notify_cb(void *opaque, QEMUClockType type)
           */
          cpu_exit(current_cpu);
      } else if (first_cpu) {
@@ -133952,10 +133960,10 @@ index 0000000000000000000000000000000000000000..4d22e9b564952fa95f8d95e7823c1216
 +    main()
 diff --git a/tests/qtest/crucible-icount-migration.py b/tests/qtest/crucible-icount-migration.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..0ae75732c9502f34a5ed7b9d0c3e43ebbf9dcd31
+index 0000000000000000000000000000000000000000..f560c9665a1e79a10c7dc743cb2c98185589d38d
 --- /dev/null
 +++ b/tests/qtest/crucible-icount-migration.py
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,330 @@
 +# Copyright (c) Andyl, Inc.
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check that icount migration preserves its configured clock model."""
@@ -134085,6 +134093,44 @@ index 0000000000000000000000000000000000000000..0ae75732c9502f34a5ed7b9d0c3e43eb
 +    return expiry_ns, phase_ps
 +
 +
++def with_adaptive_timer_phase(source, destination, phase_ps):
++    """Stages a valid subnanosecond deadline in an armed VMState timer."""
++    name = b"timer/icount/timers"
++    marker = bytes((5, len(name))) + name
++    with open(source, "rb") as stream:
++        data = bytearray(stream.read())
++    if data.count(marker) != 1 or not 0 < phase_ps < 1000:
++        raise AssertionError("invalid adaptive timer phase fixture")
++
++    offset = data.index(marker) + len(marker)
++    if struct.unpack_from(">I", data, offset)[0] != 2:
++        raise AssertionError("expected exact adaptive timer v2")
++    timer_offset = offset + 4 + 8
++    if data[timer_offset] != 1:
++        raise AssertionError("adaptive virtual timer is not armed")
++
++    # Preserve the actual ns deadline and encode only its VMState ps phase.
++    struct.pack_into(">H", data, timer_offset + 1 + 8, phase_ps)
++    with open(destination, "wb") as stream:
++        stream.write(data)
++
++
++def check_public_shift_model(snapshot):
++    name = b"timer/icount/model"
++    marker = bytes((5, len(name))) + name
++    with open(snapshot, "rb") as stream:
++        data = stream.read()
++    if data.count(marker) != 1:
++        raise AssertionError("expected one icount clock model subsection")
++
++    offset = data.index(marker) + len(marker)
++    version = struct.unpack_from(">I", data, offset)[0]
++    if version != 2:
++        raise AssertionError(
++            f"expected public nanosecond shift clock model v2, got {version}"
++        )
++
++
 +def reorder_timer_before_model(source, destination):
 +    with open(source, "rb") as stream:
 +        data = stream.read()
@@ -134114,6 +134160,7 @@ index 0000000000000000000000000000000000000000..0ae75732c9502f34a5ed7b9d0c3e43eb
 +        source_socket = os.path.join(root, "source.sock")
 +        target_socket = os.path.join(root, "target.sock")
 +        snapshot = os.path.join(root, "source.bin")
++        fractional_snapshot = os.path.join(root, "fractional.bin")
 +        restored = os.path.join(root, "restored.bin")
 +        reordered = os.path.join(root, "reordered.bin")
 +
@@ -134135,11 +134182,13 @@ index 0000000000000000000000000000000000000000..0ae75732c9502f34a5ed7b9d0c3e43eb
 +        if source_status != "completed":
 +            raise AssertionError(f"adaptive source {source_status}: {source_stderr}")
 +
-+        source_deadline = adaptive_virtual_timer(snapshot)
-+        if source_deadline[1] == 0:
-+            raise AssertionError("adaptive source timer did not acquire ps phase")
++        check_public_shift_model(snapshot)
++        with_adaptive_timer_phase(snapshot, fractional_snapshot, 375)
++        source_deadline = adaptive_virtual_timer(fractional_snapshot)
++        if source_deadline[1] != 375:
++            raise AssertionError("fractional adaptive timer fixture changed")
 +
-+        target = start_qemu(qemu, options, target_socket, snapshot,
++        target = start_qemu(qemu, options, target_socket, fractional_snapshot,
 +                            machine="pc")
 +        try:
 +            connection, stream = connect_qmp(target_socket, target)
@@ -134161,7 +134210,7 @@ index 0000000000000000000000000000000000000000..0ae75732c9502f34a5ed7b9d0c3e43eb
 +        print("CRUCIBLE_ICOUNT_MIGRATION_PASS case=adaptive-nonzero-phase",
 +              flush=True)
 +
-+        reorder_timer_before_model(snapshot, reordered)
++        reorder_timer_before_model(fractional_snapshot, reordered)
 +        reordered_target = start_qemu(qemu, options,
 +                                      os.path.join(root, "reordered.sock"),
 +                                      reordered, machine="pc")
@@ -134198,6 +134247,8 @@ index 0000000000000000000000000000000000000000..0ae75732c9502f34a5ed7b9d0c3e43eb
 +            raise AssertionError(
 +                f"{name}: source migration {source_status}: {source_stderr}"
 +            )
++
++        check_public_shift_model(snapshot)
 +
 +        target = start_qemu(qemu, target_options, target_socket, snapshot)
 +        try:
@@ -136398,10 +136449,10 @@ index 8611f648c141c59c0f6fd8f5a09327d3bd2e5fd7..94db197eb07961c97773fa9835c17ff2
  
      if (control & FW_CFG_DMA_CTL_READ) {
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 56ff860e216c8f37105b56839447b54cd05712de..a5114635e2227b01983182228354611db95eda17 100644
+index 56ff860e216c8f37105b56839447b54cd05712de..bbf806864a296d68e9af54ec6b4a9b8e87690dec 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
-@@ -505,3 +505,48 @@ foreach dir : target_dirs
+@@ -505,3 +505,49 @@ foreach dir : target_dirs
           suite: ['qtest', 'qtest-' + target_base])
    endforeach
  endforeach
@@ -136414,6 +136465,7 @@ index 56ff860e216c8f37105b56839447b54cd05712de..a5114635e2227b01983182228354611d
 +    args: [
 +      files('crucible-multiboot-gap.py'),
 +      '--qemu', fingerprint_qemu,
++      '--data-dir', meson.project_source_root() / 'pc-bios',
 +    ],
 +    depends: [fingerprint_qemu],
 +    timeout: 60,
@@ -144258,10 +144310,21 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..a9096530045bf3898486ef5a25495e8223a1f59c 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..bd8d69eb10b79cbc1c60547a46d10bfdf500f415 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
-@@ -147,6 +147,37 @@ if have_system
+@@ -125,6 +125,10 @@ if have_block
+   tests += {'test-crypto-pbkdf': [io]}
+ endif
+ 
++if have_system and have_tcg
++  tests += {'test-crucible-icount-rate': []}
++endif
++
+ if have_system
+   tests += {
+     'ptimer-test': ['ptimer-test-stubs.c', meson.project_source_root() / 'hw/core/ptimer.c'],
+@@ -147,6 +151,37 @@ if have_system
        genh, qemuutil, qom
      ],
    }
@@ -144299,7 +144362,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..a9096530045bf3898486ef5a25495e82
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +238,627 @@ foreach test_name, extra: tests
+@@ -207,3 +242,627 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -157202,6 +157265,55 @@ index 0000000000000000000000000000000000000000..3625a5222c36e18e8210088c86e81648
 +                         test_crossmode_stream);
 +    g_test_add_data_func("/ich9/refuse-prior-precise-format",
 +                         GUINT_TO_POINTER(3), test_crossmode_stream);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-icount-rate.c b/tests/unit/test-crucible-icount-rate.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..e6bebd3a33e520eede13446effe1afb09cb0dd2f
+--- /dev/null
++++ b/tests/unit/test-crucible-icount-rate.c
+@@ -0,0 +1,43 @@
++/* Copyright (c) 2026 ANDYL Technologies
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "exec/icount.h"
++
++static void test_ordinary_public_shift(void)
++{
++    g_assert_cmpint(icount_instruction_ps(false, 0), ==, 1000);
++    g_assert_cmpint(icount_instruction_ps(false, 1), ==, 2000);
++    g_assert_cmpint(icount_instruction_ps(false, 3), ==, 8000);
++    g_assert_cmpint(icount_instruction_ps(false, ICOUNT_MAX_SHIFT_NS),
++                    ==, 1024000);
++
++    g_assert_cmpint(icount_round_duration_ps(999,
++                    icount_instruction_ps(false, 0)), ==, 1);
++    g_assert_cmpint(icount_round_duration_ps(1000,
++                    icount_instruction_ps(false, 0)), ==, 1);
++    g_assert_cmpint(icount_round_duration_ps(1001,
++                    icount_instruction_ps(false, 0)), ==, 2);
++}
++
++static void test_sim_fractional_instruction(void)
++{
++    int64_t instruction_ps = icount_instruction_ps(true, 0);
++
++    g_assert_cmpint(instruction_ps, ==, 50);
++    g_assert_cmpint(icount_round_duration_ps(49, instruction_ps), ==, 1);
++    g_assert_cmpint(icount_round_duration_ps(50, instruction_ps), ==, 1);
++    g_assert_cmpint(icount_round_duration_ps(51, instruction_ps), ==, 2);
++    g_assert_cmpint(icount_round_duration_ps(999, instruction_ps), ==, 20);
++    g_assert_cmpint(icount_round_duration_ps(1001, instruction_ps), ==, 21);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/icount/ordinary-public-shift", test_ordinary_public_shift);
++    g_test_add_func("/icount/sim-fractional-instruction",
++                    test_sim_fractional_instruction);
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-idle-wait.c b/tests/unit/test-crucible-idle-wait.c

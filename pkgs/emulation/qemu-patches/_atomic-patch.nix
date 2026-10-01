@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "01623653cbf7425c0518dcf659e267f1f669d0aeb8ce45271dca65870effa53c";
+  sha256 = "5a70238b51bfab9846fb856248d8df14ae1e2b9faca05b09ed9f7d30af332d84";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -18,10 +18,15 @@
     "horizon, carry exact ns-plus-phase device state through migration, and"
     "ceil-project that state when crossing to a non-TCG accelerator."
     ""
-    "Represent ordinary TCG shifts in picoseconds per instruction, retain the"
-    "wide virtual clock horizon, and validate fixed and adaptive clock models"
-    "before accepting migrated timer state. Preserve fractional virtual timer"
+    "Interpret ordinary TCG -icount shifts as nanoseconds per instruction"
+    "at the public option boundary while retaining the picosecond internal"
+    "clock and wide virtual horizon. Validate fixed and adaptive models"
+    "under the versioned migration contract, and preserve fractional timer"
     "phase across adaptive migration and device deadlines."
+    ""
+    "Exercise ordinary shift rates, deadline rounding and sim's fixed 50 ps"
+    "model. Load and resave an armed fractional timer through actual QEMU"
+    "migration instead of relying on an incidental adaptive timer phase."
     ""
     "Keep RISC-V instruction triggers tied to retired instruction counts when"
     "adaptive icount changes its picosecond shift. Exercise fixed and adaptive"
@@ -159,8 +164,8 @@
     ""
     "Preserve fullword ICH9 TCO, software SMI and periodic SMI timer state, require exact mode-tagged migration and validate all auxiliary deadlines before any timer arm."
   ];
-  commit = "b1d2117f5b5e6d2b1092f1cb02e82bbcb4103c2d";
-  tree = "a02f5ee0cc3960377c99dd9c1c3d8d2964f7cc76";
+  commit = "ba5604dd75cda9f20826bacb09d7aa0c1bb4a1fd";
+  tree = "da4ab9e54ca0908b7558b2af8e0301b1f1a686c9";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -169,7 +174,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "2fecc0639554e7d53cb432205a4e2e9573aa7e08a7553657984ed367cb38d3a3";
+  bundleSha256 = "32a3124eb45f0c75c5d68c6690a7473236448fa11f8c774daa73ea25b2a7d09e";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
