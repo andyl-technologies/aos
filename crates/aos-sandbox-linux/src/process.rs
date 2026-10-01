@@ -18,13 +18,20 @@ use crate::pidfd::PidFd;
 use crate::uapi;
 use crate::{Error, Result};
 
+mod capture;
 mod session;
+pub use capture::{
+    FixedProcessCaptureObservationV1, FixedProcessCapturePartsV1, FixedProcessCaptureV1,
+    FixedProcessCapturedStreamV1, FixedProcessDispatchV1, FixedProcessRetainedSessionError,
+    FixedProcessRetainedSessionOutcome, FixedProcessStopV1,
+};
 
 pub use session::{
     ExchangeStep, FixedLiveChild, FixedProcessControlInterest, FixedProcessControlReadiness,
     FixedProcessSessionError, FixedProcessSessionExchange, FixedProcessSessionOutcome,
     FixedProcessSessionRequest, run_fixed_process_session,
     run_fixed_process_session_from_executable_descriptor,
+    run_fixed_process_session_from_executable_descriptor_retained_v1,
 };
 
 const MAXIMUM_EXECUTABLE_BYTES: usize = 4096;
@@ -192,6 +199,13 @@ struct PreparedInvocation {
     arguments: Vec<CString>,
 }
 
+#[derive(Clone, Copy)]
+enum SpawnExecution<'a> {
+    Path,
+    Descriptor(BorrowedFd<'a>),
+    PendingDescriptor(BorrowedFd<'a>),
+}
+
 impl PreparedInvocation {
     fn new(request: FixedProcessRequest<'_>) -> Result<Self> {
         validate_request(request)?;
@@ -219,7 +233,7 @@ impl PreparedInvocation {
         stdin: Option<BorrowedFd<'_>>,
         inherited: &[BorrowedFd<'_>],
     ) -> Result<SpawnedProcess> {
-        self.spawn_internal(stdin, inherited, None)
+        self.spawn_internal(stdin, inherited, SpawnExecution::Path)
     }
 
     fn spawn_from_executable_descriptor(
@@ -228,14 +242,27 @@ impl PreparedInvocation {
         stdin: Option<BorrowedFd<'_>>,
         inherited: &[BorrowedFd<'_>],
     ) -> Result<SpawnedProcess> {
-        self.spawn_internal(stdin, inherited, Some(executable))
+        self.spawn_internal(stdin, inherited, SpawnExecution::Descriptor(executable))
+    }
+
+    fn begin_from_executable_descriptor(
+        &self,
+        executable: BorrowedFd<'_>,
+        stdin: Option<BorrowedFd<'_>>,
+        inherited: &[BorrowedFd<'_>],
+    ) -> Result<SpawnedProcess> {
+        self.spawn_internal(
+            stdin,
+            inherited,
+            SpawnExecution::PendingDescriptor(executable),
+        )
     }
 
     fn spawn_internal(
         &self,
         stdin: Option<BorrowedFd<'_>>,
         inherited: &[BorrowedFd<'_>],
-        executable_descriptor: Option<BorrowedFd<'_>>,
+        execution: SpawnExecution<'_>,
     ) -> Result<SpawnedProcess> {
         let null = rustix::fs::open(
             "/dev/null",
@@ -256,7 +283,12 @@ impl PreparedInvocation {
             .copied()
             .map(duplicate_high)
             .collect::<Result<Vec<_>>>()?;
-        let executable_descriptor = executable_descriptor.map(duplicate_high).transpose()?;
+        let executable_descriptor = match execution {
+            SpawnExecution::Path => None,
+            SpawnExecution::Descriptor(descriptor) | SpawnExecution::PendingDescriptor(descriptor) => {
+                Some(duplicate_high(descriptor)?)
+            }
+        };
         let stdin = supplied_stdin
             .as_ref()
             .map_or_else(|| null.as_fd(), |descriptor| descriptor.as_fd());
@@ -265,33 +297,62 @@ impl PreparedInvocation {
             .map(|descriptor| descriptor.as_fd())
             .collect::<Vec<_>>();
 
-        let pid = match executable_descriptor.as_ref() {
-            Some(executable) => uapi::fork_execveat_fixed_without_authority(
-                executable.as_fd(),
-                &self.argument_zero,
-                &self.arguments,
-                stdin,
-                stdout_write.as_fd(),
-                stderr_write.as_fd(),
-                &inherited,
-            )?,
-            None => uapi::posix_spawn_fixed(
-                &self.executable,
-                &self.argument_zero,
-                &self.arguments,
-                stdin,
-                stdout_write.as_fd(),
-                stderr_write.as_fd(),
-                &inherited,
-            )?,
+        let (mut guard, exec_status) = match (execution, executable_descriptor.as_ref()) {
+            (SpawnExecution::PendingDescriptor(_), Some(executable)) => {
+                let pending = uapi::begin_fixed_execveat_without_authority(
+                    executable.as_fd(),
+                    &self.argument_zero,
+                    &self.arguments,
+                    stdin,
+                    stdout_write.as_fd(),
+                    stderr_write.as_fd(),
+                    &inherited,
+                )?;
+                let (mut raw_guard, status) = pending.into_parts();
+                let guard = ChildGuard::new(raw_guard.pid()?);
+                // The upper guard is armed before the real lower owner disarms.
+                // There is no fallible operation between these two statements.
+                raw_guard.disarm();
+                (guard, Some(status))
+            }
+            (_, Some(executable)) => {
+                let pid = uapi::fork_execveat_fixed_without_authority(
+                    executable.as_fd(),
+                    &self.argument_zero,
+                    &self.arguments,
+                    stdin,
+                    stdout_write.as_fd(),
+                    stderr_write.as_fd(),
+                    &inherited,
+                )?;
+                (ChildGuard::new(pid), None)
+            }
+            (_, None) => {
+                let pid = uapi::posix_spawn_fixed(
+                    &self.executable,
+                    &self.argument_zero,
+                    &self.arguments,
+                    stdin,
+                    stdout_write.as_fd(),
+                    stderr_write.as_fd(),
+                    &inherited,
+                )?;
+                (ChildGuard::new(pid), None)
+            }
         };
-        // Own cancellation immediately: pidfd and output setup can still fail.
-        let mut guard = ChildGuard::new(pid);
 
         drop(null);
         drop(stdout_write);
         drop(stderr_write);
-        let raw_pid = u32::try_from(pid.as_raw_nonzero().get())
+        if exec_status.is_some() {
+            return Ok(SpawnedProcess {
+                guard,
+                stdout: stdout_read,
+                stderr: stderr_read,
+                exec_status,
+            });
+        }
+        let raw_pid = u32::try_from(guard.pid.as_raw_nonzero().get())
             .ok()
             .and_then(NonZeroU32::new)
             .ok_or_else(|| Error::invalid("fixed process PID", "must be a positive u32"))?;
@@ -301,6 +362,7 @@ impl PreparedInvocation {
             guard,
             stdout: stdout_read,
             stderr: stderr_read,
+            exec_status: None,
         })
     }
 }
@@ -309,6 +371,7 @@ struct SpawnedProcess {
     guard: ChildGuard,
     stdout: OwnedFd,
     stderr: OwnedFd,
+    exec_status: Option<uapi::FixedExecStatusReader>,
 }
 
 struct OutputStream {
@@ -444,9 +507,13 @@ struct ProcessStatus {
 }
 
 fn wait_blocking(pid: rustix::process::Pid) -> Result<ProcessStatus> {
+    decode_status(wait_status_blocking(pid)?)
+}
+
+fn wait_status_blocking(pid: rustix::process::Pid) -> Result<rustix::process::WaitStatus> {
     loop {
         match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty()) {
-            Ok(Some((_, status))) => return decode_status(status),
+            Ok(Some((_, status))) => return Ok(status),
             Ok(None) => continue,
             Err(rustix::io::Errno::INTR) => {}
             Err(error) => return Err(kernel_error("reap fixed process", error)),
@@ -545,17 +612,44 @@ impl ChildGuard {
     }
 
     fn cancel(&self) -> Result<()> {
-        kill_group(self.pid)?;
-        kill_leader(self.pid, self.pidfd.as_ref())?;
+        self.cancel_with_disposition(CleanupDisposition::LegacyReturn)
+    }
+
+    fn cancel_with_disposition(&self, mut disposition: CleanupDisposition<'_>) -> Result<()> {
+        disposition.observe(kill_group(self.pid))?;
+        disposition.observe(kill_leader(self.pid, self.pidfd.as_ref()))?;
         Ok(())
+    }
+}
+
+/// Keeps old short-circuit/drop semantics and retained diagnostics on one
+/// actual group/leader signaling sequence, without an injected callback.
+enum CleanupDisposition<'a> {
+    LegacyReturn,
+    LegacyDrop,
+    Retained {
+        first: &'a mut Option<Error>,
+        capture: &'a mut capture::FixedProcessCaptureV1,
+    },
+}
+
+impl CleanupDisposition<'_> {
+    fn observe(&mut self, result: Result<()>) -> Result<()> {
+        match self {
+            Self::LegacyReturn => result,
+            Self::LegacyDrop => Ok(()),
+            Self::Retained { first, capture } => {
+                capture::record_cleanup_result(result, first, capture);
+                Ok(())
+            }
+        }
     }
 }
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         if self.armed {
-            let _ = kill_group(self.pid);
-            let _ = kill_leader(self.pid, self.pidfd.as_ref());
+            let _ = self.cancel_with_disposition(CleanupDisposition::LegacyDrop);
             let _ = wait_blocking(self.pid);
         }
         #[cfg(test)]

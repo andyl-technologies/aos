@@ -12,6 +12,10 @@ use std::time::Duration;
 use crate::pidfd::{PidFd, PidFdInfo};
 use crate::{Error, Result};
 
+use super::capture::{
+    FixedProcessCaptureV1, FixedProcessRetainedSessionError,
+    FixedProcessRetainedSessionOutcome, FixedProcessStopV1, SessionRun,
+};
 use super::{
     ChildGuard, FixedProcessOutput, FixedProcessRequest, OutputStream, PreparedInvocation,
     ProcessStatus, SpawnedProcess, kernel_error, monotonic_now, validate_exclusive_reaping_owner,
@@ -348,6 +352,100 @@ where
     spawn_and_supervise_descriptor_session(request, executable, deadline, exchange)
 }
 
+/// Runs the same fixed descriptor session while retaining both output streams.
+///
+/// The caller owns `capture` across returned errors and callback unwind. All
+/// reservations occur before fork. The original absolute deadline also covers
+/// the exec-status handshake, and no callback runs before exec confirmation.
+/// The request, environment, authority removal and FD roles are unchanged.
+///
+/// Only actual reads establish EOF. Retained bytes, exact leader wait status
+/// and cleanup attempts are DATA, never process-tree drain or currentness.
+/// Cleanup can block as in the existing runner. A blocking callback cannot be
+/// preempted, and worker abort or dropping the reservoir loses in-memory DATA.
+///
+/// # Errors
+///
+/// Returns the original concrete session error for validation, spawning,
+/// observation, exchange or cleanup failure. Rejects a previously used capture
+/// or overflowing aggregate byte ceiling. Returns a typed reservation error
+/// before fork if bounded capture storage cannot be allocated.
+///
+/// # Panics
+///
+/// Propagates the original callback panic. The caller-held reservoir retains
+/// bounded observed output and actual cleanup diagnostics during unwinding.
+pub fn run_fixed_process_session_from_executable_descriptor_retained_v1<X>(
+    request: FixedProcessSessionRequest<'_>,
+    executable: OwnedFd,
+    exchange: &mut X,
+    capture: &mut FixedProcessCaptureV1,
+) -> std::result::Result<
+    FixedProcessRetainedSessionOutcome<X::Output>,
+    FixedProcessRetainedSessionError<X::Error>,
+>
+where
+    X: FixedProcessSessionExchange,
+{
+    let result = (|| {
+        let started = monotonic_now();
+        let deadline = started.checked_add(request.process.timeout).ok_or_else(|| {
+            process_error(Error::invalid(
+                "fixed process timeout",
+                "absolute deadline overflows CLOCK_MONOTONIC duration",
+            ))
+        })?;
+
+        if request.inherited.len() > super::MAXIMUM_INHERITED_DESCRIPTORS {
+            return Err(process_error(Error::invalid(
+                "fixed process inherited descriptors",
+                "exceeds the four-descriptor ceiling",
+            )));
+        }
+        validate_executable_descriptor(executable.as_fd()).map_err(process_error)?;
+        validate_session_request(&request).map_err(process_error)?;
+        validate_exclusive_reaping_owner().map_err(process_error)?;
+
+        let invocation = PreparedInvocation::new(request.process).map_err(process_error)?;
+
+        Ok((deadline, invocation))
+    })()
+    .map_err(FixedProcessRetainedSessionError::Session)?;
+
+    let (deadline, invocation) = result;
+    capture.prepare(request.process)?;
+    let FixedProcessSessionRequest {
+        process,
+        stdin,
+        inherited,
+        control,
+    } = request;
+    let inherited_borrows = inherited
+        .iter()
+        .map(|descriptor| descriptor.as_fd())
+        .collect::<Vec<_>>();
+    let spawned = invocation
+        .begin_from_executable_descriptor(
+            executable.as_fd(),
+            stdin.as_ref().map(|descriptor| descriptor.as_fd()),
+            &inherited_borrows,
+        )
+        .map_err(|source| FixedProcessRetainedSessionError::Session(process_error(source)))?;
+    let mut run = SessionRun::retained(spawned, process, capture);
+
+    drop(inherited_borrows);
+    drop(executable);
+    drop(inherited);
+    drop(stdin);
+
+    if let Err(source) = run.initialize_retained() {
+        return fail_process(&mut run, source).map_err(FixedProcessRetainedSessionError::Session);
+    }
+
+    supervise_session_core(&mut run, control, deadline, exchange)
+        .map_err(FixedProcessRetainedSessionError::Session)
+}
+
 fn spawn_and_supervise_session<X>(
     request: FixedProcessSessionRequest<'_>,
     deadline: Duration,
@@ -542,111 +640,215 @@ where
     X: FixedProcessSessionExchange,
 {
     let mut guard = spawned.guard;
-    let mut stdout = match OutputStream::new(spawned.stdout, process.maximum_stdout_bytes) {
+    let stdout = match OutputStream::new(spawned.stdout, process.maximum_stdout_bytes) {
         Ok(stream) => stream,
-        Err(source) => return fail_process(&mut guard, source),
+        Err(source) => return fail_process_guard(&mut guard, source),
     };
-    let mut stderr = match OutputStream::new(spawned.stderr, process.maximum_stderr_bytes) {
+    let stderr = match OutputStream::new(spawned.stderr, process.maximum_stderr_bytes) {
         Ok(stream) => stream,
-        Err(source) => return fail_process(&mut guard, source),
+        Err(source) => return fail_process_guard(&mut guard, source),
     };
-    let initial_info = match guard.pidfd().and_then(PidFd::info) {
-        Ok(info) => info,
-        Err(source) => return fail_process(&mut guard, source),
-    };
-    let mut state = SessionState::pending();
+    let mut run = SessionRun::legacy(guard, stdout, stderr);
+    let outcome = supervise_session_core(&mut run, control, deadline, exchange)?;
+    Ok(match outcome {
+        FixedProcessRetainedSessionOutcome::Completed {
+            exit_code,
+            signal,
+            exchange,
+        } => {
+            let process = process_output(
+                ProcessStatus {
+                    exit_code,
+                    signal,
+                },
+                &mut run,
+            );
+            FixedProcessSessionOutcome::Completed {
+                process,
+                exchange,
+            }
+        }
+        FixedProcessRetainedSessionOutcome::ChildExitedBeforeExchange {
+            exit_code,
+            signal,
+        } => {
+            FixedProcessSessionOutcome::ChildExitedBeforeExchange(
+                process_output(
+                    ProcessStatus {
+                        exit_code,
+                        signal,
+                    },
+                    &mut run,
+                ),
+            )
+        }
+        FixedProcessRetainedSessionOutcome::TimedOut => FixedProcessSessionOutcome::TimedOut,
+        FixedProcessRetainedSessionOutcome::OutputLimitExceeded =>
+            FixedProcessSessionOutcome::OutputLimitExceeded,
+    })
+}
 
-    if deadline_expired(deadline) {
-        return finish_cancelled(&mut guard, FixedProcessSessionOutcome::TimedOut);
-    }
-    match child_is_alive(&guard) {
-        Ok(true) => {}
-        Ok(false) => state.mark_leader_exited(),
-        Err(source) => return fail_process(&mut guard, source),
-    }
-    if !state.leader_exited {
-        let step = {
-            let child = match live_child(&guard, initial_info, deadline) {
-                Ok(child) => child,
-                Err(source) => return fail_process(&mut guard, source),
-            };
-            exchange.start(&child, control)
-        };
-        match step {
-            Ok(step) => state.apply(step),
-            Err(source) => return fail_exchange(&mut guard, source),
-        }
-        if deadline_expired(deadline) {
-            return finish_cancelled(&mut guard, FixedProcessSessionOutcome::TimedOut);
-        }
-        match child_is_alive(&guard) {
-            Ok(true) => {}
-            Ok(false) => state.mark_leader_exited(),
-            Err(source) => return fail_process(&mut guard, source),
-        }
-    }
-    let early_exit_cleanup = if state.leader_exited {
-        guard.cancel()
+fn supervise_session_core<X>(
+    run: &mut SessionRun<'_>,
+    control: BorrowedFd<'_>,
+    deadline: Duration,
+    exchange: &mut X,
+) -> std::result::Result<
+    FixedProcessRetainedSessionOutcome<X::Output>,
+    FixedProcessSessionError<X::Error>,
+>
+where
+    X: FixedProcessSessionExchange,
+{
+    let mut state = SessionState::pending();
+    let mut initial_info = None;
+    let mut began = false;
+    let retention = if run.retains_output() {
+        OutputRetention::Prefix
     } else {
-        Ok(())
+        OutputRetention::Legacy
     };
-    if let Err(source) = early_exit_cleanup {
-        return fail_process(&mut guard, source);
-    }
 
     loop {
-        if state.leader_exited && stdout.closed && stderr.closed {
-            return finish_reaped(guard, stdout, stderr, state.exchange);
+        if !began && run.exec_status.is_none() {
+            if !(run.retains_output() && state.leader_exited) {
+                initial_info = Some(match run.guard.pidfd().and_then(PidFd::info) {
+                    Ok(info) => info,
+                    Err(source) => return fail_process(run, source),
+                });
+
+                if deadline_expired(deadline) {
+                    return finish_cancelled(run, FixedProcessRetainedSessionOutcome::TimedOut);
+                }
+                match child_is_alive(&run.guard) {
+                    Ok(true) => {}
+                    Ok(false) => state.mark_leader_exited(),
+                    Err(source) => return fail_process(run, source),
+                }
+                if !state.leader_exited {
+                    let step = {
+                        let child = match live_child(&run.guard, initial_info, deadline) {
+                            Ok(child) => child,
+                            Err(source) => return fail_process(run, source),
+                        };
+                        exchange.start(&child, control)
+                    };
+                    match step {
+                        Ok(step) => state.apply(step),
+                        Err(source) => return fail_exchange(run, source),
+                    }
+                    if deadline_expired(deadline) {
+                        return finish_cancelled(run, FixedProcessRetainedSessionOutcome::TimedOut);
+                    }
+                    match child_is_alive(&run.guard) {
+                        Ok(true) => {}
+                        Ok(false) => state.mark_leader_exited(),
+                        Err(source) => return fail_process(run, source),
+                    }
+                }
+                let early_exit_cleanup = if state.leader_exited {
+                    run.guard.cancel()
+                } else {
+                    Ok(())
+                };
+                if let Err(source) = early_exit_cleanup {
+                    return fail_process(run, source);
+                }
+            }
+            began = true;
+        }
+        if state.leader_exited
+            && run.stdout.closed
+            && run.stderr.closed
+            && run.exec_status.is_none()
+        {
+            return finish_reaped(run, state.exchange);
         }
         if deadline_expired(deadline) {
-            return finish_cancelled(&mut guard, FixedProcessSessionOutcome::TimedOut);
+            return finish_cancelled(run, FixedProcessRetainedSessionOutcome::TimedOut);
         }
 
         let ready = match poll_session(
-            &guard,
-            &stdout,
-            &stderr,
+            &run.guard,
+            &run.stdout,
+            &run.stderr,
             control,
             state.interest,
             state.leader_exited,
             deadline,
+            run.exec_status.as_ref(),
         ) {
             Ok(ready) => ready,
-            Err(source) => return fail_process(&mut guard, source),
+            Err(source) => return fail_process(run, source),
         };
 
-        if ready.stdout && !stdout.closed {
-            match drain_output_once(&mut stdout) {
+        if ready.stdout && !run.stdout.closed {
+            match drain_output_once(&mut run.stdout, retention) {
                 Ok(OutputDrain::Open | OutputDrain::Closed) => {}
                 Ok(OutputDrain::LimitExceeded) => {
+                    run.limit(true);
                     return finish_cancelled(
-                        &mut guard,
-                        FixedProcessSessionOutcome::OutputLimitExceeded,
+                        run,
+                        FixedProcessRetainedSessionOutcome::OutputLimitExceeded,
                     );
                 }
-                Err(source) => return fail_process(&mut guard, source),
+                Err(source) => return fail_process(run, source),
             }
         }
-        if ready.stderr && !stderr.closed {
-            match drain_output_once(&mut stderr) {
+        if ready.stderr && !run.stderr.closed {
+            match drain_output_once(&mut run.stderr, retention) {
                 Ok(OutputDrain::Open | OutputDrain::Closed) => {}
                 Ok(OutputDrain::LimitExceeded) => {
+                    run.limit(false);
                     return finish_cancelled(
-                        &mut guard,
-                        FixedProcessSessionOutcome::OutputLimitExceeded,
+                        run,
+                        FixedProcessRetainedSessionOutcome::OutputLimitExceeded,
                     );
                 }
-                Err(source) => return fail_process(&mut guard, source),
+                Err(source) => return fail_process(run, source),
             }
         }
         if deadline_expired(deadline) {
-            return finish_cancelled(&mut guard, FixedProcessSessionOutcome::TimedOut);
+            return finish_cancelled(run, FixedProcessRetainedSessionOutcome::TimedOut);
+        }
+
+        if run.exec_status.is_some() {
+            if ready.exec_status {
+                let status = match run.exec_status.as_mut() {
+                    Some(status) => status.read_once(),
+                    None => Ok(false),
+                };
+                match status {
+                    Ok(true) => {
+                        run.exec_status = None;
+                        match child_is_alive(&run.guard) {
+                            Ok(true) => run.exec_confirmed(),
+                            Ok(false) => state.mark_leader_exited(),
+                            Err(source) => return fail_process(run, source),
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(source) => {
+                        run.exec_failed(&source);
+                        return fail_process(run, source);
+                    }
+                }
+            }
+            if ready.leader {
+                state.mark_leader_exited();
+                if let Err(source) = run.guard.cancel() {
+                    return fail_process(run, source);
+                }
+            }
+            // Exec EOF is not proof of entry if the leader died before it.
+            // The same loop continues output collection without a callback.
+            continue;
         }
 
         if ready.leader {
             state.mark_leader_exited();
-            if let Err(source) = guard.cancel() {
-                return fail_process(&mut guard, source);
+            if let Err(source) = run.guard.cancel() {
+                return fail_process(run, source);
             }
         }
         if state.leader_exited || state.exchange.is_some() {
@@ -654,7 +856,7 @@ where
         }
         if ready.control_invalid {
             return fail_process(
-                &mut guard,
+                run,
                 Error::invalid(
                     "fixed process control descriptor",
                     "poll reported an invalid descriptor",
@@ -663,7 +865,7 @@ where
         }
         if ready.control_error {
             return fail_process(
-                &mut guard,
+                run,
                 Error::invalid(
                     "fixed process control descriptor",
                     "poll reported a terminal I/O error",
@@ -673,7 +875,7 @@ where
 
         let Some(interest) = state.interest else {
             return fail_process(
-                &mut guard,
+                run,
                 Error::invalid(
                     "fixed process exchange state",
                     "pending exchange omitted control interest",
@@ -685,52 +887,55 @@ where
         let writable = ready.control_writable && !ready.control_hangup;
         if readable || writable {
             if deadline_expired(deadline) {
-                return finish_cancelled(&mut guard, FixedProcessSessionOutcome::TimedOut);
+                return finish_cancelled(run, FixedProcessRetainedSessionOutcome::TimedOut);
             }
-            match child_is_alive(&guard) {
+            match child_is_alive(&run.guard) {
                 Ok(true) => {}
                 Ok(false) => {
                     state.mark_leader_exited();
-                    if let Err(source) = guard.cancel() {
-                        return fail_process(&mut guard, source);
+                    if let Err(source) = run.guard.cancel() {
+                        return fail_process(run, source);
                     }
                     continue;
                 }
-                Err(source) => return fail_process(&mut guard, source),
+                Err(source) => return fail_process(run, source),
             }
 
             let step = {
-                let child = match live_child(&guard, initial_info, deadline) {
+                let child = match live_child(&run.guard, initial_info, deadline) {
                     Ok(child) => child,
-                    Err(source) => return fail_process(&mut guard, source),
+                    Err(source) => return fail_process(run, source),
                 };
                 exchange.advance(
                     &child,
                     control,
-                    FixedProcessControlReadiness { readable, writable },
+                    FixedProcessControlReadiness {
+                        readable,
+                        writable,
+                    },
                 )
             };
             match step {
                 Ok(step) => state.apply(step),
-                Err(source) => return fail_exchange(&mut guard, source),
+                Err(source) => return fail_exchange(run, source),
             }
             if deadline_expired(deadline) {
-                return finish_cancelled(&mut guard, FixedProcessSessionOutcome::TimedOut);
+                return finish_cancelled(run, FixedProcessRetainedSessionOutcome::TimedOut);
             }
-            match child_is_alive(&guard) {
+            match child_is_alive(&run.guard) {
                 Ok(true) => {}
                 Ok(false) => {
                     state.mark_leader_exited();
-                    if let Err(source) = guard.cancel() {
-                        return fail_process(&mut guard, source);
+                    if let Err(source) = run.guard.cancel() {
+                        return fail_process(run, source);
                     }
                 }
-                Err(source) => return fail_process(&mut guard, source),
+                Err(source) => return fail_process(run, source),
             }
         }
         if ready.control_hangup && state.exchange.is_none() {
             return fail_process(
-                &mut guard,
+                run,
                 Error::invalid(
                     "fixed process control descriptor",
                     "hung up before exchange completion",
@@ -742,12 +947,15 @@ where
 
 fn live_child<'a>(
     guard: &'a ChildGuard,
-    initial_info: PidFdInfo,
+    initial_info: Option<PidFdInfo>,
     deadline: Duration,
 ) -> Result<FixedLiveChild<'a>> {
     Ok(FixedLiveChild {
         pidfd: guard.pidfd()?,
-        initial_info,
+        initial_info: initial_info.ok_or_else(|| Error::invalid(
+            "fixed process exchange state",
+            "initial pidfd information was not observed",
+        ))?,
         deadline,
     })
 }
@@ -761,32 +969,61 @@ fn deadline_expired(deadline: Duration) -> bool {
 }
 
 fn finish_reaped<T, E>(
-    mut guard: ChildGuard,
-    stdout: OutputStream,
-    stderr: OutputStream,
+    run: &mut SessionRun<'_>,
     exchange: Option<T>,
-) -> std::result::Result<FixedProcessSessionOutcome<T>, FixedProcessSessionError<E>> {
-    let status = guard
+) -> std::result::Result<FixedProcessRetainedSessionOutcome<T>, FixedProcessSessionError<E>> {
+    run.stop(if exchange.is_some() {
+        FixedProcessStopV1::Completed
+    } else {
+        FixedProcessStopV1::ChildExitedBeforeExchange
+    });
+    let status = run
         .cancel_and_reap()
-        .map_err(FixedProcessSessionError::Cleanup)?;
-    let process = process_output(status, stdout, stderr);
+        .map_err(|source| {
+            run.cleanup_error_returned();
+            FixedProcessSessionError::Cleanup(source)
+        })?;
     Ok(match exchange {
-        Some(exchange) => FixedProcessSessionOutcome::Completed { process, exchange },
-        None => FixedProcessSessionOutcome::ChildExitedBeforeExchange(process),
+        Some(exchange) => FixedProcessRetainedSessionOutcome::Completed {
+            exit_code: status.exit_code,
+            signal: status.signal,
+            exchange,
+        },
+        None => FixedProcessRetainedSessionOutcome::ChildExitedBeforeExchange {
+            exit_code: status.exit_code,
+            signal: status.signal,
+        },
     })
 }
 
 fn finish_cancelled<T, E>(
-    guard: &mut ChildGuard,
-    outcome: FixedProcessSessionOutcome<T>,
-) -> std::result::Result<FixedProcessSessionOutcome<T>, FixedProcessSessionError<E>> {
-    guard
-        .cancel_and_reap()
-        .map_err(FixedProcessSessionError::Cleanup)?;
+    run: &mut SessionRun<'_>,
+    outcome: FixedProcessRetainedSessionOutcome<T>,
+) -> std::result::Result<FixedProcessRetainedSessionOutcome<T>, FixedProcessSessionError<E>> {
+    if matches!(outcome, FixedProcessRetainedSessionOutcome::TimedOut) {
+        run.stop(FixedProcessStopV1::TimedOut);
+    }
+    run.cancel_and_reap()
+        .map_err(|source| {
+            run.cleanup_error_returned();
+            FixedProcessSessionError::Cleanup(source)
+        })?;
     Ok(outcome)
 }
 
 fn fail_process<T, E>(
+    run: &mut SessionRun<'_>,
+    source: Error,
+) -> std::result::Result<T, FixedProcessSessionError<E>> {
+    run.stop(FixedProcessStopV1::Error);
+    let cleanup = run.cancel_and_reap().err();
+    if cleanup.is_some() {
+        run.cleanup_error_returned();
+    }
+    Err(FixedProcessSessionError::Process { source, cleanup })
+}
+
+fn fail_process_guard<T, E>(
     guard: &mut ChildGuard,
     source: Error,
 ) -> std::result::Result<T, FixedProcessSessionError<E>> {
@@ -795,23 +1032,26 @@ fn fail_process<T, E>(
 }
 
 fn fail_exchange<T, E>(
-    guard: &mut ChildGuard,
+    run: &mut SessionRun<'_>,
     source: E,
 ) -> std::result::Result<T, FixedProcessSessionError<E>> {
-    let cleanup = guard.cancel_and_reap().err();
+    run.stop(FixedProcessStopV1::Error);
+    let cleanup = run.cancel_and_reap().err();
+    if cleanup.is_some() {
+        run.cleanup_error_returned();
+    }
     Err(FixedProcessSessionError::Exchange { source, cleanup })
 }
 
 fn process_output(
     status: ProcessStatus,
-    stdout: OutputStream,
-    stderr: OutputStream,
+    run: &mut SessionRun<'_>,
 ) -> FixedProcessOutput {
     FixedProcessOutput {
         exit_code: status.exit_code,
         signal: status.signal,
-        stdout: stdout.bytes,
-        stderr: stderr.bytes,
+        stdout: std::mem::take(&mut run.stdout.bytes),
+        stderr: std::mem::take(&mut run.stderr.bytes),
     }
 }
 
@@ -821,7 +1061,13 @@ enum OutputDrain {
     LimitExceeded,
 }
 
-fn drain_output_once(stream: &mut OutputStream) -> Result<OutputDrain> {
+#[derive(Clone, Copy)]
+enum OutputRetention {
+    Legacy,
+    Prefix,
+}
+
+fn drain_output_once(stream: &mut OutputStream, retention: OutputRetention) -> Result<OutputDrain> {
     let mut chunk = [0_u8; 8192];
     match rustix::io::read(&stream.descriptor, &mut chunk) {
         Ok(0) => {
@@ -835,6 +1081,10 @@ fn drain_output_once(stream: &mut OutputStream) -> Result<OutputDrain> {
                 .checked_add(count)
                 .is_none_or(|length| length > stream.maximum);
             if exceeds {
+                if matches!(retention, OutputRetention::Prefix) {
+                    let available = stream.maximum.saturating_sub(stream.bytes.len());
+                    stream.bytes.extend_from_slice(&chunk[..available.min(count)]);
+                }
                 return Ok(OutputDrain::LimitExceeded);
             }
             stream.bytes.extend_from_slice(&chunk[..count]);
@@ -850,6 +1100,7 @@ struct SessionReadiness {
     leader: bool,
     stdout: bool,
     stderr: bool,
+    exec_status: bool,
     control_readable: bool,
     control_writable: bool,
     control_hangup: bool,
@@ -865,6 +1116,7 @@ fn poll_session(
     interest: Option<FixedProcessControlInterest>,
     leader_exited: bool,
     deadline: Duration,
+    exec_status: Option<&crate::uapi::FixedExecStatusReader>,
 ) -> Result<SessionReadiness> {
     let remaining = deadline.saturating_sub(monotonic_now());
     let timeout = rustix::event::Timespec::try_from(remaining)
@@ -872,7 +1124,7 @@ fn poll_session(
     let pidfd = guard.pidfd()?.as_fd();
     let stdout_fd = stdout.descriptor.as_fd();
     let stderr_fd = stderr.descriptor.as_fd();
-    let mut descriptors = Vec::with_capacity(4);
+    let mut descriptors = Vec::with_capacity(if exec_status.is_some() { 5 } else { 4 });
     let leader_index = (!leader_exited).then(|| {
         descriptors.push(rustix::event::PollFd::new(
             &pidfd,
@@ -890,6 +1142,13 @@ fn poll_session(
     let stderr_index = (!stderr.closed).then(|| {
         descriptors.push(rustix::event::PollFd::new(
             &stderr_fd,
+            rustix::event::PollFlags::IN | rustix::event::PollFlags::HUP,
+        ));
+        descriptors.len() - 1
+    });
+    let exec_index = exec_status.map(|status| {
+        descriptors.push(rustix::event::PollFd::new(
+            &status.descriptor,
             rustix::event::PollFlags::IN | rustix::event::PollFlags::HUP,
         ));
         descriptors.len() - 1
@@ -926,6 +1185,9 @@ fn poll_session(
     }
     if let Some(index) = stderr_index {
         ready.stderr = validate_output_readiness(descriptors[index].revents())?;
+    }
+    if let Some(index) = exec_index {
+        ready.exec_status = validate_output_readiness(descriptors[index].revents())?;
     }
     if let Some(index) = control_index {
         let requested = interest.ok_or_else(|| {
