@@ -66,4 +66,4 @@ also removes owned import artifacts once no consumers need them.
 GCP uses UEFI with Secure Boot disabled and explicit VirtIO networking. AWS
 uses raw snapshot import and AMI registration; its boot path still needs live
 qualification. Run the offline check with
-`bash ./aos-dev build check build.aos-cloud-vm --no-out-link`.
+`bash ./tools/dev/aos-dev build check build.aos-cloud-vm --no-out-link`.
