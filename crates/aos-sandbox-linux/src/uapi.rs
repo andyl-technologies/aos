@@ -1986,6 +1986,17 @@ pub(crate) fn require_seqpacket_identity(fd: BorrowedFd<'_>) -> Result<()> {
 }
 
 pub(crate) fn accept_record_subject_socket(fd: BorrowedFd<'_>) -> Result<OwnedFd> {
+    let result = accepted_record_subject_socket_result(fd);
+    fd_result(result.into(), "accept4(SOCK_SEQPACKET)")
+}
+
+/// Adopts the actual accepted child before any fallible descriptor flag check.
+pub(crate) fn accept_record_subject_socket_before_flags(fd: BorrowedFd<'_>) -> Result<OwnedFd> {
+    let result = accepted_record_subject_socket_result(fd);
+    adopt_created_fd(result.into(), "accept4(SOCK_SEQPACKET)")
+}
+
+fn accepted_record_subject_socket_result(fd: BorrowedFd<'_>) -> libc::c_int {
     // SAFETY: the listener remains borrowed; null address pointers request no
     // peer-address output. Success returns a fresh descriptor, immediately owned.
     let result = unsafe {
@@ -1996,7 +2007,7 @@ pub(crate) fn accept_record_subject_socket(fd: BorrowedFd<'_>) -> Result<OwnedFd
             libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
         )
     };
-    fd_result(result.into(), "accept4(SOCK_SEQPACKET)")
+    result
 }
 
 fn require_connected_unix_peer(fd: BorrowedFd<'_>) -> Result<()> {
@@ -2465,6 +2476,17 @@ pub(crate) fn seqpacket_pair_with_flags(flags: i32) -> Result<(OwnedFd, OwnedFd)
 }
 
 pub(crate) fn unconnected_seqpacket() -> Result<OwnedFd> {
+    let result = unconnected_seqpacket_result();
+    fd_result(result.into(), "socket(SOCK_SEQPACKET)")
+}
+
+/// Adopts the actual created socket before any fallible descriptor flag check.
+pub(crate) fn unconnected_seqpacket_before_flags() -> Result<OwnedFd> {
+    let result = unconnected_seqpacket_result();
+    adopt_created_fd(result.into(), "socket(SOCK_SEQPACKET)")
+}
+
+fn unconnected_seqpacket_result() -> libc::c_int {
     // SAFETY: socket returns one fresh descriptor on success.
     let result = unsafe {
         libc::socket(
@@ -2473,10 +2495,24 @@ pub(crate) fn unconnected_seqpacket() -> Result<OwnedFd> {
             0,
         )
     };
-    fd_result(result.into(), "socket(SOCK_SEQPACKET)")
+    result
 }
 
 pub(crate) fn connect_seqpacket(path: &Path) -> Result<OwnedFd> {
+    let bytes = validate_seqpacket_connection_path(path)?;
+    let socket = unconnected_seqpacket()?;
+    connect_seqpacket_borrowed(socket.as_fd(), bytes)?;
+    Ok(socket)
+}
+
+/// Borrows checked address bytes without granting a socket or connection.
+pub(crate) struct ValidatedSeqpacketConnectionPath<'path> {
+    bytes: &'path [u8],
+}
+
+pub(crate) fn validate_seqpacket_connection_path(
+    path: &Path,
+) -> Result<ValidatedSeqpacketConnectionPath<'_>> {
     let bytes = path.as_os_str().as_bytes();
     if bytes.is_empty() || bytes.contains(&0) {
         return Err(Error::invalid(
@@ -2494,7 +2530,17 @@ pub(crate) fn connect_seqpacket(path: &Path) -> Result<OwnedFd> {
         ));
     }
 
-    let socket = unconnected_seqpacket()?;
+    Ok(ValidatedSeqpacketConnectionPath { bytes })
+}
+
+/// Configures and connects the same exclusively owned socket after path validation.
+///
+/// Only callers holding the original may borrow it here; no descriptor is created.
+pub(crate) fn connect_seqpacket_borrowed(
+    socket: BorrowedFd<'_>,
+    path: ValidatedSeqpacketConnectionPath<'_>,
+) -> Result<()> {
+    let bytes = path.bytes;
     enable_seqpacket_identity(socket.as_fd())?;
 
     // All-zero initializes the pathname terminator after the copied bytes.
@@ -2517,8 +2563,7 @@ pub(crate) fn connect_seqpacket(path: &Path) -> Result<OwnedFd> {
             length as libc::socklen_t,
         )
     };
-    unit_result(result.into(), "connect(record-subject SOCK_SEQPACKET)")?;
-    Ok(socket)
+    unit_result(result.into(), "connect(record-subject SOCK_SEQPACKET)")
 }
 
 pub(crate) fn unix_socket_local_filesystem_path(fd: BorrowedFd<'_>) -> Result<Vec<u8>> {
@@ -2834,6 +2879,13 @@ pub(crate) fn add_seals(fd: BorrowedFd<'_>, seals: libc::c_int) -> Result<()> {
 }
 
 fn fd_result(result: libc::c_long, operation: &'static str) -> Result<OwnedFd> {
+    let fd = adopt_created_fd(result, operation)?;
+    ensure_cloexec(fd.as_fd())?;
+    Ok(fd)
+}
+
+/// Immediately owns a successful fresh-descriptor result without observing flags.
+fn adopt_created_fd(result: libc::c_long, operation: &'static str) -> Result<OwnedFd> {
     if result < 0 {
         return Err(Error::syscall(operation));
     }
@@ -2844,7 +2896,6 @@ fn fd_result(result: libc::c_long, operation: &'static str) -> Result<OwnedFd> {
     // SAFETY: each caller invokes a syscall documented to return a fresh fd on
     // success, and ownership has not been transferred elsewhere.
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-    ensure_cloexec(fd.as_fd())?;
     Ok(fd)
 }
 

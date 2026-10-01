@@ -16,7 +16,10 @@ use std::path::Component;
 use std::path::Path;
 
 use super::descriptor_subject::DescriptorSubjectSocket;
-use super::{SeqpacketError, SeqpacketSocket, map_kernel_error};
+use super::{
+    PendingSocketAdmissionV1, RetainedSeqpacketAdmissionErrorV1, SeqpacketError,
+    SeqpacketSocket, map_kernel_error,
+};
 use crate::uapi;
 
 /// Owns a listener whose accepted records retain kernel-authorized subjects.
@@ -146,11 +149,26 @@ impl RecordSubjectListener {
     /// or child options, failed acceptance, and peer-identity adoption failure.
     /// Any newly accepted descriptor closes before a rejection is returned.
     pub fn accept(&mut self) -> Result<SeqpacketSocket, SeqpacketError> {
-        self.validate_current()?;
-        let child =
-            uapi::accept_record_subject_socket(self.fd.as_fd()).map_err(map_kernel_error)?;
+        let child = self.accept_child()?;
         uapi::require_seqpacket_identity(child.as_fd()).map_err(map_kernel_error)?;
         SeqpacketSocket::from_owned(child)
+    }
+
+    /// Accepts one child while retaining failed admission of its original socket.
+    ///
+    /// A child is parked before inherited-option and peer checks. Rejection
+    /// shuts down the original but cannot repair its historical subject options
+    /// or assert peer termination. The listener remains available.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original validation, acceptance, option or peer failure.
+    /// Pre-accept failures own no child; later failures retain the original
+    /// descriptor and separate shutdown debt without permitting I/O or retry.
+    pub fn accept_retaining(
+        &mut self,
+    ) -> Result<SeqpacketSocket, RetainedSeqpacketAdmissionErrorV1> {
+        SeqpacketSocket::from_pending_retaining(self.accept_pending_child()?)
     }
 
     /// Accepts one descriptor-capable child with inherited record subjects.
@@ -167,11 +185,50 @@ impl RecordSubjectListener {
     /// [`SeqpacketError::Interrupted`] on interruption. Rejects missing listener
     /// or child identity options, failed acceptance, or child adoption failure.
     pub fn accept_descriptor_subject(&mut self) -> Result<DescriptorSubjectSocket, SeqpacketError> {
+        let child = self.accept_child()?;
+        uapi::require_seqpacket_identity(child.as_fd()).map_err(map_kernel_error)?;
+        DescriptorSubjectSocket::from_owned(child)
+    }
+
+    /// Accepts a descriptor-capable child while retaining failed original custody.
+    ///
+    /// It preserves the inherited-option-before-adoption order of
+    /// `accept_descriptor_subject`. No child reporting options are repaired.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first typed validation, acceptance, option or peer cause.
+    /// Any accepted descriptor remains in the error after shutdown, with no
+    /// descriptor extraction, revival, application authority or drain claim.
+    pub fn accept_descriptor_subject_retaining(
+        &mut self,
+    ) -> Result<DescriptorSubjectSocket, RetainedSeqpacketAdmissionErrorV1> {
+        DescriptorSubjectSocket::from_pending_retaining(self.accept_pending_child()?)
+    }
+
+    fn accept_child(&mut self) -> Result<OwnedFd, SeqpacketError> {
         self.validate_current()?;
         let child =
             uapi::accept_record_subject_socket(self.fd.as_fd()).map_err(map_kernel_error)?;
-        uapi::require_seqpacket_identity(child.as_fd()).map_err(map_kernel_error)?;
-        DescriptorSubjectSocket::from_owned(child)
+        Ok(child)
+    }
+
+    fn accept_pending_child(
+        &mut self,
+    ) -> Result<PendingSocketAdmissionV1, RetainedSeqpacketAdmissionErrorV1> {
+        self.validate_current()
+            .map_err(RetainedSeqpacketAdmissionErrorV1::before_creation)?;
+        let child = uapi::accept_record_subject_socket_before_flags(self.fd.as_fd())
+            .map_err(map_kernel_error)
+            .map_err(RetainedSeqpacketAdmissionErrorV1::before_creation)?;
+        let pending = PendingSocketAdmissionV1::new(child);
+        let prepared = pending
+            .prepare_accepted_descriptor()
+            .and_then(|()| pending.require_inherited_subjects());
+        if let Err(source) = prepared {
+            return Err(pending.fail(source));
+        }
+        Ok(pending)
     }
 
     /// Borrows the listener for readiness polling, not competing acceptance or configuration.
@@ -197,6 +254,21 @@ mod tests {
         let fd = uapi::seqpacket_listener().expect("create listener");
         uapi::enable_seqpacket_identity(fd.as_fd()).expect("configure listener");
         RecordSubjectListener::from_owned(fd).expect("adopt listener")
+    }
+
+    #[test]
+    fn preaccept_backpressure_and_interruption_are_no_child_failures() {
+        for source in [SeqpacketError::WouldBlock, SeqpacketError::Interrupted] {
+            let failure = RetainedSeqpacketAdmissionErrorV1::before_creation(source);
+
+            assert!(matches!(
+                failure.cause(),
+                SeqpacketError::WouldBlock | SeqpacketError::Interrupted
+            ));
+            assert!(!failure.retains_descriptor());
+            assert!(!failure.shutdown_attempted());
+            assert!(failure.shutdown_failure().is_none());
+        }
     }
 
     #[test]
