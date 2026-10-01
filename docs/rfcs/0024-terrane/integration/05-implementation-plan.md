@@ -326,12 +326,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   independent reopen. A genuine ordinary branch dispatch also preserves its
   exact chained predecessor and whole old head; intervening pack/index Raw
   preparation slots are verified separately, and the rejected target stays
-  absent. Complete ref qualification remains red: the broader 33-case run
-  passes 28 cases and exposes five failures. Retargeting existing faults to
-  the retained primitives qualifies both consumed-registration checks and
-  the directory-failure/abandoned-candidate outcomes in a focused follow-up;
-  cancellation arrival and multiwriter duration still require correction under
-  their unchanged bounds. Complete effect routing remains pending.
+  absent. The latest joint run includes all 33 ref selectors and nine native
+  backend cases: 38 pass and four fail. Both consumed-registration checks,
+  the directory-failure/abandoned-candidate outcomes, queued native cancellation
+  and all four complete parent-batch regressions pass. The Guard rejection
+  witness checks its exact predecessor and absent target before reopening;
+  reopening separately selects only a distinct canonical Raw capability update.
+  Remaining failures are cancellation arrival and multiwriter duration under
+  their unchanged bounds, the log fault hook's retained-effect target, and a
+  retirement-association fixture rejected before its intended publication check.
+  The fixture's canonical complete successor correction awaits qualification.
+  Complete effect routing remains pending.
   Ordered ancestry and record-parent batching preserve all
   metadata observations, duplicate reads, exact payload reads and initial/final
   fences. The CAS gate
@@ -376,9 +381,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   traversal-context ordering, cutoff dominance, reconstructed mark hints and
   immutable operation associations against GC-3 to GC-7, GC-28 to GC-30
   and the registered CDDL. All 16 local-v1 fixtures match the normative hex
-  byte for byte. The candidate reports 299 core tests, strict Clippy and
-  rustdoc, a no-default-feature core build and mandatory formatting passing;
-  the canonical gate requires its 27 exact selectors. Complete trunk source
+  byte for byte. The candidate passes 299 core tests. A second qualification
+  runs the canonical gate's 27 exact selectors in 27 separate 256 MiB test
+  processes; each runs one test and exits successfully. Strict Clippy and
+  rustdoc, a no-default-feature core build and mandatory formatting also pass
+  with the exact reviewed publication/retirement prerequisites temporarily
+  present and byte-verified before removal. Complete trunk source
   integration and Nix qualification remain pending. No decoded checkpoint,
   elapsed bound or physical intent grants native collection authority.
   Narrowed
