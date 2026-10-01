@@ -1,6 +1,6 @@
-From ba5604dd75cda9f20826bacb09d7aa0c1bb4a1fd Mon Sep 17 00:00:00 2001
+From 706f48e102f26d3230c1a536f4e53f92d72a9f08 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Mon, 1 Jan 2001 00:00:01 +0000
+Date: Wed, 30 Sep 2026 19:23:17 -0700
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
 
 Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,
@@ -157,6 +157,13 @@ Retain actual RTC calendar callbacks in the current GPL unit and remove obsolete
 Pass the source firmware directory explicitly to the pre-install multiboot check. Preserve uninitialized nonperiodic PIT startup before HPET enables its IRQ, and reject a zero periodic divisor.
 
 Preserve fullword ICH9 TCO, software SMI and periodic SMI timer state, require exact mode-tagged migration and validate all auxiliary deadlines before any timer arm.
+
+Wait for the detached call_rcu worker to process a drain callback before
+hot-fork child unit tests inspect the registry. This stabilizes the
+strict three-entry startup assertion without changing runtime behavior.
+
+Report runstate and VMStop transaction and flush facts when template
+preparation rejects the exact paused boundary; leave its guards intact.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -66139,10 +66146,10 @@ index 8fe0876a3dab43aa3dc7376ada20b149b7c9d032..5434d4501636c9aad39475c8f6920e48
      if (mon->commands == &qmp_commands) {
          error_set(errp, ERROR_CLASS_COMMAND_NOT_FOUND,
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..9590aa65113ea6ced7e6f0ea506d65c3b7cf7d34 100644
+index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..9d348b5336c2dce662771d65ac9f061368b31c7b 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
-@@ -14,53 +14,6016 @@
+@@ -14,53 +14,6022 @@
   */
  
  #include "qemu/osdep.h"
@@ -70403,7 +70410,13 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..9590aa65113ea6ced7e6f0ea506d65c3
 +                    &crucible_hot_fork_template_snapshot_bindings, g_free);
 +                crucible_hot_fork_template_snapshot_binding_count = 0;
 +                error_setg(errp, "Crucible hot-fork template preparation "
-+                           "requires an exact paused/device-flush boundary");
++                           "requires an exact paused/device-flush boundary "
++                           "(runstate=%s, vmstop_pending=%d, "
++                           "vmstop_admission_pending=%d, flush_status=%d)",
++                           RunState_str(runstate_get()),
++                           qemu_plugin_crucible_vmstop_pending(),
++                           qemu_plugin_crucible_vmstop_admission_pending(),
++                           qemu_plugin_crucible_vmstop_flush_status());
 +                goto out;
 +            }
 +            crucible_hot_fork_template_failure_stage =
@@ -72175,7 +72188,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..9590aa65113ea6ced7e6f0ea506d65c3
  }
  
  void qmp_cont(Error **errp)
-@@ -68,7 +6031,23 @@ void qmp_cont(Error **errp)
+@@ -68,7 +6037,23 @@ void qmp_cont(Error **errp)
      BlockBackend *blk;
      BlockJob *job;
      Error *local_err = NULL;
@@ -72199,7 +72212,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..9590aa65113ea6ced7e6f0ea506d65c3
      /* if there is a dump in background, we should wait until the dump
       * finished */
      if (qemu_system_dump_in_progress()) {
-@@ -116,6 +6095,155 @@ void qmp_cont(Error **errp)
+@@ -116,6 +6101,155 @@ void qmp_cont(Error **errp)
      }
  }
  
@@ -151348,10 +151361,10 @@ index 0000000000000000000000000000000000000000..8c972db14596c1fc9b9a80e2542bb058
 +}
 diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c028f84e76600f1f90c3e3907a0c1b160e368bed
+index 0000000000000000000000000000000000000000..57b2f5de179724dbb072619030cc86eca030ac8d
 --- /dev/null
 +++ b/tests/unit/test-crucible-hot-fork-child.c
-@@ -0,0 +1,3246 @@
+@@ -0,0 +1,3250 @@
 +/*
 + * Crucible hot-fork child resource disposition tests
 + *
@@ -154520,6 +154533,10 @@ index 0000000000000000000000000000000000000000..c028f84e76600f1f90c3e3907a0c1b16
 +    /* Match system startup before retained hot-fork owns RCU disposition. */
 +    rcu_disable_atfork();
 +    g_test_init(&argc, &argv, NULL);
++
++    /* The detached call_rcu worker must register before registry tests run. */
++    drain_call_rcu();
++
 +    g_test_add_func("/crucible/hot-fork-child/eventfd-identity-token",
 +                    test_eventfd_identity_token);
 +    g_test_add_func("/crucible/hot-fork-child/registry-rebuild",
