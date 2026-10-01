@@ -119,7 +119,9 @@ The derived object key is exactly:
 The selected SDK Put uses `onlyIf: {etagDoesNotMatch: "*"}` and the original
 SHA256. The pinned R2 implementation permits this condition for an absent object
 and refuses an existing incarnation. The subsequent SDK Get uses
-`onlyIf: {etagMatches: <actual positive httpEtag>}`. The returned version, strong
+`onlyIf: {etagMatches: <unquoted actual positive ETag>}`. The conditional
+value removes only the quotes from the already validated canonical HTTP ETag;
+the retained object identity keeps that quoted HTTP ETag. The returned version, strong
 ETag, key and size must match the Put; the consumed complete body must match the
 original size and full SHA256. The command checks real UTC before dispatch and
 after each awaited SDK/stream operation; backward or expired clocks refuse a
@@ -155,6 +157,17 @@ they do not establish server settlement after a lost reply. Conditional create
 refusal returns `refused`; any incomplete or failed possible dispatch returns
 `unknown` without an anchor. The runner retains the receipt in its private
 `oci-sdk-anchor-journal/<runId>` directory.
+
+Nonpositive outcomes also retain a private `diagnostic.json` sidecar with
+exactly `version: 1`, `stage`, and `code`. Fixed stage names are
+`pre_dispatch`, `select_sdk_bucket`, `conditional_create`, `created_identity`,
+`conditional_read`, `read_identity`, `read_body`, `full_body_check`, and
+`completion`. Fixed codes are `clock_invalid`, `sdk_call_failed`,
+`conditional_create_refused`, `identity_invalid`, `identity_changed`,
+`body_invalid`, and `body_mismatch`. The sidecar contains no raw SDK error,
+key, payload, or credential and leaves the response schema unchanged.
+`sdkInvocations` counts attempted SDK calls; a rejected SDK argument may never
+dispatch an upstream provider request. The sidecar never settles an unknown.
 
 Raw originals, dispatch intents, replies, known anchors and unknowns remain
 retained. No command retries, enumerates, deletes or automatically reconciles an

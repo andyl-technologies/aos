@@ -74,7 +74,7 @@ test('positive original precedes create-only Put and conditional full identity r
     assert.deepEqual(value.calls, [ ['select', 'REGISTRY_BUCKET', 'controlled-worker'],
       ['put', value.identity.key, value.payload, { onlyIf: { etagDoesNotMatch: '*' },
         sha256: hash(value.payload) }],
-      ['get', value.identity.key, { onlyIf: { etagMatches: value.identity.httpEtag } }] ]);
+      ['get', value.identity.key, { onlyIf: { etagMatches: value.identity.httpEtag.slice(1, -1) } }] ]);
     assert.deepEqual(JSON.parse(readFileSync(path.join(value.root, 'oci-sdk-anchor-journal',
       value.original.runId, 'receipt.json'))), result);
     await assert.rejects(value.run());
@@ -136,6 +136,9 @@ test('lost Put reply stays permanent unknown and cannot repeat the mutation', as
     assert.equal(result.status, 'unknown');
     assert.deepEqual(result.sdkInvocations, { put: 1, get: 0 });
     assert.equal(result.anchor, undefined);
+    assert.deepEqual(JSON.parse(readFileSync(path.join(value.root, 'oci-sdk-anchor-journal',
+      value.original.runId, 'diagnostic.json'))),
+      { version: 1, stage: 'conditional_create', code: 'sdk_call_failed' });
     await assert.rejects(value.run());
     assert.equal(value.calls.length, 2);
     assert.equal(JSON.parse(readFileSync(path.join(value.root, 'oci-sdk-anchor-journal',
@@ -150,6 +153,9 @@ test('conditional create refusal cannot dispatch a GET or replace an original', 
     const result = await value.run();
     assert.equal(result.status, 'refused');
     assert.deepEqual(result.sdkInvocations, { put: 1, get: 0 });
+    assert.deepEqual(JSON.parse(readFileSync(path.join(value.root, 'oci-sdk-anchor-journal',
+      value.original.runId, 'diagnostic.json'))),
+      { version: 1, stage: 'conditional_create', code: 'conditional_create_refused' });
     await assert.rejects(value.run());
     assert.equal(value.calls.length, 1);
   } finally { value.close(); }
@@ -198,4 +204,40 @@ test('stream limits and UTC expiry after await preserve unknown without positive
       assert.equal(result.sdkInvocations.get, mode === 'expired-put' ? 0 : 1);
     } finally { Date.now = actualNow; value.close(); }
   }
+});
+
+
+test('conditional read uses the SDK raw ETag while the positive identity remains quoted', async () => {
+  const value = fixture();
+  try {
+    const originalGet = value.bucket.get;
+    value.bucket.get = async (key, options) => {
+      assert.match(options.onlyIf.etagMatches, /^[0-9a-f]{32}$/);
+      assert.equal(options.onlyIf.etagMatches, value.identity.httpEtag.slice(1, -1));
+      return originalGet(key, options);
+    };
+    const result = await value.run();
+    assert.equal(result.status, 'observed');
+    assert.equal(result.anchor.object.etag, value.identity.httpEtag);
+    assert.equal(existsSync(path.join(value.root, 'oci-sdk-anchor-journal',
+      value.original.runId, 'diagnostic.json')), false);
+  } finally { value.close(); }
+});
+
+
+test('conditional read failure retains only bounded private diagnostic labels', async () => {
+  const value = fixture();
+  try {
+    value.bucket.get = async () => { throw new Error('private SDK detail must not be retained'); };
+    const result = await value.run();
+    assert.equal(result.status, 'unknown');
+    assert.equal(result.anchor, undefined);
+    assert.deepEqual(result.sdkInvocations, { put: 1, get: 1 });
+    const diagnostic = JSON.parse(readFileSync(path.join(value.root, 'oci-sdk-anchor-journal',
+      value.original.runId, 'diagnostic.json')));
+    assert.deepEqual(diagnostic, { version: 1, stage: 'conditional_read', code: 'sdk_call_failed' });
+    assert.equal(JSON.stringify(result).includes('private SDK detail'), false);
+    await assert.rejects(value.run());
+    assert.equal(value.calls.length, 2);
+  } finally { value.close(); }
 });

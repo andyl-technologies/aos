@@ -426,9 +426,12 @@ async function createOciSdkAnchor(runtime, options, request, namespaceObservatio
   const originalBytes = ociDecodeBytes(request.originalBase64, request.originalSha256, 32768);
   const { original, payload, namespace } = ociAnchorOriginal(originalBytes);
   let lastClock = Number(original.issuedAt);
+  let diagnosticStage = 'pre_dispatch';
+  let diagnosticCode = 'clock_invalid';
   const current = () => {
     const now = Math.floor(Date.now() / 1000);
     if (now < lastClock || now < Number(original.issuedAt) || now >= Number(original.expiresAt)) {
+      diagnosticCode = 'clock_invalid';
       throw new Error('OCI anchor original clock expired or moved backward');
     }
     lastClock = now;
@@ -479,30 +482,49 @@ async function createOciSdkAnchor(runtime, options, request, namespaceObservatio
   const invocations = { put: 0, get: 0 };
   let outcome;
   try {
+    diagnosticStage = 'select_sdk_bucket';
+    diagnosticCode = 'sdk_call_failed';
     current();
     const bucket = await runtime.getR2Bucket(observed.bindingName, observed.workerName);
     current();
+    diagnosticStage = 'conditional_create';
+    diagnosticCode = 'sdk_call_failed';
     invocations.put++;
     const written = await bucket.put(key, payload, {
       onlyIf: { etagDoesNotMatch: '*' }, sha256: original.payloadSha256,
     });
     current();
     if (written === null) {
+      diagnosticCode = 'conditional_create_refused';
       outcome = { version: 1, status: 'refused', reason: 'conditional_create_refused' };
     } else {
+      diagnosticStage = 'created_identity';
+      diagnosticCode = 'identity_invalid';
       const positive = ociAnchorIdentity(written, key, payload.length);
       current();
+      // R2Conditional uses the unquoted SDK ETag; the retained identity keeps
+      // the canonical quoted HTTP ETag validated above.
+      const conditionalEtag = positive.etag.slice(1, -1);
+      diagnosticStage = 'conditional_read';
+      diagnosticCode = 'sdk_call_failed';
       invocations.get++;
-      const read = await bucket.get(key, { onlyIf: { etagMatches: positive.etag } });
+      const read = await bucket.get(key, { onlyIf: { etagMatches: conditionalEtag } });
       current();
+      diagnosticStage = 'read_identity';
+      diagnosticCode = 'identity_invalid';
       const retained = ociAnchorIdentity(read, key, payload.length);
       if (JSON.stringify(retained) !== JSON.stringify(positive)) {
+        diagnosticCode = 'identity_changed';
         throw new Error('OCI anchor changed between conditional effects');
       }
+      diagnosticStage = 'read_body';
+      diagnosticCode = 'body_invalid';
       const bytes = await ociAnchorBody(read, payload.length, current);
       current();
       const sha256 = createHash('sha256').update(bytes).digest('hex');
       if (bytes.length !== payload.length || sha256 !== original.payloadSha256) {
+        diagnosticStage = 'full_body_check';
+        diagnosticCode = 'body_mismatch';
         throw new Error('OCI anchor full read differs from its original');
       }
       outcome = { version: 1, status: 'observed', anchor: { object: positive, sha256 } };
@@ -515,7 +537,16 @@ async function createOciSdkAnchor(runtime, options, request, namespaceObservatio
   const completedAt = new Date().toISOString();
   if (outcome.status === 'observed'
       && Date.parse(completedAt) >= Number(original.expiresAt) * 1000) {
+    diagnosticStage = 'completion';
+    diagnosticCode = 'clock_invalid';
     outcome = { version: 1, status: 'unknown', reason: 'no_complete_positive_receipt' };
+  }
+  if (outcome.status !== 'observed') {
+    // Fixed diagnostic labels stay in the private journal. They never turn an
+    // unknown effect into absence or expose an SDK error, key, or payload.
+    ociPersistBytes(path.join(journal, 'diagnostic.json'), Buffer.from(JSON.stringify({
+      version: 1, stage: diagnosticStage, code: diagnosticCode,
+    }) + '\n'));
   }
   const receipt = { ...outcome, runId: original.runId, originalSha256: request.originalSha256,
     namespaceObservationSha256: original.namespaceObservationSha256,
