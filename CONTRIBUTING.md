@@ -8,8 +8,7 @@ Report undisclosed vulnerabilities privately under the
 agreement.
 
 Project contributors must read
-[the repository license map](docs/legal/licensing.md) and the instructions in
-[`AGENTS.md`](AGENTS.md) before opening a change.
+[the repository license map](docs/legal/licensing.md) before opening a change.
 
 ## Code style
 
