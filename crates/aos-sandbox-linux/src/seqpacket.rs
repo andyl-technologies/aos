@@ -55,6 +55,196 @@ pub struct SeqpacketSocket {
     peer: ConnectionPeerIdentity,
 }
 
+/// Owns an admission failure and any original socket created before that failure.
+///
+/// Private custody cannot be extracted, cloned or used for I/O. A failed
+/// admission has attempted shutdown before returning; a shutdown failure is
+/// retained separately and does not replace the first typed cause. Neither
+/// shutdown nor dropping this error proves peer exit or all-owner drain.
+pub struct RetainedSeqpacketAdmissionErrorV1 {
+    source: SeqpacketError,
+    attempt: Option<PendingSocketAdmissionV1>,
+}
+
+impl RetainedSeqpacketAdmissionErrorV1 {
+    /// Borrows the original typed admission failure without replacing its cause.
+    #[must_use]
+    pub const fn cause(&self) -> &SeqpacketError {
+        &self.source
+    }
+
+    /// Reports whether the failure still owns the created or supplied descriptor.
+    #[must_use]
+    pub fn retains_descriptor(&self) -> bool {
+        self.attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.fd.is_some())
+    }
+
+    /// Reports whether shutdown was attempted on the original descriptor.
+    #[must_use]
+    pub fn shutdown_attempted(&self) -> bool {
+        self.attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.ended)
+    }
+
+    /// Borrows shutdown debt without implying closure, termination or drain.
+    #[must_use]
+    pub fn shutdown_failure(&self) -> Option<&std::io::Error> {
+        self.attempt
+            .as_ref()
+            .and_then(|attempt| attempt.shutdown_failure.as_ref())
+    }
+
+    pub(super) fn before_creation(source: SeqpacketError) -> Self {
+        Self {
+            source,
+            attempt: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for RetainedSeqpacketAdmissionErrorV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RetainedSeqpacketAdmissionErrorV1")
+            .field("retains_descriptor", &self.retains_descriptor())
+            .field("shutdown_attempted", &self.shutdown_attempted())
+            .field("shutdown_failed", &self.shutdown_failure().is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for RetainedSeqpacketAdmissionErrorV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("original socket admission failed; any acquired custody is retained")
+    }
+}
+
+impl std::error::Error for RetainedSeqpacketAdmissionErrorV1 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// Guards only original socket admission, never application-purpose authority.
+pub(super) struct PendingSocketAdmissionV1 {
+    fd: Option<OwnedFd>,
+    peer: Option<ConnectionPeerIdentity>,
+    armed: bool,
+    ended: bool,
+    shutdown_failure: Option<std::io::Error>,
+}
+
+impl PendingSocketAdmissionV1 {
+    pub(super) fn new(fd: OwnedFd) -> Self {
+        Self {
+            fd: Some(fd),
+            peer: None,
+            armed: true,
+            ended: false,
+            shutdown_failure: None,
+        }
+    }
+
+    fn borrow_fd(&self) -> Result<BorrowedFd<'_>, SeqpacketError> {
+        self.fd
+            .as_ref()
+            .map(AsFd::as_fd)
+            .ok_or(SeqpacketError::Closed)
+    }
+
+    pub(super) fn require_inherited_subjects(&self) -> Result<(), SeqpacketError> {
+        uapi::require_seqpacket_identity(self.borrow_fd()?).map_err(map_kernel_error)
+    }
+
+    pub(super) fn prepare_accepted_descriptor(&self) -> Result<(), SeqpacketError> {
+        uapi::ensure_cloexec(self.borrow_fd()?).map_err(map_kernel_error)
+    }
+
+    pub(super) fn admit_peer(&mut self) -> Result<(), SeqpacketError> {
+        self.peer = Some(admit_connected_peer(self.borrow_fd()?)?);
+        Ok(())
+    }
+
+    pub(super) fn enable_subjects(&self) -> Result<(), SeqpacketError> {
+        uapi::enable_seqpacket_identity(self.borrow_fd()?).map_err(SeqpacketError::from)
+    }
+
+    pub(super) fn fail(mut self, source: SeqpacketError) -> RetainedSeqpacketAdmissionErrorV1 {
+        self.end_transport();
+        RetainedSeqpacketAdmissionErrorV1 {
+            source,
+            attempt: Some(self),
+        }
+    }
+
+    pub(super) fn finish(
+        mut self,
+    ) -> Result<(OwnedFd, ConnectionPeerIdentity), RetainedSeqpacketAdmissionErrorV1> {
+        let Some(peer) = self.peer.take() else {
+            return Err(self.fail(SeqpacketError::Closed));
+        };
+        let Some(fd) = self.fd.take() else {
+            self.peer = Some(peer);
+            return Err(self.fail(SeqpacketError::Closed));
+        };
+
+        // Both original owners move directly into the admitted socket. There
+        // is no fallible work between this disarm and result construction.
+        self.armed = false;
+        Ok((fd, peer))
+    }
+
+    fn end_transport(&mut self) {
+        if !self.armed || self.ended {
+            return;
+        }
+        self.ended = true;
+        if let Some(fd) = self.fd.as_ref() {
+            self.shutdown_failure = rustix::net::shutdown(fd, rustix::net::Shutdown::Both)
+                .err()
+                .map(std::io::Error::from);
+        }
+    }
+}
+
+impl Drop for PendingSocketAdmissionV1 {
+    fn drop(&mut self) {
+        // The original socket and any completed peer pin remain resident until
+        // shutdown is attempted, including during admission unwind.
+        self.end_transport();
+    }
+}
+
+fn admit_connected_peer(fd: BorrowedFd<'_>) -> Result<ConnectionPeerIdentity, SeqpacketError> {
+    uapi::prepare_seqpacket(fd)?;
+    ConnectionPeerIdentity::from_socket(fd)
+}
+
+pub(super) fn connect_pending_seqpacket(
+    path: &Path,
+) -> Result<PendingSocketAdmissionV1, RetainedSeqpacketAdmissionErrorV1> {
+    let bytes = uapi::validate_seqpacket_connection_path(path)
+        .map_err(SeqpacketError::from)
+        .map_err(RetainedSeqpacketAdmissionErrorV1::before_creation)?;
+    let fd = uapi::unconnected_seqpacket_before_flags()
+        .map_err(SeqpacketError::from)
+        .map_err(RetainedSeqpacketAdmissionErrorV1::before_creation)?;
+    let pending = PendingSocketAdmissionV1::new(fd);
+
+    let connected = (|| {
+        uapi::ensure_cloexec(pending.borrow_fd()?)?;
+        uapi::connect_seqpacket_borrowed(pending.borrow_fd()?, bytes)?;
+        Ok::<_, SeqpacketError>(())
+    })();
+    if let Err(source) = connected {
+        return Err(pending.fail(source));
+    }
+    Ok(pending)
+}
+
 impl SeqpacketSocket {
     /// Connects to one absolute filesystem Unix sequenced-packet socket.
     ///
@@ -67,6 +257,28 @@ impl SeqpacketSocket {
     /// Returns an error for a non-normalized or oversized path, socket-option
     /// failure, incomplete nonblocking connection, or peer-pinning failure.
     pub fn connect(path: &Path) -> Result<Self, SeqpacketError> {
+        Self::require_connection_path(path)?;
+        let socket = uapi::connect_seqpacket(path)?;
+        Self::from_owned(socket)
+    }
+
+    /// Connects while retaining the original socket on admission failure.
+    ///
+    /// The error owns any created socket without exposing it for I/O or revival.
+    /// Failure and unwind shut down that socket before its custody is dropped;
+    /// shutdown is neither peer termination nor proof of drained effects.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original typed path, creation, option, connection or peer
+    /// failure together with any created socket and separate shutdown debt.
+    pub fn connect_retaining(path: &Path) -> Result<Self, RetainedSeqpacketAdmissionErrorV1> {
+        Self::require_connection_path(path)
+            .map_err(RetainedSeqpacketAdmissionErrorV1::before_creation)?;
+        Self::from_pending_retaining(connect_pending_seqpacket(path)?)
+    }
+
+    fn require_connection_path(path: &Path) -> Result<(), SeqpacketError> {
         let normalized = path.is_absolute()
             && path
                 .components()
@@ -78,8 +290,7 @@ impl SeqpacketSocket {
             )));
         }
 
-        let socket = uapi::connect_seqpacket(path)?;
-        Self::from_owned(socket)
+        Ok(())
     }
 
     /// Creates a private channel with record-subject reporting enabled before exposure.
@@ -112,8 +323,30 @@ impl SeqpacketSocket {
     /// sequenced-packet socket, its connection peer cannot be pinned, or its
     /// descriptor flags cannot be inspected or changed.
     pub fn from_owned(fd: OwnedFd) -> Result<Self, SeqpacketError> {
-        uapi::prepare_seqpacket(fd.as_fd())?;
-        let peer = ConnectionPeerIdentity::from_socket(fd.as_fd())?;
+        let peer = admit_connected_peer(fd.as_fd())?;
+        Ok(Self { fd: Some(fd), peer })
+    }
+
+    /// Adopts an original descriptor while retaining rejected admission custody.
+    ///
+    /// This has the same checks as `from_owned`, but failed input remains owned
+    /// by the error after shutdown. It cannot be extracted or retried.
+    ///
+    /// # Errors
+    ///
+    /// Retains the first descriptor, flag or peer failure and separate shutdown
+    /// debt. No error exposes a usable descriptor or application authority.
+    pub fn from_owned_retaining(fd: OwnedFd) -> Result<Self, RetainedSeqpacketAdmissionErrorV1> {
+        Self::from_pending_retaining(PendingSocketAdmissionV1::new(fd))
+    }
+
+    pub(super) fn from_pending_retaining(
+        mut pending: PendingSocketAdmissionV1,
+    ) -> Result<Self, RetainedSeqpacketAdmissionErrorV1> {
+        if let Err(source) = pending.admit_peer() {
+            return Err(pending.fail(source));
+        }
+        let (fd, peer) = pending.finish()?;
         Ok(Self { fd: Some(fd), peer })
     }
 
@@ -1197,6 +1430,73 @@ mod tests {
             ready.subject().credentials().pid().get(),
             std::process::id()
         );
+    }
+
+    #[test]
+    fn retaining_path_refusal_has_original_typed_cause_and_no_socket() {
+        for path in [
+            Path::new("relative.sock"),
+            Path::new("/tmp/../control.sock"),
+        ] {
+            let failure = SeqpacketSocket::connect_retaining(path).unwrap_err();
+
+            assert!(matches!(
+                failure.cause(),
+                SeqpacketError::Kernel(Error::InvalidInput {
+                    field: "sequenced-packet connection path",
+                    ..
+                })
+            ));
+            assert!(!failure.retains_descriptor());
+            assert!(!failure.shutdown_attempted());
+            assert!(failure.shutdown_failure().is_none());
+        }
+    }
+
+    #[test]
+    fn retaining_oversized_path_fails_before_socket_creation() {
+        let path = std::path::PathBuf::from(format!("/{}", "x".repeat(512)));
+        let failure = SeqpacketSocket::connect_retaining(&path).unwrap_err();
+
+        assert!(matches!(
+            failure.cause(),
+            SeqpacketError::Kernel(Error::InvalidInput {
+                field: "sequenced-packet connection path",
+                ..
+            })
+        ));
+        assert!(!failure.retains_descriptor());
+        assert!(!failure.shutdown_attempted());
+        assert!(failure.shutdown_failure().is_none());
+    }
+
+    #[test]
+    fn retaining_precreation_failure_preserves_the_same_error_source() {
+        let failure = RetainedSeqpacketAdmissionErrorV1::before_creation(
+            SeqpacketError::Kernel(Error::invalid("original admission", "pure refusal")),
+        );
+        let source = std::error::Error::source(&failure)
+            .unwrap()
+            .downcast_ref::<SeqpacketError>()
+            .unwrap();
+
+        assert!(std::ptr::eq(source, failure.cause()));
+        assert!(!failure.retains_descriptor());
+        assert!(!failure.shutdown_attempted());
+        assert!(failure.shutdown_failure().is_none());
+    }
+
+    #[test]
+    fn retaining_display_does_not_claim_precreation_descriptor_custody() {
+        let failure = RetainedSeqpacketAdmissionErrorV1::before_creation(
+            SeqpacketError::Closed,
+        );
+
+        assert_eq!(
+            failure.to_string(),
+            "original socket admission failed; any acquired custody is retained",
+        );
+        assert!(!failure.retains_descriptor());
     }
 
     #[test]

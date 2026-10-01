@@ -23,7 +23,9 @@ use std::path::{Component, Path};
 
 use super::socket_binding::ReceivedSocketOrigin;
 use super::{
-    ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError, map_kernel_error,
+    ConnectionPeerIdentity, KernelAuthorizedRecordSubject, PendingSocketAdmissionV1,
+    RetainedSeqpacketAdmissionErrorV1, SeqpacketError, admit_connected_peer,
+    connect_pending_seqpacket, map_kernel_error,
 };
 use crate::Error;
 use crate::uapi::{self, RawAncillary};
@@ -54,6 +56,26 @@ impl DescriptorSubjectSocket {
     /// Rejects a relative or non-normalized path, connection failure, or
     /// descriptor-subject socket adoption failure.
     pub fn connect(path: &Path) -> Result<Self, SeqpacketError> {
+        Self::require_connection_path(path)?;
+        Self::from_owned(uapi::connect_seqpacket(path)?)
+    }
+
+    /// Connects while retaining original socket custody on admission failure.
+    ///
+    /// Failure shuts down the same descriptor without exposing it for I/O or
+    /// retry. It preserves the first cause separately from shutdown debt.
+    ///
+    /// # Errors
+    ///
+    /// Rejects the same paths, creation, connection, peer and reporting options
+    /// as `connect`; any created socket remains owned by the returned error.
+    pub fn connect_retaining(path: &Path) -> Result<Self, RetainedSeqpacketAdmissionErrorV1> {
+        Self::require_connection_path(path)
+            .map_err(RetainedSeqpacketAdmissionErrorV1::before_creation)?;
+        Self::from_pending_retaining(connect_pending_seqpacket(path)?)
+    }
+
+    fn require_connection_path(path: &Path) -> Result<(), SeqpacketError> {
         let bytes = path.as_os_str().as_bytes();
         let normalized = path.is_absolute()
             && bytes.len() > 1
@@ -71,7 +93,7 @@ impl DescriptorSubjectSocket {
             )));
         }
 
-        Self::from_owned(uapi::connect_seqpacket(path)?)
+        Ok(())
     }
 
     /// Adopts a connected Unix sequenced-packet socket and enables subject reporting.
@@ -87,9 +109,32 @@ impl DescriptorSubjectSocket {
     /// and pin the connection peer, or failure to set close-on-exec,
     /// nonblocking, credential, or pidfd-reporting options.
     pub fn from_owned(fd: OwnedFd) -> Result<Self, SeqpacketError> {
-        uapi::prepare_seqpacket(fd.as_fd())?;
-        let peer = ConnectionPeerIdentity::from_socket(fd.as_fd())?;
+        let peer = admit_connected_peer(fd.as_fd())?;
         uapi::enable_seqpacket_identity(fd.as_fd())?;
+        Ok(Self { fd: Some(fd), peer })
+    }
+
+    /// Adopts an original descriptor while retaining failed admission custody.
+    ///
+    /// The same checks and ordering as `from_owned` are used. Failure and
+    /// unwind shut down the original before dropping its descriptor or peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original descriptor, flag, peer or subject-option cause with
+    /// owned socket custody and separate shutdown debt; no I/O loan escapes.
+    pub fn from_owned_retaining(fd: OwnedFd) -> Result<Self, RetainedSeqpacketAdmissionErrorV1> {
+        Self::from_pending_retaining(PendingSocketAdmissionV1::new(fd))
+    }
+
+    pub(super) fn from_pending_retaining(
+        mut pending: PendingSocketAdmissionV1,
+    ) -> Result<Self, RetainedSeqpacketAdmissionErrorV1> {
+        let admitted = pending.admit_peer().and_then(|()| pending.enable_subjects());
+        if let Err(source) = admitted {
+            return Err(pending.fail(source));
+        }
+        let (fd, peer) = pending.finish()?;
         Ok(Self { fd: Some(fd), peer })
     }
 
@@ -770,6 +815,35 @@ pub(super) fn validate_ancillary(
     super::receive_custody::validate_legacy(ancillary,
         super::receive_custody::SubjectProfileV1::Descriptors { expected, allow_empty })
         .map(|(subject, descriptors, _)| (subject, descriptors))
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[test]
+    fn retaining_strict_path_refusal_has_no_created_socket_or_shutdown_debt() {
+        for path in [
+            Path::new("relative.sock"),
+            Path::new("/"),
+            Path::new("/tmp//control.sock"),
+            Path::new("/tmp/./control.sock"),
+            Path::new("/tmp/control.sock/"),
+        ] {
+            let failure = DescriptorSubjectSocket::connect_retaining(path).unwrap_err();
+
+            assert!(matches!(
+                failure.cause(),
+                SeqpacketError::Kernel(Error::InvalidInput {
+                    field: "descriptor-subject connection path",
+                    ..
+                })
+            ));
+            assert!(!failure.retains_descriptor());
+            assert!(!failure.shutdown_attempted());
+            assert!(failure.shutdown_failure().is_none());
+        }
+    }
 }
 
 #[cfg(test)]
