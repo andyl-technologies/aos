@@ -25,6 +25,7 @@
 
   allocationTests = [
     "gc::retirement::tests::fence::fence_inventory_headers_do_not_reserve_storage_before_validating_rows"
+    "gc::retirement::tests::fence::fence_ref_rows_validate_names_order_and_current_records_before_growing_inventory"
     "bucket::records::burn_tests::generation_burn_headers_validate_ids_before_growing_storage"
     "gc::publication::cbor::tests::retirement::publication_burn_owner_headers_validate_rows_before_growing_storage"
   ];
