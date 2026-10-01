@@ -1,4 +1,4 @@
-//! `aos release step publish`: place a finalized bundle on one destination.
+//! `aos maintain release step publish`: place a finalized bundle on one destination.
 //!
 //! One command serves staging and production destinations on Hub and static
 //! surfaces. Before any upload it verifies the bundle, its build-phase
@@ -21,6 +21,11 @@
 //! receipt. The output is the destination's `receipt.json` and a successor
 //! `release-journal.jsonl` with a `published` entry.
 
+use aos_registry_surface::staging::{
+    STAGE_SCHEMA, StageObject, StagePointer, StageRecord, StageRevision, StageState,
+    inventory_digest,
+};
+use std::io::{Read as _, Write as _};
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
@@ -51,7 +56,9 @@ use super::surface::{
 use super::verify::{VerifiedBundle, verified_bundle};
 use super::{capture, tuf, verify};
 use crate::cli::ReleasePublishArgs;
-use crate::commands::hub::publication::inventory::publication_from_root;
+use crate::commands::hub::publication::inventory::{
+    publication_from_root, snapshot_publication_object,
+};
 
 /// Path of the only mutable TUF pointer in a composed surface.
 const TUF_TIMESTAMP: &str = "tuf/timestamp.json";
@@ -132,6 +139,75 @@ pub(super) async fn run(args: &ReleasePublishArgs, printer: &Printer) -> Result<
         &bundle.captured.manifest_bytes,
         overlay.as_ref(),
     )?;
+    if args.stage_only || args.staged_upload.is_some() {
+        materialize_container_stage(args, projected.root(), &projection, &bundle)?;
+    }
+    let _stage_lock = if args.stage_only || args.staged_upload.is_some() {
+        let output = args.staged_upload.as_deref().unwrap_or(&args.output);
+        std::fs::create_dir_all(output)?;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(output.join(".stage.lock"))?;
+        lock.try_lock()
+            .context("another process is updating or finalizing this candidate")?;
+        Some(lock)
+    } else {
+        None
+    };
+    let stage = if args.stage_only || args.staged_upload.is_some() {
+        Some(candidate_revision(args, projected.root(), &bundle, client.as_ref()).await?)
+    } else {
+        None
+    };
+    if args.stage_only {
+        let revision = stage.as_ref().context("candidate revision is absent")?;
+        persist_stage_record(
+            &args.output,
+            &StageRecord {
+                revision: revision.clone(),
+                state: StageState::Draft,
+                released_version: None,
+            },
+        )?;
+        let staged = client
+            .stage_surface(projected.root(), revision, printer)
+            .await?;
+        client.read_back(&staged.publication.objects).await?;
+        client.verify_identity().await?;
+        persist_stage_record(&args.output, &staged.record)?;
+        let result = serde_json::json!({
+            "schema_version": "aos.registry-staged-upload/v1",
+            "destination": destination.name, "release_id": plan.release_id,
+            "bundle_digest": bundle.bundle_digest, "manifest_digest": manifest_digest,
+            "operation_id": staged.publication.operation_id, "stage": staged.record,
+        });
+        persist_stage_file(
+            &args.output.join("staged-upload.json"),
+            &canonical::to_vec(&result)?,
+        )?;
+        let prior_journal = capture::control_file(&args.journal, "release journal")?;
+        persist_stage_file(&args.output.join("release-journal.jsonl"), &prior_journal)?;
+        if !printer.json_if_active(&result) {
+            printer.success(&format!(
+                "Uploaded and verified candidate {} revision {} to {}",
+                revision.id, revision.revision, destination.name
+            ));
+        }
+        return Ok(());
+    }
+
+    if let (Some(revision), Some(output)) = (&stage, args.staged_upload.as_deref()) {
+        persist_stage_record(
+            output,
+            &StageRecord {
+                revision: revision.clone(),
+                state: StageState::Releasing,
+                released_version: None,
+            },
+        )?;
+    }
     let receipt = if reused {
         verify_existing_publication(client.as_ref(), &projected, &bundle).await?
     } else {
@@ -141,11 +217,22 @@ pub(super) async fn run(args: &ReleasePublishArgs, printer: &Printer) -> Result<
             &bundle,
             destination,
             continuity.as_ref(),
+            stage.as_ref(),
             printer,
         )
         .await?
     };
     client.verify_identity().await?;
+    if let (Some(revision), Some(output)) = (&stage, args.staged_upload.as_deref()) {
+        persist_stage_record(
+            output,
+            &StageRecord {
+                revision: revision.clone(),
+                state: StageState::Released,
+                released_version: Some(revision.release_id.clone()),
+            },
+        )?;
+    }
 
     let view = verify_publication_receipt(plan, destination, &receipt, &receipt_keys)?;
     require_receipt_binds(&view, &bundle, &journal, continuity.as_ref(), reused)?;
@@ -207,6 +294,379 @@ pub(super) async fn run(args: &ReleasePublishArgs, printer: &Printer) -> Result<
             ""
         }
     ));
+    Ok(())
+}
+
+/// Builds or resumes the exact shared candidate revision from captured registry evidence.
+async fn candidate_revision(
+    args: &ReleasePublishArgs,
+    root: &Path,
+    bundle: &VerifiedBundle,
+    client: &dyn SurfaceClient,
+) -> Result<StageRevision> {
+    let mut revision = build_candidate_revision(args, root, bundle)?;
+    let prior_path = args
+        .staged_upload
+        .as_deref()
+        .map(|path| path.join("stage.json"))
+        .unwrap_or_else(|| args.output.join("stage.json"));
+    if prior_path.exists() {
+        let prior: StageRecord = serde_json::from_slice(&capture::control_file(
+            &prior_path,
+            "candidate stage record",
+        )?)?;
+        if let Some(resumed) = resumable_candidate_revision(
+            &prior,
+            &revision,
+            args.stage_only,
+            args.stage_revision,
+            args.staged_upload.is_some(),
+        )? {
+            return Ok(resumed);
+        }
+        revision.revision = prior
+            .revision
+            .revision
+            .checked_add(1)
+            .context("candidate revision overflow")?;
+    } else {
+        anyhow::ensure!(
+            args.staged_upload.is_none(),
+            "explicit publication has no shared candidate record"
+        );
+        anyhow::ensure!(
+            args.stage_revision.is_none() || args.stage_revision == Some(0),
+            "candidate does not exist for revision compare-and-swap"
+        );
+    }
+    let surface = client.surface();
+    let origin = match surface.kind {
+        aos_release::plan::SurfaceKind::Hub => format!(
+            "{}/{}",
+            surface.origin.trim_end_matches('/'),
+            bundle.plan.registry
+        ),
+        aos_release::plan::SurfaceKind::Static => surface.readback().to_owned(),
+    };
+    let base = super::surface::readback::base_url(&origin)?;
+    let public = super::surface::readback::public_client()?;
+    for pointer in &mut revision.publication {
+        pointer.expected_sha256 =
+            super::surface::readback::fetch_small(&public, &base, &pointer.path, 4 * 1024 * 1024)
+                .await?
+                .map(|bytes| format!("sha256:{}", Sha256Digest::of_bytes(bytes).hex()));
+    }
+    revision.validate()?;
+    Ok(revision)
+}
+
+/// Returns the frozen revision for an exact retry, or admits an explicit draft update.
+fn resumable_candidate_revision(
+    prior: &StageRecord,
+    proposed: &StageRevision,
+    stage_only: bool,
+    expected_revision: Option<u64>,
+    finalizing: bool,
+) -> Result<Option<StageRevision>> {
+    prior.revision.validate()?;
+    if let Some(expected) = expected_revision {
+        anyhow::ensure!(
+            expected == prior.revision.revision,
+            "candidate revision changed"
+        );
+    }
+    let mut compared = prior.revision.clone();
+    compared.revision = 1;
+    for pointer in &mut compared.publication {
+        pointer.expected_sha256 = None;
+    }
+    if compared == *proposed {
+        if stage_only {
+            anyhow::ensure!(
+                matches!(prior.state, StageState::Draft | StageState::Ready),
+                "candidate cannot be edited after finalization begins"
+            );
+        }
+        if finalizing {
+            anyhow::ensure!(
+                matches!(
+                    prior.state,
+                    StageState::Ready | StageState::Releasing | StageState::Released
+                ),
+                "candidate is not ready for explicit publication"
+            );
+        }
+        return Ok(Some(prior.revision.clone()));
+    }
+    anyhow::ensure!(
+        stage_only && expected_revision == Some(prior.revision.revision),
+        "candidate inventory changed; provide --stage-revision {}",
+        prior.revision.revision
+    );
+    anyhow::ensure!(
+        matches!(prior.state, StageState::Draft | StageState::Ready),
+        "candidate cannot be edited after finalization begins"
+    );
+    Ok(None)
+}
+
+fn object_kind(path: &str) -> &'static str {
+    if path.starts_with("images/") && !path.ends_with("image-info.json") {
+        "image-disk"
+    } else if path.starts_with("images/") {
+        "image-metadata"
+    } else if path.starts_with("nar/") {
+        "nar"
+    } else if path.starts_with("oci/") {
+        "oci"
+    } else if aos_registry_surface::keymap::is_git_pack_path(path) {
+        "git-pack"
+    } else if path.starts_with("tuf/") {
+        "tuf"
+    } else if path.starts_with("releases/") {
+        "release-metadata"
+    } else {
+        "registry-object"
+    }
+}
+
+fn build_candidate_revision(
+    args: &ReleasePublishArgs,
+    root: &Path,
+    bundle: &VerifiedBundle,
+) -> Result<StageRevision> {
+    let pinned = publication_from_root(root, &bundle.plan.registry)?;
+    let finalized = captured_finalization(args, bundle)?;
+    let mut inventory = pinned
+        .request
+        .objects
+        .iter()
+        .filter(|object| object.kind != "mutable_pointer")
+        .map(|object| {
+            Ok(StageObject {
+                path: object.path.clone(),
+                sha256: format!("sha256:{}", object.sha256),
+                byte_size: u64::try_from(object.byte_size)?,
+                kind: object_kind(&object.path).into(),
+                media_type: object.media_type.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if let Some(graph) = &finalized.container {
+        inventory.extend(aos_package::registry::container_stage::graph_objects(graph));
+        inventory.sort_by(|left, right| left.path.cmp(&right.path));
+    }
+    let mut publication = Vec::new();
+    for object in pinned
+        .request
+        .objects
+        .iter()
+        .filter(|object| object.kind == "mutable_pointer")
+    {
+        let mut snapshot = snapshot_publication_object(&pinned.root, object)?;
+        let mut bytes = Vec::new();
+        snapshot.read_to_end(&mut bytes)?;
+        publication.push(StagePointer {
+            path: object.path.clone(),
+            bytes,
+            expected_sha256: None,
+        });
+    }
+    let revision = StageRevision {
+        schema: STAGE_SCHEMA.into(),
+        id: format!(
+            "aos-{}",
+            Sha256Digest::of_bytes(serde_json::to_vec(&(
+                &bundle.plan.registry,
+                &bundle.plan.version,
+                &args.to
+            ))?)
+            .hex()
+        ),
+        registry: bundle.plan.registry.clone(),
+        revision: 1,
+        release_id: bundle.plan.version.clone(),
+        source_branch: finalized.source_branch,
+        commit: finalized.commit,
+        container: finalized.container,
+        inventory_digest: inventory_digest(&inventory)?,
+        inventory,
+        publication,
+        store_roots: bundle
+            .manifest
+            .payload
+            .artifacts
+            .iter()
+            .filter_map(|artifact| artifact.store_path.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+    };
+    revision.validate()?;
+    Ok(revision)
+}
+
+fn captured_finalization(
+    args: &ReleasePublishArgs,
+    bundle: &VerifiedBundle,
+) -> Result<aos_package::registry::release::FinalizedRegistryRelease> {
+    let relative = "evidence/registry-finalization.json";
+    let bytes = capture::control_file(
+        &args.bundle.join(relative),
+        "registry finalization evidence",
+    )?;
+    let expected = bundle
+        .captured
+        .files
+        .iter()
+        .find(|file| file.path.as_str() == relative)
+        .context("verified bundle lacks registry finalization evidence")?;
+    anyhow::ensure!(
+        bytes.len() as u64 == expected.size_bytes
+            && Sha256Digest::of_bytes(&bytes) == expected.sha256,
+        "registry finalization evidence changed after bundle verification"
+    );
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+/// Copies graph bytes from the already verified projection into OCI digest storage.
+fn materialize_container_stage(
+    args: &ReleasePublishArgs,
+    root: &Path,
+    projection: &project::Projection,
+    bundle: &VerifiedBundle,
+) -> Result<()> {
+    let finalized = captured_finalization(args, bundle)?;
+    let Some(graph) = finalized.container else {
+        return Ok(());
+    };
+    let objects = aos_package::registry::container_stage::graph_objects(&graph);
+    graph.validate(&objects, &bundle.plan.version)?;
+    let projected_paths = projection
+        .objects
+        .iter()
+        .map(|object| (object.bundle_path.as_str(), object.surface_path.as_str()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for object in objects {
+        let source = projected_paths.get(object.path.as_str()).with_context(|| {
+            format!(
+                "signed container graph member {} is absent from the release bundle",
+                object.path
+            )
+        })?;
+        let destination = root.join(&object.path);
+        std::fs::create_dir_all(
+            destination
+                .parent()
+                .context("OCI graph object has no parent")?,
+        )?;
+        let captured = capture::copy_payload_file(&root.join(source), &destination, &object.path)?;
+        anyhow::ensure!(
+            captured.size_bytes == object.byte_size && captured.sha256.to_string() == object.sha256,
+            "projected OCI graph member differs from its signed descriptor: {}",
+            object.path
+        );
+    }
+    Ok(())
+}
+
+/// Verifies local candidate upload evidence against the current signed bundle and overlay.
+pub(super) fn inspect_staged_upload(args: &ReleasePublishArgs) -> Result<StageRecord> {
+    let bundle = verified_bundle(&args.bundle, &args.trusted_keys)?;
+    let additions = args
+        .surface
+        .as_deref()
+        .map(|surface| verify_overlay(args, surface, &bundle))
+        .transpose()?;
+    let overlay = args
+        .surface
+        .as_deref()
+        .zip(additions.as_ref())
+        .map(|(root, additions)| Overlay { root, additions });
+    let projection = project::plan_projection(&args.bundle, &bundle.manifest.payload)?;
+    let projected = project::materialize(
+        &args.bundle,
+        &bundle.captured.files,
+        &projection,
+        &bundle.captured.manifest_bytes,
+        overlay.as_ref(),
+    )?;
+    materialize_container_stage(args, projected.root(), &projection, &bundle)?;
+    let expected = build_candidate_revision(args, projected.root(), &bundle)?;
+    let output = args.staged_upload.as_deref().unwrap_or(&args.output);
+    let record: StageRecord = serde_json::from_slice(&capture::control_file(
+        &output.join("stage.json"),
+        "candidate record",
+    )?)?;
+    record.revision.validate()?;
+    anyhow::ensure!(
+        matches!(
+            record.state,
+            StageState::Ready | StageState::Releasing | StageState::Released
+        ),
+        "candidate has no verified immutable upload"
+    );
+    anyhow::ensure!(
+        if record.state == StageState::Released {
+            record.released_version.as_deref() == Some(bundle.plan.version.as_str())
+        } else {
+            record.released_version.is_none()
+        },
+        "candidate release state differs from the selected version"
+    );
+    let mut normalized = record.revision.clone();
+    normalized.revision = 1;
+    for pointer in &mut normalized.publication {
+        pointer.expected_sha256 = None;
+    }
+    anyhow::ensure!(
+        normalized == expected,
+        "candidate upload inventory differs from the current signed release"
+    );
+    let marker: serde_json::Value = serde_json::from_slice(&capture::control_file(
+        &output.join("staged-upload.json"),
+        "candidate upload evidence",
+    )?)?;
+    let uploaded: StageRecord = serde_json::from_value(
+        marker
+            .get("stage")
+            .cloned()
+            .context("upload evidence has no shared stage record")?,
+    )?;
+    anyhow::ensure!(
+        marker
+            .get("schema_version")
+            .and_then(|value| value.as_str())
+            == Some("aos.registry-staged-upload/v1")
+            && marker.get("destination").and_then(|value| value.as_str()) == Some(args.to.as_str())
+            && marker.get("release_id").and_then(|value| value.as_str())
+                == Some(bundle.plan.release_id.as_str())
+            && marker.get("bundle_digest") == Some(&serde_json::to_value(bundle.bundle_digest)?)
+            && marker.get("manifest_digest")
+                == Some(&serde_json::to_value(bundle.summary.manifest_digest)?)
+            && uploaded.state == StageState::Ready
+            && uploaded.released_version.is_none()
+            && uploaded.revision == record.revision,
+        "candidate upload evidence differs from the exact revision"
+    );
+    Ok(record)
+}
+
+fn persist_stage_record(output: &Path, record: &StageRecord) -> Result<()> {
+    std::fs::create_dir_all(output)?;
+    persist_stage_file(&output.join("stage.json"), &canonical::to_vec(record)?)
+}
+
+fn persist_stage_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().context("candidate state has no parent")?;
+    std::fs::create_dir_all(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(path)
+        .context("persisting candidate state")?;
+    std::fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
 
@@ -472,12 +932,27 @@ async fn publish_new(
     bundle: &VerifiedBundle,
     destination: &PlannedDestination,
     continuity: Option<&ProductionContinuity>,
+    stage: Option<&StageRevision>,
     printer: &Printer,
 ) -> Result<SignedReceipt> {
     let plan = &bundle.plan;
-    let publication = client
-        .publish_surface(projected.root(), &plan.registry_base_commit, printer)
-        .await?;
+    let publication = match stage {
+        Some(revision) => {
+            client
+                .finalize_stage(
+                    projected.root(),
+                    revision,
+                    &plan.registry_base_commit,
+                    printer,
+                )
+                .await?
+        }
+        None => {
+            client
+                .publish_surface(projected.root(), &plan.registry_base_commit, printer)
+                .await?
+        }
+    };
     client.verify_identity().await?;
     client.read_back(&publication.objects).await?;
 
@@ -568,5 +1043,75 @@ fn require_receipt_binds(
         // receipt that this journal already recorded.
         (Some(_), Some(predecessor)) if journal.contains_evidence(predecessor) => Ok(()),
         _ => bail!("publication receipt continuity differs from the destination's role"),
+    }
+}
+
+#[cfg(test)]
+mod stage_resume_tests {
+    use super::*;
+
+    fn candidate() -> StageRevision {
+        let inventory = vec![StageObject {
+            path: "nar/candidate.nar.zst".into(),
+            sha256: format!("sha256:{}", "a".repeat(64)),
+            byte_size: 12,
+            kind: "nar".into(),
+            media_type: "application/zstd".into(),
+        }];
+        StageRevision {
+            schema: STAGE_SCHEMA.into(),
+            id: "aos-stable-candidate".into(),
+            registry: "owner/registry".into(),
+            revision: 1,
+            release_id: "1.2.3".into(),
+            source_branch: "dplecki/release-1.2.3".into(),
+            commit: "b".repeat(40),
+            container: None,
+            inventory_digest: inventory_digest(&inventory).unwrap(),
+            inventory,
+            publication: vec![StagePointer {
+                path: "HEAD".into(),
+                bytes: b"ref: refs/heads/stable\n".to_vec(),
+                expected_sha256: None,
+            }],
+            store_roots: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn interrupted_finalization_keeps_revision_and_pointer_expectations_frozen() {
+        let proposed = candidate();
+        let mut frozen = proposed.clone();
+        frozen.revision = 3;
+        frozen.publication[0].expected_sha256 = Some(format!("sha256:{}", "c".repeat(64)));
+        let record = StageRecord {
+            revision: frozen.clone(),
+            state: StageState::Releasing,
+            released_version: None,
+        };
+
+        let resumed = resumable_candidate_revision(&record, &proposed, false, Some(3), true)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(resumed, frozen);
+        assert!(resumable_candidate_revision(&record, &proposed, true, Some(3), false).is_err());
+        let mut changed = proposed;
+        changed.commit = "d".repeat(40);
+        assert!(resumable_candidate_revision(&record, &changed, true, Some(3), false).is_err());
+        assert_eq!(record.state, StageState::Releasing);
+    }
+
+    #[test]
+    fn matching_inventory_still_requires_the_requested_revision() {
+        let proposed = candidate();
+        let record = StageRecord {
+            revision: proposed.clone(),
+            state: StageState::Ready,
+            released_version: None,
+        };
+
+        assert!(resumable_candidate_revision(&record, &proposed, false, Some(2), true).is_err());
+        assert!(resumable_candidate_revision(&record, &proposed, false, Some(1), true).is_ok());
     }
 }

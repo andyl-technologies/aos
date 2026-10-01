@@ -18,6 +18,55 @@ use crate::auth::Credential;
 use crate::pool::PoolConfig;
 use crate::types::{Method, TransferBody, TransferOutput, TransferRequest, TransferResult};
 
+/// Carries an unsuccessful HTTP response without discarding its status.
+#[derive(Debug)]
+pub struct HttpStatusError {
+    /// HTTP response status code.
+    pub status: u16,
+    /// Requested URL.
+    pub url: String,
+    /// Bounded diagnostic prefix of the response body supplied by the server.
+    pub body: String,
+}
+
+impl std::fmt::Display for HttpStatusError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "HTTP {} for {}: {}",
+            self.status, self.url, self.body
+        )
+    }
+}
+
+impl std::error::Error for HttpStatusError {}
+
+/// Limits unsuccessful reads independently of the remote's response size.
+async fn bounded_error_body(mut response: reqwest::Response, maximum_bytes: Option<u64>) -> String {
+    let limit = maximum_bytes.unwrap_or(8192).min(8192) as usize;
+    let mut bytes = Vec::with_capacity(limit);
+    while bytes.len() < limit {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) | Err(_) => break,
+        };
+        let count = chunk.len().min(limit - bytes.len());
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+
+    // Invalid UTF-8 can expand during decoding; keep the rendered diagnostic
+    // within the same byte bound without cutting through a UTF-8 sequence.
+    let mut body = String::from_utf8_lossy(&bytes).into_owned();
+    if body.len() > limit {
+        let mut end = limit;
+        while !body.is_char_boundary(end) {
+            end -= 1;
+        }
+        body.truncate(end);
+    }
+    body
+}
+
 /// HTTP/HTTPS protocol handler.
 ///
 /// Wraps a shared [`reqwest::Client`] (connection-pooled, ALPN
@@ -226,8 +275,13 @@ impl HttpProtocol {
         let status = response.status().as_u16();
 
         if status >= 400 {
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("HTTP {} for {}: {}", status, request.url, body);
+            let body = bounded_error_body(response, request.maximum_bytes).await;
+            return Err(HttpStatusError {
+                status,
+                url: request.url.clone(),
+                body,
+            }
+            .into());
         }
 
         if resumed && status == 200 && matches!(request.output, TransferOutput::Sink(_)) {
@@ -305,8 +359,13 @@ impl HttpProtocol {
 
         // Check for error status.
         if status >= 400 {
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("HTTP {} for {}: {}", status, request.url, body);
+            let body = bounded_error_body(response, request.maximum_bytes).await;
+            return Err(HttpStatusError {
+                status,
+                url: request.url.clone(),
+                body,
+            }
+            .into());
         }
 
         // A full response safely restarts the destination. A partial response

@@ -1,11 +1,11 @@
-//! `aos release record`: compose the public release record from admitted
+//! `aos maintain release record`: compose the public release record from admitted
 //! qualification evidence.
 //!
 //! The record is derived, never authored: every field is copied from the
 //! frozen plan, the final manifest, the signed staging-phase qualification of
 //! one production destination, and the public report after each has been
-//! verified here as `step publish` verifies them. The output is canonical JSON that `aos release tuf`
-//! authorizes as a delegated target beside the manifest and `aos release
+//! verified here as `step publish` verifies them. The output is canonical JSON that `aos maintain release tuf`
+//! authorizes as a delegated target beside the manifest and `aos maintain release
 //! compose-surface` serves at `releases/<class>/<version>/release-record.json`.
 
 use std::collections::BTreeMap;

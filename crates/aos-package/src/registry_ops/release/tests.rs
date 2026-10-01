@@ -1,9 +1,9 @@
 //! Tests for signed release orchestration, container attachments, and static pack artifacts.
 
 use super::{
-    ContainerReleaseAttachment, attach_container_release, ensure_release_tag_available,
-    ensure_release_worktree_clean, existing_release_tag_commit, load_container_release_attachment,
-    validate_release_options,
+    ContainerReleaseAttachment, attach_container_release, composed_cache_options,
+    ensure_release_tag_available, ensure_release_worktree_clean, existing_release_tag_commit,
+    load_container_release_attachment, validate_release_options,
 };
 use crate::registry_ops::git::git;
 use crate::registry_ops::tags::sign_tag;
@@ -46,6 +46,48 @@ fn release_validation_rejects_cache_flags_without_publishing() {
     assert!(
         format!("{:#}", validate_release_options(&options).unwrap_err())
             .contains("--no-skip requires an upload destination")
+    );
+}
+
+#[test]
+fn inherited_catalog_roots_preserve_cache_policy_and_allow_cache_signing() {
+    let temporary = TempDir::new().unwrap();
+    fs::write(
+        temporary.path().join("registry.toml"),
+        "[registry]\nname = \"local\"\n[caches]\nendpoint = \"https://cache.example/inherited\"\n",
+    )
+    .unwrap();
+    let packages = temporary.path().join("packages").join("i");
+    fs::create_dir_all(&packages).unwrap();
+    let inherited_root = "/nix/store/00000000000000000000000000000000-inherited";
+    fs::write(packages.join("inherited.toml"), format!(
+        "[[versions]]\nversion = \"1.0.0\"\n[versions.platforms.x86_64-linux]\nstore_path = \"{inherited_root}\"\n",
+    )).unwrap();
+    let mut options = test_release_options(&temporary);
+    options.upload_urls = vec![temporary.path().join("origin").display().to_string()];
+    options.cache_key = Some(temporary.path().join("cache-key"));
+    assert!(!options.has_store_roots);
+
+    let effective = composed_cache_options(temporary.path(), &options).unwrap();
+
+    assert!(effective.has_store_roots);
+    assert!(effective.should_publish_cache());
+    assert_eq!(
+        effective.cache_url.as_deref(),
+        Some("https://cache.example/inherited")
+    );
+    validate_release_options(&effective).unwrap();
+    assert_eq!(
+        crate::registry::nixcache::collect_static_cache_roots(temporary.path()).unwrap(),
+        vec![inherited_root]
+    );
+
+    options.cache_url = Some("https://cache.example/explicit".to_string());
+    options.cache_url_explicit = true;
+    let overridden = composed_cache_options(temporary.path(), &options).unwrap();
+    assert_eq!(
+        overridden.cache_url.as_deref(),
+        Some("https://cache.example/explicit")
     );
 }
 

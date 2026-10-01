@@ -1,16 +1,17 @@
-//! Parser contract tests for `aos release` porcelain and `aos release step`.
+//! Parser contract tests for `aos maintain release` porcelain and `aos maintain release step`.
 
 use std::path::PathBuf;
 
 use clap::Parser as _;
 
 use super::{ReleaseCommand, ReleaseFitnessCommand, ReleaseStepCommand};
-use crate::cli::{Cli, Commands};
+use crate::cli::{Cli, Commands, MaintainArgs, MaintainCommand};
 
 #[test]
 fn assembler_accepts_repeatable_image_sets_and_optional_container() {
     let Ok(parsed) = Cli::try_parse_from([
         "aos",
+        "maintain",
         "release",
         "step",
         "assemble",
@@ -45,12 +46,16 @@ fn assembler_accepts_repeatable_image_sets_and_optional_container() {
     ]) else {
         panic!("release assemble arguments should parse");
     };
-    let Commands::Release {
+    let Commands::Maintain(MaintainArgs {
         command:
-            ReleaseCommand::Step {
-                command: ReleaseStepCommand::Assemble(args),
-            },
-    } = parsed.command
+            Some(MaintainCommand::Release {
+                command:
+                    ReleaseCommand::Step {
+                        command: ReleaseStepCommand::Assemble(args),
+                    },
+            }),
+        ..
+    }) = parsed.command
     else {
         panic!("expected release assemble command");
     };
@@ -61,10 +66,13 @@ fn assembler_accepts_repeatable_image_sets_and_optional_container() {
 
 #[test]
 fn verifier_requires_explicit_trust_input() {
-    assert!(Cli::try_parse_from(["aos", "release", "step", "verify", "bundle"]).is_err());
+    assert!(
+        Cli::try_parse_from(["aos", "maintain", "release", "step", "verify", "bundle"]).is_err()
+    );
 
     let Ok(parsed) = Cli::try_parse_from([
         "aos",
+        "maintain",
         "release",
         "step",
         "verify",
@@ -74,7 +82,13 @@ fn verifier_requires_explicit_trust_input() {
     ]) else {
         panic!("release verifier arguments should parse");
     };
-    assert!(matches!(parsed.command, Commands::Release { .. }));
+    assert!(matches!(
+        parsed.command,
+        Commands::Maintain(MaintainArgs {
+            command: Some(MaintainCommand::Release { .. }),
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -82,6 +96,7 @@ fn planner_requires_review_and_authorization_inputs() {
     assert!(
         Cli::try_parse_from([
             "aos",
+            "maintain",
             "release",
             "step",
             "plan",
@@ -100,6 +115,7 @@ fn planner_requires_review_and_authorization_inputs() {
 fn build_captures_its_completion_time() {
     let command = [
         "aos",
+        "maintain",
         "release",
         "step",
         "build",
@@ -123,6 +139,7 @@ fn image_finalization_requires_explicit_role_keys() {
     assert!(
         Cli::try_parse_from([
             "aos",
+            "maintain",
             "release",
             "step",
             "finalize-image",
@@ -143,6 +160,7 @@ fn image_finalization_requires_explicit_role_keys() {
 fn registry_preparation_requires_provenance_role_key() {
     let base = [
         "aos",
+        "maintain",
         "release",
         "step",
         "prepare-registry",
@@ -162,6 +180,10 @@ fn registry_preparation_requires_provenance_role_key() {
         "provenance=provenance.pub",
         "--provenance-verification-identity",
         "provider-provenance",
+        "--registry-key",
+        "registry=registry.pub",
+        "--registry-verification-identity",
+        "provider-registry",
     ];
     assert!(Cli::try_parse_from(base).is_ok());
 
@@ -172,6 +194,8 @@ fn registry_preparation_requires_provenance_role_key() {
             "container-release.json",
             "--container-signature-input",
             "signature-input.json",
+            "--container-layout",
+            "container-layout",
         ])
         .collect::<Vec<_>>();
     assert!(Cli::try_parse_from(with_container).is_ok());
@@ -187,6 +211,7 @@ fn registry_preparation_requires_provenance_role_key() {
 fn registry_finalization_requires_reviewed_tree_and_registry_key() {
     let base = [
         "aos",
+        "maintain",
         "release",
         "step",
         "finalize-registry",
@@ -238,6 +263,7 @@ fn bundle_finalization_requires_provider_identity_for_signers() {
     assert!(
         Cli::try_parse_from([
             "aos",
+            "maintain",
             "release",
             "step",
             "finalize",
@@ -269,6 +295,7 @@ fn tuf_construction_requires_each_online_release_role() {
     assert!(
         Cli::try_parse_from([
             "aos",
+            "maintain",
             "release",
             "step",
             "tuf",
@@ -316,6 +343,7 @@ fn cache_finalization_requires_external_key_and_provider_identity() {
     assert!(
         Cli::try_parse_from([
             "aos",
+            "maintain",
             "release",
             "step",
             "finalize-cache",
@@ -343,6 +371,7 @@ fn qualification_run_requires_native_matrix_and_authority_inputs() {
     assert!(
         Cli::try_parse_from([
             "aos",
+            "maintain",
             "release",
             "step",
             "qualify-run",
@@ -395,6 +424,7 @@ fn qualification_run_requires_native_matrix_and_authority_inputs() {
 fn qualification_response_requires_one_report_source() {
     let base = [
         "aos",
+        "maintain",
         "release",
         "step",
         "qualification",
@@ -432,6 +462,7 @@ fn surface_composition_requires_the_complete_tuf_set() {
     assert!(
         Cli::try_parse_from([
             "aos",
+            "maintain",
             "release",
             "step",
             "compose-surface",
@@ -470,6 +501,7 @@ fn surface_composition_requires_the_complete_tuf_set() {
 fn publish_requires_a_destination_and_receipt_trust() {
     let base = [
         "aos",
+        "maintain",
         "release",
         "step",
         "publish",
@@ -493,12 +525,16 @@ fn publish_requires_a_destination_and_receipt_trust() {
     let Ok(parsed) = Cli::try_parse_from(base) else {
         panic!("publish arguments should parse");
     };
-    let Commands::Release {
+    let Commands::Maintain(MaintainArgs {
         command:
-            ReleaseCommand::Step {
-                command: ReleaseStepCommand::Publish(args),
-            },
-    } = parsed.command
+            Some(MaintainCommand::Release {
+                command:
+                    ReleaseCommand::Step {
+                        command: ReleaseStepCommand::Publish(args),
+                    },
+            }),
+        ..
+    }) = parsed.command
     else {
         panic!("expected release step publish");
     };
@@ -532,6 +568,7 @@ fn publish_requires_a_destination_and_receipt_trust() {
 fn rollout_qualification_requires_ring_and_generation() {
     let base = [
         "aos",
+        "maintain",
         "release",
         "step",
         "qualify-run",
@@ -578,6 +615,7 @@ fn rollout_qualification_requires_ring_and_generation() {
 fn channel_advance_names_a_ring_not_partitions() {
     let base = [
         "aos",
+        "maintain",
         "release",
         "step",
         "channel",
@@ -608,6 +646,7 @@ fn new_requires_registry_version_and_image_decisions() {
     assert!(
         Cli::try_parse_from([
             "aos",
+            "maintain",
             "release",
             "new",
             "--registry",
@@ -620,6 +659,7 @@ fn new_requires_registry_version_and_image_decisions() {
 
     let Ok(parsed) = Cli::try_parse_from([
         "aos",
+        "maintain",
         "release",
         "new",
         "--registry",
@@ -637,9 +677,13 @@ fn new_requires_registry_version_and_image_decisions() {
     ]) else {
         panic!("release new arguments should parse");
     };
-    let Commands::Release {
-        command: ReleaseCommand::New(args),
-    } = parsed.command
+    let Commands::Maintain(MaintainArgs {
+        command:
+            Some(MaintainCommand::Release {
+                command: ReleaseCommand::New(args),
+            }),
+        ..
+    }) = parsed.command
     else {
         panic!("expected release new command");
     };
@@ -653,10 +697,11 @@ fn new_requires_registry_version_and_image_decisions() {
 
 #[test]
 fn advance_names_a_destination_and_optional_ring() {
-    assert!(Cli::try_parse_from(["aos", "release", "advance"]).is_err());
+    assert!(Cli::try_parse_from(["aos", "maintain", "release", "advance"]).is_err());
 
     let Ok(parsed) = Cli::try_parse_from([
         "aos",
+        "maintain",
         "release",
         "advance",
         "--to",
@@ -667,14 +712,19 @@ fn advance_names_a_destination_and_optional_ring() {
     ]) else {
         panic!("release advance arguments should parse");
     };
-    let Commands::Release {
-        command: ReleaseCommand::Advance(args),
-    } = parsed.command
+    let Commands::Maintain(MaintainArgs {
+        command:
+            Some(MaintainCommand::Release {
+                command: ReleaseCommand::Advance(args),
+            }),
+        ..
+    }) = parsed.command
     else {
         panic!("expected release advance command");
     };
     assert_eq!(args.to, "production/stable");
     assert_eq!(args.ring, Some(2));
+    assert!(!args.stop_after_upload);
     assert!(args.accept_transaction);
     assert_eq!(args.override_dir, None);
     assert_eq!(args.work, None);
@@ -682,47 +732,57 @@ fn advance_names_a_destination_and_optional_ring() {
 
 #[test]
 fn status_explain_and_review_select_a_work_directory() {
-    let Ok(parsed) = Cli::try_parse_from(["aos", "release", "status", "--work", "work"]) else {
+    let Ok(parsed) =
+        Cli::try_parse_from(["aos", "maintain", "release", "status", "--work", "work"])
+    else {
         panic!("release status arguments should parse");
     };
     assert!(matches!(
         parsed.command,
-        Commands::Release {
+        Commands::Maintain(MaintainArgs { command: Some(MaintainCommand::Release {
             command: ReleaseCommand::Status(ref args),
-        } if args.work == Some(PathBuf::from("work"))
+        }), .. }) if args.work == Some(PathBuf::from("work"))
     ));
 
-    assert!(Cli::try_parse_from(["aos", "release", "explain"]).is_err());
-    let Ok(parsed) =
-        Cli::try_parse_from(["aos", "release", "explain", "--to", "production/candidate"])
-    else {
+    assert!(Cli::try_parse_from(["aos", "maintain", "release", "explain"]).is_err());
+    let Ok(parsed) = Cli::try_parse_from([
+        "aos",
+        "maintain",
+        "release",
+        "explain",
+        "--to",
+        "production/candidate",
+    ]) else {
         panic!("release explain arguments should parse");
     };
     assert!(matches!(
         parsed.command,
-        Commands::Release {
+        Commands::Maintain(MaintainArgs { command: Some(MaintainCommand::Release {
             command: ReleaseCommand::Explain(ref args),
-        } if args.to == "production/candidate"
+        }), .. }) if args.to == "production/candidate"
     ));
 
-    let Ok(parsed) = Cli::try_parse_from(["aos", "release", "review"]) else {
+    let Ok(parsed) = Cli::try_parse_from(["aos", "maintain", "release", "review"]) else {
         panic!("release review arguments should parse");
     };
     assert!(matches!(
         parsed.command,
-        Commands::Release {
+        Commands::Maintain(MaintainArgs { command: Some(MaintainCommand::Release {
             command: ReleaseCommand::Review(ref args),
-        } if !args.reject && args.reason.is_none()
+        }), .. }) if !args.reject && args.reason.is_none()
     ));
 }
 
 #[test]
 fn review_rejection_requires_a_reason() {
-    assert!(Cli::try_parse_from(["aos", "release", "review", "--reject"]).is_err());
-    assert!(Cli::try_parse_from(["aos", "release", "review", "--reason", "late"]).is_err());
+    assert!(Cli::try_parse_from(["aos", "maintain", "release", "review", "--reject"]).is_err());
+    assert!(
+        Cli::try_parse_from(["aos", "maintain", "release", "review", "--reason", "late"]).is_err()
+    );
 
     let Ok(parsed) = Cli::try_parse_from([
         "aos",
+        "maintain",
         "release",
         "review",
         "--reject",
@@ -731,9 +791,13 @@ fn review_rejection_requires_a_reason() {
     ]) else {
         panic!("release review rejection should parse");
     };
-    let Commands::Release {
-        command: ReleaseCommand::Review(args),
-    } = parsed.command
+    let Commands::Maintain(MaintainArgs {
+        command:
+            Some(MaintainCommand::Release {
+                command: ReleaseCommand::Review(args),
+            }),
+        ..
+    }) = parsed.command
     else {
         panic!("expected release review command");
     };
@@ -746,10 +810,11 @@ fn review_rejection_requires_a_reason() {
 
 #[test]
 fn fitness_run_takes_a_kind_and_optional_report() {
-    assert!(Cli::try_parse_from(["aos", "release", "fitness", "run"]).is_err());
+    assert!(Cli::try_parse_from(["aos", "maintain", "release", "fitness", "run"]).is_err());
 
     let Ok(parsed) = Cli::try_parse_from([
         "aos",
+        "maintain",
         "release",
         "fitness",
         "run",
@@ -759,12 +824,16 @@ fn fitness_run_takes_a_kind_and_optional_report() {
     ]) else {
         panic!("release fitness run arguments should parse");
     };
-    let Commands::Release {
+    let Commands::Maintain(MaintainArgs {
         command:
-            ReleaseCommand::Fitness {
-                command: ReleaseFitnessCommand::Run(args),
-            },
-    } = parsed.command
+            Some(MaintainCommand::Release {
+                command:
+                    ReleaseCommand::Fitness {
+                        command: ReleaseFitnessCommand::Run(args),
+                    },
+            }),
+        ..
+    }) = parsed.command
     else {
         panic!("expected release fitness run command");
     };
@@ -773,6 +842,7 @@ fn fitness_run_takes_a_kind_and_optional_report() {
 
     let Ok(parsed) = Cli::try_parse_from([
         "aos",
+        "maintain",
         "release",
         "fitness",
         "status",
@@ -783,10 +853,50 @@ fn fitness_run_takes_a_kind_and_optional_report() {
     };
     assert!(matches!(
         parsed.command,
-        Commands::Release {
-            command: ReleaseCommand::Fitness {
-                command: ReleaseFitnessCommand::Status(_),
-            },
-        }
+        Commands::Maintain(MaintainArgs {
+            command: Some(MaintainCommand::Release {
+                command: ReleaseCommand::Fitness {
+                    command: ReleaseFitnessCommand::Status(_),
+                },
+            }),
+            ..
+        })
     ));
+}
+
+#[test]
+fn removed_top_level_release_is_rejected() {
+    assert!(Cli::try_parse_from(["aos", "release", "status"]).is_err());
+}
+
+#[test]
+fn upload_stop_and_explicit_publication_are_distinct_commands() {
+    let parsed = Cli::try_parse_from([
+        "aos",
+        "maintain",
+        "release",
+        "advance",
+        "--to",
+        "staging/edge",
+        "--stop-after-upload",
+    ])
+    .expect("upload stopping point parses");
+    assert!(matches!(parsed.command, Commands::Maintain(MaintainArgs {
+        command: Some(MaintainCommand::Release { command: ReleaseCommand::Advance(args) }), ..
+    }) if args.stop_after_upload));
+
+    let parsed = Cli::try_parse_from([
+        "aos",
+        "maintain",
+        "release",
+        "publish",
+        "--to",
+        "staging/edge",
+        "--work",
+        "release-work",
+    ])
+    .expect("explicit staged publication parses");
+    assert!(matches!(parsed.command, Commands::Maintain(MaintainArgs {
+        command: Some(MaintainCommand::Release { command: ReleaseCommand::Publish(args) }), ..
+    }) if args.work == Some(PathBuf::from("release-work"))));
 }

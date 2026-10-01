@@ -20,9 +20,8 @@ use aos_hub::auth::jwt::JwtKeys;
 use aos_hub::db::{
     Database, EndpointHostInput, EndpointRevisionSpec, NewBindingWriteRevision,
     NewSurfacePlacementSpec, RegistryRecord, RouteSpec, SurfacePlacementRecord, SurfaceTarget,
-    TokenAuth,
 };
-use aos_hub::domain::{Permission, Principal, Scope};
+use aos_hub::domain::{Permission, Principal, iam};
 use aos_hub::fetch::LocalFsFetch;
 use aos_hub::server::{AppState, router};
 use aos_hub_core::db::oci_blob_object_key;
@@ -73,6 +72,7 @@ struct RunningHub {
     replica_surface: PathBuf,
     authority: String,
     origin: String,
+    provisioning_token: String,
     bearer: String,
     observations: Arc<Mutex<Vec<ControlObservation>>>,
     server: tokio::task::JoinHandle<()>,
@@ -112,6 +112,110 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
         &signature_input,
     )
     .await?;
+
+    // Bootstrap a real signed predecessor, then author an unpublished revision
+    // on an ordinary branch. The local alias differs from the Hub namespace.
+    run_apr(
+        &home,
+        &[
+            "release",
+            "0.9.0",
+            "--registry",
+            APR_REGISTRY,
+            "--key",
+            path_str(&key_path)?,
+        ],
+    )?;
+    run_apr(
+        &home,
+        &[
+            "channel",
+            "init",
+            TARGET_TAG,
+            "0.9.0",
+            "--registry",
+            APR_REGISTRY,
+            "--key",
+            path_str(&key_path)?,
+        ],
+    )?;
+    let upload_url = format!("{}{}", hub.origin, hub.registry.slug);
+    run_apr(
+        &home,
+        &[
+            "origin",
+            "upload",
+            "--registry",
+            APR_REGISTRY,
+            "--upload-url",
+            &upload_url,
+            "--token",
+            &hub.provisioning_token,
+        ],
+    )?;
+    git_output(
+        &authoring_registry,
+        &["checkout", "-b", "dplecki/container-candidate"],
+    )?;
+    assert_apr_attachment_rejections(
+        &home,
+        &key_path,
+        &release_path,
+        &signature_input_path,
+        &authoring_registry,
+    )?;
+    let preparation = run_apr_output(
+        &home,
+        &[
+            "release",
+            RELEASE,
+            "--stage",
+            "native-container",
+            "--registry",
+            APR_REGISTRY,
+            "--key",
+            path_str(&key_path)?,
+            "--container-release",
+            path_str(&release_path)?,
+            "--container-signature-input",
+            path_str(&signature_input_path)?,
+            "--container-layout",
+            path_str(fixture.root())?,
+            "--upload-url",
+            &upload_url,
+            "--token",
+            &hub.bearer,
+        ],
+    )?;
+    assert!(
+        !preparation.status.success(),
+        "the second required OCI placement is still absent"
+    );
+    let store =
+        aos_package::registry::staging::LocalStageStore::open_read_only(&authoring_registry)?;
+    let prepared = store.show("native-container").with_context(|| {
+        format!(
+            "APR did not retain the prepared candidate:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&preparation.stdout),
+            String::from_utf8_lossy(&preparation.stderr),
+        )
+    })?;
+    assert_eq!(prepared.revision.registry, hub.registry.slug);
+    assert_eq!(prepared.revision.release_id, RELEASE);
+    assert_eq!(
+        prepared.revision.source_branch,
+        "dplecki/container-candidate"
+    );
+    assert!(prepared.revision.container.is_some());
+    let stage_path = workspace.path().join("registry-stage.json");
+    fs::write(&stage_path, serde_json::to_vec(&prepared)?)?;
+    assert!(
+        hub.db
+            .list_releases(hub.registry.id)
+            .await?
+            .iter()
+            .all(|release| release.semver != RELEASE)
+    );
 
     let reference = format!("{}/aos:{TARGET_TAG}", hub.authority);
     let staged = run_publish(
@@ -174,28 +278,61 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
     }
     assert_tag(&hub.db, repository.id, None).await?;
 
-    assert_apr_attachment_rejections(
-        &home,
-        &key_path,
-        &release_path,
-        &signature_input_path,
-        &authoring_registry,
-    )?;
     run_apr(
         &home,
         &[
             "release",
             RELEASE,
+            "--stage",
+            "native-container",
+            "--stage-revision",
+            "1",
+            "--resume",
             "--registry",
             APR_REGISTRY,
-            "--key",
-            path_str(&key_path)?,
-            "--container-release",
-            path_str(&release_path)?,
-            "--container-signature-input",
-            path_str(&signature_input_path)?,
+            "--upload-url",
+            &upload_url,
+            "--token",
+            &hub.bearer,
         ],
     )?;
+    let ready = store.show("native-container")?;
+    assert_eq!(
+        ready.state,
+        aos_registry_surface::staging::StageState::Ready
+    );
+    assert!(hub.db.oci_tags(repository.id, 10, None).await?.is_empty());
+    run_apr(
+        &home,
+        &[
+            "release",
+            RELEASE,
+            "--from-stage",
+            "native-container",
+            "--stage-revision",
+            "1",
+            "--registry",
+            APR_REGISTRY,
+            "--upload-url",
+            &upload_url,
+            "--token",
+            &hub.bearer,
+        ],
+    )?;
+    let finalized = store.show("native-container")?;
+    assert_eq!(
+        finalized.state,
+        aos_registry_surface::staging::StageState::Released
+    );
+    let version = hub
+        .db
+        .oci_manifest_for_repository(
+            repository.id,
+            &aos_oci_types::ManifestReference::Tag(Tag::parse(RELEASE)?),
+        )
+        .await?
+        .context("staged release version tag is absent")?;
+    assert_eq!(version.digest, release.oci.index.digest);
     run_apr(
         &home,
         &[
@@ -336,11 +473,24 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
         release.oci.index.digest,
     );
     let tags = hub.db.oci_tags(repository.id, 10, None).await?;
-    assert_eq!(tags.len(), 1);
-    assert_eq!(tags[0].name.as_str(), TARGET_TAG);
-    assert_eq!(tags[0].digest, release.oci.index.digest);
-    assert_eq!(tags[0].source_kind, "channel");
-    assert_eq!(tags[0].resource_version, 1, "retry must not move the tag");
+    assert_eq!(tags.len(), 2);
+    let stable_tag = tags
+        .iter()
+        .find(|tag| tag.name.as_str() == TARGET_TAG)
+        .context("channel tag is absent")?;
+    assert_eq!(stable_tag.digest, release.oci.index.digest);
+    assert_eq!(stable_tag.source_kind, "channel");
+    assert_eq!(
+        stable_tag.resource_version, 1,
+        "retry must not move the tag"
+    );
+    let version_tag = tags
+        .iter()
+        .find(|tag| tag.name.as_str() == RELEASE)
+        .context("version tag is absent")?;
+    assert_eq!(version_tag.digest, release.oci.index.digest);
+    assert_eq!(version_tag.source_kind, "release");
+    assert_eq!(version_tag.resource_version, 1);
 
     let pull_reference = RegistryReference::parse(&reference)?;
     let client = RegistryClient::new(&pull_reference, Some(&hub.origin), Some(hub.bearer.clone()))?;
@@ -566,6 +716,8 @@ fn create_authoring_registry(home: &Path) -> Result<(String, PathBuf, PathBuf)> 
         ],
     )?;
     let registry = home.join(".local/share/apm/registries").join(APR_REGISTRY);
+    git_output(&registry, &["config", "user.name", "Registry Test"])?;
+    git_output(&registry, &["config", "user.email", "registry@example.com"])?;
     let package = registry.join("packages/a/aos.toml");
     fs::create_dir_all(package.parent().context("package parent")?)?;
     fs::write(
@@ -579,14 +731,6 @@ maintainer = "registry@example.com"
 [[versions]]
 version = "0.1.0"
 
-[versions.platforms.x86_64-linux]
-store_path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-0.1.0"
-nar_hash = "sha256:placeholder"
-nar_size = 1
-closure_size = 1
-source_drv = ""
-source_nar_hash = ""
-references = []
 "#,
     )?;
     run_apr(
@@ -672,16 +816,22 @@ async fn spawn_hub(workspace: &Path, trust_key: &str) -> Result<RunningHub> {
         .await?;
     db.grant_membership("user", user_id, &registry.owner_scope_key, "maintainer")
         .await?;
+    let scope = db.registry_authorization_scope(registry.id).await?;
+    let (_, provisioning_token) = db
+        .create_token(
+            Principal::user(user_id),
+            &scope,
+            &[Permission::Read, Permission::Publish],
+            Some("native container publisher"),
+            None,
+        )
+        .await?;
+    let token = db
+        .validate_token(&provisioning_token)
+        .await?
+        .context("fixture provisioning token was not accepted")?;
     let keys = JwtKeys::from_secret(TEST_JWT_SECRET);
-    let bearer = keys.mint(
-        &TokenAuth {
-            token_id: "native-container-publisher".to_string(),
-            owner: Principal::user(user_id),
-            scope: Scope::parse(&db.registry_authorization_scope(registry.id).await?),
-            permissions: vec![Permission::Read, Permission::Publish],
-        },
-        900,
-    )?;
+    let bearer = keys.mint(&token, 900)?;
     let ratelimit = Arc::new(aos_hub::ratelimit::RateLimiter::new());
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),
@@ -694,7 +844,7 @@ async fn spawn_hub(workspace: &Path, trust_key: &str) -> Result<RunningHub> {
     let state = Arc::new(AppState {
         db: Arc::clone(&db),
         external_url: origin.trim_end_matches('/').to_string(),
-        deployment_id: None,
+        deployment_id: Some("native-container-fixture".into()),
         auth,
         leases: Arc::new(aos_hub_core::lease::InMemoryLease::new()),
         mailer: Arc::new(aos_hub::auth::magic::LogMailer),
@@ -713,8 +863,50 @@ async fn spawn_hub(workspace: &Path, trust_key: &str) -> Result<RunningHub> {
         release_evidence: None,
     });
     let observations = Arc::new(Mutex::new(Vec::new()));
+    let git_surface = surface.clone();
+    let git_auth = Arc::clone(&state.auth);
+    let git_scope = scope.clone();
+    let git_path = format!("/{}/{{*path}}", registry.slug);
     let app = router(state)
         .await
+        .route(
+            &git_path,
+            axum::routing::get(
+                move |axum::extract::Path(path): axum::extract::Path<String>,
+                      headers: axum::http::HeaderMap| {
+                    let surface = git_surface.clone();
+                    let auth = Arc::clone(&git_auth);
+                    let scope = git_scope.clone();
+                    async move {
+                        if !fixture_git_read_allowed(&auth, &scope, &headers)
+                            .await
+                            .unwrap_or(false)
+                        {
+                            return axum::http::Response::builder()
+                                .status(StatusCode::UNAUTHORIZED)
+                                .body(Body::empty())
+                                .expect("unauthorized response");
+                        }
+                        if !aos_hub_core::keymap::is_machine_path(&path) {
+                            return axum::http::Response::builder()
+                                .status(StatusCode::NOT_FOUND)
+                                .body(Body::empty())
+                                .expect("missing response");
+                        }
+                        match tokio::fs::read(surface.join(path)).await {
+                            Ok(bytes) => axum::http::Response::builder()
+                                .header(axum::http::header::CONTENT_LENGTH, bytes.len())
+                                .body(Body::from(bytes))
+                                .expect("Git object response"),
+                            Err(_) => axum::http::Response::builder()
+                                .status(StatusCode::NOT_FOUND)
+                                .body(Body::empty())
+                                .expect("missing response"),
+                        }
+                    }
+                },
+            ),
+        )
         .layer(axum::middleware::from_fn_with_state(
             ObserverState {
                 db: Arc::clone(&db),
@@ -741,10 +933,49 @@ async fn spawn_hub(workspace: &Path, trust_key: &str) -> Result<RunningHub> {
         replica_surface,
         authority,
         origin,
+        provisioning_token,
         bearer,
         observations,
         server,
     })
+}
+
+async fn fixture_git_read_allowed(
+    auth: &AuthState,
+    registry_scope: &str,
+    headers: &axum::http::HeaderMap,
+) -> Result<bool> {
+    let Some(token) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+    else {
+        return Ok(false);
+    };
+    let Ok(claims) = auth.jwt_keys.verify(token) else {
+        return Ok(false);
+    };
+    let Some((scope, lifecycle)) = auth.db.token_scope_and_lifecycle(&claims.sub).await? else {
+        return Ok(false);
+    };
+    if scope != claims.scope
+        || lifecycle != "active"
+        || !auth
+            .db
+            .principal_is_live(&claims.owner_kind, claims.owner_id)
+            .await?
+    {
+        return Ok(false);
+    }
+    let Some(context) = auth.db.authorization_context(registry_scope).await? else {
+        return Ok(false);
+    };
+    let Some(principal) = iam::claims_principal(&claims) else {
+        return Ok(false);
+    };
+    let grants = auth.db.effective_scopes(principal).await?;
+    Ok(iam::token_allows(&claims, Permission::Read, &context)
+        && iam::allow(&grants, Permission::Read, &context))
 }
 
 async fn create_local_binding(db: &Database, org_id: i64, name: &str, path: &str) -> Result<i64> {
@@ -1161,12 +1392,14 @@ fn publish_output(
         .args(["--idempotency-key", idempotency_key])
         .args(["--registry-origin", &hub.origin])
         .args(["--registry-token", &hub.bearer]);
+    command
+        .args(["--hub", &hub.origin])
+        .args(["--token", &hub.bearer]);
     if stage_only {
-        command.arg("--stage-only");
-    } else {
         command
-            .args(["--hub", &hub.origin])
-            .args(["--token", &hub.bearer]);
+            .arg("--stage-only")
+            .arg("--registry-stage")
+            .arg(workspace.join("registry-stage.json"));
     }
     command.output().context("running aos container publish")
 }
@@ -1176,7 +1409,7 @@ fn run_apr(home: &Path, arguments: &[&str]) -> Result<String> {
     if !output.status.success() {
         bail!(
             "apr {} failed:\nstdout:\n{}\nstderr:\n{}",
-            arguments.join(" "),
+            display_arguments(arguments),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
@@ -1201,7 +1434,24 @@ fn run_apr_output(home: &Path, arguments: &[&str]) -> Result<Output> {
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .args(arguments)
         .output()
-        .with_context(|| format!("running apr {}", arguments.join(" ")))
+        .with_context(|| format!("running apr {}", display_arguments(arguments)))
+}
+
+fn display_arguments(arguments: &[&str]) -> String {
+    let mut redact_next = false;
+    arguments
+        .iter()
+        .map(|argument| {
+            if redact_next {
+                redact_next = false;
+                "<redacted>".to_owned()
+            } else {
+                redact_next = matches!(*argument, "--token" | "--registry-token");
+                argument.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn assert_failure_contains(output: &Output, needle: &str) {

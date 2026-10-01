@@ -131,7 +131,7 @@ pub(super) struct MaintainerConfig {
     /// Native qualification executors keyed by platform.
     #[serde(default)]
     pub(super) executors: BTreeMap<String, ExecutorConfig>,
-    /// Reviewer key used by `aos release review`.
+    /// Reviewer key used by `aos maintain release review`.
     #[serde(default)]
     pub(super) reviewer: Option<ReviewerConfig>,
     /// Alert delivery path exercised by `alert-delivery` fitness.

@@ -17,6 +17,11 @@ Three version numbers are easy to confuse:
   `2026.8.0`;
 - a channel maps 256 stable consumer buckets to registry releases.
 
+An unpublished release stage records an exact candidate revision and upload
+inventory. It stays out of default catalogs and channels; directly addressed
+refs, digests, and cache URLs may still expose uploaded bytes. It is distinct
+from a staging deployment. See [Release stages](../../registry/release-stages.md).
+
 Changing package metadata does not change consumers until a maintainer creates
 and publishes a registry release. Publishing a registry release does not move
 a channel unless the release command initializes or advances it.
@@ -34,7 +39,7 @@ a channel unless the release command initializes or advances it.
 - [Configure registries on an AOS host](../aos/registries.md) covers the
   built-in registry, organizational registries, priorities, trust, and
   explicit consumer selection.
-- [Stage and schedule updates](rollouts.md) covers release channels, rollout
+- [Promote and schedule channel updates](rollouts.md) covers release channels, rollout
   partitions, automation, observation, and fix-forward recovery.
 - [Manage trust and incidents](trust.md) covers trust bootstrap, key custody,
   planned and emergency rotation, and bad package versions.
@@ -49,7 +54,8 @@ The command-line programs have separate parsers and responsibilities:
 
 | Command | Job |
 | --- | --- |
-| `apr` | Author, sign, release, and upload a registry |
+| `apr` | Author, stage, sign, release, and upload a registry |
+| `aos maintain release` | Orchestrate the AOS source matrix, qualification, and destinations |
 | `apm` | Configure registries and install or upgrade packages |
 | `aos hub` | Administer a running AOS Hub through its HTTP API |
 | `aos-hub` | Administer a native Hub through trusted local state |

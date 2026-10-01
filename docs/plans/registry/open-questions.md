@@ -235,7 +235,8 @@ apr release <semver>
   [--store-path <path>]
   (--key <private-key-path> | --key-id <keys.toml-id>)
   [--channel <name> (--init-channel | --count N | --partitions 00,01,...)]
-  [--cache-url <url>] [--cache-output <dir>] [--cache-key <key-file>]
+  [--cache-url <url>] [--cache-key <key-file>]
+  [--stage <id> | --from-stage <id>] [--stage-revision N]
   [--upload-url <file|http|s3|sftp URL>]...
   [--dry-run] [--resume]
 ```
@@ -245,8 +246,10 @@ real local Nix store path first by delegating to `apr publish`. When `--cache-ur
 is supplied, the cache pointer is committed before the semver tag is signed so
 the release authenticates the pointer. Pack generation writes full packs at
 `X.Y.0` anchors and compressed guaranteed thin deltas at the target release.
-`--cache-output` runs static Nix-cache generation explicitly because it requires
-the listed store paths to exist locally.
+Static Nix-cache generation requires the listed store paths to exist locally.
+`--stage` retains an unpublished candidate; updates and resume name the observed
+`--stage-revision`. Finalization uses `--from-stage` with that revision. See
+[release stages](../../registry/release-stages.md).
 
 **Upload backend decision.** Upload is pluggable at the static-file backend layer:
 repeat `--upload-url` for `file://`, generic `http(s)://`, `s3://`, and
@@ -256,9 +259,10 @@ narinfos) and low-TTL mutable surfaces last (`HEAD`, `info/refs`,
 `objects/info/**`, `channels/**`, `nix-cache-info`). Service-backed S3/SFTP
 validation remains a separate TODO because it requires external services.
 
-**Idempotency and coordination.** `--resume` skips a semver tag already pointing
-at `HEAD` and skips already-present full/delta pack artifacts; otherwise existing
-immutable artifacts fail closed with a clear "pass --resume" message. A local
+**Idempotency and coordination.** `--resume` reuses verified immutable artifacts
+for the same release. Existing semver refs cannot be overwritten. Candidate
+updates, resume, and finalization check the exact recorded revision rather than
+silently adopting workspace changes. A local
 publisher lock in the git dir prevents two local `apr release` processes from
 interleaving. Multi-host publisher serialization and production CDN behavior are
 still operational validation topics (see R2/R3 and the TODO).

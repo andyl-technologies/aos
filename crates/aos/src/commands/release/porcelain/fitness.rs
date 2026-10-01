@@ -1,4 +1,4 @@
-//! `aos release fitness run <kind>` and `aos release fitness status`.
+//! `aos maintain release fitness run <kind>` and `aos maintain release fitness status`.
 //!
 //! Fitness attestations are maintainer-wide: one store under the
 //! configuration's `fitness_root` (`<kind>/<performed_at>.json`) serves every
@@ -456,7 +456,7 @@ impl FitnessContext {
             (Err(_), None) => bail!(
                 "fitness attestations are verified against the release-evidence roster; \
                  configure [signer.roles.release-evidence] or create a release with \
-                 aos release new"
+                 aos maintain release new"
             ),
         };
 
@@ -471,7 +471,7 @@ impl FitnessContext {
 /// Returns the newest release directory under `work_root`, if any.
 ///
 /// A missing or empty `work_root` is the normal state before the first
-/// `aos release new`; the contract then comes from the Nix export.
+/// `aos maintain release new`; the contract then comes from the Nix export.
 fn newest_work(config: &MaintainerConfig) -> Option<WorkDir> {
     WorkDir::select(config, None).ok()
 }
