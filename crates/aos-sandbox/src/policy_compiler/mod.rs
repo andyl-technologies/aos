@@ -37,6 +37,8 @@ pub use controller_project_terminal_readback::{
     sign_fixed_controller_project_terminal_readback_v1,
 };
 mod controller_readback_session;
+#[cfg(target_os = "linux")]
+pub(crate) use controller_readback_session::fresh_root_nonce;
 mod controller_root_receipt_readback_v8;
 mod controller_v8_readback_envelope;
 mod controller_v8_settlement_readback;

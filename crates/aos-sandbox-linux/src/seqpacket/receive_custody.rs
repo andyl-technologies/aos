@@ -48,6 +48,19 @@ impl RetainedSeqpacketReceiveErrorV1 {
         self.retry == RetryV1::Interrupted
     }
 
+    /// Borrows the first recorded failure to shut down original custody.
+    ///
+    /// An inner retained-attempt failure takes precedence over an additional
+    /// outer stream failure; both remain owned by this error. Absence reports
+    /// no recorded failure, not successful shutdown, EOF, retirement or Drain.
+    #[must_use]
+    pub fn shutdown_failure(&self) -> Option<&std::io::Error> {
+        self.attempt
+            .as_ref()
+            .and_then(|attempt| attempt.shutdown_failure.as_ref())
+            .or(self.additional_shutdown_failure.as_ref())
+    }
+
     pub(crate) fn before_receive(source: SeqpacketError) -> Self {
         Self {
             source,
@@ -435,6 +448,28 @@ mod tests {
 
     use super::*;
     use crate::seqpacket::SeqpacketSocket;
+
+    #[test]
+    fn absent_shutdown_debt_is_not_a_closed_or_drain_proof() {
+        let error = RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::InvalidMaximum);
+
+        assert!(error.shutdown_failure().is_none());
+        assert!(matches!(std::error::Error::source(&error)
+            .and_then(|source| source.downcast_ref::<SeqpacketError>()),
+            Some(SeqpacketError::InvalidMaximum)));
+    }
+
+    #[test]
+    fn outer_shutdown_failure_is_borrowed_without_removing_its_owner() {
+        let mut error = RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::Closed);
+        error.record_shutdown_failure(Some(std::io::Error::from(std::io::ErrorKind::PermissionDenied)));
+        let original = error.additional_shutdown_failure.as_ref().unwrap() as *const std::io::Error;
+
+        assert_eq!(error.shutdown_failure().unwrap() as *const std::io::Error, original);
+        assert_eq!(error.shutdown_failure().unwrap().kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(error.additional_shutdown_failure.as_ref().unwrap() as *const std::io::Error, original);
+        assert!(error.attempt.is_none());
+    }
 
     fn pair() -> (SeqpacketSocket, SeqpacketSocket) {
         let (left, right) = uapi::seqpacket_pair().unwrap();

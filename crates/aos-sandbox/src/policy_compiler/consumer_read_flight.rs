@@ -16,6 +16,8 @@ pub use client::{ConsumerReadPolicyStateV1, with_consumer_read_policy_state_v1};
 pub use server::serve_consumer_read_policy_state_v1;
 pub use wire::CONSUMER_READ_BOOTSTRAP_MAGIC_V1;
 
+pub(crate) use transport::{Deadline, RetainedCarrier, TransportFault};
+
 /// Reports failure of this original nonauthorizing flight.
 #[derive(Debug, thiserror::Error)]
 pub enum ConsumerReadFlightErrorV1 {

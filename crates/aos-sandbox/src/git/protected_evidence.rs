@@ -18,6 +18,15 @@
 use std::path::Path;
 
 #[cfg(target_os = "linux")]
+mod current_view;
+
+#[cfg(target_os = "linux")]
+pub use current_view::{
+    GIT_EVIDENCE_VIEW_BOOTSTRAP_MAGIC_V1, GitRootEvidenceMetadataV1,
+    GitRootEvidenceViewAttemptV1, GitRootEvidenceViewErrorV1, RootGitEvidenceViewAttemptV1,
+};
+
+#[cfg(target_os = "linux")]
 mod provisioning;
 
 #[cfg(target_os = "linux")]

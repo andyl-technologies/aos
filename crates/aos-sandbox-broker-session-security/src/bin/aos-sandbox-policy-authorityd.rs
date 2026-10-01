@@ -211,6 +211,7 @@ const CACHE_SIGNER_RPC_TIMEOUT: Duration = Duration::from_secs(75);
 
 #[derive(Clone, Copy)]
 enum HeadRequestMode {
+    GitEvidenceView,
     Query,
     Lease,
     SourceGenesis,
@@ -1187,6 +1188,11 @@ fn read_head_request(
 ) -> Result<([u8; REQUEST_BYTES], HeadRequestMode), Box<dyn Error>> {
     let mut request = [0_u8; REQUEST_BYTES];
     stream.read_exact(&mut request)?;
+    if &request[..8] == aos_sandbox::git::GIT_EVIDENCE_VIEW_BOOTSTRAP_MAGIC_V1 {
+        // Complete discrimination DATA only. The same accepted stream enters
+        // its prearmed capsule before every fallible new-purpose check/gate.
+        return Ok((request, HeadRequestMode::GitEvidenceView));
+    }
     if &request[..8]
         == aos_sandbox::policy_compiler::consumer_read_flight::CONSUMER_READ_BOOTSTRAP_MAGIC_V1
     {
@@ -1444,6 +1450,18 @@ fn serve_current_head(
         require_no_fixed_closed_policy_binding_hold_v1()?;
         Ok(())
     })?;
+    if matches!(mode, HeadRequestMode::GitEvidenceView) {
+        let mut attempt = aos_sandbox::git::RootGitEvidenceViewAttemptV1::new(
+            startup, original, request,
+        );
+        if let Err(error) = attempt.serve_once() {
+            // Neither fallible diagnostics nor an ordinary return may drop
+            // the original failed flight/writer before terminal process exit.
+            let _ = writeln!(std::io::stderr().lock(), "aos-sandbox-policy-authorityd: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if matches!(mode, HeadRequestMode::ConsumerReadPreRoot) {
         let owner = require_pre_root_startup(startup)?;
         // The accepted descriptor is moved exactly once. All old modes keep
@@ -3937,6 +3955,7 @@ fn select_project_source<'a>(
         }),
         HeadRequestMode::SourceGenesis
         | HeadRequestMode::ConsumerReadPreRoot
+        | HeadRequestMode::GitEvidenceView
         | HeadRequestMode::ClosedBindingReplay
         | HeadRequestMode::RootEffectAck
         | HeadRequestMode::RootEffectAckReplay

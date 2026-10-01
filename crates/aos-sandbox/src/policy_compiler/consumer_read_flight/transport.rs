@@ -2,13 +2,14 @@
 //!
 //! This owns no role or policy algorithm. Application checks run before each
 //! operation and on every subject chunk, followed by a deadline check after
-//! potentially slow observations. Any failure drops/shuts down this PRE-ROOT
-//! endpoint; no retry can adopt another connection inside the flight.
+//! potentially slow observations. Legacy PRE-ROOT callers keep their ordinary
+//! failure/drop contract. The opt-in metadata carrier instead parks originals,
+//! incomplete buffers and owning receives; neither profile retries an endpoint.
 
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 
 use aos_sandbox_linux::boot::KernelBootId;
-use aos_sandbox_linux::seqpacket::SeqpacketError;
+use aos_sandbox_linux::seqpacket::{RetainedSeqpacketReceiveErrorV1, SeqpacketError};
 use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connect, socket_with};
@@ -18,12 +19,17 @@ use super::wire::{Correlation, HEADER_BYTES, Phase};
 
 const MAXIMUM_FLIGHT_NANOSECONDS: u64 = 60_000_000_000;
 const MAXIMUM_POLL_NANOSECONDS: u64 = 100_000_000;
+// Four initial reads, sixteen header/commitment checks, then RELEASED pair.
+const MAXIMUM_METADATA_READS: usize = 4 + 2 * 16 + 2;
 
 type PeerCheck<'a> =
     dyn FnMut(&RetainedUnixStream, Option<&UnixStreamSubjectChunk>) -> Result<(), Error> + 'a;
 
+type RetainingCheck<'a> = dyn FnMut(&RetainedUnixStream, Option<&UnixStreamSubjectChunk>)
+    -> Result<(), TransportFault> + 'a;
+
 #[derive(Clone, Copy)]
-pub(super) struct Deadline {
+pub(crate) struct Deadline {
     boot: [u8; 16],
     cutoff: u64,
 }
@@ -35,7 +41,7 @@ impl Deadline {
         Ok(Self { boot, cutoff })
     }
 
-    pub(super) fn boot(self) -> [u8; 16] {
+    pub(crate) fn boot(self) -> [u8; 16] {
         self.boot
     }
 
@@ -54,8 +60,31 @@ impl Deadline {
             .ok_or(Error::Deadline)
     }
 
-    pub(super) fn require_current(self) -> Result<(), Error> {
+    pub(crate) fn require_current(self) -> Result<(), Error> {
         self.remaining().map(|_| ())
+    }
+
+    pub(crate) fn new_metadata() -> Result<Self, Error> {
+        let (boot, now) = kernel_sample()?;
+        let cutoff = now.checked_add(10_000_000_000).ok_or(Error::Deadline)?;
+        Ok(Self { boot, cutoff })
+    }
+
+    pub(crate) fn capture_metadata(cutoff: u64) -> Result<Self, Error> {
+        let (boot, now) = kernel_sample()?;
+        require_metadata_cutoff(now, cutoff)?;
+        Ok(Self { boot, cutoff })
+    }
+
+    pub(crate) fn cutoff(self) -> u64 {
+        self.cutoff
+    }
+}
+
+fn require_metadata_cutoff(now: u64, cutoff: u64) -> Result<(), Error> {
+    match cutoff.checked_sub(now) {
+        Some(1..=10_000_000_000) => Ok(()),
+        _ => Err(Error::Deadline),
     }
 }
 
@@ -101,20 +130,7 @@ impl Flight {
             None,
         )
         .map_err(std::io::Error::from)?;
-        let address = SocketAddrUnix::new(
-            super::super::root_v8_released_proof::POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2,
-        )
-        .map_err(std::io::Error::from)?;
-        match connect(&fd, &address) {
-            Ok(()) => {}
-            Err(rustix::io::Errno::INPROGRESS) => {
-                wait(fd.as_fd(), PollFlags::OUT, deadline)?;
-                rustix::net::sockopt::socket_error(&fd)
-                    .map_err(std::io::Error::from)?
-                    .map_err(std::io::Error::from)?;
-            }
-            Err(error) => return Err(std::io::Error::from(error).into()),
-        }
+        connect_fixed(&fd, deadline)?;
         deadline.require_current()?;
         Self::adopt(fd, correlation, deadline)
     }
@@ -145,21 +161,9 @@ impl Flight {
         &self.stream
     }
 
-    pub(super) fn write(&self, mut bytes: &[u8], check: &mut PeerCheck<'_>) -> Result<(), Error> {
-        while !bytes.is_empty() {
-            self.checked(check, None)?;
-            match rustix::net::send(self.stream.as_fd(), bytes, rustix::net::SendFlags::NOSIGNAL) {
-                Ok(0) => return Err(Error::Protocol),
-                Ok(count) => bytes = &bytes[count..],
-                Err(rustix::io::Errno::AGAIN) => {
-                    wait(self.stream.as_fd(), PollFlags::OUT, self.deadline)?
-                }
-                Err(rustix::io::Errno::INTR) => self.deadline.require_current()?,
-                Err(error) => return Err(std::io::Error::from(error).into()),
-            }
-            self.deadline.require_current()?;
-        }
-        self.checked(check, None)
+    pub(super) fn write(&self, bytes: &[u8], check: &mut PeerCheck<'_>) -> Result<(), Error> {
+        let mut cursor = 0;
+        write_engine(&self.stream, self.deadline, bytes, &mut cursor, check)
     }
 
     pub(super) fn read_exact(
@@ -168,24 +172,12 @@ impl Flight {
         check: &mut PeerCheck<'_>,
     ) -> Result<Vec<u8>, Error> {
         let mut bytes = Vec::with_capacity(length);
-        while bytes.len() < length {
-            self.checked(check, None)?;
-            match self
-                .stream
-                .try_receive_subject_chunk((length - bytes.len()).min(4096))
-            {
-                Ok(chunk) => {
-                    self.checked(check, Some(&chunk))?;
-                    bytes.extend_from_slice(chunk.payload());
-                }
-                Err(SeqpacketError::WouldBlock) => {
-                    wait(self.stream.as_fd(), PollFlags::IN, self.deadline)?
-                }
-                Err(SeqpacketError::Interrupted) => self.deadline.require_current()?,
-                Err(error) => return Err(error.into()),
-            }
-        }
-        self.checked(check, None)?;
+        let mut slot = ReceiveSlot::Legacy(None);
+        let mut legacy_check = |stream: &_, chunk: Option<&UnixStreamSubjectChunk>| {
+            check(stream, chunk).map_err(TransportFault::from)
+        };
+        read_engine(&mut self.stream, self.deadline, &mut bytes, length, false, &mut slot, &mut legacy_check)
+            .map_err(TransportFault::legacy)?;
         Ok(bytes)
     }
 
@@ -211,26 +203,12 @@ impl Flight {
     }
 
     pub(super) fn require_eof(&mut self, check: &mut PeerCheck<'_>) -> Result<(), Error> {
-        loop {
-            self.checked(check, None)?;
-            match self.stream.try_receive_subject_chunk(1) {
-                Ok(chunk) => {
-                    self.checked(check, Some(&chunk))?;
-                    return Err(Error::Protocol);
-                }
-                // No previous receive failure is recoverable in this Flight.
-                // Ready->Closed here is the actual zero-byte recvmsg, not an ACK.
-                Err(SeqpacketError::Closed) => {
-                    self.checked(check, None)?;
-                    return Ok(());
-                }
-                Err(SeqpacketError::WouldBlock) => {
-                    wait(self.stream.as_fd(), PollFlags::IN, self.deadline)?
-                }
-                Err(SeqpacketError::Interrupted) => self.deadline.require_current()?,
-                Err(error) => return Err(error.into()),
-            }
-        }
+        let mut slot = ReceiveSlot::Legacy(None);
+        let mut legacy_check = |stream: &_, chunk: Option<&UnixStreamSubjectChunk>| {
+            check(stream, chunk).map_err(TransportFault::from)
+        };
+        read_engine(&mut self.stream, self.deadline, &mut Vec::new(), 1, true, &mut slot, &mut legacy_check)
+            .map_err(TransportFault::legacy)
     }
 
     pub(super) fn checked(
@@ -238,9 +216,7 @@ impl Flight {
         check: &mut PeerCheck<'_>,
         chunk: Option<&UnixStreamSubjectChunk>,
     ) -> Result<(), Error> {
-        self.deadline.require_current()?;
-        check(&self.stream, chunk)?;
-        self.deadline.require_current()
+        checked(&self.stream, self.deadline, check, chunk)
     }
 }
 
@@ -248,6 +224,338 @@ impl Drop for Flight {
     fn drop(&mut self) {
         // PRE-ROOT only: no pins or positive effects can be retired by this.
         let _ = rustix::net::shutdown(self.stream.as_fd(), rustix::net::Shutdown::Both);
+    }
+}
+
+fn connect_fixed(fd: &OwnedFd, deadline: Deadline) -> Result<(), Error> {
+    let address = SocketAddrUnix::new(
+        super::super::root_v8_released_proof::POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2,
+    )
+    .map_err(std::io::Error::from)?;
+    match connect(fd, &address) {
+        Ok(()) => Ok(()),
+        Err(rustix::io::Errno::INPROGRESS) => {
+            wait(fd.as_fd(), PollFlags::OUT, deadline)?;
+            rustix::net::sockopt::socket_error(fd)
+                .map_err(std::io::Error::from)?
+                .map_err(std::io::Error::from)?;
+            Ok(())
+        }
+        Err(error) => Err(std::io::Error::from(error).into()),
+    }
+}
+
+fn checked<E: From<Error>>(
+    stream: &RetainedUnixStream,
+    deadline: Deadline,
+    check: &mut dyn FnMut(&RetainedUnixStream, Option<&UnixStreamSubjectChunk>) -> Result<(), E>,
+    chunk: Option<&UnixStreamSubjectChunk>,
+) -> Result<(), E> {
+    deadline.require_current()?;
+    check(stream, chunk)?;
+    deadline.require_current().map_err(E::from)
+}
+
+fn write_engine<E: From<Error>>(
+    stream: &RetainedUnixStream,
+    deadline: Deadline,
+    bytes: &[u8],
+    cursor: &mut usize,
+    check: &mut dyn FnMut(&RetainedUnixStream, Option<&UnixStreamSubjectChunk>) -> Result<(), E>,
+) -> Result<(), E> {
+    while *cursor < bytes.len() {
+        checked(stream, deadline, check, None)?;
+        match rustix::net::send(stream.as_fd(), &bytes[*cursor..], rustix::net::SendFlags::NOSIGNAL) {
+            Ok(0) => return Err(Error::Protocol.into()),
+            Ok(count) => *cursor += count,
+            Err(rustix::io::Errno::AGAIN) => wait(stream.as_fd(), PollFlags::OUT, deadline)?,
+            Err(rustix::io::Errno::INTR) => deadline.require_current()?,
+            Err(error) => return Err(E::from(Error::from(std::io::Error::from(error)))),
+        }
+        deadline.require_current()?;
+    }
+    checked(stream, deadline, check, None)
+}
+
+// This closed alternative changes custody, not wire decoding or peer authority.
+enum ReceiveSlot {
+    Legacy(Option<Result<UnixStreamSubjectChunk, SeqpacketError>>),
+    Retaining(Option<Result<UnixStreamSubjectChunk, RetainedSeqpacketReceiveErrorV1>>),
+}
+
+impl ReceiveSlot {
+    fn receive(&mut self, stream: &mut RetainedUnixStream, maximum: usize) {
+        match self {
+            Self::Legacy(result) => *result = Some(stream.try_receive_subject_chunk(maximum)),
+            Self::Retaining(result) => {
+                // Assignment precedes every decoder, role observation and allocation.
+                *result = Some(stream.try_receive_subject_chunk_retaining(maximum));
+            }
+        }
+    }
+
+    fn chunk(&self) -> Option<&UnixStreamSubjectChunk> {
+        match self {
+            Self::Legacy(Some(Ok(chunk))) | Self::Retaining(Some(Ok(chunk))) => Some(chunk),
+            _ => None,
+        }
+    }
+
+    fn retry(&self) -> Option<PollFlags> {
+        match self {
+            Self::Legacy(Some(Err(SeqpacketError::WouldBlock))) => Some(PollFlags::IN),
+            Self::Legacy(Some(Err(SeqpacketError::Interrupted))) => Some(PollFlags::empty()),
+            Self::Retaining(Some(Err(error))) if error.is_nonconsuming_would_block() => {
+                Some(PollFlags::IN)
+            }
+            Self::Retaining(Some(Err(error))) if error.is_nonconsuming_interrupted() => {
+                Some(PollFlags::empty())
+            }
+            _ => None,
+        }
+    }
+
+    fn clean_closed(&self) -> bool {
+        match self {
+            Self::Legacy(Some(Err(SeqpacketError::Closed))) => true,
+            Self::Retaining(Some(Err(error))) => {
+                matches!(std::error::Error::source(error)
+                    .and_then(|source| source.downcast_ref::<SeqpacketError>()),
+                    Some(SeqpacketError::Closed)) && error.shutdown_failure().is_none()
+            }
+            _ => false,
+        }
+    }
+
+    fn failure(&mut self) -> TransportFault {
+        match self {
+            Self::Legacy(result) => match result.take() {
+                Some(Err(error)) => TransportFault::Legacy(error.into()),
+                _ => TransportFault::Legacy(Error::Protocol),
+            },
+            Self::Retaining(_) => TransportFault::RetainedReceive,
+        }
+    }
+
+    fn release_legacy_chunk(&mut self) {
+        if let Self::Legacy(result) = self {
+            // Preserve the old chunk's disposal before the next precheck or
+            // final bookend. Retaining custody intentionally keeps its chunk.
+            *result = None;
+        }
+    }
+}
+
+/// Private marker keeps the actual retaining receive error in its carrier slot.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TransportFault {
+    #[error(transparent)]
+    Legacy(#[from] Error),
+    #[error("retained original receive failed")]
+    RetainedReceive,
+    #[error(transparent)]
+    Allocation(#[from] std::collections::TryReserveError),
+    #[error(transparent)]
+    Evidence(#[from] crate::git::GitProtectedEvidenceErrorV1),
+}
+
+impl TransportFault {
+    fn legacy(self) -> Error {
+        match self {
+            Self::Legacy(error) => error,
+            // Legacy callers never select retaining custody or fallible reserve.
+            Self::RetainedReceive | Self::Allocation(_) | Self::Evidence(_) => Error::Protocol,
+        }
+    }
+}
+
+fn read_engine(
+    stream: &mut RetainedUnixStream,
+    deadline: Deadline,
+    bytes: &mut Vec<u8>,
+    length: usize,
+    eof: bool,
+    slot: &mut ReceiveSlot,
+    check: &mut RetainingCheck<'_>,
+) -> Result<(), TransportFault> {
+    while eof || bytes.len() < length {
+        checked(stream, deadline, check, None)?;
+        slot.receive(stream, if eof { 1 } else { (length - bytes.len()).min(4096) });
+        if let Some(chunk) = slot.chunk() {
+            checked(stream, deadline, check, Some(chunk))?;
+            if eof {
+                return Err(Error::Protocol.into());
+            }
+            bytes.extend_from_slice(chunk.payload());
+            slot.release_legacy_chunk();
+        } else if let Some(interest) = slot.retry() {
+            if interest.is_empty() {
+                deadline.require_current()?;
+            } else {
+                wait(stream.as_fd(), interest, deadline)?;
+            }
+        } else if eof && slot.clean_closed() {
+            // Only this call's exclusive Ready->Closed transition is accepted.
+            // Retaining callers preserve the whole owning error and its debt.
+            checked(stream, deadline, check, None)?;
+            return Ok(());
+        } else {
+            return Err(slot.failure());
+        }
+    }
+    checked(stream, deadline, check, None)?;
+    Ok(())
+}
+
+/// Retains originals before connect/adoption, chunks before checks, and all debt.
+///
+/// No descriptor, peer or journal is exposed publicly. The raw alias has the
+/// same OFD and exists solely to retain shutdown custody across consuming lower
+/// adoption; it is never another reader. Partial lower adoption remains outside
+/// the returned-owner boundary and is not claimed recovered here.
+pub(crate) struct RetainedCarrier {
+    raw: Option<OwnedFd>,
+    stream: Option<RetainedUnixStream>,
+    deadline: Option<Deadline>,
+    slot: ReceiveSlot,
+    buffers: Vec<Vec<u8>>,
+    write_cursor: usize,
+    shutdown_failure: Option<std::io::Error>,
+    ended: bool,
+}
+
+impl RetainedCarrier {
+    pub(crate) fn empty() -> Self {
+        Self {
+            raw: None,
+            stream: None,
+            deadline: None,
+            slot: ReceiveSlot::Retaining(None),
+            buffers: Vec::new(),
+            write_cursor: 0,
+            shutdown_failure: None,
+            ended: false,
+        }
+    }
+
+    pub(crate) fn accepted(original: std::os::unix::net::UnixStream) -> Self {
+        Self { raw: Some(original.into()), ..Self::empty() }
+    }
+
+    pub(crate) fn connect(&mut self, deadline: Deadline) -> Result<(), Error> {
+        if self.raw.is_some() || self.ended {
+            return Err(Error::Protocol);
+        }
+        self.deadline = Some(deadline);
+        deadline.require_current()?;
+        self.raw = Some(socket_with(
+            AddressFamily::UNIX,
+            SocketType::STREAM,
+            SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+            None,
+        ).map_err(std::io::Error::from)?);
+        connect_fixed(self.raw.as_ref().ok_or(Error::Protocol)?, deadline)?;
+        deadline.require_current()?;
+        self.adopt(deadline)
+    }
+
+    pub(crate) fn adopt(&mut self, deadline: Deadline) -> Result<(), Error> {
+        if self.stream.is_some() || self.ended {
+            return Err(Error::Protocol);
+        }
+        self.deadline = Some(deadline);
+        deadline.require_current()?;
+        let fd = self.raw.as_ref().ok_or(Error::Protocol)?;
+        let flags = rustix::fs::fcntl_getfl(fd).map_err(std::io::Error::from)?;
+        rustix::fs::fcntl_setfl(fd, flags | rustix::fs::OFlags::NONBLOCK)
+            .map_err(std::io::Error::from)?;
+        let alias = rustix::io::fcntl_dupfd_cloexec(fd, 64).map_err(std::io::Error::from)?;
+        self.stream = Some(RetainedUnixStream::from_owned(alias)?);
+        self.stream.as_mut().ok_or(Error::Protocol)?.enable_subject_reporting()?;
+        deadline.require_current()
+    }
+
+    pub(crate) fn stream(&self) -> Result<&RetainedUnixStream, Error> {
+        self.stream.as_ref().ok_or(Error::Protocol)
+    }
+
+    pub(crate) fn deadline(&self) -> Result<Deadline, Error> {
+        self.deadline.ok_or(Error::Protocol)
+    }
+
+    pub(crate) fn checked(&self, check: &mut RetainingCheck<'_>) -> Result<(), TransportFault> {
+        checked(self.stream()?, self.deadline()?, check, None)
+    }
+
+    pub(crate) fn write(&mut self, bytes: &[u8], check: &mut RetainingCheck<'_>) -> Result<(), TransportFault> {
+        let deadline = self.deadline()?;
+        self.write_cursor = 0;
+        write_engine(self.stream.as_ref().ok_or(Error::Protocol)?, deadline,
+            bytes, &mut self.write_cursor, check)
+    }
+
+    pub(crate) fn read_exact(&mut self, length: usize, check: &mut RetainingCheck<'_>)
+        -> Result<usize, TransportFault>
+    {
+        let deadline = self.deadline()?;
+        // Refuse before collecting another allocation in the closed profile.
+        if self.buffers.len() >= MAXIMUM_METADATA_READS {
+            return Err(Error::Protocol.into());
+        }
+        self.buffers.try_reserve(1)?;
+        let index = self.buffers.len();
+        self.buffers.push(Vec::new());
+        self.buffers[index].try_reserve_exact(length)?;
+        read_engine(self.stream.as_mut().ok_or(Error::Protocol)?, deadline,
+            &mut self.buffers[index], length, false, &mut self.slot, check)?;
+        Ok(index)
+    }
+
+    pub(crate) fn bytes(&self, index: usize) -> Result<&[u8], Error> {
+        self.buffers.get(index).map(Vec::as_slice).ok_or(Error::Protocol)
+    }
+
+    pub(crate) fn finish_sending(&self) -> Result<(), Error> {
+        let deadline = self.deadline()?;
+        deadline.require_current()?;
+        rustix::net::shutdown(self.stream()?.as_fd(), rustix::net::Shutdown::Write)
+            .map_err(std::io::Error::from)?;
+        deadline.require_current()
+    }
+
+    pub(crate) fn require_eof(&mut self, check: &mut RetainingCheck<'_>) -> Result<(), TransportFault> {
+        let deadline = self.deadline()?;
+        read_engine(self.stream.as_mut().ok_or(Error::Protocol)?, deadline,
+            &mut Vec::new(), 1, true, &mut self.slot, check)
+    }
+
+    pub(crate) fn receive_failure(&self) -> Option<&RetainedSeqpacketReceiveErrorV1> {
+        match &self.slot {
+            ReceiveSlot::Retaining(Some(Err(error))) => Some(error),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn shutdown_failure(&self) -> Option<&std::io::Error> {
+        self.receive_failure().and_then(|error| error.shutdown_failure())
+            .or(self.shutdown_failure.as_ref())
+    }
+
+    pub(crate) fn end(&mut self) {
+        if self.ended {
+            return;
+        }
+        self.ended = true;
+        if let Some(fd) = &self.raw {
+            self.shutdown_failure = rustix::net::shutdown(fd, rustix::net::Shutdown::Both)
+                .err().map(std::io::Error::from);
+        }
+    }
+}
+
+impl Drop for RetainedCarrier {
+    fn drop(&mut self) {
+        self.end();
     }
 }
 
@@ -302,6 +610,17 @@ mod tests {
             Flight::adopt(left.into(), correlation, deadline).unwrap(),
             right,
         )
+    }
+
+    #[test]
+    fn metadata_cutoff_has_its_own_nonrenewing_ten_second_bound() {
+        assert!(require_metadata_cutoff(100, 100).is_err());
+        assert!(require_metadata_cutoff(100, 99).is_err());
+        assert!(require_metadata_cutoff(100, 101).is_ok());
+        assert!(require_metadata_cutoff(100, 100 + 10_000_000_000).is_ok());
+        assert!(require_metadata_cutoff(100, 101 + 10_000_000_000).is_err());
+        assert!(require_metadata_cutoff(u64::MAX, 0).is_err());
+        assert!(require_admissible_cutoff(100, 100 + MAXIMUM_FLIGHT_NANOSECONDS).is_ok());
     }
 
     #[test]
