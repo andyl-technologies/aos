@@ -435,6 +435,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   assertions. On that graph, the corrected file CAS gate passes all 44 exact
   cases and the probe gate passes all 10. Complete source integration and
   whole-task qualification remain pending.
+  The reviewed shared selected-observation and fixed publication engine now
+  replace their trunk declarations. The private frame captures exact selected
+  reads and actual exclusions; immutable staging precedes the sole consecutive
+  create-once slot, and portable projection precedes logical caches. Existing
+  collector observation and checkpoint anchors remain intact. All five adopted
+  files pass source formatting and match the qualified candidate except for
+  those preserved anchors. Child implementation integration and the full trunk
+  gate set remain pending; this adoption does not qualify a task merge.
   Qualification exposed
   an overwrite fixture still targeting the previous rename primitive and three
   fixtures retaining their own namespace receipts while waiting to reacquire.
