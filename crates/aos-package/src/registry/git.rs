@@ -199,6 +199,9 @@ pub(crate) async fn sync_git_with_continuity(
         }
     }
 
+    // Share only within this update; the next update must revalidate local data.
+    let mut verified_objects = repo::VerifiedObjectGraph::new(&repo_dir);
+
     // Step 2: Fetch refs.
     progress.phase("Fetching registry objects");
     let fetch_roster_head = enforcing && uses_remote_head_roster(tracking_mode);
@@ -209,6 +212,7 @@ pub(crate) async fn sync_git_with_continuity(
             tracking_mode,
             fetch_roster_head,
             &progress,
+            &mut verified_objects,
         )
         .await
         {
@@ -229,6 +233,7 @@ pub(crate) async fn sync_git_with_continuity(
             tracking_mode,
             fetch_roster_head,
             &progress,
+            &mut verified_objects,
         )
         .await?
     };
@@ -340,15 +345,22 @@ pub(crate) async fn sync_git_with_continuity(
             .ok_or_else(|| anyhow::anyhow!("channel resolution did not persist a semver floor"))?;
         let target = semver::Version::parse(target)
             .with_context(|| format!("parsing resolved channel release {target}"))?;
-        fetch::resolve_objects_with_progress(
-            &repo_dir,
-            &git_url,
-            &target,
-            &retained_before,
-            printer,
-            Some(&progress),
-        )
-        .await?;
+        let release_ref = format!("refs/tags/{target}");
+        if !verified_objects
+            .missing_objects(&[release_ref])
+            .await?
+            .is_empty()
+        {
+            fetch::resolve_objects_with_progress(
+                &repo_dir,
+                &git_url,
+                &target,
+                &retained_before,
+                printer,
+                Some(&progress),
+            )
+            .await?;
+        }
     }
 
     progress.activity_phase("Verifying registry release");
@@ -843,6 +855,7 @@ async fn fetch_refs(
     tracking_mode: &TrackingMode,
     fetch_roster_head: bool,
     progress: &TransferProgress,
+    verified: &mut repo::VerifiedObjectGraph,
 ) -> Result<bool> {
     let refspecs: Vec<String> = match tracking_mode {
         // Fetch the specific commit by object id (no local ref).
@@ -862,12 +875,12 @@ async fn fetch_refs(
         TrackingMode::Default => vec!["+HEAD:refs/remotes/origin/HEAD".to_string()],
     };
 
-    repo::fetch_with_progress(repo_dir, url, &refspecs, Some(progress.clone()))
+    repo::fetch_with_verified_graph(repo_dir, url, &refspecs, Some(progress.clone()), verified)
         .await
         .with_context(|| format!("fetching from {url}"))?;
 
     if fetch_roster_head {
-        fetch_origin_head(repo_dir, url, progress).await
+        fetch_origin_head(repo_dir, url, progress, verified).await
     } else {
         Ok(false)
     }
@@ -882,12 +895,14 @@ async fn fetch_origin_head(
     repo_dir: &Path,
     url: &str,
     progress: &TransferProgress,
+    verified: &mut repo::VerifiedObjectGraph,
 ) -> Result<bool> {
-    match repo::fetch_with_progress(
+    match repo::fetch_with_verified_graph(
         repo_dir,
         url,
         &["+HEAD:refs/remotes/origin/HEAD".to_string()],
         Some(progress.clone()),
+        verified,
     )
     .await
     {
@@ -2407,6 +2422,7 @@ mod tests {
             &TrackingMode::Default,
             false,
             &progress,
+            &mut repo::VerifiedObjectGraph::new(&repo_dir),
         )
         .await
         .unwrap();

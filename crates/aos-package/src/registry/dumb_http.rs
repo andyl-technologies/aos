@@ -93,6 +93,22 @@ pub(crate) async fn fetch_with_progress(
     refspecs: &[String],
     progress: Option<&TransferProgress>,
 ) -> Result<()> {
+    let mut verified = repo::VerifiedObjectGraph::new(repo_dir);
+    fetch_with_verified_graph(repo_dir, base_url, refspecs, progress, &mut verified).await
+}
+
+/// Fetches refs while reusing complete graphs verified during this update.
+///
+/// # Errors
+///
+/// Returns the same errors as [`fetch_with_progress`].
+pub(crate) async fn fetch_with_verified_graph(
+    repo_dir: &Path,
+    base_url: &str,
+    refspecs: &[String],
+    progress: Option<&TransferProgress>,
+    verified: &mut repo::VerifiedObjectGraph,
+) -> Result<()> {
     let client = reqwest::Client::new();
     set_phase(progress, "Reading registry references");
     let advertised = fetch_info_refs(&client, base_url, progress).await?;
@@ -110,7 +126,10 @@ pub(crate) async fn fetch_with_progress(
     // Walk the local graph first: a repeat sync with no upstream change finds
     // nothing missing and downloads no objects at all — only the refs (below)
     // may need re-pointing.
-    let mut missing = walk_missing(repo_dir, &target_oids).await?;
+    if let Some(progress) = progress {
+        progress.activity_phase("Verifying registry objects");
+    }
+    let mut missing = verified.missing_objects(&target_oids).await?;
 
     if !missing.is_empty() {
         // Pack phase (fast path): download + index advertised packs we do not
@@ -144,12 +163,14 @@ pub(crate) async fn fetch_with_progress(
             if let Some(progress) = progress {
                 progress.activity_phase("Indexing registry packs");
             }
+            // A new pack can change how even existing OIDs are reconstructed.
+            verified.invalidate();
             let indexed =
                 tokio::task::spawn_blocking(move || repo::index_packs_blocking(&repo_path, &packs))
                     .await
                     .context("pack-indexing task panicked")?;
             if indexed.is_ok() {
-                missing = walk_missing(repo_dir, &target_oids).await?;
+                missing = verified.missing_objects(&target_oids).await?;
             }
         }
 
@@ -169,6 +190,7 @@ pub(crate) async fn fetch_with_progress(
             }
             let client = &client;
             let objects_dir = &objects_dir;
+            verified.invalidate();
             stream::iter(missing.into_iter())
                 .map(|oid| async move {
                     fetch_loose(client, base_url, objects_dir, &oid, progress).await
@@ -178,7 +200,10 @@ pub(crate) async fn fetch_with_progress(
                 .await
                 .into_iter()
                 .collect::<Result<Vec<_>>>()?;
-            missing = walk_missing(repo_dir, &target_oids).await?;
+            if let Some(progress) = progress {
+                progress.activity_phase("Verifying registry objects");
+            }
+            missing = verified.missing_objects(&target_oids).await?;
         }
     }
 
@@ -205,16 +230,6 @@ pub(crate) async fn fetch_with_progress(
     }
 
     Ok(())
-}
-
-/// Walk the local object graph and return reachable OIDs that are absent or
-/// fail content-address verification. Runs the libgit2 walk off-runtime.
-async fn walk_missing(repo_dir: &Path, targets: &[String]) -> Result<Vec<String>> {
-    let repo_path = repo_dir.to_path_buf();
-    let targets = targets.to_vec();
-    tokio::task::spawn_blocking(move || repo::missing_objects_blocking(&repo_path, &targets))
-        .await
-        .context("object-walk task panicked")?
 }
 
 /// Maximum attempts for a single GET before giving up. Exponential backoff

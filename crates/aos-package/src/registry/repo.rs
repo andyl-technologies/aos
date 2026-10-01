@@ -21,8 +21,9 @@
 //! non-`Send` handle confined to one blocking closure. Catalog and artifact
 //! batches share a handle so pack indexes and decoded objects stay cached.
 
-use std::collections::BTreeMap;
-use std::os::unix::fs::OpenOptionsExt;
+use std::collections::{BTreeMap, HashSet};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -31,6 +32,51 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 use crate::registry::dumb_http;
+
+/// Memoizes complete, content-verified object graphs within one registry sync.
+///
+/// Git objects are immutable by identity. Reusing verification within a sync
+/// avoids decoding the same history for overlapping refs. This cache is bound
+/// to one repository and never survives an update, so later updates still
+/// detect missing or damaged objects. Incomplete walks are never memoized.
+pub(crate) struct VerifiedObjectGraph {
+    repo_dir: PathBuf,
+    verified: HashSet<git2::Oid>,
+}
+
+impl VerifiedObjectGraph {
+    /// Starts an empty verification cache for one repository transaction.
+    pub(crate) fn new(repo_dir: &Path) -> Self {
+        Self {
+            repo_dir: repo_dir.to_path_buf(),
+            verified: HashSet::new(),
+        }
+    }
+
+    /// Invalidates prior reads before downloaded objects can change pack lookup.
+    pub(crate) fn invalidate(&mut self) {
+        self.verified.clear();
+    }
+
+    /// Finds missing objects while reusing complete graphs verified in this sync.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if references or objects cannot be read, or the worker fails.
+    pub(crate) async fn missing_objects(&mut self, targets: &[String]) -> Result<Vec<String>> {
+        let repo_dir = self.repo_dir.clone();
+        let targets = targets.to_vec();
+        let mut verified = std::mem::take(&mut self.verified);
+        let (verified, result) = tokio::task::spawn_blocking(move || {
+            let result = walk_missing_objects(&repo_dir, &targets, &mut verified);
+            (verified, result)
+        })
+        .await
+        .context("object verification task panicked")?;
+        self.verified = verified;
+        result
+    }
+}
 
 /// Open the SHA-256 repository at `repo_dir` on the current thread.
 ///
@@ -403,7 +449,9 @@ pub(crate) async fn read_required_blobs_at(
 /// Extract the directory tree at `commit:tree_path` into `output_dir`.
 ///
 /// Replaces `git archive <commit> <tree_path>/ | tar -x --strip-components=1`.
-/// `output_dir` is removed first so deletions in the registry propagate. When
+/// An existing output is reused only when every entry matches the Git tree,
+/// including content hashes, file kinds, executable bits, and symlink targets.
+/// Otherwise it is replaced so deletions in the registry propagate. When
 /// `tree_path` is absent, `create_empty_when_absent` selects between creating
 /// an empty `output_dir` (historical `packages/` behavior) and leaving none
 /// (required for `store/`, where presence is meaningful).
@@ -413,8 +461,8 @@ pub(crate) async fn read_required_blobs_at(
 ///
 /// # Errors
 ///
-/// Returns an error if the commit cannot be resolved or the filesystem writes
-/// fail.
+/// Returns an error if the commit cannot be resolved or the filesystem cannot
+/// be read or updated.
 pub(crate) async fn extract_tree_dir(
     repo_dir: &Path,
     commit: &str,
@@ -426,15 +474,12 @@ pub(crate) async fn extract_tree_dir(
     let tree_path = tree_path.to_string();
     let output_dir = output_dir.to_path_buf();
     blocking(repo_dir, move |dir| {
-        if output_dir.exists() {
-            std::fs::remove_dir_all(&output_dir)
-                .with_context(|| format!("cleaning {}", output_dir.display()))?;
-        }
         let repo = open(dir)?;
         let tree = commit_tree(&repo, &commit)?;
         let entry = match tree.get_path(Path::new(&tree_path)) {
             Ok(entry) => entry,
             Err(e) if e.code() == git2::ErrorCode::NotFound => {
+                clear_extracted_tree(&output_dir)?;
                 if create_empty_when_absent {
                     std::fs::create_dir_all(&output_dir)
                         .with_context(|| format!("creating {}", output_dir.display()))?;
@@ -449,12 +494,80 @@ pub(crate) async fn extract_tree_dir(
         let subtree = object
             .as_tree()
             .with_context(|| format!("{commit}:{tree_path} is not a directory"))?;
+        if cached_tree_matches(&repo, subtree, &output_dir)? {
+            return Ok(());
+        }
+        clear_extracted_tree(&output_dir)?;
         std::fs::create_dir_all(&output_dir)
             .with_context(|| format!("creating {}", output_dir.display()))?;
         write_tree_recursive(&repo, subtree, &output_dir)?;
         Ok(())
     })
     .await
+}
+
+/// Removes a stale output without following a symlink at its root.
+fn clear_extracted_tree(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).with_context(|| format!("inspecting {}", path.display())),
+    }
+    .with_context(|| format!("cleaning {}", path.display()))
+}
+
+/// Checks local bytes against authenticated Git identities, never timestamps.
+///
+/// Directory enumeration rejects extra entries. Symlinks are read as targets,
+/// never followed, so a modified cache cannot substitute another directory.
+fn cached_tree_matches(repo: &git2::Repository, tree: &git2::Tree, dest: &Path) -> Result<bool> {
+    let metadata = match std::fs::symlink_metadata(dest) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).with_context(|| format!("inspecting {}", dest.display())),
+    };
+    if !metadata.is_dir() {
+        return Ok(false);
+    }
+    let mut count = 0;
+    for local in std::fs::read_dir(dest).with_context(|| format!("reading {}", dest.display()))? {
+        let local = local?;
+        count += 1;
+        let name = local.file_name();
+        let Some(entry) = tree.get_name_bytes(name.as_bytes()) else {
+            return Ok(false);
+        };
+        let path = local.path();
+        let metadata = std::fs::symlink_metadata(&path)?;
+        match entry.kind() {
+            Some(git2::ObjectType::Tree) => {
+                let subtree = repo.find_tree(entry.id())?;
+                if !cached_tree_matches(repo, &subtree, &path)? {
+                    return Ok(false);
+                }
+            }
+            Some(git2::ObjectType::Blob) => {
+                let bytes = if entry.filemode() == 0o120000 {
+                    if !metadata.is_symlink() {
+                        return Ok(false);
+                    }
+                    std::fs::read_link(&path)?.as_os_str().as_bytes().to_vec()
+                } else {
+                    let executable = metadata.permissions().mode() & 0o111 != 0;
+                    if !metadata.is_file() || executable != (entry.filemode() == 0o100755) {
+                        return Ok(false);
+                    }
+                    std::fs::read(&path)?
+                };
+                if !object_matches_oid(entry.id(), git2::ObjectType::Blob, &bytes) {
+                    return Ok(false);
+                }
+            }
+            _ => return Ok(false),
+        }
+    }
+    Ok(count == tree.len())
 }
 
 /// Recursively materialize `tree` under `dest`, preserving git file modes.
@@ -802,6 +915,37 @@ pub(crate) async fn fetch_with_progress(
             None => dumb_http::fetch(repo_dir, url, refspecs).await,
         };
     }
+    let mut verified = VerifiedObjectGraph::new(repo_dir);
+    fetch_with_verified_graph(repo_dir, url, refspecs, progress, &mut verified).await
+}
+
+/// Fetches refs with a verification cache shared by the current sync.
+///
+/// # Errors
+///
+/// Returns the same transport and reference errors as [`fetch_with_progress`],
+/// or an error if the verification cache belongs to another repository.
+pub(crate) async fn fetch_with_verified_graph(
+    repo_dir: &Path,
+    url: &str,
+    refspecs: &[String],
+    progress: Option<TransferProgress>,
+    verified: &mut VerifiedObjectGraph,
+) -> Result<()> {
+    anyhow::ensure!(
+        repo_dir == verified.repo_dir,
+        "verification cache belongs to a different repository"
+    );
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return dumb_http::fetch_with_verified_graph(
+            repo_dir,
+            url,
+            refspecs,
+            progress.as_ref(),
+            verified,
+        )
+        .await;
+    }
     let url = url.to_string();
     let refspecs = refspecs.to_vec();
     blocking(repo_dir, move |dir| {
@@ -918,7 +1062,15 @@ pub(crate) fn index_packs_blocking(repo_dir: &Path, packs: &[Vec<u8>]) -> Result
 /// Returns an error if a target cannot be resolved (other than not-found) or an
 /// object read fails for a reason other than absence.
 pub(crate) fn missing_objects_blocking(repo_dir: &Path, targets: &[String]) -> Result<Vec<String>> {
-    use std::collections::HashSet;
+    walk_missing_objects(repo_dir, targets, &mut HashSet::new())
+}
+
+/// Records a graph only after every reachable object has passed verification.
+fn walk_missing_objects(
+    repo_dir: &Path,
+    targets: &[String],
+    verified: &mut HashSet<git2::Oid>,
+) -> Result<Vec<String>> {
     let repo = open(repo_dir)?;
     let odb = repo.odb().context("opening object database")?;
     let mut missing: HashSet<String> = HashSet::new();
@@ -936,7 +1088,7 @@ pub(crate) fn missing_objects_blocking(repo_dir: &Path, targets: &[String]) -> R
     }
 
     while let Some(oid) = stack.pop() {
-        if !visited.insert(oid) {
+        if verified.contains(&oid) || !visited.insert(oid) {
             continue;
         }
         let raw = match odb.read(oid) {
@@ -952,6 +1104,10 @@ pub(crate) fn missing_objects_blocking(repo_dir: &Path, targets: &[String]) -> R
             continue;
         }
 
+        // Blobs have no outgoing references; avoid decoding their bytes twice.
+        if raw.kind() == git2::ObjectType::Blob {
+            continue;
+        }
         let object = match repo.find_object(oid, None) {
             Ok(object) => object,
             Err(e) if e.code() == git2::ErrorCode::NotFound => {
@@ -985,5 +1141,238 @@ pub(crate) fn missing_objects_blocking(repo_dir: &Path, targets: &[String]) -> R
             _ => {}
         }
     }
+    if missing.is_empty() {
+        verified.extend(visited);
+    }
     Ok(missing.into_iter().collect())
+}
+
+#[cfg(test)]
+mod verified_graph_tests {
+    use super::*;
+
+    fn release(repo: &git2::Repository, data: &[u8]) -> (git2::Oid, git2::Oid) {
+        let blob = repo.blob(data).unwrap();
+        let mut builder = repo.treebuilder(None).unwrap();
+        builder.insert("package.toml", blob, 0o100644).unwrap();
+        let tree = repo.find_tree(builder.write().unwrap()).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.test").unwrap();
+        let commit = repo
+            .commit(None, &signature, &signature, "release", &tree, &[])
+            .unwrap();
+        (commit, blob)
+    }
+
+    fn remove_blob(repo_dir: &Path, blob: git2::Oid) {
+        let hex = blob.to_string();
+        std::fs::remove_file(repo_dir.join("objects").join(&hex[..2]).join(&hex[2..])).unwrap();
+    }
+
+    #[tokio::test]
+    async fn complete_graphs_are_reused_only_within_one_update() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init_bare(tmp.path()).unwrap();
+        let (commit, blob) = release(&repo, b"metadata");
+        let targets = [commit.to_string()];
+        let mut update = VerifiedObjectGraph::new(tmp.path());
+
+        assert!(update.missing_objects(&targets).await.unwrap().is_empty());
+        assert_eq!(update.verified.len(), 3);
+        assert!(update.missing_objects(&targets).await.unwrap().is_empty());
+        assert_eq!(update.verified.len(), 3);
+
+        remove_blob(tmp.path(), blob);
+        update.invalidate();
+        assert_eq!(
+            update.missing_objects(&targets).await.unwrap(),
+            vec![blob.to_string()]
+        );
+        let mut next_update = VerifiedObjectGraph::new(tmp.path());
+        assert_eq!(
+            next_update.missing_objects(&targets).await.unwrap(),
+            vec![blob.to_string()]
+        );
+        assert!(next_update.verified.is_empty());
+    }
+
+    #[tokio::test]
+    async fn incomplete_graph_is_not_cached_and_can_be_repaired() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init_bare(tmp.path()).unwrap();
+        let (complete, _) = release(&repo, b"available");
+        let (incomplete, blob) = release(&repo, b"missing");
+        remove_blob(tmp.path(), blob);
+        let mut update = VerifiedObjectGraph::new(tmp.path());
+        assert!(
+            update
+                .missing_objects(&[complete.to_string()])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let verified_before = update.verified.clone();
+
+        for _ in 0..2 {
+            assert_eq!(
+                update
+                    .missing_objects(&[incomplete.to_string()])
+                    .await
+                    .unwrap(),
+                vec![blob.to_string()]
+            );
+            assert_eq!(update.verified, verified_before);
+        }
+
+        assert_eq!(repo.blob(b"missing").unwrap(), blob);
+        assert!(
+            update
+                .missing_objects(&[incomplete.to_string()])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(update.verified.contains(&incomplete));
+        assert!(update.verified.contains(&blob));
+    }
+}
+
+#[cfg(test)]
+mod cached_tree_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    fn fixture(repo_dir: &Path) -> String {
+        let mut options = git2::RepositoryInitOptions::new();
+        options.bare(true).object_format(git2::ObjectFormat::Sha256);
+        let repo = git2::Repository::init_opts(repo_dir, &options).unwrap();
+        let blob = repo.blob(b"original").unwrap();
+        let link = repo.blob(b"nested/data").unwrap();
+        let mut nested = repo.treebuilder(None).unwrap();
+        nested.insert("data", blob, 0o100644).unwrap();
+        let mut files = repo.treebuilder(None).unwrap();
+        files
+            .insert("nested", nested.write().unwrap(), 0o040000)
+            .unwrap();
+        files.insert("executable", blob, 0o100755).unwrap();
+        files.insert("link", link, 0o120000).unwrap();
+        let mut root = repo.treebuilder(None).unwrap();
+        root.insert("packages", files.write().unwrap(), 0o040000)
+            .unwrap();
+        let tree = repo.find_tree(root.write().unwrap()).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.test").unwrap();
+        repo.commit(None, &signature, &signature, "catalog", &tree, &[])
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn identical_extraction_preserves_existing_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo.git");
+        let commit = fixture(&repo);
+        let dest = tmp.path().join("out");
+        extract_tree_dir(&repo, &commit, "packages", &dest, true)
+            .await
+            .unwrap();
+        let metadata = std::fs::metadata(dest.join("executable")).unwrap();
+
+        extract_tree_dir(&repo, &commit, "packages", &dest, true)
+            .await
+            .unwrap();
+
+        let reused = std::fs::metadata(dest.join("executable")).unwrap();
+        assert_eq!(reused.ino(), metadata.ino());
+        assert_eq!(reused.modified().unwrap(), metadata.modified().unwrap());
+        assert_eq!(
+            std::fs::read_link(dest.join("link")).unwrap(),
+            Path::new("nested/data")
+        );
+    }
+
+    #[tokio::test]
+    async fn changed_missing_extra_and_mode_modified_entries_are_repaired() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo.git");
+        let commit = fixture(&repo);
+        let dest = tmp.path().join("out");
+        extract_tree_dir(&repo, &commit, "packages", &dest, true)
+            .await
+            .unwrap();
+
+        std::fs::write(dest.join("nested/data"), b"tampered").unwrap();
+        extract_tree_dir(&repo, &commit, "packages", &dest, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(dest.join("nested/data")).unwrap(),
+            b"original"
+        );
+
+        std::fs::remove_file(dest.join("nested/data")).unwrap();
+        extract_tree_dir(&repo, &commit, "packages", &dest, true)
+            .await
+            .unwrap();
+        assert!(dest.join("nested/data").is_file());
+
+        std::fs::write(dest.join("extra"), b"stale").unwrap();
+        extract_tree_dir(&repo, &commit, "packages", &dest, true)
+            .await
+            .unwrap();
+        assert!(!dest.join("extra").exists());
+
+        std::fs::set_permissions(
+            dest.join("executable"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        extract_tree_dir(&repo, &commit, "packages", &dest, true)
+            .await
+            .unwrap();
+        assert_ne!(
+            std::fs::metadata(dest.join("executable"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn replaced_symlinks_and_directory_symlinks_are_not_reused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo.git");
+        let commit = fixture(&repo);
+        let dest = tmp.path().join("out");
+        extract_tree_dir(&repo, &commit, "packages", &dest, true)
+            .await
+            .unwrap();
+
+        std::fs::remove_file(dest.join("link")).unwrap();
+        std::os::unix::fs::symlink("executable", dest.join("link")).unwrap();
+        extract_tree_dir(&repo, &commit, "packages", &dest, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_link(dest.join("link")).unwrap(),
+            Path::new("nested/data")
+        );
+
+        let outside = tmp.path().join("outside");
+        std::fs::rename(dest.join("nested"), &outside).unwrap();
+        std::os::unix::fs::symlink(&outside, dest.join("nested")).unwrap();
+        extract_tree_dir(&repo, &commit, "packages", &dest, true)
+            .await
+            .unwrap();
+        assert!(!dest.join("nested").is_symlink());
+        assert_eq!(std::fs::read(outside.join("data")).unwrap(), b"original");
+
+        std::fs::remove_dir_all(&dest).unwrap();
+        std::os::unix::fs::symlink(&outside, &dest).unwrap();
+        extract_tree_dir(&repo, &commit, "packages", &dest, true)
+            .await
+            .unwrap();
+        assert!(!dest.is_symlink());
+        assert_eq!(std::fs::read(outside.join("data")).unwrap(), b"original");
+    }
 }
