@@ -30,13 +30,15 @@ pub(super) fn verify(command: &NativeDeploymentCommand, number: u32) -> Result<(
     )?;
     let mut configuration = descriptor.configuration.clone();
     configuration.extend(descriptor.runtime_configuration.clone());
+    let declarations = crate::native_deployment::retained_declarations(
+        &descriptor.package_envelopes,
+        descriptor.os_release.as_ref(),
+        &command.nix_store,
+    )?;
     let evaluation = Evaluation {
         os_release: descriptor.os_release.clone(),
-        os_requirements: crate::native_deployment::retained_os_requirements(
-            &descriptor.package_envelopes,
-            descriptor.os_release.as_ref(),
-            &command.nix_store,
-        )?,
+        os_requirements: declarations.os_requirements,
+        package_releases: declarations.package_releases,
         nix_store: command.nix_store.clone(),
         library: descriptor.library.clone(),
         scope: descriptor.scope.clone(),

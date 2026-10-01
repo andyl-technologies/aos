@@ -1036,6 +1036,7 @@ mod tests {
         let measurement_hex = measurement.trim_start_matches("sha256:");
         PackageMeta {
             named_outputs: Default::default(),
+            version_requirement: None,
             os_version: None,
             module_dependencies: Vec::new(),
             name: "webapp".to_string(),

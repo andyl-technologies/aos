@@ -1315,6 +1315,7 @@ references = ["llllllllllllllllllllllllllllllll"]
         }];
         let high_candidate = PackageMeta {
             named_outputs: Default::default(),
+            version_requirement: None,
             os_version: None,
             module_dependencies: Vec::new(),
             name: "same-version-tool".into(),
@@ -1344,6 +1345,7 @@ references = ["llllllllllllllllllllllllllllllll"]
         };
         let low_candidate = PackageMeta {
             named_outputs: Default::default(),
+            version_requirement: None,
             os_version: None,
             module_dependencies: Vec::new(),
             name: "same-version-tool".into(),

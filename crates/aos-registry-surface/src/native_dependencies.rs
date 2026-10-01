@@ -66,6 +66,7 @@ impl ModuleSource {
     /// # Errors
     /// Returns an error for a missing coordinate, noncanonical store root, or entry point.
     pub fn check(&self) -> Result<()> {
+        crate::package_version::validate_package_version(&self.version)?;
         let root = self.source.strip_prefix("/nix/store/");
         ensure!(
             root.is_some_and(|root| !root.is_empty() && !root.contains('/')),
@@ -181,6 +182,34 @@ impl ModuleRequirement {
     }
 }
 
+/// Checks a generated shorthand against its normalized strict release version.
+///
+/// # Errors
+/// Returns an error for invalid exact coordinates, malformed requirements, non-SemVer releases, or a
+/// shorthand that differs from the declaring package release.
+pub fn check_version_requirement(version: &str, requirement: Option<&str>) -> Result<()> {
+    crate::package_version::validate_package_version(version)?;
+    if let Some(requirement) = requirement {
+        check_requirement(requirement)?;
+        let parsed = semver::Version::parse(version)?;
+        ensure!(
+            parsed.to_string() == version,
+            "package version is not strict SemVer"
+        );
+        ensure!(
+            ["^", "~", "="]
+                .iter()
+                .any(|operator| requirement == format!("{operator}{version}")),
+            "package version requirement is not a normalized release shorthand"
+        );
+        ensure!(
+            semver::VersionReq::parse(requirement)?.matches(&parsed),
+            "package version requirement excludes its own release"
+        );
+    }
+    Ok(())
+}
+
 /// Checks package and OS compatibility metadata shared by signed catalogs.
 ///
 /// # Errors
@@ -280,6 +309,19 @@ mod tests {
             *package_version = ">=7.1.0-beta.1, <8.0.0".into();
         }
         assert!(dependency.accepts(&candidate, &candidate.version).unwrap());
+    }
+
+    #[test]
+    fn generated_requirements_bind_one_operator_to_the_exact_package_release() {
+        for operator in ["^", "~", "="] {
+            check_version_requirement("7.2.3", Some(&format!("{operator}7.2.3"))).unwrap();
+        }
+        for requirement in ["^7", ">=7.2.3", "^7.2.3, <8", "^7.2.4", "7.2.3"] {
+            assert!(check_version_requirement("7.2.3", Some(requirement)).is_err());
+        }
+        assert!(check_version_requirement("calver", Some("^7.2.3")).is_err());
+        check_version_requirement("calver", None).unwrap();
+        assert!(check_version_requirement("^7.2.3", None).is_err());
     }
 
     #[test]

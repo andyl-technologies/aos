@@ -349,13 +349,15 @@ pub fn rederive(record: &GenerationEvidence) -> Result<String> {
             Some(&executable),
         )?;
     }
+    let declarations = crate::native_deployment::retained_declarations(
+        &descriptor.package_envelopes,
+        descriptor.os_release.as_ref(),
+        &executable,
+    )?;
     let evaluation = crate::deployment::evaluation::Evaluation {
         os_release: descriptor.os_release.clone(),
-        os_requirements: crate::native_deployment::retained_os_requirements(
-            &descriptor.package_envelopes,
-            descriptor.os_release.as_ref(),
-            &executable,
-        )?,
+        os_requirements: declarations.os_requirements,
+        package_releases: declarations.package_releases,
         module_requirements: descriptor
             .resolution_lock
             .as_ref()

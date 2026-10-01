@@ -82,62 +82,64 @@ async fn discover_modules(
     let mut discovered = Vec::new();
     let mut original_envelopes = original_envelopes.to_vec();
     while !pending.is_empty() || !original_envelopes.is_empty() {
-        let (envelope, requester_key, required_requester) = if let Some(envelope) =
-            original_envelopes.pop()
-        {
-            let key = (
-                envelope.package.name.clone(),
-                envelope.package.version.clone(),
-                envelope.package.canonical_catalog().path,
-            );
-            (envelope, key, true)
-        } else {
-            let (registry_name, meta) = pending.pop().context("discovery queue is empty")?;
-            if !seen.insert((
-                meta.name.clone(),
-                meta.version.clone(),
-                meta.store_path.clone(),
-            )) {
-                continue;
-            }
-            ensure!(
-                seen.len() <= 16_384,
-                "native module companion closure exceeds its bound"
-            );
-            let artifact = meta
-                .deployment
-                .as_ref()
-                .context("native companion has no envelope")?;
-            let envelope = if download_only {
-                let results = realize_companions(
-                    config,
-                    registries,
-                    &registry_name,
-                    &meta,
-                    printer,
-                    true,
-                    temporary_roots,
-                )
-                .await?;
-                cached_envelope(artifact, &meta, &results)?
+        let (envelope, requester_key, required_requester) =
+            if let Some(envelope) = original_envelopes.pop() {
+                let key = (
+                    envelope.package.name.clone(),
+                    envelope.package.version.clone(),
+                    envelope.package.canonical_catalog().path,
+                );
+                (envelope, key, true)
             } else {
-                crate::native_artifact::read_envelope(
-                    artifact,
-                    &meta.name,
-                    &meta.version,
-                    &meta.platform,
-                )?
+                let (registry_name, meta) = pending.pop().context("discovery queue is empty")?;
+                if !seen.insert((
+                    meta.name.clone(),
+                    meta.version.clone(),
+                    meta.store_path.clone(),
+                )) {
+                    continue;
+                }
+                ensure!(
+                    seen.len() <= 16_384,
+                    "native module companion closure exceeds its bound"
+                );
+                let artifact = meta
+                    .deployment
+                    .as_ref()
+                    .context("native companion has no envelope")?;
+                let envelope = if download_only {
+                    let results = realize_companions(
+                        config,
+                        registries,
+                        &registry_name,
+                        &meta,
+                        printer,
+                        true,
+                        temporary_roots,
+                    )
+                    .await?;
+                    cached_envelope(artifact, &meta, &results)?
+                } else {
+                    crate::native_artifact::read_envelope(
+                        artifact,
+                        &meta.name,
+                        &meta.version,
+                        &meta.platform,
+                    )?
+                };
+                envelope.verify_catalog_resolution(
+                    meta.version_requirement.as_deref(),
+                    meta.os_version.as_deref(),
+                    &meta.module_dependencies,
+                )?;
+                let requester_key = (
+                    meta.name.clone(),
+                    meta.version.clone(),
+                    meta.store_path.clone(),
+                );
+                let required_requester = required.contains(&requester_key);
+                (envelope, requester_key, required_requester)
             };
-            envelope
-                .verify_catalog_resolution(meta.os_version.as_deref(), &meta.module_dependencies)?;
-            let requester_key = (
-                meta.name.clone(),
-                meta.version.clone(),
-                meta.store_path.clone(),
-            );
-            let required_requester = required.contains(&requester_key);
-            (envelope, requester_key, required_requester)
-        };
         for dependency in envelope.module_dependencies {
             let source = dependency.seed();
             let candidates = registries
@@ -186,6 +188,7 @@ async fn discover_modules(
                     )?
                 };
                 candidate.verify_catalog_resolution(
+                    meta.version_requirement.as_deref(),
                     meta.os_version.as_deref(),
                     &meta.module_dependencies,
                 )?;
@@ -439,8 +442,11 @@ fn cached_envelope(
         "native envelope document differs from authenticated metadata"
     );
     let envelope = crate::deployment::model::Envelope::decode(document)?;
-    envelope
-        .verify_catalog_resolution(package.os_version.as_deref(), &package.module_dependencies)?;
+    envelope.verify_catalog_resolution(
+        package.version_requirement.as_deref(),
+        package.os_version.as_deref(),
+        &package.module_dependencies,
+    )?;
     ensure!(
         envelope.package.name == package.name
             && envelope.package.version == package.version
@@ -881,13 +887,15 @@ fn prepare_with_inputs(
             .to_str()
             .context("evaluation descriptor is not UTF-8")?,
     )?;
+    let declarations = crate::native_deployment::validated_declarations(
+        &descriptor,
+        &executable,
+        cancellation.token(),
+    )?;
     let evaluation = Evaluation {
         os_release: descriptor.os_release.clone(),
-        os_requirements: crate::native_deployment::os_requirements(
-            &descriptor,
-            &executable,
-            cancellation.token(),
-        )?,
+        os_requirements: declarations.os_requirements,
+        package_releases: declarations.package_releases,
         module_requirements: descriptor
             .resolution_lock
             .as_ref()
@@ -1269,6 +1277,7 @@ mod tests {
                 entrypoint: "module.nix".into(),
             }),
             runtime_dependencies: BTreeMap::new(),
+            version_requirement: None,
             os_version: None,
             module_dependencies: Vec::new(),
         }

@@ -184,6 +184,9 @@ pub struct PlatformEntry {
     /// Native package deployment envelope retained by this release.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment: Option<NativeArtifactMeta>,
+    /// Retains the generated compatibility requirement for this package release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_requirement: Option<String>,
     /// Host operating system release compatibility requirement.
     #[serde(rename = "osVersion", default, skip_serializing_if = "Option::is_none")]
     pub os_version: Option<String>,
@@ -1507,11 +1510,17 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
     validate_package_name(&toml.package.name)?;
     for version in &toml.versions {
         for (platform, entry) in &version.platforms {
+            crate::native_dependencies::check_version_requirement(
+                &version.version,
+                entry.version_requirement.as_deref(),
+            )?;
             crate::native_dependencies::check_resolution_metadata(
                 entry.os_version.as_deref(),
                 &entry.module_dependencies,
             )?;
-            if (entry.os_version.is_some() || !entry.module_dependencies.is_empty())
+            if (entry.version_requirement.is_some()
+                || entry.os_version.is_some()
+                || !entry.module_dependencies.is_empty())
                 && entry.deployment.is_none()
             {
                 bail!("native resolution catalog lacks its authenticated deployment document");

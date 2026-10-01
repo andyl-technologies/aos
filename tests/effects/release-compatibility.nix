@@ -21,7 +21,12 @@ let
   interface = signed (package "release-interface" ./release-compatibility/interface);
   consumer = signed ((package "release-consumer" ./release-compatibility/consumer)
     // {
-      moduleDeps = [interface];
+      moduleDeps = [
+        {
+          package = interface;
+          exact = true;
+        }
+      ];
     });
   secondary = signed (package "release-secondary" ./release-compatibility/secondary);
   compatible = range: {
@@ -38,7 +43,13 @@ let
   moduleless = signed (
     (builtins.removeAttrs (package "moduleless-requester" ./release-compatibility/consumer) ["module"])
     // {
-      moduleDeps = [(compatible "^9.0") secondary];
+      moduleDeps = [
+        (compatible "^9.0")
+        {
+          package = secondary;
+          exact = true;
+        }
+      ];
       osVersion = "^0.1";
     }
   );
@@ -183,9 +194,33 @@ in {
   assert builtins.length (builtins.attrNames lock.requesters) == 2; true;
   sourceOnlyLockContexts = assert builtins.all (root: lockContext ? ${root}) sourceRoots;
   assert builtins.all (root: !(lockContext ? ${root})) payloadRoots; true;
-  duplicateExactEdgesRejected = assert rejects (modules.resolved [(consumer // {moduleDeps = [interface interface];})]); true;
+  duplicateExactEdgesRejected = assert rejects (modules.resolved [
+    (consumer
+      // {
+        moduleDeps = [
+          {
+            package = interface;
+            exact = true;
+          }
+          {
+            package = interface;
+            exact = true;
+          }
+        ];
+      })
+  ]); true;
   duplicateMixedEdgesRejected = let
-    duplicate = consumer // {moduleDeps = [interface (compatible "^9.0")];};
+    duplicate =
+      consumer
+      // {
+        moduleDeps = [
+          {
+            package = interface;
+            exact = true;
+          }
+          (compatible "^9.0")
+        ];
+      };
   in
     assert rejects (modules.resolved [duplicate]);
     assert rejects (artifacts.envelope duplicate); true;

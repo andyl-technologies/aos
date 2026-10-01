@@ -58,6 +58,31 @@ pub(super) fn validate(reference: &ModuleReference) -> Result<()> {
         ));
     }
 
+    for package in &reference.packages {
+        if let Some(range) = &package.version_requirement {
+            if !matches!(range.as_bytes().first(), Some(b'^' | b'~' | b'='))
+                || range.get(1..) != Some(package.version.as_str())
+                || package.version.len() > 128
+            {
+                return Err(invalid(
+                    "generated package version requirement must prefix its exact version with ^, ~, or =",
+                ));
+            }
+            validate_range(range)?;
+            let version = semver::Version::parse(&package.version).map_err(|error| {
+                invalid(format!(
+                    "invalid package version for compatibility requirement: {error}"
+                ))
+            })?;
+            let requirement = semver::VersionReq::parse(range).map_err(invalid)?;
+            if !requirement.matches(&version) {
+                return Err(invalid(
+                    "package compatibility requirement must include its selected version",
+                ));
+            }
+        }
+    }
+
     if let Some(release) = &reference.os_release {
         require_name(&release.name, "OS release name")?;
         if release.version.len() > 128 {
@@ -243,5 +268,43 @@ mod tests {
             value["abilities"]["echo"]["run"]["inputDefaults"] = paths;
             assert!(decode(&value).is_err());
         }
+    }
+    #[test]
+    fn generated_package_version_requirements_preserve_normalized_recipe_policy() {
+        for prefix in ["^", "~", "="] {
+            let mut value = reference();
+            let requirement = format!("{prefix}7.4.2");
+            value["packages"] =
+                json!([{"name":"interfaces","version":"7.4.2","versionRequirement":requirement}]);
+            let document = decode(&value).unwrap();
+            assert_eq!(
+                document.reference().unwrap().packages[0]
+                    .version_requirement
+                    .as_deref(),
+                Some(requirement.as_str())
+            );
+            assert_eq!(document.value(), &value);
+            assert!(
+                document
+                    .render_plain()
+                    .contains(&format!("Compatibility requirement: {requirement}"))
+            );
+            assert!(document.render_html().contains(&format!(
+                "Compatibility requirement: <code>{requirement}</code>"
+            )));
+        }
+    }
+
+    #[test]
+    fn generated_package_policy_rejects_arbitrary_ranges_and_mismatched_versions() {
+        for requirement in [">=7.4.2", "^7", "~7.4.1", "*", "7.4.2", "=not-semver"] {
+            let mut value = reference();
+            value["packages"] =
+                json!([{"name":"interfaces","version":"7.4.2","versionRequirement":requirement}]);
+            assert!(decode(&value).is_err(), "accepted {requirement}");
+        }
+        let mut value = reference();
+        value["packages"] = json!([{"name":"interfaces","version":"git-snapshot"}]);
+        assert!(decode(&value).is_ok());
     }
 }

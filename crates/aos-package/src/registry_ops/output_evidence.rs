@@ -276,6 +276,7 @@ store_path = "/nix/store/22222222222222222222222222222222-example-tools"
             None,
             None,
             None,
+            None,
             &[],
         )
         .unwrap();

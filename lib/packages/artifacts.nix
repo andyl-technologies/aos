@@ -1,7 +1,20 @@
 ##! Explicit realized artifacts shared by package builds and deployment evaluation.
 {}: let
   moduleDependencies = import ./module-dependencies.nix;
+  versions = import ./version.nix;
   nameFor = package: package.catalogName or package.pname or package.name;
+  releaseIdentity = package: let
+    versionRequirement = versions.requirementFor package;
+  in
+    {
+      name = nameFor package;
+      version = package.version or "0";
+    }
+    // (
+      if versionRequirement == null
+      then {}
+      else {inherit versionRequirement;}
+    );
   reference = package: {
     name = nameFor package;
     version = package.version or "0";
@@ -112,6 +125,7 @@
       runtimeDependencies = builtins.mapAttrs (_: metadata) (keyed (package.runtimeDeps or []));
       moduleDependencies = moduleDependencies.references moduleReference (package.moduleDeps or []);
     }
+    // builtins.removeAttrs (releaseIdentity package) ["name" "version"]
     // (
       if (package.osVersion or null) == null
       then {}
@@ -213,4 +227,4 @@
     if invalidRoots != []
     then throw "Effect graph references artifacts outside its authenticated package catalogs: ${builtins.concatStringsSep ", " invalidRoots}"
     else inputs;
-in {inherit nameFor reference metadata canonical canonicalReference canonicalDependencies dependencyValues keyed unique moduleReference envelope value valid graphInputs;}
+in {inherit nameFor releaseIdentity reference metadata canonical canonicalReference canonicalDependencies dependencyValues keyed unique moduleReference envelope value valid graphInputs;}

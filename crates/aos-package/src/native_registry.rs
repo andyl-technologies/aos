@@ -377,8 +377,11 @@ impl<'a> NativeRegistry<'a> {
             &self.admission.executable,
             &aos_ability_runtime::adapter::CancellationToken::default(),
         )?;
-        envelope
-            .verify_catalog_resolution(meta.os_version.as_deref(), &meta.module_dependencies)?;
+        envelope.verify_catalog_resolution(
+            meta.version_requirement.as_deref(),
+            meta.os_version.as_deref(),
+            &meta.module_dependencies,
+        )?;
         let priority = self
             .registries
             .registries()
@@ -926,6 +929,7 @@ pub(crate) fn same_package_context(left: &Envelope, right: &Envelope) -> bool {
         && left.module == right.module
         && left.runtime_dependencies == right.runtime_dependencies
         && left.module_dependencies == right.module_dependencies
+        && left.version_requirement == right.version_requirement
         && left.os_version == right.os_version
 }
 
@@ -1017,6 +1021,7 @@ mod authority_tests {
             },
             module,
             runtime_dependencies: BTreeMap::new(),
+            version_requirement: None,
             os_version: None,
             module_dependencies: Vec::new(),
         }

@@ -1,7 +1,8 @@
 //! Conservative structural checks for package and OS release interfaces.
 //!
 //! The check reads generated declarations, never handler programs or defaults.
-//! It reports changes requiring a major release or an exact, explained exception.
+//! It reports changes requiring a release outside the previous compatibility range
+//! or an exact, explained exception.
 //! Passing this check does not establish behavioral compatibility.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -41,7 +42,7 @@ pub struct CompatibilityChange {
     pub path: Vec<String>,
     /// Explains the compatibility concern.
     pub reason: String,
-    /// Records a matching explicit exception, independently of a major bump.
+    /// Records a matching explicit exception, independently of the compatibility boundary.
     pub waived: bool,
 }
 
@@ -50,8 +51,8 @@ pub struct CompatibilityChange {
 pub struct CompatibilityReport {
     /// Indicates that every diagnostic is acknowledged by release policy or exception.
     pub compatible: bool,
-    /// Indicates that the owning release increased its major version.
-    pub major_bump: bool,
+    /// Indicates that the next release falls outside the previous compatibility range.
+    pub compatibility_boundary: bool,
     /// Lists structural concerns, including acknowledged changes.
     pub changes: Vec<CompatibilityChange>,
 }
@@ -59,13 +60,14 @@ pub struct CompatibilityReport {
 struct Surface<'a> {
     name: String,
     version: semver::Version,
+    version_requirement: semver::VersionReq,
     options: BTreeMap<Vec<String>, &'a NativeOption>,
     operations: BTreeMap<(String, String), &'a OperationReference>,
 }
 
 impl ReleaseOwner {
     fn surface<'a>(&self, document: &'a ModuleReference) -> Result<Surface<'a>> {
-        let (name, version, owner) = match self {
+        let (name, version, requirement, owner) = match self {
             Self::Package(name) => {
                 let mut packages = document
                     .packages
@@ -77,17 +79,33 @@ impl ReleaseOwner {
                 if packages.next().is_some() {
                     return Err(invalid("interface owner has duplicate package identities"));
                 }
-                (name.clone(), package.version.as_str(), name.as_str())
+                (
+                    name.clone(),
+                    package.version.as_str(),
+                    package.version_requirement.as_deref(),
+                    name.as_str(),
+                )
             }
             Self::Os => {
                 let release = document
                     .os_release
                     .as_ref()
                     .ok_or_else(|| invalid("OS interface check requires osRelease metadata"))?;
-                (release.name.clone(), release.version.as_str(), "@base")
+                (
+                    release.name.clone(),
+                    release.version.as_str(),
+                    None,
+                    "@base",
+                )
             }
         };
         let version = semver::Version::parse(version).map_err(invalid)?;
+        // The previous release's policy belongs to its existing consumers. The
+        // next release cannot relax that policy by changing its own declaration.
+        let inferred_requirement = format!("^{version}");
+        let version_requirement =
+            semver::VersionReq::parse(requirement.unwrap_or(&inferred_requirement))
+                .map_err(invalid)?;
         let mut options = BTreeMap::new();
         for option in document
             .options
@@ -116,6 +134,7 @@ impl ReleaseOwner {
         Ok(Surface {
             name,
             version,
+            version_requirement,
             options,
             operations,
         })
@@ -128,6 +147,7 @@ impl Surface<'_> {
         json!({
             "name": self.name,
             "version": self.version.to_string(),
+            "versionRequirement": self.version_requirement.to_string(),
             "options": self.options.values().map(|option| json!({
                 "path":option.path, "type":option.option_type,
                 "default":option.has_default, "readOnly":option.read_only,
@@ -147,7 +167,9 @@ impl Surface<'_> {
 /// Unchanged types, new operations, and input additions with defaults are accepted.
 /// Other type changes are conservatively reported, including changed refinements.
 /// Closed result records reject additions because earlier consumers may reject them.
-/// A major bump acknowledges diagnostics but does not erase them from the report.
+/// A release outside the previous version requirement acknowledges diagnostics
+/// but does not erase them from the report. OS releases use the caret range
+/// derived from their previous semantic version.
 ///
 /// # Errors
 /// Returns an error for non-reference documents, missing or mismatched release
@@ -178,7 +200,7 @@ pub fn check_compatibility(
             "interface comparison requires the same owner and nondecreasing release versions",
         ));
     }
-    let major_bump = after.version.major > before.version.major;
+    let compatibility_boundary = !before.version_requirement.matches(&after.version);
     let mut changes = Vec::new();
     let mut report = |path: Vec<String>, reason: &str| {
         changes.push(CompatibilityChange {
@@ -292,8 +314,8 @@ pub fn check_compatibility(
         change.waived = true;
     }
     Ok(CompatibilityReport {
-        compatible: major_bump || changes.iter().all(|change| change.waived),
-        major_bump,
+        compatible: compatibility_boundary || changes.iter().all(|change| change.waived),
+        compatibility_boundary,
         changes,
     })
 }

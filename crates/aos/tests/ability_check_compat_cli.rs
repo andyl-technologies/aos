@@ -68,7 +68,7 @@ fn compatible_prose_change_emits_one_json_report() {
     );
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["compatible"], true);
-    assert_eq!(report["major_bump"], false);
+    assert_eq!(report["compatibility_boundary"], false);
     assert_eq!(report["changes"], json!([]));
 }
 
@@ -111,7 +111,7 @@ fn major_package_release_accepts_structural_removal() {
     assert!(output.status.success());
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["compatible"], true);
-    assert_eq!(report["major_bump"], true);
+    assert_eq!(report["compatibility_boundary"], true);
 }
 
 #[test]
@@ -142,7 +142,45 @@ fn os_selection_uses_the_os_release_instead_of_package_versions() {
     assert!(output.status.success());
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["compatible"], true);
-    assert_eq!(report["major_bump"], true);
+    assert_eq!(report["compatibility_boundary"], true);
+}
+
+#[test]
+fn previous_tilde_requirement_accepts_a_breaking_minor_release() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut before = reference("1.0.0");
+    before["packages"][0]["versionRequirement"] = json!("~1.0.0");
+    let mut after = reference("1.1.0");
+    after["options"] = json!([]);
+    write(directory.path(), "before.json", &before);
+    write(directory.path(), "after.json", &after);
+
+    let output = check(directory.path(), &[]);
+
+    assert!(output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["compatible"], true);
+    assert_eq!(report["compatibility_boundary"], true);
+    assert_eq!(report["changes"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn next_release_policy_cannot_relax_previous_consumers_requirement() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut before = reference("1.0.0");
+    before["packages"][0]["versionRequirement"] = json!("^1.0.0");
+    let mut after = reference("1.1.0");
+    after["packages"][0]["versionRequirement"] = json!("=1.1.0");
+    after["options"] = json!([]);
+    write(directory.path(), "before.json", &before);
+    write(directory.path(), "after.json", &after);
+
+    let output = check(directory.path(), &[]);
+
+    assert!(!output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["compatible"], false);
+    assert_eq!(report["compatibility_boundary"], false);
 }
 
 #[test]

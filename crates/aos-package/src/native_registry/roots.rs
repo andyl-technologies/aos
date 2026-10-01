@@ -129,6 +129,7 @@ mod tests {
             },
             module: Some(source(name)),
             runtime_dependencies: BTreeMap::new(),
+            version_requirement: None,
             os_version: None,
             module_dependencies: dependencies
                 .iter()

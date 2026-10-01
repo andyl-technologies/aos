@@ -330,6 +330,7 @@ fn package_metas_for_platform(
                 requires_features,
                 named_outputs: plat.named_outputs.clone(),
                 deployment: plat.deployment.clone(),
+                version_requirement: plat.version_requirement.clone(),
                 os_version: plat.os_version.clone(),
                 module_dependencies: plat.module_dependencies.clone(),
                 module_documentation: plat.module_documentation.clone(),

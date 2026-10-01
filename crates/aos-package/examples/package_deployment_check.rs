@@ -157,6 +157,7 @@ fn main() -> Result<()> {
     );
     let built = Deployment::decode(&serde_json::to_vec(&fixture.document)?, &resolved)?;
     let evaluation = Evaluation {
+        package_releases: Vec::new(),
         os_release: None,
         os_requirements: Vec::new(),
         module_requirements: Vec::new(),

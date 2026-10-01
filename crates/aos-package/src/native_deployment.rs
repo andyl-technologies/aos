@@ -41,7 +41,9 @@ pub use crate::native_registry::solver::{LockedEdge, ResolutionLock};
 pub use admission::{AdmissionCatalog, AdmittedRoot};
 pub use bootstrap::{SourceAuthorization, apply_with_sources, resume_profile};
 pub use evaluate::evaluate_input;
-pub(crate) use evaluate::{os_requirements, retained_os_requirements, validate_target_os};
+pub(crate) use evaluate::{
+    os_requirements, retained_declarations, validate_target_os, validated_declarations,
+};
 
 #[derive(clap::Args)]
 pub struct NativeDeploymentArgs {
@@ -632,13 +634,15 @@ fn apply_profile(
                 .chain(supplemental)
                 .map(PathBuf::from)
                 .collect();
+            let declarations = retained_declarations(
+                &descriptor.package_envelopes,
+                descriptor.os_release.as_ref(),
+                &command.nix_store,
+            )?;
             let evaluator = crate::deployment::evaluation::Evaluation {
                 os_release: descriptor.os_release.clone(),
-                os_requirements: retained_os_requirements(
-                    &descriptor.package_envelopes,
-                    descriptor.os_release.as_ref(),
-                    &command.nix_store,
-                )?,
+                os_requirements: declarations.os_requirements,
+                package_releases: declarations.package_releases,
                 module_requirements: descriptor
                     .resolution_lock
                     .as_ref()
@@ -982,13 +986,15 @@ pub(crate) fn deployment_observer(
     for module in &input.packages.modules {
         admission.admit(&module.config_root)?;
     }
+    let declarations = retained_declarations(
+        &input.package_envelopes,
+        input.os_release.as_ref(),
+        &executable,
+    )?;
     let evaluation = crate::deployment::evaluation::Evaluation {
         os_release: input.os_release.clone(),
-        os_requirements: retained_os_requirements(
-            &input.package_envelopes,
-            input.os_release.as_ref(),
-            &executable,
-        )?,
+        os_requirements: declarations.os_requirements,
+        package_releases: declarations.package_releases,
         module_requirements: input
             .resolution_lock
             .as_ref()
