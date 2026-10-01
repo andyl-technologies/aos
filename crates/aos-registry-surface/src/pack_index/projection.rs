@@ -20,6 +20,10 @@ use super::{
 };
 use crate::object::{ObjectKind, Oid};
 
+mod catalogue;
+
+pub use catalogue::{VerifiedCatalogue, VerifiedObjectSummary, MAX_CATALOGUE_OBJECTS};
+
 /// Maximum decoded content returned across all selections.
 pub const MAX_SELECTED_CONTENT_BYTES: usize = 128 * 1024;
 
