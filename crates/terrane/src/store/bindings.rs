@@ -399,29 +399,44 @@ impl LocalFs for TokioLocalFs {
     }
 
     async fn read_nofollow(&self, path: &std::path::Path) -> std::io::Result<Vec<u8>> {
-        use tokio::io::AsyncReadExt;
-
-        let mut options = tokio::fs::OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
         #[cfg(not(unix))]
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "nofollow open unavailable",
-        ));
-
-        let mut file = options.open(path).await?;
-        if !file.metadata().await?.is_file() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "path is not a regular file",
-            ));
+        {
+            let _ = path;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "nofollow open unavailable",
+            ))
         }
-        let mut bytes = Vec::new();
 
-        file.read_to_end(&mut bytes).await?;
-        Ok(bytes)
+        #[cfg(unix)]
+        {
+            use std::io::Read;
+            use std::os::unix::fs::OpenOptionsExt;
+
+            tokio::runtime::Handle::try_current().map_err(std::io::Error::other)?;
+            let path = path.to_owned();
+
+            // One worker owns the same nofollow descriptor through inspection
+            // and the complete read; these blocking steps stay off the executor.
+            tokio::task::spawn_blocking(move || {
+                let mut file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                    .open(path)?;
+                if !file.metadata()?.is_file() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "path is not a regular file",
+                    ));
+                }
+
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                Ok(bytes)
+            })
+            .await
+            .map_err(std::io::Error::other)?
+        }
     }
 
     async fn read_link(&self, path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
