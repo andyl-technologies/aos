@@ -635,6 +635,7 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
     native_executable = observe_direct_native_executable(native, tools,
         tools["installedNativeExecutableSha256"])
     provider_callers = observe_direct_provider_callers(s3, tools)
+    workload_started = time.monotonic_ns()
     before_worker = direct_log_position(worker, tools["python"], process["logFile"])
     before_native = direct_log_position(native, tools["python"], "/var/lib/hybrid-native-observations/requests.jsonl")
     before_provider = direct_log_position(s3, tools["python"], "/var/lib/hybrid-s3/provider-observations.jsonl")
@@ -656,6 +657,10 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
         worker_storage_log, worker_storage_window = retain_direct_log_window(worker, tools["python"],
             before_worker_storage, "publication-worker-storage.jsonl")
         proxy_lifetimes = observe_direct_boundary_lifetimes(native, worker, tools, "loaded-finish")
+    workload_finished = time.monotonic_ns()
+    workload_interval = {"clock": "controller_monotonic",
+        "startedNanoseconds": str(workload_started), "finishedNanoseconds": str(workload_finished),
+        "elapsedNanoseconds": str(workload_finished - workload_started)}
 
     # Retain every measured gate before asserting. Parsing errors and incomplete
     # telemetry remain failures even if the public publisher says ready.
@@ -685,6 +690,9 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
         native_storage_log.read_text(), worker_storage_log.read_text(), worker_log.read_text(),
         identity["identity"]["sourceDigest"], tools["storageBoundaryInstallation"]["routing"]["nativeAddress"])
     provider_classification = classify_direct_provider_object_receipts(provider_boundary, original_mapping)
+    throughput = summarize_direct_provider_throughput(provider_boundary, provider_classification,
+        original_mapping, corpus, workload_interval)
+    retain_direct_flow("actual-production-transfer-throughput.json", throughput)
     native_summary = summarize_native_control_bytes(native_observations, sum(len(publication["objects"]) for publication in publications.values()))
     loaded_raw = concurrent["pageSamples"]
     loaded_count = len(loaded_raw.splitlines())
@@ -702,6 +710,7 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
         "version": 1, "acceptance": acceptance, "workerLogWindow": worker_window,
         "nativeLogWindow": native_window, "clientInvocations": counters,
         "providerLogWindow": provider_window, "providerBoundary": provider_boundary,
+        "productionTransferThroughput": throughput,
         "nativeVerifiedControlJoins": native_control_joins,
         "nativeOriginalsSnapshot": originals_receipt, "providerObjectClassification": provider_classification,
         "nativeBulkAssessment": None,

@@ -52,6 +52,11 @@ def provider_boundary_observations(text, callers):
             "etagSha256": hashlib.sha256(raw["etag"].encode()).hexdigest(),
             "contentMd5Sha256": hashlib.sha256(raw["content_md5"].encode()).hexdigest(),
         }
+        elapsed = raw["elapsed_seconds"]
+        if (not isinstance(elapsed, str) or len(elapsed) > 24
+                or not re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,9})?", elapsed)):
+            raise ValueError("provider elapsed time is not a finite bounded decimal")
+        receipt["elapsedSeconds"] = elapsed
         for name in ("status", "request_http_bytes", "response_http_bytes", "response_body_bytes"):
             receipt[name] = _direct_runtime_integer(raw[name], wire=True)
         body = raw["request_body_bytes"]
@@ -376,3 +381,96 @@ def classify_direct_provider_object_receipts(boundary, mapping):
         "scope": "actual provider object/control classification; Native body codec proof remains independent"}
     retain_direct_flow("actual-provider-object-classification.json", report)
     return report
+
+
+def summarize_direct_provider_throughput(boundary, classification, mapping, corpus, interval):
+    """Report retry-inclusive transfer rates over one actual loaded wall interval."""
+    fields = {"clock", "startedNanoseconds", "finishedNanoseconds", "elapsedNanoseconds"}
+    if not isinstance(interval, dict) or set(interval) != fields or interval["clock"] != "controller_monotonic":
+        raise ValueError("publication throughput lacks its actual monotonic interval")
+    started, finished, elapsed = (
+        _direct_runtime_integer(interval[name], wire=True)
+        for name in ("startedNanoseconds", "finishedNanoseconds", "elapsedNanoseconds")
+    )
+    if started == 0 or finished <= started or elapsed != finished - started:
+        raise ValueError("publication throughput has a missing or zero elapsed interval")
+    if (classification["unresolvedReceiptIndexes"] or classification["unknownCallers"]
+            or classification["nativeProviderCalls"]
+            or len(classification["classified"]) != len(boundary["receipts"])):
+        raise ValueError("publication throughput has incomplete provider classification")
+
+    bulk = {hashlib.sha256(item["path"].encode()).hexdigest(): item for item in corpus["large_objects"]}
+    metadata = {hashlib.sha256(f"web/packages/direct-qualification-{number:05d}.json".encode()).hexdigest()
+        for number in range(corpus["metadata_objects"])}
+    if not bulk or not metadata or len(bulk) != len(corpus["large_objects"]) or set(bulk) & metadata:
+        raise ValueError("publication throughput corpus identities are incomplete or ambiguous")
+    originals, selected = {}, {"bulk": set(), "metadata": set()}
+    for original in mapping["originals"]:
+        path = original["objectPathSha256"]
+        category = "bulk" if path in bulk else "metadata" if path in metadata else "signed_surface_other"
+        size = _direct_runtime_integer(original["byteSize"], wire=True)
+        if category == "bulk" and (size != bulk[path]["byte_size"]
+                or original["expectedSha256"] != bulk[path]["sha256"]
+                or original["dependencyPhase"] != "content"):
+            raise ValueError("bulk throughput original differs from the actual source corpus")
+        if category == "metadata" and (size == 0 or original["dependencyPhase"] != "visibility"):
+            raise ValueError("metadata throughput original changed its Visibility dependency")
+        coordinate = (original["sessionDigest"], original["originalDigest"], original["placementDigest"])
+        if coordinate in originals:
+            raise ValueError("publication throughput original ownership is duplicated")
+        originals[coordinate] = {"category": category, "byteSize": size,
+            "uploadedBytes": 0, "readBytes": 0}
+        if category in selected:
+            if path in selected[category]:
+                raise ValueError("one source corpus path belongs to multiple throughput originals")
+            selected[category].add(path)
+    if selected != {"bulk": set(bulk), "metadata": metadata}:
+        raise ValueError("publication throughput does not cover the complete source corpus")
+
+    classes = {name: {"positiveClientUploadBytes": 0, "positiveWorkerReadBytes": 0,
+        "positiveClientUploadRequests": 0, "positiveWorkerReadRequests": 0}
+        for name in ("bulk", "metadata", "signed_surface_other")}
+    seen = set()
+    for item in classification["classified"]:
+        index = item["receiptIndex"]
+        if type(index) is not int or not 0 <= index < len(boundary["receipts"]) or index in seen:
+            raise ValueError("publication throughput provider receipt is duplicated or missing")
+        seen.add(index)
+        receipt = boundary["receipts"][index]
+        if any(item[name] != receipt[name] for name in ("caller", "method", "status")):
+            raise ValueError("publication throughput classification differs from its provider receipt")
+        coordinate = (item["sessionDigest"], item["originalDigest"], item["placementDigest"])
+        if coordinate not in originals:
+            raise ValueError("publication throughput receipt has no retained original")
+        original = originals[coordinate]
+        observed = classes[original["category"]]
+        transferred = _direct_runtime_integer(item["objectTransferBytes"])
+        if not 200 <= item["status"] < 300:
+            continue
+        if item["caller"] == "client" and item["method"] == "PUT" and item["location"] == "stage":
+            if item["objectTransferBytes"] != receipt["request_body_bytes"]:
+                raise ValueError("publication throughput upload differs from actual provider bytes")
+            observed["positiveClientUploadBytes"] += transferred
+            observed["positiveClientUploadRequests"] += 1
+            original["uploadedBytes"] += transferred
+        elif item["caller"] == "worker" and item["method"] == "GET" and item["operation"] == "object":
+            if item["objectTransferBytes"] != receipt["response_body_bytes"]:
+                raise ValueError("publication throughput read differs from actual provider bytes")
+            observed["positiveWorkerReadBytes"] += transferred
+            observed["positiveWorkerReadRequests"] += 1
+            original["readBytes"] += transferred
+    if seen != set(range(len(boundary["receipts"]))):
+        raise ValueError("publication throughput provider receipts are incomplete")
+    for original in originals.values():
+        if (original["uploadedBytes"] < original["byteSize"]
+                or original["readBytes"] < original["byteSize"]):
+            raise ValueError("publication throughput has incomplete positive original byte coverage")
+    for category, observed in classes.items():
+        if category != "signed_surface_other" and (
+                observed["positiveClientUploadBytes"] == 0 or observed["positiveWorkerReadBytes"] == 0):
+            raise ValueError("publication throughput has no positive class transfer observations")
+        observed["clientUploadBytesPerSecond"] = observed["positiveClientUploadBytes"] * 1_000_000_000 / elapsed
+        observed["workerReadBytesPerSecond"] = observed["positiveWorkerReadBytes"] * 1_000_000_000 / elapsed
+    return {"version": 1, "interval": interval, "classes": classes,
+        "sourceObjects": {name: len(paths) for name, paths in selected.items()},
+        "scope": "actual successful provider transfer bytes divided by one shared loaded interval spanning the retained log window; retries, source preparation, sparse recovery, other signed objects and observer capture overhead included; not unique goodput or per-request service rate"}

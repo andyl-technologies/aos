@@ -1,6 +1,7 @@
 """Check evidence refusals with synthetic inputs, never runtime qualification."""
 
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -25,6 +26,90 @@ boundary.retain_direct_flow = lambda *_: None
 
 
 class BoundaryEvidenceRefusals(unittest.TestCase):
+    def throughput_inputs(self):
+        corpus = {"large_objects": [{"path": f"web/direct-content/object-{number}.bin",
+            "byte_size": size, "sha256": str(number + 1) * 64}
+            for number, size in enumerate((20, 30, 40))], "metadata_objects": 2}
+        sources = [(item["path"], item["byte_size"], item["sha256"], "content")
+            for item in corpus["large_objects"]]
+        sources += [(f"web/packages/direct-qualification-{number:05d}.json", size, "9" * 64, "visibility")
+            for number, size in enumerate((5, 6))]
+        sources.append(("HEAD", 4, "a" * 64, "visibility"))
+        originals, rows = [], []
+        for number, (path, size, digest, phase) in enumerate(sources):
+            stage = f"/synthetic/stage/{number}"
+            originals.append({"objectPathSha256": hashlib.sha256(path.encode()).hexdigest(),
+                "byteSize": str(size), "expectedSha256": digest, "dependencyPhase": phase,
+                "sessionDigest": f"{number + 1:064x}", "originalDigest": f"{number + 7:064x}",
+                "placementDigest": "b" * 64, "publicationId": ("c" if number != 2 else "d") * 32,
+                "stagePathSha256": hashlib.sha256(stage.encode()).hexdigest(), "finalPathSha256": f"{number + 13:064x}"})
+            for caller, method in (("10.0.0.1", "PUT"), ("10.0.0.2", "GET")):
+                rows.append({"method": method, "operation": "object", "caller": caller,
+                    "path": stage, "status": "200", "request_http_bytes": "200",
+                    "request_body_bytes": str(size if method == "PUT" else 0), "transfer_encoding": "",
+                    "response_http_bytes": "200", "response_body_bytes": str(size if method == "GET" else 0),
+                    "etag": "", "content_md5": "", "elapsed_seconds": "60.000"})
+        rows.append(copy.deepcopy(rows[0]))
+        callers = {"client": "10.0.0.1", "worker": "10.0.0.2", "native": "10.0.0.3", "provider": "127.0.0.1"}
+        receipts = boundary.provider_boundary_observations("\n".join(json.dumps(row) for row in rows), callers)
+        mapping = {"originals": originals}
+        classified = boundary.classify_direct_provider_object_receipts(receipts, mapping)
+        interval = {"clock": "controller_monotonic", "startedNanoseconds": "1000000000",
+            "finishedNanoseconds": "3000000000", "elapsedNanoseconds": "2000000000"}
+        return receipts, classified, mapping, corpus, interval
+
+    def test_rates_use_one_actual_interval_and_include_retries_separately_by_class(self):
+        inputs = self.throughput_inputs()
+        result = boundary.summarize_direct_provider_throughput(*inputs)
+        self.assertEqual(result["sourceObjects"], {"bulk": 3, "metadata": 2})
+        self.assertEqual(result["classes"]["bulk"]["positiveClientUploadBytes"], 110)
+        self.assertEqual(result["classes"]["bulk"]["positiveWorkerReadBytes"], 90)
+        self.assertEqual(result["classes"]["bulk"]["clientUploadBytesPerSecond"], 55)
+        self.assertEqual(result["classes"]["bulk"]["workerReadBytesPerSecond"], 45)
+        self.assertEqual(result["classes"]["metadata"]["clientUploadBytesPerSecond"], 5.5)
+        self.assertEqual(result["classes"]["signed_surface_other"]["workerReadBytesPerSecond"], 2)
+        self.assertEqual(inputs[0]["receipts"][0]["elapsedSeconds"], "60.000")
+        self.assertIn("not unique goodput", result["scope"])
+
+    def test_missing_time_originals_or_provider_coverage_cannot_supply_a_rate(self):
+        for defect in ("missing_time", "zero_time", "nonfinite_time", "missing_original",
+                "missing_receipt", "duplicate_receipt", "partial_upload", "changed_bytes", "changed_source"):
+            with self.subTest(defect=defect):
+                inputs = list(copy.deepcopy(self.throughput_inputs()))
+                receipts, classified, mapping, corpus, interval = inputs
+                if defect == "missing_time":
+                    interval.pop("elapsedNanoseconds")
+                elif defect == "zero_time":
+                    interval.update(finishedNanoseconds=interval["startedNanoseconds"], elapsedNanoseconds="0")
+                elif defect == "nonfinite_time":
+                    interval["elapsedNanoseconds"] = "NaN"
+                elif defect == "missing_original":
+                    mapping["originals"].pop(3)
+                elif defect == "missing_receipt":
+                    classified["classified"].pop()
+                elif defect == "duplicate_receipt":
+                    classified["classified"][-1] = copy.deepcopy(classified["classified"][0])
+                elif defect == "partial_upload":
+                    classified["classified"][6]["status"] = 403
+                    receipts["receipts"][6]["status"] = 403
+                elif defect == "changed_bytes":
+                    classified["classified"][0]["objectTransferBytes"] += 1
+                elif defect == "changed_source":
+                    corpus["large_objects"][0]["sha256"] = "f" * 64
+                with self.assertRaises(ValueError):
+                    boundary.summarize_direct_provider_throughput(*inputs)
+
+    def test_provider_elapsed_preserves_observed_zero_resolution_but_refuses_nonfinite(self):
+        callers = {"client": "10.0.0.1", "worker": "10.0.0.2", "native": "10.0.0.3", "provider": "127.0.0.1"}
+        raw = {"method": "GET", "operation": "object", "caller": "10.0.0.2", "path": "/synthetic/payload",
+            "status": "200", "request_http_bytes": "71", "request_body_bytes": "0", "transfer_encoding": "",
+            "response_http_bytes": "140", "response_body_bytes": "53", "etag": "", "content_md5": "", "elapsed_seconds": "0.000"}
+        result = boundary.provider_boundary_observations(json.dumps(raw), callers)
+        self.assertEqual(result["receipts"][0]["elapsedSeconds"], "0.000")
+        for value in (None, "NaN", "Infinity", "-0.1", "1e3", "", "9" * 25):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                boundary.provider_boundary_observations(json.dumps({**raw, "elapsed_seconds": value}), callers)
+
     def test_exact_verified_replay_is_one_classification_but_changed_original_refuses(self):
         queue = models.event("queue_start")
         offer, finish = models.event("control_request"), models.event("control_reply")
