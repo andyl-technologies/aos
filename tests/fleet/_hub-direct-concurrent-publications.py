@@ -189,10 +189,12 @@ def direct_visibility_rendezvous(worker, tools, cursor, expected_source):
 
 
 def run_direct_concurrent_publications(client, worker, tools, sources, registries,
-                                       before_worker, expected_source):
+                                       before_worker, expected_source, corpus_a):
     """Start B from A's genuine Visibility event and retain every invocation."""
     processes, completed, originals, invocations = {}, {}, {}, []
     pages, page_intervals, failed_probes = [], [], []
+    sparse = {"interruption": None, "changedSource": None, "continuity": None,
+        "terminalCountersUnavailable": []}
     cursor = {**before_worker, "offset": before_worker["byteSize"]}
 
     def start(label, attempt):
@@ -207,6 +209,35 @@ def run_direct_concurrent_publications(client, worker, tools, sources, registrie
     while len(completed) != 2:
         if time.monotonic() > deadline:
             raise RuntimeError("actual concurrent publications exceeded their retained invocation budget")
+        if sparse["interruption"] is None and "a" not in completed:
+            process = processes["a"]
+            observation = observe_direct_sparse_publisher(client, tools, process, sources["a"], corpus_a)
+            if observation["sparse"]:
+                if process["attempt"] >= 3:
+                    raise ValueError("actual sparse interruption has no remaining retained resume attempt")
+                interrupted = interrupt_direct_sparse_publisher(
+                    client, tools, process, sources["a"], corpus_a, observation)
+                publication_id = interrupted["admission"]["publication"]["admission"]["publicationId"]
+                if "a" in originals and originals["a"] != publication_id:
+                    raise ValueError("sparse interruption changed the actual admitted publication")
+                originals["a"] = publication_id
+                # SIGKILL has no terminal JSON or counter report. Do not parse
+                # its partial stdout or reconstruct its unavailable metrics.
+                partial_stderr = read_direct_guest_file(client, tools["python"],
+                    process["directory"] + "/stderr", 1048576)
+                invocations.append({"label": "a", "result": interrupted["result"],
+                    "stderr": partial_stderr.decode(), "terminalCountersAvailable": False,
+                    "metricsScope": "actual killed original; terminal counters unavailable"})
+                sparse["terminalCountersUnavailable"].append({"label": "a", "attempt": process["attempt"]})
+                sparse["interruption"] = interrupted
+                source = next(item for item in corpus_a["large_objects"]
+                    if any(session["path"] == item["path"] and session["sparseGaps"]
+                        for session in interrupted["checkpoint"]["sessions"]))
+                fresh_token = direct_root_browser_token(client, tools["curl"], tools["python"],
+                    private_guest_command, reuse_session=True)
+                sparse["changedSource"] = probe_direct_changed_source(
+                    client, tools, process, sources["a"], source, fresh_token)
+                start("a", process["attempt"] + 1)
         if "b" not in processes:
             rendezvous = direct_visibility_rendezvous(worker, tools, cursor, expected_source)
             if rendezvous is not None:
@@ -225,12 +256,21 @@ def run_direct_concurrent_publications(client, worker, tools, sources, registrie
             retain_direct_flow(prefix + ".stderr.log", stderr)
             retain_direct_flow(prefix + ".invocation.json", result)
             reply = json.loads(stdout)
-            invocations.append({"label": label, "result": result, "stderr": stderr.decode()})
+            invocations.append({"label": label, "result": result, "stderr": stderr.decode(),
+                "terminalCountersAvailable": True,
+                "metricsScope": "actual completed invocation; only its fresh transfers"})
             if result["exitCode"] == 0:
                 publication = reply["data"]
                 if label in originals and originals[label] != publication["publication_id"]:
                     raise ValueError("publication JWT resume changed its original")
                 completed[label] = publication
+                if label == "a":
+                    if sparse["interruption"] is None:
+                        raise RuntimeError("A completed without an observed sparse gap; no interruption fabricated")
+                    checkpoint = observe_direct_sparse_completion(client, tools, sources["a"], corpus_a)
+                    sparse["continuity"] = assert_direct_sparse_resume(
+                        sparse["interruption"], checkpoint, publication)
+                    retain_direct_flow("actual-sparse-publication-continuity.json", sparse["continuity"])
                 continue
             error = reply.get("error", "")
             retained = re.search(r"publication ([0-9a-f]{32}) remains resumable;", error)
@@ -254,6 +294,8 @@ def run_direct_concurrent_publications(client, worker, tools, sources, registrie
         time.sleep(0.2)
     observation = {"version": 1, "invocations": invocations, "pageSamples": "".join(pages),
         "pageIntervals": page_intervals, "failedPageProbeExitCodes": failed_probes,
-        "pacing": "none", "scope": "two genuine admitted publications with unchanged dependency barriers"}
+        "pacing": "none", "sparseRecovery": sparse,
+        "metricsCoverage": "terminal summaries cover completed invocations only; the killed original is explicitly unavailable",
+        "scope": "two genuine admitted publications with unchanged dependency barriers; actual A interruption and same-original resume costs included"}
     retain_direct_flow("actual-concurrent-publisher.json", observation)
     return completed, observation

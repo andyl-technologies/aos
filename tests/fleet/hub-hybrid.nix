@@ -541,6 +541,8 @@ in {
       + builtins.readFile ./_hub-direct-codec-assessment.py
       + builtins.readFile ./_hub-direct-worker-lifecycle.py
       + builtins.readFile ./_hub-direct-concurrent-publications.py
+      + builtins.readFile ./_hub-direct-sparse-publisher.py
+      + builtins.readFile ./_hub-direct-recovery-evidence.py
       + builtins.readFile ./_hub-direct-failure-windows.py
       + builtins.readFile ./_hub-direct-storage-boundary.py
       + builtins.readFile ./_hub-index-parity.py

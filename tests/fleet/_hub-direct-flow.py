@@ -554,7 +554,7 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
     observe_direct_boundary_lifetimes(native, worker, tools, "loaded-start")
     try:
         publications, concurrent = run_direct_concurrent_publications(client, worker, tools,
-            sources, registries, before_worker, identity["identity"]["sourceDigest"])
+            sources, registries, before_worker, identity["identity"]["sourceDigest"], corpus_a)
         index_freshness = wait_direct_registry_indexes(controls, registries, sources)
     finally:
         worker_log, worker_window = retain_direct_log_window(worker, tools["python"], before_worker, "publication-worker.log")
@@ -572,10 +572,10 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
     assert_direct_publication_objects(publications["b"], corpus_b)
     checkpoints = observe_direct_absolute_checkpoints(client, tools, sources)
     counters = [counter for invocation in concurrent["invocations"]
+                if invocation["terminalCountersAvailable"]
                 for counter in direct_client_observations(invocation["stderr"])]
     aggregate = {name: sum(counter[name] for counter in counters) for name in DIRECT_CLIENT_COUNTERS}
     aggregate["max_provider_active"] = max(counter["max_provider_active"] for counter in counters)
-    assert_direct_client_activity([aggregate], corpus)
     events = direct_runtime_observations(worker_log.read_text(), identity["identity"]["sourceDigest"])
     runtime = summarize_direct_runtime(events)
     native_observations = native_control_observations(native_log.read_text())
@@ -618,7 +618,9 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
         "nativeStorageLogWindow": native_storage_window,
         "workerStorageLogWindow": worker_storage_window,
         "boundaryProxyLifetimes": proxy_lifetimes,
-        "clientAggregate": aggregate, "runtime": runtime, "nativeBoundary": native_summary,
+        "clientAggregate": aggregate, "clientMetricsCoverage": concurrent["metricsCoverage"],
+        "sparseRecovery": concurrent["sparseRecovery"],
+        "runtime": runtime, "nativeBoundary": native_summary,
         "baselinePageP95Seconds": baseline_first[94], "loadedPageP95Seconds": loaded_p95,
         "baselinePageP99Seconds": baseline_first[98], "loadedPageP99Seconds": loaded_p99,
         "loadedPageSampleCount": loaded_count,
@@ -636,6 +638,12 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
         "scope": "actual External emulator publication; independent hosted qualification remains separate",
     }
     retain_direct_flow("actual-publication-measurements.json", summary)
+    if concurrent["sparseRecovery"]["terminalCountersUnavailable"]:
+        summary["recoveredActivityEvidence"] = assert_direct_recovered_activity(
+            aggregate, corpus, concurrent["sparseRecovery"], original_mapping,
+            provider_classification, native_observations)
+    else:
+        assert_direct_client_activity([aggregate], corpus)
     assert baseline_first[94] < 0.5 and baseline_first[98] < 1.0, summary
     assert loaded_count >= 25 and summary["loadedPublisherOverlapSamples"] >= 25, summary
     assert not summary["failedPageProbeExitCodes"], summary
