@@ -28,6 +28,7 @@ use crate::{
     ValidatedHeader, exact_nonzero, validate_fence, validate_request_header,
 };
 
+mod historical;
 mod observation;
 mod portable_graph;
 
@@ -35,6 +36,10 @@ mod portable_graph;
 mod tests;
 
 pub use observation::{NixBuildObservationV2, decode_nix_build_observation_v2};
+pub use historical::{
+    HistoricalNixBuildRequestV2, decode_historical_nix_build_request_v2,
+    decode_historical_nix_build_response_v2, decode_historical_nix_build_observation_v2,
+};
 
 /// Maximum complete application request body, before outer signed framing.
 pub const NIX_REQUEST_MAXIMUM_BYTES_V2: usize = 262_144;
@@ -436,21 +441,49 @@ pub fn decode_nix_build_request_v2(
     policy: PeerPolicy,
     now_boottime_nanoseconds: u64,
 ) -> Result<ValidatedNixBuildRequestV2, ProtocolValidationError> {
-    if bytes.len() > NIX_REQUEST_MAXIMUM_BYTES_V2 {
-        return Err(ProtocolValidationError::RequestTooLarge);
-    }
+    require_nix_request_size(bytes)?;
     if policy.audience != Audience::AUDIENCE_NODE_CONTROLLER || !is_nix_method(method) {
         return Err(ProtocolValidationError::MethodMismatch);
     }
+    let wire = decode_nix_request_wire(bytes)?;
+    let header = validate_request_header(
+        wire.header.as_option().ok_or(ProtocolValidationError::MissingField("header"))?,
+        peer, policy, ProtocolId::NixBuildBroker, now_boottime_nanoseconds,
+    )?;
+    let (fence, commitment) = compare_nix_request_body(bytes, method, &wire)?;
+
+    Ok(ValidatedNixBuildRequestV2 {
+        header,
+        fence,
+        wire,
+        commitment,
+        method,
+    })
+}
+
+fn require_nix_request_size(bytes: &[u8]) -> Result<(), ProtocolValidationError> {
+    if bytes.len() > NIX_REQUEST_MAXIMUM_BYTES_V2 {
+        return Err(ProtocolValidationError::RequestTooLarge);
+    }
+    Ok(())
+}
+
+fn decode_nix_request_wire(bytes: &[u8]) -> Result<NixBuildRequestV2, ProtocolValidationError> {
     let wire = NixBuildRequestV2::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
     if !wire.__buffa_unknown_fields.is_empty() || wire.encode_to_vec() != bytes {
         return Err(ProtocolValidationError::UnknownFields);
     }
-    let header = validate_request_header(
-        wire.header.as_option().ok_or(ProtocolValidationError::MissingField("header"))?,
-        peer, policy, ProtocolId::NixBuildBroker, now_boottime_nanoseconds,
-    )?;
+    Ok(wire)
+}
+
+// Both callers finish their distinct header checks before the same fence/body
+// comparator. This helper does not admit a peer, deadline, recipe or operation.
+fn compare_nix_request_body(
+    bytes: &[u8],
+    method: BrokerMethod,
+    wire: &NixBuildRequestV2,
+) -> Result<(ValidatedAssignmentFence, [u8; 32]), ProtocolValidationError> {
     let fence = validate_fence(wire.fence.as_option().ok_or(ProtocolValidationError::MissingField("fence"))?)?;
     exact_nonzero::<16>(&wire.operation_id, "operation_id")?;
     for (value, name) in [
@@ -475,13 +508,7 @@ pub fn decode_nix_build_request_v2(
     let commitment = Sha256::new().chain_update(b"aos.sandbox.nix.method-request.v2\0")
         .chain_update((method as i32).to_be_bytes()).chain_update((bytes.len() as u64).to_be_bytes())
         .chain_update(bytes).finalize().into();
-    Ok(ValidatedNixBuildRequestV2 {
-        header,
-        fence,
-        wire,
-        commitment,
-        method,
-    })
+    Ok((fence, commitment))
 }
 
 /// Decodes response shape and exact original-request comparisons.
@@ -492,6 +519,49 @@ pub fn decode_nix_build_request_v2(
 pub fn decode_nix_build_response_v2(
     bytes: &[u8],
     request: &ValidatedNixBuildRequestV2,
+    method: BrokerMethod,
+) -> Result<NixBuildResponseV2, ProtocolValidationError> {
+    compare_nix_build_response_v2(bytes, &request.comparison(), method)
+}
+
+// One borrowed comparison view bridges live and historical DATA; neither
+// constructing it nor using it performs admission or produces a live request.
+#[derive(Clone, Copy)]
+struct NixRequestComparisonV2<'request> {
+    request_id: &'request [u8; 16],
+    wire: &'request NixBuildRequestV2,
+    commitment: [u8; 32],
+    method: BrokerMethod,
+}
+
+impl NixRequestComparisonV2<'_> {
+    const fn wire(&self) -> &NixBuildRequestV2 {
+        self.wire
+    }
+
+    const fn commitment(&self) -> [u8; 32] {
+        self.commitment
+    }
+
+    const fn method(&self) -> BrokerMethod {
+        self.method
+    }
+}
+
+impl ValidatedNixBuildRequestV2 {
+    fn comparison(&self) -> NixRequestComparisonV2<'_> {
+        NixRequestComparisonV2 {
+            request_id: self.header.request_id(),
+            wire: &self.wire,
+            commitment: self.commitment,
+            method: self.method,
+        }
+    }
+}
+
+fn compare_nix_build_response_v2(
+    bytes: &[u8],
+    request: &NixRequestComparisonV2<'_>,
     method: BrokerMethod,
 ) -> Result<NixBuildResponseV2, ProtocolValidationError> {
     if bytes.len() > NIX_RESPONSE_MAXIMUM_BYTES_V2 {
@@ -505,7 +575,7 @@ pub fn decode_nix_build_response_v2(
     if !response.__buffa_unknown_fields.is_empty() || response.encode_to_vec() != bytes {
         return Err(ProtocolValidationError::UnknownFields);
     }
-    if response.request_id.as_slice() != request.header.request_id()
+    if response.request_id.as_slice() != request.request_id
         || response.recipe_digest != request.wire.recipe_digest
         || response.domain_digest != request.wire.domain_digest
         || response.observation.is_empty()
@@ -515,7 +585,7 @@ pub fn decode_nix_build_response_v2(
     {
         return Err(ProtocolValidationError::InvalidField("Nix original response"));
     }
-    decode_nix_build_observation_v2(&response.observation, request)?;
+    observation::compare_nix_build_observation_v2(&response.observation, request)?;
     Ok(response)
 }
 

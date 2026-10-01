@@ -138,6 +138,13 @@ pub fn decode_nix_build_observation_v2(
     bytes: &[u8],
     request: &ValidatedNixBuildRequestV2,
 ) -> Result<NixBuildObservationV2, ProtocolValidationError> {
+    compare_nix_build_observation_v2(bytes, &request.comparison())
+}
+
+pub(super) fn compare_nix_build_observation_v2(
+    bytes: &[u8],
+    request: &super::NixRequestComparisonV2<'_>,
+) -> Result<NixBuildObservationV2, ProtocolValidationError> {
     if bytes.len() < HEADER_BYTES || bytes.len() > NIX_RESPONSE_MAXIMUM_BYTES_V2
         || !bytes.starts_with(MAGIC)
     {
