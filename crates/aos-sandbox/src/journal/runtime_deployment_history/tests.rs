@@ -228,7 +228,7 @@ fn unrun_no_compaction_is_closed_to_exact_path_not_namespace_or_basename() {
     ) == OriginalCompactionSelectionV1::Other);
     assert!(OriginalCompactionSelectionV1::capture(
         Path::new("/var/lib/aos/sandbox/runtime-deployment"), "tpm-floor.journal",
-    ) == OriginalCompactionSelectionV1::Other);
+    ) == OriginalCompactionSelectionV1::DeploymentSidecar);
 
     let directory = tempfile::tempdir().unwrap();
     let (mut unrelated, _) = Journal::open(directory.path().join("preparation.journal"), MAIN_LIMITS).unwrap();
