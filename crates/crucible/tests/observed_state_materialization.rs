@@ -126,7 +126,7 @@ fn fault_evidence_does_not_expose_internal_state_to_assertion_predicates() {
         semantic_version: 1,
         kind: FaultObservationKind::EffectApplied,
         coordinate: FaultCoordinate {
-            virtual_nanos: 5,
+            virtual_ticks: 5,
             retired_instructions: Some(5),
         },
         binding: None,
