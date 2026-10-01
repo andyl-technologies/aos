@@ -39,6 +39,7 @@ where
 {
     owner: QemuAttemptGenerationResourceOwner<G>,
     run_directories: Arc<Mutex<BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>>>,
+    image_helpers: Arc<Mutex<ImageHelperCleanupDebt>>,
     terminal_checkpoint: Option<TerminalCheckpointImport>,
 }
 
@@ -51,6 +52,7 @@ where
         Self {
             owner,
             run_directories: Arc::new(Mutex::new(BTreeMap::new())),
+            image_helpers: Arc::new(Mutex::new(ImageHelperCleanupDebt::default())),
             terminal_checkpoint: None,
         }
     }
@@ -307,11 +309,34 @@ where
             run_directories: Arc::clone(&self.run_directories),
             qemu_executable: request.launch().qemu_executable().to_path_buf(),
             process_contract,
-            failed_image_helper: None,
+            image_helpers: Arc::clone(&self.image_helpers),
             directory_released: false,
         };
 
         ProductionVmNodeLaunch::new_in_run_directory(request, run_directory_path, node, lease)
+    }
+
+    fn transfer_image_helper_debt(&mut self) {
+        let mut debt = self
+            .image_helpers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        debt.closed = true;
+
+        for (_, child) in std::mem::take(&mut debt.children) {
+            self.owner.retain_failed_launch_child(child);
+        }
+    }
+}
+
+impl<G> Drop for QemuAttemptProductionVmNodeLauncher<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    fn drop(&mut self) {
+        // Transfer the original wait handles before the aggregate owner's Drop
+        // starts quarantine. Its worker keeps retrying reap before quota release.
+        self.transfer_image_helper_debt();
     }
 }
 
@@ -441,7 +466,32 @@ where
     }
 
     fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        self.transfer_image_helper_debt();
         self.owner.finish()
+    }
+}
+
+/// Shared wait authority survives generation-lease abandonment.
+#[derive(Default)]
+struct ImageHelperCleanupDebt {
+    closed: bool,
+    children: BTreeMap<ProductionVmNodeGeneration, crucible_qemu::QemuNodeChild>,
+}
+
+impl ImageHelperCleanupDebt {
+    fn retry_generation(
+        &mut self,
+        generation: &ProductionVmNodeGeneration,
+    ) -> Result<(), LifecycleApiError> {
+        if let Some(child) = self.children.get_mut(generation) {
+            child
+                .force_kill_and_reap_failed_helper(std::time::Duration::from_secs(5))
+                .map_err(|error| {
+                    launcher_message(format!("retry hot-fork image helper cleanup: {error}"))
+                })?;
+            self.children.remove(generation);
+        }
+        Ok(())
     }
 }
 
@@ -450,19 +500,8 @@ struct QemuLifecycleGenerationLease {
     run_directories: Arc<Mutex<BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>>>,
     qemu_executable: std::path::PathBuf,
     process_contract: QemuChildProcessContract,
-    failed_image_helper: Option<crucible_qemu::QemuNodeChild>,
+    image_helpers: Arc<Mutex<ImageHelperCleanupDebt>>,
     directory_released: bool,
-}
-
-impl Drop for QemuLifecycleGenerationLease {
-    fn drop(&mut self) {
-        if let Some(child) = self.failed_image_helper.take() {
-            // The generation registry also marks this lease abandoned. Keep
-            // the unique wait handle alive while the aggregate stays in
-            // quarantine; dropping it would hide an unreaped helper.
-            let _retained_for_process_lifetime = Box::leak(Box::new(child));
-        }
-    }
 }
 
 impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
@@ -501,7 +540,16 @@ impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
         graph_generation: u64,
         virtual_size: u64,
     ) -> Result<(std::fs::File, std::path::PathBuf), LifecycleApiError> {
-        if self.failed_image_helper.is_some() {
+        // Closing the launcher and creating helper debt serialize under this
+        // lock, so cleanup cannot miss a helper launched by a retained lease.
+        let mut helper_debt = self
+            .image_helpers
+            .lock()
+            .map_err(|_| launcher_message("QEMU image-helper registry is poisoned"))?;
+        if helper_debt.closed {
+            return Err(launcher_message("QEMU image-helper owner is terminal"));
+        }
+        if helper_debt.children.contains_key(self.inner.identity()) {
             return Err(launcher_message(
                 "prior hot-fork image helper still owes process cleanup",
             ));
@@ -524,8 +572,11 @@ impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
                 let message = error.to_string();
                 if let Some(child) = error.take_unreaped_child() {
                     // An unreaped helper is retained with the source generation.
-                    // Its lease cannot finish and the aggregate guard quarantines.
-                    self.failed_image_helper = Some(child);
+                    // Its lease must reap it before finishing; abandonment
+                    // transfers the original handle to aggregate quarantine.
+                    helper_debt
+                        .children
+                        .insert(self.inner.identity().clone(), child);
                 }
                 Err(launcher_message(format!(
                     "prepare guarded hot-fork detached overlay: {message}"
@@ -535,11 +586,10 @@ impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
     }
 
     fn finish(&mut self) -> Result<(), LifecycleApiError> {
-        if self.failed_image_helper.is_some() {
-            return Err(launcher_message(
-                "hot-fork image helper still owes process cleanup",
-            ));
-        }
+        self.image_helpers
+            .lock()
+            .map_err(|_| launcher_message("QEMU image-helper registry is poisoned"))?
+            .retry_generation(self.inner.identity())?;
         if !self.directory_released {
             let mut run_directories = self.run_directories.lock().map_err(|_| {
                 launcher_message("QEMU generation run-directory registry is poisoned")
@@ -634,7 +684,145 @@ fn launch_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- fixture failures identify the exact ownership transition.
+    #![allow(clippy::expect_used)]
+
     use super::*;
+
+    #[derive(Default)]
+    struct HelperGuardReceipts {
+        children: Vec<crucible_qemu::QemuNodeChild>,
+        quarantined: bool,
+    }
+
+    struct HelperGuard {
+        receipts: Arc<Mutex<HelperGuardReceipts>>,
+        cancellation: ExecutionCancellation,
+    }
+
+    impl crate::QemuAttemptOperationalBoundary for HelperGuard {
+        fn resource_limits(&self) -> crucible_campaign::AttemptResourceLimits {
+            crucible_campaign::AttemptResourceLimits::new(1, 64 * 1024 * 1024, 128 * 1024 * 1024, 8)
+                .expect("fixture resource ceilings")
+        }
+
+        fn cancellation(&self) -> &ExecutionCancellation {
+            &self.cancellation
+        }
+
+        fn check_operational_boundary(
+            &mut self,
+        ) -> Result<(), crucible_qemu::QemuVmRealizationError> {
+            Ok(())
+        }
+
+        fn charge_execution_quantum(
+            &mut self,
+        ) -> Result<(), crucible_qemu::QemuVmRealizationError> {
+            panic!("fixture cannot advance a guest")
+        }
+    }
+
+    impl crate::QemuAttemptResourceGuard for HelperGuard {
+        fn finish(&mut self) -> Result<(), crucible_qemu::QemuVmRealizationError> {
+            panic!("an abandoned generation must enter quarantine")
+        }
+
+        fn quarantine(&mut self) {
+            self.receipts.lock().expect("fixture receipts").quarantined = true;
+        }
+    }
+
+    impl QemuAttemptProcessResourceGuard for HelperGuard {
+        fn child_process_contract(
+            &self,
+        ) -> Result<&QemuChildProcessContract, crucible_qemu::QemuVmRealizationError> {
+            panic!("fixture cannot mint launch authority")
+        }
+
+        fn prepare_generation_run_directory(
+            &mut self,
+            _requirements: crucible_qemu::QemuLaunchResourceRequirements,
+        ) -> Result<QemuPreparedRunDirectory, crucible_qemu::QemuVmRealizationError> {
+            panic!("fixture cannot mint storage authority")
+        }
+
+        fn retain_failed_launch_child(&mut self, child: crucible_qemu::QemuNodeChild) {
+            self.receipts
+                .lock()
+                .expect("fixture receipts")
+                .children
+                .push(child);
+        }
+    }
+
+    #[test]
+    fn abandoned_generation_transfers_original_helper_to_attempt_quarantine()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let receipts = Arc::new(Mutex::new(HelperGuardReceipts::default()));
+        let guard = HelperGuard {
+            receipts: Arc::clone(&receipts),
+            cancellation: ExecutionCancellation::default(),
+        };
+        let owner = QemuAttemptGenerationResourceOwner::new(guard, 1)?;
+        let mut launcher = QemuAttemptProductionVmNodeLauncher::new(owner);
+        let generation = ProductionVmNodeGeneration::new(
+            crucible::NodeId {
+                name: String::from("source"),
+            },
+            1,
+        )?;
+        let lease = launcher.owner.register_generation(generation.clone())?;
+        let process = std::process::Command::new("sleep").arg("60").spawn()?;
+        let child = crucible_qemu::QemuNodeChild::from_test_process(process);
+        let process_id = child.process_id();
+        let helper_debt = Arc::clone(&launcher.image_helpers);
+        helper_debt
+            .lock()
+            .expect("helper registry")
+            .children
+            .insert(generation, child);
+
+        drop(lease);
+        drop(launcher);
+
+        let debt = helper_debt.lock().expect("helper registry");
+        assert!(debt.closed);
+        assert!(debt.children.is_empty());
+        let mut receipts = receipts.lock().expect("fixture receipts");
+        assert!(receipts.quarantined);
+        assert_eq!(receipts.children.len(), 1);
+        assert_eq!(receipts.children[0].process_id(), process_id);
+        assert!(!receipts.children[0].reaped());
+
+        receipts.children[0]
+            .force_kill_and_reap_failed_helper(std::time::Duration::from_secs(5))?;
+        assert!(receipts.children[0].reaped());
+        Ok(())
+    }
+
+    #[test]
+    fn retained_image_helper_debt_reaps_original_process_before_removal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let generation = ProductionVmNodeGeneration::new(
+            crucible::NodeId {
+                name: String::from("source"),
+            },
+            1,
+        )?;
+        let process = std::process::Command::new("sleep").arg("60").spawn()?;
+        let child = crucible_qemu::QemuNodeChild::from_test_process(process);
+        let process_id = child.process_id();
+        let mut debt = ImageHelperCleanupDebt::default();
+        debt.children.insert(generation.clone(), child);
+
+        assert_eq!(debt.children[&generation].process_id(), process_id);
+        debt.retry_generation(&generation)?;
+
+        assert!(debt.children.is_empty());
+        debt.retry_generation(&generation)?;
+        Ok(())
+    }
 
     fn rendered_launch_error(
         operation: &'static str,

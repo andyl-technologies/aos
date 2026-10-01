@@ -297,6 +297,15 @@ pub struct QemuNodeChild {
 }
 
 impl QemuNodeChild {
+    /// Wraps a fixture process with the same unique wait authority as QEMU.
+    ///
+    /// This constructor is available only with the `test-support` feature.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub const fn from_test_process(child: Child) -> Self {
+        Self::new(child)
+    }
+
     /// Takes ownership of a spawned QEMU child process.
     #[must_use]
     // crucible-lint: allow rust-allow -- non-Linux builds do not construct child wrappers in this target.
@@ -413,7 +422,15 @@ impl QemuNodeChild {
     ///
     /// A timeout deliberately leaves this wrapper unreaped so the caller can
     /// transfer its unique direct-child wait authority into the attempt owner.
-    pub(crate) fn force_kill_and_reap_failed_helper(
+    /// Repeated calls retry cleanup with that same authority; successful reap
+    /// makes subsequent calls no-ops.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuShutdownTargetError`] if waiting fails or the original
+    /// child remains alive after the bounded wait. The caller must retain this
+    /// wrapper and its attempt resource enforcement until cleanup succeeds.
+    pub fn force_kill_and_reap_failed_helper(
         &mut self,
         timeout: Duration,
     ) -> Result<(), QemuShutdownTargetError> {
