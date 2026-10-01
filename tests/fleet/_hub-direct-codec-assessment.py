@@ -22,6 +22,13 @@ DIRECT_NATIVE_ALLOWED_BODY_CLASSES = frozenset((
     "authenticated_instance_app_shell_html", "browser_session_token_metadata",
 ))
 
+DIRECT_STORAGE_ALLOWED_BODY_CLASSES = frozenset((
+    "storage_control_metadata", "storage_negative_protocol_metadata",
+    "storage_selected_git_content", "storage_selected_git_tree_rows",
+    "storage_exact_metadata_document", "storage_exact_metadata_document_page",
+    "storage_documentation_index_projection", "storage_documentation_canonical_model",
+))
+
 
 def observe_direct_native_executable(native, tools, expected_sha256):
     """Bind the actual running Native process to the installed immutable binary."""
@@ -92,12 +99,65 @@ def run_direct_native_codec_observer(selection, manifest):
     return _closed_review_json(stdout)
 
 
+def direct_release_storage_budget(projections, release_placements):
+    """Attribute actual storage calls to retained release placement namespaces."""
+    if not release_placements:
+        raise ValueError("per-release storage budget lacks actual selected placement receipts")
+    by_prefix = {}
+    for selected in release_placements:
+        if (set(selected) != {"registrySlug", "release", "sourceCommit", "placement"}
+                or not re.fullmatch(r"[0-9a-f]{64}", selected["sourceCommit"])
+                or not selected["placement"]["prefix"]):
+            raise ValueError("per-release selected placement identity differs")
+        prefix = hashlib.sha256(selected["placement"]["prefix"].encode()).hexdigest()
+        if prefix in by_prefix:
+            raise ValueError("per-release storage ownership is ambiguous")
+        by_prefix[prefix] = selected
+    releases, unassigned = {}, []
+    for projection in projections:
+        observed = projection["observation"]
+        owner = by_prefix.get(observed["placementPrefixSha256"])
+        if owner is None:
+            unassigned.append(projection["requestId"])
+            continue
+        key = owner["registrySlug"] + "@" + owner["release"]
+        row = releases.setdefault(key, {"registrySlug": owner["registrySlug"],
+            "release": owner["release"], "sourceCommit": owner["sourceCommit"],
+            "placementPrefixSha256": observed["placementPrefixSha256"],
+            "calls": 0, "requestBytes": 0, "replyBytes": 0, "executorSourceBytes": 0,
+            "operations": {}, "payloadBytesByKind": {}})
+        row["calls"] += 1
+        for name in ("requestBytes", "replyBytes"):
+            row[name] += projection[name]
+        row["executorSourceBytes"] += int(observed["executorSourceBytes"])
+        operation = row["operations"].setdefault(observed["operation"], {
+            "calls": 0, "maximumRequestBytes": 0, "maximumReplyBytes": 0})
+        operation["calls"] += 1
+        operation["maximumRequestBytes"] = max(operation["maximumRequestBytes"], projection["requestBytes"])
+        operation["maximumReplyBytes"] = max(operation["maximumReplyBytes"], projection["replyBytes"])
+        for kind, value in observed["payload"].items():
+            row["payloadBytesByKind"][kind] = row["payloadBytesByKind"].get(kind, 0) + int(value)
+    result = {"version": 1, "releases": list(releases.values()),
+        "unassignedRequestIds": unassigned,
+        "scope": "actual accepted business window calls attributed by independently typed original placement prefix; no division by release count, no claim of per-release-only background isolation"}
+    retain_direct_flow("actual-per-release-storage-budget.json", result)
+    if unassigned or len(releases) != len(release_placements):
+        raise ValueError("per-release storage attribution is incomplete; actual counts retained")
+    return result
+
+
 def assess_direct_native_bodies(body_receipts, control_joins, provider_classification,
                                mapping, source_digest, issuer_verifier, native_executable,
-                               storage_work_boundary=None):
+                               storage_work_boundary=None, release_placements=None):
     """Require complete positive-workload type and provider evidence before zero."""
     if storage_work_boundary is None:
         raise ValueError("Native outbound StorageWork bodies remain unclassified; bulk bytes stay unknown")
+    if (not isinstance(storage_work_boundary, dict)
+            or storage_work_boundary["unresolvedNativeRequestIds"]
+            or storage_work_boundary["receivedWithoutOriginal"]
+            or len(storage_work_boundary["captures"]) != storage_work_boundary["actualNativeRequests"]
+            or len(storage_work_boundary["authenticatedCompletions"]) != storage_work_boundary["actualNativeRequests"]):
+        raise ValueError("actual Native outbound original/received/authenticated coverage is incomplete")
     if body_receipts["incompleteCaptures"] or control_joins["unresolvedDirectRequestIds"]:
         raise ValueError("Native accepted-workload capture or authenticated joins are incomplete")
     if (provider_classification["unresolvedReceiptIndexes"]
@@ -110,6 +170,7 @@ def assess_direct_native_bodies(body_receipts, control_joins, provider_classific
         "providerClassification": retain_direct_flow("native-codec-provider-inputs.json", provider_classification),
         "physicalOriginals": retain_direct_flow("native-codec-physical-inputs.json", mapping),
         "nativeExecutable": retain_direct_flow("native-codec-executable-inputs.json", native_executable),
+        "nativeOutboundBodies": retain_direct_flow("native-codec-storage-inputs.json", storage_work_boundary),
     }
     reviewed = await_direct_review("native-capture-codecs", hashes,
         {"observerExecutable", "runtimeCodecRevision", "runtimeProvenance"})
@@ -128,12 +189,23 @@ def assess_direct_native_bodies(body_receipts, control_joins, provider_classific
             or not re.fullmatch(r"[0-9a-f]{64}", provenance["sourceArchiveSha256"])):
         raise ValueError("reviewed codec provenance does not match the installed runtime")
     captures = []
-    for capture in body_receipts["bodies"]:
-        captures.append({**capture, "phase": capture["phase"] or None,
+    for capture in [*body_receipts["bodies"], *storage_work_boundary["captures"]]:
+        selected = {**capture, "phase": capture["phase"] or None,
             "responseContentType": capture["responseContentType"] or None,
             "responseContentEncoding": capture["responseContentEncoding"] or None,
             "bodies": {direction: {**body, "file": str(Path(body["file"]).resolve()),
-                "byteSize": str(body["byteSize"])} for direction, body in capture["bodies"].items()}})
+                "byteSize": str(body["byteSize"])} for direction, body in capture["bodies"].items()}}
+        if "storageWorkSelection" in selected:
+            original = selected["storageWorkSelection"]["originalPlan"]
+            selected["storageWorkSelection"] = {"sourceDigest": source_digest,
+                "originalPlan": {**original, "file": str(Path(original["file"]).resolve()),
+                    "byteSize": str(original["byteSize"])}}
+        captures.append(selected)
+    selected_corpus_bytes = body_receipts["capturedCorpusBytes"] + sum(
+        int(body["byteSize"]) for capture in storage_work_boundary["captures"]
+        for body in capture["bodies"].values())
+    if selected_corpus_bytes > NATIVE_CAPTURE_CORPUS_LIMIT or len(captures) > NATIVE_CAPTURE_COUNT_LIMIT:
+        raise ValueError("combined Native inbound/outbound corpus exceeds the selected observer bounds")
     manifest = {"version": 1, "codecRevision": revision, "sourceDigest": source_digest,
         "issuerVerifier": issuer_verifier, "captures": captures}
     manifest_path = Path("external-direct-flow/native-codec-manifest-private.json")
@@ -145,18 +217,23 @@ def assess_direct_native_bodies(body_receipts, control_joins, provider_classific
             or type(parsed["version"]) is not int or parsed["version"] != 1
             or parsed["codecRevision"] != revision or parsed["selectedSourceDigest"] != source_digest
             or parsed["manifestSha256"] != manifest_sha
-            or int(parsed["selectedBodyBytes"]) != body_receipts["capturedCorpusBytes"]
+            or int(parsed["selectedBodyBytes"]) != selected_corpus_bytes
             or int(parsed["maximumSelectedBodyBytes"]) != NATIVE_CAPTURE_CORPUS_LIMIT
             or int(parsed["maximumBodyBytes"]) != WORKER_CONTROL_REPLY_LIMIT
             or len(parsed["captures"]) != len(captures)):
         raise ValueError("codec observation differs from the complete selected Native corpus")
     actual = {hashlib.sha256(capture["requestId"].encode()).hexdigest(): capture for capture in captures}
+    if len(actual) != len(captures):
+        raise ValueError("combined Native capture request ownership is ambiguous")
     joined = {item["requestId"]: item for item in control_joins["joined"]}
+    storage_joins = {item["requestId"]: item for item in storage_work_boundary["authenticatedCompletions"]}
+    storage_projections = []
     seen = set()
     for item in parsed["captures"]:
         identifier = item["requestIdSha256"]
         capture = actual.get(identifier)
-        if (capture is None or identifier in seen or item["class"] not in DIRECT_NATIVE_ALLOWED_BODY_CLASSES
+        allowed = DIRECT_STORAGE_ALLOWED_BODY_CLASSES if "storageWorkSelection" in (capture or {}) else DIRECT_NATIVE_ALLOWED_BODY_CLASSES
+        if (capture is None or identifier in seen or item["class"] not in allowed
                 or item["procedure"] != capture["procedure"] or item["phase"] != capture["phase"]):
             raise ValueError("codec class or original capture ownership changed")
         seen.add(identifier)
@@ -173,15 +250,36 @@ def assess_direct_native_bodies(body_receipts, control_joins, provider_classific
                 raise ValueError("typed logical body lacks its exact authenticated production join")
         if item["browserSource"] is not None and item["browserSource"] != provenance["browserSource"]:
             raise ValueError("browser template or compiled assets differ from the installed source")
+        if "storageWorkSelection" in capture:
+            positive = storage_joins.get(capture["requestId"])
+            typed = item.get("storageWork")
+            original = capture["storageWorkSelection"]["originalPlan"]
+            if (positive is None or typed is None
+                    or positive["requestSha256"] != item["request"]["sha256"]
+                    or positive["replySha256"] != item["response"]["sha256"]
+                    or typed["originalPlanSha256"] != original["sha256"]
+                    or typed["selectedSourceDigest"] != source_digest
+                    or typed["planIdSha256"] != positive["planIdSha256"]
+                    or typed["operation"] != positive["operation"]
+                    or int(typed["executorSourceBytes"]) != positive["executorSourceBytes"]
+                    or int(typed["payload"]["returnedWholeOciObjectBytes"]) != 0
+                    or int(typed["payload"]["returnedOciRangeBytes"]) != 0):
+                raise ValueError("typed storage projection lacks exact production provenance or contains whole raw object bytes")
+            storage_projections.append({"requestId": capture["requestId"], "class": item["class"],
+                "requestBytes": int(item["request"]["byteSize"]), "replyBytes": int(item["response"]["byteSize"]),
+                "observation": typed})
     if seen != set(actual):
         raise ValueError("Native codec observation omitted an actual accepted-workload request")
+    release_budget = direct_release_storage_budget(storage_projections, release_placements)
     assessment = {"version": 1, "nativeBulkBytes": 0,
-        "nativeClassifiedRequests": len(seen), "nativeClassifiedBodyBytes": body_receipts["capturedCorpusBytes"],
+        "nativeClassifiedRequests": len(seen), "nativeClassifiedBodyBytes": selected_corpus_bytes,
         "nativeExecutableSha256": native_executable["executableSha256"], "runtimeCodecRevision": revision,
         "sourceDigest": source_digest, "codecReportSha256": retain_direct_flow("native-codec-classifications.json", parsed),
         "reviewSha256": reviewed["reviewSha256"], "providerClassifiedReceipts": len(provider_classification["classified"]),
         "publications": sorted({item["publicationId"] for item in mapping["originals"]}),
-        "derivation": "every captured Native body has a closed supported metadata/app-shell class; authenticated logical joins and complete independent provider originals/callers exclude Native object transfer",
+        "storageProjections": storage_projections,
+        "perReleaseStorageBudget": release_budget,
+        "derivation": "all captured Native inbound and outbound bodies have closed supported metadata/app-shell/selected projection classes; independently matched production handler bytes and complete provider originals/callers exclude whole raw object transfer",
         "scope": "accepted A/B publication and concurrent page window only; separately retained injected-failure windows are not folded into this conclusion",
     }
     retain_direct_flow("actual-native-bulk-assessment.json", assessment)

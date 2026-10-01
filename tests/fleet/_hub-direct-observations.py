@@ -41,8 +41,11 @@ NATIVE_OBSERVATION_FIELDS = frozenset((
 ))
 
 
-def native_control_observations(text):
+def native_control_observations(text, body_root="/var/lib/hybrid-native-observations"):
     """Read closed numeric proxy records without inventing missing body sizes."""
+    if body_root not in {"/var/lib/hybrid-native-observations",
+            "/var/lib/hybrid-native-outbound", "/var/lib/hybrid-worker-boundary"}:
+        raise ValueError("body observation directory is not selected")
     observations = []
     for line in text.splitlines():
         if len(line) > 4096:
@@ -67,7 +70,7 @@ def native_control_observations(text):
             observation[name] = raw[name]
         if not re.fullmatch(r"[0-9a-f]{32}", observation["request_id"]):
             raise ValueError("Native request identity is invalid")
-        if (observation["response_body_file"] != "/var/lib/hybrid-native-observations/response-bodies/"
+        if (observation["response_body_file"] != body_root + "/response-bodies/"
                 + observation["request_id"] or observation["method"] not in {"GET", "POST"}):
             raise ValueError("Native body reference or method changed")
         for field in (

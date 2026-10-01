@@ -112,6 +112,8 @@ def capture_direct_artifacts(worker, tools):
         root = Path('/var/lib/hybrid-worker/installation')
         root.mkdir(mode=0o700, parents=True, exist_ok=False)
         files = {name: selected[name] for name in ('wasm', 'shim', 'runner', 'workerd')}
+        files.update({name: selected[name] for name in (
+            'nginx', 'nativeObservationProxyConfiguration', 'workerObservationProxyConfiguration')})
         files.update({name: selected[tool] for name, tool in (
             ('nativeHub', 'hub'), ('authority', 'authority'),
             ('authorityBootstrap', 'authorityBootstrap'), ('reviewer', 'reviewer'),
@@ -530,6 +532,7 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
         retain_direct_flow("actual-registry-placement-" + label + ".json", registries[label])
     token = direct_root_browser_token(client, tools["curl"], tools["python"], private_guest_command, reuse_session=True)
     assert_direct_fifo_checkpoint(client, tools, registries["b"]["registry"]["slug"], sources["b"], token)
+    observe_direct_boundary_lifetimes(native, worker, tools, "baseline-start")
     baseline_report = direct_page_samples(client, tools, 100)
     retain_direct_flow("baseline-page-probes.json", baseline_report)
     baseline_raw = baseline_report["samples"]
@@ -544,13 +547,24 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
     before_worker = direct_log_position(worker, tools["python"], process["logFile"])
     before_native = direct_log_position(native, tools["python"], "/var/lib/hybrid-native-observations/requests.jsonl")
     before_provider = direct_log_position(s3, tools["python"], "/var/lib/hybrid-s3/provider-observations.jsonl")
+    before_native_storage = direct_log_position(native, tools["python"],
+        "/var/lib/hybrid-native-outbound/requests.jsonl")
+    before_worker_storage = direct_log_position(worker, tools["python"],
+        "/var/lib/hybrid-worker-boundary/requests.jsonl")
+    observe_direct_boundary_lifetimes(native, worker, tools, "loaded-start")
     try:
         publications, concurrent = run_direct_concurrent_publications(client, worker, tools,
             sources, registries, before_worker, identity["identity"]["sourceDigest"])
+        index_freshness = wait_direct_registry_indexes(controls, registries, sources)
     finally:
         worker_log, worker_window = retain_direct_log_window(worker, tools["python"], before_worker, "publication-worker.log")
         native_log, native_window = retain_direct_log_window(native, tools["python"], before_native, "publication-native.jsonl")
         provider_log, provider_window = retain_direct_log_window(s3, tools["python"], before_provider, "publication-provider-private.jsonl")
+        native_storage_log, native_storage_window = retain_direct_log_window(native, tools["python"],
+            before_native_storage, "publication-native-storage.jsonl")
+        worker_storage_log, worker_storage_window = retain_direct_log_window(worker, tools["python"],
+            before_worker_storage, "publication-worker-storage.jsonl")
+        proxy_lifetimes = observe_direct_boundary_lifetimes(native, worker, tools, "loaded-finish")
 
     # Retain every measured gate before asserting. Parsing errors and incomplete
     # telemetry remain failures even if the public publisher says ready.
@@ -573,6 +587,12 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
     originals_path, originals_receipt = capture_direct_native_originals(native, tools, publications)
     original_mapping = direct_provider_original_mapping(originals_path, publications,
         credentials["binding"]["spec"]["s3"]["bucket"], events)
+    same_registry = direct_same_registry_parallel_reads(events, original_mapping,
+        publications["a"]["publication_id"], DIRECT_LARGE_OBJECT_BYTES)
+    retain_direct_flow("actual-same-registry-parallel-integrity.json", same_registry)
+    storage_boundary = capture_direct_storage_boundary(native, worker, tools,
+        native_storage_log.read_text(), worker_storage_log.read_text(), worker_log.read_text(),
+        identity["identity"]["sourceDigest"], tools["storageBoundaryInstallation"]["routing"]["nativeAddress"])
     provider_classification = classify_direct_provider_object_receipts(provider_boundary, original_mapping)
     native_summary = summarize_native_control_bytes(native_observations, sum(len(publication["objects"]) for publication in publications.values()))
     loaded_raw = concurrent["pageSamples"]
@@ -594,6 +614,10 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
         "nativeVerifiedControlJoins": native_control_joins,
         "nativeOriginalsSnapshot": originals_receipt, "providerObjectClassification": provider_classification,
         "nativeBulkAssessment": None,
+        "nativeStorageBoundary": storage_boundary,
+        "nativeStorageLogWindow": native_storage_window,
+        "workerStorageLogWindow": worker_storage_window,
+        "boundaryProxyLifetimes": proxy_lifetimes,
         "clientAggregate": aggregate, "runtime": runtime, "nativeBoundary": native_summary,
         "baselinePageP95Seconds": baseline_first[94], "loadedPageP95Seconds": loaded_p95,
         "baselinePageP99Seconds": baseline_first[98], "loadedPageP99Seconds": loaded_p99,
@@ -606,6 +630,8 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
         "actualBusinessCorpus": {"largeObjects": 3, "largeObjectBytes": DIRECT_LARGE_OBJECT_BYTES,
             "mutableJsonPointers": DIRECT_METADATA_OBJECT_COUNT, "dependencyPhase": "visibility"},
         "providerPositiveIntegrityConsumedBytes": positive_integrity,
+        "sameRegistryParallelIntegrity": same_registry,
+        "authoritativeIndexFreshness": index_freshness,
         "absoluteCheckpoints": checkpoints,
         "scope": "actual External emulator publication; independent hosted qualification remains separate",
     }
@@ -620,16 +646,23 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
     assert native_summary["publication_inventory_transport_limit_passed"], native_summary
     assert runtime["production_phase_originals"].get("visibility", 0) >= DIRECT_METADATA_OBJECT_COUNT, runtime
     assert positive_integrity >= 3 * DIRECT_LARGE_OBJECT_BYTES + corpus["metadata_source_bytes"], runtime
+    assert same_registry["samePublicationOverlaps"], same_registry
     assert runtime["queue_overlap"]["positive_metadata_completions_during_bulk"], runtime
     for kind in ("queue_attempts", "production_read_attempts", "control_attempts"):
         assert not runtime[kind]["missing_finish_attempts"] and not runtime[kind]["unmatched_finish_attempts"], runtime
         assert not runtime[kind]["duplicate_boundary_attempts"], runtime
     assert not runtime["unknown_control_replies"], runtime
+    summary["businessIndexParity"] = qualify_direct_business_indexes(
+        client, native, worker, tools, registries["a"], sources["a"])
+    retain_direct_flow("actual-publication-with-index-parity.json", summary)
     bootstrap = authority["exported"]["bootstrap"]
     native_bulk = assess_direct_native_bodies(native_bodies, native_control_joins,
         provider_classification, original_mapping, identity["identity"]["sourceDigest"],
         {"keyId": bootstrap["issuer_key_id"], "publicKeyHex": bootstrap["issuer_public_key"]},
-        native_executable)
+        native_executable, storage_work_boundary=storage_boundary,
+        release_placements=[{"registrySlug": registries[label]["registry"]["slug"],
+            "release": "1.0.0", "sourceCommit": sources[label]["sourceCommit"],
+            "placement": registries[label]["placement"]} for label in ("a", "b")])
     assert native_bulk["nativeBulkBytes"] == 0, native_bulk
     summary["nativeBulkAssessment"] = native_bulk
     retain_direct_flow("actual-publication-assessed.json", summary)

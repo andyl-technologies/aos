@@ -40,6 +40,46 @@ def parse(*values):
 
 
 class EvidenceRefusals(unittest.TestCase):
+    def test_same_registry_parallel_requires_full_distinct_actual_originals(self):
+        values, originals = [], []
+        publication = "e" * 32
+        size = str(2 * 1024 ** 3)
+        for index, digest in enumerate(("c", "d")):
+            queue = event("queue_start")
+            queue["object"]["session"]["sessionDigest"] = digest * 64
+            queue["object"].update(dependencyPhase="content", byteSize=size)
+            queue["queueClass"] = "bulk"
+            start, finish = event("provider_read_start"), event("provider_read_finish")
+            for item in (start, finish):
+                item["object"] = copy.deepcopy(queue["object"])
+                item.update(queueClass="bulk", attemptDigest=digest * 64)
+            start["atMillis"] = 100 + index * 20
+            finish.update(atMillis=200 + index * 20, bytes=size, outcome="positive", replayed=False)
+            values.extend((queue, start, finish))
+            originals.append({"publicationId": publication, "dependencyPhase": "content",
+                "byteSize": size, "sessionDigest": digest * 64,
+                "originalDigest": "4" * 64, "clientOperationDigest": "5" * 64,
+                "placementDigest": "6" * 64, "objectPathSha256": digest * 64})
+        actual = observations.direct_same_registry_parallel_reads(
+            parse(*values), {"originals": originals}, publication, int(size),
+        )
+        self.assertEqual(len(actual["samePublicationOverlaps"]), 1)
+        self.assertEqual(len(actual["completeIntegrityIntervals"]), 2)
+        for variation in ("other_publication", "other_isolate", "partial", "missing_finish"):
+            changed, selected = copy.deepcopy(values), copy.deepcopy(originals)
+            if variation == "other_publication":
+                selected[1]["publicationId"] = "f" * 32
+            elif variation == "other_isolate":
+                changed[4]["isolateDigest"] = changed[5]["isolateDigest"] = "f" * 64
+            elif variation == "partial":
+                changed[5]["bytes"] = "17"
+            else:
+                changed.pop()
+            refused = observations.direct_same_registry_parallel_reads(
+                parse(*changed), {"originals": selected}, publication, int(size),
+            )
+            self.assertEqual(refused["samePublicationOverlaps"], [], variation)
+
     def test_overlap_requires_complete_same_isolate_attempts(self):
         bulk_start, bulk_finish = event("queue_start"), event("queue_finish")
         for value in (bulk_start, bulk_finish):

@@ -4,6 +4,7 @@
 {
   serverCertificate,
   serverPrivateKey,
+  storageHttp ? "",
 }: ''
   user root;
   pid /var/lib/hybrid-native-observations/nginx.pid;
@@ -32,6 +33,10 @@
     fastcgi_temp_path /var/lib/hybrid-native-observations/fastcgi-temp;
     uwsgi_temp_path /var/lib/hybrid-native-observations/uwsgi-temp;
     scgi_temp_path /var/lib/hybrid-native-observations/scgi-temp;
+    proxy_ssl_verify on;
+    proxy_ssl_verify_depth 2;
+    proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+    ${storageHttp}
     server {
       listen 443 ssl;
       server_name aos.staging.andyl.org;

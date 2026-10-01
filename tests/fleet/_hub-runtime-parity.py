@@ -14,10 +14,19 @@ import textwrap
 import urllib.parse
 
 
-def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, snapshot_assert):
+def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, snapshot_assert,
+                                   corpus_fixture=None, process_observer=None, process_stop=None):
     """Require identical signed package and channel indexes in all three modes."""
-    native_origin = "https://aos.staging.andyl.org:8443"
-    worker_origin = "https://aos.andyl.org:8443"
+    if corpus_fixture is not None:
+        if (set(corpus_fixture) != {"surfaceRoot", "registrySlug", "trustKey", "sourceCommit"}
+                or not re.fullmatch(r"[a-z][a-z0-9-]*/[a-z][a-z0-9-]*", corpus_fixture["registrySlug"])
+                or not re.fullmatch(r"[0-9a-f]{64}", corpus_fixture["sourceCommit"])
+                or not corpus_fixture["surfaceRoot"].startswith("/var/lib/hybrid-client/")):
+            raise ValueError("selected signed parity corpus identity differs")
+    port = 8443 if corpus_fixture is None else 8453
+    native_origin = f"https://aos.staging.andyl.org:{port}"
+    worker_origin = f"https://aos.andyl.org:{port}"
+    registry_slug = "fleet/containers" if corpus_fixture is None else corpus_fixture["registrySlug"]
     native_root = "/var/lib/hub-parity-native"
     worker_root = "/var/lib/hub-parity-worker"
     source_root = "/tmp/hub-parity-source"
@@ -31,15 +40,18 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
     # Exclude the unrelated large web-upload probe. Every signed Git, channel,
     # semantic, and package object remains byte identical to the hybrid corpus.
     corpus_path = "/tmp/hub-parity-corpus.tar"
+    corpus_root = "/tmp/hybrid-publication-surface" if corpus_fixture is None else corpus_fixture["surfaceRoot"]
     client.succeed(
-        f"{tools['tar']} -C /tmp/hybrid-publication-surface --exclude=./web "
+        f"{tools['tar']} -C {shlex.quote(corpus_root)} --exclude=./web "
         f"-cf {corpus_path} .",
         timeout=60,
     )
     corpus_size = int(client.succeed(f"{coreutils}/stat -c '%s' {corpus_path}").strip())
     corpus_digest = client.succeed(f"{coreutils}/sha256sum {corpus_path}").split()[0]
     assert corpus_size > 0, "empty signed parity corpus"
-    trust_key = fixture["trust_key"]
+    trust_key = fixture["trust_key"] if corpus_fixture is None else corpus_fixture["trustKey"]
+
+    process_receipts = {}
 
     # Native signing readers require owner-private files, including fixture seeds.
     native.succeed(textwrap.dedent(f"""
@@ -53,7 +65,7 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
         {hub} --root {native_root} init \\
           --root-email {email} --root-password {password}
         HUB_DNS_JSON_ENDPOINT=https://dns.google/resolve \\
-        {hub} --root {native_root} serve --listen 0.0.0.0:8443 \\
+        {hub} --root {native_root} serve --listen 0.0.0.0:{port} \\
           --external-url {native_origin} --reindex-interval 0 \\
           --tls-certificate-file {fixture['certificate']} \\
           --tls-private-key-file {fixture['private_key']} \\
@@ -70,6 +82,9 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
           > {native_root}/server.log 2>&1 < /dev/null &
         echo $! > {native_root}/server.pid
     """), timeout=180)
+
+    if process_observer is not None:
+        process_receipts["native_only"] = process_observer(native, native_root, "server.pid", hub)
 
     evidence = {
         "schema_version": "aos.hub.release-evidence-config/v1",
@@ -90,7 +105,7 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
         "HUB_RELEASE_EVIDENCE_CONFIG": json.dumps(evidence, separators=(",", ":")),
     }
     worker_config = worker_only_configuration(
-        tools["worker_main"], worker_origin, worker_root, fixture, secrets,
+        tools["worker_main"], worker_origin, worker_root, fixture, secrets, port=port,
     )
     worker.succeed(textwrap.dedent(f"""
         set -eu
@@ -103,6 +118,8 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
           > {worker_root}/worker.log 2>&1 < /dev/null &
         echo $! > {worker_root}/worker.pid
     """), timeout=30)
+    if process_observer is not None:
+        process_receipts["worker_only"] = process_observer(worker, worker_root, "worker.pid", tools["node"])
     try:
         worker.wait_until_succeeds(f"{curl} -fsS {worker_origin}/healthz > /dev/null", timeout=180)
     except Exception:
@@ -133,6 +150,7 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
             machine, origin, token, trust_key, source_root, tools, fixture,
             refresh_token=lambda: browser_session_token(machine, origin, email, password, curl),
             provision_worker_binding=mode == "worker_only",
+            registry_slug=registry_slug, include_container=corpus_fixture is None,
         )
         print("signed parity registry published:", mode)
 
@@ -166,15 +184,23 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
         )
         return [list(row.values()) for row in json.loads(output)]
 
-    snapshot_assert({
+    compared = snapshot_assert({
         "hybrid": hybrid_query,
         "native_only": native_query,
         "worker_only": worker_query,
-    }, "fleet/containers", container_index_digest=fixture["container_index_digest"])
+    }, registry_slug, container_index_digest=fixture.get("container_index_digest"))
 
     for machine, root in ((native, native_root), (worker, worker_root)):
         pid_file = "server.pid" if machine is native else "worker.pid"
-        machine.succeed(f"kill $(cat {root}/{pid_file})")
+        if process_stop is None:
+            machine.succeed(f"kill $(cat {root}/{pid_file})")
+        else:
+            mode = "native_only" if machine is native else "worker_only"
+            process_stop(machine, process_receipts[mode])
+    return {"version": 1, "corpusSha256": corpus_digest, "corpusBytes": corpus_size,
+        "registrySlug": registry_slug, "sourceCommit": None if corpus_fixture is None else corpus_fixture["sourceCommit"],
+        "companionPort": port, "indexes": compared, "processes": process_receipts,
+        "scope": "actual same signed semantic corpus in Native-only, ordinary Worker-only emulator and External hybrid; no managed direct-upload acceptance"}
 
 
 def browser_session_token(machine, origin, email, password, curl):
@@ -237,6 +263,7 @@ def copy_signed_surface(client, destination, corpus_path, corpus_size, corpus_di
 def setup_and_publish_same_registry(
     machine, origin, token, trust_key, source_root, tools, fixture, *, refresh_token,
     provision_worker_binding=False,
+    registry_slug="fleet/containers", include_container=True,
 ):
     """Create the same reviewed registry and publish exact pre-authored bytes."""
     def command(subcommand, mutation=""):
@@ -263,36 +290,41 @@ def setup_and_publish_same_registry(
             "--kind deployment-r2 --bucket-binding REGISTRY_BUCKET",
         )
 
-    reviewed("parity-org", "org create --slug fleet --display-name 'Hybrid fleet'")
-    org = json.loads(machine.succeed(command("org show fleet")))["data"]["organization"]
+    org_slug, registry_name = registry_slug.split("/")
+    reviewed("parity-org", "org create --slug " + shlex.quote(org_slug) + " --display-name 'Hybrid fleet'")
+    org = json.loads(machine.succeed(command("org show " + shlex.quote(org_slug))))["data"]["organization"]
     reviewed("parity-binding", "binding grant instance:default --consumer-scope " + shlex.quote(org["stable_id"]))
     reviewed("parity-network", "network-policy grant instance:public --consumer-scope " + shlex.quote(org["stable_id"]))
-    reviewed("parity-registry", "registry create --org fleet --name containers --visibility public --trust-key " + shlex.quote(trust_key))
+    visibility = "public" if include_container else "private"
+    reviewed("parity-registry", "registry create --org " + shlex.quote(org_slug)
+        + " --name " + shlex.quote(registry_name) + " --visibility " + visibility + " --trust-key " + shlex.quote(trust_key))
     reviewed(
         "parity-placement",
-        "placement add registry:fleet/containers primary --binding instance-default "
-        "--prefix registries/fleet-containers --kind complete --desired-state active --read enabled",
+        "placement add " + shlex.quote("registry:" + registry_slug) + " primary --binding instance-default "
+        "--prefix " + shlex.quote("registries/" + registry_slug.replace("/", "-"))
+        + " --kind complete --desired-state active --read enabled",
     )
-    placement = json.loads(machine.succeed(command("placement show registry:fleet/containers primary")))["data"]["placement"]
+    placement = json.loads(machine.succeed(command("placement show " + shlex.quote("registry:" + registry_slug) + " primary")))["data"]["placement"]
     reviewed(
-        "parity-scan", "placement scan registry:fleet/containers primary --wait --timeout 2m "
+        "parity-scan", "placement scan " + shlex.quote("registry:" + registry_slug) + " primary --wait --timeout 2m "
         "--if-version " + shlex.quote(placement["resource_version"]),
     )
-    placement = json.loads(machine.succeed(command("placement show registry:fleet/containers primary")))["data"]["placement"]
-    reviewed("parity-promote", "placement promote registry:fleet/containers primary --if-version " + shlex.quote(placement["resource_version"]))
+    placement = json.loads(machine.succeed(command("placement show " + shlex.quote("registry:" + registry_slug) + " primary")))["data"]["placement"]
+    reviewed("parity-promote", "placement promote " + shlex.quote("registry:" + registry_slug) + " primary --if-version " + shlex.quote(placement["resource_version"]))
 
     token = refresh_token()
-    configure_oci_parity_route(
-        machine, origin, command, reviewed, org, tools, fixture,
-        worker_ingress=provision_worker_binding,
-    )
-    stage_same_container_graph(machine, origin, tools, fixture, refresh_token=refresh_token)
+    if include_container:
+        configure_oci_parity_route(
+            machine, origin, command, reviewed, org, tools, fixture,
+            worker_ingress=provision_worker_binding,
+        )
+        stage_same_container_graph(machine, origin, tools, fixture, refresh_token=refresh_token)
     token = refresh_token()
     try:
         publication, token = publish_signed_surface(
             machine,
             lambda authorization: (
-                f"{tools['aos']} --json hub registry publish upload fleet/containers "
+                f"{tools['aos']} --json hub registry publish upload {shlex.quote(registry_slug)} "
                 f"--root {shlex.quote(source_root)} --hub {origin} "
                 f"--token {shlex.quote(authorization)}"
             ),
@@ -307,7 +339,7 @@ def setup_and_publish_same_registry(
     assert publication["state"] == "ready", publication
     token = refresh_token()
     machine.wait_until_succeeds(
-        command("registry show fleet/containers") + f" | {tools['jq']} -e '.data.registry.index_state == \"fresh\"' > /dev/null",
+        command("registry show " + shlex.quote(registry_slug)) + f" | {tools['jq']} -e '.data.registry.index_state == \"fresh\"' > /dev/null",
         timeout=240,
     )
 
@@ -443,7 +475,7 @@ def stage_same_container_graph(machine, origin, tools, fixture, *, refresh_token
     assert staged["index_digest"] == fixture["container_index_digest"], staged
 
 
-def worker_only_configuration(main, origin, root, fixture, secrets):
+def worker_only_configuration(main, origin, root, fixture, secrets, *, port=8443):
     """Configure persistent production bindings for the direct Worker runner."""
     classes = {
         "COORDINATOR": "CoordinatorObject", "HUB_DB": "HubDb",
@@ -455,7 +487,7 @@ def worker_only_configuration(main, origin, root, fixture, secrets):
         "scriptPath": main,
         "compatibilityDate": "2024-09-23",
         "host": "0.0.0.0",
-        "port": 8443,
+        "port": port,
         "certificatePath": fixture["certificate"],
         "privateKeyPath": fixture["private_key"],
         "resourcePersistencePath": f"{root}/state",

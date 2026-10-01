@@ -122,9 +122,14 @@
       }
     }
   '';
+  storageObservationProxies = import ./_hub-direct-storage-proxies.nix {inherit serverCertificate serverPrivateKey;};
   nativeObservationProxyConfig = writeFixture "hub-hybrid-fleet-native-observation-nginx.conf" (
-    import ./_hub-direct-native-proxy.nix {inherit serverCertificate serverPrivateKey;}
+    import ./_hub-direct-native-proxy.nix {
+      inherit serverCertificate serverPrivateKey;
+      storageHttp = storageObservationProxies.nativeHttp;
+    }
   );
+  workerObservationProxyConfig = writeFixture "hub-hybrid-fleet-worker-observation-nginx.conf" storageObservationProxies.workerConfiguration;
   databaseUrl =
     writeFixture
     "hub-hybrid-fleet-database-url"
@@ -286,8 +291,14 @@
       name = "hub-hybrid-fleet";
       scriptPath = "${workerDist}/shim.mjs";
       compatibilityDate = "2024-09-23";
-      host = "0.0.0.0";
-      port = 443;
+      host =
+        if externalDirect
+        then "127.0.0.1"
+        else "0.0.0.0";
+      port =
+        if externalDirect
+        then 4443
+        else 443;
       certificatePath = "${serverCertificate}/value";
       privateKeyPath = "${serverPrivateKey}/value";
       r2Buckets.REGISTRY_BUCKET = "hybrid-fleet-r2";
@@ -417,9 +428,11 @@
       ]
       ++ lib.optionals externalDirect [
         pkgs.openssl
+        pkgs.aos-hub-worker-dist
         s3PublicTrust
         workerDist.src
         nativeObservationProxyConfig
+        workerObservationProxyConfig
         installationObserver
         namespaceObserver
         queueObserver
@@ -526,6 +539,10 @@ in {
       + builtins.readFile ./_hub-direct-worker-lifecycle.py
       + builtins.readFile ./_hub-direct-concurrent-publications.py
       + builtins.readFile ./_hub-direct-failure-windows.py
+      + builtins.readFile ./_hub-direct-storage-boundary.py
+      + builtins.readFile ./_hub-index-parity.py
+      + builtins.readFile ./_hub-runtime-parity.py
+      + builtins.readFile ./_hub-direct-index-parity.py
       + builtins.readFile ./_hub-direct-flow.py
     )
     # python
@@ -725,6 +742,9 @@ in {
               "python": "${pkgs.python3}/bin/python3", "node": "${pkgs.nodejs}/bin/node",
               "runner": "${workerRunner}/value", "miniflare": "${pkgs.miniflare}",
               "workerd": "${pkgs.workerd-source}/bin/workerd", "curl": CURL,
+              "nginx": "${pkgs.nginx}/bin/nginx",
+              "nativeObservationProxyConfiguration": "${nativeObservationProxyConfig}/value",
+              "workerObservationProxyConfiguration": "${workerObservationProxyConfig}/value",
               "nixStore": "${pkgs.nix}/bin/nix-store", "nixBin": "${pkgs.nix}/bin",
               "workerSourcePath": "${workerDist.src}", "workerDistribution": "${workerDist}",
               "wasm": "${workerDist}/index.wasm", "shim": "${workerDist}/shim.mjs",
@@ -746,23 +766,22 @@ in {
               "issuerCertificateHost": "localhost", "fleetCaPem": ${builtins.toJSON caCertificate},
               "nativeDatabaseUrlFile": "/run/hybrid-bootstrap-credentials/database-url",
               "nativeStorageWorkKeyFile": "/run/credentials/@system/hybrid-fleet-storage-key",
+              "parityTools": {
+                  "coreutils": "${pkgs.coreutils}/bin", "jq": "${pkgs.jq}/bin/jq",
+                  "sqlite": "${pkgs.sqlite}/bin/sqlite3", "tar": "${pkgs.tar}/bin/tar",
+                  "postgres_host": DATABASE_HOST,
+                  "worker_runner": "${workerRunner}/value",
+                  "worker_main": "${pkgs.aos-hub-worker-dist}/shim.mjs",
+              },
+              "parityFixture": {
+                  "certificate": "${serverCertificate}/value", "private_key": "${serverPrivateKey}/value",
+                  "release_seed": "${releaseReceiptKey}/value", "channel_seed": "${channelReceiptKey}/value",
+                  "publication_keys": "${releasePublicationKeys}/value", "qualification_keys": "${qualificationKeys}/value",
+                  "route_keys": "${parityRouteKeys}/value",
+              },
           }
-          native.succeed(textwrap.dedent("""
-              set -eu
-              install -d -m 0700 /var/lib/hybrid-native-observations \
-                /var/lib/hybrid-native-observations/client-body /var/lib/hybrid-native-observations/proxy-temp \
-                /var/lib/hybrid-native-observations/response-bodies \
-                /var/lib/hybrid-native-observations/fastcgi-temp /var/lib/hybrid-native-observations/uwsgi-temp \
-                /var/lib/hybrid-native-observations/scgi-temp
-              cp ${nativeObservationProxyConfig}/value /var/lib/hybrid-native-observations/nginx.conf
-              ${pkgs.nginx}/bin/nginx -t -c /var/lib/hybrid-native-observations/nginx.conf \
-                -p /var/lib/hybrid-native-observations/
-              ${pkgs.nginx}/bin/nginx -c /var/lib/hybrid-native-observations/nginx.conf \
-                -p /var/lib/hybrid-native-observations/ -g 'daemon off;' \
-                > /var/lib/hybrid-native-observations/process.log 2>&1 < /dev/null &
-              echo $! > /var/lib/hybrid-native-observations/process.pid
-              systemctl restart aos-hub.service
-          """), timeout=60)
+          direct_tools["storageBoundaryInstallation"] = install_direct_storage_boundaries(native, worker, direct_tools)
+          native.succeed("systemctl restart aos-hub.service", timeout=60)
           native.wait_for_unit("aos-hub.service", timeout=90)
           run_external_direct_fleet(client, native, worker, s3, database_machine,
               direct_tools, DATABASE_OPERATOR_HOST, "${workerOptions}/value")

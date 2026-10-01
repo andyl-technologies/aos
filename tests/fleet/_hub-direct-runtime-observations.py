@@ -288,3 +288,72 @@ def summarize_direct_runtime(events):
         "native_bulk_evidence": "requires correlated Native HTTP and direct provider transfer receipts",
         "observation_completeness": "requires full retained log boundaries and terminal original audit",
     }
+
+
+def direct_same_registry_parallel_reads(events, mapping, publication_id, minimum_bytes):
+    """Join simultaneous full reads of distinct originals in one publication.
+
+    The SQL capture supplies actual publication ownership. Isolated qualifier
+    reads, different publications, replayed finishes and incomplete attempts
+    cannot establish this same-registry concurrency gate.
+    """
+    selected = {}
+    for original in mapping["originals"]:
+        if (original["publicationId"] != publication_id
+                or original["dependencyPhase"] != "content"
+                or int(original["byteSize"]) < minimum_bytes):
+            continue
+        coordinate = (original["sessionDigest"], original["originalDigest"],
+            original["clientOperationDigest"], original["placementDigest"])
+        if coordinate in selected and selected[coordinate] != original:
+            raise ValueError("same-registry original ownership is ambiguous")
+        selected[coordinate] = original
+    production = {_direct_runtime_original(event["object"])
+        for event in events if event["scope"] == "production_queue"}
+    attempts = collections.defaultdict(list)
+    for event in events:
+        if (event["scope"] == "storage_read" and event["readKind"] == "full_integrity"
+                and _direct_runtime_original(event["object"]) in production):
+            attempts[(event["isolateDigest"], event["attemptDigest"])].append(event)
+    intervals, incomplete = [], 0
+    for (isolate, attempt), boundaries in attempts.items():
+        starts = [item for item in boundaries if item["kind"] == "provider_read_start"]
+        finishes = [item for item in boundaries if item["kind"] == "provider_read_finish"]
+        if len(starts) != 1 or len(finishes) != 1:
+            incomplete += 1
+            continue
+        start, finish = starts[0], finishes[0]
+        obj = start["object"]
+        coordinate = (obj["session"]["sessionDigest"], obj["session"]["originalDigest"],
+            obj["clientOperationDigest"], obj["placementDigest"])
+        original = selected.get(coordinate)
+        if original is None:
+            continue
+        if (_direct_runtime_original(obj) != _direct_runtime_original(finish["object"])
+                or finish["outcome"] != "positive" or finish["replayed"] is not False
+                or finish["bytes"] != original["byteSize"]
+                or int(obj["byteSize"]) != int(original["byteSize"])
+                or finish["atMillis"] <= start["atMillis"]):
+            incomplete += 1
+            continue
+        intervals.append({"isolateDigest": isolate, "attemptDigest": attempt,
+            "sessionDigest": coordinate[0], "originalDigest": coordinate[1],
+            "objectPathSha256": original["objectPathSha256"],
+            "publicationId": publication_id, "consumedBytes": int(finish["bytes"]),
+            "startedAtMillis": start["atMillis"], "finishedAtMillis": finish["atMillis"]})
+    overlaps = []
+    for index, first in enumerate(intervals):
+        for second in intervals[index + 1:]:
+            if (first["isolateDigest"] == second["isolateDigest"]
+                    and first["sessionDigest"] != second["sessionDigest"]
+                    and first["objectPathSha256"] != second["objectPathSha256"]
+                    and max(first["startedAtMillis"], second["startedAtMillis"])
+                        < min(first["finishedAtMillis"], second["finishedAtMillis"])):
+                overlaps.append({"isolateDigest": first["isolateDigest"],
+                    "attemptDigests": [first["attemptDigest"], second["attemptDigest"]],
+                    "sessionDigests": [first["sessionDigest"], second["sessionDigest"]],
+                    "publicationId": publication_id})
+    return {"version": 1, "publicationId": publication_id,
+        "minimumObjectBytes": minimum_bytes, "completeIntegrityIntervals": intervals,
+        "samePublicationOverlaps": overlaps, "incompleteOrRefusedAttempts": incomplete,
+        "scope": "actual distinct Content sessions within one retained publication; same-isolate consumed streams, no cross-isolate clock inference"}

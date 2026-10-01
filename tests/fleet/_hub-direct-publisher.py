@@ -167,7 +167,10 @@ def prepare_direct_signed_surface(client, python, apr, git, openssh, nix,
         run([{apr!r}, 'verify', '--registry', name])
         if not (Path(surface) / 'HEAD').is_file():
             raise ValueError('actual APR release did not produce its signed HEAD')
-        print(json.dumps({{'version': 1, 'trustKey': trust_key,
+        source_commit = run([{git!r}, '-C', str(registry), 'rev-parse', 'HEAD']).decode().strip()
+        if not re.fullmatch(r'[0-9a-f]{{64}}', source_commit):
+            raise ValueError('actual signed publisher source commit differs')
+        print(json.dumps({{'version': 1, 'trustKey': trust_key, 'sourceCommit': source_commit,
             'surfaceRoot': surface, 'publisherHome': str(home),
             'scope': 'actual APR release and verifier; provider admission pending'}}))
         DIRECT_SIGNED_SURFACE

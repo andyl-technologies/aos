@@ -96,8 +96,15 @@ def observe_direct_provider_callers(s3, tools):
     return callers
 
 
-def capture_direct_native_bodies(native, tools, observations):
+def capture_direct_native_bodies(native, tools, observations,
+                                body_root="/var/lib/hybrid-native-observations",
+                                capture_label="native"):
     """Retain exact actual private files and resolve lengths from measured bytes."""
+    if (body_root, capture_label) not in {
+            ("/var/lib/hybrid-native-observations", "native"),
+            ("/var/lib/hybrid-native-outbound", "native-original"),
+            ("/var/lib/hybrid-worker-boundary", "worker-received")}:
+        raise ValueError("body capture root or role differs from the selected fixture")
     if len(observations) > NATIVE_CAPTURE_COUNT_LIMIT:
         raise ValueError("Native observation corpus exceeds its selected capture count")
     captures, measured, incomplete = [], [], []
@@ -116,7 +123,7 @@ def capture_direct_native_bodies(native, tools, observations):
                     raise ValueError("Native request body is missing despite an observed framing declaration")
                 body = b""
             else:
-                prefix = "/var/lib/hybrid-native-observations/" + (
+                prefix = body_root + "/" + (
                     "client-body/" if direction == "request" else "response-bodies/"
                 )
                 if not path.startswith(prefix) or ".." in path.split("/"):
@@ -137,7 +144,7 @@ def capture_direct_native_bodies(native, tools, observations):
             if corpus_bytes > NATIVE_CAPTURE_CORPUS_LIMIT:
                 raise ValueError("Native private body corpus exceeds its selected observation bound")
             actual[direction + "_body_bytes"] = len(body)
-            filename = "native-" + identifier + "." + direction + ".body"
+            filename = capture_label + "-" + identifier + "." + direction + ".body"
             digest = retain_direct_flow(filename, body)
             captured["bodies"][direction] = {"file": str(Path("external-direct-flow") / filename),
                 "sha256": digest, "byteSize": len(body)}
@@ -152,7 +159,7 @@ def capture_direct_native_bodies(native, tools, observations):
         "observerOverhead": "private request buffering and response storage enabled equally for baseline and loaded probes",
         "rawBodies": "retained owner-private; not included in public numeric evidence",
         "scope": "actual Native request and response files; codec classification is independent"}
-    retain_direct_flow("actual-native-private-body-receipts.json", receipt)
+    retain_direct_flow("actual-" + capture_label + "-private-body-receipts.json", receipt)
     return measured, receipt
 
 
