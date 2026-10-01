@@ -21,6 +21,7 @@ mod storage_inventory_archive;
     reason = "TPM floor attachment and live transport remain unqualified"
 )]
 mod tpm_floor;
+pub(crate) use tpm_floor::BrokerSidecarCustodyV1;
 pub(crate) use tpm_floor::{
     AuthenticatedNvObservationV1, BrokerPhysicalOpenV1, FloorErrorV1, FloorProfileV1,
     HelperObservationV1, HelperOperationV1, LOCK_ACK_BYTES, MeasuredHelperImageV1,

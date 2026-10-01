@@ -19,6 +19,16 @@ mod host;
 
 mod floor;
 
+use floor::{
+    HostSidecarStoreV1, HostSuffixPreflightV1, host_finalize_transaction,
+    host_initial_transaction, host_prepare_transaction,
+};
+
+pub(crate) use floor::{
+    BrokerSidecarStoreV1, CHECKPOINT_KEY, FinalSuffixPreflightV1, INTENT_KEY,
+    StoredBrokerFloorV1, TRANSACTION_KEY, sidecar_limits,
+};
+
 // Sibling owners share only canonical DATA, never physical or durable permits.
 pub(crate) use floor::{
     CHECKPOINT_BYTES, FloorCheckpointV1, FloorCutV1, FloorEndpointV1, FloorErrorV1,

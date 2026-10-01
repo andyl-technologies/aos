@@ -13,6 +13,7 @@
 //! ```
 
 mod store;
+pub(crate) use store::BrokerSidecarCustodyV1;
 mod traffic;
 
 use aos_sandbox::{JournalTransaction, ProtectedJournalLockCustodyV1};

@@ -8,6 +8,17 @@
 
 mod digest;
 mod format;
+mod store;
+
+pub(super) use store::{
+    HostSidecarStoreV1, HostSuffixPreflightV1, host_finalize_transaction,
+    host_initial_transaction, host_prepare_transaction,
+};
+
+pub(crate) use store::{
+    BrokerSidecarStoreV1, CHECKPOINT_KEY, FinalSuffixPreflightV1, INTENT_KEY,
+    StoredBrokerFloorV1, TRANSACTION_KEY, sidecar_limits,
+};
 
 pub(crate) use digest::{
     broker_cut_from_records_v1, broker_transaction_digest_v1, hash_parts,
