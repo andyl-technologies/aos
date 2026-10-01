@@ -36876,9 +36876,8 @@ mod cache_upload_tests {
     use crate::db::{
         ChannelSummary, Database, IndexSnapshot, IndexedSystemImage, NewRegistryPublication,
         NewSurfacePlacementSpec, RegistryRecord, ReleaseImageSnapshot, ReleaseRow,
-        SetRegistryPublicationObject, SetRegistryPublicationPlacement, SetSurfaceObject,
-        SurfacePlacementBlockers, SurfaceTarget, VerifiedRegistryImageObject,
-        WriteTicketPartRecord,
+        SetRegistryPublicationPlacement, SurfacePlacementBlockers, SurfaceTarget,
+        VerifiedRegistryImageObject, WriteTicketPartRecord,
     };
     use crate::domain::{Permission, Principal, Role, Scope};
     use crate::fetch::{
@@ -37613,27 +37612,23 @@ mod cache_upload_tests {
             ("nar/reused.nar.zst", "immutable", "d".repeat(64), 7),
             ("info/refs", "mutable_pointer", "e".repeat(64), 9),
         ] {
-            let object = db
-                .create_surface_object(&SetSurfaceObject {
-                    surface: SurfaceTarget::Registry(registry_id),
+            db.admit_registry_publication_manifest_objects(
+                registry_id,
+                publication_id,
+                &[crate::db::RegistryPublicationManifestObject {
                     object_key: path.into(),
-                    content_hash: Some(hash.clone()),
-                    size: Some(size),
+                    expected_hash: hash.clone(),
+                    expected_size: size,
                     object_kind: kind.into(),
-                    mutable_publication_id: (kind == "mutable_pointer")
-                        .then(|| publication_id.into()),
-                })
-                .await
-                .unwrap();
-            db.set_registry_publication_object(&SetRegistryPublicationObject {
-                publication_id: publication_id.into(),
-                surface_object_id: object.id,
-                object_kind: kind.into(),
-                expected_hash: hash.clone(),
-                expected_size: size,
-            })
+                }],
+            )
             .await
             .unwrap();
+            let object = db
+                .surface_object_named(SurfaceTarget::Registry(registry_id), path)
+                .await
+                .unwrap()
+                .unwrap();
             db.record_registry_publication_object_presence(
                 publication_id,
                 object.id,
@@ -37656,6 +37651,9 @@ mod cache_upload_tests {
             )
             .await
             .unwrap();
+
+        let usage = db.org_usage(org_id).await.unwrap();
+        assert_eq!((usage.used_bytes, usage.object_count), (16, 2));
 
         assert_eq!(committed.state, "ready");
         assert_eq!(committed.placements[0].state, "ready");
