@@ -281,6 +281,7 @@
         '';
         packages = [
           devLauncher
+          aos.pkgs.aos
           aos.pkgs.bash
           aos.pkgs.nix
           aos.pkgs.alejandra
