@@ -108,7 +108,9 @@ use aos_sandbox::lifecycle::{
     lifecycle_public_mutation_admission_v1,
 };
 use aos_sandbox::mount_preparation::MountCatalogPreparationError;
-use aos_sandbox::production_operation_compiler::ProductionOperationCompilerV1;
+use aos_sandbox::production_operation_compiler::{
+    ControllerNixStartRecipeSelectorV2, NixStartAdmissionErrorV2, ProductionOperationCompilerV1,
+};
 use aos_sandbox::public_policy_planner::PublicPolicyPlanningErrorV1;
 use aos_sandbox::{
     AcceptOutcome, ActivatedOperationCompiler, AuthorityEffectAttemptTimingV1,
@@ -344,6 +346,9 @@ where
 /// and enables the registered-client public endpoint at the fixed socket.
 /// `--publisher-ingress` requires one protected service-scope credential and
 /// PID 1's exact record-subject listener; it registers an execution only.
+/// `--nix-start-admission` requires the original paired Nix startup capture and
+/// twelve fixed public credentials. It admits pending Start operations only;
+/// it does not enable a Nix worker, effect success, or readiness.
 /// The node identity is read from
 /// `CREDENTIALS_DIRECTORY/node-id`; broker endpoints,
 /// cgroups, journal location, and root-only diagnostic socket are fixed
@@ -353,13 +358,24 @@ where
 ///
 /// Returns an error for invalid activation, unsafe state or socket paths,
 /// corrupt durable state, failure of the initial authenticated catalog cycle,
-/// systemd notification failure, or diagnostic-server termination.
+/// selected Nix startup or recipe admission failure, systemd notification
+/// failure, or diagnostic-server termination.
 pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let configuration = RuntimeConfiguration::from_process()?;
     configuration.validate_process_identity()?;
-    let (publisher_descriptor, launch_image, normal_root_capture) =
-        crate::production_startup::capture_controller(configuration.publisher_ingress)
-            .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
+    let startup = crate::production_startup::capture_controller_with_backends(
+        configuration.publisher_ingress,
+        configuration.nix_start_admission,
+        false,
+    )
+    .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
+    let crate::production_startup::CapturedControllerStartupV1 {
+        publisher_descriptor,
+        launch_image,
+        normal_root_capture,
+        nix_capture,
+        git_source_listener: _,
+    } = startup;
     // This independently selected profile is retained before opening any
     // journal. Root's concurrent startup is joined only on the original flight.
     let normal_root_profile = normal_root_capture
@@ -375,6 +391,19 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         .transpose()
         .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
     let node_id = read_node_id()?;
+    // Admission consumes the genuine original capture before any Controller
+    // journal opens. The selected credentials grant no worker or floor owner.
+    let nix_start = if configuration.nix_start_admission {
+        let capture = nix_capture.ok_or(NixStartAdmissionErrorV2::Invalid)?;
+        Some(Arc::new(ControllerNixStartRecipeSelectorV2::admit_original(
+            capture,
+            configuration.uid,
+            configuration.gid,
+            NodeId::from_bytes(node_id),
+        )?))
+    } else {
+        None
+    };
     let source_genesis_input =
         ProvisionedControllerSourceGenesisInputV1::from_systemd_credentials_optional()?;
     let publisher_registration = if let Some(listener) = publisher_listener {
@@ -436,6 +465,7 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         Arc::clone(&sessions),
         attachment_host,
         attachment_mount,
+        nix_start,
     )?;
     let replay_genesis = source_genesis_input
         .as_ref()
@@ -2026,6 +2056,7 @@ fn open_controller(
     sessions: SharedControllerBrokerSessions,
     attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
     attachment_mount: Option<aos_sandbox::mount_preparation::MountServiceIdentity>,
+    nix_start: Option<Arc<ControllerNixStartRecipeSelectorV2>>,
 ) -> Result<ProductionController, ControllerRuntimeError> {
     let (journal, _) = Journal::open_protected_at_for_uid(
         &configuration.state_directory,
@@ -2041,6 +2072,7 @@ fn open_controller(
         configuration.uid,
         attachment_host,
         attachment_mount,
+        nix_start,
     )
 }
 
@@ -2051,6 +2083,7 @@ fn controller_from_journal(
     controller_uid: u32,
     attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
     attachment_mount: Option<aos_sandbox::mount_preparation::MountServiceIdentity>,
+    nix_start: Option<Arc<ControllerNixStartRecipeSelectorV2>>,
 ) -> Result<ProductionController, ControllerRuntimeError> {
     validate_controller_journal(&mut journal, node_id)?;
     let scope = ControllerRequestScopeV1::new(ObjectDigest::from_bytes(REQUEST_SCOPE))?;
@@ -2064,10 +2097,14 @@ fn controller_from_journal(
         attachment_host,
         attachment_mount,
     )?;
+    let compiler = match nix_start {
+        Some(selector) => ProductionOperationCompilerV1::with_nix_start(selector),
+        None => ProductionOperationCompilerV1::new(),
+    };
     Ok(NodeController::new(
         scope,
         limits,
-        ProductionOperationCompilerV1::new(),
+        compiler,
         Reconciler::new(journal, executor),
     ))
 }
@@ -2149,20 +2186,28 @@ struct RuntimeConfiguration {
     diagnostic_socket: PathBuf,
     public_api: bool,
     publisher_ingress: bool,
+    nix_start_admission: bool,
 }
 
 impl RuntimeConfiguration {
     fn from_process() -> Result<Self, ControllerRuntimeError> {
-        let mut arguments = std::env::args();
+        Self::from_arguments(std::env::args())
+    }
+
+    fn from_arguments(
+        mut arguments: impl Iterator<Item = String>,
+    ) -> Result<Self, ControllerRuntimeError> {
         let _program = arguments.next();
         let uid = parse_identity(arguments.next(), "controller UID")?;
         let gid = parse_identity(arguments.next(), "controller GID")?;
         let mut public_api = false;
         let mut publisher_ingress = false;
+        let mut nix_start_admission = false;
         for argument in arguments {
             match argument.as_str() {
                 "--public-api" if !public_api => public_api = true,
                 "--publisher-ingress" if !publisher_ingress => publisher_ingress = true,
+                "--nix-start-admission" if !nix_start_admission => nix_start_admission = true,
                 _ => {
                     return Err(ControllerRuntimeError::InvalidArguments(
                         "unknown or duplicate activation flag",
@@ -2177,6 +2222,7 @@ impl RuntimeConfiguration {
             diagnostic_socket: PathBuf::from(DIAGNOSTIC_SOCKET),
             public_api,
             publisher_ingress,
+            nix_start_admission,
         })
     }
 
@@ -5846,6 +5892,9 @@ impl SystemdReadyNotifier {
 /// Reports activation, recovery, reconciliation, or serving failure.
 #[derive(Debug, thiserror::Error)]
 pub enum ControllerRuntimeError {
+    /// The selected original Nix startup or fixed recipe credentials failed admission.
+    #[error(transparent)]
+    NixStartAdmission(#[from] NixStartAdmissionErrorV2),
     /// Pre-Q04 project admission could not be replayed to an exact Root outcome.
     #[error("controller project-admission recovery failed: {0}")]
     ProjectAdmissionRecovery(std::io::Error),
@@ -5962,6 +6011,129 @@ mod tests {
     use buffa::Message as _;
 
     #[test]
+    fn nix_start_admission_defaults_closed_without_changing_fixed_paths() {
+        let configuration = RuntimeConfiguration::from_arguments(
+            ["aos-sandboxd", "1001", "1002"].map(str::to_owned).into_iter(),
+        )
+        .unwrap();
+
+        assert_eq!(configuration.uid, 1001);
+        assert_eq!(configuration.gid, 1002);
+        assert_eq!(
+            configuration.state_directory,
+            PathBuf::from(STATE_DIRECTORY)
+        );
+        assert_eq!(
+            configuration.diagnostic_socket,
+            PathBuf::from(DIAGNOSTIC_SOCKET)
+        );
+        assert!(!configuration.public_api);
+        assert!(!configuration.publisher_ingress);
+        assert!(!configuration.nix_start_admission);
+    }
+
+    #[test]
+    fn legacy_activation_flags_do_not_select_nix_admission() {
+        for flags in [
+            vec!["--public-api"],
+            vec!["--publisher-ingress"],
+            vec!["--public-api", "--publisher-ingress"],
+            vec!["--publisher-ingress", "--public-api"],
+        ] {
+            let arguments = ["aos-sandboxd", "1001", "1002"]
+                .into_iter()
+                .chain(flags)
+                .map(str::to_owned);
+            let configuration = RuntimeConfiguration::from_arguments(arguments).unwrap();
+
+            assert_eq!(configuration.uid, 1001);
+            assert_eq!(configuration.gid, 1002);
+            assert!(!configuration.nix_start_admission);
+        }
+    }
+
+    #[test]
+    fn nix_start_admission_flag_composes_with_each_existing_flag_order() {
+        for flags in [
+            ["--nix-start-admission", "--public-api", "--publisher-ingress"],
+            ["--nix-start-admission", "--publisher-ingress", "--public-api"],
+            ["--public-api", "--nix-start-admission", "--publisher-ingress"],
+            ["--public-api", "--publisher-ingress", "--nix-start-admission"],
+            ["--publisher-ingress", "--nix-start-admission", "--public-api"],
+            ["--publisher-ingress", "--public-api", "--nix-start-admission"],
+        ] {
+            let arguments = ["aos-sandboxd", "1001", "1002"]
+                .into_iter()
+                .chain(flags)
+                .map(str::to_owned);
+            let configuration = RuntimeConfiguration::from_arguments(arguments).unwrap();
+
+            assert!(configuration.public_api);
+            assert!(configuration.publisher_ingress);
+            assert!(configuration.nix_start_admission);
+        }
+    }
+
+    #[test]
+    fn activation_flags_reject_duplicates_and_unknown_nix_spellings() {
+        for flags in [
+            vec!["--nix-start-admission", "--nix-start-admission"],
+            vec!["--public-api", "--public-api"],
+            vec!["--publisher-ingress", "--publisher-ingress"],
+            vec!["--nix-start-admission=true"],
+            vec!["--nix-build"],
+            vec!["--unknown"],
+        ] {
+            let arguments = ["aos-sandboxd", "1001", "1002"]
+                .into_iter()
+                .chain(flags)
+                .map(str::to_owned);
+            let error = RuntimeConfiguration::from_arguments(arguments).unwrap_err();
+
+            assert!(matches!(
+                error,
+                ControllerRuntimeError::InvalidArguments("unknown or duplicate activation flag")
+            ));
+        }
+    }
+
+    #[test]
+    fn activation_identity_errors_keep_their_original_precedence() {
+        for (arguments, expected) in [
+            (vec!["aos-sandboxd"], "controller UID"),
+            (
+                vec!["aos-sandboxd", "bad", "--nix-start-admission"],
+                "controller UID",
+            ),
+            (vec!["aos-sandboxd", "1001"], "controller GID"),
+            (
+                vec!["aos-sandboxd", "1001", "bad", "--unknown"],
+                "controller GID",
+            ),
+        ] {
+            let error = RuntimeConfiguration::from_arguments(
+                arguments.into_iter().map(str::to_owned),
+            )
+            .unwrap_err();
+
+            assert!(matches!(
+                error,
+                ControllerRuntimeError::InvalidArguments(label) if label == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn nix_admission_error_is_retained_without_a_success_label() {
+        let error = ControllerRuntimeError::from(NixStartAdmissionErrorV2::Invalid);
+
+        assert!(matches!(
+            error,
+            ControllerRuntimeError::NixStartAdmission(NixStartAdmissionErrorV2::Invalid)
+        ));
+    }
+
+    #[test]
     fn retained_public_delete_effect_is_permanently_blocked() {
         let request = aos_proto::aos::sandbox::v1::DeleteSandboxRequest {
             sandbox_id: vec![0x11; 16],
@@ -6025,6 +6197,7 @@ mod tests {
             diagnostic_socket: directory.path().join("diagnostics.sock"),
             public_api: false,
             publisher_ingress: false,
+            nix_start_admission: false,
         }
     }
 
