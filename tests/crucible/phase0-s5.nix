@@ -4,7 +4,6 @@
 }: let
   workloadSource = builtins.readFile ./phase0-s5-workload.c;
   pluginSource = builtins.readFile ./phase0-s5-virtual-memory-plugin.c;
-  qmpClientSource = builtins.readFile ./phase0-s5-qmp.py;
   linuxResetSource = builtins.readFile ./phase0-s5-linux-reset.S;
   linuxResetLinkerScript = builtins.readFile ./x86-direct-reset.ld;
   rrSwitchQuantum = 4096;
@@ -257,8 +256,7 @@ in
     src = null;
 
     plugin = pluginSource;
-    qmpClient = qmpClientSource;
-    passAsFile = ["plugin" "qmpClient"];
+    passAsFile = ["plugin"];
 
     buildDeps = [
       pkgs.coreutils
@@ -271,7 +269,6 @@ in
       pkgs.pkg-config
       pkgs.python3
       pkgs.qemu-crucible
-      pkgs.python3
     ];
 
     QEMU = "${pkgs.qemu-crucible}/bin/qemu-system-x86_64";
@@ -282,7 +279,6 @@ in
         name = "build-s5-plugin";
         script = ''
           cp "$pluginPath" phase0-s5-virtual-memory-plugin.c
-          cp "$qmpClientPath" qmp-client.py
           cc -fPIC -shared -O2 -Wall -Wextra -Werror \
             $(pkg-config --cflags glib-2.0) \
             -I${pkgs.qemu-crucible}/include \
@@ -306,13 +302,16 @@ in
             socket="$1"
             request="$2"
             response="$3"
-            budget="''${4:-5}"
+            budget="''${4:-15}"
+            if [ "$budget" -gt 15 ]; then
+              budget=15
+            fi
             response_err="$response.err"
 
             # A loaded builder can delay migration admission beyond one second.
             # Wait for the matching QMP reply rather than a transport idle gap.
             if ! ${pkgs.python3}/bin/python3 ${./_qmp-command.py} \
-              "$socket" "$request" > "$response" 2> "$response_err"; then
+              "$socket" "$request" "$budget" > "$response" 2> "$response_err"; then
               cat "$response_err" >&2
               return 1
             fi

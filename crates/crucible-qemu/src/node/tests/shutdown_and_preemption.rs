@@ -267,6 +267,7 @@ fn assert_native_capture_failure_reaps(
         vec![
             ChannelCall::ShmemCurrentIcount,
             ChannelCall::ShmemCurrentIcount,
+            ChannelCall::HostCheckpointQuiesce,
             ChannelCall::QmpStop,
             ChannelCall::HostCheckpointClearWhileStopped,
             ChannelCall::ShmemCurrentIcount,

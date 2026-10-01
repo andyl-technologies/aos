@@ -999,8 +999,8 @@ authority for its shape. The contract those files may rely on:
   §8.
   - Completed by `crates/crucible/src/model.rs`: `World`, `Plan`, and
     `Properties` each expose independent canonical bytes and BLAKE3 content
-    addresses in separate domains (`crucible.model.world.v4`,
-    `crucible.model.plan.v5`, and `crucible.model.properties.v1`). Scenario
+    addresses in separate domains (`crucible.model.world.v6`,
+    `crucible.model.plan.v6`, and `crucible.model.properties.v2`). Scenario
     identity composes those component refs plus seed material instead of folding
     component material together. The focused
     `spatial_components_have_independent_content_addresses_and_cross_reuse` test

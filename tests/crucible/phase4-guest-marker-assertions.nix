@@ -338,7 +338,6 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-marker-assertions-target" \
               -p crucible \
-              --test guest_assertion_declarations \
               --test guest_marker_assertions \
               --test guest_assertion_declarations \
               --test guest_marker_condition_leaf \
