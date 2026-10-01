@@ -489,7 +489,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
   `ttl`, `forever`, and ordinary reflog duration/count selection. D-78
   registers physical creation journals and recoverable deletion intent;
-  the shared canonical collector lease preserves whole-value proposal and
+  the reviewed pure journal, marking, proof-context, checkpoint, retention and
+  grace-window bodies now replace their trunk declarations. All 27 adopted
+  paths, including 16 independent hexadecimal witnesses, match the qualified
+  collector graph byte-for-byte; their source formatting passes. Publication
+  codec integration and qualification on the complete trunk remain pending.
+  The shared canonical collector lease preserves whole-value proposal and
   fencing checks. Actual selected lease authority remains joint native work;
   native integration, actual crash/timer/restore qualification and complete
   current-root/publication fencing remain pending. Physical intent alone
