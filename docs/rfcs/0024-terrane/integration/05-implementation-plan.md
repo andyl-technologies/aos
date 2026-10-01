@@ -233,7 +233,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   evidence retention checks. Its current native compilation fails on the
   missing repository prerequisite (42 shared import/inference diagnostics);
   no native derived tests have executed on the trunk. Both mandatory formatting
-  commands pass. Native gate and joint T-JOB-1 backfill qualification remain
+  commands, the native library build, and strict native rustdoc pass. The native
+  build still reports 61 shared unused/dead-code warnings; strict Clippy remains
+  unqualified. The aggregate also fails on the missing repository prerequisite.
+  Native gate and joint T-JOB-1 backfill qualification remain
   pending.
   — satisfies DRV-1 to DRV-11; `checks.terrane.gates.derived-attr-record`.
 - [x] **T-AUTH-1** Capability token verification (Ed25519, chain, caveats,
