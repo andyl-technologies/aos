@@ -809,9 +809,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The integrated binary still has only its T0 configuration/role launcher;
   local command frontend implementation remains pending. No Terrane ext4
   workflow artifact is present in the current tracked gate or workflow sources;
-  the earlier claim of registration does not establish qualification. A scoped
-  descendant-only policy diff correction is under review. Complete feature
-  matrix, workflow and package qualification remain pending; native I/O
+  the earlier claim of registration does not establish qualification. The scoped
+  descendant-only policy diff correction is integrated; its real protected-factory
+  regression passes with unchanged scope and admission checks. The actual feature
+  matrix still fails on six backend compatibility cases and the cancellation
+  waiter; the trunk aggregate fails the index-generation retirement assertion.
+  Both mandatory formatting commands pass. Complete workflow and package
+  qualification remain pending; native I/O
   batching preserves every required observation and fence.
   — satisfies CRATE-22 to CRATE-27;
   `checks.terrane.gates.feature-matrix`.

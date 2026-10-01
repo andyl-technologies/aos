@@ -1,5 +1,7 @@
 //! Compares authorized scoped metadata using the canonical core Merkle algebra.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use terrane_core::{
     algebra::{self, DiffResult},
     identity::Digest,
@@ -11,6 +13,9 @@ use terrane_core::{
 use crate::store::{Clock, LocalFs, Store};
 
 use super::{Error, PreparedTree, Repository, read::ReadEntry};
+
+#[cfg(all(test, feature = "tokio", feature = "surface-sdk", unix))]
+mod tests;
 
 /// Retains owned metadata for a deterministic difference between two views.
 ///
@@ -78,12 +83,16 @@ where
         let minimum = self.chunk_profile().minimum() as u64;
         let old_policy = policies(&old_snapshot, &before.subtree, minimum)?;
         let new_policy = policies(&new_snapshot, &after.subtree, minimum)?;
+        let old_descendants =
+            descendant_policies(&old_snapshot, &before.subtree, &old_entries, minimum)?;
+        let new_descendants =
+            descendant_policies(&new_snapshot, &after.subtree, &new_entries, minimum)?;
         Ok(Difference {
             before: prepared(&old_entries, minimum)?,
             after: prepared(&new_entries, minimum)?,
             before_commit: old_snapshot.commit.identity(),
             after_commit: new_snapshot.commit.identity(),
-            policies_changed: old_policy != new_policy,
+            policies_changed: old_policy != new_policy || old_descendants != new_descendants,
         })
     }
 }
@@ -103,6 +112,55 @@ fn prepared(entries: &[ReadEntry], minimum: u64) -> Result<PreparedTree, Error> 
 }
 
 type PolicyDeclarations = Vec<(Vec<(String, Vec<u8>)>, Vec<(String, Vec<u8>)>)>;
+
+fn descendant_policies(
+    snapshot: &crate::guard::AuthorizedSnapshot,
+    scope: &[u8],
+    entries: &[ReadEntry],
+    minimum: u64,
+) -> Result<BTreeMap<Vec<u8>, PolicyDeclarations>, Error> {
+    let mut prefix = b"/".to_vec();
+    prefix.extend_from_slice(scope);
+    if !scope.is_empty() {
+        prefix.push(b'/');
+    }
+    let exposed = entries
+        .iter()
+        .map(|entry| {
+            let mut path = prefix.clone();
+            path.extend_from_slice(&entry.key);
+            path
+        })
+        .collect::<BTreeSet<_>>();
+    let mut declarations = BTreeMap::new();
+
+    // Projection has already checked current authority and provenance for
+    // every exposed path. A hidden or out-of-scope occurrence must never
+    // influence even the policy-change bit returned to the caller.
+    for occurrence in snapshot.evidence.occurrences(minimum)? {
+        if !exposed.contains(&occurrence.path) {
+            continue;
+        }
+        let path = occurrence
+            .path
+            .strip_prefix(b"/")
+            .ok_or(Error::PathEscape)?;
+        let layers = policies(snapshot, path, minimum)?;
+        let Some((properties, overrides)) = layers.last() else {
+            continue;
+        };
+        if properties.is_empty() && overrides.is_empty() {
+            continue;
+        }
+        let relative = occurrence
+            .path
+            .strip_prefix(prefix.as_slice())
+            .ok_or(Error::PathEscape)?
+            .to_vec();
+        declarations.insert(relative, vec![(properties.clone(), overrides.clone())]);
+    }
+    Ok(declarations)
+}
 
 fn policies(
     snapshot: &crate::guard::AuthorizedSnapshot,
