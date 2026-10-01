@@ -23,6 +23,149 @@ const DUPLICATE_FD_MINIMUM: RawFd = 64;
 static CLAIMED_DESCRIPTOR_NUMBERS: Mutex<BTreeSet<RawFd>> = Mutex::new(BTreeSet::new());
 static INITIAL_ACTIVATION_DUPLICATED: AtomicBool = AtomicBool::new(false);
 
+/// Keeps Controller's fixed six-slot duplicate prefix resident through observation.
+///
+/// Slots are descriptor DATA, not launch, role or image authority. Construction
+/// performs no observation. A failed or abandoned attempt must remain resident
+/// until intentional process termination; armed Drop aborts before field release.
+#[must_use]
+pub struct ControllerInitialActivationTableV1 {
+    descriptors: [Option<OwnedFd>; 6],
+    count: usize,
+    attempted: bool,
+    complete: bool,
+    failure: Option<Error>,
+    armed: bool,
+}
+
+impl ControllerInitialActivationTableV1 {
+    /// Creates empty fixed storage without reading the descriptor table.
+    pub const fn new() -> Self {
+        Self {
+            descriptors: [None, None, None, None, None, None],
+            count: 0,
+            attempted: false,
+            complete: false,
+            failure: None,
+            armed: true,
+        }
+    }
+
+    /// Observes the names-derived prefix of original entries 3 through 8 once.
+    ///
+    /// # Errors
+    /// Keeps the first actual duplication, flag or complete-table refusal.
+    /// A repeated call ends observation without touching the process table.
+    pub fn observe_once(&mut self, count: usize) -> std::result::Result<(), &Error> {
+        if self.attempted {
+            self.complete = false;
+            return Err(self.failure.get_or_insert_with(|| {
+                Error::invalid("Controller initial table", "observation is closed")
+            }));
+        }
+        self.attempted = true;
+
+        let result = {
+            let _unwind = AbortInitialCaptureUnwind;
+            self.observe_prefix(count)
+        };
+        match result {
+            Ok(()) => {
+                self.complete = true;
+                Ok(())
+            }
+            Err(error) => Err(self.failure.get_or_insert(error)),
+        }
+    }
+
+    /// Borrows the permanently retained first observation failure.
+    pub fn failure(&self) -> Option<&Error> {
+        self.failure.as_ref()
+    }
+
+    /// Moves the complete fixed slots once without another observation.
+    ///
+    /// The caller parks the returned array before any fallible continuation.
+    /// No failed or interrupted observation exposes its successful prefix.
+    #[must_use]
+    pub fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; 6]> {
+        if !self.complete
+            || self.count > self.descriptors.len()
+            || self.descriptors[..self.count].iter().any(Option::is_none)
+            || self.descriptors[self.count..].iter().any(Option::is_some)
+        {
+            return None;
+        }
+        let descriptors = std::mem::replace(
+            &mut self.descriptors, [None, None, None, None, None, None],
+        );
+        self.complete = false;
+        self.armed = false;
+        Some(descriptors)
+    }
+
+    fn observe_prefix(&mut self, count: usize) -> Result<()> {
+        begin_initial_activation_observation()?;
+        if count > self.descriptors.len() {
+            return Err(Error::invalid("Controller initial table", "count exceeds six slots"));
+        }
+        self.count = count;
+        let numbers = contiguous_numbers(SYSTEMD_ACTIVATION_FD_BASE, count)?;
+        for (slot, number) in self.descriptors.iter_mut().zip(&numbers) {
+            *slot = Some(duplicate_inherited_descriptor(*number)?);
+        }
+        for number in &numbers {
+            mark_inherited_descriptor_close_on_exec(*number)?;
+        }
+
+        use std::os::fd::AsRawFd as _;
+        let expected = [0, 1, 2].into_iter().chain(numbers)
+            .chain(self.descriptors.iter().flatten().map(|descriptor| descriptor.as_raw_fd()))
+            .collect::<BTreeSet<_>>();
+        require_initial_table_bookends(&expected)
+    }
+}
+
+impl Default for ControllerInitialActivationTableV1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for ControllerInitialActivationTableV1 {
+    fn drop(&mut self) {
+        if self.armed {
+            self.complete = false;
+            std::process::abort();
+        }
+    }
+}
+
+struct AbortInitialCaptureUnwind;
+
+impl Drop for AbortInitialCaptureUnwind {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            // Returned duplicates are already parked, before this stack unwinds.
+            std::process::abort();
+        }
+    }
+}
+
+// The legacy Vec, offline fixed pair and Controller fixed prefix have different
+// storage/drop contracts. Their fence and two complete observations are shared.
+fn begin_initial_activation_observation() -> Result<()> {
+    INITIAL_ACTIVATION_DUPLICATED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| Error::invalid("initial activation table", "already observed"))?;
+    Ok(())
+}
+
+fn require_initial_table_bookends(expected: &BTreeSet<RawFd>) -> Result<()> {
+    require_complete_startup_table(expected)?;
+    require_complete_startup_table(expected)
+}
+
 /// Retains the fixed two-entry offline-prepare startup observation, including failures.
 ///
 /// This is descriptor DATA, not launcher, role, profile or provisioning authority.
@@ -98,9 +241,7 @@ impl NixOfflinePrepareInitialTableV3 {
     }
 
     fn observe_once(&mut self) -> Result<()> {
-        INITIAL_ACTIVATION_DUPLICATED
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| Error::invalid("initial activation table", "already observed"))?;
+        begin_initial_activation_observation()?;
 
         for (slot, number) in self.descriptors.iter_mut().zip([3, 4]) {
             *slot = Some(duplicate_inherited_descriptor(number)?);
@@ -114,8 +255,7 @@ impl NixOfflinePrepareInitialTableV3 {
             .into_iter()
             .chain(self.descriptors.iter().flatten().map(|descriptor| descriptor.as_raw_fd()))
             .collect::<BTreeSet<_>>();
-        require_complete_startup_table(&expected)?;
-        require_complete_startup_table(&expected)
+        require_initial_table_bookends(&expected)
     }
 }
 
@@ -140,9 +280,7 @@ impl Default for NixOfflinePrepareInitialTableV3 {
 /// or a complete procfs table that differs from originals, duplicates, standard
 /// I/O, and the temporary scanner. A failed attempt cannot be repeated.
 pub fn duplicate_initial_activation_table(descriptor_count: usize) -> Result<Vec<OwnedFd>> {
-    INITIAL_ACTIVATION_DUPLICATED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| Error::invalid("initial activation table", "already observed"))?;
+    begin_initial_activation_observation()?;
     if descriptor_count > MAXIMUM_SYSTEMD_ACTIVATION_DESCRIPTORS {
         return Err(Error::invalid(
             "initial activation table",
@@ -165,8 +303,7 @@ pub fn duplicate_initial_activation_table(descriptor_count: usize) -> Result<Vec
         .chain(numbers)
         .chain(descriptors.iter().map(|descriptor| descriptor.as_raw_fd()))
         .collect::<BTreeSet<_>>();
-    require_complete_startup_table(&expected)?;
-    require_complete_startup_table(&expected)?;
+    require_initial_table_bookends(&expected)?;
     Ok(descriptors)
 }
 

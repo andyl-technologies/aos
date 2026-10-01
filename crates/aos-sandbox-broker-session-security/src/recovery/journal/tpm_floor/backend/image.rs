@@ -166,7 +166,8 @@ impl MeasuredHelperImageV1 {
 pub(super) fn open_original_pid1_image(
     launch_image: &crate::production_startup::Pid1LaunchImageV1,
 ) -> Result<MeasuredFileV1, FloorErrorV1> {
-    aos_sandbox::immutable_image::retain_original_backend_pid1_v1(launch_image.file())
+    let original = launch_image.file().map_err(|_| FloorErrorV1::Provisioning)?;
+    aos_sandbox::immutable_image::retain_original_backend_pid1_v1(original)
         .map_err(Into::into)
 }
 
