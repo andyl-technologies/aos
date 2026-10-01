@@ -804,6 +804,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Every entry, file and chunk still receives fresh authorization. The 116
   non-Send tests, strict native rustdoc and mandatory formatting pass; the
   actual trunk aggregate remains red on index-generation retirement.
+  Target snapshot construction also retains the complete history verified
+  within that same invocation. Eight expanded regressions pass, including
+  protected registration, consumed inputs and held expiry/issuer retirement;
+  all 116 non-Send tests, strict native rustdoc and mandatory formatting pass.
+  This removes a duplicate target-history observation, preserving subsequent
+  current-policy and content checks rather than promising identical I/O timing.
   Documented `Chunk`, `Object`, `Ref` and `Root` SDK names now reuse the
   canonical core representations. Strict core Clippy, core/native rustdoc,
   `formats-no-std`, and both mandatory formatting commands pass for this facade.

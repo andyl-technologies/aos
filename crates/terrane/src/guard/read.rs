@@ -277,9 +277,8 @@ impl<S: Store, C: Clock> Guard<S, C> {
         surface: &str,
         observation: HistoryObservation<'_>,
     ) -> Result<(AuthorizedSnapshot, Vec<super::AuthorizedRef>), StoreFailure> {
-        let verified = self.verified_tree_observed(identity, observation).await?;
-        let history = self
-            .verified_history_observed(identity, observation)
+        let (verified, history) = self
+            .verified_tree_history_observed(identity, observation)
             .await?;
         let policy_layers = verified
             .evidence

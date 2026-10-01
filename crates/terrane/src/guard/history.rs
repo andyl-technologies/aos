@@ -118,10 +118,29 @@ impl<S: Store, C: Clock> Guard<S, C> {
         identity: Digest,
         observation: HistoryObservation<'_>,
     ) -> Result<VerifiedTree, StoreFailure> {
+        self.verified_tree_history_observed(identity, observation)
+            .await
+            .map(|(verified, _)| verified)
+    }
+
+    /// Retains the complete history freshly checked for this exact target tree.
+    ///
+    /// Both witnesses belong to this invocation and its observation. Callers
+    /// still perform their independent current-policy and content checks.
+    ///
+    /// # Errors
+    /// Preserves tree/signature failures before complete canonical history and
+    /// protected original-authority failures.
+    pub(super) async fn verified_tree_history_observed(
+        &self,
+        identity: Digest,
+        observation: HistoryObservation<'_>,
+    ) -> Result<(VerifiedTree, VerifiedHistory), StoreFailure> {
         let verified = self.signed_tree(identity).await?;
-        self.verified_history_observed(identity, observation)
+        let history = self
+            .verified_history_observed(identity, observation)
             .await?;
-        Ok(verified)
+        Ok((verified, history))
     }
 
     // This private value authenticates a signature only. Canonical original
