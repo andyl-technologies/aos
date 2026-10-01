@@ -8,6 +8,7 @@
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod batch;
 pub(crate) mod buffers;
+#[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) mod guard_state;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod inspection;
