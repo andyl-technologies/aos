@@ -18,11 +18,15 @@
 //! settlement. Its terminal-only observation never materializes catalog rows.
 
 mod native_acquire;
+pub(crate) mod original_held_measurement;
 mod operator_terminal_hold;
 mod native_readback;
 mod repair_worker_drain;
 mod operator_startup;
-pub(crate) use native_acquire::{StorageNativeDeliveryOutcomeV2, validate_native_request_clock};
+pub(crate) use native_acquire::{
+    StorageNativeDeliveryOutcomeV2, original_fail_stop_deadline,
+    validate_native_request_clock, validate_original_clock,
+};
 
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
@@ -117,7 +121,7 @@ const WORKSPACE_PIN_OBSERVER_SOCKET: &str = "/run/aos/sandbox-workspace-pin-obse
 const GUEST_ROOT_PUBLISHER_SOCKET: &str = "/run/aos/sandbox-guest-root-publisher/control.sock";
 const STARTUP_CATALOG_OBSERVATION_NANOSECONDS: u64 = 10_000_000_000;
 const STARTUP_CATALOG_WORKER_NANOSECONDS: u64 = 9_000_000_000;
-const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
+pub(crate) const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
 
 /// Rejects a retained Repair hold before startup observation can dispatch.
 ///
@@ -452,6 +456,8 @@ pub struct StorageBrokerRuntime {
     held_reader_state_directory: Option<PathBuf>,
     native_issuance: Option<StorageNativeIssuanceLedgerV1>,
     native_escrow: native_acquire::StorageNativeEscrowV2,
+    original_worker_startup: Option<crate::activation::StorageOriginalWorkerStartupV3>,
+    original_measurements: original_held_measurement::ResidentOriginalMeasurementsV3,
     #[cfg(test)]
     native_fixture: Option<native_acquire::SyntheticNativeRuntimeV2>,
     #[cfg(test)]
@@ -470,6 +476,30 @@ pub struct StorageBrokerRuntime {
 }
 
 impl StorageBrokerRuntime {
+    pub(crate) fn install_original_worker_startup(
+        &mut self,
+        mut startup: crate::activation::StorageOriginalWorkerStartupV3,
+    ) -> Result<(), crate::activation::StorageOriginalWorkerStartupErrorV3> {
+        use crate::activation::{
+            StorageOriginalWorkerStartupCauseV3, StorageOriginalWorkerStartupErrorV3,
+        };
+
+        if self.original_worker_startup.is_some() {
+            return Err(StorageOriginalWorkerStartupErrorV3::retain_closed(
+                StorageOriginalWorkerStartupCauseV3::Closed,
+                startup,
+            ));
+        }
+        if let Err(cause) = startup.recheck() {
+            return Err(StorageOriginalWorkerStartupErrorV3::retain_closed(
+                cause,
+                startup,
+            ));
+        }
+        self.original_worker_startup = Some(startup);
+        Ok(())
+    }
+
     /// Reobserves one catalogued hold and measures its immutable bytes.
     ///
     /// Both workers must quiesce while Storage retains its journal cut. A
@@ -1356,6 +1386,8 @@ impl StorageBrokerRuntime {
             held_reader_state_directory: Some(state_directory.to_path_buf()),
             native_issuance: Some(native_issuance),
             native_escrow: native_acquire::StorageNativeEscrowV2::default(),
+            original_worker_startup: None,
+            original_measurements: original_held_measurement::ResidentOriginalMeasurementsV3::default(),
             #[cfg(test)]
             native_fixture: None,
             #[cfg(test)]
@@ -1423,6 +1455,8 @@ impl StorageBrokerRuntime {
             held_reader_state_directory: None,
             native_issuance: None,
             native_escrow: native_acquire::StorageNativeEscrowV2::default(),
+            original_worker_startup: None,
+            original_measurements: original_held_measurement::ResidentOriginalMeasurementsV3::default(),
             native_fixture: None,
             native_readback_fixture_uid: None,
             pin_contract,
@@ -1473,6 +1507,8 @@ impl StorageBrokerRuntime {
             held_reader_state_directory: None,
             native_issuance: None,
             native_escrow: native_acquire::StorageNativeEscrowV2::default(),
+            original_worker_startup: None,
+            original_measurements: original_held_measurement::ResidentOriginalMeasurementsV3::default(),
             native_fixture: None,
             native_readback_fixture_uid: None,
             pin_contract,

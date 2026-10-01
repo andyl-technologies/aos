@@ -301,6 +301,95 @@ where
     spawn_and_supervise_session(request, deadline, exchange)
 }
 
+/// Runs the ordinary fixed path session while retaining both output streams.
+///
+/// This uses the same path invocation and capability inheritance as
+/// [`run_fixed_process_session`]. It sets or grants no capability. A privileged
+/// owner must authenticate its fixed immutable executable and confinement
+/// before calling; this mechanical path boundary admits neither of them.
+/// The descriptor-session APIs continue to remove child authority separately.
+///
+/// Capture reservations precede the ordinary spawn. Its exec confirmation and
+/// initial pidfd acquisition are synchronous: the absolute deadline includes
+/// that prefix but cannot preempt it. Only a returned spawn is handed into the
+/// caller-held reservoir. Thereafter the same retained `SessionRun` and sole
+/// supervisor own output, exchange, cancellation and exact-child reaping.
+/// Owned stdin and roles close before initialization or exchange callbacks.
+/// Neither captured EOF nor leader reap establishes whole-cgroup drain.
+///
+/// # Errors
+///
+/// Returns the original typed session errors for request validation, ordinary
+/// spawning, observation, exchange or cleanup. Returns a typed pre-fork capture
+/// reservation error for an overflowing ceiling, allocation failure or a used
+/// reservoir. Caller-owned capture remains available after returned errors.
+///
+/// # Panics
+///
+/// Propagates callback panic. After the returned child is handed into the
+/// retained supervisor, the same unwind guard attempts cleanup and retains
+/// bounded observations. Abort, dropping capture and the synchronous spawn
+/// prefix are not universal retained-custody or preemption guarantees.
+pub fn run_fixed_process_session_retained_v1<X>(
+    request: FixedProcessSessionRequest<'_>,
+    exchange: &mut X,
+    capture: &mut FixedProcessCaptureV1,
+) -> std::result::Result<
+    FixedProcessRetainedSessionOutcome<X::Output>,
+    FixedProcessRetainedSessionError<X::Error>,
+>
+where
+    X: FixedProcessSessionExchange,
+{
+    let started = monotonic_now();
+    let deadline = started.checked_add(request.process.timeout).ok_or_else(|| {
+        FixedProcessRetainedSessionError::Session(process_error(Error::invalid(
+            "fixed process timeout",
+            "absolute deadline overflows CLOCK_MONOTONIC duration",
+        )))
+    })?;
+
+    validate_session_request(&request)
+        .map_err(process_error)
+        .map_err(FixedProcessRetainedSessionError::Session)?;
+    validate_exclusive_reaping_owner()
+        .map_err(process_error)
+        .map_err(FixedProcessRetainedSessionError::Session)?;
+    let invocation = PreparedInvocation::new(request.process)
+        .map_err(process_error)
+        .map_err(FixedProcessRetainedSessionError::Session)?;
+    capture.prepare(request.process)?;
+
+    let FixedProcessSessionRequest {
+        process,
+        stdin,
+        inherited,
+        control,
+    } = request;
+    let inherited_borrows = inherited
+        .iter()
+        .map(|descriptor| descriptor.as_fd())
+        .collect::<Vec<_>>();
+    let spawned = invocation
+        .spawn(
+            stdin.as_ref().map(|descriptor| descriptor.as_fd()),
+            &inherited_borrows,
+        )
+        .map_err(process_error)
+        .map_err(FixedProcessRetainedSessionError::Session)?;
+    let mut run = SessionRun::retained(spawned, process, capture);
+
+    drop(inherited_borrows);
+    drop(inherited);
+    drop(stdin);
+
+    if let Err(source) = run.initialize_retained() {
+        return fail_process(&mut run, source).map_err(FixedProcessRetainedSessionError::Session);
+    }
+    supervise_session_core(&mut run, control, deadline, exchange)
+        .map_err(FixedProcessRetainedSessionError::Session)
+}
+
 /// Runs one live-child exchange by executing a retained regular-file descriptor.
 ///
 /// `request.process.executable` remains the exact argument-zero value, but the

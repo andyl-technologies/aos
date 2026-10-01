@@ -290,7 +290,8 @@ in {
         PrivateDevices = false;
         PrivateNetwork = true;
         PrivateTmp = true;
-        ProcSubset = "pid";
+        # The original cutoff reads the kernel boot ID, not a parent-supplied ID.
+        ProcSubset = "all";
         ProtectClock = true;
         ProtectControlGroups = true;
         ProtectHome = true;
@@ -367,7 +368,8 @@ in {
         PrivateNetwork = true;
         PrivateTmp = true;
         TemporaryFileSystem = ["/run/aos-held-reader-namespace:ro,nosuid,nodev,noexec"];
-        ProcSubset = "pid";
+        # The original cutoff reads the kernel boot ID, not a parent-supplied ID.
+        ProcSubset = "all";
         ProtectClock = true;
         ProtectControlGroups = true;
         ProtectHome = true;

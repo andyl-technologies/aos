@@ -39,6 +39,40 @@ const CONTROLLER_CGROUP: &str = "aos.slice/aos-control.slice/aos-sandboxd.servic
 const HOST_CGROUP: &str = "system.slice/aos-sandbox-hostd.service";
 const SOURCE_PROVIDER_CGROUP: &str = "aos.slice/aos-control.slice/aos-source-providerd.service";
 
+// The legacy diagnostic remains transparent. New startup failures keep their
+// concrete cause and owning custody instead of becoming Activation strings.
+#[derive(Debug, thiserror::Error)]
+enum StorageStartupRunErrorV3 {
+    #[error(transparent)]
+    Service(#[from] StorageServiceError),
+    #[error(transparent)]
+    Original(#[from] aos_sandbox_storage::activation::StorageOriginalWorkerStartupErrorV3),
+}
+
+impl From<StorageRuntimeError> for StorageStartupRunErrorV3 {
+    fn from(error: StorageRuntimeError) -> Self {
+        Self::Service(error.into())
+    }
+}
+
+impl From<aos_sandbox_linux::Error> for StorageStartupRunErrorV3 {
+    fn from(error: aos_sandbox_linux::Error) -> Self {
+        Self::Service(error.into())
+    }
+}
+
+impl From<rustix::io::Errno> for StorageStartupRunErrorV3 {
+    fn from(error: rustix::io::Errno) -> Self {
+        Self::Service(error.into())
+    }
+}
+
+impl From<aos_sandbox_linux::seqpacket::SeqpacketError> for StorageStartupRunErrorV3 {
+    fn from(error: aos_sandbox_linux::seqpacket::SeqpacketError) -> Self {
+        Self::Service(error.into())
+    }
+}
+
 fn main() -> ExitCode {
     if let Err(error) = aos_sandbox_linux::no_setid::require_guarded_startup() {
         eprintln!("aos-storaged: {error}");
@@ -54,11 +88,12 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<(), StorageServiceError> {
+fn run() -> Result<(), StorageStartupRunErrorV3> {
     if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {
         return Err(StorageServiceError::Activation(
             "broker must start with real and effective UID zero".to_owned(),
-        ));
+        )
+        .into());
     }
     let state_root = Path::new(STATE_ROOT);
     let command_line: Vec<_> = env::args_os().collect();
@@ -67,12 +102,22 @@ fn run() -> Result<(), StorageServiceError> {
         .is_some_and(|value| value == "--provision-output")
     {
         let source = parse_provision_source(&command_line)?;
-        return provision_execution_output_ledger(state_root, &source);
+        return provision_execution_output_ledger(state_root, &source).map_err(Into::into);
     }
     let (command, arguments) = parse_startup_command(command_line)?;
 
     // Claim the complete systemd table before any inherited slot can be
     // reused. The broker session owns only its fixed control listener.
+    let (startup, original_worker_startup) = if command == StorageStartupCommandV4::Serve
+        && arguments.zfs_hold_key_configured
+    {
+        aos_sandbox_broker_session_security::ProductionStorageStartupV1::capture_original_worker_startup()?
+    } else {
+        (
+            aos_sandbox_broker_session_security::ProductionStorageStartupV1::capture()?,
+            None,
+        )
+    };
     let (
         mut activation,
         mut export_listener,
@@ -80,7 +125,7 @@ fn run() -> Result<(), StorageServiceError> {
         mut zfs_hold_listener,
         mut operator_listener,
         mut existing_output_listener,
-    ) = aos_sandbox_broker_session_security::ProductionStorageStartupV1::capture()?.into_parts();
+    ) = startup.into_parts();
     let output_custody = if let Some(source) = &arguments.output_key_source {
         Some(StorageExecutionOutputCustodyV1::open(state_root, source)?)
     } else {
@@ -90,7 +135,8 @@ fn run() -> Result<(), StorageServiceError> {
         return Err(StorageServiceError::Activation(
             "existing-output listener and protected custody must be provisioned together"
                 .to_owned(),
-        ));
+        )
+        .into());
     }
     let zfs_hold_key = if arguments.zfs_hold_key_configured {
         Some(StorageZfsHoldKeyV1::load()?)
@@ -154,7 +200,8 @@ fn run() -> Result<(), StorageServiceError> {
         {
             return Err(StorageServiceError::Activation(
                 "guest-root template changed during operator provisioning".to_owned(),
-            ));
+            )
+            .into());
         }
         // Keep the actual template and complete inherited table until all
         // provisioning bookends finish. No actor or effect owner is returned.
@@ -188,6 +235,9 @@ fn run() -> Result<(), StorageServiceError> {
             None,
         ),
     };
+    if let Some(startup) = original_worker_startup {
+        storage = storage.with_original_worker_startup(startup)?;
+    }
     if let Some(diagnostic) = prepare_readiness_diagnostic(storage.runtime().prepare_readiness()) {
         eprintln!("aos-storaged: {diagnostic}");
     }
@@ -235,7 +285,10 @@ fn run() -> Result<(), StorageServiceError> {
             let request_ready = pending_request_index.is_some_and(|index| recovery_ready[index].revents().contains(rustix::event::PollFlags::IN));
             let request_disconnected = pending_request_index.is_some_and(|index| recovery_ready[index].revents().intersects(rustix::event::PollFlags::HUP | rustix::event::PollFlags::ERR));
             if recovery_ready[..2].iter().any(|ready| ready.revents().intersects(rustix::event::PollFlags::HUP | rustix::event::PollFlags::ERR)) {
-                return Err(StorageServiceError::Activation("operator recovery listener retired".to_owned()));
+                return Err(StorageServiceError::Activation(
+                    "operator recovery listener retired".to_owned(),
+                )
+                .into());
             }
             drop(recovery_ready);
             if request_ready {
@@ -256,7 +309,7 @@ fn run() -> Result<(), StorageServiceError> {
                 match activation.accept_authenticated(deadline) {
                     Ok(session) => active_session = Some(session),
                     Err(ProductionBrokerSessionActivationErrorV1::Deadline) => {}
-                    Err(error) => return Err(production_error(error)),
+                    Err(error) => return Err(production_error(error).into()),
                 }
             }
             if operator_ready {
@@ -375,13 +428,15 @@ fn run() -> Result<(), StorageServiceError> {
         {
             return Err(StorageServiceError::Activation(
                 "activated Storage endpoint reported invalid readiness".to_owned(),
-            ));
+            )
+            .into());
         }
 
         if broker_disconnected && active_session.is_none() {
             return Err(StorageServiceError::Activation(
                 "protected Storage broker listener was retired".to_owned(),
-            ));
+            )
+            .into());
         }
         if broker_ready {
             if let Some(session) = active_session.take() {
@@ -397,7 +452,7 @@ fn run() -> Result<(), StorageServiceError> {
                 match activation.accept_authenticated(accept_deadline) {
                     Ok(session) => active_session = Some(session),
                     Err(ProductionBrokerSessionActivationErrorV1::Deadline) => {}
-                    Err(error) => return Err(production_error(error)),
+                    Err(error) => return Err(production_error(error).into()),
                 }
             }
         } else if broker_disconnected {

@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 use rustix::fs::{CWD, Mode, OFlags, StatVfsMountFlags, fstatvfs, openat};
 use sha2::{Digest as _, Sha256};
 
+use crate::tpm_nv_custody::credential::{
+    CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
+};
+
 const MAXIMUM_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 
 #[cfg(all(target_os = "linux", feature = "git-helper-mechanics"))]
@@ -254,6 +258,120 @@ pub fn require_readonly_launch_flags(flags: OFlags) -> Result<(), ImmutableImage
         return Err(ImmutableImageErrorV1::Provisioning);
     }
     Ok(())
+}
+
+/// Measures an original PID 1 file against the image-built backend artifact.
+///
+/// The file must come from the caller's genuine original launch capture. This
+/// shared measurement does not authenticate its supplier, confer floor or
+/// worker authority, or establish continuous identity after manager reexec.
+///
+/// # Errors
+///
+/// Rejects missing compiled selection, unsafe artifact metadata, malformed
+/// pins, unavailable cloning, writable descriptors, or changed image custody.
+pub fn retain_original_backend_pid1_v1(
+    original: &File,
+) -> Result<RetainedImmutableFileV1, ImmutableImageErrorV1> {
+    let path = PathBuf::from(
+        option_env!("AOS_METHOD46_TPM_PID1").ok_or(ImmutableImageErrorV1::Unavailable)?,
+    );
+    let package = path
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or(ImmutableImageErrorV1::Provisioning)?;
+    let pin = read_immutable_image_pin_v1(
+        &package.join("share/aos"),
+        "backend-policy-artifact-v2",
+        74,
+        4096,
+    )?;
+    if !pin.starts_with(b"AOSBPA02\n") {
+        return Err(ImmutableImageErrorV1::Provisioning);
+    }
+    let digest = decode_immutable_sha256_pin_v1(
+        pin.get(9..74).ok_or(ImmutableImageErrorV1::Provisioning)?,
+    )?;
+
+    // Clone this original inode, never reopen a nominally selected PID 1 image.
+    let file = original
+        .try_clone()
+        .map_err(|_| ImmutableImageErrorV1::Unavailable)?;
+    let flags = rustix::fs::fcntl_getfl(&file)
+        .map_err(|_| ImmutableImageErrorV1::Unavailable)?;
+    require_readonly_launch_flags(flags)?;
+    RetainedImmutableFileV1::retain_with_profile(
+        path,
+        file,
+        Some(digest),
+        MAXIMUM_IMAGE_BYTES,
+        true,
+    )
+}
+
+/// Reads bounded root-owned immutable image-pin DATA through the shared reader.
+///
+/// A pathname and returned bytes are not independent image authorization.
+///
+/// # Errors
+///
+/// Rejects missing pins, unsafe metadata, bounds, or incomplete reads.
+pub fn read_immutable_image_pin_v1(
+    directory: &Path,
+    name: &str,
+    minimum: usize,
+    maximum: usize,
+) -> Result<Vec<u8>, ImmutableImageErrorV1> {
+    let metadata = std::fs::symlink_metadata(directory.join(name))
+        .map_err(|_| ImmutableImageErrorV1::Provisioning)?;
+    if !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.gid() != 0
+        || metadata.mode() & 0o222 != 0
+    {
+        return Err(ImmutableImageErrorV1::Provisioning);
+    }
+    read_optional_bounded_role_credential_v1(
+        directory,
+        name,
+        minimum,
+        maximum,
+        false,
+        CredentialOwnerPolicyV1::RootOrCurrent,
+    )
+    .map_err(|_| ImmutableImageErrorV1::Provisioning)?
+    .ok_or(ImmutableImageErrorV1::Provisioning)
+}
+
+/// Decodes exact lowercase SHA-256 pin DATA terminated by one newline.
+///
+/// # Errors
+///
+/// Rejects any length, character, or terminator outside the canonical form.
+pub fn decode_immutable_sha256_pin_v1(
+    bytes: &[u8],
+) -> Result<[u8; 32], ImmutableImageErrorV1> {
+    if bytes.len() != 65
+        || bytes[64] != b'\n'
+        || bytes[..64]
+            .iter()
+            .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(byte))
+    {
+        return Err(ImmutableImageErrorV1::Provisioning);
+    }
+    let mut digest = [0; 32];
+    for (index, pair) in bytes[..64].chunks_exact(2).enumerate() {
+        let digit = |byte: u8| {
+            if byte <= b'9' {
+                byte - b'0'
+            } else {
+                byte - b'a' + 10
+            }
+        };
+        digest[index] = (digit(pair[0]) << 4) | digit(pair[1]);
+    }
+    Ok(digest)
 }
 
 fn identity(metadata: &Metadata) -> (u64, u64, u64) {

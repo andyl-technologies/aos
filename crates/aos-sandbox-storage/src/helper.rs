@@ -19,6 +19,9 @@ use crate::process::{
     HeldSnapshotPhysicalObservationV1, HeldSnapshotWorkerBindingV1, SystemdZfsExecutor,
     WorkerObservationOutcome, ZfsWorkerError,
 };
+use crate::runtime::original_held_measurement::{
+    OriginalHeldMeasurementErrorV3, OriginalWorkerLoanV3,
+};
 use crate::{
     AncestorPolicyTransaction, DurableStoragePhase, PostconditionPolicyV1, ProjectAncestorPolicyV1,
     ResolvedCatalogCommitmentV1, StorageOperation, StorageRecoveryEntry, StorageStateError,
@@ -106,6 +109,18 @@ pub(crate) struct SealedZfsProgram<'a> {
 }
 
 pub(crate) trait ZfsProcessBackend {
+    fn observe_original_held_snapshot(
+        &mut self,
+        _contract: &ZfsHelperContract,
+        _snapshot: &crate::ResolvedSnapshot,
+        _hold_id: crate::HoldId,
+        _binding: HeldSnapshotWorkerBindingV1,
+        _loan: &mut OriginalWorkerLoanV3<'_, '_, '_>,
+        _progress: &mut crate::process::OriginalHeldWorkerProgressV3,
+    ) -> Result<HeldSnapshotPhysicalObservationV1, OriginalHeldMeasurementErrorV3> {
+        Err(OriginalHeldMeasurementErrorV3::Closed)
+    }
+
     fn observe_held_snapshot(
         &mut self,
         _contract: &ZfsHelperContract,
@@ -154,6 +169,18 @@ pub(crate) trait ZfsProcessBackend {
 }
 
 impl<T: ZfsProcessBackend + ?Sized> ZfsProcessBackend for Box<T> {
+    fn observe_original_held_snapshot(
+        &mut self,
+        contract: &ZfsHelperContract,
+        snapshot: &crate::ResolvedSnapshot,
+        hold_id: crate::HoldId,
+        binding: HeldSnapshotWorkerBindingV1,
+        loan: &mut OriginalWorkerLoanV3<'_, '_, '_>,
+        progress: &mut crate::process::OriginalHeldWorkerProgressV3,
+    ) -> Result<HeldSnapshotPhysicalObservationV1, OriginalHeldMeasurementErrorV3> {
+        (**self).observe_original_held_snapshot(contract, snapshot, hold_id, binding, loan, progress)
+    }
+
     fn observe_held_snapshot(
         &mut self,
         contract: &ZfsHelperContract,
@@ -231,6 +258,19 @@ impl SystemdZfsProcessBackend {
 }
 
 impl ZfsProcessBackend for SystemdZfsProcessBackend {
+    fn observe_original_held_snapshot(
+        &mut self,
+        contract: &ZfsHelperContract,
+        snapshot: &crate::ResolvedSnapshot,
+        hold_id: crate::HoldId,
+        binding: HeldSnapshotWorkerBindingV1,
+        loan: &mut OriginalWorkerLoanV3<'_, '_, '_>,
+        progress: &mut crate::process::OriginalHeldWorkerProgressV3,
+    ) -> Result<HeldSnapshotPhysicalObservationV1, OriginalHeldMeasurementErrorV3> {
+        self.executor
+            .observe_original_held_snapshot(contract, snapshot, hold_id, binding, loan, progress)
+    }
+
     fn observe_held_snapshot(
         &mut self,
         contract: &ZfsHelperContract,
@@ -457,6 +497,24 @@ impl PreobservedZfsMutation {
 }
 
 impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
+    pub(crate) fn observe_original_held_snapshot(
+        &mut self,
+        snapshot: &crate::ResolvedSnapshot,
+        hold_id: crate::HoldId,
+        binding: HeldSnapshotWorkerBindingV1,
+        loan: &mut OriginalWorkerLoanV3<'_, '_, '_>,
+        progress: &mut crate::process::OriginalHeldWorkerProgressV3,
+    ) -> Result<HeldSnapshotPhysicalObservationV1, OriginalHeldMeasurementErrorV3> {
+        self.backend.observe_original_held_snapshot(
+            &self.contract,
+            snapshot,
+            hold_id,
+            binding,
+            loan,
+            progress,
+        )
+    }
+
     /// Dispatches only a nonmutating held-snapshot probe through the same worker custody.
     pub(crate) fn observe_held_snapshot(
         &mut self,

@@ -50,7 +50,7 @@ struct NativeOriginalV2 {
     initial_clock: RawPairedClockSample,
 }
 
-fn original_fail_stop_deadline(
+pub(crate) fn original_fail_stop_deadline(
     request: &SignedStorageNativeAcquireRequestV2,
     clock: RawPairedClockSample,
 ) -> Result<u64, StorageRuntimeError> {
@@ -168,6 +168,9 @@ impl StorageBrokerRuntime {
         key: &StorageZfsHoldKeyV1,
         deliver: impl FnOnce(&[u8], BorrowedFd<'_>, u64) -> Result<(), ()>,
     ) -> Result<StorageNativeDeliveryOutcomeV2, StorageRuntimeError> {
+        if self.original_worker_startup.is_some() {
+            return self.with_original_worker_native_delivery(authenticated, key, deliver);
+        }
         let _dispatch = self
             .worker_dispatch
             .enter()
@@ -281,6 +284,229 @@ impl StorageBrokerRuntime {
         let outcome = self.deliver_native_original(authenticated, key, &original, deliver);
         self.native_escrow.originals.insert(request_key, original);
         outcome
+    }
+
+    /// Uses the same issuance/signature engines with resident original custody.
+    ///
+    /// Unlike the legacy local escrow loan, no mount, signed reply or packet is
+    /// removed from its resident owner around a fallible call or user delivery.
+    /// The original paired sample and absolute cutoff are never regenerated.
+    fn with_original_worker_native_delivery(
+        &mut self,
+        authenticated: &AuthenticatedStorageNativeRequestV2<'_>,
+        key: &StorageZfsHoldKeyV1,
+        deliver: impl FnOnce(&[u8], BorrowedFd<'_>, u64) -> Result<(), ()>,
+    ) -> Result<StorageNativeDeliveryOutcomeV2, StorageRuntimeError> {
+        use super::original_held_measurement::{OriginalHeldMeasurementErrorV3, OriginalPhase};
+
+        let (index, new) = match self.original_measurements.begin(authenticated) {
+            Ok(entry) => entry,
+            Err(cause) => {
+                if self.original_measurements.first_admission_failure.is_none() {
+                    self.original_measurements.first_admission_failure = Some(cause);
+                }
+                self.readiness = StorageRuntimeReadiness::ReopenRequired;
+                return Err(StorageRuntimeError::ReopenRequired);
+            }
+        };
+        // Panic, a caught unwind in the caller, and every early Err leave this
+        // admission closed. Only the same complete successful attempt reopens.
+        self.original_measurements.closed = true;
+        let result = (|| {
+            if !self.readiness.permits_catalog_methods() || self.workspaces.is_none() {
+                return Err(OriginalHeldMeasurementErrorV3::Closed);
+            }
+            if new {
+                self.initialize_original_scope(index, authenticated)?;
+            } else {
+                self.original_measurements.originals[index].dispatch = Some(
+                    self.worker_dispatch
+                        .enter()
+                        .map_err(|_| OriginalHeldMeasurementErrorV3::Closed)?,
+                );
+            }
+            authenticated.recheck()?;
+            self.original_worker_startup
+                .as_mut()
+                .ok_or(OriginalHeldMeasurementErrorV3::Closed)?
+                .recheck()?;
+            let original = &self.original_measurements.originals[index];
+            let first = original.first.ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+            let cutoff = original.cutoff.ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+            validate_original_clock(
+                authenticated.request(),
+                first,
+                trusted_paired_clock_sample()?,
+                cutoff,
+            )?;
+
+            let retained = self
+                .native_issuance
+                .as_mut()
+                .ok_or(OriginalHeldMeasurementErrorV3::Closed)?
+                .retained_acceptance(authenticated.request());
+            let retained = retained?;
+            let action = native_custody_action(
+                retained.as_ref(),
+                self.original_measurements.originals[index].reply.as_ref(),
+            )?;
+            if action == NativeCustodyActionV2::Unavailable {
+                self.original_measurements.originals[index].phase = OriginalPhase::Unavailable;
+                return Ok(StorageNativeDeliveryOutcomeV2::Unavailable);
+            }
+            if action == NativeCustodyActionV2::MeasureNew {
+                if !new {
+                    return Err(OriginalHeldMeasurementErrorV3::Closed);
+                }
+                self.measure_original_authenticated_request(index, authenticated)?;
+                self.recheck_original_measurement(index, authenticated)?;
+                validate_original_clock(
+                    authenticated.request(),
+                    first,
+                    trusted_paired_clock_sample()?,
+                    cutoff,
+                )?;
+                let original = &self.original_measurements.originals[index];
+                let held = original
+                    .held
+                    .as_ref()
+                    .ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+                let reply = key.sign_native_reply(
+                    authenticated,
+                    held,
+                    random_challenge()?,
+                    trusted_paired_clock_sample()?,
+                )?;
+                // The immutable reply enters the same resident owner before
+                // any subsequent physical/journal check can fail or unwind.
+                self.original_measurements.originals[index].reply = Some(reply);
+                let current = self.recheck_original_measurement(index, authenticated)?;
+                let clock = trusted_paired_clock_sample()?;
+                validate_original_clock(authenticated.request(), first, clock, cutoff)?;
+                let original = &self.original_measurements.originals[index];
+                let held = original
+                    .held
+                    .as_ref()
+                    .ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+                let reply = original
+                    .reply
+                    .as_ref()
+                    .ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+                key.verify_native_reply(authenticated, held, reply, clock)?;
+                validate_original_clock(
+                    authenticated.request(),
+                    first,
+                    trusted_paired_clock_sample()?,
+                    cutoff,
+                )?;
+                let accepted = self
+                    .native_issuance
+                    .as_mut()
+                    .ok_or(OriginalHeldMeasurementErrorV3::Closed)?
+                    .accept_live(authenticated, held, reply, &current);
+                accepted?;
+                let original = &mut self.original_measurements.originals[index];
+                original.packet = Some(
+                    original
+                        .reply
+                        .as_ref()
+                        .ok_or(OriginalHeldMeasurementErrorV3::Closed)?
+                        .to_canonical_bytes(),
+                );
+            }
+
+            self.recheck_original_measurement(index, authenticated)?;
+            let retained = self
+                .native_issuance
+                .as_mut()
+                .ok_or(OriginalHeldMeasurementErrorV3::Closed)?
+                .retained_acceptance(authenticated.request());
+            let retained = retained?.ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+            let original = &mut self.original_measurements.originals[index];
+            let held = original
+                .held
+                .as_ref()
+                .ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+            let reply = original
+                .reply
+                .as_ref()
+                .ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+            validate_original_acceptance(&retained, reply)?;
+            if held.observe_root()? != *retained.descriptor()
+                || reply.receipt().signer() != key.verifier().projection().0
+            {
+                return Err(OriginalHeldMeasurementErrorV3::Closed);
+            }
+            key.recheck()?;
+            authenticated.recheck()?;
+            self.original_worker_startup
+                .as_mut()
+                .ok_or(OriginalHeldMeasurementErrorV3::Closed)?
+                .recheck()?;
+            let clock = trusted_paired_clock_sample()?;
+            validate_original_clock(authenticated.request(), first, clock, cutoff)?;
+            key.verify_native_reply(authenticated, held, reply, clock)?;
+            validate_original_clock(
+                authenticated.request(),
+                first,
+                trusted_paired_clock_sample()?,
+                cutoff,
+            )?;
+            let delivery_index = original.next_delivery;
+            if delivery_index >= original.deliveries.len() {
+                return Err(OriginalHeldMeasurementErrorV3::Bound);
+            }
+            original.next_delivery += 1;
+            let delivery = deliver(
+                original
+                    .packet
+                    .as_deref()
+                    .ok_or(OriginalHeldMeasurementErrorV3::Closed)?,
+                held.mount.as_fd(),
+                cutoff,
+            );
+            self.original_measurements.originals[index].deliveries[delivery_index] = Some(delivery);
+            // A late post-send refusal cannot undo transfer. Keep the exact
+            // send observation and original escrow; never report no-send or
+            // release consumer interest when the syscall straddled the cutoff.
+            validate_original_clock(
+                authenticated.request(),
+                first,
+                trusted_paired_clock_sample()?,
+                cutoff,
+            )?;
+            authenticated.recheck()?;
+            self.original_worker_startup
+                .as_mut()
+                .ok_or(OriginalHeldMeasurementErrorV3::Closed)?
+                .recheck()?;
+            validate_original_clock(
+                authenticated.request(),
+                first,
+                trusted_paired_clock_sample()?,
+                cutoff,
+            )?;
+            Ok(match delivery {
+                Ok(()) => StorageNativeDeliveryOutcomeV2::Delivered,
+                Err(()) => StorageNativeDeliveryOutcomeV2::SendAmbiguous,
+            })
+        })();
+        match result {
+            Ok(outcome) => {
+                self.original_measurements.originals[index].dispatch = None;
+                self.original_measurements.closed = false;
+                Ok(outcome)
+            }
+            Err(cause) => {
+                let original = &mut self.original_measurements.originals[index];
+                if original.first_failure.is_none() {
+                    original.first_failure = Some(cause);
+                }
+                original.phase = OriginalPhase::Failed;
+                self.readiness = StorageRuntimeReadiness::ReopenRequired;
+                Err(StorageRuntimeError::ReopenRequired)
+            }
+        }
     }
 
     fn deliver_native_original(
@@ -415,7 +641,7 @@ impl StorageBrokerRuntime {
     }
 }
 
-fn validate_original_clock(
+pub(crate) fn validate_original_clock(
     request: &SignedStorageNativeAcquireRequestV2,
     initial: RawPairedClockSample,
     later: RawPairedClockSample,

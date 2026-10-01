@@ -299,6 +299,23 @@ impl DormantStorageApplyCompositionV1 {
         self
     }
 
+    /// Transfers genuine original Storage startup into this runtime only once.
+    ///
+    /// This downward loan does not open backend readiness or confer a floor.
+    /// Existing constructors leave the original worker slot unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a duplicate, permanently closed, or changed original owner while
+    /// preserving incoming startup custody in the typed failure.
+    pub fn with_original_worker_startup(
+        mut self,
+        startup: crate::activation::StorageOriginalWorkerStartupV3,
+    ) -> Result<Self, crate::activation::StorageOriginalWorkerStartupErrorV3> {
+        self.runtime.install_original_worker_startup(startup)?;
+        Ok(self)
+    }
+
     /// Audits private Provider clone history before accepting live-export requests.
     ///
     /// # Errors

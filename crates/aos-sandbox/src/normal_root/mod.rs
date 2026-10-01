@@ -83,6 +83,105 @@ pub enum NormalRootStartupErrorV1 {
     Confinement,
 }
 
+/// Reports fixed Storage startup comparison DATA, not an admitted owner.
+///
+/// Only the closed self-observer produces this value. A successful comparison
+/// is point-in-time; it grants no dispatch, policy freeze, floor, or readiness.
+#[derive(Debug, Eq, PartialEq)]
+pub struct StorageWorkerParentDataV3 {
+    fragment: std::path::PathBuf,
+    invocation: [u8; 16],
+    executable: String,
+    arguments: Vec<String>,
+}
+
+impl StorageWorkerParentDataV3 {
+    /// Borrows the observed immutable fixed-unit fragment name.
+    pub fn fragment(&self) -> &Path {
+        &self.fragment
+    }
+
+    /// Returns the observed invocation identifier as comparison DATA.
+    pub const fn invocation(&self) -> [u8; 16] {
+        self.invocation
+    }
+
+    /// Borrows the sole reported executable path, not image authority.
+    pub fn executable(&self) -> &Path {
+        Path::new(&self.executable)
+    }
+
+    /// Borrows the exact reported fixed command arguments.
+    pub fn arguments(&self) -> &[String] {
+        &self.arguments
+    }
+}
+
+/// Observes this cap-empty direct-PID1 Storage process and its fixed unit.
+///
+/// There is no caller PID, unit, context, or observation argument. The caller
+/// independently retains original pidfd, cgroup, image and launch custody;
+/// these DATA checks are not an admission or portable currentness proof.
+///
+/// # Errors
+///
+/// Rejects unavailable process or unit observations, another process role,
+/// nonzero credentials/capabilities, changed custody, or permissive SELinux.
+pub fn observe_fixed_storage_worker_parent_v3(
+) -> Result<StorageWorkerParentDataV3, NormalRootStartupErrorV1> {
+    let process = PidFd::open(
+        NonZeroU32::new(std::process::id()).ok_or(NormalRootStartupErrorV1::Service)?,
+    )
+    .map_err(|_| NormalRootStartupErrorV1::Service)?;
+    let before = process
+        .info()
+        .map_err(|_| NormalRootStartupErrorV1::Service)?;
+    let credentials = before
+        .credentials()
+        .ok_or(NormalRootStartupErrorV1::Confinement)?;
+    if before.pid() != std::process::id()
+        || before.thread_group_id() != std::process::id()
+        || before.parent_pid() != 1
+        || [
+            credentials.real_user_id(),
+            credentials.effective_user_id(),
+            credentials.saved_user_id(),
+            credentials.filesystem_user_id(),
+            credentials.real_group_id(),
+            credentials.effective_group_id(),
+            credentials.saved_group_id(),
+            credentials.filesystem_group_id(),
+        ] != [0; 8]
+    {
+        return Err(NormalRootStartupErrorV1::Confinement);
+    }
+    let cgroup = retain_fixed_cgroup(Path::new(
+        "aos.slice/aos-control.slice/aos-storaged.service",
+    ))?;
+    cgroup
+        .verify_exact_membership(&process)
+        .map_err(|_| NormalRootStartupErrorV1::Service)?;
+    aos_sandbox_linux::selinux_policy::require_enforcing()
+        .map_err(|_| NormalRootStartupErrorV1::Confinement)?;
+    require_subject("system_u:system_r:aos_sandbox_storage_t")
+        .map_err(|_| NormalRootStartupErrorV1::Confinement)?;
+    require_status(&read_bounded("/proc/self/status", 64 * 1024)?)?;
+
+    let observed = service::observe_storage()?;
+
+    cgroup
+        .verify_exact_membership(&process)
+        .map_err(|_| NormalRootStartupErrorV1::Service)?;
+    if process.info().map_err(|_| NormalRootStartupErrorV1::Service)? != before
+        || !process
+            .is_alive()
+            .map_err(|_| NormalRootStartupErrorV1::Service)?
+    {
+        return Err(NormalRootStartupErrorV1::Service);
+    }
+    Ok(observed)
+}
+
 /// Captures only the actual initial normal-Root process descriptor table.
 ///
 /// Names/counts select slots, not authority. Capture must be the daemon's first

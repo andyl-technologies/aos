@@ -56,6 +56,22 @@ const PEER_PROPERTIES: &[&str] = &[
     "ExecStartPost",
 ];
 
+const STORAGE_UNIT: &str = "aos-storaged.service";
+const STORAGE_CGROUP: &str = "/aos.slice/aos-control.slice/aos-storaged.service";
+const STORAGE_CONTEXT: &str = "system_u:system_r:aos_sandbox_storage_t";
+const STORAGE_PROPERTIES: &[&str] = &[
+    "ControlGroup",
+    "OpenFile",
+    "ExtraFileDescriptorNames",
+    "FileDescriptorStoreMax",
+    "NFileDescriptorStore",
+    "SELinuxContext",
+    "CapabilityBoundingSet",
+    "AmbientCapabilities",
+    "NoNewPrivileges",
+    "ExecStart",
+];
+
 #[derive(Debug, PartialEq)]
 pub(super) struct ServiceObservationV1 {
     pub(super) fragment: PathBuf,
@@ -66,6 +82,72 @@ pub(super) fn observe(
     profile_path: &str,
 ) -> Result<ServiceObservationV1, NormalRootStartupErrorV1> {
     observe_at(profile_path, std::process::id())
+}
+
+/// Observes only this process's fixed Storage unit through the same PID1 reader.
+pub(super) fn observe_storage(
+) -> Result<super::StorageWorkerParentDataV3, NormalRootStartupErrorV1> {
+    let (service, unit) = read_properties(STORAGE_UNIT, std::process::id(), STORAGE_PROPERTIES)?;
+    let [cgroup, open_files, extras, maximum, stored, context, bounding, ambient, nnp, start] =
+        service.as_slice()
+    else {
+        return Err(NormalRootStartupErrorV1::Service);
+    };
+    let Value::Array(open_files) = &**open_files else {
+        return Err(NormalRootStartupErrorV1::Service);
+    };
+    let [Value::Structure(open_file)] = open_files.inner() else {
+        return Err(NormalRootStartupErrorV1::Service);
+    };
+    let [Value::Str(path), Value::Str(name), Value::U64(1)] = open_file.fields() else {
+        return Err(NormalRootStartupErrorV1::Service);
+    };
+    let Value::Array(extras) = &**extras else {
+        return Err(NormalRootStartupErrorV1::Service);
+    };
+    if <&str>::try_from(cgroup).ok() != Some(STORAGE_CGROUP)
+        || path.as_str() != "/proc/1/exe"
+        || name.as_str() != "aos-method46-pid1-image"
+        || !extras.is_empty()
+        || extras.element_signature() != Value::from("").value_signature()
+        || u32::try_from(maximum).ok() != Some(0)
+        || u32::try_from(stored).ok() != Some(0)
+        || systemd_property_data::explicit_context(context) != Some(STORAGE_CONTEXT)
+        || u64::try_from(bounding).ok() != Some(0)
+        || u64::try_from(ambient).ok() != Some(0)
+        || bool::try_from(nnp).ok() != Some(true)
+    {
+        return Err(NormalRootStartupErrorV1::Service);
+    }
+    let command = systemd_property_data::single_exec_start(start)
+        .ok_or(NormalRootStartupErrorV1::Service)?;
+    if command.pid != std::process::id()
+        || command.path.len() > 4096
+        || command.argv.len() != 12
+    {
+        return Err(NormalRootStartupErrorV1::Service);
+    }
+    let executable = command.path.to_owned();
+    let arguments = command
+        .argv
+        .iter()
+        .map(|value| {
+            let Value::Str(value) = value else {
+                return Err(NormalRootStartupErrorV1::Service);
+            };
+            if value.len() > 4096 {
+                return Err(NormalRootStartupErrorV1::Service);
+            }
+            Ok(value.as_str().to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let observed = immutable_observation(decode_unit(&unit, STORAGE_UNIT)?)?;
+    Ok(super::StorageWorkerParentDataV3 {
+        fragment: observed.fragment,
+        invocation: observed.invocation,
+        executable,
+        arguments,
+    })
 }
 
 pub(super) fn observe_at(
