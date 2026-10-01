@@ -223,6 +223,8 @@ in
               # shebang), the latter directly on disk for inspection.
               mkdir -p rootfs/nix.lower/store
               mkdir -p rootfs/nix
+              mkdir -p rootfs/usr/lib/aos
+              printf 'aos.config-bundle/v1\n' > rootfs/usr/lib/aos/configuration-capabilities
               mkdir -p rootfs/usr/bin rootfs/usr/lib
               mkdir -p rootfs/usr/lib/systemd/system-preset
               ln -sfn bin rootfs/usr/sbin

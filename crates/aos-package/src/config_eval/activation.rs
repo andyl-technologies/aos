@@ -695,7 +695,12 @@ fn verify_manifest_store_paths_realized(manifest: &ConfigManifest) -> Result<()>
     paths.extend([
         manifest.inputs.base_lib.store_path.as_str(),
         manifest.inputs.evaluator.store_path.as_str(),
-        manifest.inputs.host_nix.store_path.as_str(),
+        manifest
+            .inputs
+            .host_nix
+            .store_path
+            .strip_suffix("/host.nix")
+            .unwrap_or(&manifest.inputs.host_nix.store_path),
         manifest.inputs.instance_facts.store_path.as_str(),
     ]);
     for path in paths {
@@ -816,6 +821,11 @@ fn prepare_generation(
             .and_then(Value::as_str)
             .filter(|path| path.starts_with("/nix/store/"))
         {
+            let source = if pointer == "/inputs/host_nix/store_path" {
+                source.strip_suffix("/host.nix").unwrap_or(source)
+            } else {
+                source
+            };
             sources.push(source.to_string());
         }
     }

@@ -598,11 +598,12 @@ in {
                 # config generation to the running image before boot assessment.
                 image_default_arg=""
                 if [ -e "${cfg.hostNix}" ]; then
-                  ${pkgs.aos}/bin/aos metadata verify-binding
-                  cp -f "${cfg.hostNix}" /run/aos-eval/host.nix
+                  ${pkgs.aos}/bin/aos metadata verify-binding || exit 1
+                  host_input="${cfg.hostNix}"
                 else
                   printf '{}\n' > /run/aos-eval/host.nix
                   image_default_arg="--image-default-host"
+                  host_input=/run/aos-eval/host.nix
                 fi
                 # Prefer the immutable running image's os-release. `/etc/os-release`
                 # is a configuration overlay and can still belong to the prior image
@@ -647,7 +648,7 @@ in {
                 # non-zero. Wants ordering keeps the boot reachable; downstream
                 # manifest guards make the attempted switch a no-op.
                 ${pkgs.aos.packageRuntime}/bin/aos-package-runtime __eval \
-                  --host-nix /run/aos-eval/host.nix \
+                  --host-nix "$host_input" \
                   --base-lib "${cfg.baseLib}" \
                   --module-abi "$module_abi" \
                   --out "${cfg.manifest}" \

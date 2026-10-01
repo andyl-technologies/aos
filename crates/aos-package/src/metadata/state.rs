@@ -16,6 +16,8 @@
 //! └── current/
 //!     ├── host.nix
 //!     ├── host.nix.sig
+//!     ├── config-bundle.json  # exact bundle, when supplied
+//!     ├── source/             # complete checked source revision
 //!     ├── facts.json
 //!     ├── .metadata-result.json
 //!     └── .provisioning-result.json
@@ -36,8 +38,8 @@ use serde::{Deserialize, Serialize};
 use super::fetcher::Facts;
 use super::provisioning::{PROVISIONING_RESULT_FILE, ProvisioningResult, ProvisioningSource};
 use super::repart::{REPART_DIR, REPART_TARGETS_FILE, STORAGE_PLAN_FILE};
-use super::topology::{ARRAYS_FILE, VOLUMES_FILE};
 use super::stash::{MetadataResult, sha256_hex};
+use super::topology::{ARRAYS_FILE, VOLUMES_FILE};
 
 /// Default durable state directory.
 pub const DEFAULT_STATE_DIR: &str = "/var/lib/aos-provisioning";
@@ -152,6 +154,7 @@ pub fn cache_runtime_input(stash_dir: &Path, state_dir: &Path) -> Result<bool> {
     }
     std::fs::create_dir_all(&temp).with_context(|| format!("creating {}", temp.display()))?;
     copy_required(&host, &temp.join("host.nix"))?;
+    super::bundle::copy_source(stash_dir, &temp)?;
     copy_required(
         &stash_dir.join(PROVISIONING_RESULT_FILE),
         &temp.join(PROVISIONING_RESULT_FILE),
@@ -199,6 +202,16 @@ pub fn restore_runtime_input(stash_dir: &Path, state_dir: &Path) -> Result<bool>
                 .with_context(|| format!("clearing stale {}", path.display()))?;
         }
     }
+    super::provisioning::verify_host_binding(&current)?;
+    for name in [super::bundle::SOURCE_DIR, super::bundle::BUNDLE_FILE] {
+        let path = stash_dir.join(name);
+        if path.is_dir() {
+            std::fs::remove_dir_all(path)?;
+        } else if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+    }
+    super::bundle::copy_source(&current, stash_dir)?;
     copy_required(&current.join("host.nix"), &stash_dir.join("host.nix"))?;
     copy_required(
         &current.join(PROVISIONING_RESULT_FILE),
