@@ -2,4 +2,6 @@
 
 // Guard diagnostics reuse the operation's actual clock without another tracer.
 #[cfg(test)]
-pub(crate) use native::PhaseTrace;
+mod phase_trace;
+#[cfg(test)]
+pub(crate) use phase_trace::PhaseTrace;
