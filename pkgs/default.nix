@@ -552,14 +552,48 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       }
     );
 
-  fetchCargoVendor = args:
-    lib.fetchCargoVendor (
+  # The existing path-returning producer is the sole workspace identity. It
+  # depends on source filtering/string helpers, never on this vendor derivation.
+  canonicalWorkspaceSource = import ./tools/aos/_workspace-source.nix {inherit lib;};
+  workspaceRegistryPatches = let
+    recipe = builtins.fromJSON (builtins.readFile ./tools/aos/cargo-patches/registry-source-patches.json);
+    resolvePatch = record: let
+      components = lib.splitString "/" record.patch;
+      safePath =
+        builtins.isString record.patch
+        && lib.hasPrefix "pkgs/tools/aos/cargo-patches/" record.patch
+        && builtins.match "[A-Za-z0-9._/-]+" record.patch != null
+        && builtins.all (part: part != "" && part != "." && part != "..") components;
+    in
+      lib.throwIfNot safePath "workspace registry patch path is outside its fixed source directory"
+      (record // {patch = ../. + "/${record.patch}";});
+  in
+    lib.throwIfNot (builtins.isList recipe && recipe != [])
+    "canonical workspace requires its nonempty frozen registry patch recipe"
+    (builtins.map resolvePatch recipe);
+
+  fetchCargoVendor = args: let
+    canonicalSource = args.src == canonicalWorkspaceSource;
+    registryPatches =
+      if canonicalSource
+      then workspaceRegistryPatches
+      else args.registryPatches or [];
+    conflictingOverride =
+      canonicalSource
+      && args ? registryPatches
+      && args.registryPatches != workspaceRegistryPatches;
+  in
+    lib.throwIfNot (!conflictingOverride)
+    "canonical workspace registry source patches cannot be overridden or disabled"
+    (lib.fetchCargoVendor (
       args
       // {
         cargo = resolvedBuildPackages.rust;
         python3 = resolvedBuildPackages.python3;
         git = resolvedBuildPackages.git;
         caCertificates = resolvedBuildPackages.ca-certificates;
+        inherit registryPatches;
+        patchTool = stdenv.patch;
         inherit bootstrapTools;
         extraPaths = [
           stdenv.coreutils
@@ -573,7 +607,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         # explicit caller override without imposing one on every subprocess.
         extraLibPaths = args.extraLibPaths or [];
       }
-    );
+    ));
 
   fetchGoModules = args:
     lib.fetchGoModules (
