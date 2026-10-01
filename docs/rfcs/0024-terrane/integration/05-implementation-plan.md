@@ -517,6 +517,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   collector cases, 21 retirement cases and four decoding regressions in actual
   test processes bounded to 256 MiB. Qualification on the complete native trunk
   remains pending.
+  The 11 reviewed native checkpoint paths now replace their trunk declarations:
+  complete selected observations, metadata-only historical Guard adaptation,
+  actual consumed controls, retained fixed checkpoint effects and resumable
+  marking. All 11 match both frozen collector checkpoints byte-for-byte and
+  pass scoped AOS source formatting; the existing private producer and executor
+  namespace anchors are preserved. This adoption grants no sweep or deletion
+  authority. Native lease, lower backend and reference/Guard prerequisites
+  still need integration before the current trunk can qualify these paths.
   The shared canonical collector lease preserves whole-value proposal and
   fencing checks. Actual selected lease authority remains joint native work;
   native integration, actual crash/timer/restore qualification and complete
