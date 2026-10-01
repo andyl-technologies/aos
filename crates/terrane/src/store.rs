@@ -14,6 +14,8 @@ compile_error!("CRATE-7: wasm host futures do not support the send feature");
 mod native_clock;
 #[cfg(feature = "std")]
 mod native_effect;
+#[cfg(feature = "std")]
+pub(crate) mod protected_read;
 
 #[cfg(feature = "std")]
 pub use native_clock::NativeEffectClock;
@@ -23,6 +25,8 @@ pub(crate) use native_effect::publication as native_publication_effects;
 pub(crate) use native_effect::{EffectFault, EffectFaultProbe};
 #[cfg(feature = "std")]
 pub use native_effect::{NativeEffectFailure, NativeExclusion, NativeFsEffect};
+#[cfg(feature = "std")]
+pub use protected_read::{NativeProtectedRead, NativeProtectedRecord};
 
 use std::error::Error;
 use std::fmt;
@@ -893,6 +897,27 @@ pub trait LocalFs {
             observations.push(self.symlink_metadata(path).await);
         }
         Ok(observations)
+    }
+
+    /// Executes a fixed protected-record read in one native worker when supported.
+    ///
+    /// The recipe preserves all ordered duplicate parent observations, rejects
+    /// unsafe metadata before reading the body, and binds before/after checks to
+    /// the same nofollow descriptor. It supplies read data alone; callers retain
+    /// their complete initial and final resolver fences and actual exclusion.
+    /// The default returns `None` without I/O so the caller can use its existing
+    /// scalar read path. Wrappers with method-level fault interception keep that
+    /// fallback rather than bypassing their original observation boundaries.
+    ///
+    /// # Errors
+    /// Preserves unsafe-path, changed-incarnation and individual I/O failures in
+    /// their original order. A supported binding never reports a failed read as
+    /// an unavailable optimization or silently retries it through another path.
+    async fn read_protected_record(
+        &self,
+        _read: NativeProtectedRead,
+    ) -> Result<Option<NativeProtectedRecord>, StoreFailure> {
+        Ok(None)
     }
 
     /// Removes a file after GC, eviction, or temporary-write cleanup.

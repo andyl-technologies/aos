@@ -378,6 +378,27 @@ impl LocalFs for TokioLocalFs {
         Ok(observations)
     }
 
+    async fn read_protected_record(
+        &self,
+        read: super::NativeProtectedRead,
+    ) -> Result<Option<super::NativeProtectedRecord>, super::StoreFailure> {
+        #[cfg(unix)]
+        {
+            tokio::runtime::Handle::try_current()
+                .map_err(|error| super::protected_read::io_failure(std::io::Error::other(error)))?;
+
+            tokio::task::spawn_blocking(move || read.execute())
+                .await
+                .map_err(|error| super::protected_read::io_failure(std::io::Error::other(error)))?
+                .map(Some)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = read;
+            Ok(None)
+        }
+    }
+
     async fn remove_file(&self, path: &std::path::Path) -> std::io::Result<()> {
         tokio::fs::remove_file(path).await
     }
