@@ -26765,6 +26765,17 @@ requires-features = ["image-artifact-contract-v1"]
             "#,
         )
         .unwrap();
+        let artifacts = vec![ReleaseSnapshotArtifact {
+            package_name: "curl".into(),
+            package_version: "8.5.0".into(),
+            platform: "x86_64-linux".into(),
+            artifact_kind: "output".into(),
+            store_path: "/var/lib/store/abc-curl-8.5.0".into(),
+            store_hash: "abc".into(),
+        }];
+        let manifest_digest = hex::encode(sha2::Sha256::digest(
+            serde_json::to_vec(&artifacts).unwrap(),
+        ));
         let mut snapshot = IndexSnapshot {
             commit: "c".repeat(64),
             name: "Demo".into(),
@@ -26781,8 +26792,8 @@ requires-features = ["image-artifact-contract-v1"]
                 release_tag: "1.0.0".into(),
                 source_commit: "c".repeat(64),
                 verified_tag_oid: "a".repeat(64),
-                manifest_digest: hex::encode(sha2::Sha256::digest(b"[]")),
-                artifacts: Vec::new(),
+                manifest_digest,
+                artifacts,
                 container_release: None,
             }],
             channels: vec![ChannelSummary {
@@ -26794,6 +26805,82 @@ requires-features = ["image-artifact-contract-v1"]
         };
         db.apply_snapshot(id, &snapshot).await.unwrap();
         let before = db.list_retention_release_snapshots(id).await.unwrap();
+
+        let mut conflicting_snapshot = snapshot.clone();
+        conflicting_snapshot.release_artifact_snapshots[0].manifest_digest = "f".repeat(64);
+        assert!(db.apply_snapshot(id, &conflicting_snapshot).await.is_err());
+        db.backend
+            .execute(
+                "INSERT INTO registry_catalog_artifacts
+                     (registry_id, source_revision, package_name, package_version,
+                      platform, artifact_kind, store_path, store_hash, metadata_digest)
+                     VALUES (?1, ?2, 'stale', '1.0', 'x86_64-linux', 'output',
+                             '/nix/store/stale-output', 'stale', 'stale')",
+                &vals![id, "0".repeat(64)],
+            )
+            .await
+            .unwrap();
+        let current_artifacts = db
+            .list_current_catalog_retention_artifacts(id)
+            .await
+            .unwrap();
+        assert_eq!(current_artifacts.len(), 3);
+        assert!(
+            current_artifacts
+                .iter()
+                .all(|artifact| artifact.package_name == "curl")
+        );
+        assert!(current_artifacts.iter().any(|artifact| {
+            artifact.artifact_kind == "output"
+                && artifact.store_path == "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
+        }));
+        assert_eq!(
+            db.list_complete_package_snapshots(id).await.unwrap(),
+            [("1.0.0".to_string(), "c".repeat(64))]
+        );
+        assert!(
+            db.list_complete_package_snapshots(id + 1000)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        // A moved tag cannot select a complete snapshot of its predecessor.
+        db.backend
+            .execute(
+                "UPDATE releases SET commit_oid = ?1 WHERE registry_id = ?2",
+                &vals!["d".repeat(64), id],
+            )
+            .await
+            .unwrap();
+        assert!(
+            db.list_complete_package_snapshots(id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        db.backend
+            .execute(
+                "UPDATE releases SET commit_oid = ?1 WHERE registry_id = ?2",
+                &vals!["c".repeat(64), id],
+            )
+            .await
+            .unwrap();
+        let release_packages = db.list_packages_at_release(id, "1.0.0").await.unwrap();
+        assert_eq!(release_packages.len(), 1);
+        assert_eq!(release_packages[0].name, "curl");
+        assert_eq!(release_packages[0].latest_version.as_deref(), Some("8.5.0"));
+        assert_eq!(release_packages[0].platforms, ["x86_64-linux"]);
+        assert_eq!(
+            db.list_release_package_counts(id).await.unwrap(),
+            [("1.0.0".to_string(), 1)]
+        );
+        assert_eq!(
+            db.list_packages_at_release(id, &"c".repeat(64))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
         db.apply_snapshot(id, &snapshot).await.unwrap();
         let after = db.list_retention_release_snapshots(id).await.unwrap();

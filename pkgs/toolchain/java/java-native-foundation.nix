@@ -289,10 +289,12 @@ in
 
           ${buildPackages.file}/bin/file JavaNativeFoundation.dylib \
             | grep -q 'Mach-O 64-bit ${stdenv.hostPlatform.darwinArch} dynamically linked shared library'
-          ${buildPackages.llvm}/bin/llvm-otool -D JavaNativeFoundation.dylib \
-            | grep -qx '@rpath/JavaNativeFoundation.framework/Versions/A/JavaNativeFoundation'
-          ${buildPackages.llvm}/bin/llvm-otool -L JavaNativeFoundation.dylib \
-            | grep -q 'compatibility version 1.0.0, current version 80.0.0'
+          # Let LLVM finish writing before a successful grep can close its pipe.
+          ${buildPackages.llvm}/bin/llvm-otool -D JavaNativeFoundation.dylib > jnf-install-name.txt
+          ${buildPackages.llvm}/bin/llvm-otool -L JavaNativeFoundation.dylib > jnf-libraries.txt
+
+          grep -Fxq '@rpath/JavaNativeFoundation.framework/Versions/A/JavaNativeFoundation' jnf-install-name.txt
+          grep -Fq 'compatibility version 1.0.0, current version 80.0.0' jnf-libraries.txt
         '';
       }
       {

@@ -70,7 +70,7 @@
               "systemctl --failed --no-legend --no-pager; "
               "cat /proc/mounts; "
               "ls -la /var/home /var/roothome /home /root 2>&1; "
-              "journalctl -u home.mount -u root.mount -u systemd-tmpfiles-setup.service "
+              "journalctl -u home.mount -u root.mount -u aos-homes.service "
               "--no-pager --output=cat 2>&1 | tail -n 40"
           )
 
@@ -106,16 +106,16 @@
       workstation.succeed("echo root-note > /root/note")
       workstation.succeed("test \"$(cat /var/roothome/note)\" = root-note")
 
-      # Root's apm authoring tree is created by tmpfiles on the state volume.
+      # The native seed service prepares root's authoring tree on the state volume.
       workstation.succeed("test -d /root/.config/apm/registries.d")
 
-      # A user's edit to a skeleton-seeded file must survive activation
-      # reruns of tmpfiles: the copy rule only fires for a missing file.
+      # A user's edits survive rerunning the native seed service; existing files
+      # are retained while missing skeleton files are copied into the home.
       workstation.succeed(
           "systemd-run --wait --quiet --uid=alice --gid=alice "
           "bash -c 'echo \"export EDITED=yes\" >> \"$HOME/.bashrc\"'"
       )
-      workstation.succeed("systemd-tmpfiles --create /etc/tmpfiles.d/aos-homes.conf")
+      workstation.succeed("systemctl restart aos-homes.service")
       workstation.succeed("grep -q EDITED /home/alice/.bashrc")
 
       workstation.reboot(timeout=600)

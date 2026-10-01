@@ -81,6 +81,8 @@ in
   assert workerEffects.credential.operations.deliver.effects.k3s.input.name == "k3s-token";
   assert workerEffects.kernelModules.operations.ensure.effects.k3s.input.required;
   assert builtins.elem "br_netfilter" workerEffects.kernelModules.operations.ensure.effects.k3s.input.modules;
+  assert builtins.elem "xt_physdev" workerEffects.kernelModules.operations.ensure.effects.k3s.input.modules;
+  assert builtins.elem "xt_physdev" combinedEffects.kernelModules.operations.ensure.effects.k3s.input.modules;
   assert workerEffects.kernelTunables.operations.ensure.effects.settings.input.values."net.ipv4.ip_forward" == "1";
   assert workerEffects.network.operations.ready.effects.k3s.input.scope == "address-configured";
   assert workerEffects.kubernetes.operations.ensure.effects == {};

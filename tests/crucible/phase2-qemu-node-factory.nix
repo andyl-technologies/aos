@@ -12,9 +12,16 @@
     entry = ../../crates/crucible-qemu/src/lib.rs;
   };
   nodeFactory = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu/src/node_factory.rs)
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/node_factory.rs;
+    })
     (builtins.readFile ../../crates/crucible-qemu/src/node_factory/restore_plan.rs)
   ];
+  nodeFactoryProduction =
+    builtins.readFile ../../crates/crucible-qemu/src/node_factory.rs
+    + builtins.readFile ../../crates/crucible-qemu/src/node_factory/restore_plan.rs;
+
   nodeFactoryTests = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu/src/node_factory/tests.rs;
@@ -195,15 +202,15 @@
       }
       {
         label = "runtime authorization check before restore";
-        needle = "validate_runtime_restore_authorization(authorization, admission)?;\n    let prepared_setup = prepare_qemu_node_setup";
+        needle = "if let Err(error) = validate_runtime_restore_authorization(authorization, admission)";
       }
       {
         label = "local setup prepared before restore";
-        needle = "let prepared_setup = prepare_qemu_node_setup(setup, shmem_config, send_authorizer)?;\n    qmp.restore_checkpoint_vmstate";
+        needle = "let mut prepared_setup = match prepare_qemu_node_setup(setup, shmem_config, send_authorizer)";
       }
       {
         label = "authorized VMState restore";
-        needle = "qmp.restore_checkpoint_vmstate(checkpoint, authorization)";
+        needle = "qmp.restore_checkpoint_vmstate_authorized(checkpoint)";
       }
       {
         label = "runtime purpose enforcement";
@@ -234,7 +241,7 @@
         needle = "mod tests;";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/node_factory.rs" nodeFactory [
+    ++ forbiddenFor "crates/crucible-qemu/src/node_factory.rs" nodeFactoryProduction [
       {
         label = "public QMP unwrap escape hatch";
         needle = "pub fn into_inner";
@@ -381,11 +388,11 @@
       }
       {
         label = "cfg-test-only admission constructor";
-        needle = "    #[cfg(test)]\n    pub(crate) const fn for_test";
+        needle = "    #[cfg(all(test, target_os = \"linux\"))]\n    pub(crate) const fn for_test";
       }
       {
         label = "baked genesis load authorization";
-        needle = "pub const fn authorize_baked_genesis_runtime";
+        needle = "pub(crate) const fn authorize_baked_genesis_runtime";
       }
       {
         label = "baked genesis load purpose";

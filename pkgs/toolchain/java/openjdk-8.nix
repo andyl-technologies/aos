@@ -1342,10 +1342,11 @@ in
                 -delete_rpath ${java-native-foundation}/lib \
                 -add_rpath @loader_path/../../../server \
                 "$bundledJnf"
-              ${buildTools.llvm}/bin/llvm-otool -l "$bundledJnf" \
-                | grep -q '@loader_path/../../../server'
-              ! ${buildTools.llvm}/bin/llvm-otool -l "$bundledJnf" \
-                | grep -Fq '${java-native-foundation}/lib'
+              # Early grep exits can abort LLVM and make the absence check pass.
+              ${buildTools.llvm}/bin/llvm-otool -l "$bundledJnf" > jnf-load-commands.txt
+
+              grep -Fq '@loader_path/../../../server' jnf-load-commands.txt
+              ! grep -Fq '${java-native-foundation}/lib' jnf-load-commands.txt
 
               # dsymutil records the pre-install libjvm location in the dSYM's
               # relocation manifest. Preserve the complete symbols while making

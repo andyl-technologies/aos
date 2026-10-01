@@ -8,14 +8,29 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
+  pluginAbi = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/abi.rs;
+  };
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginWhitebox =
-    builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs
+    import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+    }
     + builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
-  pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
-  pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
-  pluginBlockIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs;
+  pluginNetworkTx = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/network_tx.rs;
+  };
+  pluginNetworkRx = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/network_rx.rs;
+  };
+  pluginBlockIo = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/block_io.rs;
+  };
   pluginNinePIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -198,7 +213,7 @@
       }
       {
         label = "network RX invalid payload test";
-        needle = "network_rx_rejects_invalid_payload_before_queue_or_flush";
+        needle = "network_rx_rejects_invalid_payload_before_delivery";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [

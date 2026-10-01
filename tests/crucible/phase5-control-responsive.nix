@@ -15,7 +15,10 @@
   daemonLib = builtins.readFile ../../crates/crucible-daemon/src/lib.rs;
   daemonControl = builtins.readFile ../../crates/crucible-daemon/src/control_responsiveness.rs;
   daemonGateTest = builtins.readFile ../../crates/crucible-daemon/tests/gate_control_responsive.rs;
-  sessionGateTest = builtins.readFile ../../crates/crucible-session/tests/gate_control_responsive.rs;
+  sessionGateTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-session/tests/gate_control_responsive.rs;
+  };
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   harnessLib = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
   gateTargetNix = builtins.readFile ./phase1-gate-target-mapping.nix;

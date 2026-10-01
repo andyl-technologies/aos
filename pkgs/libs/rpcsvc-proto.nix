@@ -187,6 +187,7 @@ in
     checks = {
       testing,
       self,
+      pkgs,
       ...
     }: {
       rpcgen = testing.mkToolCheck {
@@ -197,10 +198,13 @@ in
 
       catalogs = testing.mkVMTest {
         name = "lib-rpcsvc-proto-nls";
-        rootfsDeps = [self];
+        rootfsDeps = [self pkgs.binutils];
         testScript = ''
-          test -d ${self}/share/locale
-          find ${self}/share/locale -type f -name '*.mo' | grep .
+          # This release has no upstream .po files to install. Verify that
+          # rpcgen retains its gettext calls rather than requiring catalogs
+          # that do not exist in the source archive.
+          ${pkgs.binutils}/bin/readelf --dyn-syms --wide ${self}/bin/rpcgen \
+            | grep -E ' (gettext|dcgettext)(@|$)'
         '';
       };
     };

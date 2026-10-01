@@ -139,7 +139,18 @@ in
       tool = testing.mkToolCheck {
         pname = "tool-sudo";
         tool = self;
-        command = "sudo -V > /tmp/sudo-version && grep -q 'Sudo version' /tmp/sudo-version && grep -q 'PAM' /tmp/sudo-version && grep -q 'SELinux' /tmp/sudo-version && grep -q 'Linux audit' /tmp/sudo-version && grep -q 'LDAP' /tmp/sudo-version";
+        command = ''
+          # The minimal guest must provide a valid policy before root's feature dump.
+          printf 'root ALL=(ALL:ALL) ALL\n' > /etc/sudoers &&
+          chmod 0440 /etc/sudoers &&
+          sudo -V > /tmp/sudo-version &&
+          cat /tmp/sudo-version &&
+          grep -q 'Sudo version' /tmp/sudo-version &&
+          grep -q 'PAM' /tmp/sudo-version &&
+          grep -q 'SELinux' /tmp/sudo-version &&
+          grep -F -- '--with-linux-audit' /tmp/sudo-version &&
+          grep -F -- '--with-ldap' /tmp/sudo-version
+        '';
       };
     };
 

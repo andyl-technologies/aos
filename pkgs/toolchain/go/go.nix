@@ -708,6 +708,8 @@ in
             self
             pkgs.llvm
             pkgs.zlib
+            pkgs.stdenv.gcc
+            pkgs.glibc.dev
           ];
           memory = 768;
           testScript = ''
@@ -723,25 +725,27 @@ in
             export LD_LIBRARY_PATH="${pkgs.zlib}/lib:$LD_LIBRARY_PATH"
             mkdir -p "$GOPATH" "$GOCACHE" /tmp/cgo-integration
 
-            BT="${builtins.toString pkgs.bootstrapTools}"
-            DL=$(ls "$BT"/lib/ld-linux-*.so.* | head -1)
-            GCC_VER=$(ls "$BT"/lib/gcc/x86_64-unknown-linux-gnu)
-
-            # --sysroot=/ points at the Firecracker guest rootfs assembled for
-            # this VM test, not at the host filesystem or Nix build sandbox root.
-            cat > /tmp/clang-cgo << EOF
+            # Clang needs the raw GCC installation and split glibc outputs;
+            # bootstrapTools is the stdenv compiler wrapper, not that tree.
+            cat > /tmp/clang-cgo << 'EOF'
             #!/bin/sh
-            exec ${pkgs.llvm}/bin/clang \\
-              --sysroot=/ \\
-              -isystem "$BT/include-glibc" \\
-              -B"$BT/lib" \\
-              -B"$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER" \\
-              -L"$BT/lib" \\
-              -L"$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER" \\
-              -Wl,-dynamic-linker="$DL" \\
-              -Wl,-rpath,"$BT/lib" \\
-              -Wl,-rpath,"$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER" \\
-              "\$@"
+            linking=true
+            for argument in "$@"; do
+              case "$argument" in
+                -c|-S|-E|-fsyntax-only) linking=false ;;
+              esac
+            done
+
+            set -- -isystem ${pkgs.glibc.dev}/include "$@"
+            if "$linking"; then
+              # CGO also compiles with -Werror. Linker-only flags must stay
+              # out of those invocations so Clang does not reject unused input.
+              set -- --gcc-toolchain=${pkgs.stdenv.gcc} \
+                -B${pkgs.glibc}/lib -L${pkgs.glibc}/lib \
+                -Wl,-dynamic-linker=${pkgs.glibc}/lib/${stdenv.hostPlatform.dynamicLinker} \
+                -Wl,-rpath,${pkgs.glibc}/lib "$@"
+            fi
+            exec ${pkgs.llvm}/bin/clang "$@"
             EOF
             chmod +x /tmp/clang-cgo
 

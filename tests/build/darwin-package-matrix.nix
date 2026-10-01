@@ -101,6 +101,63 @@
     nativeToolPackages
   );
 
+  pathScanner = pkgs.mkDerivation {
+    pname = "darwin-ephemeral-path-scanner";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.gawk];
+    phases = [
+      {
+        name = "check";
+        script = ''
+          assert_classification() {
+            expected="$1"
+            file="$2"
+            text="$3"
+            if printf '%s\n' "$text" \
+              | gawk -v file="$file" -f ${./fixtures/darwin-ephemeral-paths.awk}; then
+              actual=leak
+            else
+              actual=clean
+            fi
+            if test "$actual" != "$expected"; then
+              printf 'Expected %s, got %s in %s: %s\n' "$expected" "$actual" "$file" "$text" >&2
+              exit 1
+            fi
+          }
+
+          cmake=/nix/store/fixture-cmake-4/bin/cmake
+          buildx=/nix/store/fixture-docker-buildx-1/bin/docker-buildx
+          ordinary=/nix/store/fixture-other-1/bin/tool
+
+          for method in commands targets; do
+            assert_classification clean "$cmake" "/build/$method"
+            assert_classification clean "$cmake" "/build/$method/"
+            assert_classification leak "$cmake" "/build/$method/source.c"
+            assert_classification leak "$cmake" "/build/$method /build/source.c"
+            assert_classification leak "$ordinary" "/build/$method"
+          done
+
+          prune='/build/prune/containers//checkpoints'
+          cancel='prefix /build/cancel/checkpoints//attestations'
+          assert_classification clean "$buildx" "$prune"
+          assert_classification clean "$buildx" "$cancel"
+          assert_classification leak "$ordinary" "$prune"
+          assert_classification leak "$ordinary" "$cancel"
+          assert_classification leak "$buildx" '/build/prune/source.c'
+          assert_classification leak "$buildx" '/build/cancel/source.c'
+          assert_classification leak "$buildx" "$prune /build/source.c"
+          assert_classification leak "$buildx" "$cancel /build/source.c"
+          assert_classification leak "$ordinary" 'rpath=/build/lib'
+          assert_classification clean "$ordinary" 'example.com/project/build/tool'
+
+          mkdir -p "$out"
+          printf 'PASS: 20 path classifications\n' > "$out/result"
+        '';
+      }
+    ];
+  };
+
   mkAggregate = name: checks:
     pkgs.mkDerivation {
       pname = "darwin-package-matrix-${name}";
@@ -248,7 +305,7 @@
                 # treating every `/build/` component as ephemeral rejects
                 # canonical language package names rather than build roots.
                 if ${pkgs.llvm}/bin/llvm-strings -a "$file" \
-                  | grep -E '(^|[[:space:]"=:(;,])/build/' >/dev/null; then
+                  | gawk -v file="$file" -f ${./fixtures/darwin-ephemeral-paths.awk}; then
                   echo "ephemeral /build path in Darwin output: $file" >&2
                   exit 1
                 fi
@@ -529,8 +586,10 @@
 in
   matrices
   // {
+    path-scanner = pathScanner;
     all = mkAggregate "all" (
-      builtins.map (targetSystem: matrices.${targetSystem}.all) (
+      [pathScanner]
+      ++ builtins.map (targetSystem: matrices.${targetSystem}.all) (
         builtins.attrNames targetSystems
       )
     );

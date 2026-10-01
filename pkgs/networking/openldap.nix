@@ -310,7 +310,7 @@ in
       cli = testing.mkToolCheck {
         pname = "tool-openldap";
         tool = self;
-        command = "slapd -VV";
+        command = "${self}/libexec/slapd -VV";
       };
 
       soname = testing.mkSONAMECheck {

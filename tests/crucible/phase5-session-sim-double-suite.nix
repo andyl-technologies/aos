@@ -16,7 +16,10 @@
   defaultChecks = builtins.readFile ./default.nix;
   sessionManifest = builtins.readFile ../../crates/crucible-session/Cargo.toml;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  sessionGateTest = builtins.readFile ../../crates/crucible-session/tests/gate_control_responsive.rs;
+  sessionGateTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-session/tests/gate_control_responsive.rs;
+  };
   sessionExplorationForkTest = builtins.readFile ../../crates/crucible-session/tests/gate_exploration_fork.rs;
   sessionExplorationLifecycleTest = builtins.readFile ../../crates/crucible-session/tests/gate_exploration_lifecycle.rs;
   apiManifest = builtins.readFile ../../crates/crucible-api/Cargo.toml;

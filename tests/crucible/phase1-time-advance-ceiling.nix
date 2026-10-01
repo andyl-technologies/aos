@@ -9,9 +9,15 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   shmemFrameNode =
-    builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
+    import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+    }
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/futex.rs;
-  handoffTest = builtins.readFile ../../crates/crucible-shmem/tests/advance_ceiling_handoff.rs;
+  handoffTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-shmem/tests/advance_ceiling_handoff.rs;
+  };
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   defaultChecks = builtins.readFile ./default.nix;

@@ -175,11 +175,17 @@ in
         pname = "lib-libproxy";
         library = self;
         libs = ["-lproxy"];
+        includes = [
+          "${self}/include/libproxy"
+          "${glib.dev}/include/glib-2.0"
+          "${glib.dev}/lib/glib-2.0/include"
+        ];
+        extraDeps = [glib glib.dev];
         testSource = ''
           #include <proxy.h>
 
           int main(void) {
-              px_proxy_factory *factory = px_proxy_factory_new();
+              pxProxyFactory *factory = px_proxy_factory_new();
               if (factory == NULL) {
                   return 1;
               }

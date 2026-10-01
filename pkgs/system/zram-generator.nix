@@ -61,7 +61,7 @@
   };
   cargoDeps = fetchCargoDeps {
     inherit src;
-    hash = "sha256-Nzrv8uaCpUeGraGe+DFNfO5hcIfK7p7AB0YbfW1EHdc=";
+    hash = "sha256-WnUHXMiOJJhAi/ZmBHqvVKalqa+a5lq0YAKFlaaOnJM=";
   };
 in
   mkDerivation {

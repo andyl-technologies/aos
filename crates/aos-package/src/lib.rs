@@ -3859,7 +3859,21 @@ pub async fn run_apr(
     run_registry(&config, command, dry_run, printer).await
 }
 
-/// Reports whether a registry subcommand implements the global preview mode.
+/// Reports whether a registry subcommand honors the global `--dry-run` flag.
+///
+/// `--dry-run` is a promise that nothing is written, so a command that accepts
+/// the flag and mutates anyway breaks it in the most damaging direction. The
+/// dispatcher refuses the flag for anything absent from this list rather than
+/// silently ignoring it, and [`crate::dry_run`] enforces the promise beneath
+/// the handlers.
+///
+/// Read-only subcommands are absent on purpose. `--dry-run` means nothing for
+/// them, and accepting it would suggest the flag had been considered where it
+/// had not; refusing says plainly that the command never writes anyway.
+///
+/// `release` is accepted only when its explicit preview option is set.
+/// Clap propagates that option into the global flag as well, so rejecting
+/// the global value would also reject valid release previews.
 fn implements_global_dry_run(command: &RegistryCommand) -> bool {
     matches!(
         command,
@@ -3879,6 +3893,7 @@ fn implements_global_dry_run(command: &RegistryCommand) -> bool {
             | RegistryCommand::Pull { .. }
             | RegistryCommand::Push { .. }
             | RegistryCommand::Remove { .. }
+            | RegistryCommand::Release { dry_run: true, .. }
             | RegistryCommand::Sign { .. }
             | RegistryCommand::Store { .. }
             | RegistryCommand::Tag { .. }

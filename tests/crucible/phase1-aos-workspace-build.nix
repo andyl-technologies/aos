@@ -2,6 +2,7 @@
   pkgs,
   lib,
 }: let
+  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   requiredAttrs = [
     "crucible"
     "crucible-controller"
@@ -50,7 +51,7 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase1-aos-workspace-build";
       version = "0";
-      src = null;
+      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
@@ -62,14 +63,29 @@ in
 
       phases = [
         {
+          name = "unpack";
+          script = ''
+            cp -R "$src" source
+            chmod -R u+w source
+            cd source
+          '';
+        }
+        {
           name = "check";
           script = ''
             set -eu
 
             stale_shmem_label="crucible-shmem-abi-v$((10 - 1))"
-            if grep -R "$stale_shmem_label" crates pkgs tests docs; then
+            # Match the complete identity so deliberate invalid-version
+            # fixtures such as v999 do not masquerade as the retired v9 ABI.
+            if grep -RE "$stale_shmem_label([^[:alnum:]_-]|$)" crates pkgs tests docs; then
               echo "stale shared-memory ABI identity: $stale_shmem_label" >&2
               exit 1
+            else
+              case "$?" in
+                1) ;;
+                *) echo "shared-memory ABI source scan failed" >&2; exit 1 ;;
+              esac
             fi
 
             test -x ${packages.crucible}/bin/crucible
@@ -114,7 +130,7 @@ in
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^gdb_package=gdb$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^gdb_path=${packages.gdb}/bin/gdb$' \
+            grep -q '^gdb_path=${pkgs.gdb}/bin/gdb$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^gdb_license=GPL-3.0-or-later$' \
               ${packages.crucible}/nix-support/crucible-build-info
@@ -173,9 +189,9 @@ in
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
             grep -q '^qemu_plugin_header=${packages.qemu-crucible}/include/qemu-plugin.h$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
-            grep -q '^qemu_plugin_api_version=4$' \
+            grep -q '^qemu_plugin_api_version=7$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
-            grep -q '^qemu_plugin_abi=qemu-plugin-api-v4$' \
+            grep -q '^qemu_plugin_abi=qemu-plugin-api-v7$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
             grep -q '^shmem_abi_version=17$' \
               ${packages.crucible-qemu-plugin}/nix-support/crucible-qemu-plugin-build-info
@@ -234,7 +250,7 @@ in
             plugin_library=lib/libcrucible_qemu_plugin.so
             plugin_search_path=lib/qemu/plugins/crucible-qemu-plugin.so
             qemu_discovery_hint=runtime-environment-wrapper
-            qemu_plugin_abi=qemu-plugin-api-v4
+            qemu_plugin_abi=qemu-plugin-api-v7
             shmem_abi=crucible-shmem-abi-v17
             guest_host_protocol_abi=crucible-guest-host-channel-v1
             rpc_abi=5.1.0+crucible-rpc-abi-v5

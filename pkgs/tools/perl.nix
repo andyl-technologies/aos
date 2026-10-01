@@ -46,6 +46,10 @@
     if isDarwin
     then stdenv.cc
     else gccUnwrapped;
+  recordedBinutils =
+    if stdenv.isCross
+    then stdenv.binutils
+    else binutils;
   # Linux cross compilation uses the construction libc. Its public utilities are
   # completed with target Perl later, so recording that public package here
   # would introduce an interpreter/libc dependency cycle.
@@ -119,9 +123,9 @@ in
     version = "=${version}";
 
     # Two outputs: $out is the scrubbed, ship-ready interpreter; $dev
-    # preserves the unmodified Config.pm / Config_heavy.pl so a future
-    # developer can audit the build-time toolchain or rebuild an
-    # XS-capable variant.
+    # preserves Config.pm / Config_heavy.pl for development inspection.
+    # Darwin metadata names tools without retaining Linux construction
+    # wrappers, which cannot execute on the target host.
     outputs = ["out" "dev"];
 
     src = fetchurl {
@@ -146,7 +150,7 @@ in
     # the original configuration for inspection.
     outputChecks = {
       out = {
-        disallowedReferences = [recordedGcc recordedGccUnwrapped recordedCc gnumake];
+        disallowedReferences = [recordedGcc recordedGccUnwrapped recordedCc recordedBinutils gnumake];
       };
     };
 
@@ -364,6 +368,7 @@ in
               "${recordedCc}" \
               "${recordedGcc}" \
               "${recordedGccUnwrapped}" \
+              "${recordedBinutils}" \
               "${recordedLibc}" \
               "${recordedLibc.dev}" \
               "${recordedLibc.static}" \
@@ -401,6 +406,15 @@ in
           + (
             if isDarwin
             then ''
+              # Development metadata retains the ABI and configure options,
+              # but its tool names must not retain Linux wrapper closures or
+              # the temporary native compiler used for source generation.
+              sed -i \
+                -e "s|${recordedCc}/bin/||g" \
+                -e "s|$TMPDIR/perl-native-tools/cc-for-build|cc-for-build|g" \
+                "$dev"/lib/perl5/*/*/Config.pm \
+                "$dev"/lib/perl5/*/*/Config_heavy.pl
+
               # Perl installs generated module data and documentation outside
               # the generic executable/config scrub set. Remove build-time
               # store references from every shipped regular file while

@@ -8,6 +8,7 @@
   aosWorkspaceIntegrationSource,
   aosWorkspaceVendor,
   bash,
+  ca-certificates,
   git-minimal,
   nix,
   openssh,
@@ -130,14 +131,18 @@
     "aos-ability-model"
     "aos-ability-plan"
     "aos-ability-runtime"
+    "aos-boot-identity"
     "aos-cache"
     "aos-contract"
     "aos-core"
     "aos-doc"
     "aos-doc-model"
     "aos-hub"
+    "aos-hub-console"
+    "aos-hub-console-contract"
     "aos-hub-core"
     "aos-hub-worker"
+    "aos-image-finalizer"
     "aos-maintain"
     "aos-net"
     "aos-oci"
@@ -146,6 +151,7 @@
     "aos-profile"
     "aos-proto"
     "aos-proto-types"
+    "aos-recovery"
     "aos-registry-spa"
     "aos-registry-surface"
     "aos-release"
@@ -337,7 +343,7 @@ in
     # the `aos` runtime closure because maintainer commands create, inspect,
     # commit, and publish isolated Git worktrees without host tools.
     buildDeps =
-      [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildNix buildOpenSsh buildZstd buildDbus remove-references-to]
+      [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildNix buildOpenSsh buildZstd buildDbus remove-references-to ca-certificates]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
       [coreutils openssl sqlite libssh2 zlib]
@@ -429,6 +435,9 @@ in
 
         cleanup_pinned_bus
         trap - EXIT HUP INT TERM
+
+        # Nextest does not execute public documentation examples.
+        cargo test --doc --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}
       fi
     '';
 
@@ -438,6 +447,8 @@ in
       # linked dependency DWARF in addition to the workspace's size-optimized
       # test profile. The shipped release artifact is built independently
       # above and is unaffected.
+      # SDK clients load trust roots even when tests use loopback HTTP.
+      export SSL_CERT_FILE="${ca-certificates}/etc/ssl/certs/ca-certificates.crt"
       export CARGO_PROFILE_TEST_STRIP=debuginfo
       export OPENSSL_DIR="${openssl}"
       export OPENSSL_LIB_DIR="${openssl}/lib"

@@ -93,6 +93,31 @@
     resolverProvenanceCannotBeForged = rejects forgedProvenance;
     effectCollisionRejected = rejects collision;
   };
+  loginPolicy = operatorModules: lib.evalPackageModules {
+    scope = ["profile" "login-provenance"];
+    packages = [pkgs.aos-host-policy pkgs.systemd];
+    inherit operatorModules;
+  };
+  loginBase = loginPolicy [];
+  loginSession = loginPolicy [{
+    environment.sessionVariables.PROVENANCE_TEST = "host";
+    aos.abilities.configuration.operations.file.effects.operator-login.input = {
+      path = "/etc/profile.d/operator-login.sh";
+      content = "export PROVENANCE_TEST=host\n";
+      mode = "0644";
+    };
+  }];
+  # Derived login files keep their authenticated package owner when operator
+  # session values change; separately authored files retain operator custody.
+  loginPathChecks = {
+    retainedLoginPathCustody =
+      (byInstance loginBase "login-package-path").owner == "aos-host-policy"
+      && (byInstance loginBase "login-package-path").input.path == "/etc/profile.d/10-apm-path.sh"
+      && (byInstance loginSession "login-package-path").owner == "aos-host-policy";
+    authoredLoginPathCustody =
+      (byInstance loginSession "operator-login").owner == "@environment"
+      && (byInstance loginSession "operator-login").input.path == "/etc/profile.d/operator-login.sh";
+  };
   mkCheck = name: valid:
     assert valid;
       pkgs.mkDerivation {
@@ -107,9 +132,10 @@
           '';
         }];
       };
-  suites = lib.mapAttrs mkCheck checks;
+  suites = lib.mapAttrs mkCheck (checks // loginPathChecks);
 in {
-  inherit suites checks;
+  inherit suites;
+  checks = checks // loginPathChecks;
   all = pkgs.mkDerivation {
     pname = "config-provenance-check";
     version = "0";

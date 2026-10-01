@@ -112,6 +112,7 @@ in rec {
     searchTreeGrowth = import ./phase0-search-tree.nix {inherit pkgs;};
   };
   phase1 = {
+    rustSourceScrub = import ./rust-source-scrub.nix {inherit pkgs lib;};
     aosWorkspaceBuild = import ./phase1-aos-workspace-build.nix {inherit pkgs lib;};
     adversarialHostFixture = import ./phase1-adversarial-host-fixture.nix {inherit pkgs lib;};
     contractAIsolation = import ./phase1-contract-a-isolation.nix {inherit pkgs lib;};
@@ -191,6 +192,7 @@ in rec {
     qemuNinePShmem = import ./phase1-qemu-9p-shmem.nix {inherit pkgs lib;};
     pluginTimeAdvance = import ./phase1-plugin-time-advance.nix {inherit pkgs lib;};
     pluginRuntimeApis = import ./phase1-plugin-runtime-apis.nix {inherit pkgs lib;};
+    qmpCommand = import ./qmp-command.nix {inherit pkgs;};
     simAccel = import ./phase1-sim-accel.nix {inherit pkgs lib;};
     rrFingerprintHelpers = import ./phase1-rr-fingerprint-helpers.nix {inherit pkgs lib;};
     phaseGateOrdering = import ./phase1-phase-gate-ordering.nix {inherit pkgs lib;};
@@ -400,6 +402,8 @@ in rec {
     qemu9pSyncKick = import ./phase2-qemu-9p-sync-kick.nix {inherit pkgs lib;};
     qemuWhiteboxGuestWrite = import ./phase2-qemu-whitebox-guest-write.nix {inherit pkgs lib;};
     qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {inherit pkgs lib;};
+    qemuQueuedInvalidation = import ./phase2-qemu-queued-invalidation.nix {inherit pkgs lib;};
+    qemuRuntimeSemantics = import ./phase2-qemu-runtime-semantics.nix {inherit pkgs lib;};
     qemuRawStateExport = import ./phase2-qemu-raw-state-export.nix {inherit pkgs lib;};
     qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
     qemuDetIpi = import ./phase2-qemu-det-ipi.nix {inherit pkgs lib;};

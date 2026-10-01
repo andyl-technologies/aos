@@ -36,6 +36,8 @@ The series currently creates these QEMU source files:
 | `target/arm/crucible-register.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `target/i386/crucible-register.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/tcg/plugins/crucible-register.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/tcg/aarch64/system/crucible-smp-invalidation.S` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/tcg/plugins/run-crucible-smp-invalidation.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/tcg/plugins/crucible-instruction.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/tcg/plugins/crucible-memory.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/tcg/plugins/crucible-memory-access.c` | GPL-2.0-or-later | Explicit SPDX identifier |

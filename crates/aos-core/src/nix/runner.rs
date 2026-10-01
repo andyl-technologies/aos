@@ -567,11 +567,7 @@ impl NixRunner {
         }
         // Package aliases and configuration companions share store paths.
         // Query each path once so shared inputs cannot cross batch boundaries.
-        let unique_paths: Vec<_> = paths
-            .iter()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
+        let unique_paths: Vec<_> = paths.iter().collect::<BTreeSet<_>>().into_iter().collect();
 
         for batch in unique_paths.chunks(128) {
             // The packaged Nix 2.24 emits v1 object JSON by default and does not

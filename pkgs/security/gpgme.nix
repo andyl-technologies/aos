@@ -189,6 +189,7 @@ in
         pname = "lib-gpgme";
         library = self;
         libs = ["-lgpgme"];
+        extraDeps = [libgpg-error];
         testSource = ''
           #include <gpgme.h>
 

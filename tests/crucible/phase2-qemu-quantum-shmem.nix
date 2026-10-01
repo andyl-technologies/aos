@@ -8,7 +8,10 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  quantumLib = builtins.readFile ../../crates/crucible-qemu/src/quantum.rs;
+  quantumLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/quantum.rs;
+  };
   # Production-only slice (everything before the `#[cfg(test)]` module): the
   # no-unwrap/no-expect forbids apply to production code; test code is allowed
   # panic shortcuts, matching the workspace clippy allow policy. `splitString`
@@ -147,7 +150,7 @@
       }
       {
         label = "SPSC inbound dequeue";
-        needle = ".dequeue(self.view.inbound_entries)";
+        needle = ".dequeue(hot_path.view.inbound_entries)";
       }
       {
         label = "stale report rejection";
@@ -179,7 +182,7 @@
       }
       {
         label = "lookahead rejection test";
-        needle = "qemu_quantum_rejects_horizon_that_would_pass_possible_frame_delivery";
+        needle = "qemu_quantum_caps_horizon_at_next_possible_frame_delivery";
       }
       {
         label = "outbound frame test";

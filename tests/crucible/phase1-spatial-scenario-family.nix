@@ -47,8 +47,8 @@
         needle = "pub struct PinnedConfiguration";
       }
       {
-        label = "fixed-point fault density";
-        needle = "pub struct FaultDensity";
+        label = "concrete family parameters";
+        needle = "pub struct FamilyParams";
       }
       {
         label = "topology shape axis";
@@ -83,8 +83,8 @@
         needle = "pub fn genesis_configuration(&self) -> PinnedConfiguration";
       }
       {
-        label = "density generates plan faults";
-        needle = "params.fault_density.scaled_count";
+        label = "family topology generation leaves fault programs independent";
+        needle = "fn build_plan(&self, _world: &World, _params: FamilyParams)";
       }
       {
         label = "random topology is deterministic from seed";
@@ -93,39 +93,27 @@
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
       {
-        label = "ScenarioFamily re-export";
-        needle = "ScenarioFamily";
-      }
-      {
-        label = "PinnedScenario re-export";
-        needle = "PinnedScenario";
-      }
-      {
-        label = "PinnedConfiguration re-export";
-        needle = "PinnedConfiguration";
-      }
-      {
-        label = "focused scenario family test";
+        label = "finite family regression";
         needle = "scenario_family_pins_concrete_validated_instances";
       }
       {
-        label = "test pins concrete scenario";
+        label = "pinned genesis";
         needle = "pinned.genesis_configuration()";
       }
       {
-        label = "test round-trips pinned concrete form";
-        needle = "round_tripped_pinned_form";
+        label = "canonical pinned form round trip";
+        needle = "ScenarioDefForm::from_compact_binary(&pinned.form().to_compact_binary())";
       }
       {
-        label = "test covers bounded finite sampling";
-        needle = "tiny_total";
+        label = "finite exhaustive sampling";
+        needle = "for index in 0..total";
       }
       {
-        label = "test decouples random topology from density";
-        needle = "random_zero_faults.form().world()";
+        label = "separate fault plan layer";
+        needle = "pinned.form().plan(), &Plan::empty()";
       }
       {
-        label = "test rejects out-of-space params";
+        label = "out-of-space sampling rejected";
         needle = "ScenarioFamilyParameterOutOfSpace";
       }
     ]

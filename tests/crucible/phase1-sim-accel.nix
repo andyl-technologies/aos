@@ -325,8 +325,8 @@ in
               test -f accel/tcg/tcg-accel-ops-sim.c
               grep -F -q 'TYPE_SIM_ACCEL' accel/tcg/tcg-all.c
               grep -F -q 'ACCEL_OPS_NAME("sim")' accel/tcg/tcg-accel-ops-sim.c
-              grep -F -q 'g_str_equal(ac->name, "sim")' accel/accel-target.c
-              grep -F -q 'ACCEL_CLASS_NAME("tcg")' accel/accel-target.c
+              grep -F -q 'g_str_equal(ac->name, "sim")' accel/accel-common.c
+              grep -F -q 'ACCEL_CLASS_NAME("tcg")' accel/accel-common.c
               grep -F -q 's->mttcg_enabled = false' accel/tcg/tcg-all.c
               grep -F -q '.instance_init = tcg_accel_instance_init' accel/tcg/tcg-all.c
               grep -F -q '.instance_size = sizeof(TCGState)' accel/tcg/tcg-all.c
