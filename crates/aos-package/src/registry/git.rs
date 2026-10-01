@@ -169,7 +169,7 @@ pub(crate) async fn sync_git_with_continuity(
     let progress = printer.transfer(&format!("Updating registry '{}'", config.name), 0);
 
     // Step 1: Ensure repo; assemble the trusted key set.
-    progress.phase("Preparing registry update");
+    progress.activity_phase("Preparing registry update");
     let key_store = KeyStore::new(trusted_keys_dirs.to_vec());
     let enforcing = signing_enforced(config);
     let trusted_keys = assemble_trusted_set(&key_store, config);
@@ -233,7 +233,7 @@ pub(crate) async fn sync_git_with_continuity(
         .await?
     };
 
-    progress.phase("Verifying registry trust");
+    progress.activity_phase("Verifying registry trust");
     let channel_roster_head = if let TrackingMode::Channel(channel_name) = tracking_mode {
         if !fetched_roster_head {
             Some(
@@ -292,7 +292,7 @@ pub(crate) async fn sync_git_with_continuity(
     // Step 5: Determine the selected release commit.
     let mut record_successful_freshness = true;
     let resolved_head = if let TrackingMode::Channel(channel_name) = tracking_mode {
-        progress.phase("Resolving signed release channel");
+        progress.activity_phase("Resolving signed release channel");
         match resolve_channel_head(
             config,
             &git_url,
@@ -350,6 +350,8 @@ pub(crate) async fn sync_git_with_continuity(
         )
         .await?;
     }
+
+    progress.activity_phase("Verifying registry release");
 
     // Verify the selected release commit. When the selected commit is also
     // the roster commit, the pre-pin signature check above is the continuity
@@ -422,7 +424,7 @@ pub(crate) async fn sync_git_with_continuity(
     };
 
     // Step 7: Extract authenticated tree files used by consumers.
-    progress.phase("Installing registry catalog");
+    progress.activity_phase("Installing registry catalog");
     let registry_cache_dir = cache_dir.join(&config.name);
     let packages_dir = registry_cache_dir.join("packages");
     let old_packages = count_toml_files(&packages_dir).await;

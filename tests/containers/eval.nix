@@ -213,6 +213,13 @@ in
   assert testing.config.aos.release.url == "https://cdn.aos.andyl.org/andyl/testing/";
   assert testing.config.aos.apm.registries.andyl-testing.url == "https://cdn.aos.andyl.org/andyl/testing/";
   assert lib.hasInfix "https://cdn.aos.andyl.org/andyl/testing/" testingFileText;
+  assert testing.config.aos.apm.registries.andyl-testing.rootOwnerSigners == ["andyl-testing-provenance-v1"];
+  assert lib.hasInfix
+  ''root_owner_signers = ["andyl-testing-provenance-v1"]''
+  testing.config.environment.etc."apm/registries.d/andyl-testing.toml".text;
+  assert lib.hasInfix
+  ''root_owner_signers = ["andyl-testing-provenance-v1"]''
+  testingFileText;
   assert testing.config.aos.release.channel == "edge";
   assert builtins.attrNames testing.config.aos.apm.registries == ["andyl-testing"];
   assert testingAos.publication.repository == "aos-testing";

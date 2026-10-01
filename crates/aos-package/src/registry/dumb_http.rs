@@ -141,7 +141,9 @@ pub(crate) async fn fetch_with_progress(
             // hash-verifies every still-missing object (the dumb-HTTP layout
             // guarantees loose completeness). On success, prune what the pack
             // already covered so the loose phase only fetches the remainder.
-            set_phase(progress, "Indexing registry packs");
+            if let Some(progress) = progress {
+                progress.activity_phase("Indexing registry packs");
+            }
             let indexed =
                 tokio::task::spawn_blocking(move || repo::index_packs_blocking(&repo_path, &packs))
                     .await
@@ -188,7 +190,9 @@ pub(crate) async fn fetch_with_progress(
         }
     }
     if !ref_writes.is_empty() {
-        set_phase(progress, "Updating registry references");
+        if let Some(progress) = progress {
+            progress.activity_phase("Updating registry references");
+        }
         let repo_dir = repo_dir.to_path_buf();
         tokio::task::spawn_blocking(move || -> Result<()> {
             for (refname, oid) in ref_writes {

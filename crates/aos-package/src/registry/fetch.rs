@@ -333,6 +333,9 @@ async fn fetch_delta(
         if !download_optional_to_file(origin, &relative, &download_path, progress).await? {
             continue;
         }
+        if let Some(progress) = progress {
+            progress.activity_phase("Indexing registry delta");
+        }
         if compressed {
             pack::zstd_decompress(&download_path, None)
                 .await
@@ -373,6 +376,10 @@ async fn fetch_full_pack(
     let pack_path = local_pack_path(repo_dir, &pack_name)?;
     if !download_optional_to_file(origin, &pack_relative, &pack_path, progress).await? {
         return Ok(None);
+    }
+
+    if let Some(progress) = progress {
+        progress.activity_phase("Indexing registry release pack");
     }
 
     // libgit2's pack writer regenerates and verifies the index, so the
