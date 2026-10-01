@@ -1,103 +1,52 @@
-# Signed AOS Hub hybrid staging delivery
+# Local AOS Hub hybrid delivery
 
-`application-project.nix` is application intent. The public hostname is the
-Worker; the separately reviewed origin reaches the Native service. The Native
-service owns PostgreSQL and ordinary application APIs. Infrastructure selects
-the external runtime identity, Cloud SQL, TCP readiness and eleven pinned
-private credential files. No provider coordinates or credentials belong here.
+Build, test and deploy the Hub from a trusted local AOS environment. GitHub
+Actions and CI are not part of the delivery or qualification procedure. Use the
+[hybrid deployment runbook](../docs/maintainers/aos-hub-hybrid-deployment.md) for
+the Worker-fronted Native service and the
+[manual Worker deployment runbook](../docs/maintainers/aos-hub-deployment.md) for
+Workers-only serving.
 
-The new `delivery-hub-staging.yml` runs only for a same-repository push to
-`dplecki/hub-hybrid-topology`, using the exact registered workflow identity.
-It reconciles the base graph, builds and qualifies the actual image, catalogs
-the image, scans both that catalog and the AOS closure SPDX, uploads one
-immutable v2 artifact through the dedicated intake audience, then submits the
-anchored signed release graph through the staging audience. Infrastructure
-owns graph expansion, signatures, Cloud Deploy and runtime continuations.
+`application-project.nix` remains the application-owned Native deployment
+intent. Runtime identities, PostgreSQL and protected credential files must be
+selected and provisioned separately. The declaration does not create resources,
+initialize state or establish a successful serving revision.
 
-## Required live registration
+## Local build and qualification
 
-Before the workflow can succeed, reviewed infra registration for
-`aos-hub-hybrid` must be published from protected master, independently
-qualified and selected by the signed staging engine channel. A local grant or
-provider apply does not install application source admission. Keep the two
-protected GitHub environments separate:
+Pin one exact source commit and retain the actual image, source and qualification
+receipts. The existing local targets remain available:
 
-| Environment | Role | WIF audience |
-| --- | --- | --- |
-| `aos-hub-hybrid-staging-artifact` | Artifact intake only | `https://github.com/andyl-technologies/aos/delivery/staging/artifact` |
-| `aos-hub-hybrid-staging` | Registered staging reconciliation | `https://github.com/andyl-technologies/aos/delivery/staging/staging` |
+```sh
+nix-build -A containerImages.aos-hub.ociIndex --no-out-link
+nix-build -A containerImages.aos-hub.evidence --no-out-link
+nix-build -A containerImages.aos-hub.checks.reproducibility --no-out-link
+nix-build -A checks.fleet.hub-native-container --no-out-link
+nix-build -A checks.fleet.hub-hybrid --no-out-link
+```
 
-Each environment receives its own emitted `DELIVERY_WORKLOAD_IDENTITY_PROVIDER`,
-`DELIVERY_SERVICE_ACCOUNT`, `DELIVERY_WIF_AUDIENCE`, and `DELIVERY_ENDPOINT`.
-They are API-only identities. No service-account key, provider permission,
-signing key, registry credential or direct infrastructure workflow belongs in
-the application workflow. These protections and CODEOWNERS must be configured
-with actual repository reviewers before accepting production authority.
+Run targeted Native process, Worker runtime and fleet checks using matching
+source-built AOS tools and artifacts. Preserve failures and pending gates;
+successful image construction or TCP readiness alone does not qualify the
+Worker/Native pair or its provider paths.
 
-Actual applied identities, archive recipients, signing/trust/evidence outputs,
-eleven enabled secret versions and initialized PostgreSQL are prerequisites.
-The service artifact neither creates those resources nor initializes state on
-every rollout. See the existing Hub hybrid deployment maintainer runbook.
+The local artifact inventory/scanning sources and `pkgs.grype`/`pkgs.syft`
+packages remain available. Use an independently fetched, SHA-256-pinned
+vulnerability database and retain its integrity, schema and age checks. Empty
+package recognition or zero findings does not establish complete coverage or
+runtime qualification.
 
-## Evidence and scanning
+## Deployment and publisher status
 
-The build gate runs actual container reproducibility, the Native container
-fleet check and hybrid fleet check. It uses AOS-built Python, Git, Grype and
-Syft, with no nixpkgs tools. The database is an independently fetched,
-SHA-256-pinned official archive exposed by
-`pkgs.grype.passthru.databaseArchive`; automatic updates are disabled. Integrity,
-schema and a 120-hour build-age bound are enforced. Refresh the reviewed pin
-when it expires; do not disable the age check.
+Follow the operator runbooks to install protected configuration and match the
+Worker's deployment identity, storage attachment, Native origin and shared
+ingress/storage keys. Qualify the actual installed source and unchanged runtime
+before enabling independently accepted provider work.
 
-The bundle retains actual image catalog, closure SPDX and original AOS build
-provenance, along with actual Grype reports and exact Git source/configuration
-digests. Normalizing the component source tag changes only the OCI index tag;
-the wrapper records both original and normalized index digests. Static Rust
-inventory is augmented from the compiler-artifact messages present in the final
-Hub image, using actual crates.io package IDs and excluding proc-macro, build
-script, test and executable records. These are conservative compiled-library
-candidates; some build-only libraries may remain. The evidence retains the
-metadata source hash and the selection rules. Static Rust and Nix package
-recognition must be audited from real artifact evidence before
-claiming full vulnerability coverage. Empty package recognition cannot pass
-the catalog gate. Zero findings alone do not establish qualification.
-
-Unit scanner fixtures test bytes and rejection behavior only. They never
-supply workflow evidence, a signed receipt or a real qualification claim.
-The release workflow fails closed when registration or evidence is missing.
-
-Before submitting the signed Native rollout, deploy and configure the
-independently named Worker at `aos-hybrid.staging.andyl.org`. Its R2 attachment,
-deployment ID, Native origin setting and shared ingress/storage keys must match
-the reviewed pair. Provision its Cloudflare hostname/route and actual secrets
-through the existing operator runbook. The signed storage capability endpoint
-and versioned console assets are served locally by the Worker and must work
-while the Native origin is unavailable. Native checks both before opening its
-listener, so the Worker must already be reachable.
-
-The public Custom Domain uses the existing Cloudflare-owned `andyl.org` zone.
-Its DNS record and certificate belong to the Worker deployment. The separate
-`aos-hybrid-origin.staging.andyl.org` hostname needs the dedicated GCP origin
-frontend, certificate authorization and DNS owner declared in the companion
-infrastructure registration. Origin DNS must not also own the public Worker
-record. A hostname declaration alone does not provision either endpoint.
-
-Then submit the signed Native rollout and its single policy/backend
-continuation. Once Native is listening and the rollout settles, qualify the
-HTTPS origin and public Worker/Native pair, and run hosted fleet/browser checks
-before accepting the public hub. Cloud Run TCP readiness alone does not
-establish successful hybrid operation. This workflow does not claim that those
-hosted checks or pairing have already succeeded.
-
-## Resuming observation
-
-The client prints and writes the operation name immediately after submission.
-If an observation deadline expires, inspect that existing operation through
-the registered API instead of creating another release. In the same exact
-workflow/source context, `aos-delivery watch --endpoint URL --source-sha SHA
---declaration FILE --phase application --operation operations/NAME` observes
-a base graph without resubmitting. Release observation selects `--phase
-release-graph` and requires the original `--artifact-coordinate FILE` and
-`--generation-anchor operations/NAME`. The client fences the full public source,
-registered target, retained artifact and engine anchor before observation.
-The caller must still have the appropriate current API and GitHub proofs.
+The former Actions-specific `aos-delivery` transport is retired from the
+delivery procedure. Its source remains for the separate local publisher
+implementation; it currently requires an Actions identity proof and is not a
+working manual publisher. Do not fabricate workflow environment values or
+bypass its source/authentication checks. A local replacement must preserve
+exact source/artifact commitments and the independently authorized deployment
+protocol. No automated release submission is claimed here.

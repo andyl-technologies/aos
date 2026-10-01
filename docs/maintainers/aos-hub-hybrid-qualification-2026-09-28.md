@@ -1427,8 +1427,9 @@ authenticated credential file.
 The reviewed plan is promotable: 46 foundation no-ops, zero Google resource
 changes and one nonsensitive contract output. Apply succeeds with existing
 encrypted state preserved. All four local gates, seven module fixtures, the
-complete OpenTofu module policy check and the required CI gate pass. The
-bootstrap change has not been merged; merge approval is pending. This does not
+complete OpenTofu module policy check and the then-configured automation gate
+pass. AOS builds and qualification run locally; GitHub Actions is not required.
+The bootstrap change has not been merged; merge approval is pending. This does not
 deploy a serving revision or resolve the separate execution-engine publication
 capacity block.
 
