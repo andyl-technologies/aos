@@ -1,7 +1,8 @@
 //! Runs the dedicated, transport-only Git Gateway's fixed PID1 entry point.
 //!
-//! The service cannot start accepting until a real node-network envelope lane
-//! exists. Neither process startup nor transport READY authorizes Git effects.
+//! The transport requires an explicit service-memcg/advisory-memory profile.
+//! Observed memory is not reserved capacity. Neither process startup nor
+//! transport READY authorizes Git effects.
 
 use std::process::ExitCode;
 
