@@ -471,6 +471,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   exclusion and queued/running cancellation assertions. The exact mandatory
   Rust-check and all-format sequence now passes on the trunk; native execution
   of these fixtures still requires the complete Guard/reference source graph.
+  The actual current trunk aggregate stops in `bundle-verify` compilation,
+  before test execution, with 30 diagnostics. Missing Guard, domain and
+  protected installation APIs include the collector fixture's namespace and
+  registration types; remaining inference diagnostics are retained separately.
   Qualification exposed
   an overwrite fixture still targeting the previous rename primitive and three
   fixtures retaining their own namespace receipts while waiting to reacquire.
