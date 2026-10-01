@@ -425,12 +425,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   opened descriptors and kernel exclusion through worker acknowledgment.
   An effective-UID mismatch refuses before any root/control creation. The
   supported non-Send build, strict rustdoc and mandatory formatting pass on
-  that candidate. Strict Clippy exposes a large shared receipt variant and
-  test-only assertion diagnostics; the shared outcome now boxes its opaque
-  receipt, and narrowly scoped test corrections remain under qualification.
+  that candidate. The shared outcome now boxes its opaque receipt, and the
+  reviewed test-only assertion corrections pass formatting and strict rustdoc.
+  Strict Clippy still fails on shared diagnostics; no lint is suppressed.
   The capability gate now requires all 14 new exact cases, raising its floor
-  from 24 to 38; actual Nix qualification and complete source integration
-  remain pending.
+  from 24 to 38. Actual Nix qualification passes all 38 exact cases on the
+  frozen initializer graph. Three native fault/read fixtures now forward the
+  actual initialization binding without changing their interception or
+  assertions. On that graph, the corrected file CAS gate passes all 44 exact
+  cases and the probe gate passes all 10. Complete source integration and
+  whole-task qualification remain pending.
   Qualification exposed
   an overwrite fixture still targeting the previous rename primitive and three
   fixtures retaining their own namespace receipts while waiting to reacquire.
@@ -455,10 +459,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   after the unchanged original origins. A later original untraced multiwriter
   process passes in 40.700 seconds including setup and final assertions.
   The grouped 33-selector run passes 32 cases and fails the unchanged
-  two-second cancellation-barrier arrival. That full-run failure leaves
-  reference-gate qualification incomplete; one successful original untraced
-  process does not establish reliable timing. No deadline change or speedup
-  is claimed.
+  two-second cancellation-barrier arrival. Subsequent actual Nix qualification
+  passes all four reference gates on that same frozen source: 16 exact ordering
+  cases, five epoch-fencing cases, three watch cases and 12 commit-order cases.
+  Each gate runs individual exact test processes with the original bounds.
+  These passes preserve the grouped-run failure as separate evidence and do
+  not establish reliable timing. Forwarding the new initializer through the
+  native reference adapters and joint source qualification remain pending.
+  No deadline change or speedup is claimed.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,
@@ -536,10 +544,20 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   on the frozen reviewed collector graph: 13 native lease cases, five runner
   fencing and progress cases, and one independent non-Send Rc case. Native
   source integration and full collector gates remain pending; foreign ownership,
-  disclosure, present Notes, grace, sweep, restore and deletion are incomplete.
+  disclosure, grace, sweep, restore and deletion are incomplete.
   D-83 reconciles opaque advisory Notes with commit-bearing GC roots while
-  preserving their whole selected values in current fences; actual present-Notes
-  inventory, marking and fence regressions remain pending.
+  preserving their whole selected values in current fences. Two actual Notes
+  regressions pass: opaque and RefRecord-shaped Notes stay outside commit
+  roots, Derived refs remain roots, and a changed selected Note invalidates
+  stale whole-inventory publication. Completed resume independently reopens
+  the FileBucket, Guard and retention verifier and preserves the original
+  selected Notes. Both collector fixture bindings now invoke genuine native
+  initialization; the non-Send Rc case passes independently, and the native
+  collector run passes all 24 selected cases. The unchanged singleton-lease
+  Nix gate again passes all 19 exact cases on this initializer-compatible graph.
+  Strict rustdoc, non-Send compilation and mandatory formatting pass; strict
+  Clippy remains blocked by shared diagnostics. Full collector qualification
+  and source integration remain pending.
   An unrepaired observation hook retains the actual writable holder role and
   fresh complete chain checks so live-other-holder, stale lease or Guard
   rejection can precede every cache effect. A separately anchored test clock
