@@ -45,6 +45,13 @@ pub(super) fn hold_run_result(
     completed: &mut BTreeMap<NodeId, HeldHostRun>,
     boundaries: &mut BTreeMap<NodeId, HeldBoundaryRun>,
 ) -> Result<(), SchedulerError> {
+    if run.dispatch_contract == crate::BackendDispatchContract::ControlV3
+        && !matches!(&result, ConcurrentBackendRunResult::Completed(_))
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from("control 3 cannot supply a native Source boundary receipt"),
+        });
+    }
     let node = run.plan.node.node.clone();
     if completed.contains_key(&node) || boundaries.contains_key(&node) {
         return Err(SchedulerError::BoundaryViolation {

@@ -58,9 +58,12 @@ where
                 "fixed input cannot cross another retained actor owner",
             ));
         }
-        if self.backend.io_inventory_authority()
-            == crate::BackendIoInventoryAuthority::SchedulerOwnedModel
+        if self.selected_dispatch_contract()? == crate::BackendDispatchContract::ControlV3
+            || self.backend.io_inventory_authority()
+                == crate::BackendIoInventoryAuthority::SchedulerOwnedModel
         {
+            // Control 3 keeps genuine queue service in its installed backend.
+            // It supplies no native Source inventory or fixed-input receipt.
             return Ok(None);
         }
         if self.pending_fixed_input.is_none() {

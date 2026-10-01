@@ -18,6 +18,22 @@ pub use io_inventory::{
     BackendIoNativeCaps, BackendIoQueueSnapshot,
 };
 
+/// Selects the implemented execution contract before scheduler dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackendDispatchContract {
+    /// Requires independently retained native Source admission and inventory.
+    PhysicalSource,
+    /// Executes exact scheduler ceilings through control protocol version 3.
+    ///
+    /// The installed backend retains and services its real queues. Scheduler
+    /// admissions bind actor planning only and do not grant native Source
+    /// authority. Each completed RUN ends at its published bounded ceiling or
+    /// an authenticated earlier physical stop. Incoming producer lookahead
+    /// bounds completed ceilings strictly before possible delivery; windows
+    /// without a positive representable safe tick are refused.
+    ControlV3,
+}
+
 /// A VM backend boundary declared by the engine.
 pub trait Backend {
     /// Advances the backend to `horizon`.
@@ -135,6 +151,15 @@ pub trait SimulationBackend {
         Err(BackendError::Unsupported {
             capability: "queue_device_group_selection",
         })
+    }
+
+    /// Returns the positively selected execution contract.
+    ///
+    /// Unclassified backends require genuine native Source admission. A
+    /// versioned control backend selects its installed protocol explicitly;
+    /// refusal or missing observations never change this contract.
+    fn dispatch_contract(&self) -> BackendDispatchContract {
+        BackendDispatchContract::PhysicalSource
     }
 
     /// Returns the implemented owner of complete I/O queue observations.

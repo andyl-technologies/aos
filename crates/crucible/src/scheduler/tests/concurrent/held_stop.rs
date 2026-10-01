@@ -18,6 +18,7 @@ impl Clone for GuestStopBackend {
         Self {
             base: TestConcurrentBackend {
                 inner: self.base.inner.clone(),
+                control_v3: self.base.control_v3,
                 fail: self.base.fail,
                 run_sizes: self.base.run_sizes.clone(),
                 run_history: self.base.run_history.clone(),

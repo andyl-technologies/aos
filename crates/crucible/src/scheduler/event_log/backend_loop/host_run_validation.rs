@@ -18,7 +18,8 @@ pub(super) fn validate_host_run_outcome(
         ticks: planned.plan.ceiling.max_advance_icount,
     };
     let reached = completed.step.reached;
-    if reached.ticks < planned.admission.semantic_horizon().icount.retired
+    if planned.dispatch_contract == crate::BackendDispatchContract::PhysicalSource
+        && reached.ticks < planned.admission.semantic_horizon().icount.retired
         && matches!(
             completed.step.physical_stop,
             BackendPhysicalStop::Horizon | BackendPhysicalStop::UnclassifiedPause

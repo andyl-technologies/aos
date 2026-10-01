@@ -2030,6 +2030,14 @@ fn parked_selectable_step(
 }
 
 impl SimulationBackend for QemuNodeSet {
+    fn dispatch_contract(&self) -> crucible::BackendDispatchContract {
+        // This adapter implements the selected installed protocol, not the
+        // unimplemented native Source admission contract.
+        const _: () = assert!(crucible_protocol::CONTROL_PROTOCOL_VERSION == 3);
+        const _: () = assert!(crucible_shmem::ABI_VERSION == 30);
+        crucible::BackendDispatchContract::ControlV3
+    }
+
     fn step_node_with_admission(
         &mut self,
         admission: &crucible::PreparedRunAdmission,

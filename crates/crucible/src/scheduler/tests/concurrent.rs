@@ -10,8 +10,12 @@ mod network_output;
 #[path = "concurrent/held_stop.rs"]
 mod held_stop;
 
+#[path = "concurrent/control_v3.rs"]
+mod control_v3;
+
 struct TestConcurrentBackend {
     inner: MockSimulationBackend,
+    control_v3: bool,
     fail: bool,
     run_sizes: Vec<usize>,
     run_history: Vec<ConcurrentBackendRun>,
@@ -23,6 +27,7 @@ impl TestConcurrentBackend {
     fn new(fail: bool) -> Self {
         Self {
             inner: MockSimulationBackend::new(),
+            control_v3: false,
             fail,
             run_sizes: Vec::new(),
             run_history: Vec::new(),
@@ -61,8 +66,20 @@ impl TestConcurrentBackend {
 }
 
 impl SimulationBackend for TestConcurrentBackend {
+    fn dispatch_contract(&self) -> crate::BackendDispatchContract {
+        if self.control_v3 {
+            crate::BackendDispatchContract::ControlV3
+        } else {
+            crate::BackendDispatchContract::PhysicalSource
+        }
+    }
+
     fn io_inventory_authority(&self) -> crate::BackendIoInventoryAuthority {
-        crate::BackendIoInventoryAuthority::SchedulerOwnedModel
+        if self.control_v3 {
+            crate::BackendIoInventoryAuthority::PhysicalSource
+        } else {
+            crate::BackendIoInventoryAuthority::SchedulerOwnedModel
+        }
     }
 
     fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
@@ -128,8 +145,7 @@ impl ConcurrentSimulationBackend for TestConcurrentBackend {
                 message: String::from("injected host worker failure"),
             });
         }
-        Ok(runs
-            .into_iter()
+        runs.into_iter()
             .map(|run| {
                 let node = run.node().clone();
                 let network_outputs = self
@@ -156,7 +172,11 @@ impl ConcurrentSimulationBackend for TestConcurrentBackend {
                 if !network_outputs.is_empty() {
                     step.physical_stop = crate::BackendPhysicalStop::NetworkOutput;
                 }
-                if network_outputs.is_empty()
+                if self.control_v3 {
+                    self.inner.step_node_to(&node, step.reached)?;
+                }
+                if !self.control_v3
+                    && network_outputs.is_empty()
                     && step.reached.ticks < run.admission.semantic_horizon().icount.retired
                 {
                     let boundary = BackendRunDispatchBoundary {
@@ -166,22 +186,24 @@ impl ConcurrentSimulationBackend for TestConcurrentBackend {
                         admission: run.admission,
                     };
                     self.retained_dispatch.insert(node, boundary.clone());
-                    return ConcurrentBackendRunResult::DispatchBoundary(boundary);
+                    return Ok(ConcurrentBackendRunResult::DispatchBoundary(boundary));
                 }
                 step.applied_preemptions = run
                     .preemptions
                     .into_iter()
                     .filter(|command| command.at.ticks <= step.reached.ticks)
                     .collect();
-                ConcurrentBackendRunResult::Completed(ConcurrentBackendRunOutcome {
-                    node,
-                    step,
-                    rng_evidence: Vec::new(),
-                    network_outputs,
-                    observations: Vec::new(),
-                })
+                Ok(ConcurrentBackendRunResult::Completed(
+                    ConcurrentBackendRunOutcome {
+                        node,
+                        step,
+                        rng_evidence: Vec::new(),
+                        network_outputs,
+                        observations: Vec::new(),
+                    },
+                ))
             })
-            .collect())
+            .collect()
     }
 
     fn resume_dispatch_boundary(
