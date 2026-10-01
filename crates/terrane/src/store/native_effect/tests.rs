@@ -78,6 +78,49 @@ fn parents(path: &std::path::Path) -> Vec<ParentFence> {
         .collect()
 }
 
+#[test]
+fn root_owned_leaf_policy_preserves_actual_operator_ancestor() {
+    let (root, held) = fixture();
+    let operator_ancestor =
+        MetadataStamp::checked(&std::fs::symlink_metadata(&root).unwrap()).unwrap();
+    let root_owned_leaf = MetadataStamp::checked(&std::fs::symlink_metadata("/").unwrap()).unwrap();
+    assert_eq!(root_owned_leaf.owner, 0);
+
+    let policy = FencePolicy::ProtectedAncestor {
+        owner: operator_ancestor.owner,
+    };
+    policy.validate(root_owned_leaf).unwrap();
+
+    // Both stamps come from real filesystem metadata. An unprivileged fixture
+    // cannot install a UID 0 descendant below this operator-owned directory,
+    // so this exercises the actual ownership policy rather than a mixed path.
+    let configured_owner = policy.configured_owner();
+    assert_eq!(configured_owner, operator_ancestor.owner);
+    FencePolicy::ProtectedAncestor {
+        owner: configured_owner,
+    }
+    .validate(operator_ancestor)
+    .unwrap();
+    check_parents(&held.path, &parents(&held.path), configured_owner).unwrap();
+
+    if operator_ancestor.owner != 0 {
+        assert!(
+            FencePolicy::ProtectedAncestor {
+                owner: root_owned_leaf.owner,
+            }
+            .validate(operator_ancestor)
+            .is_err()
+        );
+    }
+    eprintln!(
+        "actual root-owned leaf UID {}; actual configured-operator ancestor UID {}",
+        root_owned_leaf.owner, operator_ancestor.owner,
+    );
+
+    drop(held);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn effect(held: &HeldLock, plan: Plan) -> NativeFsEffect {
     NativeFsEffect {
         exclusions: vec![NativeExclusion::from_held_descriptor(

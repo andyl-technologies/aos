@@ -52,6 +52,18 @@ enum FencePolicy {
 }
 
 impl FencePolicy {
+    /// Keeps ancestor ownership bound to the configured operator, even for a root-owned leaf.
+    fn configured_owner(self) -> u32 {
+        match self {
+            Self::ProtectedAncestor { owner }
+            | Self::NamespaceDirectory { owner }
+            | Self::PrivateControlDirectory { owner }
+            | Self::NamespaceCoordination { owner }
+            | Self::ProtectedRecord { owner }
+            | Self::Payload { owner } => owner,
+        }
+    }
+
     fn validate(self, stamp: MetadataStamp) -> io::Result<()> {
         let valid = match self {
             Self::ProtectedAncestor { owner } => {
@@ -202,7 +214,7 @@ impl NamedFence {
         let named = std::fs::symlink_metadata(&self.path)?;
         let actual = MetadataStamp::checked(&named)?;
         self.policy.validate(actual)?;
-        check_parents(&self.path, &self.parents, self.stamp.owner)?;
+        check_parents(&self.path, &self.parents, self.policy.configured_owner())?;
         if !actual.same_incarnation(self.stamp) {
             return Err(io::Error::other("current physical fence changed"));
         }
