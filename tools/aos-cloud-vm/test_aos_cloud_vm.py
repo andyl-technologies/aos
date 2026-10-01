@@ -11,8 +11,8 @@ import sys
 import tempfile
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "tools/aos-cloud-vm"
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = Path(__file__).resolve().with_name("aos-cloud-vm.sh")
 
 FAKE = r'''
 import json, os, pathlib, sys
