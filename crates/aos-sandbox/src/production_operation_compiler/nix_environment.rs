@@ -13,7 +13,7 @@
 //! serialized by their existing Core data codecs:
 //!
 //! ```text
-//! {"version":2,"identities":[controllerUID,controllerGID,ownerUID,ownerGID],
+//! {"version":2,"identities":[controllerUID,controllerGID,builderUID,builderGID],
 //!  "node":...,"deployment":...,"endpoint":...,"domain":...,
 //!  "domain_commitment":...,"disclosure":...}
 //! ```
@@ -27,7 +27,7 @@ use aos_sandbox_broker_session_protocol::manifest::{
 use aos_sandbox_core::format::decode_trust_policy;
 use aos_sandbox_core::{
     BrokerPlanTrustAnchor, DecodeLimits, KeyUsage, MediaType, NodeId, ObjectDescriptor,
-    ObjectDigest, OperationId, OwnershipLeaseTrustAnchor, PortableMediaType, ResourceId,
+    ObjectDigest, OperationId, OwnershipLeaseTrustAnchor, PortableMediaType,
     RevocationScopeId, SandboxId, SignaturePurpose, descriptor_for_bytes,
 };
 use aos_sandbox_ownership_protocol::{OwnershipAuthorityVerifier, UnverifiedOwnershipLeaseResponse};
@@ -35,7 +35,6 @@ use aos_sandbox_protocol::nix_build::{
     NIX_REQUEST_MAXIMUM_BYTES_V2, NixBuildSchemaErrorV2, VerifiedNixRecipeArtifactV2,
     verify_nix_recipe_artifact_v2,
 };
-use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::Journal;
@@ -51,11 +50,13 @@ use crate::runtime_scope::{CurrentRuntimeScopePolicy, RuntimeScopeHolder};
 mod authority;
 mod carrier;
 mod continuation;
+mod fixed_domain;
 
 pub(crate) use authority::CheckedStartAuthorityV2;
 pub(crate) use carrier::NixStartAdmissionCarrierV2;
 use carrier::OriginalAssignmentV2;
 pub use continuation::{CurrentRetainedNixStartV2, NixStartContinuationErrorV2};
+pub use fixed_domain::{NixFixedDomainPinsDataV2, NixFixedDomainPinsDecodeErrorV2};
 
 const CATALOG_MAGIC: &[u8; 8] = b"AOSNRC02";
 const CATALOG_DOMAIN: &[u8] = b"aos.sandbox.nix.recipe-catalog.v2\0";
@@ -87,19 +88,6 @@ pub enum NixStartAdmissionErrorV2 {
     Invalid,
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct FixedDomainPinsV2 {
-    version: u16,
-    identities: [u32; 4],
-    node: NodeId,
-    deployment: ObjectDigest,
-    endpoint: ResourceId,
-    domain: ResourceId,
-    domain_commitment: ObjectDigest,
-    disclosure: ObjectDigest,
-}
-
 /// Owns original installed startup and twelve exact fixed PUBLIC credentials.
 ///
 /// Construction cannot accept caller paths, keys, policies, catalogs or a
@@ -107,7 +95,7 @@ struct FixedDomainPinsV2 {
 /// admission and never choose the durable operation identity.
 pub struct ControllerNixStartRecipeSelectorV2 {
     startup: Arc<ProductionControllerNixStartupV1>,
-    pins: FixedDomainPinsV2,
+    pins: NixFixedDomainPinsDataV2,
     credentials: [PinnedSystemdCredential; 12],
     recipes: Vec<VerifiedNixRecipeArtifactV2>,
 }
@@ -144,19 +132,15 @@ impl ControllerNixStartRecipeSelectorV2 {
             PinnedSystemdCredential::load_nix_mount_plan_public_key()?,
             PinnedSystemdCredential::load_nix_mount_plan_revocation_scope()?,
         ];
-        let pins: FixedDomainPinsV2 = serde_json::from_slice(credentials[1].bytes())?;
-        if serde_json::to_vec(&pins)? != credentials[1].bytes()
-            || pins.version != 2
-            || pins.node != node
+        let pins = NixFixedDomainPinsDataV2::decode(credentials[1].bytes())
+            .map_err(|error| match error {
+                NixFixedDomainPinsDecodeErrorV2::Encoding(source) => {
+                    NixStartAdmissionErrorV2::Encoding(source)
+                }
+                NixFixedDomainPinsDecodeErrorV2::Invalid => NixStartAdmissionErrorV2::Invalid,
+            })?;
+        if pins.node != node
             || pins.identities[..2] != [controller_uid, controller_gid]
-            || pins.identities.contains(&0)
-            || pins.identities[0] == pins.identities[2]
-            || pins.identities[1] == pins.identities[3]
-            || pins.node.as_bytes() == &[0; 16]
-            || pins.endpoint.as_bytes() == &[0; 16]
-            || pins.domain.as_bytes() == &[0; 16]
-            || [pins.deployment, pins.domain_commitment, pins.disclosure]
-                .iter().any(|digest| digest.as_bytes() == &[0; 32])
         {
             return Err(NixStartAdmissionErrorV2::Invalid);
         }
@@ -196,6 +180,24 @@ impl ControllerNixStartRecipeSelectorV2 {
         }
         self.startup.recheck()?;
         Ok(())
+    }
+
+    pub(crate) fn recheck_session_floor_origin(&self) -> Result<(), NixStartAdmissionErrorV2> {
+        self.recheck()
+    }
+
+    pub(crate) fn session_floor_startup(&self) -> &ProductionControllerNixStartupV1 {
+        &self.startup
+    }
+
+    pub(crate) fn session_floor_pins(&self) -> &NixFixedDomainPinsDataV2 {
+        &self.pins
+    }
+
+    pub(crate) fn session_floor_public_preimages(&self) -> [&[u8]; 12] {
+        self.credentials
+            .each_ref()
+            .map(|credential| credential.bytes())
     }
 
     fn commitments(&self) -> Vec<[u8; 32]> {

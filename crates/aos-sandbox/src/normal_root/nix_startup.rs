@@ -10,6 +10,10 @@
 //!                 + selected-unit SHA256 after one profile-path normalization
 //! ```
 
+mod floor_origin;
+
+pub use floor_origin::{ControllerNixSessionFloorOriginV2, NixOwnerSessionFloorStartupV2};
+
 use std::fs::File;
 use std::num::NonZeroU32;
 use std::os::fd::{AsRawFd as _, OwnedFd};
