@@ -28,6 +28,10 @@ Configuration:
   --url-signer ACCOUNT     GCP service account authorized to sign object URLs.
 
 Other options:
+  --spot true|false         Capacity choice (default true; no fallback).
+  --shutdown-after DURATION Automatic deletion after 24h by default; never opts out.
+                           Use integer s/m/h/d, from 60s through 120d.
+  --scheduler-role ARN      Existing AWS Scheduler role; required for finite lifetime.
   --architecture x86_64|aarch64 (default x86_64)
   --image-state-dir DIR     Reuse the verified owned image from another launch.
   --security-group ID       Existing AWS group (required with private access).
@@ -38,7 +42,7 @@ Other options:
 
 plan validates inputs and writes local preparation artifacts; it never changes
 cloud resources. image-create imports the verified Hub disk. vm-create launches
-one Spot VM using that owned image. up performs both. delete removes only the
+one VM using that owned image. up performs both. delete removes only the
 resources recorded in this state directory (requires --provider and --name;
 other deployment options are loaded from its private resource record).
 
@@ -48,6 +52,9 @@ values (75) and defaults, while explicit mkForce (50) remains stronger. A
 --config-root requires an image advertising aos.config-bundle/v1. Without it,
 Nix inputs must be self-contained; JSON/TOML data is embedded, not evaluated
 locally. SSH is configured for root public-key login with passwords disabled.
+The lifetime begins with the VM launch attempt; retries never extend it.
+Automatic deletion retains images, ingress rules, and import/config objects;
+run delete to clean up those recorded resources. Provider timing is approximate.
 HELP
 }
 
@@ -59,6 +66,7 @@ hub= registry= release= package= machine_type= ssh_key= ssh_cidr= config_root=
 import_role= signer= config_signing_key= private_access=false
 image_state_dir= existing_security_group= delete_image=false
 architecture=x86_64 disk_size=32 config_url_ttl=3600 aos=aos
+spot=true shutdown_after=24h scheduler_role=
 config_args=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -81,6 +89,7 @@ while [[ $# -gt 0 ]]; do
         --config-signing-key) config_signing_key=$2;; --config-url-ttl) config_url_ttl=$2;;
         --image-state-dir) image_state_dir=$2;; --security-group) existing_security_group=$2;;
         --architecture) architecture=$2;; --disk-size) disk_size=$2;; --aos) aos=$2;;
+        --spot) spot=$2;; --shutdown-after) shutdown_after=$2;; --scheduler-role) scheduler_role=$2;;
         *) fail "unknown option: $1";;
     esac
     shift 2
@@ -106,6 +115,74 @@ field() { jq -r --arg key "$1" '.[$key] // empty' "$state"; }
 gcp() { gcloud --quiet --project "$project" "$@"; }
 aws_cli() { aws --region "$region" --no-cli-pager "$@"; }
 
+vm_owner() {
+    local token
+    token=$(field launch_token)
+    printf 'aos.cloud-vm/v1 %s%s' "$(field identity)" "${token:+ $token}"
+}
+
+delete_schedule() {
+    local schedule
+    schedule=$(field schedule)
+    [[ -n $schedule ]] || return 0
+    if aws_cli scheduler get-schedule --name "$schedule" --group-name default > "$state_dir/schedule.json" 2> "$state_dir/schedule-error"; then
+        [[ $(jq -r '.Description' "$state_dir/schedule.json") == "$(field schedule_owner)" ]] || fail 'scheduled deletion belongs to another launch'
+        aws_cli scheduler delete-schedule --name "$schedule" --group-name default
+    else
+        [[ $(< "$state_dir/schedule-error") == *ResourceNotFoundException* ]] || fail 'cannot verify recorded deletion schedule'
+    fi
+    record schedule ''
+}
+
+verify_aws_instance() {
+    jq -e --arg owner "$(field identity)" --arg token "$(field launch_token)" \
+        '[.Reservations[].Instances[]] | length == 1 and all(.[];
+          any(.Tags[]?; .Key == "aos-cloud-vm" and .Value == $owner)
+          and ($token == "" or .ClientToken == $token))' "$1" >/dev/null
+}
+
+banner_notice() {
+    local deadline=$1
+    [[ $spot == true || $shutdown_seconds -gt 0 ]] || return 0
+    printf 'Ephemeral AOS VM. '
+    if [[ $shutdown_seconds -gt 0 ]]; then
+        printf 'Automatic deletion scheduled: %s. ' "$deadline"
+        if [[ $provider == gcp ]]; then
+            printf 'GCP may begin deletion up to 30 seconds later. '
+        else
+            printf 'AWS Scheduler uses minute precision; retries can delay deletion. '
+        fi
+    else
+        printf 'No automatic deletion is scheduled. '
+    fi
+    [[ $spot != true ]] || printf 'Spot capacity may end earlier. '
+    printf '\n'
+}
+
+# Render only the generated layer from the already captured source tree. No
+# source is reread after image import, and substitutions cannot touch user text.
+render_config() {
+    python3 - "$state_dir/config-template.json" "$1" "$2" <<'PY'
+import base64, json, pathlib, shlex, sys
+template = json.loads(pathlib.Path(sys.argv[1]).read_text())
+notice = sys.argv[3]
+fragment = ("case $- in *i*) printf '%s\\n' " + shlex.quote(notice) + ";; esac\n") if notice else ""
+encoded = json.dumps(fragment, ensure_ascii=False).replace('${', '\\${')
+module = template['prefix'] + encoded + template['suffix']
+if template['mode'] == 'bundle':
+    files = template['files']
+    files['_aos_cloud/entry.nix'] = base64.b64encode(module.encode()).decode()
+    if sum(len(base64.b64decode(value)) for value in files.values()) > 8 * 1024 * 1024:
+        raise SystemExit('config root plus generated entrypoint exceeds 8 MiB')
+    payload = json.dumps(dict(schema='aos.config-bundle/v1', entrypoint='_aos_cloud/entry.nix', files=files), sort_keys=True, separators=(',', ':')).encode()
+else:
+    payload = module.encode()
+if len(payload) > 16 * 1024 * 1024:
+    raise SystemExit('encoded configuration exceeds 16 MiB')
+pathlib.Path(sys.argv[2]).write_bytes(payload)
+PY
+}
+
 load_state() {
     [[ -f $state ]] || fail 'no resource record exists'
     [[ $(field schema) == aos.cloud-vm/v1 && $(field provider) == "$provider" && $(field name) == "$name" ]] || fail 'resource record belongs to another deployment'
@@ -128,12 +205,17 @@ delete_resources() {
     load_state
     verify_account
     if [[ $provider == gcp ]]; then
-        if [[ -n $(field instance) ]]; then
-            gcp compute instances list --zones "$zone" --filter "name=$(field instance)" --format=json > "$state_dir/live-instances.json"
+        if [[ -n $(field instance) || -n $(field launch_token) ]]; then
+            owned_name=$(field instance)
+            [[ -n $owned_name ]] || owned_name="$name-$(field identity | cut -c1-12)"
+            gcp compute instances list --zones "$zone" --filter "name=$owned_name" --format=json > "$state_dir/live-instances.json"
+            [[ $(jq 'length' "$state_dir/live-instances.json") -le 1 ]] || fail 'ambiguous VM cleanup lookup'
             if [[ $(jq 'length' "$state_dir/live-instances.json") -gt 0 ]]; then
-                [[ $(jq -r '.[0].description' "$state_dir/live-instances.json") == "aos.cloud-vm/v1 $(field identity)" ]] || fail 'recorded VM name now belongs to another owner'
+                [[ $(jq -r '.[0].description' "$state_dir/live-instances.json") == "$(vm_owner)" ]] || fail 'recorded VM name now belongs to another owner'
                 [[ -z $(field instance_id) || $(jq -r '.[0].id' "$state_dir/live-instances.json") == "$(field instance_id)" ]] || fail 'recorded VM was replaced'
-                gcp compute instances delete "$(field instance)" --zone "$zone"
+                gcp compute instances delete "$owned_name" --zone "$zone"
+            elif [[ $(field launch_phase) == launching ]]; then
+                fail 'launch outcome is unresolved; retain the state and retry after the provider operation settles'
             fi
             record instance ''
         fi
@@ -153,11 +235,29 @@ delete_resources() {
             fi
         done
     else
+        if [[ -z $(field instance) && -n $(field launch_token) ]]; then
+            aws_cli ec2 describe-instances --filters "Name=client-token,Values=$(field launch_token)" > "$state_dir/live-instances.json"
+            if [[ $(jq '[.Reservations[].Instances[]] | length' "$state_dir/live-instances.json") -gt 0 ]]; then
+                verify_aws_instance "$state_dir/live-instances.json" || fail 'AWS launch-token cleanup found unexpected ownership'
+                record instance "$(jq -er '.Reservations[0].Instances[0].InstanceId' "$state_dir/live-instances.json")"
+            elif [[ $(field launch_phase) == launching ]]; then
+                fail 'AWS launch outcome is unresolved; retain the token and retry cleanup after it becomes visible'
+            fi
+        fi
         if [[ -n $(field instance) ]]; then
-            aws_cli ec2 terminate-instances --instance-ids "$(field instance)" >/dev/null
-            aws_cli ec2 wait instance-terminated --instance-ids "$(field instance)"
+            if aws_cli ec2 describe-instances --instance-ids "$(field instance)" > "$state_dir/live-instances.json" 2> "$state_dir/instance-error"; then
+                verify_aws_instance "$state_dir/live-instances.json" || fail 'recorded AWS instance ownership changed'
+                if [[ $(jq -r '.Reservations[0].Instances[0].State.Name' "$state_dir/live-instances.json") != terminated ]]; then
+                    aws_cli ec2 terminate-instances --instance-ids "$(field instance)" >/dev/null
+                    aws_cli ec2 wait instance-terminated --instance-ids "$(field instance)"
+                fi
+            else
+                [[ $(< "$state_dir/instance-error") == *InvalidInstanceID.NotFound* ]] || fail 'cannot verify recorded AWS instance'
+                [[ $(field launch_phase) == active || $(field launch_phase) == terminated || -z $(field launch_token) ]] || fail 'AWS instance creation is not yet resolved; keep the launch evidence'
+            fi
             record instance ''
         fi
+        delete_schedule
         if [[ $(field owns_security_group) == true && -n $(field security_group) ]]; then
             aws_cli ec2 delete-security-group --group-id "$(field security_group)"
             record security_group ''
@@ -182,6 +282,8 @@ delete_resources() {
             fi
         done
     fi
+    for key in instance_id launch_token launch_phase deadline deadline_epoch payload_sha256 user_data_sha256 config_url_expires_epoch; do record "$key" ''; done
+    rm -f "$state_dir/launch-config" "$state_dir/launch-config.sig" "$state_dir/user-data"
     printf 'Deleted resources recorded in %s\n' "$state"
 }
 if [[ $command == delete ]]; then delete_resources; exit 0; fi
@@ -193,13 +295,33 @@ done
 [[ $architecture == x86_64 || $architecture == aarch64 ]] || fail 'unsupported architecture'
 [[ $disk_size =~ ^[0-9]+$ && $disk_size -ge 8 && $disk_size -le 16384 ]] || fail '--disk-size must be 8..16384 GiB'
 [[ $config_url_ttl =~ ^[0-9]+$ && $config_url_ttl -ge 300 && $config_url_ttl -le 604800 ]] || fail '--config-url-ttl must be 300..604800 seconds'
+[[ $spot == true || $spot == false ]] || fail '--spot must be true or false'
+shutdown_seconds=$(python3 - "$shutdown_after" <<'PY'
+import re, sys
+value = sys.argv[1]
+if value == 'never':
+    print(0)
+else:
+    match = re.fullmatch(r'([1-9][0-9]*)([smhd])', value)
+    if not match:
+        raise SystemExit('--shutdown-after requires integer s/m/h/d or never')
+    seconds = int(match[1]) * {'s':1, 'm':60, 'h':3600, 'd':86400}[match[2]]
+    if not 60 <= seconds <= 120 * 86400:
+        raise SystemExit('--shutdown-after must be from 60s through 120d')
+    print(seconds)
+PY
+)
 if [[ $provider == gcp ]]; then
     [[ -n $project && -z $account ]] || fail 'GCP requires --project and does not accept --account'
     [[ $architecture == x86_64 ]] || fail 'GCP launcher currently supports qualified x86_64 VirtIO machine families only'
     [[ $machine_type == e2-* || $machine_type == n2-* || $machine_type == n2d-* ]] || fail 'GCP requires a VirtIO-capable e2, n2, or n2d machine type'
     [[ $zone == "$region"-* ]] || fail 'zone does not belong to the explicit region'
+    [[ -z $scheduler_role ]] || fail '--scheduler-role is only supported for AWS'
 else
     [[ $account =~ ^[0-9]{12}$ && -n $import_role ]] || fail 'AWS requires --account with 12 digits and --import-role'
+    if [[ $shutdown_seconds -gt 0 ]]; then
+        [[ $scheduler_role =~ ^arn:aws:iam::$account:role/[A-Za-z0-9+=,.@_/-]+$ ]] || fail 'finite AWS lifetime requires --scheduler-role in the explicit account (or --shutdown-after never)'
+    fi
 fi
 if [[ $private_access == true ]]; then
     [[ -z $ssh_cidr ]] || fail 'choose --ssh-cidr or --private-access'
@@ -328,6 +450,7 @@ for path, value in assignments.items():
 module = '''args:
 let
   lib = args.lib;
+  banner = BANNER;
   original = FIRST;
   required = if builtins.isFunction original then builtins.functionArgs original else {};
   proxies = builtins.mapAttrs (name: _: args.${name} or args.config._module.args.${name})
@@ -342,26 +465,20 @@ in host // {
     aos.services.ssh.kbdInteractiveAuthentication = lib.mkForce false;
     aos.services.ssh.permitRootLogin = lib.mkForce "prohibit-password";
     environment.etc."ssh/authorized_keys/root".text = lib.mkForce KEY;
-  }]);
+  }] ++ lib.optional (banner != "") {
+    environment.etc."profile.local".text = banner;
+  });
 }
 '''
 substitutions = {'FIRST': first, 'ADDITIONAL': additional, 'ASSIGNMENTS': '\n    '.join(values), 'KEY': nix_string(key + '\n')}
-module = re.sub(r'\b(FIRST|ADDITIONAL|ASSIGNMENTS|KEY)\b', lambda match: substitutions[match.group()], module)
-if root:
-    entrypoint = '_aos_cloud/entry.nix'
-    files[entrypoint] = base64.b64encode(module.encode()).decode()
-    if sum(len(base64.b64decode(value)) for value in files.values()) > 8 * 1024 * 1024:
-        raise ValueError('config root plus generated entrypoint exceeds 8 MiB')
-    payload = json.dumps(dict(schema='aos.config-bundle/v1', entrypoint=entrypoint, files=files), sort_keys=True, separators=(',', ':')).encode()
-    mode = 'bundle'
-else:
-    payload = module.encode()
-    mode = 'literal'
-if len(payload) > 16 * 1024 * 1024:
-    raise ValueError('encoded configuration exceeds 16 MiB')
-(out / 'config-payload').write_bytes(payload)
+prefix, suffix = module.split('BANNER')
+def substitute(part):
+    return re.sub(r'\b(FIRST|ADDITIONAL|ASSIGNMENTS|KEY)\b', lambda match: substitutions[match.group()], part)
+mode = 'bundle' if root else 'literal'
+(out / 'config-template.json').write_text(json.dumps(dict(prefix=substitute(prefix), suffix=substitute(suffix), files=files, mode=mode)))
 (out / 'config-mode').write_text(mode)
 PY
+render_config "$state_dir/config-payload" "$(banner_notice 'assigned when VM launch begins (UTC)')"
 
 need "$aos"
 selection=(--hub "$hub" --registry "$registry" --release "$release" --package "$package" --architecture "$architecture" --format raw)
@@ -373,7 +490,7 @@ config_sha=$(sha256sum "$state_dir/config-payload" | cut -d' ' -f1)
 
 # image-info identity is authenticated by aos image show. The companion is
 # downloaded by the existing aos verifier, including its signed NAR fallback.
-"$aos" image download "${selection[@]}" --metadata-only --output "$state_dir/image-info.json"
+"$aos" image download "${selection[@]}" --metadata-only --output "$state_dir/image-info.json" > /dev/null
 python3 - "$state_dir/image-info.json" "$provider" "$config_mode" "$disk_size" <<'PY'
 import json, sys
 info = json.load(open(sys.argv[1]))
@@ -414,7 +531,8 @@ jq -n --arg provider "$provider" --arg name "$name" --arg project "$project" --a
     --arg bucket "$bucket" --arg machine "$machine_type" --arg disk "$disk_size" \
     --arg source "$image_sha" --arg config "$config_sha" --arg cidr "$ssh_cidr" \
     --arg private "$private_access" --arg architecture "$architecture" --arg securityGroup "$existing_security_group" \
-    '{preparation:"aos.cloud-vm/v1",provider:$provider,name:$name,project:$project,account:$account,region:$region,zone:$zone,network:$network,subnet:$subnet,bucket:$bucket,machine:$machine,disk:$disk,source:$source,config:$config,cidr:$cidr,private:$private,architecture:$architecture,securityGroup:$securityGroup}' > "$state_dir/intent.json"
+    --argjson spot "$spot" --argjson lifetime "$shutdown_seconds" --arg schedulerRole "$scheduler_role" \
+    '{preparation:"aos.cloud-vm/v1",provider:$provider,name:$name,project:$project,account:$account,region:$region,zone:$zone,network:$network,subnet:$subnet,bucket:$bucket,machine:$machine,disk:$disk,source:$source,config:$config,cidr:$cidr,private:$private,architecture:$architecture,securityGroup:$securityGroup,spot:$spot,shutdownAfterSeconds:$lifetime,schedulerRole:$schedulerRole}' > "$state_dir/intent.json"
 identity=$(sha256sum "$state_dir/intent.json" | cut -d' ' -f1)
 if [[ -e $state ]]; then
     [[ $(field identity) == "$identity" ]] || fail 'state directory has different source/preparation identity; choose another directory'
@@ -437,7 +555,7 @@ resource_name="$name-${identity:0:12}"
 object_prefix="aos-cloud-vm/$resource_name"
 if [[ $command == plan ]]; then
     jq --arg mode "$config_mode" --arg pointer "$pointer" \
-        '. + {configurationMode:$mode,pointerDelivery:$pointer,capacity:"spot",secureBoot:false}' "$state_dir/intent.json"
+        '. + {configurationMode:$mode,pointerDelivery:$pointer,capacity:(if .spot then "spot" else "on-demand" end),secureBoot:false}' "$state_dir/intent.json"
     exit 0
 fi
 verify_account
@@ -560,38 +678,160 @@ create_image() {
     fi
 }
 
+preflight_scheduler() {
+    [[ $provider == aws && $shutdown_seconds -gt 0 ]] || return 0
+    aws_cli iam get-role --role-name "${scheduler_role##*/}" > "$state_dir/scheduler-role.json"
+    jq -e --arg arn "$scheduler_role" '.Role.Arn == $arn and any(.Role.AssumeRolePolicyDocument.Statement[];
+      .Effect == "Allow" and ([.Principal.Service] | flatten | index("scheduler.amazonaws.com") != null))' \
+        "$state_dir/scheduler-role.json" >/dev/null || fail 'scheduler role identity or service trust is missing'
+    aws_cli scheduler get-schedule-group --name default > /dev/null
+}
+
+freeze_launch() {
+    if [[ -z $(field launch_token) ]]; then
+        python3 - "$state" "$shutdown_seconds" <<'PY'
+import datetime, json, pathlib, sys, uuid
+path = pathlib.Path(sys.argv[1])
+state = json.loads(path.read_text())
+seconds = int(sys.argv[2])
+now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+deadline = now + datetime.timedelta(seconds=seconds)
+state.update(launch_token=str(uuid.uuid4()), launch_phase='prepared', user_data_sha256='', config_url_expires_epoch='',
+             deadline=deadline.strftime('%Y-%m-%dT%H:%M:%SZ') if seconds else '',
+             deadline_epoch=int(deadline.timestamp()) if seconds else '', payload_sha256='')
+temporary = path.with_suffix('.new')
+temporary.write_text(json.dumps(state, indent=2) + '\n')
+temporary.replace(path)
+PY
+    fi
+    if [[ -z $(field payload_sha256) ]]; then
+        render_config "$state_dir/launch-config" "$(banner_notice "$(field deadline)")"
+        record payload_sha256 "$(sha256sum "$state_dir/launch-config" | cut -d' ' -f1)"
+    fi
+    [[ -f $state_dir/launch-config && $(sha256sum "$state_dir/launch-config" | cut -d' ' -f1) == "$(field payload_sha256)" ]] || fail 'frozen launch configuration is missing or modified'
+    if [[ $shutdown_seconds -gt 0 ]]; then
+        [[ $(field deadline_epoch) -gt $(($(date -u +%s) + 30)) ]] || fail 'launch deadline has elapsed or is too near; this attempt cannot be extended'
+    fi
+    config_sha=$(field payload_sha256)
+}
+
+retire_launch() {
+    # Only called after the provider confirms the predecessor no longer exists.
+    [[ $provider != aws ]] || delete_schedule
+    for key in config_object signature_object; do
+        if [[ -n $(field "$key") ]]; then
+            if [[ $provider == gcp ]]; then
+                gcp storage rm "gs://$bucket/$(field "$key")"
+            else
+                aws_cli s3 rm "s3://$bucket/$(field "$key")"
+            fi
+            record "$key" ''
+        fi
+    done
+    for key in instance instance_id launch_token launch_phase deadline deadline_epoch payload_sha256 user_data_sha256 config_url_expires_epoch; do record "$key" ''; done
+    rm -f "$state_dir/launch-config" "$state_dir/launch-config.sig" "$state_dir/user-data"
+}
+
+verify_schedule() {
+    local deadline
+    deadline=$(field deadline)
+    jq -e --arg owner "$(vm_owner)" --arg time "at(${deadline%Z})" \
+        --arg role "$scheduler_role" --arg instance "$(field instance)" \
+        '.Description == $owner and .State == "ENABLED" and .ScheduleExpression == $time
+         and .ScheduleExpressionTimezone == "UTC" and .FlexibleTimeWindow.Mode == "OFF"
+         and .ActionAfterCompletion == "DELETE" and .Target.RoleArn == $role
+         and .Target.Arn == "arn:aws:scheduler:::aws-sdk:ec2:terminateInstances"
+         and (.Target.Input | fromjson) == {InstanceIds:[$instance]}' "$state_dir/schedule.json" >/dev/null
+}
+
+ensure_schedule() {
+    [[ $shutdown_seconds -gt 0 ]] || return 0
+    local deadline schedule
+    deadline=$(field deadline)
+    schedule="aos-${identity:0:20}-$(field launch_token)"
+    # Name stays under Scheduler's 64-character limit, including the UUID.
+    record schedule "$schedule" || return 1
+    record schedule_owner "$(vm_owner)" || return 1
+    if aws_cli scheduler get-schedule --name "$schedule" --group-name default > "$state_dir/schedule.json" 2> "$state_dir/schedule-error"; then
+        verify_schedule || return 1
+        return 0
+    fi
+    [[ $(< "$state_dir/schedule-error") == *ResourceNotFoundException* ]] || return 1
+    [[ $(field deadline_epoch) -gt $(date -u +%s) ]] || return 1
+    jq -n --arg role "$scheduler_role" --arg instance "$(field instance)" \
+        '{Arn:"arn:aws:scheduler:::aws-sdk:ec2:terminateInstances",RoleArn:$role,
+          Input:({InstanceIds:[$instance]} | tojson),RetryPolicy:{MaximumEventAgeInSeconds:3600,MaximumRetryAttempts:10}}' \
+        > "$state_dir/schedule-target.json" || return 1
+    # A failed client response can still mean the remote creation committed.
+    aws_cli scheduler create-schedule --name "$schedule" --group-name default \
+        --description "$(vm_owner)" --client-token "$(field launch_token)" \
+        --schedule-expression "at(${deadline%Z})" --schedule-expression-timezone UTC \
+        --flexible-time-window '{"Mode":"OFF"}' --action-after-completion DELETE \
+        --target "file://$state_dir/schedule-target.json" > "$state_dir/schedule-created.json" || true
+    aws_cli scheduler get-schedule --name "$schedule" --group-name default > "$state_dir/schedule.json" || return 1
+    verify_schedule
+}
+
+finish_aws_launch() {
+    if ensure_schedule; then
+        record launch_phase active
+        return
+    fi
+    # Existing active VMs are never terminated merely because a read failed.
+    # Compensation covers this unfinished launch attempt, including retries.
+    if [[ $(field launch_phase) != active ]]; then
+        if aws_cli ec2 describe-instances --instance-ids "$(field instance)" > "$state_dir/cleanup-instance.json" \
+            && verify_aws_instance "$state_dir/cleanup-instance.json" \
+            && aws_cli ec2 terminate-instances --instance-ids "$(field instance)" >/dev/null \
+            && aws_cli ec2 wait instance-terminated --instance-ids "$(field instance)"; then
+            record launch_phase terminated
+            fail 'could not establish scheduled deletion; the new instance was terminated'
+        fi
+        fail 'scheduled deletion and instance cleanup failed; keep the resource record and reconcile this instance immediately'
+    fi
+    fail 'cannot verify the existing VM deletion schedule; its deadline was not changed'
+}
+
 publish_config() {
+    if [[ -n $(field user_data_sha256) ]]; then
+        [[ -f $state_dir/user-data && $(sha256sum "$state_dir/user-data" | cut -d' ' -f1) == "$(field user_data_sha256)" ]] || fail 'frozen launch metadata is missing or modified'
+        if [[ $pointer == true ]]; then
+            [[ $(field config_url_expires_epoch) -gt $(($(date -u +%s) + 30)) ]] || fail 'signed launch metadata has expired; this attempt cannot be retried with different user-data'
+        fi
+        return
+    fi
     if [[ $pointer == false ]]; then
-        cp "$state_dir/config-payload" "$state_dir/user-data"
+        cp "$state_dir/launch-config" "$state_dir/user-data"
+        record user_data_sha256 "$(sha256sum "$state_dir/user-data" | cut -d' ' -f1)"
         return
     fi
     object="$object_prefix/config-$config_sha"
     if [[ -n $config_signing_key ]]; then
         need ssh-keygen
-        rm -f "$state_dir/config-payload.sig"
-        ssh-keygen -Y sign -f "$config_signing_key" -n aos-config "$state_dir/config-payload"
+        rm -f "$state_dir/launch-config.sig"
+        ssh-keygen -Y sign -f "$config_signing_key" -n aos-config "$state_dir/launch-config"
     fi
     if [[ $provider == gcp ]]; then
-        gcp storage cp "$state_dir/config-payload" "gs://$bucket/$object" >/dev/null
+        gcp storage cp "$state_dir/launch-config" "gs://$bucket/$object" >/dev/null
         record config_object "$object"
         gcp storage sign-url "gs://$bucket/$object" --duration "${config_url_ttl}s" \
             --impersonate-service-account "$signer" --format=json > "$state_dir/signed-url.json"
         url=$(jq -er '.[0].signed_url' "$state_dir/signed-url.json")
         sig_url=
         if [[ -n $config_signing_key ]]; then
-            gcp storage cp "$state_dir/config-payload.sig" "gs://$bucket/$object.sig" >/dev/null
+            gcp storage cp "$state_dir/launch-config.sig" "gs://$bucket/$object.sig" >/dev/null
             record signature_object "$object.sig"
             gcp storage sign-url "gs://$bucket/$object.sig" --duration "${config_url_ttl}s" \
                 --impersonate-service-account "$signer" --format=json > "$state_dir/signed-url.json"
             sig_url=$(jq -er '.[0].signed_url' "$state_dir/signed-url.json")
         fi
     else
-        aws_cli s3 cp "$state_dir/config-payload" "s3://$bucket/$object" --only-show-errors
+        aws_cli s3 cp "$state_dir/launch-config" "s3://$bucket/$object" --only-show-errors
         record config_object "$object"
         url=$(aws_cli s3 presign "s3://$bucket/$object" --expires-in "$config_url_ttl")
         sig_url=
         if [[ -n $config_signing_key ]]; then
-            aws_cli s3 cp "$state_dir/config-payload.sig" "s3://$bucket/$object.sig" --only-show-errors
+            aws_cli s3 cp "$state_dir/launch-config.sig" "s3://$bucket/$object.sig" --only-show-errors
             record signature_object "$object.sig"
             sig_url=$(aws_cli s3 presign "s3://$bucket/$object.sig" --expires-in "$config_url_ttl")
         fi
@@ -599,32 +839,65 @@ publish_config() {
     jq -n --arg mode "$config_mode" --arg url "$url" --arg sha "$config_sha" --arg sig "$sig_url" \
         'if $mode == "bundle" then {schema:"aos.config-bundle-pointer/v1",url:$url,sha256:$sha,entrypoint:"_aos_cloud/entry.nix"} else {host_nix_url:$url,sha256:$sha} end | if $sig != "" then .sig_url=$sig else . end' > "$state_dir/user-data"
     rm -f "$state_dir/signed-url.json"
+    record config_url_expires_epoch "$(($(date -u +%s) + config_url_ttl))"
+    record user_data_sha256 "$(sha256sum "$state_dir/user-data" | cut -d' ' -f1)"
 }
 
 create_vm() {
     [[ -n $(field image) ]] || fail 'run image-create first'
-    if [[ -n $(field instance) ]]; then
-        if [[ $provider == gcp ]]; then
-            gcp compute instances list --zones "$zone" --filter "name=$(field instance)" --format=json > "$state_dir/live-instances.json"
-            if [[ $(jq 'length' "$state_dir/live-instances.json") -gt 0 ]]; then
-                [[ $(jq -r '.[0].description' "$state_dir/live-instances.json") == "aos.cloud-vm/v1 $identity" ]] || fail 'recorded VM was replaced by an unowned instance'
-                [[ -z $(field instance_id) || $(jq -r '.[0].id' "$state_dir/live-instances.json") == "$(field instance_id)" ]] || fail 'recorded VM instance ID changed'
-                printf 'Owned VM already exists: %s\n' "$(field instance)"
-                return
+    local live_state count remote_deadline
+    if [[ $provider == gcp ]]; then
+        gcp compute instances list --zones "$zone" --filter "name=$resource_name" --format=json > "$state_dir/live-instances.json"
+        count=$(jq 'length' "$state_dir/live-instances.json")
+        [[ $count -le 1 ]] || fail 'ambiguous VM ownership lookup'
+        if [[ $count == 1 ]]; then
+            [[ -n $(field launch_token) && $(jq -r '.[0].description' "$state_dir/live-instances.json") == "$(vm_owner)" ]] || fail 'VM name belongs to a different launch attempt'
+            [[ -z $(field instance_id) || $(jq -r '.[0].id' "$state_dir/live-instances.json") == "$(field instance_id)" ]] || fail 'recorded VM instance ID changed'
+            [[ $(jq -r '.[0].scheduling.provisioningModel // "STANDARD"' "$state_dir/live-instances.json") == "$([[ $spot == true ]] && printf SPOT || printf STANDARD)" ]] || fail 'VM capacity differs from recorded intent'
+            remote_deadline=$(jq -r '.[0].scheduling.terminationTime // empty' "$state_dir/live-instances.json")
+            if [[ $shutdown_seconds -gt 0 ]]; then
+                [[ -n $remote_deadline && $(date -u -d "$remote_deadline" +%s) == "$(field deadline_epoch)" \
+                    && $(jq -r '.[0].scheduling.instanceTerminationAction' "$state_dir/live-instances.json") == DELETE ]] || fail 'VM deletion deadline differs from recorded intent'
+            else
+                [[ -z $remote_deadline ]] || fail 'VM has an unexpected deletion deadline'
             fi
-        else
-            aws_cli ec2 describe-instances --instance-ids "$(field instance)" > "$state_dir/live-instances.json"
-            live_state=$(jq -r '.Reservations[0].Instances[0].State.Name // "terminated"' "$state_dir/live-instances.json")
-            if [[ $live_state != terminated && $live_state != shutting-down ]]; then
+            record instance "$resource_name"
+            record instance_id "$(jq -er '.[0].id' "$state_dir/live-instances.json")"
+            record launch_phase active
+            printf 'Owned VM already exists: %s\n' "$(field instance)"
+            return
+        fi
+    elif [[ -n $(field launch_token) ]]; then
+        # Lookup by token also repairs a lost run-instances response before any
+        # signed URL or other idempotency-sensitive launch argument is changed.
+        aws_cli ec2 describe-instances --filters "Name=client-token,Values=$(field launch_token)" > "$state_dir/live-instances.json"
+        count=$(jq '[.Reservations[].Instances[]] | length' "$state_dir/live-instances.json")
+        [[ $count -le 1 ]] || fail 'ambiguous AWS launch-token lookup'
+        if [[ $count == 0 && -n $(field instance) ]]; then
+            # An eventually consistent filter miss must not replace a live VM.
+            aws_cli ec2 describe-instances --instance-ids "$(field instance)" > "$state_dir/live-instances.json" \
+                || fail 'recorded AWS instance is not yet visible; retry without changing this attempt'
+            count=$(jq '[.Reservations[].Instances[]] | length' "$state_dir/live-instances.json")
+            [[ $count == 1 ]] || fail 'recorded AWS instance lookup is unresolved'
+        fi
+        if [[ $count == 1 ]]; then
+            verify_aws_instance "$state_dir/live-instances.json" || fail 'AWS launch token has unexpected ownership'
+            record instance "$(jq -er '.Reservations[0].Instances[0].InstanceId' "$state_dir/live-instances.json")"
+            live_state=$(jq -r '.Reservations[0].Instances[0].State.Name' "$state_dir/live-instances.json")
+            [[ $live_state != shutting-down ]] || fail 'previous VM is still terminating; retry after it is gone'
+            if [[ $live_state != terminated ]]; then
+                finish_aws_launch
                 printf 'Owned VM already exists: %s\n' "$(field instance)"
                 return
             fi
         fi
-        record instance ''
-        record launch_token ''
     fi
+    if [[ -n $(field instance) || $(field launch_phase) == active || $(field launch_phase) == terminated ]]; then
+        retire_launch
+    fi
+
     verify_image
-    publish_config
+    preflight_scheduler
     if [[ $provider == gcp ]]; then
         gcp compute networks subnets describe "$subnet" --region "$region" --format=json > "$state_dir/subnet.json"
         [[ $(jq -r '.network | split("/")[-1]' "$state_dir/subnet.json") == "$network" ]] || fail 'subnet belongs to a different network'
@@ -636,49 +909,67 @@ create_vm() {
         fi
         network_interface="network=$network,subnet=$subnet,nic-type=VIRTIO_NET"
         [[ $private_access == true ]] && network_interface+=",no-address"
-        gcp compute instances create "$resource_name" --zone "$zone" --machine-type "$machine_type" \
-            --image "$(field image)" --image-project "$project" --boot-disk-size "${disk_size}GB" \
-            --boot-disk-auto-delete --network-interface "$network_interface" --tags "$resource_name" \
-            --provisioning-model SPOT --instance-termination-action DELETE --maintenance-policy TERMINATE \
-            --no-restart-on-failure --no-shielded-secure-boot --no-service-account --no-scopes \
-            --metadata-from-file "user-data=$state_dir/user-data" --metadata block-project-ssh-keys=TRUE \
-            --labels "aos-cloud-vm=${identity:0:63}" --description "aos.cloud-vm/v1 $identity" --format=json > "$state_dir/instance.json"
-        record instance "$resource_name"
-        record instance_id "$(jq -er '.[0].id' "$state_dir/instance.json")"
     else
         aws_cli ec2 describe-subnets --subnet-ids "$subnet" > "$state_dir/subnet.json"
         [[ $(jq -r '.Subnets[0].VpcId' "$state_dir/subnet.json") == "$network" && $(jq -r '.Subnets[0].AvailabilityZone' "$state_dir/subnet.json") == "$zone" ]] || fail 'subnet does not match network/zone'
         if [[ -n $existing_security_group ]]; then
-            [[ $(aws_cli ec2 describe-security-groups --group-ids "$existing_security_group" --query 'SecurityGroups[0].VpcId' --output text) == "$network" ]] || fail 'existing security group belongs to a different VPC'
+            [[ $(aws_cli ec2 describe-security-groups --group-ids "$existing_security_group" --query 'SecurityGroups[0].VpcId' --output text) == "$network" ]] || fail 'security group belongs to another network'
             record security_group "$existing_security_group"
             record owns_security_group false
-        fi
-        if [[ -z $(field security_group) ]]; then
-            group=$(aws_cli ec2 create-security-group --group-name "$resource_name" --description "aos.cloud-vm/v1 $identity" \
-                --vpc-id "$network" --query GroupId --output text)
+        elif [[ -z $(field security_group) ]]; then
+            group=$(aws_cli ec2 create-security-group --group-name "$resource_name-ssh" --description "aos.cloud-vm/v1 $identity" --vpc-id "$network" --query GroupId --output text)
             record security_group "$group"
             record owns_security_group true
-            if [[ $private_access == false ]]; then
-                aws_cli ec2 authorize-security-group-ingress --group-id "$group" --protocol tcp --port 22 --cidr "$ssh_cidr" >/dev/null
-            fi
+            aws_cli ec2 authorize-security-group-ingress --group-id "$group" --protocol tcp --port 22 --cidr "$ssh_cidr"
         fi
         jq -n --arg subnet "$subnet" --arg group "$(field security_group)" --arg private "$private_access" \
             '[{DeviceIndex:0,SubnetId:$subnet,Groups:[$group],AssociatePublicIpAddress:($private != "true"),DeleteOnTermination:true}]' > "$state_dir/interfaces.json"
         jq -n --argjson size "$disk_size" \
             '[{DeviceName:"/dev/sda1",Ebs:{VolumeSize:$size,VolumeType:"gp3",DeleteOnTermination:true}}]' > "$state_dir/vm-mappings.json"
-        if [[ -z $(field launch_token) ]]; then
-            record launch_token "$(python3 -c 'import uuid; print(uuid.uuid4())')"
+    fi
+
+    # Imports and network preparation are complete before the lifetime begins.
+    # These exact bytes and this absolute deadline belong to one launch token.
+    freeze_launch
+    publish_config
+    if [[ $shutdown_seconds -gt 0 ]]; then
+        [[ $(field deadline_epoch) -gt $(($(date -u +%s) + 30)) ]] || fail 'deadline is too near after metadata preparation; launch was not attempted'
+    fi
+    capacity_args=()
+    record launch_phase launching
+    if [[ $provider == gcp ]]; then
+        if [[ $spot == true ]]; then
+            capacity_args+=(--provisioning-model SPOT --instance-termination-action DELETE --maintenance-policy TERMINATE)
+        else
+            capacity_args+=(--provisioning-model STANDARD)
         fi
+        if [[ $shutdown_seconds -gt 0 ]]; then
+            capacity_args+=(--termination-time "$(field deadline)")
+            [[ $spot == true ]] || capacity_args+=(--instance-termination-action DELETE)
+        fi
+        gcp compute instances create "$resource_name" --zone "$zone" --machine-type "$machine_type" \
+            --image "$(field image)" --image-project "$project" --boot-disk-size "${disk_size}GB" \
+            --boot-disk-auto-delete --network-interface "$network_interface" --tags "$resource_name" \
+            "${capacity_args[@]}" \
+            --no-restart-on-failure --no-shielded-secure-boot --no-service-account --no-scopes \
+            --metadata-from-file "user-data=$state_dir/user-data" --metadata block-project-ssh-keys=TRUE \
+            --labels "aos-cloud-vm=${identity:0:63}" --description "$(vm_owner)" --format=json > "$state_dir/instance.json"
+        record instance "$resource_name"
+        record instance_id "$(jq -er '.[0].id' "$state_dir/instance.json")"
+        record launch_phase active
+    else
+        [[ $spot != true ]] || capacity_args+=(--instance-market-options 'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}')
         instance=$(aws_cli ec2 run-instances --image-id "$(field image)" --instance-type "$machine_type" \
             --count 1 --client-token "$(field launch_token)" --placement "AvailabilityZone=$zone" \
             --network-interfaces "file://$state_dir/interfaces.json" --block-device-mappings "file://$state_dir/vm-mappings.json" \
-            --instance-market-options 'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}' \
-            --metadata-options 'HttpTokens=required,HttpEndpoint=enabled,HttpPutResponseHopLimit=1' \
+            "${capacity_args[@]}" --metadata-options 'HttpTokens=required,HttpEndpoint=enabled,HttpPutResponseHopLimit=1' \
             --tag-specifications "ResourceType=instance,Tags=[{Key=aos-cloud-vm,Value=$identity}]" \
             --user-data "file://$state_dir/user-data" --query 'Instances[0].InstanceId' --output text)
         record instance "$instance"
+        finish_aws_launch
     fi
-    printf 'Created Spot VM %s.\n' "$(field instance)"
+    printf 'Created %s VM %s.\n' "$([[ $spot == true ]] && printf Spot || printf on-demand)" "$(field instance)"
+    [[ $shutdown_seconds == 0 ]] || printf 'Scheduled deletion: %s (provider timing is approximate).\n' "$(field deadline)"
     if [[ $provider == gcp ]]; then
         gcp compute instances describe "$(field instance)" --zone "$zone" --format=json > "$state_dir/instance.json"
         address=$(jq -r '.networkInterfaces[0].accessConfigs[0].natIP // .networkInterfaces[0].networkIP' "$state_dir/instance.json")
