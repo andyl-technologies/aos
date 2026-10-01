@@ -1,9 +1,9 @@
-##! containers/aos.nix — Initial AOS base-container definition
+##! modules/image/_container-definition.nix — Shared AOS base-container recipe
 ##!
-##! The baked roots are inherited from the production server golden image.
+##! The baked roots are inherited from the owning system's evaluated userland.
 ##! This is analogous to a distribution base image: it contains the standard
-##! userland and full AOS CLI wrapper closure. The container runtime initializes
-##! a daemonless local Nix database and retains every baked golden root.
+##! userland and the aos, apm, and apr command closures. The container runtime
+##! initializes a daemonless local Nix database and retains every baked root.
 {
   lib,
   pkgs,
