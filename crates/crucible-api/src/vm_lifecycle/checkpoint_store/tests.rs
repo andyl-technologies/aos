@@ -5,6 +5,10 @@
 
 use super::{ExactSnapshotHandle as Snapshot, *};
 
+#[cfg(feature = "test-support")]
+#[path = "tests/v9_artifact_refusal.rs"]
+mod v9_artifact_refusal;
+
 fn wire_string(value: &str) -> decode::FallibleString {
     decode::FallibleString::new(String::from(value))
 }
