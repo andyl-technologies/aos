@@ -77,3 +77,16 @@ observability.
 This crate's checked-in `wrangler.toml` is an implementation fixture. The
 packaged installer generates deployment configuration from the current command
 options and bundled Worker artifact; it is the supported operational path.
+
+### Layer 7 delivery hosts
+
+Set `HUB_LAYER7_DELIVERY_HOSTS` to a comma-separated list of bare DNS hostnames
+when Cloudflare serves those names through delivery endpoints configured with
+`layer7` ingress. For example, `cdn.example.test` can serve OCI Worker routes
+alongside direct static storage delivery. Configure the provider routes and
+verified endpoint observations separately.
+
+The Worker selects ingress from deployment configuration and the edge-verified
+request URL. Other hosts keep `hub` ingress. Client headers cannot select the
+ingress kind; the shared router still checks endpoint identity, readiness,
+route capabilities, and access policy.
