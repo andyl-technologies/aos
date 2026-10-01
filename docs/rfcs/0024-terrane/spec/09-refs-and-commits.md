@@ -41,7 +41,9 @@ has pointed. The object encoding is not git's, for the reasons in
   holding `admin` on it and never by an ordinary commit. A snapshot is a tag.
 - **[REF-3]** `refs/notes/<path>` holds advisory sidecar refs (access
   profiles, derivation memos, completeness caches) whose loss MUST NOT affect
-  correctness. `refs/jobs/<id>` holds tree-job checkpoints
+  correctness. These sidecar values are opaque records, not `RefRecord`
+  commit pointers; their bytes MUST NOT establish content reachability.
+  `refs/jobs/<id>` holds tree-job checkpoints
   ([`32-tree-jobs.md`](32-tree-jobs.md)). `refs/conflicts/<ref>/<seq>`
   holds a commit whose merge into `<ref>` produced an unresolvable conflict
   value ([`20-consistency.md`](20-consistency.md)); it is a branch that

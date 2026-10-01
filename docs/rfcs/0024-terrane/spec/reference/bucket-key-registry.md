@@ -104,6 +104,10 @@ profiles, [`../19-tiering-and-topology.md`](../19-tiering-and-topology.md)),
 [`../08-properties.md`](../08-properties.md)), `memos` (recipe memo
 pointers, [`../10-derived-data.md`](../10-derived-data.md)).
 
+These opaque sidecar values are not `RefRecord` commit pointers. GC-1
+preserves their selected names and whole values in current fences without
+deriving content reachability from their bytes; D-83 records this distinction.
+
 Keys under any other prefix are reserved. A reader MUST ignore them and
 scrub MUST report them (BKT-1).
 

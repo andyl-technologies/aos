@@ -36,10 +36,19 @@ data.
 ## Roots
 
 - **[GC-1]** The root set of a collection MUST include: the current value
-  of every ref; every reflog entry of every ref that is within the ref's
-  retention; every tag; and every job ref under `refs/jobs/` whose lease has
-  not expired ([`32-tree-jobs.md`](32-tree-jobs.md)). *Gate:*
+  of every commit-bearing ref; every reflog entry of every ref that is
+  within the ref's retention; every tag; and every job ref under `refs/jobs/`
+  whose lease has not expired ([`32-tree-jobs.md`](32-tree-jobs.md)). *Gate:*
   `gate:gc-roots-complete`.
+
+  Advisory records under `refs/notes/` are opaque sidecars under REF-3,
+  not commit roots. Their exact names and whole current bytes MUST remain
+  in the complete selected inventory and current publication fences; a
+  collector MUST NOT decode them as `RefRecord` or invent content edges
+  from their bytes. Their presence alone MUST NOT prevent collection.
+  Missing advisory targets are discarded or rebuilt under the sidecar's
+  existing rules. Commit-bearing `refs/derived/` values remain roots even
+  though their names are advisory conveniences. See D-83.
 - **[GC-2]** The root set MUST be read from the authority of every region
   and every child of every redundant store, and the collection MUST use the
   union. A ref that is readable in one region and not another is a root.

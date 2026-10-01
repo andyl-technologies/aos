@@ -1450,6 +1450,29 @@ is added rather than editing history.
     eventual-observation/deletion/finite-effects qualification and implementation
     remain pending, not established by a format or simulator gate.
 
+- **[D-83] Distinguish advisory sidecars from commit-bearing GC roots.**
+  - **Status:** Decided
+  - **Decision:** Apply GC-1's content-root requirement to commit-bearing
+    refs, including `refs/derived/`. Preserve the exact inventoried names
+    and whole selected bytes of opaque `refs/notes/` sidecars in current
+    publication and collection fences, without decoding them as `RefRecord`
+    or treating byte patterns as content edges. Present sidecars alone do
+    not make exhaustive collection unsupported; missing advisory targets
+    use the existing discard or rebuild behavior.
+  - **Rationale:** GC-1's unqualified "every ref" contradicted REF-3 and
+    the key registry's opaque advisory sidecar records. `GcRoots` carries
+    commit digests, while profiles and completeness records need not name
+    any commit. Interpreting arbitrary sidecar bytes as a commit would
+    invent reachability; refusing collection whenever one is present would
+    strand garbage during normal operation. DRV-19 and DRV-20 already make
+    memos collectible with their result and independent of correctness.
+    Keeping whole selected values in the fences preserves concurrent
+    publication checks without converting advisory data into authority.
+  - **Affects:** REF-3, GC-1 and the bucket-key registry. Requirement IDs,
+    gate names, keys, CDDL, encoded bytes and identity domains remain
+    unchanged. This correction precedes T1's initial format freeze. Native
+    inventory, marking and current-fence regressions remain required.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
