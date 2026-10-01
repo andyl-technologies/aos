@@ -134,7 +134,7 @@
       }
 
       publish_surface_package() {
-        $APR publish "$SURFACE_STORE" \
+        publish_vm_package "$SURFACE_STORE" \
           --name surfacepkg \
           --version 1.0.0 \
           --description "Surface command fixture" \
@@ -151,7 +151,7 @@
       }
 
       publish_leaf_package() {
-        $APR publish "$LEAF_STORE" \
+        publish_vm_package "$LEAF_STORE" \
           --name surface-leaf \
           --version 1.0.0 \
           --description "Surface dependency fixture" \
@@ -170,7 +170,7 @@
         version="$1"
         store="$2"
         label="$3"
-        $APR publish "$store" \
+        publish_vm_package "$store" \
           --name upgradeface \
           --version "$version" \
           --description "Upgradable command fixture" \
@@ -190,7 +190,7 @@
         store="$2"
         source_store="$3"
         label="$4"
-        $APR publish "$store" \
+        publish_vm_package "$store" \
           --name sourceful \
           --version "$version" \
           --description "Source derivation command fixture" \
@@ -209,7 +209,7 @@
       }
 
       publish_sourceclosure() {
-        $APR publish "$SOURCE_CLOSURE_STORE" \
+        publish_vm_package "$SOURCE_CLOSURE_STORE" \
           --name sourceclosure \
           --version 1.0.0 \
           --description "Source closure command fixture" \
@@ -292,7 +292,7 @@
         "surfacepkg has a real Nix reference to surface-leaf"
 
       echo "==> Maintainer: publish initial command-surface packages"
-      $APR create surface-reg
+      create_publish_registry surface-reg
       REG_DIR="$REG_STORAGE/surface-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       publish_leaf_package

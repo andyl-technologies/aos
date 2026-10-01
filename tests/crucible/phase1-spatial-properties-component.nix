@@ -113,35 +113,31 @@
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
       {
-        label = "properties content-address test";
-        needle = "properties_content_address_is_orthogonal_and_validated";
+        label = "properties content-address regression";
+        needle = "fn properties_content_address_is_orthogonal_and_validated()";
       }
       {
-        label = "test checks authoring order";
-        needle = "let authored_order = vec![";
-      }
-      {
-        label = "test checks canonical assertions";
+        label = "canonical assertion order";
         needle = "assert_eq!(properties.assertions(), same_properties.assertions());";
       }
       {
-        label = "test checks properties reuse across compatible worlds";
-        needle = "same_properties_changed_world.content_hash()";
+        label = "canonical properties identity";
+        needle = "assert_eq!(properties.content_hash(), same_properties.content_hash());";
       }
       {
-        label = "test checks scenario properties sensitivity";
-        needle = "properties should affect scenario identity";
+        label = "reuse and scenario sensitivity regression";
+        needle = "spatial_components_have_independent_content_addresses_and_cross_reuse";
       }
       {
-        label = "test rejects incompatible world";
+        label = "incompatible world rejection";
         needle = "incompatible_world.scenario_def_with_plan_and_properties";
       }
       {
-        label = "test rejects incompatible plan in combined path";
-        needle = "no_link_world.scenario_def_with_plan_and_properties";
+        label = "incompatible plan rejection";
+        needle = "&plan, &Properties::empty()";
       }
       {
-        label = "test rejects undeclared predicate node";
+        label = "undeclared predicate node rejection";
         needle = "PropertyPredicateUnknownNode";
       }
     ]

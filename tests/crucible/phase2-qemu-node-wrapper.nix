@@ -174,12 +174,12 @@
         needle = "self.deliver_frame(input).map_err(BackendError::from)";
       }
       {
-        label = "snapshot maps to QMP";
-        needle = "self.save_checkpoint().map_err(BackendError::from)";
+        label = "generic snapshot refuses unpaired VM state";
+        needle = "QEMU snapshots require capture_exact_snapshot with scheduler checkpoint metadata";
       }
       {
-        label = "restore maps to QMP";
-        needle = "self.restore_checkpoint(checkpoint)";
+        label = "generic restore refuses unpaired VM state";
+        needle = "QEMU restore requires paired VMState and host-I/O realization";
       }
       {
         label = "shutdown maps to node shutdown";
@@ -251,7 +251,7 @@
       }
       {
         label = "QMP failure test";
-        needle = "qemu_node_reports_qmp_failures_without_touching_hot_path";
+        needle = "qemu_node_terminates_after_indeterminate_qmp_save_failure";
       }
       {
         label = "plugin shutdown failure test";

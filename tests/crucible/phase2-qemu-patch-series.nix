@@ -811,6 +811,20 @@
       enforces = "DET-1,QEMU-43";
       capability = "Crucible accelerator, fault, migration, timer, and plugin integrations use QEMU 11's public headers and current callback, atomic, TCG, and VMState APIs";
     }
+    {
+      file = "0117-crucible-qemu-11-runtime-semantics.patch";
+      catalogName = "crucible-qemu-11-runtime-semantics";
+      class = "D";
+      enforces = "DET-1,QEMU-43";
+      capability = "QEMU 11 translation success, realized ARM hardware-error dispatch, terminal VMState stream headers, and ordinary zero-budget TCG execution retain their runtime semantics";
+    }
+    {
+      file = "0118-crucible-queued-runtime-tb-invalidation.patch";
+      catalogName = "crucible-queued-runtime-tb-invalidation";
+      class = "D";
+      enforces = "DET-1,QEMU-43";
+      capability = "Instruction and lifecycle invalidation queues a global TB flush in an exclusive CPU context before serialized RR guest execution resumes";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

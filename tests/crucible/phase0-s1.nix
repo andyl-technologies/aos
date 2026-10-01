@@ -256,7 +256,7 @@ in
       pkgs.grep
       pkgs.jq
       pkgs.qemu-crucible
-      pkgs.socat
+      pkgs.python3
       pkgs.crucible-qemu-trace-plugin
     ];
 
@@ -312,10 +312,13 @@ in
             response="$3"
             response_err="$response.err"
 
-            {
-              printf '{"execute":"qmp_capabilities"}\r\n'
-              printf '%s\r\n' "$request"
-            } | socat -T 1 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
+            # A loaded builder can delay migration admission beyond one second.
+            # Wait for the matching QMP reply rather than a transport idle gap.
+            if ! ${pkgs.python3}/bin/python3 ${./_qmp-command.py} \
+              "$socket" "$request" > "$response" 2> "$response_err"; then
+              cat "$response_err" >&2
+              return 1
+            fi
 
             if [ ! -s "$response" ]; then
               cat "$response_err" >&2
@@ -423,8 +426,10 @@ in
             uri=$(json_string "file:$state")
             request=$(printf '{"execute":"migrate","arguments":{"uri":%s}}' "$uri")
 
-            qmp_cmd "$socket" "$request" "$TMPDIR/qmp-migrate-$label.json" \
-              || fail "guest $label migration command failed"
+            if ! qmp_cmd "$socket" "$request" "$TMPDIR/qmp-migrate-$label.json"; then
+              cat "$TMPDIR/qmp-migrate-$label.json" >&2
+              fail "guest $label migration command failed"
+            fi
             wait_for_migration "$label" "$socket" \
               || fail "guest $label migration did not complete"
             [ -s "$state" ] || fail "guest $label migration state is empty"

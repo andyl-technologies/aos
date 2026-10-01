@@ -37,6 +37,8 @@
     attrPath = "${attrPath}.haltedPartialRrTurn";
     taskIds = [];
   };
+  qemuQueuedInvalidation = import ./phase2-qemu-queued-invalidation.nix {inherit pkgs lib qemuPackage;};
+  qemuRuntimeSemantics = import ./phase2-qemu-runtime-semantics.nix {inherit pkgs lib qemuPackage;};
   qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
     inherit pkgs lib qemuPackage;
     patchStackRepository = qemuPatchStackRepository;
@@ -1543,6 +1545,35 @@
             ${patchDir}/0116-crucible-qemu-11-api-port.patch
           grep -Fq 'qemu_plugin_register_vcpu_tb_trans_cb(id, vcpu_tb_trans, NULL);' \
             ${patchDir}/0116-crucible-qemu-11-api-port.patch
+        '';
+      };
+    }
+    {
+      patch = "0117-crucible-qemu-11-runtime-semantics.patch";
+      check = certifyExactPatch {
+        patchName = "0117-crucible-qemu-11-runtime-semantics.patch";
+        liveCheck = qemuRuntimeSemantics;
+        evidenceName = "qemu-11-runtime-semantics";
+        liveEvidence = ''
+          grep -Fxq 'ordinary_tcg_aarch64_boot=true' "$live_result"
+          grep -Fxq 'seeded_aarch64_fingerprint=true' "$live_result"
+          grep -Fxq 'aarch64_hardware_error_dispatch=true' "$live_result"
+          grep -Fxq 'terminal_vmstate_stream_header=true' "$live_result"
+          grep -Fxq 'vcpu_service_trajectories=true' "$live_result"
+        '';
+      };
+    }
+    {
+      patch = "0118-crucible-queued-runtime-tb-invalidation.patch";
+      check = certifyExactPatch {
+        patchName = "0118-crucible-queued-runtime-tb-invalidation.patch";
+        liveCheck = qemuQueuedInvalidation;
+        evidenceName = "queued-runtime-tb-invalidation";
+        liveEvidence = ''
+          grep -Fxq 'main_loop_instruction_installation=true' "$live_result"
+          grep -Fxq 'cpu1_cached_instruction_retranslated=true' "$live_result"
+          grep -Fxq 'global_flushes=1' "$live_result"
+          grep -Fxq 'direct_flush_negative_asserts=true' "$live_result"
         '';
       };
     }

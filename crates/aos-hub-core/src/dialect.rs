@@ -380,6 +380,27 @@ impl Dialect {
             };
             s = s.replace(sentinel, &key_type);
         }
+        if self == Dialect::Mysql
+            && s.contains("CREATE TABLE")
+            && s.contains("package_documentation_search(")
+        {
+            // Four utf8mb4 VARCHAR(255) columns exceed InnoDB's index limit.
+            // Keep every original value and index an unambiguous JSON tuple
+            // instead. A digest collision rejects the insert; no write uses
+            // this digest to replace or resolve another document's identity.
+            // Stored generated columns may be unique, but not primary, keys
+            // on MariaDB. The parent documentation foreign key stays intact.
+            s = s.replace(
+                "document_key VARCHAR(255) NOT NULL,",
+                "document_key VARCHAR(255) NOT NULL,\n  document_identity_digest BINARY(32) \
+GENERATED ALWAYS AS (UNHEX(SHA2(JSON_ARRAY(package_name, package_version, platform, \
+CAST(kind AS CHAR), document_key), 256))) STORED,",
+            );
+            s = s.replace(
+                "PRIMARY KEY(\n    registry_id, package_name, package_version, platform, kind, document_key\n  )",
+                "UNIQUE(registry_id, document_identity_digest)",
+            );
+        }
         if self == Dialect::Mysql && s.contains("consumer_cache_publication_intents") {
             // The portable schema keeps the full committed URL and keys it by
             // exact value. MySQL-family engines cannot place LONGTEXT directly

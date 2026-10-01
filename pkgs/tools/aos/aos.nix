@@ -6,6 +6,7 @@
   mkCargoDummySource,
   fetchCargoVendor,
   bash,
+  ca-certificates,
   git-minimal,
   nix,
   openssh,
@@ -141,14 +142,18 @@
   src = import ./_workspace-source.nix {inherit lib;};
   applicationTestPackages = [
     "aos"
+    "aos-boot-identity"
     "aos-cache"
     "aos-contract"
     "aos-core"
     "aos-doc"
     "aos-doc-model"
     "aos-hub"
+    "aos-hub-console"
+    "aos-hub-console-contract"
     "aos-hub-core"
     "aos-hub-worker"
+    "aos-image-finalizer"
     "aos-maintain"
     "aos-net"
     "aos-oci"
@@ -157,6 +162,7 @@
     "aos-profile"
     "aos-proto"
     "aos-proto-types"
+    "aos-recovery"
     "aos-registry-spa"
     "aos-registry-surface"
     "aos-release"
@@ -246,7 +252,7 @@ in
     # the `aos` runtime closure because maintainer commands create, inspect,
     # commit, and publish isolated Git worktrees without host tools.
     buildDeps =
-      [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildNix buildOpenSsh buildZstd remove-references-to]
+      [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildNix buildOpenSsh buildZstd remove-references-to ca-certificates]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
       [openssl sqlite libssh2 zlib]
@@ -268,6 +274,8 @@ in
       # linked dependency DWARF in addition to the workspace's size-optimized
       # test profile. The shipped release artifact is built independently
       # above and is unaffected.
+      # SDK clients load trust roots even when tests use loopback HTTP.
+      export SSL_CERT_FILE="${ca-certificates}/etc/ssl/certs/ca-certificates.crt"
       export CARGO_PROFILE_TEST_STRIP=debuginfo
       export OPENSSL_DIR="${openssl}"
       export OPENSSL_LIB_DIR="${openssl}/lib"
@@ -322,6 +330,12 @@ in
     # exercises them exactly as the dev `cargo test` / `aos test` path does,
     # preserving full coverage without weakening the release security posture.
     checkType = "debug";
+
+    # Nextest runs ordinary tests only. Keep public documentation examples in
+    # the same application gate so switching runners does not drop coverage.
+    postBuild = lib.optionalString (!isCross) ''
+      cargo test --doc --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}
+    '';
 
     # Install each Cargo binary into its own output behind a thin wrapper. The
     # programs have independent parsers and entry points; none derives

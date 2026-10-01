@@ -323,8 +323,7 @@ pub fn require_store_path(value: &str, derivation: bool) -> Result<()> {
     }
     // Nix source names may retain query punctuation from their download URLs.
     if !name.bytes().all(|byte| {
-        byte.is_ascii_alphanumeric()
-            || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
+        byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
     }) {
         bail!("Nix store path name contains a forbidden character: {name}");
     }

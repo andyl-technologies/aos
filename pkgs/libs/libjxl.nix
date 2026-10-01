@@ -1,5 +1,6 @@
 ##! JPEG XL image codecs and command-line tools.
 {
+  lib,
   mkDerivation,
   callPackage,
   fetchurl,
@@ -137,15 +138,22 @@ in
       ++ [
         {
           name = "install";
-          script = ''
-            cmake --install build
-            mkdir -p "$out/share/doc/libjxl"
-            cp -R build/doc/html build/doc/xml "$out/share/doc/libjxl/"
-            mkdir -p "$out/share/licenses/libjxl"
-            cp LICENSE PATENTS "$out/share/licenses/libjxl/"
-            cp third_party/skcms/LICENSE "$out/share/licenses/libjxl/LICENSE.skcms"
-            cp third_party/sjpeg/COPYING "$out/share/licenses/libjxl/LICENSE.sjpeg"
-          '';
+          script =
+            ''
+              cmake --install build
+              mkdir -p "$out/share/doc/libjxl"
+              cp -R build/doc/html build/doc/xml "$out/share/doc/libjxl/"
+              mkdir -p "$out/share/licenses/libjxl"
+              cp LICENSE PATENTS "$out/share/licenses/libjxl/"
+              cp third_party/skcms/LICENSE "$out/share/licenses/libjxl/LICENSE.skcms"
+              cp third_party/sjpeg/COPYING "$out/share/licenses/libjxl/LICENSE.sjpeg"
+            ''
+            + lib.optionalString stdenv.isCross ''
+              # The diagrams are already rendered. Installed Doxygen metadata
+              # uses PATH discovery instead of retaining the native renderer.
+              sed -i 's|${buildPackages.graphviz}/bin||g' \
+                "$out/share/doc/libjxl/xml/Doxyfile.xml"
+            '';
         }
       ];
 

@@ -192,12 +192,13 @@ in
         pname = "lib-bind-dns";
         library = self;
         libs = ["-ldns" "-lisc"];
+        extraDeps = [liburcu libuv];
         testSource = ''
-          #include <dns/version.h>
-          #include <isc/version.h>
+          #include <dns/name.h>
+          #include <isc/result.h>
 
           int main(void) {
-              return dns_version == NULL || isc_version == NULL;
+              return dns_rootname == NULL || isc_result_totext(ISC_R_SUCCESS) == NULL;
           }
         '';
       };

@@ -108,7 +108,7 @@
       }
       {
         label = "explicit thin-only cache policy";
-        needle = "pub fn thin_only() -> Self";
+        needle = "pub const fn thin_only() -> Self";
       }
       {
         label = "ordinary materialization integration";
@@ -188,7 +188,7 @@
       }
       {
         label = "thin default evicts fat assertion";
-        needle = "cached_snapshots_after, 0";
+        needle = "thin_graph.cached_snapshot_count(), 0";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

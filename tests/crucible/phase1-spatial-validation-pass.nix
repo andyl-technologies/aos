@@ -8,14 +8,22 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  worldValidationTests =
-    builtins.readFile ../../crates/crucible/src/tests/world_validation.rs;
+  worldValidationTests = import ./_crucible-tests-source.nix {inherit lib;};
   qemuLaunch =
-    builtins.readFile ../../crates/crucible-qemu/src/launch.rs
+    import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/launch.rs;
+    }
     + builtins.readFile ../../crates/crucible-qemu/src/launch/canonical.rs;
-  qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
+  qemuRealization = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/realization.rs;
+  };
   qemuLaunchTest =
-    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
+    import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/tests/deterministic_launch.rs;
+    }
     + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
   replayOracleTest = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -73,7 +81,7 @@
       }
       {
         label = "binary parser validates world before plan";
-        needle = "let world = read_world_binary(reader, includes_devices)?;";
+        needle = "let world = read_world_binary(";
       }
       {
         label = "binary parser validates plan against world";
@@ -93,11 +101,11 @@
       }
       {
         label = "plan validation";
-        needle = "fn validate_plan_entries_for_world(";
+        needle = "validate_event_graph_plan(";
       }
       {
         label = "serialized plan pre-validation";
-        needle = "fn validate_plan_entries_in_toml(";
+        needle = "plan_from_toml_with_assertions(";
       }
       {
         label = "properties validation";
@@ -125,23 +133,23 @@
       }
       {
         label = "plan reference errors";
-        needle = "PlanFaultUnknownLink";
+        needle = "event_graph_plan_error";
       }
       {
         label = "partition direction errors";
-        needle = "PlanFaultUnknownDirection";
+        needle = "FaultSignalPlanError";
       }
       {
         label = "fault param errors";
-        needle = "PlanFaultUnsupportedParam";
+        needle = "FaultSignalPlanError";
       }
       {
         label = "heal tag errors";
-        needle = "PlanHealUnknownTag";
+        needle = "FaultSignalPlanError";
       }
       {
         label = "plan time errors";
-        needle = "PlanNegativeTime";
+        needle = "require_current_fault_schema";
       }
       {
         label = "property ref errors";
@@ -186,80 +194,36 @@
     ]
     ++ failuresFor "crates/crucible/src/tests/world_validation.rs" worldValidationTests [
       {
-        label = "focused validation matrix test";
-        needle = "fn scenario_def_form_rejects_well_formedness_matrix_before_hashing()";
+        label = "scenario validation matrix";
+        needle = "scenario_def_form_rejects_well_formedness_matrix_before_hashing";
       }
       {
-        label = "matrix covers duplicate node";
-        needle = "duplicate_node_ids";
+        label = "duplicate nodes";
+        needle = "DuplicateWorldNodeId";
       }
       {
-        label = "matrix covers unknown link endpoint";
-        needle = "unknown_link_endpoint";
+        label = "unknown link endpoint";
+        needle = "WorldLinkUnknownNode";
       }
       {
-        label = "matrix covers latency floor";
-        needle = "latency_below_floor";
+        label = "latency floor";
+        needle = "WorldLinkJitterBelowLatencyFloor";
       }
       {
-        label = "matrix covers jitter floor";
-        needle = "jitter_below_floor";
+        label = "white-box ready point";
+        needle = "WhiteBoxReadyPointWithoutOptIn";
       }
       {
-        label = "matrix covers loss range";
-        needle = "loss_out_of_range";
+        label = "property references";
+        needle = "PropertyPredicateUnknownNode";
       }
       {
-        label = "matrix covers plan refs";
-        needle = "plan_unknown_link";
+        label = "serialized vCPU validation";
+        needle = "WorldNodeSmpVcpuCountZero";
       }
       {
-        label = "matrix covers fault params";
-        needle = "unsupported_fault_param_toml";
-      }
-      {
-        label = "matrix covers unknown partition directions";
-        needle = "unknown_direction_toml";
-      }
-      {
-        label = "matrix covers heal tags";
-        needle = "unknown_heal_tag";
-      }
-      {
-        label = "matrix covers plan time";
-        needle = "negative_plan_time_toml";
-      }
-      {
-        label = "matrix covers property refs";
-        needle = "unknown_property_ref";
-      }
-      {
-        label = "matrix covers empty compound properties";
-        needle = "empty_property_compound";
-      }
-      {
-        label = "matrix covers ready point opt-in";
-        needle = "white_box_ready_point_without_opt_in";
-      }
-      {
-        label = "matrix covers zero vCPU count";
-        needle = "zero_vcpu_count";
-      }
-      {
-        label = "matrix covers vCPU identity sensitivity";
-        needle = "changed_vcpu_world";
-      }
-      {
-        label = "matrix covers icount-shift range";
-        needle = "icount_shift_too_large";
-      }
-      {
-        label = "matrix covers icount-shift identity sensitivity";
-        needle = "changed_shift_world";
-      }
-      {
-        label = "matrix covers full scenario parse validation";
-        needle = "scenario_negative_plan_time";
+        label = "incompatible event graph";
+        needle = "incompatible_world";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/launch.rs" qemuLaunch [

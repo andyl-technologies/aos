@@ -134,6 +134,7 @@
         --trust-key "$STATIC_RELEASE_TRUST_KEY" \
         --key /tmp/static-release-key
       REG_DIR="$REG_STORAGE/static-release-reg"
+      register_publish_key static-release-reg initial /tmp/static-release-key
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       assert_file_contains "$REG_DIR/keys.toml" "$STATIC_RELEASE_TRUST_KEY" \
         "registry records static release trust key"
@@ -150,7 +151,7 @@
         --license MIT \
         --maintainer static-release@example.invalid \
         --source-drv "$ROOT_SOURCE_STORE" \
-        --key /tmp/static-release-key \
+        --key-id initial \
         --cache-key /tmp/static-release-cache.sec \
         --cache-url http://127.0.0.1:18120 \
         --upload-url file:///tmp/static-release-origin \
@@ -459,7 +460,7 @@
         --maintainer static-release@example.invalid \
         --previous 1.0.0 \
         --source-drv "$ROOT_V2_SOURCE_STORE" \
-        --key /tmp/static-release-key \
+        --key-id initial \
         --cache-key /tmp/static-release-cache.sec \
         --cache-url http://127.0.0.1:18120 \
         --upload-url file:///tmp/static-release-origin \

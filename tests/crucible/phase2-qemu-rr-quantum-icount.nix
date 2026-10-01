@@ -167,7 +167,7 @@
       }
       {
         label = "S11 default uses the fixed predeclared horizon";
-        needle = "stopAt ? 4000000000";
+        needle = "stopAt ? 8000000000";
       }
       {
         label = "S11 numeric stop_at sustains the validated workload";
@@ -320,10 +320,10 @@ in
             require_line "$s11_result" "vcpus=4"
             require_line "$s11_result" "rr_switch_quantum=4096"
             require_line "$s11_result" "cadence=100000000"
-            require_line "$s11_result" "run_horizon=plugin-stop_at-4000000000"
-            require_line "$s11_result" "periodic_samples_expected=40"
-            require_line "$s11_result" "periodic_samples_observed=40"
-            require_line "$s11_result" "samples=41"
+            require_line "$s11_result" "run_horizon=plugin-stop_at-8000000000"
+            require_line "$s11_result" "periodic_samples_expected=80"
+            require_line "$s11_result" "periodic_samples_observed=80"
+            require_line "$s11_result" "samples=81"
             require_line "$s11_result" "require_guest_pass=1"
             require_line "$s11_result" "host_adversary=bounded-scheduler-preemption"
             require_line "$s11_result" "extended_fingerprint_match=true"

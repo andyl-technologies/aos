@@ -151,7 +151,7 @@
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
       {
         label = "debug executes live QEMU admission";
-        needle = "run_local_qemu_debug_workflow(&backend, &plan)";
+        needle = "run_local_qemu_debug_workflow(&backend, plan)";
       }
       {
         label = "coordinate flag group";

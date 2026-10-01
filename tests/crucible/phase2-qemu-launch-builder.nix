@@ -10,12 +10,21 @@
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   faultCapabilityLib = builtins.readFile ../../crates/crucible-qemu/src/fault_capability.rs;
   launchLib =
-    builtins.readFile ../../crates/crucible-qemu/src/launch.rs
+    import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/launch.rs;
+    }
     + builtins.readFile ../../crates/crucible-qemu/src/launch/error.rs
     + builtins.readFile ../../crates/crucible-qemu/src/launch/helpers.rs
-    + builtins.readFile ../../crates/crucible-qemu/src/launch/plugin_config.rs;
+    + import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/launch/plugin_config.rs;
+    };
   launchTest =
-    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
+    import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/tests/deterministic_launch.rs;
+    }
     + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs
     + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/fingerprint_options.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
@@ -101,7 +110,7 @@
       }
       {
         label = "production launch requires an exact manifest";
-        needle = "required_target.exact_manifest().is_none()";
+        needle = "required_target.exact_register_manifest().is_none()";
       }
       {
         label = "launch verifies World node identity";
@@ -279,7 +288,7 @@
       }
       {
         label = "exact World register manifest binding";
-        needle = "target.exact_manifest = Some(manifest.clone());";
+        needle = "target.exact_register_manifest = Some(manifest.clone());";
       }
       {
         label = "World node identity binding";
@@ -321,11 +330,11 @@
       }
       {
         label = "default plugin argv assertion";
-        needle = "simfd=3,slot=0,fault_node_hash={fault_hash},shmemfd=4,wakefd=5,whitebox=off,coverage=off";
+        needle = "simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=4,wakefd=5,whitebox=off,coverage=off";
       }
       {
         label = "fixed fd plugin argv assertion";
-        needle = "simfd=3,slot=2,fault_node_hash={fault_hash},shmemfd=4,wakefd=5,whitebox=on,coverage=on";
+        needle = "simfd=3,slot=2,fault_node_hash={fault_hash},process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=4,wakefd=5,whitebox=on,coverage=on";
       }
       {
         label = "kernel argv assertion";

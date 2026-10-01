@@ -508,11 +508,11 @@
     }
 
     echo "==> Maintainer: publish server sysroot and static cache"
-    $APR create system-reg
+    create_publish_registry system-reg
     REG_DIR="$REG_STORAGE/system-reg"
     DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
 
-    $APR publish "$TOPLEVEL_STORE" \
+    publish_vm_package "$TOPLEVEL_STORE" \
       --name server \
       --version 2026.03 \
       --description "System install workflow sysroot" \

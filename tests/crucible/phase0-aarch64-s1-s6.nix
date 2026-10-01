@@ -3,7 +3,9 @@
   lib,
 }: let
   boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
-  linuxSource = import ../../pkgs/kernel/_source.nix {fetchurl = pkgs.fetchurl;};
+  linuxSource = import ../../pkgs/kernel/_source.nix {
+    inherit (pkgs) fetchurl mkManualUpstream;
+  };
 
   kernel = pkgs.mkDerivation {
     pname = "crucible-aarch64-s1-s6-linux";
@@ -52,6 +54,9 @@
           CONFIG_BINFMT_ELF=y
           CONFIG_RANDOMIZE_BASE=y
           CONFIG_RANDOMIZE_MODULE_REGION_FULL=y
+          # Cortex-A57 implements the ARMv8.0 48-bit address space, not LPA2.
+          CONFIG_ARM64_VA_BITS_48=y
+          CONFIG_ARM64_PA_BITS_48=y
           CONFIG_BLK_DEV_INITRD=y
           CONFIG_RD_GZIP=y
           CONFIG_TTY=y
@@ -72,6 +77,8 @@
           make ARCH=arm64 LLVM=1 HOSTCC=cc HOSTCXX=c++ olddefconfig
           grep -Fxq 'CONFIG_RANDOMIZE_BASE=y' .config
           grep -Fxq 'CONFIG_BLK_DEV_INITRD=y' .config
+          grep -Fxq 'CONFIG_ARM64_VA_BITS=48' .config
+          grep -Fxq 'CONFIG_ARM64_PA_BITS=48' .config
         '';
       }
       {
@@ -218,7 +225,10 @@
             -c init.S \
             -o init.o
           ld.lld -pie -static -e _start --build-id=none init.o -o init
-          llvm-readelf -h init | grep -Eq 'Type:.*DYN'
+          # Read the complete header before matching: grep -q can close a pipe
+          # early and make LLVM abort while writing the remaining header.
+          llvm-readelf -h init > init-header.txt
+          grep -Eq 'Type:.*DYN' init-header.txt
 
           mkdir -p root "$out"
           cp init root/init
@@ -269,6 +279,14 @@ in
 
           fail() {
             echo "FAIL: $*" >&2
+            if [ -n "''${label:-}" ]; then
+              for diagnostic in "$serial" "$TMPDIR/stderr-$label.log" "$trace"; do
+                if [ -f "$diagnostic" ]; then
+                  echo "Last records from $diagnostic:" >&2
+                  tail -n 40 "$diagnostic" >&2
+                fi
+              done
+            fi
             exit 1
           }
 
@@ -293,6 +311,31 @@ in
           trap 'bounded_preemption_cleanup' EXIT
           trap 'bounded_preemption_cleanup; exit 143' TERM
           trap 'bounded_preemption_cleanup; exit 130' INT
+
+          # Ordinary TCG has no icount service budget. Reaching userspace
+          # catches both translation failures and accidental zero-budget denial.
+          label=ordinary-tcg
+          serial="$TMPDIR/serial-$label.log"
+          trace="$TMPDIR/trace-$label.jsonl"
+          qemu_binary=$(command -v qemu-system-aarch64)
+          bounded_preemption_launch_qemu \
+            120 "$TMPDIR/qemu-target-$label.pid" - "$qemu_binary" \
+            qemu-system-aarch64 \
+            -nodefaults -no-user-config -display none -monitor none \
+            -machine virt,gic-version=2 -cpu cortex-a57 -accel tcg,thread=single \
+            -m 256 -smp 1 -dtb "$seed_dtb" \
+            -kernel "$KERNEL" -initrd "$INITRAMFS" \
+            -append 'console=ttyAMA0 rdinit=/init nokaslr norandmaps' \
+            -serial "file:$serial" -no-reboot -no-shutdown \
+            >"$TMPDIR/stdout-$label.log" 2>"$TMPDIR/stderr-$label.log" \
+            || fail "ordinary TCG QEMU launch failed"
+          qemu_pid="$BOUNDED_QEMU_PID"
+          bounded_preemption_wait_for_guest_progress \
+            "$serial" CRUCIBLE_AARCH64_BASES 1000 0.1 \
+            || fail "ordinary TCG did not reach AArch64 userspace"
+          kill -9 "$qemu_pid" || fail "ordinary TCG could not be terminated"
+          bounded_preemption_wait_qemu 2>/dev/null || true
+          qemu_pid=""
 
           run_one() {
             mode="$1"
@@ -433,6 +476,7 @@ in
             echo check=checks.crucible.phase0.aarch64S1S6
             echo architecture=aarch64
             echo backend=qemu-system-aarch64
+            echo ordinary_tcg_aarch64_boot=true
             echo accelerator=sim,thread=single
             echo entropy_source=fixed-device-tree-kaslr-seed-and-rng-seed
             echo randomized_kernel_cmdline_has_nokaslr_norandmaps=false

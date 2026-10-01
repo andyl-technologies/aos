@@ -351,7 +351,9 @@ fn resolve_members(
 
 fn validate_member_partition(name: &str, partition: &PartitionSpec) -> Result<()> {
     if partition.format.is_some() {
-        bail!("member partition '{name}' must not declare a format; the array carries the filesystem");
+        bail!(
+            "member partition '{name}' must not declare a format; the array carries the filesystem"
+        );
     }
     if matches!(partition.encryption.as_deref(), Some("tpm2")) {
         bail!("member partition '{name}' must not declare encryption; encrypt the array instead");
@@ -385,7 +387,11 @@ fn validate_system_state_placement(
     }
     match arrays.get(SYSTEM_STATE_VOLUME) {
         Some(array) => {
-            if !array.members.iter().any(|member| member == SYSTEM_STATE_VOLUME) {
+            if !array
+                .members
+                .iter()
+                .any(|member| member == SYSTEM_STATE_VOLUME)
+            {
                 bail!(
                     "array '{SYSTEM_STATE_VOLUME}' must include the root-disk '{SYSTEM_STATE_VOLUME}' partition as a member"
                 );
@@ -421,7 +427,9 @@ fn validate_array_name(
         bail!("array name '{name}' must be 1-{limit} ASCII letters, digits, '.', '_' or '-'");
     }
     if partition_labels.contains(name) {
-        bail!("array name '{name}' collides with a partition label; both would claim /dev/disk/by-label/{name}");
+        bail!(
+            "array name '{name}' collides with a partition label; both would claim /dev/disk/by-label/{name}"
+        );
     }
     Ok(())
 }
@@ -434,7 +442,9 @@ fn validate_level(name: &str, level: &str, member_count: usize) -> Result<()> {
         other => bail!("array '{name}' has unsupported level '{other}'"),
     };
     if member_count < minimum {
-        bail!("array '{name}' level {level} needs at least {minimum} members, found {member_count}");
+        bail!(
+            "array '{name}' level {level} needs at least {minimum} members, found {member_count}"
+        );
     }
     Ok(())
 }
