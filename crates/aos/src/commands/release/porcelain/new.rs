@@ -38,6 +38,7 @@ use async_trait::async_trait;
 use super::super::capture;
 use super::super::config::MaintainerConfig;
 use super::super::surface::readback;
+use super::super::tooling::ToolingEnvironment;
 use super::super::{contract, plan};
 use super::keys;
 use super::workdir::{self, ReleaseIndex, WORK_INDEX, WorkDir, digest_string};
@@ -177,12 +178,16 @@ impl LiveState for Live<'_> {
 /// directory that already holds a plan, a failed live lookup, or a plan the
 /// planner rejects.
 pub(super) async fn run(args: &ReleaseNewArgs, nix: &NixRunner, printer: &Printer) -> Result<()> {
+    // A plan frozen by a development build would bind no tooling closure;
+    // refuse before reading anything else.
+    let tooling = ToolingEnvironment::require()?;
     let (config_path, config) = MaintainerConfig::load(args.config.as_deref())?;
     let live = Live { nix, printer };
     let prepared = prepare(args, &config_path, &config, &live).await?;
     for (label, value) in &prepared.summary {
         printer.kv(label, value);
     }
+    printer.kv("tooling", &tooling.closure().display().to_string());
 
     let work = &prepared.work;
     printer.info(&format!(

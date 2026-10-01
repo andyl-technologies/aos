@@ -206,7 +206,7 @@ with the live value:
 | `surface` | The destination surface identity: the Hub deployment ID, or the static surface identity served at `.aos-surface` |
 | `hub-schema` | The Hub schema version reported by the deployment. A static surface has none; the binding is recorded as `null` and is satisfied vacuously |
 | `signer-roster` | Digest of the plan's `signers` list, canonical JSON under the domain `aos.release.signer-roster/v1` |
-| `tooling` | Digest of the maintainer configuration's `tooling_closure` |
+| `tooling` | Digest of the installed release tooling closure's store path |
 | `alert-config` | Digest of the maintainer configuration's `[alert]` section |
 
 A binding mismatch makes an attestation unusable regardless of its age. A new
@@ -947,9 +947,10 @@ environment shape that does not match the case.
 
 The flake exposes `qualification-executor-<platform>` packages for all four
 release platforms under `packages.x86_64-linux`, plus a native
-`qualification-executor` alias on each supported system. Install the exact
-platform closures at the paths named by the maintainer configuration's
-`[executors.<platform>]` tables, which `advance` passes to `step qualify-run`. Before starting an
+`qualification-executor` alias on each supported system. The `release-tooling`
+package bundles the native one with the CLI under
+`libexec/aos-release/executors/<platform>/`, where `advance` discovers it and
+passes it to `step qualify-run`. Before starting an
 executor, install each applicable report-backed scenario's single-link
 canonical report at
 `/run/aos-release/qualification-reports/<platform>/<case-digest>.json`.

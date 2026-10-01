@@ -92,7 +92,8 @@ Complete this section before starting builds or requesting signatures.
   signer role in the approved roster has a `[signer.roles.<role>]` table whose
   key IDs, verification identities, threshold, and provider revision match that
   roster, `[git]` names the organization's public release identity for
-  registry commits, and `tooling_closure` names the installed `aos`.
+  registry commits, and the shell runs the installed
+  [release tooling closure](canonical-releases.md#release-tooling-environment).
   One configuration serves one registry; load only its credentials.
 
 - [ ] **Verify source and contributor authorization.** Use the protected source
@@ -108,13 +109,13 @@ Complete this section before starting builds or requesting signatures.
 
 - [ ] **Confirm the test environments are ready.** Confirm real test programs
   exist for both Linux disk/container targets and every platform receiving
-  packages, including native macOS runners where needed, at the paths in the
-  configuration's `[executors.<platform>]` tables.
+  packages, including native macOS runners where needed, inside the installed
+  release tooling closure's `libexec/aos-release/executors/<platform>/`.
 
-  **Check when:** every required test has an implementation and the executor
-  identities match the configuration. A generic runner, empty scenario mapping,
-  or passing fixture test does not satisfy this item. Complete the executor
-  setup described above.
+  **Check when:** every required test has an implementation and each
+  executor's `identity` file names the identity it reports. A generic runner,
+  empty scenario mapping, or passing fixture test does not satisfy this item.
+  Complete the executor setup described above.
 
 - [ ] **Verify the registry and both surfaces.** Follow the preconditions
   and live-state commands in the [testing](registry-testing.md#preconditions)
@@ -528,7 +529,7 @@ maintainer's operations log, not in a release checklist.
 
 | Kind | Performed by | Cadence | Accepted for | Invalidated by a change to |
 | --- | --- | --- | --- | --- |
-| `storage-restore` | `aos-release-restore-check.timer` | weekly | 14 days | `tooling_closure` |
+| `storage-restore` | `aos-release-restore-check.timer` | weekly | 14 days | the installed release tooling closure |
 | `alert-delivery` | `aos-release-alert-check.timer` | weekly | 14 days | the `[alert]` section |
 | `authority-recovery` | operator | quarterly | 90 days | the plan's signer roster |
 | `hub-restore` | operator | quarterly, and before a risky schema or storage migration | 90 days | the production surface identity or Hub schema |
@@ -563,7 +564,7 @@ the report.
 
   **Check when:** the backup is held independently of the maintainer machine,
   both jobs report `Result=success` and `ExecMainStatus=0`, and `fitness status`
-  shows a fresh `storage-restore` bound to the current `tooling_closure`. A
+  shows a fresh `storage-restore` bound to the installed tooling closure. A
   successful backup upload alone is insufficient.
 
 - [ ] **Alert delivery (automated).** The weekly alert check triggers the
