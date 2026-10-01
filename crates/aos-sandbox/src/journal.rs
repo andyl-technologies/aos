@@ -1266,6 +1266,28 @@ enum ProtectedOwnerPolicy {
     Exact(u32),
 }
 
+#[derive(Clone, Copy)]
+enum ProtectedJournalOpenMode {
+    Ordinary { allow_create: bool },
+    StorageOperatorEmptyProvisionV4,
+}
+
+impl ProtectedJournalOpenMode {
+    fn allows_creation(self) -> bool {
+        match self {
+            Self::Ordinary { allow_create } => allow_create,
+            Self::StorageOperatorEmptyProvisionV4 => true,
+        }
+    }
+
+    fn allows_repair(self) -> bool {
+        matches!(self, Self::Ordinary { allow_create: true })
+    }
+}
+
+const STORAGE_OPERATOR_STATE_DIRECTORY: &str = "/var/lib/aos/sandbox-storage";
+const STORAGE_OPERATOR_JOURNAL_NAME: &str = "operator-recovery.journal";
+
 impl ProtectedOwnerPolicy {
     fn expected_uid(self) -> u32 {
         match self {
@@ -1523,6 +1545,74 @@ impl Journal {
             ProtectedOwnerPolicy::Root,
             false,
         )
+    }
+
+    /// Provisions only the fixed empty Storage operator receipt journal.
+    ///
+    /// The actual exclusive writer lock precedes the physical-length check.
+    /// Existing nonempty history, interrupted tails, and stale compaction are
+    /// refused without repair or cleanup. Newly created names are synchronized;
+    /// an error leaves any partially provisioned names in place for diagnosis.
+    /// This does not initialize a receipt, rollback floor, or Storage runtime.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsafe fixed custody, a held writer lock, any physical history,
+    /// stale compaction, or an opening, replay, or synchronization failure.
+    pub fn provision_empty_storage_operator_recovery_v4(
+        limits: JournalLimits,
+    ) -> Result<Self, JournalError> {
+        let path = Path::new(STORAGE_OPERATOR_STATE_DIRECTORY);
+        let directory = resolve_protected_directory_from_root(path, 0)?;
+        let (journal, _) = Self::open_protected_directory_with_mode(
+            path,
+            directory,
+            STORAGE_OPERATOR_JOURNAL_NAME,
+            limits,
+            ProtectedOwnerPolicy::Root,
+            ProtectedJournalOpenMode::StorageOperatorEmptyProvisionV4,
+        )?;
+        journal.validate_empty_storage_operator_recovery_v4()?;
+        Ok(journal)
+    }
+
+    /// Rechecks the same fixed writer and its physically empty native history.
+    ///
+    /// A materialized-empty map alone is insufficient: deleted rows or a
+    /// compacted history do not count as first-time receipt provisioning.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unhealthy, replaced, foreign, or nonempty fixed writer custody.
+    pub fn validate_empty_storage_operator_recovery_v4(&self) -> Result<(), JournalError> {
+        self.validate_held_root_owned_at(
+            STORAGE_OPERATOR_STATE_DIRECTORY,
+            STORAGE_OPERATOR_JOURNAL_NAME,
+        )?;
+        let journal_identity = FileIdentity::of(&self.file)?;
+        let lock_identity = FileIdentity::of(&self._lock)?;
+        reject_operator_provisioning_history(journal_identity.size)?;
+        reject_operator_provisioning_history(lock_identity.size)?;
+        let has_history = !self.transaction_ids.is_empty()
+            || !self.committed_namespaces.is_empty()
+            || !self.state.is_empty()
+            || self.materialized_bytes != 0
+            || !self.idempotency.is_empty();
+        require_empty_operator_provisioning_state(
+            self.next_sequence,
+            self.committed_transactions,
+            has_history,
+        )?;
+        self.validate_held_root_owned_at(
+            STORAGE_OPERATOR_STATE_DIRECTORY,
+            STORAGE_OPERATOR_JOURNAL_NAME,
+        )?;
+        if FileIdentity::of(&self.file)? != journal_identity
+            || FileIdentity::of(&self._lock)? != lock_identity
+        {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+        Ok(())
     }
 
     /// Opens a protected journal owned by one configured service UID.
@@ -1842,6 +1932,25 @@ impl Journal {
         owner: ProtectedOwnerPolicy,
         allow_create: bool,
     ) -> Result<(Self, RecoveryReport), JournalError> {
+        Self::open_protected_directory_with_mode(
+            directory_path,
+            directory,
+            name,
+            limits,
+            owner,
+            ProtectedJournalOpenMode::Ordinary { allow_create },
+        )
+    }
+
+    fn open_protected_directory_with_mode(
+        directory_path: &Path,
+        directory: File,
+        name: &str,
+        limits: JournalLimits,
+        owner: ProtectedOwnerPolicy,
+        mode: ProtectedJournalOpenMode,
+    ) -> Result<(Self, RecoveryReport), JournalError> {
+        let allow_create = mode.allows_creation();
         let expected_uid = owner.expected_uid();
         validate_limits(limits)?;
         if name.len() > MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES {
@@ -1865,12 +1974,18 @@ impl Journal {
                 rustix_io(error)
             }
         })?;
-        if allow_create {
+        if matches!(mode, ProtectedJournalOpenMode::StorageOperatorEmptyProvisionV4) {
+            reject_operator_provisioning_history(lock.metadata()?.len())?;
+        }
+        if mode.allows_repair() {
             remove_stale_protected_compaction(&directory, name)?;
         } else {
             reject_stale_protected_compaction(&directory, name)?;
         }
         let file = open_protected_file(&directory, name, expected_uid, allow_create, false, false)?;
+        if matches!(mode, ProtectedJournalOpenMode::StorageOperatorEmptyProvisionV4) {
+            reject_operator_provisioning_history(file.metadata()?.len())?;
+        }
         if allow_create {
             fsync(&directory).map_err(rustix_io)?;
         }
@@ -1891,7 +2006,7 @@ impl Journal {
             lock,
             limits,
             Some(protected),
-            allow_create,
+            mode.allows_repair(),
         )
     }
 
@@ -5719,6 +5834,24 @@ fn protected_compaction_name(name: &str) -> String {
     format!("{name}.compact.tmp")
 }
 
+fn reject_operator_provisioning_history(length: u64) -> Result<(), JournalError> {
+    if length != 0 {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
+}
+
+fn require_empty_operator_provisioning_state(
+    next_sequence: u64,
+    committed_transactions: usize,
+    has_history: bool,
+) -> Result<(), JournalError> {
+    if next_sequence != 1 || committed_transactions != 0 || has_history {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
+}
+
 fn remove_stale_protected_compaction(directory: &File, name: &str) -> Result<(), JournalError> {
     let temporary = protected_compaction_name(name);
     validate_basename(&temporary)?;
@@ -5942,6 +6075,54 @@ mod tests {
         open_protected_file, open_read_only_protected_file, protected_open_error,
         require_opened_directory_identity, traverse_protected_directory,
     };
+
+    #[test]
+    fn operator_empty_provisioning_mode_never_enables_repair() {
+        use super::ProtectedJournalOpenMode;
+
+        let ordinary_create = ProtectedJournalOpenMode::Ordinary { allow_create: true };
+        assert!(ordinary_create.allows_creation());
+        assert!(ordinary_create.allows_repair());
+
+        let ordinary_existing = ProtectedJournalOpenMode::Ordinary { allow_create: false };
+        assert!(!ordinary_existing.allows_creation());
+        assert!(!ordinary_existing.allows_repair());
+
+        let provision = ProtectedJournalOpenMode::StorageOperatorEmptyProvisionV4;
+        assert!(provision.allows_creation());
+        assert!(!provision.allows_repair());
+    }
+
+    #[test]
+    fn operator_provisioning_refuses_all_physical_history() {
+        assert!(super::reject_operator_provisioning_history(0).is_ok());
+        for length in [1, 32, 4096, u64::MAX] {
+            assert!(matches!(
+                super::reject_operator_provisioning_history(length),
+                Err(JournalError::ProtectedBoundary),
+            ));
+        }
+    }
+
+    #[test]
+    fn operator_provisioning_requires_native_genesis_not_just_empty_state() {
+        use super::require_empty_operator_provisioning_state;
+
+        assert!(require_empty_operator_provisioning_state(1, 0, false).is_ok());
+        for (sequence, transactions, history) in [
+            (0, 0, false),
+            (2, 0, false),
+            (u64::MAX, 0, false),
+            (1, 1, false),
+            (1, 0, true),
+            (4, 1, true),
+        ] {
+            assert!(matches!(
+                require_empty_operator_provisioning_state(sequence, transactions, history),
+                Err(JournalError::ProtectedBoundary),
+            ));
+        }
+    }
 
     struct TestDirectory(PathBuf);
 

@@ -202,6 +202,12 @@ pub enum StorageRuntimeError {
     /// Signed Apply admission or its durable authority links failed closed.
     #[error("Storage admission failed closed: {0}")]
     Admission(#[from] StorageBrokerError),
+    /// The explicit empty operator sidecar could not be provisioned or rechecked.
+    #[error("Storage operator receipt provisioning failed: {0}")]
+    OperatorProvision(#[from] crate::operator_recovery::StorageOperatorRecoveryErrorV1),
+    /// Actual fixed role credentials changed during explicit provisioning.
+    #[error("Storage operator provisioning credentials failed: {0}")]
+    OperatorProvisionCredentials(#[source] Box<crate::service::StorageServiceError>),
 }
 
 /// Describes core mutation recovery and authoritative-catalog readiness.
@@ -254,6 +260,14 @@ pub enum StorageApplyReadiness {
 enum StorageApplyConstructionV1 {
     Closed,
     DormantProtectedWorker,
+}
+
+enum StorageStartupOutcomeV4 {
+    Runtime(
+        StorageBrokerRuntime,
+        Option<crate::operator_recovery::StorageOperatorRecoveryOwnerV1>,
+    ),
+    OperatorProvisioned,
 }
 
 /// Describes whether protected policy permits production catalog preparation.
@@ -1141,6 +1155,39 @@ impl StorageBrokerRuntime {
         (Self, Option<crate::operator_recovery::StorageOperatorRecoveryOwnerV1>),
         StorageRuntimeError,
     > {
+        let selection = match operator_credentials {
+            Some(credentials) => operator_startup::OperatorStartupSelectionV4::Existing(credentials),
+            None => operator_startup::OperatorStartupSelectionV4::Ordinary,
+        };
+        match Self::open_root_owned_selected_v4(
+            authority_directory,
+            bootstrap_directory,
+            state_directory,
+            resolver_policy_directory,
+            identity_pool,
+            zfs_executable,
+            executor,
+            apply_construction,
+            selection,
+        )? {
+            StorageStartupOutcomeV4::Runtime(runtime, owner) => Ok((runtime, owner)),
+            StorageStartupOutcomeV4::OperatorProvisioned => Err(StorageRuntimeError::Recovery),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_root_owned_selected_v4(
+        authority_directory: &Path,
+        bootstrap_directory: &Path,
+        state_directory: &Path,
+        resolver_policy_directory: Option<&Path>,
+        identity_pool: StorageIdentityPoolV1,
+        zfs_executable: PathBuf,
+        executor: SystemdZfsExecutor,
+        apply_construction: StorageApplyConstructionV1,
+        selection: operator_startup::OperatorStartupSelectionV4<'_>,
+    ) -> Result<StorageStartupOutcomeV4, StorageRuntimeError> {
+        let operator_credentials = selection.credentials();
         // Retain the host mount namespace before constructing any subsystem
         // that may later acquire a namespace-scoped helper.
         let pin_custody = WorkspacePinHostCustody::retain_initial_root_owned()
@@ -1252,6 +1299,26 @@ impl StorageBrokerRuntime {
             .validate_active_holds(&coordinator)
             .map_err(|_| StorageRuntimeError::Recovery)?;
 
+        if let operator_startup::OperatorStartupSelectionV4::ProvisionEmpty(credentials) = selection {
+            // All lower writers and physical roots remain held. Provisioning
+            // exits before random runtime IDs, backend construction, or any
+            // ordinary startup/policy/recovery mutation.
+            operator_startup::provision_empty_operator_sidecar_v4(
+                &coordinator,
+                &workspaces,
+                &mut native_issuance,
+                &pin_io,
+                state_directory,
+                credentials,
+            )?;
+            // Match the runtime's primary/workspace/native field-drop order;
+            // the fourth writer has already been checked and released.
+            drop(coordinator);
+            drop(workspaces);
+            drop(native_issuance);
+            return Ok(StorageStartupOutcomeV4::OperatorProvisioned);
+        }
+
         // The fourth writer is acquired only after all three lower cuts authenticate.
         let mut operator_owner = match operator_credentials {
             Some(credentials) => Some(
@@ -1314,7 +1381,7 @@ impl StorageBrokerRuntime {
             runtime.readiness = runtime.reconcile_startup()?;
         }
 
-        Ok((runtime, operator_owner))
+        Ok(StorageStartupOutcomeV4::Runtime(runtime, operator_owner))
     }
 
     #[cfg(test)]
@@ -3704,6 +3771,38 @@ mod tests {
         CatalogPlanV1, ManagedDatasetRoot, PlannedDataset, ProjectAncestorPolicyV1,
         ReservationPolicy, ResolvedDataset, StorageDomainsV1, WorkspaceSpacePolicyV1,
     };
+
+    #[test]
+    fn operator_provisioning_preserves_the_original_journal_cause() {
+        let cause = crate::operator_recovery::StorageOperatorRecoveryErrorV1::Journal(
+            aos_sandbox::JournalError::AlreadyLocked,
+        );
+        let error = StorageRuntimeError::from(cause);
+
+        assert!(matches!(
+            error,
+            StorageRuntimeError::OperatorProvision(
+                crate::operator_recovery::StorageOperatorRecoveryErrorV1::Journal(
+                    aos_sandbox::JournalError::AlreadyLocked,
+                ),
+            ),
+        ));
+    }
+
+    #[test]
+    fn operator_provisioning_preserves_the_original_credential_cause() {
+        let cause = crate::service::StorageServiceError::Activation("original role cause".to_owned());
+        let error = StorageRuntimeError::OperatorProvisionCredentials(Box::new(cause));
+        let StorageRuntimeError::OperatorProvisionCredentials(cause) = error else {
+            panic!("the provisioning source must remain typed");
+        };
+
+        assert!(matches!(
+            *cause,
+            crate::service::StorageServiceError::Activation(ref message)
+                if message == "original role cause",
+        ));
+    }
 
     #[test]
     fn kernel_paired_clock_sampling_brackets_boot_and_reads_boot_time_before_wall() {

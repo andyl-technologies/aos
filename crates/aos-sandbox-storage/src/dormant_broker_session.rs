@@ -248,6 +248,40 @@ impl DormantStorageApplyCompositionV1 {
         Ok((Self::from_runtime(runtime), owner))
     }
 
+    /// Provisions only the fixed empty operator receipt sidecar, then releases custody.
+    ///
+    /// All three lower writers must already exist and authenticate. No runtime,
+    /// receipt, or effect authority is returned, and ordinary startup never runs.
+    /// This does not activate the unqualified public Repair route.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing or changed lower custody, pending lower recovery,
+    /// changed role credentials, nonempty or incompatible sidecar history,
+    /// unsafe fixed names, or an uncertain creation/synchronization failure.
+    #[allow(clippy::too_many_arguments)]
+    pub fn provision_empty_operator_repair_v4(
+        authority_directory: &Path,
+        bootstrap_directory: &Path,
+        state_directory: &Path,
+        resolver_policy_directory: Option<&Path>,
+        identity_pool: StorageIdentityPoolV1,
+        zfs_executable: PathBuf,
+        executor: SystemdZfsExecutor,
+        credentials: &crate::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1,
+    ) -> Result<(), StorageRuntimeError> {
+        StorageBrokerRuntime::provision_empty_operator_repair_v4(
+            authority_directory,
+            bootstrap_directory,
+            state_directory,
+            resolver_policy_directory,
+            identity_pool,
+            zfs_executable,
+            executor,
+            credentials,
+        )
+    }
+
     /// Wraps an already-open explicit dormant Apply runtime.
     #[must_use]
     pub const fn from_runtime(runtime: StorageBrokerRuntime) -> Self {
