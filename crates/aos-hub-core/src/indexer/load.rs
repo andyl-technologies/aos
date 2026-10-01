@@ -216,6 +216,24 @@ impl<'a> ObjectReader<'a> {
         Ok(entry)
     }
 
+    /// Reads only the immutable container sidecar of a retained release commit.
+    ///
+    /// This lets package-only releases reuse verified snapshots even when a
+    /// different release in the registry has a signed container root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for missing or malformed Git objects or sidecar data.
+    pub(crate) async fn retained_container_release(
+        &self,
+        commit_oid: Oid,
+    ) -> Result<Option<LoadedContainerRelease>> {
+        let commit = self.read_commit(commit_oid).await?;
+        let root = object::tree_map(&self.read_kind(commit.tree, ObjectKind::Tree).await?)?;
+
+        load_container_release(self, &root).await
+    }
+
     /// Hydrates every bounded bundle shard before dependency-ordered walking.
     ///
     /// Producers publish all 256 fixed shard names, including empty shards.
@@ -706,6 +724,110 @@ mod container_release_tests {
                 signature: evidence_descriptor(MediaType::DsseEnvelope, "signature"),
             },
         }
+    }
+
+    #[derive(Default)]
+    struct ReleaseTreeFetch {
+        objects: BTreeMap<String, Vec<u8>>,
+    }
+
+    impl ReleaseTreeFetch {
+        fn add(&mut self, kind: ObjectKind, bytes: &[u8]) -> Oid {
+            let oid = object::hash_object(kind, bytes);
+            self.objects
+                .insert(oid.loose_path(), object::encode_loose(kind, bytes).unwrap());
+            oid
+        }
+
+        fn release(sidecar: Option<&[u8]>) -> (Self, Oid) {
+            let mut fetch = Self::default();
+            // A package tree must not be read by the sidecar-only probe.
+            let mut entries = vec![object::TreeEntry {
+                mode: "40000".into(),
+                name: "packages".into(),
+                oid: Oid::from_hex(&"a".repeat(64)).unwrap(),
+            }];
+            if let Some(bytes) = sidecar {
+                let document = fetch.add(ObjectKind::Blob, bytes);
+                let version = fetch.add(
+                    ObjectKind::Tree,
+                    &object::encode_tree(&[object::TreeEntry {
+                        mode: "100644".into(),
+                        name: "index.json".into(),
+                        oid: document,
+                    }]),
+                );
+                let containers = fetch.add(
+                    ObjectKind::Tree,
+                    &object::encode_tree(&[object::TreeEntry {
+                        mode: "40000".into(),
+                        name: "v1".into(),
+                        oid: version,
+                    }]),
+                );
+                entries.push(object::TreeEntry {
+                    mode: "40000".into(),
+                    name: "containers".into(),
+                    oid: containers,
+                });
+            }
+            let tree = fetch.add(ObjectKind::Tree, &object::encode_tree(&entries));
+            let commit = fetch.add(
+                ObjectKind::Commit,
+                format!("tree {tree}\nauthor Reader <reader@example.org> 0 +0000\ncommitter Reader <reader@example.org> 0 +0000\n\nFixture\n").as_bytes(),
+            );
+
+            (fetch, commit)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for ReleaseTreeFetch {
+        async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self.objects.get(path).cloned())
+        }
+
+        async fn fetch_bounded(&self, path: &str, _max_bytes: usize) -> Result<Option<Vec<u8>>> {
+            self.fetch(path).await
+        }
+
+        fn describe(&self) -> String {
+            "retained-release-tree".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn retained_package_release_probe_skips_package_tree() {
+        let (fetch, commit) = ReleaseTreeFetch::release(None);
+        let reader = ObjectReader::new(&fetch);
+
+        assert!(reader
+            .retained_container_release(commit)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn retained_container_release_probe_keeps_strict_sidecar() {
+        let bytes = to_canonical_json(&release_fixture()).unwrap();
+        let (fetch, commit) = ReleaseTreeFetch::release(Some(&bytes));
+        let reader = ObjectReader::new(&fetch);
+
+        let sidecar = reader
+            .retained_container_release(commit)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(sidecar.document.identity.release, "1.0.0");
+    }
+
+    #[tokio::test]
+    async fn retained_container_release_probe_rejects_invalid_sidecar() {
+        let (fetch, commit) = ReleaseTreeFetch::release(Some(br#"{"schemaVersion":1}"#));
+        let reader = ObjectReader::new(&fetch);
+
+        assert!(reader.retained_container_release(commit).await.is_err());
     }
 
     #[test]

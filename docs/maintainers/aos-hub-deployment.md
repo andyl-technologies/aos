@@ -361,6 +361,19 @@ topology or grants from Worker bindings, custom domains, or environment
 variables. Operators must be able to inventory the complete effective
 configuration through the same CLI, API, and Web console used to change it.
 
+For OCI delivery on the same CDN hostname, attach a Worker route for `/v2/*`
+to the Hub Worker. Keep the R2 attachment for all other artifact paths. The
+endpoint must use `layer7` ingress to describe this shared hostname, with a
+direct gateway route for the static registry prefix and a separate root
+`hub-proxy` route serving `oci`. Select the static route as canonical for
+`git`, `web`, and `nix_cache`. Container instructions prefer a ready OCI route
+on that canonical hostname; the existing Hub OCI route can remain enabled
+for operator uploads.
+
+After each publication, refresh the direct route's signed publication
+observation against the newly ready manifest. An observation of a retained
+older publication does not advertise the current registry as ready.
+
 The first install provisions the R2 bucket, KV namespace, Durable Object
 migration, custom domain, and Worker secrets. After the first successful install,
 bootstrap the staging owner once:
