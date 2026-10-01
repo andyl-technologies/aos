@@ -5,6 +5,10 @@ evaluation. Plain `moduleDeps` entries inherit `package.versionRequirement`
 from the dependency recipe. Bare strict SemVer recipe versions imply caret;
 `^`, `~`, or `=` followed by a full version set the policy while preserving
 the exact published version. Other bare version schemes remain exact-only.
+The caret default is an authoring convention, not an upstream policy detector.
+Recipes narrow it to a documented patch series or an exact release when a
+broader guarantee has not been reviewed. Upstream ABI, configuration, and upgrade
+policies do not establish compatibility of the AOS-authored module automatically.
 Explicit `packageVersion` ranges override inference; `exact = true` pins immutable
 source identity, unlike an equal-version requirement. Every entry retains its
 exact build-time seed. Interfaces
