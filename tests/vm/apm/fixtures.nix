@@ -22,6 +22,7 @@ in rec {
     gitPkg
     grepPkg
     pkgs.coreutils
+    pkgs.openssh
   ];
 
   # Shell preamble that sets up the test environment.
@@ -126,6 +127,51 @@ in rec {
     # Config path (matches ~/.config/apm/)
     APM_CONFIG="$HOME/.config/apm"
     mkdir -p "$APM_CONFIG/registries.d"
+
+    # Publication requires a roster-backed signer. Give fixture publishers a
+    # separate config directory so consumers can add the same registry name.
+    register_publish_key() {
+      local registry_name="$1"
+      local key_id="$2"
+      local key_path="$3"
+      local config_dir="''${XDG_CONFIG_HOME:-$HOME/.config}/apm/registries.d"
+      local registry_dir="''${XDG_DATA_HOME:-$HOME/.local/share}/apm/registries"
+      mkdir -p "$config_dir"
+      if [ ! -f "$config_dir/$registry_name.toml" ]; then
+        {
+          printf '[registry]\n'
+          printf 'name = "%s"\n' "$registry_name"
+          printf 'url = "file://%s/%s"\n' "$registry_dir" "$registry_name"
+        } > "$config_dir/$registry_name.toml"
+      fi
+      $APR keys register "$key_id" --registry "$registry_name" \
+        --key "$key_path" > /dev/null
+    }
+
+    create_publish_registry() {
+      local registry_name="$1"
+      shift
+      local key_path="/tmp/vm-publish-keys/$registry_name"
+      local public_key
+      mkdir -p /tmp/vm-publish-keys
+      ssh-keygen -q -t ed25519 -N "" -f "$key_path"
+      public_key=$(cut -d ' ' -f2 < "$key_path.pub")
+      $APR "$@" create "$registry_name" \
+        --trust-key "$registry_name:Ed25519:$public_key" \
+        --trust-key-id vm --key "$key_path"
+      XDG_CONFIG_HOME=/tmp/vm-publish-config \
+        register_publish_key "$registry_name" vm "$key_path"
+    }
+
+    publish_vm_package() {
+      XDG_CONFIG_HOME=/tmp/vm-publish-config \
+        "$APR" publish --key-id vm "$@"
+    }
+
+    release_vm_package() {
+      XDG_CONFIG_HOME=/tmp/vm-publish-config \
+        "$APR" release --key-id vm "$@"
+    }
   '';
 
   # Create a bare git repo at a given path to act as a "remote" registry.

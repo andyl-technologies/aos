@@ -374,7 +374,7 @@ in {
         version="$1"
         store_path="$2"
         dep_store_path="$3"
-        run_logged "/tmp/e2e-publish-helper-$version.out" "$APR" publish "$dep_store_path" \
+        run_logged "/tmp/e2e-publish-helper-$version.out" publish_vm_package "$dep_store_path" \
           --name e2e-helper \
           --version "$version" \
           --description "End-to-end package lifecycle dependency" \
@@ -385,7 +385,7 @@ in {
           fail "apr publish e2e-helper $version"
         }
 
-        run_logged "/tmp/e2e-publish-$version.out" "$APR" publish "$store_path" \
+        run_logged "/tmp/e2e-publish-$version.out" publish_vm_package "$store_path" \
           --name e2e-tool \
           --version "$version" \
           --description "End-to-end package lifecycle tool" \
@@ -413,7 +413,7 @@ in {
         git -C "$REG_DIR" commit -m "release: e2e-tool $version"
       }
 
-      $APR create e2e-reg
+      create_publish_registry e2e-reg
       REG_DIR="$REG_STORAGE/e2e-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       git init --bare --object-format=sha256 /tmp/e2e-origin.git
@@ -628,7 +628,7 @@ in {
       publish_system_version() {
         version="$1"
         store_path="$2"
-        run_logged "/tmp/e2e-system-publish-$version.out" "$APR" publish "$store_path" \
+        run_logged "/tmp/e2e-system-publish-$version.out" publish_vm_package "$store_path" \
           --name server \
           --version "$version" \
           --description "End-to-end system sysroot" \
@@ -657,7 +657,7 @@ in {
         git -C "$REG_DIR" commit -m "release: server $version"
       }
 
-      $APR create e2e-system-reg
+      create_publish_registry e2e-system-reg
       REG_DIR="$REG_STORAGE/e2e-system-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       git init --bare --object-format=sha256 /tmp/e2e-system-origin.git
@@ -792,7 +792,7 @@ in {
         version="$1"
         store_path="$2"
         dep_store_path="$3"
-        run_logged "/tmp/fleet-publish-helper-$version.out" "$APR" publish "$dep_store_path" \
+        run_logged "/tmp/fleet-publish-helper-$version.out" publish_vm_package "$dep_store_path" \
           --name fleet-helper \
           --version "$version" \
           --description "Fleet rolling update dependency" \
@@ -802,7 +802,7 @@ in {
           --no-commit || {
           fail "apr publish fleet-helper $version"
         }
-        run_logged "/tmp/fleet-publish-$version.out" "$APR" publish "$store_path" \
+        run_logged "/tmp/fleet-publish-$version.out" publish_vm_package "$store_path" \
           --name fleet-tool \
           --version "$version" \
           --description "Fleet rolling update tool" \
@@ -840,7 +840,7 @@ in {
           "fleet profile $user exposes dependency $expected_helper"
       }
 
-      $APR create fleet-reg
+      create_publish_registry fleet-reg
       REG_DIR="$REG_STORAGE/fleet-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       git init --bare --object-format=sha256 /tmp/fleet-origin.git
