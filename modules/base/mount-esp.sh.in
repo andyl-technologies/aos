@@ -6,7 +6,7 @@ export PATH
 
 mountpoint -q /boot && exit 0
 mkdir -p /boot
-metadata=/aos-toplevel/meta/boot-storage.json
+metadata=/usr/lib/aos/toplevel/meta/boot-storage.json
 mapfile -t configured < <(jq -er '.espDevices[]' "$metadata")
 
 candidates=()

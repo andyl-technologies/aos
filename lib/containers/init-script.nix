@@ -8,7 +8,7 @@
   lib,
   pkgs,
   rootPrefix ? "",
-  registrationPath ? "${rootPrefix}/aos-registration",
+  registrationPath ? "${rootPrefix}/usr/lib/aos/nix-registration",
   storePathsPath ? "${rootPrefix}/usr/lib/aos-container/store-paths",
   bakedRootsPath ? "${rootPrefix}/usr/lib/aos-container/baked-roots",
   defaultCommand ? ["/bin/bash"],
