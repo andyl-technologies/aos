@@ -1759,6 +1759,16 @@ async fn main() -> Result<()> {
                     let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
                     loop {
                         tick.tick().await;
+                        if let Err(error) = aos_hub_core::oci::recover_expired_oci_work(
+                            &inventory_db,
+                            inventory_writers.as_ref(),
+                            now_secs(),
+                            100,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "expired hybrid OCI work recovery failed");
+                        }
                         if let Err(error) = aos_hub_core::cache_scan::reap_due_cache_tombstones(
                             &inventory_db,
                             now_secs(),
@@ -1766,6 +1776,17 @@ async fn main() -> Result<()> {
                         .await
                         {
                             tracing::warn!(error = %format!("{error:#}"), "cache tombstone reap failed");
+                        }
+                        if let Err(error) = aos_hub_core::cache_scan::recover_expired_cache_writes(
+                            &inventory_db,
+                            inventory_surfaces.as_ref(),
+                            inventory_writers.as_ref(),
+                            now_secs(),
+                            aos_hub_core::cache_scan::MAX_CLEANUP_ITEMS_PER_PASS,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "expired hybrid cache write recovery failed");
                         }
                         if oci_gc_enabled {
                             if let Err(error) = oci_gc_controller
