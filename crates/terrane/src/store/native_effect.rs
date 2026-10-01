@@ -234,6 +234,22 @@ struct ExactRead {
 }
 
 impl ExactRead {
+    /// Rebinds only this operation's exact absent target to its created directory.
+    fn check_created_directory(&self, created: &CreatedDirectory) -> io::Result<()> {
+        if self.expected.is_some() || self.identity.is_some() || self.metadata.is_some() {
+            return Err(io::Error::other(
+                "created directory did not replace an absent preimage",
+            ));
+        }
+        check_parents(&self.path, &self.parents, self.owner)?;
+        if created.stamp.owner != self.owner {
+            return Err(io::Error::other(
+                "created directory owner differs from its absent preimage",
+            ));
+        }
+        created.check()
+    }
+
     #[cfg(unix)]
     fn check(&self) -> io::Result<()> {
         use std::io::Read;
@@ -290,6 +306,46 @@ impl ExactRead {
             io::ErrorKind::Unsupported,
             "nofollow native receipts unavailable",
         ))
+    }
+}
+
+/// Pins the freshly captured directory incarnation under this worker's exclusions.
+struct CreatedDirectory {
+    path: PathBuf,
+    stamp: MetadataStamp,
+}
+
+impl CreatedDirectory {
+    fn capture(path: &std::path::Path) -> io::Result<Self> {
+        let stamp = MetadataStamp::checked(&std::fs::symlink_metadata(path)?)?;
+        if stamp.kind != NodeKind::Directory || stamp.mode & 0o777 & !0o700 != 0 {
+            return Err(io::Error::other(
+                "new private directory has unexpected metadata",
+            ));
+        }
+        Ok(Self {
+            path: path.to_owned(),
+            stamp,
+        })
+    }
+
+    fn check(&self) -> io::Result<()> {
+        let named = MetadataStamp::checked(&std::fs::symlink_metadata(&self.path)?)?;
+        if !named.same_incarnation(self.stamp) {
+            return Err(io::Error::other("created directory incarnation changed"));
+        }
+        Ok(())
+    }
+
+    fn check_descriptor(&self, file: &File) -> io::Result<()> {
+        self.check()?;
+        let opened = MetadataStamp::checked(&file.metadata()?)?;
+        if !opened.same_incarnation(self.stamp) {
+            return Err(io::Error::other(
+                "opened directory differs from the created incarnation",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -427,6 +483,8 @@ pub enum NativeEffectFailure {
     /// Earlier steps may already have become durable and require recovery.
     Rejected(StoreFailure),
     /// Physical execution or durable acknowledgment failed or was unavailable.
+    /// A directory may already exist privately when the operator cannot open it
+    /// for descriptor-bound mode repair; that refusal has kind `Unsupported`.
     Io(io::Error),
 }
 
@@ -519,6 +577,7 @@ struct TestGate {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TestGatePhase {
     BeforeChecks,
+    AfterDirectoryCreate,
     BeforeOpen,
     AfterOpen,
     AfterSourceSync,
@@ -559,6 +618,8 @@ impl NativeFsEffect {
     ///
     /// # Errors
     /// Rejects changed preimages, final-check denial and filesystem or sync errors.
+    /// Returns `Unsupported` after private directory creation if restrictive
+    /// permissions prevent the actual descriptor from opening for mode repair.
     pub(super) fn execute_inline(self) -> Result<(), NativeEffectFailure> {
         // Destructure first, and explicitly drop the actual guards only after
         // the syscall and directory sync. They must not be dropped after a
@@ -591,22 +652,31 @@ impl NativeFsEffect {
                 }
                 Ok(())
             };
-            let fresh_projection = || -> Result<(), NativeEffectFailure> {
-                fresh_fence()?;
-                for preimage in &preimages {
-                    #[cfg(test)]
-                    if faults.contains(&EffectFault::UnavailableRead(preimage.path.clone())) {
-                        return Err(io::Error::other("injected retained exact read failure").into());
+            let fresh_projection =
+                |created: Option<&CreatedDirectory>| -> Result<(), NativeEffectFailure> {
+                    fresh_fence()?;
+                    for preimage in &preimages {
+                        #[cfg(test)]
+                        if faults.contains(&EffectFault::UnavailableRead(preimage.path.clone())) {
+                            return Err(
+                                io::Error::other("injected retained exact read failure").into()
+                            );
+                        }
+                        match created.filter(|created| created.path == preimage.path) {
+                            Some(created) => preimage.check_created_directory(created)?,
+                            None => preimage.check()?,
+                        }
                     }
-                    preimage.check()?;
-                }
-                fresh_fence()?;
-                if let Some(final_check) = &final_check {
-                    final_check.recheck()?;
-                }
-                Ok(())
-            };
-            fresh_projection()?;
+                    fresh_fence()?;
+                    if let Some(created) = created {
+                        created.check()?;
+                    }
+                    if let Some(final_check) = &final_check {
+                        final_check.recheck()?;
+                    }
+                    Ok(())
+                };
+            fresh_projection(None)?;
 
             match plan {
                 Plan::CreateDirectoryNew { path } => {
@@ -615,6 +685,34 @@ impl NativeFsEffect {
                         use std::os::unix::fs::DirBuilderExt;
                         let mut builder = std::fs::DirBuilder::new();
                         builder.mode(0o700).create(&path)?;
+                        let mut created = CreatedDirectory::capture(&path)?;
+                        #[cfg(all(test, feature = "tokio"))]
+                        wait_test_gate(&mut gates, TestGatePhase::AfterDirectoryCreate)?;
+                        created.check()?;
+                        #[cfg(all(test, feature = "tokio"))]
+                        wait_test_gate(&mut gates, TestGatePhase::BeforeOpen)?;
+                        let directory = open_native(&path, true).map_err(|error| {
+                            if error.kind() == io::ErrorKind::PermissionDenied {
+                                io::Error::new(
+                                    io::ErrorKind::Unsupported,
+                                    "created directory cannot be safely opened for mode repair",
+                                )
+                            } else {
+                                error
+                            }
+                        })?;
+                        #[cfg(all(test, feature = "tokio"))]
+                        wait_test_gate(&mut gates, TestGatePhase::AfterOpen)?;
+                        fresh_projection(Some(&created))?;
+                        created.check_descriptor(&directory)?;
+
+                        use std::os::unix::fs::PermissionsExt;
+                        directory.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+                        let mut final_stamp = created.stamp;
+                        final_stamp.mode = (final_stamp.mode & !0o7777) | 0o700;
+                        created.stamp = final_stamp;
+                        created.check_descriptor(&directory)?;
+                        directory.sync_all()?;
                         durable_parent(&path)?;
                     }
                     #[cfg(not(unix))]
@@ -637,7 +735,7 @@ impl NativeFsEffect {
                         return Err(io::Error::other("injected retained file sync failure").into());
                     }
                     let file = open_native(&path, false)?;
-                    fresh_projection()?;
+                    fresh_projection(None)?;
                     check_opened_name(&file, &path, false)?;
                     file.sync_all()?;
                 }
@@ -649,7 +747,7 @@ impl NativeFsEffect {
                         );
                     }
                     let directory = open_native(&path, true)?;
-                    fresh_projection()?;
+                    fresh_projection(None)?;
                     check_opened_name(&directory, &path, true)?;
                     directory.sync_all()?;
                 }
@@ -659,12 +757,12 @@ impl NativeFsEffect {
                     let source = open_native(&from, false)?;
                     #[cfg(all(test, feature = "tokio"))]
                     wait_test_gate(&mut gates, TestGatePhase::AfterOpen)?;
-                    fresh_projection()?;
+                    fresh_projection(None)?;
                     check_opened_name(&source, &from, false)?;
                     source.sync_all()?;
                     #[cfg(all(test, feature = "tokio"))]
                     wait_test_gate(&mut gates, TestGatePhase::AfterSourceSync)?;
-                    fresh_projection()?;
+                    fresh_projection(None)?;
                     check_opened_name(&source, &from, false)?;
                     #[cfg(test)]
                     {
@@ -693,12 +791,12 @@ impl NativeFsEffect {
                     let source = open_native(&from, false)?;
                     #[cfg(all(test, feature = "tokio"))]
                     wait_test_gate(&mut gates, TestGatePhase::AfterOpen)?;
-                    fresh_projection()?;
+                    fresh_projection(None)?;
                     check_opened_name(&source, &from, false)?;
                     source.sync_all()?;
                     #[cfg(all(test, feature = "tokio"))]
                     wait_test_gate(&mut gates, TestGatePhase::AfterSourceSync)?;
-                    fresh_projection()?;
+                    fresh_projection(None)?;
                     check_opened_name(&source, &from, false)?;
                     std::fs::rename(&from, &to)?;
                     #[cfg(all(test, feature = "tokio"))]
@@ -718,7 +816,7 @@ impl NativeFsEffect {
                     let file = open_native(&path, false)?;
                     #[cfg(all(test, feature = "tokio"))]
                     wait_test_gate(&mut gates, TestGatePhase::AfterOpen)?;
-                    fresh_projection()?;
+                    fresh_projection(None)?;
                     check_opened_name(&file, &path, false)?;
                     file.set_permissions(permissions)?;
                     file.sync_all()?;

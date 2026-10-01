@@ -14,6 +14,9 @@ use std::fs::OpenOptions;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[path = "tests/directory.rs"]
+mod directory;
+
 // Deliberately Send, not Sync or Clone: the effect owns only actual descriptor
 // duplicates, so no stronger associated lock contract is needed.
 struct HeldLock {
