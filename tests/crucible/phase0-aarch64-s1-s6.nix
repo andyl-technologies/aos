@@ -225,7 +225,10 @@
             -c init.S \
             -o init.o
           ld.lld -pie -static -e _start --build-id=none init.o -o init
-          llvm-readelf -h init | grep -Eq 'Type:.*DYN'
+          # Read the complete header before matching: grep -q can close a pipe
+          # early and make LLVM abort while writing the remaining header.
+          llvm-readelf -h init > init-header.txt
+          grep -Eq 'Type:.*DYN' init-header.txt
 
           mkdir -p root "$out"
           cp init root/init
