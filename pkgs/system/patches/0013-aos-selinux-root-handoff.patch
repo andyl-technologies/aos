@@ -51,7 +51,7 @@ index 782168e56d..ef57f0e4c1 100644
                  if (proc_cmdline_value_missing(key, value))
                          return 0;
 @@ -1960,5 +1969,133 @@ static void reduce_vt(ManagerObjective objective) {
-         }
+                         log_debug("Successfully disallocated VT TTY %i.", ttynr);
  }
 +
 +static int aos_open_root_handoff_guard(const char *root) {
