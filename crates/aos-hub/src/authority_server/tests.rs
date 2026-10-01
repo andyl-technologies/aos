@@ -21,6 +21,7 @@ use aos_hub_core::storage_authority::{
 
 use super::*;
 
+mod clock_recovery;
 mod native_clock;
 
 struct FixedClock(AtomicI64);
@@ -526,6 +527,7 @@ async fn default_disabled_issuance_and_serving_missing_or_changed_files_fail_clo
         },
         clock_uncertainty: integer(0),
         clock_commit_latency: integer(1),
+        clock_recovery: None,
         issuance_enabled: false,
         publisher_key_file: publisher,
         renewal_key_file: renewal,

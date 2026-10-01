@@ -23,6 +23,8 @@ const MARKER_LIMIT: usize = 4096;
 const JOURNAL_LIMIT: usize = 16 * 1024;
 const RECEIPT_LIMIT: usize = 1024;
 
+pub(super) mod recovery;
+
 const SCHEMA: &[(&str, &str, &str)] = &[
     ("table", "installation_marker", "CREATE TABLE installation_marker (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), marker BLOB NOT NULL)"),
     ("table", "authority_clock", "CREATE TABLE authority_clock (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), floor TEXT NOT NULL, session TEXT)"),
@@ -40,12 +42,23 @@ const SCHEMA: &[(&str, &str, &str)] = &[
 ];
 
 pub(super) fn initialize(adapter: &AuthorityJournal, snapshot: &IssuerLiveState) -> Result<()> {
+    initialize_with_policy(adapter, snapshot, None)
+}
+
+pub(super) fn initialize_with_policy(
+    adapter: &AuthorityJournal,
+    snapshot: &IssuerLiveState,
+    policy: Option<&super::recovery::ClockRecoveryPolicy>,
+) -> Result<()> {
     let mut connection = connection(adapter)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
-    transaction.pragma_update(None, "user_version", 2)?;
-    for (_, _, statement) in SCHEMA {
+    transaction.pragma_update(None, "user_version", if policy.is_some() { 3 } else { 2 })?;
+    for (_, _, statement) in schema(policy.is_some()) {
         transaction.execute_batch(statement)?;
+    }
+    if let Some(policy) = policy {
+        recovery::initialize_policy(&transaction, adapter, policy)?;
     }
     transaction.execute(
         "INSERT INTO installation_marker VALUES (1, ?1)",
@@ -58,10 +71,21 @@ pub(super) fn initialize(adapter: &AuthorityJournal, snapshot: &IssuerLiveState)
             encode(&snapshot.journal, JOURNAL_LIMIT)?
         ],
     )?;
-    transaction.execute(
-        "INSERT INTO authority_clock VALUES (1, ?1, NULL)",
-        [snapshot.journal.clock_floor.get().to_string()],
-    )?;
+    let floor = snapshot.journal.clock_floor.get();
+    if let Some(policy) = policy {
+        let ceiling = floor
+            .checked_add(policy.total_uncertainty()?)
+            .context("initial clock ceiling overflow")?;
+        transaction.execute(
+            "INSERT INTO authority_clock VALUES (1, ?1, NULL, ?2)",
+            params![floor.to_string(), ceiling.to_string()],
+        )?;
+    } else {
+        transaction.execute(
+            "INSERT INTO authority_clock VALUES (1, ?1, NULL)",
+            [floor.to_string()],
+        )?;
+    }
     insert_receipt(
         &transaction,
         &snapshot.publication,
@@ -286,7 +310,7 @@ fn load_transaction(
         transaction.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let version: i32 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
     ensure!(
-        application == APPLICATION_ID && version == 2,
+        application == APPLICATION_ID && matches!(version, 2 | 3),
         "issuer journal schema identity changed"
     );
     let mut statement = transaction.prepare(
@@ -295,8 +319,8 @@ fn load_transaction(
     let actual: Vec<(String, String, String)> = statement
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    let mut expected: Vec<_> = SCHEMA
-        .iter()
+    let mut expected: Vec<_> = schema(version == 3)
+        .into_iter()
         .map(|(kind, name, sql)| (kind.to_string(), name.to_string(), sql.to_string()))
         .collect();
     expected.sort_by(|left, right| left.1.cmp(&right.1));
@@ -344,6 +368,9 @@ fn load_transaction(
         read_clock_floor(transaction)? >= snapshot.journal.clock_floor,
         "retained clock floor is behind journal"
     );
+    if version == 3 {
+        recovery::validate_retained_clock(transaction, adapter, &snapshot)?;
+    }
     let receipt = read_receipt(transaction, &marker, snapshot.journal.generation)?
         .context("issuer head has no historical receipt")?;
     ensure!(
@@ -535,11 +562,24 @@ pub(super) fn observe_clock(
         .checked_add(clock.uncertainty)
         .context("clock uncertainty overflow")?;
     retain_clock_floor(&transaction, LeaseInteger::new(clock.observed_at)?)?;
+    recovery::retain_observation_ceiling(&transaction, clock)?;
     transaction
         .commit()
         .context("retaining clock observation; outcome may be indeterminate")?;
     adapter.file.validate_current()?;
     Ok(clock)
+}
+
+fn schema(recoverable: bool) -> Vec<(&'static str, &'static str, &'static str)> {
+    if !recoverable {
+        return SCHEMA.to_vec();
+    }
+    SCHEMA
+        .iter()
+        .copied()
+        .filter(|(_, name, _)| !matches!(*name, "authority_clock" | "clock_session_no_change"))
+        .chain(recovery::SCHEMA.iter().copied())
+        .collect()
 }
 
 fn read_clock_floor(transaction: &rusqlite::Transaction<'_>) -> Result<LeaseInteger> {

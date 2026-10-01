@@ -33,6 +33,7 @@ use rand::TryRngCore as _;
 
 mod control_replay;
 mod filesystem;
+pub mod recovery;
 mod sqlite;
 
 #[cfg(test)]
@@ -85,6 +86,51 @@ impl AuthorityJournal {
         policy: BoundedLeaseRevocationPolicy,
         clock: LeaseClock,
     ) -> Result<Self> {
+        Self::initialize_inner(path, boundary, marker, publication, policy, clock, None)
+    }
+
+    /// Creates a fresh format 3 journal with an immutable independent recovery policy.
+    ///
+    /// Existing journals, installation markers and publication history are never
+    /// adopted, copied or upgraded by this operation.
+    ///
+    /// # Errors
+    /// Returns an error for invalid or mismatched policies, existing/insecure
+    /// files, invalid state, or initialization and durability failures.
+    pub fn initialize_recoverable(
+        path: &Path,
+        boundary: &HubDataBoundary,
+        marker: IssuerInstallation,
+        publication: StorageAuthorityPublication,
+        policy: BoundedLeaseRevocationPolicy,
+        clock: LeaseClock,
+        recovery: recovery::ClockRecoveryPolicy,
+    ) -> Result<Self> {
+        recovery.validate()?;
+        anyhow::ensure!(
+            recovery.total_uncertainty()? <= policy.timing_profile.maximum_clock_uncertainty.get(),
+            "recovery uncertainty exceeds installed timing profile"
+        );
+        Self::initialize_inner(
+            path,
+            boundary,
+            marker,
+            publication,
+            policy,
+            clock,
+            Some(&recovery),
+        )
+    }
+
+    fn initialize_inner(
+        path: &Path,
+        boundary: &HubDataBoundary,
+        marker: IssuerInstallation,
+        publication: StorageAuthorityPublication,
+        policy: BoundedLeaseRevocationPolicy,
+        clock: LeaseClock,
+        recovery: Option<&recovery::ClockRecoveryPolicy>,
+    ) -> Result<Self> {
         marker.validate()?;
         let journal = EpochLeaseIssuerJournal::initialize_fresh_namespace(
             &publication,
@@ -100,7 +146,10 @@ impl AuthorityJournal {
         snapshot.validate()?;
         let file = filesystem::PrivateFile::create_new(path, boundary)?;
         let adapter = Self { file, marker };
-        sqlite::initialize(&adapter, &snapshot)?;
+        match recovery {
+            Some(policy) => sqlite::initialize_with_policy(&adapter, &snapshot, Some(policy))?,
+            None => sqlite::initialize(&adapter, &snapshot)?,
+        }
         adapter.file.sync_installation()?;
         Ok(adapter)
     }
@@ -124,6 +173,31 @@ impl AuthorityJournal {
         Ok(adapter)
     }
 
+    /// Opens an inactive exact format 3 resource for an explicit operator action.
+    ///
+    /// The nonblocking inode lock precedes all SQLite reads. Each later recovery
+    /// action reacquires that lock and rechecks the complete original transactionally.
+    ///
+    /// # Errors
+    /// Returns an error for active owners, format 2, corrupt or changed files,
+    /// installation mismatch or a different immutable recovery policy.
+    pub fn open_recovery_existing(
+        path: &Path,
+        boundary: &HubDataBoundary,
+        expected: IssuerInstallation,
+        policy: &recovery::ClockRecoveryPolicy,
+    ) -> Result<Self> {
+        expected.validate()?;
+        let adapter = Self {
+            file: filesystem::PrivateFile::existing(path, boundary)?,
+            marker: expected,
+        };
+        let _lock = adapter.file.lock_exclusive()?;
+        adapter.load()?;
+        adapter.verify_recovery_policy(Some(policy))?;
+        Ok(adapter)
+    }
+
     /// Reloads a complete validated current snapshot from the actual file.
     ///
     /// # Errors
@@ -137,7 +211,8 @@ impl AuthorityJournal {
     /// The actual session marker is committed before any clock sample. It remains
     /// retained for the entire process lifetime, including crashes and successful
     /// observations. Serving cannot clear it; restart requires a later explicit
-    /// reviewed operator resolution, which this increment does not implement.
+    /// reviewed operator resolution for freshly initialized format 3 journals.
+    /// Format 2 journals have no supported recovery or adoption path.
     /// State and historical receipts remain independently readable.
     ///
     /// # Errors
@@ -145,15 +220,48 @@ impl AuthorityJournal {
     /// installation or indeterminate commit. A possibly committed claim is never
     /// retried by substituting cached success or implicitly authorizing restart.
     pub fn begin_clock_observation_session(&self) -> Result<AuthorityClockSession> {
+        self.begin_clock_session_with_resolution(None)
+    }
+
+    /// Claims the one successor authorized by an exact retained recovery receipt.
+    ///
+    /// The inode lock remains held for the whole returned observer lifetime.
+    /// A receipt cannot authorize two starts, even when the first start crashes.
+    ///
+    /// # Errors
+    /// Returns an error for active owners, format 2, changed or consumed receipts,
+    /// stale state, insecure files or indeterminate commit.
+    pub fn begin_recovered_clock_session(
+        &self,
+        receipt: &recovery::ClockRecoveryReceipt,
+    ) -> Result<AuthorityClockSession> {
+        self.begin_clock_session_with_resolution(Some(receipt))
+    }
+
+    fn begin_clock_session_with_resolution(
+        &self,
+        receipt: Option<&recovery::ClockRecoveryReceipt>,
+    ) -> Result<AuthorityClockSession> {
+        let lock = self.file.lock_exclusive()?;
         let mut random = [0_u8; 32];
         rand::rngs::OsRng
             .try_fill_bytes(&mut random)
             .map_err(|_| anyhow::anyhow!("clock session entropy unavailable"))?;
-        let session = hex::encode(random);
-        sqlite::begin_clock_session(self, &session)?;
+        let session = match receipt {
+            Some(receipt) => {
+                sqlite::recovery::consume(self, receipt)?;
+                receipt.review.plan.successor_session.clone()
+            }
+            None => {
+                let session = hex::encode(random);
+                sqlite::begin_clock_session(self, &session)?;
+                session
+            }
+        };
         Ok(AuthorityClockSession {
             journal: self.clone(),
             session,
+            _lock: lock,
         })
     }
 
@@ -264,10 +372,12 @@ impl AuthorityJournal {
 /// Durable unresolved observation session owned by one separately running issuer.
 ///
 /// Only an acknowledged actual journal claim constructs this value. It cannot
-/// authorize another process after restart; no close/clear/resolution API exists.
+/// authorize another process after restart. Format 3 recovery requires a separate
+/// independent review and exact one-use successor; serving never clears a session.
 pub struct AuthorityClockSession {
     journal: AuthorityJournal,
     session: String,
+    _lock: std::fs::File,
 }
 
 impl AuthorityClockSession {

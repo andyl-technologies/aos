@@ -37,6 +37,16 @@ impl NativeClock {
         latency_seconds: i64,
         retained_floor: i64,
     ) -> Result<Self> {
+        Self::new_with_resolution(journal, uncertainty, latency_seconds, retained_floor, None)
+    }
+
+    pub(super) fn new_with_resolution(
+        journal: AuthorityJournal,
+        uncertainty: i64,
+        latency_seconds: i64,
+        retained_floor: i64,
+        resolution: Option<&crate::authority_journal::recovery::ClockRecoveryReceipt>,
+    ) -> Result<Self> {
         ensure!(
             uncertainty >= 0 && latency_seconds > 0 && retained_floor >= 0,
             "invalid clock qualification"
@@ -58,7 +68,10 @@ impl NativeClock {
         );
         // No SystemTime sample precedes this actual retained claim. A crash or
         // failed bound check cannot silently regain clock authority on restart.
-        let session = journal.begin_clock_observation_session()?;
+        let session = match resolution {
+            Some(receipt) => journal.begin_recovered_clock_session(receipt)?,
+            None => journal.begin_clock_observation_session()?,
+        };
         Ok(Self {
             session,
             uncertainty,

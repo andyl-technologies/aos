@@ -19,6 +19,36 @@ pub(super) struct PrivateFile {
 }
 
 impl PrivateFile {
+    pub(super) fn recovery_identity(&self) -> super::recovery::ClockRecoveryFile {
+        super::recovery::ClockRecoveryFile {
+            device: self.device.to_string(),
+            inode: self.inode.to_string(),
+            parent_device: self.parent_device.to_string(),
+            parent_inode: self.parent_inode.to_string(),
+        }
+    }
+
+    // The open descriptor owns the flock until the clock/service or explicit
+    // operator operation ends. No sidecar or path-only lock can substitute.
+    pub(super) fn lock_exclusive(&self) -> Result<std::fs::File> {
+        self.validate_current()?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(&self.path)?;
+        let metadata = file.metadata()?;
+        private_regular_file(&metadata)?;
+        ensure!(
+            metadata.dev() == self.device && metadata.ino() == self.inode,
+            "issuer journal lock file was replaced"
+        );
+        rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+            .context("unresolved clock session: issuer or operator holds the journal inode lock")?;
+        self.validate_current()?;
+        Ok(file)
+    }
+
     pub(super) fn create_new(path: &Path, boundary: &HubDataBoundary) -> Result<Self> {
         validate_location(path, boundary)?;
         validate_namespace(path, true)?;

@@ -33,6 +33,7 @@ use clock::{ClockSource, NativeClock};
 
 mod clock;
 mod config;
+pub mod recovery_operator;
 
 #[cfg(test)]
 mod tests;
@@ -77,6 +78,21 @@ impl AuthorityServer {
     /// Returns an error for missing/changed/corrupt state, insecure credentials,
     /// reused role material, mismatched policy or invalid clock/key configuration.
     pub fn open(configuration: &AuthorityConfiguration) -> Result<Self> {
+        Self::open_with_clock_resolution(configuration, None)
+    }
+
+    /// Opens one explicitly nominated successor using a retained recovery receipt.
+    ///
+    /// The independent review and exact durable positive are verified before the
+    /// one-use successor is consumed. A failed start never restores the old session.
+    ///
+    /// # Errors
+    /// Returns an error for invalid configuration, active owners, changed or used
+    /// receipts, credential reuse, clock failure or indeterminate session commit.
+    pub fn open_with_clock_resolution(
+        configuration: &AuthorityConfiguration,
+        resolution: Option<&crate::authority_journal::recovery::ClockRecoveryReceipt>,
+    ) -> Result<Self> {
         configuration.validate()?;
         let journal = AuthorityJournal::open_existing(
             &configuration.journal_file,
@@ -84,6 +100,7 @@ impl AuthorityServer {
             configuration.installation.clone(),
         )?;
         let state = journal.load()?;
+        journal.verify_recovery_policy(configuration.clock_recovery.as_ref())?;
         ensure!(
             state.journal.policy == configuration.policy,
             "configured issuer policy differs"
@@ -106,12 +123,28 @@ impl AuthorityServer {
         let public = ed25519_dalek::SigningKey::from_bytes(&seed)
             .verifying_key()
             .to_bytes();
+        if let Some(policy) = &configuration.clock_recovery {
+            ensure!(
+                policy.reviewer_public_key != hex::encode(public),
+                "recovery reviewer must be independent from issuance"
+            );
+            for material in [&*publisher, &*renewal] {
+                if let Some(seed) = normalized_seed_material(material) {
+                    let role_public = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
+                    ensure!(
+                        policy.reviewer_public_key != hex::encode(role_public.to_bytes()),
+                        "recovery reviewer must be independent from publisher and renewal roles"
+                    );
+                }
+            }
+        }
         let verifier = EpochLeaseVerifier::from_bytes(signing_key_id.clone(), &public)?;
-        let clock = NativeClock::new(
+        let clock = NativeClock::new_with_resolution(
             journal.clone(),
             configuration.clock_uncertainty.get(),
             configuration.clock_commit_latency.get(),
             state.journal.clock_floor.get(),
+            resolution,
         )?;
         clock.observe()?;
         Ok(Self {

@@ -26,7 +26,7 @@ use crate::authority_journal::{AuthorityJournal, HubDataBoundary, IssuerInstalla
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthorityConfiguration {
-    /// Configuration format, currently one.
+    /// Format one selects journal 2; format two selects fresh recoverable journal 3.
     pub format_version: u8,
     /// Private listener address, with no inferred public Hub endpoint.
     pub listen: SocketAddr,
@@ -45,6 +45,9 @@ pub struct AuthorityConfiguration {
     /// Externally reviewed maximum observation/commit latency in seconds.
     /// One extra second accounts for conversion to the wire's whole seconds.
     pub clock_commit_latency: LeaseInteger,
+    /// Immutable independent recovery policy, mandatory only for format two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock_recovery: Option<crate::authority_journal::recovery::ClockRecoveryPolicy>,
     /// Explicit opt-in to issuance; omission leaves issuance disabled.
     #[serde(default)]
     pub issuance_enabled: bool,
@@ -92,11 +95,24 @@ impl AuthorityConfiguration {
     /// reused credential paths or an unprotected non-loopback listener.
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.format_version == 1,
+            matches!(self.format_version, 1 | 2),
             "unsupported authority configuration"
         );
         self.installation.validate()?;
         self.policy.timing_profile.validate()?;
+        match (&self.clock_recovery, self.format_version) {
+            (None, 1) => {}
+            (Some(recovery), 2) => {
+                recovery.validate()?;
+                ensure!(
+                    recovery.clock_uncertainty == self.clock_uncertainty
+                        && recovery.clock_commit_latency == self.clock_commit_latency
+                        && recovery.reviewer_key_id != self.signing_key_id,
+                    "clock recovery qualification or reviewer role differs"
+                );
+            }
+            _ => anyhow::bail!("authority configuration and recovery format differ"),
+        }
         ensure!(
             self.clock_commit_latency.get() > 0
                 && self
@@ -180,13 +196,49 @@ impl AuthorityConfiguration {
             observed_at,
             uncertainty: self.clock_uncertainty.get(),
         };
-        AuthorityJournal::initialize_fresh(
+        match &self.clock_recovery {
+            Some(recovery) => AuthorityJournal::initialize_recoverable(
+                &self.journal_file,
+                &self.boundary(),
+                self.installation.clone(),
+                publication,
+                self.policy.clone(),
+                observation,
+                recovery.clone(),
+            ),
+            None => AuthorityJournal::initialize_fresh(
+                &self.journal_file,
+                &self.boundary(),
+                self.installation.clone(),
+                publication,
+                self.policy.clone(),
+                observation,
+            ),
+        }
+    }
+
+    /// Opens exact existing state for an explicit operator recovery operation.
+    ///
+    /// No issuer or renewal secret is read, and no listener or SQL Hub is opened.
+    ///
+    /// # Errors
+    /// Returns an error for invalid configuration, changed state or policy mismatch.
+    pub fn open_recovery_journal(&self) -> Result<AuthorityJournal> {
+        self.validate()?;
+        let recovery = self
+            .clock_recovery
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("clock recovery requires configuration format two"))?;
+        let journal = AuthorityJournal::open_recovery_existing(
             &self.journal_file,
             &self.boundary(),
             self.installation.clone(),
-            publication,
-            self.policy.clone(),
-            observation,
-        )
+            recovery,
+        )?;
+        ensure!(
+            journal.load()?.journal.policy == self.policy,
+            "configured timing profile differs"
+        );
+        Ok(journal)
     }
 }

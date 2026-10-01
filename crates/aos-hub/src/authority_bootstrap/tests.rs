@@ -335,6 +335,7 @@ async fn fixture_with_database(db: Database) -> Fixture {
         },
         clock_uncertainty: LeaseInteger::new(2).unwrap(),
         clock_commit_latency: LeaseInteger::new(1).unwrap(),
+        clock_recovery: None,
         issuance_enabled: false,
         publisher_key_file: issuer_root.join("publisher.key"),
         renewal_key_file: issuer_root.join("renewal.key"),
