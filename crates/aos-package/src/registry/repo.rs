@@ -17,8 +17,9 @@
 //! libgit2 is synchronous. Each public function here is `async` only as a
 //! convenience for the (async) registry call sites: the libgit2 work runs on a
 //! [`tokio::task::spawn_blocking`] worker so it never stalls the runtime. A
-//! fresh [`git2::Repository`] handle is opened per call — opening a bare repo
-//! is cheap and keeps the non-`Send` handle confined to one blocking closure.
+//! fresh [`git2::Repository`] handle is opened per operation, keeping the
+//! non-`Send` handle confined to one blocking closure. Catalog and artifact
+//! batches share a handle so pack indexes and decoded objects stay cached.
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::OpenOptionsExt;
@@ -253,30 +254,6 @@ pub(crate) fn is_ancestor_blocking(
         .with_context(|| format!("checking ancestry of {ancestor}..{descendant}"))
 }
 
-/// The object kind of `commit:tree_path`, or `None` if the path is absent.
-///
-/// # Errors
-///
-/// Returns an error if the commit cannot be resolved.
-pub(crate) async fn path_object_kind(
-    repo_dir: &Path,
-    commit: &str,
-    tree_path: &str,
-) -> Result<Option<git2::ObjectType>> {
-    let commit = commit.to_string();
-    let tree_path = tree_path.to_string();
-    blocking(repo_dir, move |dir| {
-        let repo = open(dir)?;
-        let tree = commit_tree(&repo, &commit)?;
-        match tree.get_path(Path::new(&tree_path)) {
-            Ok(entry) => Ok(entry.kind()),
-            Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(None),
-            Err(e) => Err(e).with_context(|| format!("looking up {commit}:{tree_path}")),
-        }
-    })
-    .await
-}
-
 /// Read the bytes of the blob at `commit:tree_path`.
 ///
 /// Returns `None` when the path is absent from the commit (the historical
@@ -352,28 +329,75 @@ pub(crate) fn tree_path_exists_blocking(
     }
 }
 
-/// List every blob path in `commit`'s tree, recursively.
-///
-/// Equivalent to `git ls-tree -r --name-only <commit>`. Paths use `/`
-/// separators relative to the tree root.
+/// Visit every blob using one repository handle and its shared object cache.
 ///
 /// # Errors
 ///
-/// Returns an error if the commit cannot be resolved or the walk fails.
-pub(crate) fn list_tree_paths_blocking(repo_dir: &Path, commit: &str) -> Result<Vec<String>> {
+/// Returns an error if the tree cannot be read, a blob fails content-address
+/// verification, or the visitor rejects a blob.
+pub(crate) fn visit_tree_blobs_blocking(
+    repo_dir: &Path,
+    commit: &str,
+    mut visitor: impl FnMut(&str, &[u8]) -> Result<()>,
+) -> Result<()> {
     let repo = open(repo_dir)?;
     let tree = commit_tree(&repo, commit)?;
-    let mut paths = Vec::new();
-    tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
-        if entry.kind() == Some(git2::ObjectType::Blob) {
-            if let Ok(name) = entry.name() {
-                paths.push(format!("{root}{name}"));
+    let mut failure = None;
+    let walked = tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
+        if entry.kind() != Some(git2::ObjectType::Blob) {
+            return git2::TreeWalkResult::Ok;
+        }
+        let result = (|| {
+            let name = entry.name().context("non-UTF-8 tree entry name")?;
+            let bytes = read_blob_content(&repo, entry.id())?;
+            visitor(&format!("{root}{name}"), &bytes)
+        })();
+        match result {
+            Ok(()) => git2::TreeWalkResult::Ok,
+            Err(error) => {
+                failure = Some(error);
+                git2::TreeWalkResult::Abort
             }
         }
-        git2::TreeWalkResult::Ok
+    });
+
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    walked.with_context(|| format!("walking blobs of {commit}"))
+}
+
+/// Read required artifact blobs with one repository handle and commit tree.
+///
+/// # Errors
+///
+/// Returns an error if any declared artifact is missing, is not a blob, or
+/// fails content-address verification.
+pub(crate) async fn read_required_blobs_at(
+    repo_dir: &Path,
+    commit: &str,
+    paths: &[String],
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let commit = commit.to_string();
+    let paths = paths.to_vec();
+    blocking(repo_dir, move |dir| {
+        let repo = open(dir)?;
+        let tree = commit_tree(&repo, &commit)?;
+        let mut blobs = BTreeMap::new();
+        for path in paths {
+            let entry = tree.get_path(Path::new(&path)).with_context(|| {
+                format!("registry artifact '{path}' declared by package metadata is missing from commit {commit}")
+            })?;
+            if entry.kind() != Some(git2::ObjectType::Blob) {
+                bail!("registry artifact '{path}' is not a file");
+            }
+            let bytes = read_blob_content(&repo, entry.id())
+                .with_context(|| format!("reading registry artifact {path}"))?;
+            blobs.insert(path, bytes);
+        }
+        Ok(blobs)
     })
-    .with_context(|| format!("walking tree of {commit}"))?;
-    Ok(paths)
+    .await
 }
 
 /// Extract the directory tree at `commit:tree_path` into `output_dir`.

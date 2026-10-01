@@ -828,17 +828,13 @@ fn validate_role(role: &str, spec: &TufRoleSpec, keys: &BTreeMap<String, TufKey>
 }
 
 fn collect_commit_catalog(repo_dir: &Path, commit: &str) -> Result<BTreeMap<String, TufFileMeta>> {
-    let paths = crate::registry::repo::list_tree_paths_blocking(repo_dir, commit)
-        .with_context(|| format!("listing tree for {commit}"))?;
-
     let mut catalog = BTreeMap::new();
-    for path in paths {
-        if path.starts_with("tuf/") {
-            continue;
+    crate::registry::repo::visit_tree_blobs_blocking(repo_dir, commit, |path, bytes| {
+        if !path.starts_with("tuf/") {
+            catalog.insert(path.to_string(), file_meta(bytes));
         }
-        let bytes = read_commit_blob(repo_dir, commit, &path)?;
-        catalog.insert(path, file_meta(&bytes));
-    }
+        Ok(())
+    })?;
     Ok(catalog)
 }
 
