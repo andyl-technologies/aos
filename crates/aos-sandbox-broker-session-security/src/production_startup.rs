@@ -11,7 +11,11 @@ use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::sync::Arc;
 
-use aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1;
+use aos_sandbox::normal_root::{
+    ControllerInitialCaptureFailureRefV1, ProductionControllerInitialCaptureAttemptV1,
+    ProductionControllerNormalRootCaptureV1, ProductionControllerNormalRootProfileV1,
+    ProductionControllerNormalRootStartupPartsV1,
+};
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use aos_sandbox_storage::activation::take_systemd_startup;
 use aos_sandbox_storage::service::StorageServiceError;
@@ -23,8 +27,16 @@ use crate::{ProductionBrokerSessionActivationV1, ProtectedBrokerSessionFixedEndp
 pub(crate) struct Pid1LaunchImageV1 {
     endpoint: ProtectedBrokerSessionFixedEndpointV1,
     process: u32,
-    file: Arc<File>,
+    file: LaunchImageFile,
     profile_delivery: ControllerProfileDeliveryV1,
+}
+
+// Legacy keeps its literal allocation interval. The retained destination is
+// empty BEFORE capture and receives only the same actual original afterward.
+#[derive(Clone)]
+enum LaunchImageFile {
+    Legacy(Arc<File>),
+    Retained(Arc<Option<File>>),
 }
 
 // Pending capture cannot stand in for genuinely admitted profile absence.
@@ -97,8 +109,20 @@ impl Pid1LaunchImageV1 {
         }
     }
 
-    pub(crate) fn file(&self) -> &File {
-        &self.file
+    /// Borrows the same original launch image without another observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Currentness` when a retained destination has no original file,
+    /// before image measurement. Legacy images always return their original.
+    pub(crate) fn file(&self) -> Result<&File, crate::BrokerSessionSecurityError> {
+        match &self.file {
+            LaunchImageFile::Legacy(file) => Ok(file.as_ref()),
+            LaunchImageFile::Retained(slot) => slot
+                .as_ref()
+                .as_ref()
+                .ok_or(crate::BrokerSessionSecurityError::Currentness),
+        }
     }
 }
 
@@ -257,24 +281,271 @@ fn admit_launch_observation(
     endpoint: ProtectedBrokerSessionFixedEndpointV1,
     descriptor: Option<OwnedFd>,
 ) -> Result<Option<Pid1LaunchImageV1>, crate::BrokerSessionSecurityError> {
-    crate::recovery::require_launch_image_presence(endpoint, descriptor.is_some())?;
-    let profile_delivery = match endpoint {
-        ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient => {
-            ControllerProfileDeliveryV1::Pending
-        }
-        ProtectedBrokerSessionFixedEndpointV1::StorageBroker => {
-            ControllerProfileDeliveryV1::Storage
-        }
-        _ => return Err(crate::BrokerSessionSecurityError::Currentness),
-    };
+    let profile_delivery = launch_profile_delivery(endpoint, descriptor.is_some())?;
     Ok(descriptor.map(|descriptor| Pid1LaunchImageV1 {
         endpoint,
         process: std::process::id(),
-        file: Arc::new(File::from(descriptor)),
+        file: LaunchImageFile::Legacy(Arc::new(File::from(descriptor))),
         profile_delivery,
     }))
 }
 
+fn launch_profile_delivery(
+    endpoint: ProtectedBrokerSessionFixedEndpointV1,
+    supplied: bool,
+) -> Result<ControllerProfileDeliveryV1, crate::BrokerSessionSecurityError> {
+    crate::recovery::require_launch_image_presence(endpoint, supplied)?;
+    match endpoint {
+        ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient => {
+            Ok(ControllerProfileDeliveryV1::Pending)
+        }
+        ProtectedBrokerSessionFixedEndpointV1::StorageBroker => {
+            Ok(ControllerProfileDeliveryV1::Storage)
+        }
+        _ => Err(crate::BrokerSessionSecurityError::Currentness),
+    }
+}
+
+/// Borrows a cause from the same nested retained startup owner.
+///
+/// The view is short and by value; Security stores no self-borrow or cloned
+/// Core cause. It grants no launch, selected-profile or floor authority.
+pub(crate) enum ControllerStartupFailureRefV1<'attempt> {
+    Core(ControllerInitialCaptureFailureRefV1<'attempt>),
+    Launch(&'attempt crate::BrokerSessionSecurityError),
+    Closed,
+}
+
+impl std::fmt::Debug for ControllerStartupFailureRefV1<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Core(_) => "original Controller capture refused",
+            Self::Launch(_) => "original Controller launch delivery refused",
+            Self::Closed => "original Controller startup closed",
+        })
+    }
+}
+
+enum StartupCaptureFailure {
+    Core,
+    Launch(crate::BrokerSessionSecurityError),
+    Closed,
+}
+
+/// Keeps actual startup originals resident across launch-presence admission.
+///
+/// The empty image destination is allocated before initial capture, never
+/// after an original has left its slot. No installed caller migrates here.
+/// Failed/abandoned or unwinding attempts abort before field release; OS death
+/// is not drain or Source-flight settlement. Lower unreturned custody remains
+/// a separate functional prerequisite.
+#[must_use]
+pub(crate) struct ControllerStartupCaptureAttemptV1 {
+    image_destination: Arc<Option<File>>,
+    core: ProductionControllerInitialCaptureAttemptV1,
+    parts: Option<ProductionControllerNormalRootStartupPartsV1>,
+    nix: Option<aos_sandbox::normal_root::ProductionControllerNixStartupCaptureV1>,
+    git: Option<OwnedFd>,
+    completed: Option<CapturedControllerStartupV1>,
+    attempted: bool,
+    failure: Option<StartupCaptureFailure>,
+    armed: bool,
+}
+
+impl ControllerStartupCaptureAttemptV1 {
+    pub(crate) fn new(publisher: bool, nix_enabled: bool, git_source_cut: bool) -> Self {
+        // This is the sole retained-only allocation. It precedes any table IO
+        // and contains no File, fabricated image or authorization claim.
+        let image_destination = Arc::new(None);
+        Self {
+            image_destination,
+            core: ProductionControllerNormalRootCaptureV1::begin_retained_capture(
+                publisher, nix_enabled, git_source_cut,
+            ),
+            parts: None,
+            nix: None,
+            git: None,
+            completed: None,
+            attempted: false,
+            failure: None,
+            armed: true,
+        }
+    }
+
+    /// Captures and checks the same originals once, before any journal opens.
+    ///
+    /// # Errors
+    /// Borrows the actual nested Core or launch cause without releasing partial
+    /// originals. Repeats are closed and perform no observations.
+    pub(crate) fn capture_once(&mut self) -> Result<(), ControllerStartupFailureRefV1<'_>> {
+        if self.attempted {
+            self.failure.get_or_insert(StartupCaptureFailure::Closed);
+        } else {
+            self.attempted = true;
+            let result = {
+                let _unwind = AbortStartupCaptureUnwind;
+                self.capture_body()
+            };
+            match result {
+                Ok(()) => return Ok(()),
+                Err(cause) => {
+                    self.failure.get_or_insert(cause);
+                }
+            }
+        }
+        Err(self.failure_view())
+    }
+
+    pub(crate) fn first_failure(&self) -> Option<ControllerStartupFailureRefV1<'_>> {
+        self.failure.as_ref().map(|_| self.failure_view())
+    }
+
+    /// Moves the same completed startup once without observation or allocation.
+    ///
+    /// The destination must be parked before a fallible continuation. Its Core
+    /// capture can then enter the genuine existing retained-profile producer.
+    pub(crate) fn take_completed_startup(&mut self) -> Option<CapturedControllerStartupV1> {
+        if self.failure.is_some()
+            || self.completed.is_none()
+            || self.parts.is_some()
+            || self.nix.is_some()
+            || self.git.is_some()
+        {
+            return None;
+        }
+        let completed = self.completed.take();
+        self.armed = false;
+        completed
+    }
+
+    fn failure_view(&self) -> ControllerStartupFailureRefV1<'_> {
+        match &self.failure {
+            Some(StartupCaptureFailure::Core) => match self.core.first_failure() {
+                Some(cause) => ControllerStartupFailureRefV1::Core(cause),
+                None => ControllerStartupFailureRefV1::Closed,
+            },
+            Some(StartupCaptureFailure::Launch(cause)) => {
+                ControllerStartupFailureRefV1::Launch(cause)
+            }
+            Some(StartupCaptureFailure::Closed) | None => ControllerStartupFailureRefV1::Closed,
+        }
+    }
+
+    fn capture_body(&mut self) -> Result<(), StartupCaptureFailure> {
+        if self.parts.is_some() || self.nix.is_some() || self.git.is_some()
+            || self.completed.is_some()
+        {
+            return Err(StartupCaptureFailure::Closed);
+        }
+        if self.core.capture_once().is_err() {
+            return Err(StartupCaptureFailure::Core);
+        }
+        let Some(parts) = self.core.take_completed_parts() else {
+            return Err(StartupCaptureFailure::Closed);
+        };
+        self.parts = Some(parts);
+        let parts = self.parts.as_mut().ok_or(StartupCaptureFailure::Closed)?;
+        self.nix = parts.0.take_nix_startup();
+        self.git = parts.0.take_git_source_listener();
+
+        let endpoint = ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient;
+        let image_present = parts.2.is_some();
+        let profile_delivery = launch_profile_delivery(endpoint, image_present)
+            .map_err(StartupCaptureFailure::Launch)?;
+
+        // Check unique ownership and the empty destination BEFORE taking the
+        // raw original. This borrow cannot allocate or observe another image.
+        let target = Arc::get_mut(&mut self.image_destination)
+            .ok_or(StartupCaptureFailure::Closed)?;
+        if target.is_some() || parts.2.is_some() != image_present {
+            return Err(StartupCaptureFailure::Closed);
+        }
+        if let Some(original) = parts.2.take() {
+            *target = Some(File::from(original));
+        }
+        let launch_image = if image_present {
+            Some(Pid1LaunchImageV1 {
+                endpoint,
+                process: std::process::id(),
+                file: LaunchImageFile::Retained(Arc::clone(&self.image_destination)),
+                profile_delivery,
+            })
+        } else {
+            None
+        };
+
+        // The image is already resident in the shared original destination.
+        // No observation/allocation follows any startup tuple removal.
+        if self.completed.is_some()
+            || self.parts.as_ref().is_none_or(|parts| parts.2.is_some())
+        {
+            return Err(StartupCaptureFailure::Closed);
+        }
+        let originals = self.parts.take();
+        match originals {
+            Some((normal_root_capture, publisher_descriptor, None)) => {
+                self.completed = Some(CapturedControllerStartupV1 {
+                    publisher_descriptor,
+                    launch_image,
+                    normal_root_capture,
+                    nix_capture: self.nix.take(),
+                    git_source_listener: self.git.take(),
+                });
+                Ok(())
+            }
+            parts => {
+                self.parts = parts;
+                // The shared original image never left image_destination.
+                Err(StartupCaptureFailure::Closed)
+            }
+        }
+    }
+}
+
+impl Drop for ControllerStartupCaptureAttemptV1 {
+    fn drop(&mut self) {
+        if self.armed {
+            std::process::abort();
+        }
+    }
+}
+
+struct AbortStartupCaptureUnwind;
+
+impl Drop for AbortStartupCaptureUnwind {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            std::process::abort();
+        }
+    }
+}
+
 fn startup_error(message: impl Into<String>) -> StorageServiceError {
     StorageServiceError::Activation(message.into())
+}
+
+#[cfg(test)]
+mod retained_destination_tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_destination_is_unique_before_any_original_exists() {
+        let mut destination: Arc<Option<File>> = Arc::new(None);
+
+        let slot = Arc::get_mut(&mut destination);
+
+        assert!(matches!(slot, Some(None)));
+    }
+
+    #[test]
+    fn a_shared_empty_destination_cannot_receive_an_original() {
+        let mut destination: Arc<Option<File>> = Arc::new(None);
+        let retained = Arc::clone(&destination);
+
+        let slot = Arc::get_mut(&mut destination);
+
+        assert!(slot.is_none());
+        assert!(destination.as_ref().is_none());
+        assert!(retained.as_ref().is_none());
+    }
 }

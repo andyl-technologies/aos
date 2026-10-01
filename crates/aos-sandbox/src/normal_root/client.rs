@@ -18,7 +18,9 @@ use std::path::Path;
 
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
 use aos_sandbox_linux::guest_confinement::require_subject;
-use aos_sandbox_linux::inherited_fd::duplicate_initial_activation_table;
+use aos_sandbox_linux::inherited_fd::{
+    ControllerInitialActivationTableV1, duplicate_initial_activation_table,
+};
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_sandbox_linux::selinux_policy::VerifiedLiveSelinuxPolicy;
 use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
@@ -59,6 +61,20 @@ pub type ProductionControllerNormalRootStartupPartsV1 = (
 );
 
 impl ProductionControllerNormalRootCaptureV1 {
+    /// Creates resident storage for the actual initial Controller table.
+    ///
+    /// Flags select the existing closed names, not launch or role authority.
+    /// Capture must remain the first single-threaded startup operation. This
+    /// constructor performs no observation or duplication.
+    #[must_use]
+    pub fn begin_retained_capture(
+        publisher: bool,
+        nix_enabled: bool,
+        git_source_cut: bool,
+    ) -> ProductionControllerInitialCaptureAttemptV1 {
+        ProductionControllerInitialCaptureAttemptV1::new(publisher, nix_enabled, git_source_cut)
+    }
+
     /// Captures every initial descriptor before credentials or journals open.
     ///
     /// # Errors
@@ -81,10 +97,7 @@ impl ProductionControllerNormalRootCaptureV1 {
         nix_enabled: bool,
         git_source_cut: bool,
     ) -> Result<ProductionControllerNormalRootStartupPartsV1, NormalRootStartupErrorV1> {
-        let names = startup::names(6)?;
-        if !valid_backend_names(&names, publisher, nix_enabled, git_source_cut) {
-            return Err(NormalRootStartupErrorV1::Activation);
-        }
+        let names = controller_names(publisher, nix_enabled, git_source_cut)?;
         let descriptors = duplicate_initial_activation_table(names.len())
             .map_err(|_| NormalRootStartupErrorV1::Activation)?;
         let mut profile = None;
@@ -94,14 +107,14 @@ impl ProductionControllerNormalRootCaptureV1 {
         let mut nix_pid1 = None;
         let mut git_source_listener = None;
         for (name, descriptor) in names.iter().zip(descriptors) {
-            match name.as_str() {
-                PROFILE_NAME => profile = Some(descriptor),
-                PUBLISHER_NAME => publisher = Some(descriptor),
-                TPM_IMAGE_NAME => image = Some(descriptor),
-                super::nix_startup::CONTROLLER_PROFILE_NAME => nix_profile = Some(descriptor),
-                super::nix_startup::CONTROLLER_PID1_NAME => nix_pid1 = Some(descriptor),
-                GIT_SOURCE_LISTENER_NAME => git_source_listener = Some(descriptor),
-                _ => return Err(NormalRootStartupErrorV1::Activation),
+            match controller_role(name) {
+                Some(ControllerRole::Profile) => profile = Some(descriptor),
+                Some(ControllerRole::Publisher) => publisher = Some(descriptor),
+                Some(ControllerRole::Image) => image = Some(descriptor),
+                Some(ControllerRole::NixProfile) => nix_profile = Some(descriptor),
+                Some(ControllerRole::NixPid1) => nix_pid1 = Some(descriptor),
+                Some(ControllerRole::Git) => git_source_listener = Some(descriptor),
+                None => return Err(NormalRootStartupErrorV1::Activation),
             }
         }
         let nix_delivery = nix_profile.as_ref().map(rustix::io::dup).transpose()
@@ -179,6 +192,314 @@ impl ProductionControllerNormalRootCaptureV1 {
     ) -> Result<Option<ProductionControllerNormalRootProfileV1>, NormalRootStartupErrorV1> {
         admission::legacy_recipe(self, uid, gid)
     }
+}
+
+/// Borrows the actual first capture cause from its original resident owner.
+///
+/// This short by-value view stores no self-reference and clones no cause.
+/// Diagnostics expose only a fixed refusal class, not descriptor or path DATA.
+pub enum ControllerInitialCaptureFailureRefV1<'capture> {
+    /// The same existing names or slot refusal is retained by Core.
+    Startup(&'capture NormalRootStartupErrorV1),
+    /// The original Linux table owner retains this actual kernel cause.
+    Table(&'capture aos_sandbox_linux::Error),
+    /// Core retains the actual optional duplication refusal.
+    Duplicate(&'capture rustix::io::Errno),
+    /// The attempt is permanently closed without another observation.
+    Closed,
+}
+
+impl std::fmt::Debug for ControllerInitialCaptureFailureRefV1<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Startup(_) => "Controller capture names/slots refused",
+            Self::Table(_) => "Controller original table refused",
+            Self::Duplicate(_) => "Controller optional duplication refused",
+            Self::Closed => "Controller capture closed",
+        })
+    }
+}
+
+enum InitialCaptureFailure {
+    Startup(NormalRootStartupErrorV1),
+    Table,
+    Duplicate(rustix::io::Errno),
+    Closed,
+}
+
+/// Retains every returned original until the complete Core tuple moves once.
+///
+/// Raw prefixes, routed roles and optional duplicates stay resident on refusal.
+/// Armed Drop and unwind abort before those fields release. Process death is
+/// not drain or completed Source-flight evidence. No installed caller selects
+/// this path, and unreturned lower descriptions remain separate prerequisites.
+#[must_use]
+pub struct ProductionControllerInitialCaptureAttemptV1 {
+    publisher_enabled: bool,
+    nix_enabled: bool,
+    git_enabled: bool,
+    names: Vec<String>,
+    table: ControllerInitialActivationTableV1,
+    raw: [Option<OwnedFd>; 6],
+    unrouted: Option<OwnedFd>,
+    profile: Option<OwnedFd>,
+    publisher: Option<OwnedFd>,
+    image: Option<OwnedFd>,
+    nix_profile: Option<OwnedFd>,
+    nix_pid1: Option<OwnedFd>,
+    nix_delivery: Option<OwnedFd>,
+    root_duplicate: Option<OwnedFd>,
+    nix: Option<super::nix_startup::ProductionControllerNixStartupCaptureV1>,
+    git: Option<OwnedFd>,
+    completed: Option<ProductionControllerNormalRootStartupPartsV1>,
+    attempted: bool,
+    failure: Option<InitialCaptureFailure>,
+    armed: bool,
+}
+
+impl ProductionControllerInitialCaptureAttemptV1 {
+    fn new(publisher: bool, nix_enabled: bool, git_source_cut: bool) -> Self {
+        Self {
+            publisher_enabled: publisher,
+            nix_enabled,
+            git_enabled: git_source_cut,
+            names: Vec::new(),
+            table: ControllerInitialActivationTableV1::new(),
+            raw: [None, None, None, None, None, None],
+            unrouted: None,
+            profile: None,
+            publisher: None,
+            image: None,
+            nix_profile: None,
+            nix_pid1: None,
+            nix_delivery: None,
+            root_duplicate: None,
+            nix: None,
+            git: None,
+            completed: None,
+            attempted: false,
+            failure: None,
+            armed: true,
+        }
+    }
+
+    /// Captures the actual closed table once, retaining partial success.
+    ///
+    /// # Errors
+    /// Borrows the first names, table, routing or optional-duplicate cause.
+    /// A repeat performs no observation and cannot revive completed custody.
+    pub fn capture_once(&mut self) -> Result<(), ControllerInitialCaptureFailureRefV1<'_>> {
+        if self.attempted {
+            self.failure.get_or_insert(InitialCaptureFailure::Closed);
+        } else {
+            self.attempted = true;
+            let result = {
+                let _unwind = AbortControllerCaptureUnwind;
+                self.capture_body()
+            };
+            match result {
+                Ok(()) => return Ok(()),
+                Err(cause) => {
+                    self.failure.get_or_insert(cause);
+                }
+            }
+        }
+        Err(self.failure_view())
+    }
+
+    /// Borrows a short view over the same resident first cause.
+    pub fn first_failure(&self) -> Option<ControllerInitialCaptureFailureRefV1<'_>> {
+        self.failure.as_ref().map(|_| self.failure_view())
+    }
+
+    /// Moves the same completed startup tuple without a fallible continuation.
+    ///
+    /// The caller parks it before profile or launch checks. A failed attempt
+    /// exposes none of its partial roles and remains armed.
+    #[must_use]
+    pub fn take_completed_parts(&mut self) -> Option<ProductionControllerNormalRootStartupPartsV1> {
+        if self.failure.is_some()
+            || self.completed.is_none()
+            || self.raw.iter().any(Option::is_some)
+            || self.unrouted.is_some()
+            || self.profile.is_some()
+            || self.publisher.is_some()
+            || self.image.is_some()
+            || self.nix_profile.is_some()
+            || self.nix_pid1.is_some()
+            || self.nix_delivery.is_some()
+            || self.root_duplicate.is_some()
+            || self.nix.is_some()
+            || self.git.is_some()
+        {
+            return None;
+        }
+        let completed = self.completed.take();
+        self.armed = false;
+        completed
+    }
+
+    fn failure_view(&self) -> ControllerInitialCaptureFailureRefV1<'_> {
+        match &self.failure {
+            Some(InitialCaptureFailure::Startup(cause)) => {
+                ControllerInitialCaptureFailureRefV1::Startup(cause)
+            }
+            Some(InitialCaptureFailure::Duplicate(cause)) => {
+                ControllerInitialCaptureFailureRefV1::Duplicate(cause)
+            }
+            Some(InitialCaptureFailure::Table) => match self.table.failure() {
+                Some(cause) => ControllerInitialCaptureFailureRefV1::Table(cause),
+                None => ControllerInitialCaptureFailureRefV1::Closed,
+            },
+            Some(InitialCaptureFailure::Closed) | None => {
+                ControllerInitialCaptureFailureRefV1::Closed
+            }
+        }
+    }
+
+    fn capture_body(&mut self) -> Result<(), InitialCaptureFailure> {
+        self.names = controller_names(self.publisher_enabled, self.nix_enabled, self.git_enabled)
+            .map_err(InitialCaptureFailure::Startup)?;
+        if self.table.observe_once(self.names.len()).is_err() {
+            return Err(InitialCaptureFailure::Table);
+        }
+        if self.raw.iter().any(Option::is_some) || self.unrouted.is_some() {
+            return Err(InitialCaptureFailure::Closed);
+        }
+        let Some(raw) = self.table.take_completed_entries() else {
+            return Err(InitialCaptureFailure::Closed);
+        };
+        self.raw = raw;
+
+        for (name, entry) in self.names.iter().zip(&mut self.raw) {
+            let target = match controller_role(name) {
+                Some(ControllerRole::Profile) => &mut self.profile,
+                Some(ControllerRole::Publisher) => &mut self.publisher,
+                Some(ControllerRole::Image) => &mut self.image,
+                Some(ControllerRole::NixProfile) => &mut self.nix_profile,
+                Some(ControllerRole::NixPid1) => &mut self.nix_pid1,
+                Some(ControllerRole::Git) => &mut self.git,
+                None => return Err(InitialCaptureFailure::Startup(NormalRootStartupErrorV1::Activation)),
+            };
+            if target.is_some() || entry.is_none() || self.unrouted.is_some() {
+                return Err(InitialCaptureFailure::Startup(NormalRootStartupErrorV1::Activation));
+            }
+            self.unrouted = entry.take();
+            *target = self.unrouted.take();
+        }
+
+        self.nix_delivery = self.nix_profile.as_ref().map(rustix::io::dup).transpose()
+            .map_err(InitialCaptureFailure::Duplicate)?;
+        if self.nix_pid1.is_some() != self.nix_profile.is_some() {
+            return Err(InitialCaptureFailure::Startup(NormalRootStartupErrorV1::Activation));
+        }
+        if self.nix_pid1.is_some() {
+            self.root_duplicate = self.profile.as_ref().map(rustix::io::dup).transpose()
+                .map_err(InitialCaptureFailure::Duplicate)?;
+            if self.nix.is_some() || self.nix_delivery.is_none()
+                || self.root_duplicate.is_some() != self.profile.is_some()
+            {
+                return Err(InitialCaptureFailure::Closed);
+            }
+            let image_present = self.image.is_some();
+            let originals = (
+                self.nix_pid1.take(), self.nix_profile.take(), self.root_duplicate.take(),
+            );
+            match originals {
+                (Some(pid1), Some(profile), root_profile) => {
+                    self.nix = Some(super::nix_startup::ProductionControllerNixStartupCaptureV1::from_initial_table(
+                        pid1, profile, root_profile, image_present,
+                    ));
+                }
+                (pid1, profile, root_profile) => {
+                    self.nix_pid1 = pid1;
+                    self.nix_profile = profile;
+                    self.root_duplicate = root_profile;
+                    return Err(InitialCaptureFailure::Closed);
+                }
+            }
+        }
+
+        if self.raw.iter().any(Option::is_some)
+            || self.unrouted.is_some()
+            || self.completed.is_some()
+            || self.root_duplicate.is_some()
+            || self.nix_pid1.is_some()
+            || self.nix_profile.is_some()
+            || self.publisher.is_some() != self.publisher_enabled
+            || self.nix.is_some() != self.nix_enabled
+            || self.git.is_some() != self.git_enabled
+            || self.nix_delivery.is_some() != self.nix_enabled
+            || self.profile.is_some() != self.names.iter().any(|name| name == PROFILE_NAME)
+            || self.image.is_some() != self.names.iter().any(|name| name == TPM_IMAGE_NAME)
+        {
+            return Err(InitialCaptureFailure::Closed);
+        }
+        let image_present = self.image.is_some();
+        self.completed = Some((
+            ProductionControllerNormalRootCaptureV1 {
+                profile: self.profile.take(),
+                tpm_image: image_present,
+                nix: self.nix.take(),
+                nix_delivery: self.nix_delivery.take(),
+                git_source_listener: self.git.take(),
+            },
+            self.publisher.take(),
+            self.image.take(),
+        ));
+        Ok(())
+    }
+}
+
+impl Drop for ProductionControllerInitialCaptureAttemptV1 {
+    fn drop(&mut self) {
+        if self.armed {
+            std::process::abort();
+        }
+    }
+}
+
+struct AbortControllerCaptureUnwind;
+
+impl Drop for AbortControllerCaptureUnwind {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            std::process::abort();
+        }
+    }
+}
+
+enum ControllerRole {
+    Profile,
+    Publisher,
+    Image,
+    NixProfile,
+    NixPid1,
+    Git,
+}
+
+fn controller_role(name: &str) -> Option<ControllerRole> {
+    match name {
+        PROFILE_NAME => Some(ControllerRole::Profile),
+        PUBLISHER_NAME => Some(ControllerRole::Publisher),
+        TPM_IMAGE_NAME => Some(ControllerRole::Image),
+        super::nix_startup::CONTROLLER_PROFILE_NAME => Some(ControllerRole::NixProfile),
+        super::nix_startup::CONTROLLER_PID1_NAME => Some(ControllerRole::NixPid1),
+        GIT_SOURCE_LISTENER_NAME => Some(ControllerRole::Git),
+        _ => None,
+    }
+}
+
+fn controller_names(
+    publisher: bool,
+    nix_enabled: bool,
+    git_source_cut: bool,
+) -> Result<Vec<String>, NormalRootStartupErrorV1> {
+    let names = startup::names(6)?;
+    if !valid_backend_names(&names, publisher, nix_enabled, git_source_cut) {
+        return Err(NormalRootStartupErrorV1::Activation);
+    }
+    Ok(names)
 }
 
 /// Retains Controller's independent selected-profile and fixed delivery join.
