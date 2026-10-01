@@ -254,7 +254,12 @@ impl ProductionVmHotForkSourceWorld {
             return Ok(self);
         }
 
-        self.recover()?.prepare_hot_fork_source_world()
+        // Template rollback does not undo the sealed block graph. Keep the
+        // original file authority and revalidate its actual native receipt
+        // before preparing another transaction on this same stopped source.
+        let disk_custody = std::mem::take(&mut self.disk_custody);
+        self.recover()?
+            .prepare_hot_fork_source_world_with_disk_custody(disk_custody)
     }
 
     /// Aborts every retained-template transaction and recovers the lifecycle.
@@ -1061,7 +1066,15 @@ impl ProductionVmLifecycleLoop {
     /// the lifecycle and every process/resource authority when continuation
     /// capture, ownership validation, source preparation, or rollback fails.
     pub fn prepare_hot_fork_source_world(
+        self,
+    ) -> Result<ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure>
+    {
+        self.prepare_hot_fork_source_world_with_disk_custody(BTreeMap::new())
+    }
+
+    fn prepare_hot_fork_source_world_with_disk_custody(
         mut self,
+        retained_disk_custody: BTreeMap<NodeId, Arc<ProductionVmHotForkDiskCustody>>,
     ) -> Result<ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure>
     {
         let continuation = match self.capture_hot_fork_world_continuation() {
@@ -1074,7 +1087,7 @@ impl ProductionVmLifecycleLoop {
                 ));
             }
         };
-        self.prepare_hot_fork_source_world_from_continuation(continuation)
+        self.prepare_hot_fork_source_world_from_continuation(continuation, retained_disk_custody)
     }
 
     /// Re-adopts a reconstructed child world and prepares it as a descendant template.
@@ -1145,12 +1158,13 @@ impl ProductionVmLifecycleLoop {
             ));
         }
 
-        self.prepare_hot_fork_source_world_from_continuation(continuation)
+        self.prepare_hot_fork_source_world_from_continuation(continuation, BTreeMap::new())
     }
 
     fn prepare_hot_fork_source_world_from_continuation(
         mut self,
         mut continuation: ProductionVmHotForkWorldContinuation,
+        mut retained_disk_custody: BTreeMap<NodeId, Arc<ProductionVmHotForkDiskCustody>>,
     ) -> Result<ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure>
     {
         let retained_nodes = continuation
@@ -1166,6 +1180,18 @@ impl ProductionVmLifecycleLoop {
                 self,
                 error.to_string(),
                 Vec::new(),
+            ));
+        }
+
+        if retained_disk_custody
+            .keys()
+            .any(|node| !retained_nodes.contains(node))
+        {
+            let unreconciled = retained_disk_custody.keys().cloned().collect();
+            return Err(ProductionVmHotForkSourceWorldPreparationFailure::new(
+                self,
+                "retained disk custody names a source outside the current world",
+                unreconciled,
             ));
         }
 
@@ -1203,7 +1229,16 @@ impl ProductionVmLifecycleLoop {
                     );
                 }
             };
-            let disk = match self.prepare_sealed_hot_fork_disk(node) {
+            let reused_disk = retained_disk_custody.contains_key(node);
+            let disk_preparation = match retained_disk_custody.remove(node) {
+                Some(custody) => self
+                    .revalidate_sealed_hot_fork_disk(node, &custody)
+                    .map(|binding| Some((custody, binding))),
+                None => self
+                    .prepare_sealed_hot_fork_disk(node)
+                    .map(|disk| disk.map(|(custody, binding)| (Arc::new(custody), binding))),
+            };
+            let disk = match disk_preparation {
                 Ok(disk) => disk,
                 Err(error) => {
                     let mut rollback_targets = prepared
@@ -1252,9 +1287,10 @@ impl ProductionVmLifecycleLoop {
             ) {
                 Ok(token) => {
                     if let Some((custody, _binding)) = disk {
-                        let custody = Arc::new(custody);
-                        self.retained_resource_owners
-                            .push(Box::new(Arc::clone(&custody)));
+                        if !reused_disk {
+                            self.retained_resource_owners
+                                .push(Box::new(Arc::clone(&custody)));
+                        }
                         disk_custody.insert(node.clone(), custody);
                     }
                     prepared.push(token);
