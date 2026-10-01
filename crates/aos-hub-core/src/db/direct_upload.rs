@@ -375,17 +375,27 @@ impl Database {
     /// # Errors
     /// Rejects absent positive originals, changed Complete, current pins or SQL failure.
     pub(crate) async fn retain_direct_positive_complete(
-        &self, deployment: &str, session_id: &str, intent: &DirectCompleteRequest, now: i64,
+        &self,
+        deployment: &str,
+        session_id: &str,
+        intent: &DirectCompleteRequest,
+        now: i64,
     ) -> Result<DirectUploadSessionRecord> {
-        let record = self.direct_upload_session(deployment, session_id).await?
+        let record = self
+            .direct_upload_session(deployment, session_id)
+            .await?
             .context("direct positive recovery session absent")?;
         validate_complete(&record.admission, intent, deployment)?;
-        ensure!(record.state == DirectSessionState::StagedVerified
-            && record.complete_intent.as_ref() == Some(intent)
-            && record.stage_evidence.is_some()
-            && record.baselines.len() == record.admission.placements.len(),
-            "direct positive recovery original absent or changed");
-        self.direct_batch(&record).checked_batch(&[current_guard_with_recovery(&record, now, true)?]).await?;
+        ensure!(
+            record.state == DirectSessionState::StagedVerified
+                && record.complete_intent.as_ref() == Some(intent)
+                && record.stage_evidence.is_some()
+                && record.baselines.len() == record.admission.placements.len(),
+            "direct positive recovery original absent or changed"
+        );
+        self.direct_batch(&record)
+            .checked_batch(&[current_guard_with_recovery(&record, now, true)?])
+            .await?;
         Ok(record)
     }
 

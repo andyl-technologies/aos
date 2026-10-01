@@ -1231,9 +1231,13 @@ impl Database {
             bail!("cache write ticket input is invalid");
         }
         let statements = vec![
-            CheckedStatement::exact("UPDATE cache_gc_state SET epoch = epoch WHERE cache_id = ?1", vals![cache_id], 1),
+            CheckedStatement::exact(
+                "UPDATE cache_gc_state SET epoch = epoch WHERE cache_id = ?1",
+                vals![cache_id],
+                1,
+            ),
             Statement::new(
-            "INSERT INTO cache_write_tickets
+                "INSERT INTO cache_write_tickets
                  (ticket_id, cache_id, object_key, declared_size, upload_kind, placement_id,
                   prior_object_size, prior_object_hash, prior_object_etag, intended_object_hash,
                   placement_resource_version, placement_write_spec_version,
@@ -1279,28 +1283,29 @@ impl Database {
                       AND object.cache_id = job.cache_id
                      WHERE job.cache_id = ?2 AND job.active_slot = 1
                        AND object.object_key = ?4)",
-            vals![
-                ticket_id,
-                cache_id,
-                placement_id,
-                object_key,
-                upload_kind,
-                quota_org_id,
-                quota_delta_bytes,
-                quota_delta_objects,
-                expires_at,
-                now,
-                declared_size,
-                prior_object.map(|identity| identity.size),
-                prior_object.map(|identity| identity.sha256.as_str()),
-                prior_object.and_then(|identity| identity.strong_etag.as_deref()),
-                intended_object_hash,
-                expected_placement_resource_version,
-                expected_binding_write_revision,
-                expected_write_credential_generation
-            ],
-        )
-        .expecting(1)];
+                vals![
+                    ticket_id,
+                    cache_id,
+                    placement_id,
+                    object_key,
+                    upload_kind,
+                    quota_org_id,
+                    quota_delta_bytes,
+                    quota_delta_objects,
+                    expires_at,
+                    now,
+                    declared_size,
+                    prior_object.map(|identity| identity.size),
+                    prior_object.map(|identity| identity.sha256.as_str()),
+                    prior_object.and_then(|identity| identity.strong_etag.as_deref()),
+                    intended_object_hash,
+                    expected_placement_resource_version,
+                    expected_binding_write_revision,
+                    expected_write_credential_generation
+                ],
+            )
+            .expecting(1),
+        ];
         self.backend.checked_batch(&statements).await?;
         self.cache_write_ticket(ticket_id)
             .await?
@@ -1326,8 +1331,14 @@ impl Database {
         now: i64,
     ) -> Result<CacheWriteTicketRecord> {
         let statements = Self::activate_cache_write_ticket_statements(
-            ticket_id, expected_version, quota_org_id, quota_delta_bytes,
-            quota_delta_objects, prior_object, intended_object_hash, now,
+            ticket_id,
+            expected_version,
+            quota_org_id,
+            quota_delta_bytes,
+            quota_delta_objects,
+            prior_object,
+            intended_object_hash,
+            now,
         )?;
         self.backend.checked_batch(&statements).await?;
         self.cache_write_ticket(ticket_id)
@@ -1460,9 +1471,13 @@ impl Database {
             bail!("presigned cache write ticket input is invalid");
         }
         let statements = vec![
-            CheckedStatement::exact("UPDATE cache_gc_state SET epoch = epoch WHERE cache_id = ?1", vals![cache_id], 1),
+            CheckedStatement::exact(
+                "UPDATE cache_gc_state SET epoch = epoch WHERE cache_id = ?1",
+                vals![cache_id],
+                1,
+            ),
             Statement::new(
-            "INSERT INTO cache_write_tickets
+                "INSERT INTO cache_write_tickets
              (ticket_id, cache_id, object_key, declared_size, upload_kind, placement_id,
               prior_object_size, prior_object_hash, prior_object_etag, intended_object_hash,
               placement_resource_version, placement_write_spec_version,
@@ -1516,27 +1531,28 @@ impl Database {
                    AND object.cache_id = job.cache_id
                  WHERE job.cache_id = ?2 AND job.active_slot = 1
                    AND object.object_key = ?4)",
-            vals![
-                ticket_id,
-                cache_id,
-                placement_id,
-                object_key,
-                quota_org_id,
-                quota_delta_bytes,
-                quota_delta_objects,
-                expires_at,
-                now,
-                declared_size,
-                prior_object.map(|identity| identity.size),
-                prior_object.map(|identity| identity.sha256.as_str()),
-                prior_object.and_then(|identity| identity.strong_etag.as_deref()),
-                intended_object_hash,
-                expected_placement_resource_version,
-                expected_binding_write_revision,
-                expected_write_credential_generation
-            ],
-        )
-        .expecting(1)];
+                vals![
+                    ticket_id,
+                    cache_id,
+                    placement_id,
+                    object_key,
+                    quota_org_id,
+                    quota_delta_bytes,
+                    quota_delta_objects,
+                    expires_at,
+                    now,
+                    declared_size,
+                    prior_object.map(|identity| identity.size),
+                    prior_object.map(|identity| identity.sha256.as_str()),
+                    prior_object.and_then(|identity| identity.strong_etag.as_deref()),
+                    intended_object_hash,
+                    expected_placement_resource_version,
+                    expected_binding_write_revision,
+                    expected_write_credential_generation
+                ],
+            )
+            .expecting(1),
+        ];
         self.backend.checked_batch(&statements).await?;
         self.cache_write_ticket(ticket_id)
             .await?
@@ -2556,7 +2572,9 @@ impl Database {
     ) -> Result<()> {
         self.backend
             .checked_batch(&Self::complete_cache_write_ticket_statements(
-                ticket_id, expected_version, now,
+                ticket_id,
+                expected_version,
+                now,
             )?)
             .await
     }
@@ -2595,23 +2613,29 @@ impl Database {
         let super::DirectSqlOwner::Cache { ticket_id, .. } = &record.owner else {
             bail!("direct cache settlement original owner differs");
         };
-        anyhow::ensure!(record.state == crate::direct_upload::DirectSessionState::StagedVerified
-            && record.stage_evidence.is_some() && record.complete_intent.is_some()
-            && record.baselines.len() == record.admission.placements.len(),
-            "direct cache settlement positive originals absent");
+        anyhow::ensure!(
+            record.state == crate::direct_upload::DirectSessionState::StagedVerified
+                && record.stage_evidence.is_some()
+                && record.complete_intent.is_some()
+                && record.baselines.len() == record.admission.placements.len(),
+            "direct cache settlement positive originals absent"
+        );
         Self::cache_write_ticket_completion_statements(ticket_id, expected_version, now, true)
     }
 
     fn cache_write_ticket_completion_statements(
-        ticket_id: &str, expected_version: i64, now: i64, held_positive: bool,
+        ticket_id: &str,
+        expected_version: i64,
+        now: i64,
+        held_positive: bool,
     ) -> Result<Vec<CheckedStatement>> {
         validate_key_bytes(ticket_id, "cache write ticket id", 64)?;
         if expected_version <= 0 || now <= 0 {
             bail!("cache write completion metadata is invalid");
         }
         Ok(vec![
-                Statement::new(
-                    "UPDATE cache_write_tickets SET state = 'completed',
+            Statement::new(
+                "UPDATE cache_write_tickets SET state = 'completed',
                        observed_final_size = CASE WHEN upload_kind = 'single'
                          THEN declared_size ELSE observed_final_size END,
                        quota_state = CASE WHEN quota_state = 'reserved'
@@ -2656,18 +2680,18 @@ impl Database {
                        AND binding.resource_version
                          = cache_write_tickets.binding_resource_version
                        AND credential.validation_state = 'valid')",
-                    vals![ticket_id, expected_version, now, i64::from(held_positive)],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE cache_gc_state SET epoch = epoch + 1,
+                vals![ticket_id, expected_version, now, i64::from(held_positive)],
+            )
+            .expecting(1),
+            Statement::new(
+                "UPDATE cache_gc_state SET epoch = epoch + 1,
                        epoch_owner_token = ?1, resource_version = resource_version + 1
                      WHERE cache_id = (SELECT cache_id FROM cache_write_tickets
                        WHERE ticket_id = ?1 AND state = 'completed'
                          AND finished_at = ?2)",
-                    vals![ticket_id, now],
-                )
-                .expecting(1),
+                vals![ticket_id, now],
+            )
+            .expecting(1),
         ])
     }
 
@@ -2683,17 +2707,20 @@ impl Database {
         state: &str,
         now: i64,
     ) -> Result<()> {
-        let mut statements = Self::abort_cache_write_ticket_statements(
-            ticket_id, expected_version, state, now,
-        )?;
-        statements.insert(0, Statement::new(
-            "UPDATE cache_write_tickets SET resource_version = resource_version
+        let mut statements =
+            Self::abort_cache_write_ticket_statements(ticket_id, expected_version, state, now)?;
+        statements.insert(
+            0,
+            Statement::new(
+                "UPDATE cache_write_tickets SET resource_version = resource_version
              WHERE ticket_id = ?1 AND resource_version = ?2
                AND NOT EXISTS (SELECT 1 FROM direct_upload_sessions session
                  WHERE session.cache_ticket_id = cache_write_tickets.ticket_id
                    AND session.state NOT IN ('committed', 'aborted'))",
-            vals![ticket_id, expected_version],
-        ).expecting(1));
+                vals![ticket_id, expected_version],
+            )
+            .expecting(1),
+        );
         self.backend.checked_batch(&statements).await
     }
 
@@ -2714,8 +2741,8 @@ impl Database {
             bail!("cache write terminal state is invalid");
         }
         Ok(vec![
-                Statement::new(
-                    "UPDATE org_usage
+            Statement::new(
+                "UPDATE org_usage
                      SET used_bytes = CASE
                            WHEN used_bytes - (SELECT quota_delta_bytes
                              FROM cache_write_tickets WHERE ticket_id = ?1) < 0
@@ -2730,21 +2757,21 @@ impl Database {
                      WHERE org_id = (SELECT quota_org_id FROM cache_write_tickets
                        WHERE ticket_id = ?1 AND resource_version = ?2
                          AND state IN ('observing', 'active') AND quota_state = 'reserved')",
-                    vals![ticket_id, expected_version, state, now],
-                )
-                .unchecked(),
-                Statement::new(
-                    "UPDATE cache_write_tickets SET state = ?3,
+                vals![ticket_id, expected_version, state, now],
+            )
+            .unchecked(),
+            Statement::new(
+                "UPDATE cache_write_tickets SET state = ?3,
                    quota_state = CASE WHEN quota_state IN ('pending', 'reserved')
                      THEN 'released' ELSE quota_state END,
                    active_cache_slot = NULL, finished_at = ?4,
                    resource_version = resource_version + 1
                  WHERE ticket_id = ?1 AND resource_version = ?2
                    AND state IN ('observing', 'active') AND active_cache_slot = 1",
-                    vals![ticket_id, expected_version, state, now],
-                )
-                .expecting(1),
-            ])
+                vals![ticket_id, expected_version, state, now],
+            )
+            .expecting(1),
+        ])
     }
 
     async fn cache_gc_generation_topology_digest(
