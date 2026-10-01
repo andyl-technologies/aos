@@ -144,6 +144,7 @@ pub enum QemuTestQuantumBoundary {
 
 #[derive(Clone)]
 struct ScriptedShmemHotPath {
+    current_icount: Icount,
     setup_identity: crucible_shmem::SetupRegionBackingIdentity,
     host_barrier: crucible_shmem::MappedRingIoBarrierSnapshot,
     image: crucible_shmem::HotForkRingImage,
@@ -291,6 +292,7 @@ pub fn scripted_hot_fork_source_with_script_for_test(
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl,
         ScriptedShmemHotPath {
+            current_icount: Icount { retired: 0 },
             setup_identity,
             host_barrier,
             image,
@@ -327,7 +329,7 @@ pub fn scripted_hot_fork_source_with_script_for_test(
     shutdown_policy.sigkill_wait = Duration::from_secs(1);
     shutdown_policy.reap_wait = Duration::from_secs(1);
 
-    Ok(QemuNode::new(
+    let mut node = QemuNode::new(
         QemuNodeChild::new(child),
         channels,
         shutdown_policy,
@@ -335,7 +337,13 @@ pub fn scripted_hot_fork_source_with_script_for_test(
         QemuCrashDetector::new("scripted-hot-fork-source"),
         ScriptedHostIoRuntime::default(),
         2,
-    ))
+    );
+    // Match production launch priming: the retained scheduler mirror must
+    // describe the channel's completed boot boundary before source capture.
+    node.synchronize_observed_time().map_err(|source| {
+        QemuTestHotForkSourceError::new("synchronize scripted boot boundary", source)
+    })?;
+    Ok(node)
 }
 
 fn held_hot_fork_ring_image() -> Result<
@@ -518,14 +526,14 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
     }
 
     fn current_icount(&mut self) -> Result<Icount, QemuNodeChannelError> {
-        Ok(Icount { retired: 11 })
+        Ok(self.current_icount)
     }
 
     fn logical_time_calibration(
         &mut self,
     ) -> Result<QemuLogicalTimeCalibration, QemuNodeChannelError> {
         Ok(QemuLogicalTimeCalibration {
-            logical_icount: 11,
+            logical_icount: self.current_icount.retired,
             raw_icount: 0,
         })
     }
@@ -573,6 +581,8 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
                 },
             ),
         };
+        self.current_icount = final_state.current_icount;
+
         Ok(QemuAsyncQuantumCompletion {
             ceiling: Icount { retired: horizon },
             outcome,
@@ -703,7 +713,7 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
 
     fn idle_state(&mut self) -> Result<QemuNodeIdleState, QemuNodeChannelError> {
         Ok(QemuNodeIdleState {
-            current_icount: Icount { retired: 11 },
+            current_icount: self.current_icount,
             next_deadline: None,
         })
     }
