@@ -5,6 +5,10 @@
   mkCargoArtifacts,
   mkCargoDummySource,
   fetchCargoVendor,
+  mkDerivation,
+  coreutils,
+  git,
+  aos-git-helper,
   protobuf,
   stdenv,
   buildPackages,
@@ -15,6 +19,15 @@
     if isDarwinCross
     then buildPackages.protobuf
     else protobuf;
+  buildCoreutils =
+    if stdenv.isCross
+    then buildPackages.coreutils
+    else coreutils;
+  gitHelperImages = import ./_aos-git-helper-images.nix {
+    inherit mkDerivation git aos-git-helper;
+    coreutils = buildCoreutils;
+  };
+  mechanicsFeature = "--features aos-sandbox/git-helper-mechanics";
   src = import ./aos/_workspace-source.nix {inherit lib;};
   cargoDeps = fetchCargoVendor {
     inherit src;
@@ -24,11 +37,12 @@
   };
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";
+    AOS_GIT_HELPER_SELECTION_HEADER = "${gitHelperImages}/selected-images.rs";
   };
   cargoArtifactContract = {
     family = "aos-sandboxd-native";
     checkType = "debug";
-    nativeInputs = map toString [buildProtobuf];
+    nativeInputs = map toString [buildProtobuf gitHelperImages aos-git-helper git];
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-sandboxd-artifacts";
@@ -41,25 +55,25 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher"
-      "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox -p aos-sandbox-broker-session-security"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES ${mechanicsFeature} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${mechanicsFeature} -p aos-sandbox -p aos-sandbox-broker-session-security"
     ];
-    buildDeps = [buildProtobuf];
-    runtimeDeps = [];
+    buildDeps = [buildProtobuf gitHelperImages];
+    runtimeDeps = [aos-git-helper git];
   };
 in
   mkCargoPackage {
     pname = "aos-sandboxd";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher";
+    cargoFlags = "${mechanicsFeature} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher";
     checkType = "debug";
     # Keep the core suite when moving process ownership into the transport crate.
-    cargoTestFlags = "-p aos-sandbox -p aos-sandbox-broker-session-security";
+    cargoTestFlags = "${mechanicsFeature} -p aos-sandbox -p aos-sandbox-broker-session-security";
     cargoNextest = true;
     doCheck = true;
-    buildDeps = [buildProtobuf];
-    runtimeDeps = [];
+    buildDeps = [buildProtobuf gitHelperImages];
+    runtimeDeps = [aos-git-helper git];
 
     postInstall = ''
       test -x "$out/bin/aos-sandboxd"
