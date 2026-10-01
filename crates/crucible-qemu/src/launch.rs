@@ -158,6 +158,12 @@ pub const DEFAULT_VMSTATE_NODE_NAME: &str = "vmstate";
 const VMSTATE_DRIVE_ID: &str = DEFAULT_VMSTATE_NODE_NAME;
 /// Stable QEMU block-backend identifier for the writable root overlay.
 pub const ROOT_DRIVE_ID: &str = "crucible-root0";
+/// Stable graph node name of the writable root overlay at launch.
+///
+/// The retained block seal authenticates this current leaf before replacing it
+/// with a fresh overlay. A generated node name would leave no stable root for
+/// the source to identify at the exact stopped boundary.
+pub const ROOT_OVERLAY_NODE_NAME: &str = "crucible-root-overlay";
 const ROOT_DEVICE_ID: &str = "crucible-root-device0";
 const ICOUNT_SHIFT: u8 = 0;
 const MAX_RR_SWITCH_QUANTUM: u64 = i32::MAX as u64;
@@ -1032,6 +1038,7 @@ pub struct QemuVmLaunchConfig {
     initrd: Option<QemuLaunchArtifact>,
     root_image_format: QemuRootImageFormat,
     root_overlay_file_name: String,
+    root_overlay_absolute_path: Option<std::path::PathBuf>,
     crucible_shmem_block: Option<CrucibleShmemBlockDevice>,
     crucible_shmem_9p: Option<CrucibleShmem9pDevice>,
     crucible_shmem_network: Option<CrucibleShmemNetworkDevice>,
@@ -1054,6 +1061,7 @@ impl QemuVmLaunchConfig {
             initrd: None,
             root_image_format: QemuRootImageFormat::Qcow2,
             root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
+            root_overlay_absolute_path: None,
             crucible_shmem_block: None,
             crucible_shmem_9p: None,
             crucible_shmem_network: None,
@@ -1080,6 +1088,7 @@ impl QemuVmLaunchConfig {
             initrd: None,
             root_image_format: QemuRootImageFormat::Qcow2,
             root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
+            root_overlay_absolute_path: None,
             crucible_shmem_block: None,
             crucible_shmem_9p: None,
             crucible_shmem_network: None,
@@ -1102,6 +1111,7 @@ impl QemuVmLaunchConfig {
             initrd: None,
             root_image_format: QemuRootImageFormat::Qcow2,
             root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
+            root_overlay_absolute_path: None,
             crucible_shmem_block: None,
             crucible_shmem_9p: None,
             crucible_shmem_network: None,
@@ -1120,6 +1130,16 @@ impl QemuVmLaunchConfig {
     #[must_use]
     pub const fn with_root_image_format(mut self, format: QemuRootImageFormat) -> Self {
         self.root_image_format = format;
+        self
+    }
+
+    /// Names the exact generation root-overlay path in QEMU's block graph.
+    ///
+    /// The logical launch hash remains independent of run-directory placement;
+    /// the guarded spawn and native block seal authenticate the physical path.
+    #[must_use]
+    pub fn with_root_overlay_absolute_path(mut self, path: std::path::PathBuf) -> Self {
+        self.root_overlay_absolute_path = Some(path);
         self
     }
 
@@ -1304,11 +1324,15 @@ impl QemuVmLaunchConfig {
             args.extend(["-kernel".to_owned(), kernel.path.clone()]);
         }
         if let Some(root_image) = &self.root_image {
+            let root_overlay = self.root_overlay_absolute_path.as_ref().map_or_else(
+                || self.root_overlay_file_name.clone(),
+                |path| path.to_string_lossy().into_owned(),
+            );
             args.extend([
                 "-drive".to_owned(),
                 format!(
-                    "id={ROOT_DRIVE_ID},file={},backing.driver={},backing.file.driver=file,backing.file.filename={},if=none,format=qcow2,cache=none,aio=threads,discard=unmap",
-                    self.root_overlay_file_name,
+                    "id={ROOT_DRIVE_ID},node-name={ROOT_OVERLAY_NODE_NAME},file={},backing.driver={},backing.file.driver=file,backing.file.filename={},if=none,format=qcow2,cache=none,aio=threads,discard=unmap",
+                    root_overlay,
                     self.root_image_format.qemu_driver(),
                     root_image.path
                 ),
@@ -1347,6 +1371,20 @@ impl QemuVmLaunchConfig {
         if let Some(root_image) = &self.root_image {
             root_image.validate("root_image_path")?;
             validate_overlay_file_name(&self.root_overlay_file_name)?;
+            if let Some(path) = &self.root_overlay_absolute_path {
+                let text = path.to_string_lossy();
+                if !path.is_absolute()
+                    || path.file_name().and_then(std::ffi::OsStr::to_str)
+                        != Some(self.root_overlay_file_name.as_str())
+                    || text.contains(',')
+                    || text.contains('\n')
+                    || text.contains('\0')
+                {
+                    return Err(QemuLaunchCommandError::InvalidOverlayFileName {
+                        file_name: text.into_owned(),
+                    });
+                }
+            }
         }
         if let Some(initrd) = &self.initrd {
             if self.kernel.is_none() {

@@ -265,6 +265,15 @@ pub(super) fn vm_launch_config(
             ),
         }
     };
+    let vm = if config.root_image.is_some() && config.run_directory.is_absolute() {
+        vm.with_root_overlay_absolute_path(
+            config
+                .run_directory
+                .join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+        )
+    } else {
+        vm
+    };
     let vm = match (&config.initrd, config.firmware_boot) {
         (Some(_), true) | (None, _) => vm,
         (Some(initrd), false) => vm.with_initrd(launch_artifact("initrd", initrd)),

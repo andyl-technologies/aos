@@ -1,0 +1,450 @@
+//! Pinned current disk contents distinct from architecture-keyed boot assets.
+//!
+//! The source root contains guest writes. Its digest is taken only after the
+//! native seal has made it read-only. The original boot image and parentless
+//! VMState inode remain separately owned through child file staging.
+
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+
+use crucible::ContentHash;
+use crucible_qemu::{
+    QmpHotForkBlockSealRequest, QmpHotForkBlockSealState, QmpHotForkBlockSnapshotBinding,
+};
+
+use super::hot_fork_boundary_error;
+use crucible::SchedulerError;
+
+/// Process-neutral whole disk basis carried with a child continuation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::vm_lifecycle) struct ProductionVmHotForkDiskBasis {
+    pub(super) source_pid: i64,
+    pub(super) seal_generation: u64,
+    pub(super) backend_id: u64,
+    pub(super) snapshot_path: PathBuf,
+    pub(super) snapshot_identity: (u64, u64),
+    pub(super) snapshot_content: ContentHash,
+    pub(super) boot_path: PathBuf,
+    pub(super) boot_identity: (u64, u64),
+    pub(super) boot_content: ContentHash,
+    pub(super) vmstate_path: PathBuf,
+    pub(super) vmstate_identity: (u64, u64),
+    pub(super) vmstate_content: ContentHash,
+    pub(super) detached_path: PathBuf,
+    pub(super) detached_identity: (u64, u64),
+    pub(super) detached_content: ContentHash,
+}
+
+impl ProductionVmHotForkDiskBasis {
+    pub(in crate::vm_lifecycle) fn reopen_current(
+        &self,
+        expected_boot: ContentHash,
+    ) -> Result<Vec<File>, SchedulerError> {
+        if self.source_pid <= 0
+            || self.seal_generation == 0
+            || self.backend_id == 0
+            || self.boot_content != expected_boot
+        {
+            return Err(hot_fork_boundary_error(
+                "child disk basis differs from the authored boot image or native seal",
+            ));
+        }
+        let immutable = [
+            (
+                &self.snapshot_path,
+                self.snapshot_identity,
+                self.snapshot_content,
+            ),
+            (&self.boot_path, self.boot_identity, self.boot_content),
+        ];
+        let mut files = Vec::with_capacity(4);
+        for (path, identity, content) in immutable {
+            let file = File::open(path).map_err(|error| {
+                hot_fork_boundary_error(format!(
+                    "reopen retained hot-fork disk {}: {error}",
+                    path.display(),
+                ))
+            })?;
+            if hash_owned_file(&file, path, "retained hot-fork disk")? != (identity, content) {
+                return Err(hot_fork_boundary_error(format!(
+                    "retained hot-fork disk {} changed before child construction",
+                    path.display(),
+                )));
+            }
+            files.push(file);
+        }
+
+        // VMState and the detached overlay are writable transaction files.
+        // Their fork-time contents belong to the native private-file plan;
+        // retaining their original inodes does not claim immutable bytes.
+        for (path, identity) in [
+            (&self.vmstate_path, self.vmstate_identity),
+            (&self.detached_path, self.detached_identity),
+        ] {
+            let file = File::open(path).map_err(|error| {
+                hot_fork_boundary_error(format!(
+                    "reopen mutable hot-fork file {}: {error}",
+                    path.display(),
+                ))
+            })?;
+            if !pinned_identity_current(&file, path, identity)? {
+                return Err(hot_fork_boundary_error(format!(
+                    "mutable hot-fork file {} no longer names its original inode",
+                    path.display(),
+                )));
+            }
+            files.push(file);
+        }
+        Ok(files)
+    }
+}
+
+/// Original open inodes retained by the prepared source world.
+pub(super) struct ProductionVmHotForkDiskCustody {
+    basis: ProductionVmHotForkDiskBasis,
+    request: QmpHotForkBlockSealRequest,
+    snapshot: File,
+    boot: File,
+    vmstate: File,
+    detached: File,
+}
+
+impl ProductionVmHotForkDiskCustody {
+    pub(super) fn capture(
+        receipt: &QmpHotForkBlockSealState,
+        request: &QmpHotForkBlockSealRequest,
+        snapshot: File,
+        snapshot_path: &Path,
+        boot: File,
+        boot_path: &Path,
+        expected_boot: ContentHash,
+        vmstate: File,
+        vmstate_path: &Path,
+        detached: File,
+        detached_path: &Path,
+    ) -> Result<Self, SchedulerError> {
+        if !receipt.seals(std::slice::from_ref(request))
+            || request.candidate().file_path() != snapshot_path
+        {
+            return Err(hot_fork_boundary_error(
+                "native block seal differs from the retained current root",
+            ));
+        }
+
+        let (snapshot_identity, snapshot_content) =
+            hash_owned_file(&snapshot, snapshot_path, "sealed current root")?;
+        if snapshot_identity != request.candidate().file_identity() {
+            return Err(hot_fork_boundary_error(
+                "sealed root inode differs from QEMU's open current file",
+            ));
+        }
+        let (boot_identity, boot_content) =
+            hash_owned_file(&boot, boot_path, "authored boot image")?;
+        if boot_content != expected_boot {
+            return Err(hot_fork_boundary_error(
+                "authored boot image changed since production admission",
+            ));
+        }
+        reject_external_qcow2_backing(&boot)?;
+
+        let (vmstate_identity, vmstate_content) =
+            hash_owned_file(&vmstate, vmstate_path, "parentless VMState container")?;
+        let (detached_identity, detached_content) =
+            hash_owned_file(&detached, detached_path, "new empty root overlay")?;
+        let basis = ProductionVmHotForkDiskBasis {
+            source_pid: receipt.qemu_pid(),
+            seal_generation: receipt.receipt_generation(),
+            backend_id: request.candidate().backend_id(),
+            snapshot_path: snapshot_path.to_owned(),
+            snapshot_identity,
+            snapshot_content,
+            boot_path: boot_path.to_owned(),
+            boot_identity,
+            boot_content,
+            vmstate_path: vmstate_path.to_owned(),
+            vmstate_identity,
+            vmstate_content,
+            detached_path: detached_path.to_owned(),
+            detached_identity,
+            detached_content,
+        };
+        Ok(Self {
+            basis,
+            request: request.clone(),
+            snapshot,
+            boot,
+            vmstate,
+            detached,
+        })
+    }
+
+    pub(super) fn basis(&self) -> &ProductionVmHotForkDiskBasis {
+        &self.basis
+    }
+
+    pub(super) fn native_current(&self, state: &QmpHotForkBlockSealState) -> bool {
+        state.qemu_pid() == self.basis.source_pid
+            && state.receipt_generation() == self.basis.seal_generation
+            && state.seals(std::slice::from_ref(&self.request))
+    }
+
+    pub(super) fn current(&self) -> Result<bool, SchedulerError> {
+        let immutable = [
+            (
+                &self.snapshot,
+                self.basis.snapshot_path.as_path(),
+                self.basis.snapshot_identity,
+                self.basis.snapshot_content,
+            ),
+            (
+                &self.boot,
+                self.basis.boot_path.as_path(),
+                self.basis.boot_identity,
+                self.basis.boot_content,
+            ),
+        ];
+        for (file, path, identity, content) in immutable {
+            if hash_owned_file(file, path, "retained hot-fork disk file")? != (identity, content) {
+                return Ok(false);
+            }
+        }
+        Ok(pinned_identity_current(
+            &self.vmstate,
+            &self.basis.vmstate_path,
+            self.basis.vmstate_identity,
+        )? && pinned_identity_current(
+            &self.detached,
+            &self.basis.detached_path,
+            self.basis.detached_identity,
+        )?)
+    }
+
+    pub(super) fn snapshot_binding(
+        &self,
+        request: &QmpHotForkBlockSealRequest,
+    ) -> Result<QmpHotForkBlockSnapshotBinding, SchedulerError> {
+        QmpHotForkBlockSnapshotBinding::new(
+            request.candidate().backend_id(),
+            request.candidate().backend_name(),
+            request.overlay_node_name(),
+            request.candidate().root_node_name(),
+            blake3::Hash::from_bytes(self.basis.snapshot_content.bytes),
+        )
+        .map_err(|error| {
+            hot_fork_boundary_error(format!("bind sealed current root to template: {error}",))
+        })
+    }
+}
+
+fn hash_owned_file(
+    file: &File,
+    path: &Path,
+    purpose: &str,
+) -> Result<((u64, u64), ContentHash), SchedulerError> {
+    let mut reader = file.try_clone().map_err(|error| {
+        hot_fork_boundary_error(format!("duplicate {purpose} descriptor: {error}",))
+    })?;
+    let before = reader.metadata().map_err(|error| {
+        hot_fork_boundary_error(format!("inspect {purpose} descriptor: {error}",))
+    })?;
+    let named = std::fs::symlink_metadata(path)
+        .map_err(|error| hot_fork_boundary_error(format!("inspect {purpose} path: {error}",)))?;
+    if !before.is_file()
+        || !named.is_file()
+        || before.dev() != named.dev()
+        || before.ino() != named.ino()
+    {
+        return Err(hot_fork_boundary_error(format!(
+            "{purpose} path no longer names its pinned regular inode",
+        )));
+    }
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| hot_fork_boundary_error(format!("seek {purpose}: {error}",)))?;
+    let mut buffer = [0_u8; 1024 * 1024];
+    let mut hasher = blake3::Hasher::new();
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .map_err(|error| hot_fork_boundary_error(format!("hash {purpose}: {error}",)))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    let after = reader
+        .metadata()
+        .map_err(|error| hot_fork_boundary_error(format!("reinspect {purpose}: {error}",)))?;
+    if before.dev() != after.dev()
+        || before.ino() != after.ino()
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+        || before.ctime() != after.ctime()
+        || before.ctime_nsec() != after.ctime_nsec()
+    {
+        return Err(hot_fork_boundary_error(format!(
+            "{purpose} changed while its contents were authenticated",
+        )));
+    }
+    Ok((
+        (after.dev(), after.ino()),
+        ContentHash {
+            bytes: *hasher.finalize().as_bytes(),
+        },
+    ))
+}
+
+fn pinned_identity_current(
+    file: &File,
+    path: &Path,
+    identity: (u64, u64),
+) -> Result<bool, SchedulerError> {
+    let descriptor = file.metadata().map_err(|error| {
+        hot_fork_boundary_error(format!("inspect pinned file {}: {error}", path.display(),))
+    })?;
+    let named = std::fs::symlink_metadata(path).map_err(|error| {
+        hot_fork_boundary_error(format!("inspect named file {}: {error}", path.display(),))
+    })?;
+    Ok(descriptor.is_file()
+        && named.is_file()
+        && (descriptor.dev(), descriptor.ino()) == identity
+        && (named.dev(), named.ino()) == identity)
+}
+
+fn reject_external_qcow2_backing(file: &File) -> Result<(), SchedulerError> {
+    let mut reader = file.try_clone().map_err(|error| {
+        hot_fork_boundary_error(format!("duplicate boot image header: {error}",))
+    })?;
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| hot_fork_boundary_error(format!("seek boot image header: {error}",)))?;
+    let mut header = [0_u8; 80];
+    let count = reader
+        .read(&mut header)
+        .map_err(|error| hot_fork_boundary_error(format!("read boot image header: {error}",)))?;
+    if count < 4 || &header[..4] != b"QFI\xfb" {
+        return Ok(());
+    }
+    if count < 80 {
+        return Err(hot_fork_boundary_error(
+            "qcow2 boot image header is truncated",
+        ));
+    }
+    let version = u32::from_be_bytes(
+        header[4..8]
+            .try_into()
+            .map_err(|_error| hot_fork_boundary_error("qcow2 version header is truncated"))?,
+    );
+    let backing_offset = u64::from_be_bytes(
+        header[8..16]
+            .try_into()
+            .map_err(|_error| hot_fork_boundary_error("qcow2 backing header is truncated"))?,
+    );
+    let backing_length = u32::from_be_bytes(
+        header[16..20]
+            .try_into()
+            .map_err(|_error| hot_fork_boundary_error("qcow2 backing length is truncated"))?,
+    );
+    let incompatible = u64::from_be_bytes(
+        header[72..80]
+            .try_into()
+            .map_err(|_error| hot_fork_boundary_error("qcow2 feature header is truncated"))?,
+    );
+    if !matches!(version, 2 | 3)
+        || backing_offset != 0
+        || backing_length != 0
+        || (version == 3 && incompatible != 0)
+    {
+        return Err(hot_fork_boundary_error(
+            "authored qcow2 boot image has an external backing or unsupported feature",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn pinned_content_rejects_mutation_and_path_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("root.qcow2");
+        std::fs::write(&path, b"first rooted content").unwrap();
+        let file = File::open(&path).unwrap();
+        let original = hash_owned_file(&file, &path, "root").unwrap();
+        assert_eq!(original.1, ContentHash::from_bytes(b"first rooted content"));
+
+        std::fs::write(&path, b"changed rooted content").unwrap();
+        assert_ne!(hash_owned_file(&file, &path, "root").unwrap(), original);
+
+        std::fs::rename(&path, directory.path().join("old-root.qcow2")).unwrap();
+        std::fs::write(&path, b"replacement rooted content").unwrap();
+        assert!(hash_owned_file(&file, &path, "root").is_err());
+    }
+
+    #[test]
+    fn pinned_content_rejects_symlinked_name_and_external_boot_backing() {
+        let directory = tempfile::tempdir().unwrap();
+        let actual = directory.path().join("actual.qcow2");
+        let alias = directory.path().join("alias.qcow2");
+        std::fs::write(&actual, b"content").unwrap();
+        symlink(&actual, &alias).unwrap();
+        assert!(hash_owned_file(&File::open(&alias).unwrap(), &alias, "root").is_err());
+
+        let mut header = [0_u8; 80];
+        header[..4].copy_from_slice(b"QFI\xfb");
+        header[4..8].copy_from_slice(&3_u32.to_be_bytes());
+        header[8..16].copy_from_slice(&80_u64.to_be_bytes());
+        header[16..20].copy_from_slice(&4_u32.to_be_bytes());
+        std::fs::write(&actual, header).unwrap();
+        assert!(reject_external_qcow2_backing(&File::open(&actual).unwrap()).is_err());
+    }
+
+    #[test]
+    fn child_reopens_exact_sealed_basis_and_refuses_swapped_vmstate() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths =
+            ["source", "boot", "vmstate", "detached"].map(|name| directory.path().join(name));
+        let bytes = [b"source".as_slice(), b"boot", b"vmstate", b"detached"];
+        for (path, content) in paths.iter().zip(bytes) {
+            std::fs::write(path, content).unwrap();
+        }
+        let identities = paths
+            .each_ref()
+            .map(|path| hash_owned_file(&File::open(path).unwrap(), path, "test basis").unwrap());
+        let basis = ProductionVmHotForkDiskBasis {
+            source_pid: 1,
+            seal_generation: 1,
+            backend_id: 1,
+            snapshot_path: paths[0].clone(),
+            snapshot_identity: identities[0].0,
+            snapshot_content: identities[0].1,
+            boot_path: paths[1].clone(),
+            boot_identity: identities[1].0,
+            boot_content: identities[1].1,
+            vmstate_path: paths[2].clone(),
+            vmstate_identity: identities[2].0,
+            vmstate_content: identities[2].1,
+            detached_path: paths[3].clone(),
+            detached_identity: identities[3].0,
+            detached_content: identities[3].1,
+        };
+        assert_eq!(basis.reopen_current(identities[1].1).unwrap().len(), 4);
+        assert!(
+            basis
+                .reopen_current(ContentHash::from_bytes(b"wrong boot"))
+                .is_err()
+        );
+
+        // A VMState write is permitted; replacing its pinned inode is not.
+        std::fs::write(&paths[2], b"different vmstate").unwrap();
+        assert_eq!(basis.reopen_current(identities[1].1).unwrap().len(), 4);
+        std::fs::rename(&paths[2], directory.path().join("old-vmstate")).unwrap();
+        std::fs::write(&paths[2], b"replacement vmstate").unwrap();
+        assert!(basis.reopen_current(identities[1].1).is_err());
+    }
+}
