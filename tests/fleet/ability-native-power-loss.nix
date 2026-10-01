@@ -42,7 +42,9 @@ in {
   bootTimeout = 600;
   machines.runtime = {
     system = runtimeSystem;
-    extraClosures = fixture.extraClosures ++ additionalClosures ++ [referenceSource source observerSource];
+    # The authenticated bundle retains the exact stage source roots; fleet
+    # closure inputs remain packages rather than raw source paths.
+    extraClosures = fixture.extraClosures ++ additionalClosures ++ [runtimeSystem.config.system.build.hostDeploymentBundle];
     varSizeMiB = 16384;
     memoryMiB = 4096;
   };

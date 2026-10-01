@@ -19,7 +19,7 @@ in {
     extraClosures = [pkgs.aos.apm pkgs.bash pkgs.coreutils pkgs.nix pkgs.util-linux];
     metadata."host.nix" = ''
       { config, lib, ... }: {
-        aos.profiles.debug.autologin = lib.mkForce false;
+        aos.getty.autologin.enable = lib.mkForce false;
         "aos-test-agent".enable = true;
         aos.abilities.identity.operations.group.effects.build-clients.input = {
           name = "build-clients";
