@@ -1,11 +1,13 @@
-From c04dc6e096658f5d9e8b3f23a51f434ba842a788 Mon Sep 17 00:00:00 2001
+From 59884489cef9ac05109580210fc06916c11e3ddf Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 1 Oct 2026 11:49:58 -0700
-Subject: [PATCH] crucible: distribute cumulative native graph and descriptor
- sources
+Date: Thu, 1 Oct 2026 13:02:50 -0700
+Subject: [PATCH] crucible: distribute cumulative native runtime sources
 
-Preserve the reviewed runtime implementation and schemas while keeping
-validation packet artifacts outside the production source distribution.
+Preserve the native graph and descriptor implementation with the
+reviewed deterministic runtime and schemas. Restore ordinary zero-budget
+execution and queue translation invalidation through exclusive CPU work.
+Retain main-loop physical completion and drain all RR queues before
+guest execution or stop acknowledgment.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -3459,10 +3461,10 @@ index 0000000000000000000000000000000000000000..64a0a5db661128340846bd948505d7aa
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862bbf5ac4ad 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..672e56128e798ba6683eef4436d16fd3ea84b3e7 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,1659 @@
+@@ -27,45 +27,1688 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -4532,12 +4534,34 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
 +    return QEMU_PLUGIN_CRUCIBLE_IDLE_CALLBACK_COMPLETE;
 +}
 +
++static void rr_crucible_sim_process_vcpu_events(CPUState *cpu)
++{
++    CPUState *saved_cpu = current_cpu;
++
++    /* Exclusive work must name its FIFO owner, even on the shared RR thread. */
++    current_cpu = cpu;
++    /* Finish invalidation before stop acknowledgment permits capture or fork. */
++    process_queued_cpu_work(cpu);
++    qemu_process_cpu_events_common(cpu);
++    current_cpu = saved_cpu;
++}
++
 +static void rr_crucible_sim_drain_vcpu_work(void)
 +{
++    CPUState *saved_cpu = current_cpu;
 +    CPUState *cpu;
 +
++    /* A sibling's global flush must finish before any vCPU acknowledges stop. */
++    do {
++        CPU_FOREACH(cpu) {
++            current_cpu = cpu;
++            process_queued_cpu_work(cpu);
++        }
++    } while (rr_crucible_sim_vcpu_work_pending());
++    current_cpu = saved_cpu;
++
 +    CPU_FOREACH(cpu) {
-+        qemu_process_cpu_events_common(cpu);
++        rr_crucible_sim_process_vcpu_events(cpu);
 +    }
 +}
 +
@@ -4825,6 +4849,13 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
 +        bql_lock();
 +        acquired_replay = true;
 +    }
++
++    icount_account_warp_timer();
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    icount_handle_deadline();
++    rr_crucible_sim_drain_pending_ipis();
++    cpu_count = rr_cpu_count();
++    *cpu_budget = icount_percpu_budget(cpu_count);
  
 -/*
 - * TCG vCPU kick timer
@@ -4837,20 +4868,13 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
 - * The timer is removed if all vCPUs are idle and restarted again once
 - * idleness is complete.
 - */
-+    icount_account_warp_timer();
-+    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
-+    icount_handle_deadline();
-+    rr_crucible_sim_drain_pending_ipis();
-+    cpu_count = rr_cpu_count();
-+    *cpu_budget = icount_percpu_budget(cpu_count);
- 
--static QEMUTimer *rr_kick_vcpu_timer;
--static CPUState *rr_current_cpu;
 +    if (acquired_replay) {
 +        rr_replay_mutex_unlock();
 +    }
 +}
-+
+ 
+-static QEMUTimer *rr_kick_vcpu_timer;
+-static CPUState *rr_current_cpu;
 +static bool rr_crucible_sim_complete_dispatch_boundary(
 +    CPUState **cpu_ptr, uint64_t current_icount)
 +{
@@ -4884,6 +4908,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
 +        uint64_t dispatch_ceiling = UINT64_MAX;
 +        uint64_t service_before;
 +        uint64_t service_after;
++        int64_t unthrottled_budget;
 +        bool ready_marker_boundary_requested;
 +
 +        if (rr_crucible_sim_mode() &&
@@ -4997,9 +5022,11 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
 +            }
 +        }
 +
++        unthrottled_budget = *cpu_budget;
 +        *cpu_budget = qemu_crucible_fault_vcpu_service_clamp_budget(
 +            cpu, *cpu_budget);
-+        if (*cpu_budget == 0) {
++        /* Zero timer budgets and unlimited non-icount runs are not denied grants. */
++        if (unthrottled_budget > 0 && *cpu_budget == 0) {
 +            return false;
 +        }
 +        if (rr_crucible_sim_mode() && rr_crucible_sim_prepare_tcg()) {
@@ -5008,6 +5035,10 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
 +        if (rr_crucible_sim_mode() &&
 +            qemu_crucible_fault_lifecycle_ready_marker_service(
 +                qemu_plugin_icount_raw())) {
++            return true;
++        }
++        /* A boundary callback may have invalidated another RR vCPU's TBs. */
++        if (rr_crucible_sim_vcpu_work_pending()) {
 +            return true;
 +        }
 +        service_before = qemu_plugin_icount_raw();
@@ -5141,7 +5172,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +1698,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +1727,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -5174,7 +5205,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
      }
  }
  
-@@ -110,15 +1736,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +1765,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -5303,12 +5334,12 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
      CPU_FOREACH(cpu) {
 -        qemu_process_cpu_events_common(cpu);
 +        if (!rr_crucible_sim_skip_second_events_pass(cpu)) {
-+            qemu_process_cpu_events_common(cpu);
++            rr_crucible_sim_process_vcpu_events(cpu);
 +        }
      }
  }
  
-@@ -140,6 +1882,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +1911,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -5327,7 +5358,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +1938,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +1967,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -5336,8 +5367,12 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -207,38 +1963,193 @@ static void *rr_cpu_thread_fn(void *arg)
-             qemu_process_cpu_events_common(cpu);
+@@ -204,41 +1989,201 @@ static void *rr_cpu_thread_fn(void *arg)
+         /* process any pending work */
+         CPU_FOREACH(cpu) {
+             current_cpu = cpu;
+-            qemu_process_cpu_events_common(cpu);
++            rr_crucible_sim_process_vcpu_events(cpu);
          }
      }
 +    qatomic_set_mb(&rr_initial_wait_complete, true);
@@ -5487,6 +5522,11 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
 +        bql_lock();
  
 -        if (icount_enabled() && all_cpu_threads_idle()) {
++        /* Drain every FIFO before selecting a vCPU, including a new RR owner. */
++        if (rr_crucible_sim_vcpu_work_pending()) {
++            rr_crucible_sim_drain_vcpu_work_to_fixed_point();
++        }
++
 +        if (rr_crucible_sim_service_deferred_reset_handoff()) {
 +            continue;
 +        }
@@ -5547,7 +5587,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2165,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2199,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -5580,7 +5620,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2207,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2241,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -5719,7 +5759,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2331,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2365,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -5859,7 +5899,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862b
      }
  
      g_assert_not_reached();
-@@ -318,13 +2470,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2504,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -60232,10 +60272,10 @@ index 1c31de60f9406a93f04dcc04f435a40596c4cef4..9bf1523320ff6c7a4635eb0b11faa4fd
   */
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..3a76c6d4d5f0b41e5478c2ab2357a364f14fe12f
+index 0000000000000000000000000000000000000000..d0d220265a2b6901b4363ae49e18e3ce074f0ae0
 --- /dev/null
 +++ b/include/qemu/crucible-fault.h
-@@ -0,0 +1,810 @@
+@@ -0,0 +1,813 @@
 +/*
 + * Crucible deterministic fault command registry
 + *
@@ -60298,7 +60338,10 @@ index 0000000000000000000000000000000000000000..3a76c6d4d5f0b41e5478c2ab2357a364
 +    QemuCrucibleFaultEventReservation *event_reservation;
 +} QemuCrucibleDeferredMemoryService;
 +
-+/* Completes TB invalidation on the serial vCPU before a fault boundary exits. */
++/*
++ * Queues exclusive TB invalidation before further guest execution. Main-loop
++ * callers wait for physical completion; vCPU callers leave their run loop first.
++ */
 +bool qemu_crucible_fault_flush_translation(void);
 +
 +void qemu_crucible_fault_vmstate_register(
@@ -113599,10 +113642,10 @@ index 0000000000000000000000000000000000000000..612b880234fc1a4e49fb360c361063ba
 +}
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..bee8eb9ec53d5a86605aec1a0ac89efc6c9877a1
+index 0000000000000000000000000000000000000000..c232cb93777acd760b6fac2b298648132c98ea05
 --- /dev/null
 +++ b/plugins/crucible-fault.c
-@@ -0,0 +1,1621 @@
+@@ -0,0 +1,1625 @@
 +/*
 + * Crucible deterministic fault command registry and dispatcher
 + *
@@ -113672,13 +113715,12 @@ index 0000000000000000000000000000000000000000..bee8eb9ec53d5a86605aec1a0ac89efc
 +static GPtrArray *crucible_boundary_deadlines;
 +static uint64_t crucible_max_command_sequence;
 +
-+static void crucible_fault_flush_on_cpu(CPUState *cpu, run_on_cpu_data unused)
++static void crucible_fault_flush_complete_on_cpu(
++    CPUState *cpu, run_on_cpu_data unused)
 +{
 +    (void)unused;
 +    g_assert(current_cpu == cpu);
-+
-+    tb_flush__exclusive_or_serial();
-+    cpu_exit(cpu);
++    /* The exclusive flush precedes this completion marker in the CPU FIFO. */
 +}
 +
 +bool qemu_crucible_fault_flush_translation(void)
@@ -113689,12 +113731,17 @@ index 0000000000000000000000000000000000000000..bee8eb9ec53d5a86605aec1a0ac89efc
 +        return false;
 +    }
 +
-+    /* A main-loop boundary must finish invalidation before guest execution
-+     * resumes; naming CPU 0 alone does not grant the caller CPU context. */
-+    if (current_cpu) {
-+        crucible_fault_flush_on_cpu(cpu, RUN_ON_CPU_NULL);
-+    } else {
-+        run_on_cpu(cpu, crucible_fault_flush_on_cpu, RUN_ON_CPU_NULL);
++    /* Do not free translated code until the vCPU leaves its execution loop. */
++    queue_tb_flush(cpu);
++    cpu_exit(cpu);
++
++    /*
++     * Main-loop callers retain the synchronous completion contract. The
++     * standard run_on_cpu wait releases the BQL while the RR owner drains the
++     * exclusive flush and then this FIFO marker; no caller state is queued.
++     */
++    if (!current_cpu) {
++        run_on_cpu(cpu, crucible_fault_flush_complete_on_cpu, RUN_ON_CPU_NULL);
 +    }
 +    return true;
 +}
