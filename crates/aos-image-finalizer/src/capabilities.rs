@@ -85,6 +85,29 @@ pub fn capture(
         let firmware = files(tree, Path::new("lib/firmware"), false)?;
         stages.insert(name.to_owned(), StageCapabilities { modules, firmware });
     }
+    // Capability claims come from both built trees, so a newer finalizer
+    // cannot accidentally advertise support on an older guest image.
+    let marker = Path::new("lib/aos/configuration-capabilities");
+    let configuration = match (resolve(runtime, marker), resolve(initrd, marker)) {
+        (Ok(runtime_marker), Ok(initrd_marker)) => {
+            let runtime_value = fs::read_to_string(runtime_marker)?;
+            let initrd_value = fs::read_to_string(initrd_marker)?;
+            if runtime_value == "aos.config-bundle/v1\n" && initrd_value == runtime_value {
+                vec!["aos.config-bundle/v1".to_string()]
+            } else {
+                bail!("configuration capability markers disagree or are unsupported");
+            }
+        }
+        (Err(error), _) | (_, Err(error))
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            Vec::new()
+        }
+        (Err(error), _) | (_, Err(error)) => return Err(error),
+    };
+
     Ok(ImageCapabilities {
         schema_version: "aos.image.capabilities/v1".to_owned(),
         kernel_release: kernel_release.to_owned(),
@@ -92,6 +115,7 @@ pub fn capture(
         kernel_options,
         builtin_drivers: builtin_drivers.into_iter().collect(),
         stages,
+        configuration,
     })
 }
 
@@ -338,6 +362,33 @@ mod tests {
             Sha256Digest::of_bytes("firmware bytes")
         );
         assert!(crate::input::digest_regular_file(&firmware.join("network.bin")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn advertises_configuration_bundles_only_when_both_boot_stages_support_them() -> Result<()> {
+        let temporary = fixture()?;
+        let root = temporary.path();
+        assert!(collect(root)?.configuration.is_empty());
+
+        for stage in ["runtime", "initrd"] {
+            let directory = root.join(stage).join("usr/lib/aos");
+            fs::create_dir_all(&directory)?;
+            fs::write(
+                directory.join("configuration-capabilities"),
+                "aos.config-bundle/v1\n",
+            )?;
+            if stage == "runtime" {
+                assert!(collect(root)?.configuration.is_empty());
+            }
+        }
+        assert_eq!(collect(root)?.configuration, ["aos.config-bundle/v1"]);
+
+        fs::write(
+            root.join("initrd/usr/lib/aos/configuration-capabilities"),
+            "aos.config-bundle/v2\n",
+        )?;
+        assert!(collect(root).is_err());
         Ok(())
     }
 

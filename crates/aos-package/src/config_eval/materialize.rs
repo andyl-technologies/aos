@@ -310,7 +310,6 @@ impl ConfigManifest {
             bail!("config_modules closure_hash does not match store path/NAR hash set");
         }
         for (field, path) in [
-            ("host_nix.store_path", &self.inputs.host_nix.store_path),
             ("base_lib.store_path", &self.inputs.base_lib.store_path),
             ("evaluator.store_path", &self.inputs.evaluator.store_path),
             (
@@ -321,6 +320,11 @@ impl ConfigManifest {
             validate_canonical_store_path(path)
                 .with_context(|| format!("manifest inputs.{field} is not canonical"))?;
         }
+        // Bundle entrypoints retain their recursive source root. Legacy
+        // literal inputs continue to use a regular-file store root.
+        let host_path = &self.inputs.host_nix.store_path;
+        validate_canonical_store_path(host_path.strip_suffix("/host.nix").unwrap_or(host_path))
+            .context("manifest host input is not a canonical source entrypoint")?;
         let mut prior = None;
         for path in &self.store_paths {
             validate_canonical_store_path(path)?;
@@ -2566,6 +2570,27 @@ mod tests {
         let error = serde_json::from_value::<ConfigManifest>(value)
             .expect_err("config is a mandatory manifest field");
         assert!(error.to_string().contains("missing field `config`"));
+    }
+
+    #[test]
+    fn retained_bundle_entrypoint_keeps_a_canonical_source_root() {
+        let mut manifest =
+            manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
+        let root = "/nix/store/cccccccccccccccccccccccccccccccc-source";
+        manifest.inputs.host_nix.store_path = format!("{root}/host.nix");
+        manifest.validate().unwrap();
+
+        for invalid in [
+            format!("{root}/../host.nix"),
+            format!("{root}/source/host.nix"),
+            format!("{root}/other.nix"),
+            "/run/aos/host.nix".to_string(),
+        ] {
+            manifest.inputs.host_nix.store_path = invalid;
+            assert!(manifest.validate().is_err());
+        }
+        manifest.inputs.host_nix.store_path = root.to_string();
+        manifest.validate().unwrap();
     }
 
     #[test]
