@@ -33,7 +33,9 @@ use aos_systemd::{OwnedValue, Value};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
-use crate::immutable_image::{RetainedImmutableFileV1, require_readonly_launch_flags};
+use crate::immutable_image::{
+    PendingImmutableFileV1, RetainedImmutableFileV1, require_readonly_launch_flags,
+};
 use crate::systemd_property_data;
 
 use super::{NormalRootStartupErrorV1 as Error, images, profile::ImagePinV1, service, startup};
@@ -509,22 +511,36 @@ impl RetainedNixStartup {
 }
 
 fn retain_profile(file: File, role: Role) -> Result<(RetainedImmutableFileV1, Vec<u8>), Error> {
-    require_readonly_launch_flags(rustix::fs::fcntl_getfl(&file).map_err(|_| Error::Image)?)
-        .map_err(|_| Error::Image)?;
-    let path = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|_| Error::Image)?;
-    super::profile::require_store_path(path.to_str().ok_or(Error::Profile)?)?;
-    let basename = if role == Role::Controller { "controller.json" } else { "owner.json" };
-    if !path.to_string_lossy().ends_with(&format!("-aos-nix-startup-profile-2/{basename}")) {
-        return Err(Error::Profile);
-    }
+    let path = profile_path(&file, role).map_err(images::ImageObservationErrorV1::into_legacy)?;
     let retained = RetainedImmutableFileV1::retain_with_profile(path, file, None, 1_048_576, false)
         .map_err(|_| Error::Image)?;
     let bytes = retained.read_bounded().map_err(|_| Error::Image)?;
     Ok((retained, bytes))
 }
 
+fn profile_path(file: &File, role: Role) -> Result<PathBuf, images::ImageObservationErrorV1> {
+    let flags = rustix::fs::fcntl_getfl(file)?;
+    require_readonly_launch_flags(flags)?;
+    let path = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
+    super::profile::require_store_path(path.to_str().ok_or(Error::Profile)?)?;
+    let basename = if role == Role::Controller { "controller.json" } else { "owner.json" };
+    if !path.to_string_lossy().ends_with(&format!("-aos-nix-startup-profile-2/{basename}")) {
+        return Err(Error::Profile.into());
+    }
+    Ok(path)
+}
+
 pub(super) fn retain_controller_profile(file: File) -> Result<RetainedImmutableFileV1, Error> {
     retain_profile(file, Role::Controller).map(|(retained, _)| retained)
+}
+
+pub(super) fn park_controller_profile(
+    pending: &mut PendingImmutableFileV1,
+) -> Result<(), images::ImageObservationErrorV1> {
+    let path = profile_path(pending.original()?, Role::Controller)?;
+    pending.measure_original(path, None, 1_048_576, false)?;
+    pending.read_bounded()?;
+    Ok(())
 }
 
 fn observe_delivery(role: Role, profile: &Path, root_profile: Option<&Path>, method46_image: bool) -> Result<service::ServiceObservationV1, Error> {
