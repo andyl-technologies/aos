@@ -14,21 +14,26 @@ use std::path::Path;
 
 /// Native seal request and independently authenticated open file custody.
 pub(super) struct ProductionVmHotForkDiskCustody {
+    source_process: QemuProcessIdentity,
+    source_generation: ProductionVmNodeGeneration,
     request: QmpHotForkBlockSealRequest,
     files: PinnedHotForkDiskFiles,
 }
 
 impl ProductionVmHotForkDiskCustody {
     fn capture(
-        receipt: &QmpHotForkBlockSealState,
-        request: &QmpHotForkBlockSealRequest,
+        source: (QemuProcessIdentity, ProductionVmNodeGeneration),
+        seal: (&QmpHotForkBlockSealState, &QmpHotForkBlockSealRequest),
         snapshot: (File, &Path),
         boot: (File, &Path),
         expected_boot: ContentHash,
         vmstate: (File, &Path),
         detached: (File, &Path),
     ) -> Result<Self, SchedulerError> {
-        if !receipt.seals(std::slice::from_ref(request))
+        let (source_process, source_generation) = source;
+        let (receipt, request) = seal;
+        if receipt.qemu_pid() != i64::from(source_process.process_id)
+            || !receipt.seals(std::slice::from_ref(request))
             || request.candidate().file_path() != snapshot.1
         {
             return Err(hot_fork_boundary_error(
@@ -50,6 +55,8 @@ impl ProductionVmHotForkDiskCustody {
             detached,
         )?;
         Ok(Self {
+            source_process,
+            source_generation,
             request: request.clone(),
             files,
         })
@@ -113,6 +120,45 @@ impl ProductionVmHotForkDiskCustody {
 }
 
 impl ProductionVmLifecycleLoop {
+    /// Reuses sealed files while their original source identity and seal are current.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the original source process, native stopped seal,
+    /// or independently authenticated file custody has changed. A stale seal
+    /// requires coordinated native reconciliation and cannot authorize reuse.
+    pub(super) fn revalidate_sealed_hot_fork_disk(
+        &mut self,
+        node: &NodeId,
+        custody: &ProductionVmHotForkDiskCustody,
+    ) -> Result<QmpHotForkBlockSnapshotBinding, SchedulerError> {
+        let original_lease = self
+            .node_leases
+            .get(node)
+            .is_some_and(|lease| lease.identity() == &custody.source_generation);
+        let original_boot = self.immutable_root_images.get(node)
+            == Some(&custody.basis().boot_content)
+            && self
+                .launch_configs
+                .get(node)
+                .and_then(|launch| launch.root_image())
+                == Some(custody.basis().boot_path.as_path());
+        if !original_lease
+            || !original_boot
+            || self.inner.backend().process_identity(node).ok().as_ref()
+                != Some(&custody.source_process)
+            || !custody.current()?
+            || !custody.native_current_for_node(self, node)?
+            || self.inner.backend().process_identity(node).ok().as_ref()
+                != Some(&custody.source_process)
+        {
+            return Err(hot_fork_boundary_error(
+                "original sealed disk custody is not current for source reuse",
+            ));
+        }
+        custody.snapshot_binding()
+    }
+
     /// Seals current root contents while retaining the exact stopped source.
     ///
     /// # Errors
@@ -283,8 +329,8 @@ impl ProductionVmLifecycleLoop {
             hot_fork_boundary_error(format!("open authored boot-image backing: {error}"))
         })?;
         let custody = ProductionVmHotForkDiskCustody::capture(
-            &sealed,
-            &request,
+            (process.clone(), lease.identity().clone()),
+            (&sealed, &request),
             (snapshot, &root_path),
             (boot, &boot_path),
             expected_boot,
