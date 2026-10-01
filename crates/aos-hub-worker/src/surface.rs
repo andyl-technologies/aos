@@ -832,6 +832,7 @@ pub(crate) async fn execute_r2_storage_work(
             (StorageWorkOutcome::MultipartAborted { outcome }, 0)
         }
         StorageWorkOperation::MirrorTransfer { .. }
+        | StorageWorkOperation::InspectMirrorLiveMetadata { .. }
         | StorageWorkOperation::MirrorTransferBatch { .. }
         | StorageWorkOperation::InspectMirrorPack { .. }
         | StorageWorkOperation::InspectMirrorTreeInventory { .. }

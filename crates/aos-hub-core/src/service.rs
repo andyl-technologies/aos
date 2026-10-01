@@ -38,6 +38,8 @@ mod container_admin;
 mod delivery_workflow;
 #[cfg(test)]
 mod delivery_workflow_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod live_delivery_tests;
 mod hybrid_cache_upload;
 mod hybrid_publication_upload;
 #[cfg(test)]
@@ -28050,6 +28052,36 @@ impl RpcService {
                 Err(error) => return Err(RpcError::surface_read(error)),
             };
             let Some(head) = head else {
+                if let Some(target) = fetch
+                    .live_delivery(path)
+                    .await
+                    .map_err(RpcError::surface_read)?
+                {
+                    target.validate().map_err(RpcError::surface_read)?;
+                    if surface != SurfaceTarget::Registry(target.registry_id)
+                        || target.path != path
+                        || target.placement_id != placement.id
+                        || target.placement_resource_version != placement.resource_version
+                        || target.binding_id != placement.binding_id
+                        || target.placement_prefix != placement.prefix
+                        || target.write_spec_version != placement.write_spec_version
+                    {
+                        return Err(RpcError::FailedPrecondition(
+                            "live source selection changed".into(),
+                        ));
+                    }
+                    let target = serde_json::to_vec(&target).map_err(RpcError::internal)?;
+                    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(target);
+                    let response = axum::response::Response::builder()
+                        .header(
+                            crate::hybrid_ingress::live::HYBRID_LIVE_DELIVERY_HEADER,
+                            encoded,
+                        )
+                        .header(axum::http::header::CACHE_CONTROL, "private, no-store")
+                        .body(axum::body::Body::empty())
+                        .map_err(RpcError::internal)?;
+                    return Ok(Some(response));
+                }
                 continue;
             };
             let external_binding =

@@ -138,6 +138,42 @@ async fn require_profile(
     })
 }
 
+/// Requires the separate live streaming purpose before any upstream dispatch.
+pub(crate) async fn require_live(
+    env: &Env,
+    profile: &DirectProtectedProfile,
+    direct_evidence: &str,
+) -> Result<(
+    AcceptedMirror,
+    aos_hub_core::mirror_acceptance::live::MirrorLiveAcceptanceArtifact,
+)> {
+    use aos_hub_core::mirror_acceptance::live::{
+        mirror_live_acceptance_key, MirrorLiveAcceptanceArtifact, LIVE_ACCEPTANCE_MAX_BYTES,
+    };
+
+    let accepted = require_profile(env, profile, direct_evidence).await?;
+    let address =
+        mirror_live_acceptance_key(&aos_hub_core::mirror_work::digest(&accepted.artifact)?)?;
+    let raw = env
+        .kv("HUB_MIRROR_ACCEPTANCE")?
+        .get(&address)
+        .text()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("measured live mirror acceptance absent"))?;
+    ensure!(
+        raw.len() <= LIVE_ACCEPTANCE_MAX_BYTES,
+        "live review exceeds bound"
+    );
+    let live: MirrorLiveAcceptanceArtifact =
+        serde_json::from_str(&raw).map_err(|_| anyhow::anyhow!("live review malformed"))?;
+    live.require_production(
+        &accepted.artifact,
+        &env.var("HUB_MIRROR_QUALIFICATION_PUBLIC_KEY")?.to_string(),
+        profile_latest_now(profile)?,
+    )?;
+    Ok((accepted, live))
+}
+
 fn profile_latest_now(profile: &DirectProtectedProfile) -> Result<u64> {
     let DirectProtectedProfile::Managed {
         profile: managed, ..

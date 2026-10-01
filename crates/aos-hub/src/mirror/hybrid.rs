@@ -19,8 +19,12 @@ use crate::storage_work::RemoteStorageWorkClient;
 
 mod batch;
 mod discovery;
+mod live;
 mod publication;
 mod selection;
+
+pub(crate) use live::delivery as live_delivery;
+pub(crate) use live::metadata as live_metadata;
 
 use discovery::MetadataDiscovery;
 

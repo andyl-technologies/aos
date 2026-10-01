@@ -1042,6 +1042,7 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
         console_asset_version: Some(aos_hub_core::web::assets::asset_version().into()),
         operations: vec![
             "inspect_mirror_pack_v1".into(),
+            "inspect_mirror_live_metadata_v1".into(),
             "inspect_mirror_tree_inventory_v1".into(),
             "mirror_transfer_batch_v1".into(),
             "inspect_stored_git_pack_v1".into(),
@@ -1285,6 +1286,9 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
     let operation_kind = plan.operation.kind();
 
     let execution = if matches!(plan.operation,
+        aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorLiveMetadata { .. }) {
+        crate::mirror_live::inspect_metadata(env, &plan).await
+    } else if matches!(plan.operation,
         aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorMembership { .. }) {
         crate::mirror_import::membership::dispatch(env, &plan, &body, &signature).await
     } else if matches!(plan.operation,
@@ -1508,6 +1512,20 @@ pub(crate) async fn proxy_origin(
     }
     headers.delete("x-aos-hybrid-origin")?;
     let status = response.status_code();
+    if let Some(compact) =
+        headers.get(aos_hub_core::hybrid_ingress::live::HYBRID_LIVE_DELIVERY_HEADER)?
+    {
+        if status != 200 || headers.has(HYBRID_DELIVERY_HEADER)? {
+            return Response::error("invalid live delivery response", 502);
+        }
+        if requested_range.is_some() {
+            return Response::error("fresh upstream range delivery is unsupported", 501);
+        }
+        return match crate::mirror_live::deliver(env, &key, &compact, &assertion).await {
+            Ok(response) => Ok(response),
+            Err(_) => Response::error("fresh upstream delivery is unavailable", 503),
+        };
+    }
     if let Some(compact) = headers.get(HYBRID_DELIVERY_HEADER)? {
         if status != 200 || !matches!(request.method(), worker::Method::Get | worker::Method::Head)
         {

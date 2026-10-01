@@ -1780,6 +1780,11 @@ impl HybridSurfaceFetch {
         let result = self.execute(&plan).await?;
         match result.outcome {
             StorageWorkOutcome::NotFound => {
+                // Live pointers and release packs are delivered fresh by the
+                // public Worker; they cannot acquire a persisted mirror HEAD.
+                if aos_hub_core::hybrid_ingress::live::live_path(path) {
+                    return Ok(None);
+                }
                 if let Some(registry_id) = self.placement.registry_id {
                     if crate::mirror::hybrid::fetch_through(&self.db, &self.work, registry_id, path).await? {
                         let refreshed = self.work.plan_for_placement(&self.placement, &self.binding,
@@ -1824,6 +1829,25 @@ impl SurfaceFetch for HybridSurfaceFetch {
         }))
     }
 
+    async fn live_delivery(
+        &self,
+        path: &str,
+    ) -> Result<Option<aos_hub_core::hybrid_ingress::live::HybridLiveDeliveryTarget>> {
+        let Some(registry_id) = self.placement.registry_id else {
+            return Ok(None);
+        };
+        let target =
+            crate::mirror::hybrid::live_delivery(&self.db, &self.work, registry_id, path).await?;
+        Ok(target.filter(|target| {
+            target.placement_id == self.placement.id
+                && target.placement_resource_version == self.placement.resource_version
+                && target.binding_id == self.binding.id
+                && target.binding_resource_version == self.binding.resource_version
+                && target.write_spec_version == self.placement.write_spec_version
+                && target.placement_prefix == self.placement.prefix
+        }))
+    }
+
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
         anyhow::ensure!(
             aos_hub_core::storage_work::admitted_metadata_path(path),
@@ -1839,6 +1863,12 @@ impl SurfaceFetch for HybridSurfaceFetch {
         match result.outcome {
             StorageWorkOutcome::NotFound => {
                 if let Some(registry_id) = self.placement.registry_id {
+                    if aos_hub_core::hybrid_ingress::live::live_path(path) {
+                        return crate::mirror::hybrid::live_metadata(
+                            &self.db, &self.work, registry_id, path,
+                        )
+                        .await;
+                    }
                     if crate::mirror::hybrid::fetch_through(&self.db, &self.work, registry_id, path).await? {
                         let refreshed = self.work.plan_for_placement(&self.placement, &self.binding,
                             StorageWorkOperation::InspectMetadata { path: path.into() }, aos_hub_core::clock::now_unix_secs())?;
@@ -1895,6 +1925,20 @@ impl SurfaceFetch for HybridSurfaceFetch {
                     break;
                 };
                 cursor = next;
+            }
+        }
+        // Stored observations retain their batch transport. Only missing live
+        // metadata gets a fresh bounded query; bulk sources never enter this port.
+        for path in &requested {
+            if observations.get(path).is_some_and(Option::is_none)
+                && aos_hub_core::hybrid_ingress::live::live_path(path)
+            {
+                if let Some(registry_id) = self.placement.registry_id {
+                    let bytes =
+                        crate::mirror::hybrid::live_metadata(&self.db, &self.work, registry_id, path)
+                            .await?;
+                    observations.insert(path.clone(), bytes);
+                }
             }
         }
         paths

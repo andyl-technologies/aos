@@ -350,6 +350,38 @@ async fn verify_hybrid_ingress(
         .await;
     if let Some(target) = response
         .headers_mut()
+        .remove(aos_hub_core::hybrid_ingress::live::HYBRID_LIVE_DELIVERY_HEADER)
+    {
+        if response.status() != StatusCode::OK
+            || !matches!(method.as_str(), "GET" | "HEAD")
+            || response
+                .headers()
+                .contains_key(aos_hub_core::hybrid_ingress::HYBRID_DELIVERY_HEADER)
+        {
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+        let signed = target
+            .to_str()
+            .ok()
+            .and_then(|value| {
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(value)
+                    .ok()
+            })
+            .filter(|bytes| bytes.len() <= 4096)
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .and_then(|target| key.sign_live_delivery(&assertion, target).ok())
+            .and_then(|value| HeaderValue::from_str(&value).ok());
+        let Some(signed) = signed else {
+            return StatusCode::BAD_GATEWAY.into_response();
+        };
+        response.headers_mut().insert(
+            aos_hub_core::hybrid_ingress::live::HYBRID_LIVE_DELIVERY_HEADER,
+            signed,
+        );
+    }
+    if let Some(target) = response
+        .headers_mut()
         .remove(aos_hub_core::hybrid_ingress::HYBRID_DELIVERY_HEADER)
     {
         if response.status() != StatusCode::OK || !matches!(method.as_str(), "GET" | "HEAD") {
@@ -1402,5 +1434,108 @@ mod hybrid_ingress_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let compact = response.headers()[HYBRID_DELIVERY_HEADER].to_str().unwrap();
         assert_eq!(key.verify_delivery(compact, &assertion, now), Ok(target));
+    }
+
+    #[tokio::test]
+    async fn live_delivery_origin_authenticates_exact_context_and_emits_no_body() {
+        use aos_hub_core::hybrid_ingress::live::{
+            HybridLiveDeliveryClass, HybridLiveDeliveryTarget, HYBRID_LIVE_DELIVERY_HEADER,
+        };
+
+        let key = Arc::new(HybridIngressKey::new([25; 32]).unwrap());
+        let target = HybridLiveDeliveryTarget {
+            registry_id: 1,
+            registry_resource_version: 2,
+            mirror_resource_version: 3,
+            placement_id: 4,
+            placement_resource_version: 5,
+            write_spec_version: 6,
+            placement_prefix: "live/main".into(),
+            binding_id: 7,
+            binding_resource_version: 8,
+            protected_profile_digest: "11".repeat(32),
+            upstream_base: "https://upstream.example.com/root".into(),
+            path: "HEAD".into(),
+            class: HybridLiveDeliveryClass::Metadata,
+            maximum_bytes: 128 * 1024,
+        };
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&target).unwrap());
+        let app = Router::new()
+            .route(
+                "/live-object",
+                get(move || {
+                    let encoded = encoded.clone();
+                    async move { ([(HYBRID_LIVE_DELIVERY_HEADER, encoded)], "").into_response() }
+                }),
+            )
+            .layer(axum::middleware::from_fn({
+                let key = key.clone();
+                move |request, next| {
+                    let key = key.clone();
+                    async move {
+                        verify_hybrid_ingress(
+                            key,
+                            "deployment-1".into(),
+                            "https://hub.example.test".into(),
+                            None,
+                            request,
+                            next,
+                        )
+                        .await
+                    }
+                }
+            }));
+        let now = aos_hub_core::clock::now_unix_secs();
+        let original = HybridIngressAssertion {
+            version: 1,
+            deployment_id: "deployment-1".into(),
+            issued_at: now,
+            expires_at: now + 30,
+            request_id: "live-origin-1".into(),
+            scheme: "https".into(),
+            authority: "hub.example.test".into(),
+            method: "GET".into(),
+            path_and_query: "/live-object".into(),
+            body_sha256: aos_hub_core::hybrid_ingress::body_sha256(&[]),
+            upload_phase: None,
+            client_ip: "192.0.2.7".into(),
+        };
+
+        let anonymous = axum::http::Request::builder()
+            .uri("/live-object")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(anonymous).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        for method in ["GET", "HEAD"] {
+            let mut original = original.clone();
+            original.method = method.into();
+            let request = axum::http::Request::builder()
+                .uri("/live-object")
+                .method(method)
+                .header(HYBRID_INGRESS_HEADER, key.sign(&original).unwrap())
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let compact = response.headers()[HYBRID_LIVE_DELIVERY_HEADER]
+                .to_str()
+                .unwrap();
+            assert_eq!(
+                key.verify_live_delivery(compact, &original, now).unwrap(),
+                target
+            );
+            assert!(key.verify_delivery(compact, &original, now).is_err());
+            let mut foreign = original.clone();
+            foreign.request_id.push('x');
+            assert!(key.verify_live_delivery(compact, &foreign, now).is_err());
+            assert!(axum::body::to_bytes(response.into_body(), 1)
+                .await
+                .unwrap()
+                .is_empty());
+        }
     }
 }

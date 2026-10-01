@@ -23,6 +23,7 @@ impl Selection {
         registry: &RegistryRecord,
         source: RegistryMirrorRecord,
     ) -> Result<Self> {
+        validate_supported_semantics(&source)?;
         let placement = db
             .reconciled_surface_writer(SurfaceTarget::Registry(registry.id))
             .await?;
@@ -88,5 +89,49 @@ impl Selection {
             "mirror discovery configuration or destination changed; restart verification"
         );
         Ok(())
+    }
+}
+
+/// Credential references and filtered ref selection require a separate executor.
+/// Pinning their strings does not apply authentication or filtering upstream.
+fn validate_supported_semantics(source: &RegistryMirrorRecord) -> Result<()> {
+    ensure!(
+        source.auth_secret_ref.is_empty(),
+        "hybrid mirror upstream credentials are not supported"
+    );
+    ensure!(
+        source.refspec == "refs/*",
+        "hybrid mirror supports only the default refs/* selection"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_mirror_refuses_unapplied_credential_and_refspec_semantics() {
+        let mut source = RegistryMirrorRecord {
+            registry_id: 1,
+            source_url: "https://upstream.example.com/root".into(),
+            refspec: "refs/*".into(),
+            auth_secret_ref: String::new(),
+            mode: "pull_through".into(),
+            signature_policy: "required".into(),
+            interval_seconds: 0,
+            state: "ready".into(),
+            observed_commit: None,
+            error: None,
+            last_sync_at: None,
+            resource_version: 1,
+        };
+        assert!(validate_supported_semantics(&source).is_ok());
+
+        source.auth_secret_ref = "secret/version/1".into();
+        assert!(validate_supported_semantics(&source).is_err());
+        source.auth_secret_ref.clear();
+        source.refspec = "refs/heads/*".into();
+        assert!(validate_supported_semantics(&source).is_err());
     }
 }

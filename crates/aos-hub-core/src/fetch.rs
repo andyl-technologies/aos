@@ -396,6 +396,20 @@ pub trait SurfaceFetch: BackendBounds {
         bail!("this surface does not support hybrid delivery grants")
     }
 
+    /// Selects a fresh uncached upstream after an observed storage miss.
+    ///
+    /// Returns control metadata only. Native never opens the upstream body;
+    /// the authenticated public Worker executes the separately qualified read.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported mirror semantics or changed current pins.
+    async fn live_delivery(
+        &self,
+        _path: &str,
+    ) -> Result<Option<crate::hybrid_ingress::live::HybridLiveDeliveryTarget>> {
+        Ok(None)
+    }
+
     /// Whether Git objects are decoded beside storage through a typed query.
     ///
     /// Indexers use this to skip eager bundle hydration in hybrid mode. Local

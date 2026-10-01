@@ -5,6 +5,7 @@
 //! method, path, and body forwarded to Native. The origin verifies it before
 //! any route, authentication, or rate-limit middleware can use those facts.
 
+pub mod live;
 mod oci_manifest;
 pub mod projection;
 
@@ -52,6 +53,7 @@ pub fn is_hybrid_transport_header(name: &str) -> bool {
             name.as_str(),
             "x-aos-hybrid-ingress"
                 | "x-aos-hybrid-delivery"
+                | "x-aos-hybrid-live-delivery"
                 | "x-aos-hybrid-native-ms"
                 | "x-aos-delivery-attestation"
                 | "x-aos-client-ip"
@@ -582,25 +584,7 @@ impl HybridIngressKey {
         path_and_query: &str,
         now: i64,
     ) -> Result<HybridIngressAssertion, HybridIngressError> {
-        if compact.len() > 16 * 1024 {
-            return Err(HybridIngressError::Malformed);
-        }
-        let (payload_text, signature_text) = compact
-            .split_once('.')
-            .filter(|(_, signature)| !signature.contains('.'))
-            .ok_or(HybridIngressError::Malformed)?;
-        let payload = URL_SAFE_NO_PAD
-            .decode(payload_text)
-            .map_err(|_| HybridIngressError::Malformed)?;
-        let signature = URL_SAFE_NO_PAD
-            .decode(signature_text)
-            .map_err(|_| HybridIngressError::Malformed)?;
-        if URL_SAFE_NO_PAD.encode(&payload) != payload_text
-            || URL_SAFE_NO_PAD.encode(&signature) != signature_text
-            || signature.len() != 32
-        {
-            return Err(HybridIngressError::Malformed);
-        }
+        let (payload_text, payload, signature) = decode_compact_frame(compact, 16 * 1024)?;
 
         let mut mac =
             HmacSha256::new_from_slice(&self.bytes).map_err(|_| HybridIngressError::WeakKey)?;
@@ -840,6 +824,58 @@ fn validate_assertion(assertion: &HybridIngressAssertion) -> Result<(), HybridIn
         return Err(HybridIngressError::Malformed);
     }
     Ok(())
+}
+
+/// Decodes recorded ingress shape without authenticating it or checking current time.
+///
+/// Observation tooling must independently join the exact captured bytes with
+/// successful authenticated handler evidence. This returns no permission proof.
+///
+/// # Errors
+/// Returns an error for noncanonical framing, excessive bytes or invalid intrinsic shape.
+pub fn decode_hybrid_ingress_observation(
+    compact: &str,
+) -> Result<HybridIngressAssertion, HybridIngressError> {
+    let (_, bytes, _) = decode_compact_frame(compact, 16 * 1024)?;
+    let request: HybridIngressAssertion = serde_json::from_slice(&bytes)
+        .map_err(|_| HybridIngressError::Malformed)?;
+    validate_assertion(&request)?;
+    validate_intrinsic_lifetime(&request)?;
+    Ok(request)
+}
+
+fn validate_intrinsic_lifetime(request: &HybridIngressAssertion) -> Result<(), HybridIngressError> {
+    if request.expires_at < request.issued_at
+        || request.expires_at.saturating_sub(request.issued_at) > MAX_LIFETIME_SECONDS {
+        return Err(HybridIngressError::InvalidTime);
+    }
+    Ok(())
+}
+
+fn decode_compact_frame(
+    compact: &str,
+    maximum: usize,
+) -> Result<(&str, Vec<u8>, Vec<u8>), HybridIngressError> {
+    if compact.len() > maximum {
+        return Err(HybridIngressError::Malformed);
+    }
+    let (payload, signature) = compact
+        .split_once('.')
+        .filter(|(_, signature)| !signature.contains('.'))
+        .ok_or(HybridIngressError::Malformed)?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|_| HybridIngressError::Malformed)?;
+    let signature_bytes = URL_SAFE_NO_PAD
+        .decode(signature)
+        .map_err(|_| HybridIngressError::Malformed)?;
+    if URL_SAFE_NO_PAD.encode(&bytes) != payload
+        || URL_SAFE_NO_PAD.encode(&signature_bytes) != signature
+        || signature_bytes.len() != 32
+    {
+        return Err(HybridIngressError::Malformed);
+    }
+    Ok((payload, bytes, signature_bytes))
 }
 
 #[cfg(test)]

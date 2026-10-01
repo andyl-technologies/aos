@@ -116,6 +116,11 @@ const MAX_PLAN_LIFETIME_SECONDS: i64 = 30;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StorageWorkOperation {
+    /// Reads fresh bounded pointer metadata without a Native upstream body fetch.
+    InspectMirrorLiveMetadata {
+        /// Exact current SQL upstream selection; only the metadata class is admitted.
+        target: crate::hybrid_ingress::live::HybridLiveDeliveryTarget,
+    },
     /// Answers exact OID membership from one complete verified semantic catalogue.
     InspectMirrorMembership {
         /// Approved immutable source and bounded metadata-only predicate.
@@ -371,6 +376,7 @@ impl StorageWorkOperation {
         match self {
             Self::MirrorTransfer { .. } | Self::MirrorTransferBatch { .. } => &["read", "write"],
             Self::InspectMirrorPack { .. }
+            | Self::InspectMirrorLiveMetadata { .. }
             | Self::InspectMirrorMembership { .. }
             | Self::InspectMirrorTreeInventory { .. }
             | Self::FilterStoredGitPackTree { .. }
@@ -403,6 +409,7 @@ impl StorageWorkOperation {
     #[must_use]
     pub const fn kind(&self) -> &'static str {
         match self {
+            Self::InspectMirrorLiveMetadata { .. } => "inspect_mirror_live_metadata_v1",
             Self::InspectMirrorMembership { .. } => "inspect_mirror_membership_v1",
             Self::InspectMirrorPack { .. } => "inspect_mirror_pack_v1",
             Self::InspectMirrorTreeInventory { .. } => "inspect_mirror_tree_inventory_v1",
@@ -583,6 +590,15 @@ impl StorageDocumentationPage {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StorageWorkOutcome {
+    /// Fresh bounded upstream metadata, without a fabricated stored incarnation.
+    MirrorLiveMetadata {
+        /// Actual full bounded body SHA-256.
+        sha256: String,
+        /// Actual consumed bytes, at most 128 KiB.
+        size: u64,
+        /// Standard-base64 exact query output; never a bulk pack or index.
+        content_base64: String,
+    },
     /// Complete ordered membership answers for one fully verified companion pair.
     MirrorMembership {
         /// Exact pair source and presence partition; no object content bytes.
@@ -951,6 +967,19 @@ impl StorageWorkPlan {
             return Err(StorageWorkError::InvalidTime);
         }
         match &self.operation {
+            StorageWorkOperation::InspectMirrorLiveMetadata { target } => {
+                if target.validate().is_err()
+                    || target.class != crate::hybrid_ingress::live::HybridLiveDeliveryClass::Metadata
+                    || target.placement_id != self.placement_id
+                    || target.placement_resource_version != self.placement_resource_version
+                    || target.binding_id != self.binding_id
+                    || target.binding_resource_version != self.binding_resource_version
+                    || target.placement_prefix != self.placement_prefix
+                    || self.binding_kind != "deployment_r2"
+                {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
             StorageWorkOperation::InspectMirrorMembership { query } => {
                 if self.binding_kind != "deployment_r2" || query.validate().is_err() {
                     return Err(StorageWorkError::InvalidPlan);
