@@ -4,14 +4,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_oci_types::{
-    ContainerRelease, ContainerSignatureInput, Descriptor, ImageIndex, ImageManifest, MediaType,
-    CONTAINER_RELEASE_SIDECAR_PATH,
+    CONTAINER_RELEASE_SIDECAR_PATH, ContainerRelease, ContainerSignatureInput, Descriptor,
+    ImageIndex, ImageManifest, MediaType,
 };
 use aos_release::artifact::{ArtifactKind, ArtifactRelation, ArtifactRelationship, Compression};
 use aos_release::digest::Sha256Digest;
-use aos_release::plan::ReleasePlanV1;
+use aos_release::plan::ReleasePlan;
 use aos_release::platform::Platform;
 
 use super::{ArtifactAttributes, PayloadBuilder};
@@ -25,7 +25,7 @@ struct GraphNode {
 pub(super) fn assemble(
     root: &Path,
     registry: &Path,
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
     payload: &mut PayloadBuilder,
 ) -> Result<()> {
     let release_path = root.join("container-release.json");
@@ -180,7 +180,7 @@ pub(super) fn require_absent(registry: &Path) -> Result<()> {
     }
 }
 
-fn validate_plan_binding(release: &ContainerRelease, plan: &ReleasePlanV1) -> Result<()> {
+fn validate_plan_binding(release: &ContainerRelease, plan: &ReleasePlan) -> Result<()> {
     if release.identity.release != plan.version {
         bail!("container release identity differs from the release plan");
     }

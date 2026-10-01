@@ -25,7 +25,6 @@
 use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 
-use crate::plan::ReleaseClass;
 use crate::registry::{RegistryTier, registry_policy};
 
 /// Evaluated client and support identity shared by a system's release artifacts.
@@ -61,11 +60,15 @@ pub struct ArtifactProfile {
 impl ArtifactProfile {
     /// Requires this artifact's client configuration to match its release destination.
     ///
+    /// The baked default channel must have a kind the registry tier carries:
+    /// `edge` for testing registries, `candidate` or `stable` for `andyl/main`.
+    ///
     /// # Errors
     /// Returns an error for a disabled profile, a registry or tier crossover,
-    /// an incompatible channel or root epoch, a different client URL or alias,
-    /// absent or malformed trust keys, or an absent testing warning.
-    pub fn require_release(&self, registry: &str, class: ReleaseClass) -> Result<()> {
+    /// a channel kind outside the tier, a different root epoch, a different
+    /// client URL or alias, absent or malformed trust keys, or an absent
+    /// testing warning.
+    pub fn require_release(&self, registry: &str) -> Result<()> {
         if !self.enabled {
             bail!("selected system does not enable a public release artifact profile");
         }
@@ -81,7 +84,7 @@ impl ArtifactProfile {
         if self.tier != expected_tier || self.root_epoch != policy.root_epoch() {
             bail!("artifact support tier or trust-root epoch differs from its registry");
         }
-        policy.require_release(class, std::slice::from_ref(&self.channel))?;
+        policy.require_release(std::slice::from_ref(&self.channel))?;
 
         let expected_alias = match policy.tier() {
             RegistryTier::Production => "andyl".to_owned(),
@@ -187,33 +190,35 @@ mod tests {
 
     #[test]
     fn artifact_destinations_cannot_cross_registry_or_epoch_boundaries() {
-        for (registry, class) in [
-            ("andyl/main", ReleaseClass::Stable),
-            ("andyl/testing", ReleaseClass::Edge),
-            ("andyl/testing-v2", ReleaseClass::Edge),
-        ] {
+        for registry in ["andyl/main", "andyl/testing", "andyl/testing-v2"] {
             let artifact = profile(registry);
-            assert!(artifact.require_release(registry, class).is_ok());
+            assert!(artifact.require_release(registry).is_ok());
             for other in ["andyl/main", "andyl/testing", "andyl/testing-v2"] {
                 if other != registry {
-                    assert!(artifact.require_release(other, class).is_err());
+                    assert!(artifact.require_release(other).is_err());
                 }
             }
         }
     }
 
     #[test]
-    fn every_registry_can_bake_every_software_channel() {
-        for registry in ["andyl/main", "andyl/testing", "andyl/testing-v2"] {
-            for (class, channel) in [
-                (ReleaseClass::Edge, "edge"),
-                (ReleaseClass::Candidate, "candidate"),
-                (ReleaseClass::Stable, "stable"),
-            ] {
-                let mut artifact = profile(registry);
-                artifact.channel = channel.into();
-                assert!(artifact.require_release(registry, class).is_ok());
-            }
+    fn baked_channels_follow_the_registry_tier() {
+        for (registry, channel, allowed) in [
+            ("andyl/testing", "edge", true),
+            ("andyl/testing", "candidate", false),
+            ("andyl/testing-v2", "stable", false),
+            ("andyl/main", "edge", false),
+            ("andyl/main", "candidate", true),
+            ("andyl/main", "stable", true),
+            ("andyl/main", "stable-2026.3", true),
+        ] {
+            let mut artifact = profile(registry);
+            artifact.channel = channel.into();
+            assert_eq!(
+                artifact.require_release(registry).is_ok(),
+                allowed,
+                "{registry} {channel}"
+            );
         }
     }
 
@@ -240,11 +245,7 @@ mod tests {
         ] {
             let mut invalid = valid.clone();
             change(&mut invalid);
-            assert!(
-                invalid
-                    .require_release("andyl/testing", ReleaseClass::Edge)
-                    .is_err()
-            );
+            assert!(invalid.require_release("andyl/testing").is_err());
         }
     }
 }

@@ -90,7 +90,7 @@
     ${pkgs.python3}/bin/python3 \
       ${scenario}/share/aos-release/qualification-package.py
 
-    exec ${pkgs.aos}/bin/aos release qualification respond \
+    exec ${pkgs.aos}/bin/aos release step qualification respond \
       --request request.json \
       --scenarios scenario-registry.json \
       --report scenario-report.json \

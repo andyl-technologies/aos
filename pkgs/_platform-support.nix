@@ -569,6 +569,7 @@ let
   # interfaces and have no Darwin execution contract.  A portable sub-tool
   # must be split into its own package before it can leave this list.
   linuxOnly = [
+    "nix-daemon"
     "libglycin"
     "glycin-image-rs"
     "libevdev"

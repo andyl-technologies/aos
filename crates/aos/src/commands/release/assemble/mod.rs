@@ -26,7 +26,7 @@ use aos_release::build::{BuildReportV1, ReproducibilityResult};
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::manifest::{FinalArtifactSet, ImageResult, PackageResult, ReleaseManifestV1};
-use aos_release::plan::{PlatformCell, ReleasePlanV1};
+use aos_release::plan::{PlatformCell, ReleasePlan};
 use aos_release::platform::MatrixCell;
 use aos_release::sbom::SpdxDocument;
 use aos_release::signing::{SignerRole, TrustedEd25519Key};
@@ -76,18 +76,15 @@ struct LicenseInventoryEntry<'a> {
 
 struct PayloadBuilder {
     root: PathBuf,
-    release_prefix: String,
     artifacts: Vec<ArtifactRecord>,
 }
 
 impl PayloadBuilder {
-    fn new(root: PathBuf, release_prefix: String) -> Result<Self> {
-        BundlePath::parse(release_prefix.clone())?;
+    fn new(root: PathBuf) -> Result<Self> {
         fs::create_dir(&root)
             .with_context(|| format!("creating release payload {}", root.display()))?;
         Ok(Self {
             root,
-            release_prefix,
             artifacts: Vec::new(),
         })
     }
@@ -100,21 +97,6 @@ impl PayloadBuilder {
         relative: String,
         attributes: ArtifactAttributes,
     ) -> Result<()> {
-        let relative = format!("{}/{}", self.release_prefix, relative);
-        self.copy_origin(source, id, kind, relative, attributes)
-    }
-
-    // Canonical Git and cache paths also belong to the signed manifest. Their
-    // consumers use protocol-defined locations outside the release namespace.
-    fn copy_origin(
-        &mut self,
-        source: &Path,
-        id: String,
-        kind: ArtifactKind,
-        relative: String,
-        attributes: ArtifactAttributes,
-    ) -> Result<()> {
-        BundlePath::parse(relative.clone())?;
         let destination = self.root.join(&relative);
         let parent = destination
             .parent()
@@ -216,7 +198,7 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
     }
     let completed = require_utc(&args.completed_at, "assembly completion time")?;
     let plan_bytes = read_canonical(&args.plan, "release plan")?;
-    let plan: ReleasePlanV1 = canonical::from_slice(&plan_bytes, "release plan")?;
+    let plan: ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
     plan.validate()?;
     let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
 
@@ -226,11 +208,10 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
     if require_utc(&report.completed_at, "build completion time")? > completed {
         bail!("assembly completed before its build report");
     }
-    if !plan.staging_only
-        && report
-            .outputs
-            .iter()
-            .any(|output| output.reproducibility != ReproducibilityResult::Reproduced)
+    if report
+        .outputs
+        .iter()
+        .any(|output| output.reproducibility != ReproducibilityResult::Reproduced)
     {
         bail!("build report contains an output without a successful repeat build");
     }
@@ -250,7 +231,6 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
         plan_digest,
         Sha256Digest::of_bytes(&sbom_bytes),
         completed,
-        plan.staging_only,
     )?;
 
     let authorization_bytes =
@@ -271,12 +251,7 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
         .tempdir_in(parent)?;
     let assembled = temporary.path().join("assembled");
     fs::create_dir(&assembled)?;
-    let release_prefix = format!(
-        "releases/{}/{}/artifacts",
-        aos_release::tuf::TufRole::for_release(plan.release_class).as_str(),
-        plan.version
-    );
-    let mut payload = PayloadBuilder::new(assembled.join("payload"), release_prefix)?;
+    let mut payload = PayloadBuilder::new(assembled.join("payload"))?;
 
     payload.copy(
         &args.build_report,
@@ -425,7 +400,7 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
     Ok(())
 }
 
-fn package_results(plan: &ReleasePlanV1) -> Vec<PackageResult> {
+fn package_results(plan: &ReleasePlan) -> Vec<PackageResult> {
     plan.packages
         .iter()
         .map(|package| PackageResult {
@@ -442,7 +417,7 @@ fn package_results(plan: &ReleasePlanV1) -> Vec<PackageResult> {
         .collect()
 }
 
-fn image_results(plan: &ReleasePlanV1) -> Vec<ImageResult> {
+fn image_results(plan: &ReleasePlan) -> Vec<ImageResult> {
     plan.images
         .iter()
         .map(|image| ImageResult {
@@ -527,7 +502,6 @@ fn validate_advisory(
     plan_digest: Sha256Digest,
     sbom_digest: Sha256Digest,
     completed: std::time::SystemTime,
-    staging_only: bool,
 ) -> Result<()> {
     aos_release::artifact::require_identifier(
         &advisory.authority_id,
@@ -547,13 +521,9 @@ fn validate_advisory(
                 || source.name.chars().any(char::is_control)
                 || source.snapshot.chars().any(char::is_control)
         })
+        || !advisory.unresolved_advisories.is_empty()
     {
-        bail!("advisory disposition is incomplete or bound to different inputs");
-    }
-    // Isolated staging retains findings for operator testing without requiring
-    // a security approval. Production assembly still requires their resolution.
-    if !staging_only && !advisory.unresolved_advisories.is_empty() {
-        bail!("production advisory disposition contains unresolved advisories");
+        bail!("advisory disposition is incomplete, unresolved, or bound to different inputs");
     }
     if require_utc(&advisory.reviewed_at, "advisory review time")? > completed {
         bail!("advisory disposition was reviewed after assembly completion");
@@ -561,7 +531,7 @@ fn validate_advisory(
     Ok(())
 }
 
-fn cache_key(specification: &str, plan: &ReleasePlanV1) -> Result<TrustedEd25519Key> {
+fn cache_key(specification: &str, plan: &ReleasePlan) -> Result<TrustedEd25519Key> {
     let (key_id, path) = super::finalize_cache::parse_key_spec(specification)?;
     let requirement = plan
         .signers

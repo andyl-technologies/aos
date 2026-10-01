@@ -2,12 +2,27 @@
 //!
 //! This binary is installed only in `pkgs.aos.testSupport`. It deliberately
 //! uses fixed private keys and must never be used outside an isolated test.
+//!
+//! Subcommands:
+//!
+//! - `prepare`: a finalized `aos-2026.9.0-rc.1` candidate bundle on
+//!   `andyl/main` planned for `staging/candidate` and `production/candidate`
+//!   on the fleet's two Hubs, its qualification-snapshot predecessor, public
+//!   keys, and a `finalized` journal;
+//! - `review`: an accepted release-evidence review of a qualification report;
+//! - `fitness`: signed attestations for every fitness kind the production
+//!   destination's profile demands, bound to the fleet's live identities;
+//! - `sign-exchange-v1`: the qualification authority's signer exchange;
+//! - `maintainer-upstream-proxy`: a TLS proxy for the maintainer update test;
+//! - no subcommand: a native qualification executor reading one request on
+//!   stdin.
 
 use std::env;
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use anyhow::{Context as _, Result, bail};
 use aos_core::nar::cache::{
@@ -19,28 +34,30 @@ use aos_release::artifact::{
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::evidence::{
-    EvidenceRecord, GateRequirement, GateResult, QUALIFICATION_EXECUTOR_RESPONSE_V1,
-    QualificationExecutorRequestV1, QualificationExecutorResponseV1,
+    EvidenceRecord, GateResult, QUALIFICATION_EXECUTOR_RESPONSE, QualificationExecutorRequest,
+    QualificationExecutorResponse,
 };
+use aos_release::fitness::{FITNESS_REPORT, FitnessReport, LiveBindings, signer_roster_digest};
 use aos_release::inventory::PackagePublicationMetadata;
 use aos_release::manifest::{
     FinalArtifactSet, MANIFEST_DOMAIN, MANIFEST_ENVELOPE_V1, ManifestEnvelopeV1, ManifestSignature,
     PackageResult, ReleaseManifestV1,
 };
 use aos_release::plan::{
-    ChannelIntent, PackagePlan, PlannedArtifact, PlannedArtifactSet, PlatformCell, ReleaseClass,
-    ReleasePlanV1, RetentionPolicy, SourceIdentity,
+    PackagePlan, PlannedArtifact, PlannedArtifactSet, PlannedSurface, PlatformCell, ReleaseClass,
+    ReleasePlan, RequestedDestination, RetentionPolicy, SourceIdentity, SurfaceKind, SurfaceRole,
+    planned_destinations,
 };
 use aos_release::platform::{MatrixCell, Platform};
-use aos_release::receipt::{
-    COMPLETION_RECEIPT_V1, CompletionReceiptV1, RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT_V1,
-    SignedReceiptEnvelopeV1,
-};
+use aos_release::qualification::ChangeScope;
+use aos_release::qualification_admission::{QUALIFICATION_REVIEW, QualificationReview};
+use aos_release::qualification_evidence::CheckObservation;
+use aos_release::receipt::{RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope};
 use aos_release::signing::{
-    SIGNING_REQUEST_DOMAIN, SignatureAlgorithm, SignatureResponseV1, SignerRequirement, SignerRole,
-    SigningContext, SigningOperation, SigningRequestV1,
+    SIGNING_REQUEST_DOMAIN, SignatureAlgorithm, SignatureResponse, SignerRequirement, SignerRole,
+    SigningContext, SigningOperation, SigningRequest,
 };
-use aos_release::state::{JournalEntryV1, ReleaseState, parse_journal};
+use aos_release::state::{JournalEntry, ReleaseState};
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use futures_util::{StreamExt as _, TryStreamExt as _, stream};
@@ -59,8 +76,19 @@ const PROVIDER_REVISION: &str = "fleet-provider-v1";
 const QUALIFICATION_IDENTITY: &str = "fleet-qualification-authority";
 const RELEASE_ID: &str = "aos-2026.9.0-rc.1";
 const RELEASE_VERSION: &str = "2026.9.0-rc.1";
+const STAGING_ORIGIN: &str = "https://aos.staging.andyl.org";
 const STAGING_DEPLOYMENT: &str = "fleet-staging-v1";
+const PRODUCTION_ORIGIN: &str = "https://aos.andyl.org";
 const PRODUCTION_DEPLOYMENT: &str = "fleet-production-v1";
+/// Channel of both planned destinations: a release candidate on `andyl/main`.
+const CHANNEL: &str = "candidate";
+/// Production destination whose `functional` profile demands fitness.
+const PRODUCTION_DESTINATION: &str = "production/candidate";
+/// Live identities the fleet test passes to `publish` and `channel advance`;
+/// `fitness` binds its attestations to exactly these values.
+const HUB_SCHEMA: &str = "2";
+const TOOLING_LABEL: &str = "fleet-tooling-closure";
+const ALERT_CONFIG_LABEL: &str = "fleet-alert-config";
 const TIME: &str = "2026-09-03T12:00:00Z";
 const SIGNER_REQUEST_DOMAIN: &[u8] = b"aos.release.signer-exchange/v1\0";
 const SIGNER_RESPONSE_DOMAIN: &[u8] = b"aos.release.signer-exchange-response/v1\0";
@@ -71,8 +99,8 @@ async fn main() -> Result<()> {
     match arguments.first().map(String::as_str) {
         Some("prepare") => prepare(&arguments[1..]),
         Some("sign-exchange-v1") => signer_exchange(),
-        Some("completion") => completion(&arguments[1..]),
         Some("review") => review(&arguments[1..]),
+        Some("fitness") => fitness(&arguments[1..]),
         Some("maintainer-upstream-proxy") => maintainer_upstream_proxy(&arguments[1..]).await,
         None => qualification_executor().await,
         Some(command) => bail!("unknown release fleet fixture command: {command}"),
@@ -292,22 +320,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
     bind_plan_artifact(&mut manifest, &plan_bytes)?;
     manifest.plan_digest = Sha256Digest::of_bytes(&plan_bytes);
 
-    manifest.evidence = aos_release::qualification_evidence::cases(
-        &plan,
-        &manifest,
-        aos_release::qualification::QualificationPhase::Build,
-    )?
-    .iter()
-    .map(|case| {
-        fixture_evidence(
-            case,
-            gate_report_digest,
-            "fleet-preflight-authority",
-            None,
-            &humantime::format_rfc3339(std::time::SystemTime::now()).to_string(),
-        )
-    })
-    .collect::<Result<Vec<_>>>()?;
+    manifest.evidence = build_evidence(&plan, &manifest, gate_report_digest)?;
     manifest.validate(&plan)?;
     let envelope = signed_manifest(&plan_bytes, manifest)?;
     let manifest_digest = envelope.payload_digest;
@@ -323,10 +336,38 @@ fn prepare(arguments: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Synthesizes passing build-phase observations for every planned destination.
+fn build_evidence(
+    plan: &ReleasePlan,
+    manifest: &ReleaseManifestV1,
+    gate_report_digest: Sha256Digest,
+) -> Result<Vec<EvidenceRecord>> {
+    // Whole seconds: coordinators admit observations against a
+    // seconds-precision `now`, so a sub-second finish could read as future.
+    let finished = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
+    aos_release::qualification_evidence::cases(
+        plan,
+        manifest,
+        None,
+        aos_release::qualification::QualificationPhase::Build,
+    )?
+    .iter()
+    .map(|case| {
+        fixture_evidence(
+            case,
+            gate_report_digest,
+            "fleet-preflight-authority",
+            None,
+            &finished,
+        )
+    })
+    .collect()
+}
+
 fn prepare_predecessor(
     source: &Path,
     output: &Path,
-    release_plan: &ReleasePlanV1,
+    release_plan: &ReleasePlan,
     release_manifest: &ReleaseManifestV1,
     gate_report_digest: Sha256Digest,
 ) -> Result<aos_release::qualification_evidence::QualificationPredecessor> {
@@ -342,7 +383,9 @@ fn prepare_predecessor(
         aos_release::plan::QUALIFICATION_SNAPSHOT_TAG_PREFIX,
         plan.version
     );
-    plan.intended_channels.clear();
+    // A qualification snapshot is never published, so it plans no destination.
+    plan.destinations.clear();
+    plan.profile_overrides.clear();
     plan.validate()?;
     let plan_bytes = canonical::to_vec(&plan)?;
 
@@ -353,22 +396,7 @@ fn prepare_predecessor(
     manifest.release_id.clone_from(&plan.release_id);
     manifest.plan_digest = Sha256Digest::of_bytes(&plan_bytes);
     bind_plan_artifact(&mut manifest, &plan_bytes)?;
-    manifest.evidence = aos_release::qualification_evidence::cases(
-        &plan,
-        &manifest,
-        aos_release::qualification::QualificationPhase::Build,
-    )?
-    .iter()
-    .map(|case| {
-        fixture_evidence(
-            case,
-            gate_report_digest,
-            "fleet-preflight-authority",
-            None,
-            &humantime::format_rfc3339(std::time::SystemTime::now()).to_string(),
-        )
-    })
-    .collect::<Result<Vec<_>>>()?;
+    manifest.evidence = build_evidence(&plan, &manifest, gate_report_digest)?;
     manifest.validate(&plan)?;
 
     let envelope = signed_manifest(&plan_bytes, manifest)?;
@@ -420,10 +448,17 @@ fn signed_manifest(plan_bytes: &[u8], manifest: ReleaseManifestV1) -> Result<Man
     })
 }
 
+/// Builds the candidate plan for both Hub surfaces and both candidate destinations.
+///
+/// Destinations are filled by [`planned_destinations`], the same derivation
+/// `aos release step plan` applies to a request, so their profiles, gates,
+/// soak, and rings are exactly the contract's.
 fn release_plan(
     base_commit: &str,
     platforms: Vec<PlatformCell<PlannedArtifactSet>>,
-) -> Result<ReleasePlanV1> {
+) -> Result<ReleasePlan> {
+    // Two Hub surfaces need no surface-receipt signer; a planned channel
+    // needs the channel signer.
     let roles = [
         SignerRole::Registry,
         SignerRole::Cache,
@@ -437,11 +472,28 @@ fn release_plan(
         SignerRole::TufTimestamp,
         SignerRole::Channel,
     ];
-    let mut plan = ReleasePlanV1 {
-        schema_version: aos_release::RELEASE_PLAN_V1.into(),
-        staging_only: false,
-        qualification: None,
-        qualification_predecessor: None,
+    let mut contract: aos_release::qualification::QualificationContract = canonical::from_slice(
+        include_bytes!("../../../aos-release/tests/fixtures/qualification-contract.json"),
+        "fixture contract",
+    )?;
+    contract.package_rules = vec![aos_release::qualification::PackageRule {
+        name: "fleet-package".into(),
+        role: aos_release::qualification::PackageRole::GeneralCatalog,
+        inherit_dependency_obligations: true,
+        execution: None,
+    }];
+
+    let mut plan = ReleasePlan {
+        schema_version: aos_release::RELEASE_PLAN.into(),
+        public_evidence_policy_digest: contract.digest()?,
+        qualification: contract,
+        qualification_predecessor: Some(
+            aos_release::qualification_evidence::QualificationPredecessor {
+                registry: aos_release::registry::MAIN_REGISTRY.into(),
+                release_id: "fleet-predecessor".into(),
+                manifest_digest: digest("fleet-predecessor"),
+            },
+        ),
         release_id: RELEASE_ID.into(),
         version: RELEASE_VERSION.into(),
         release_class: ReleaseClass::Candidate,
@@ -467,14 +519,33 @@ fn release_plan(
             }),
             platforms,
         }],
-        images: Vec::new(),
-        gates: vec![GateRequirement {
-            policy_id: "fleet-release-gate-v1".into(),
-            policy_digest: digest("fleet-release-gate-policy"),
-            required_for_stable: true,
+        images: vec![aos_release::plan::ImagePlan {
+            system_variant: "server".into(),
+            platforms: Platform::LINUX
+                .into_iter()
+                .map(|platform| PlatformCell {
+                    platform,
+                    decision: MatrixCell::Artifact {
+                        artifact: PlannedArtifactSet {
+                            configuration: None,
+                            artifacts: [
+                                format!("image/server/{platform}"),
+                                format!("image/server/{platform}/metadata"),
+                            ]
+                            .into_iter()
+                            .map(|id| PlannedArtifact {
+                                id,
+                                derivation: None,
+                                output: None,
+                                store_path: None,
+                                source_store_paths: Vec::new(),
+                            })
+                            .collect(),
+                        },
+                    },
+                })
+                .collect(),
         }],
-        staging_deployment_id: STAGING_DEPLOYMENT.into(),
-        production_deployment_id: PRODUCTION_DEPLOYMENT.into(),
         signers: roles
             .into_iter()
             .map(|role| SignerRequirement {
@@ -488,68 +559,58 @@ fn release_plan(
                 provider_revision: PROVIDER_REVISION.into(),
             })
             .collect(),
-        intended_channels: vec![ChannelIntent {
-            channel: "candidate".into(),
-            first_partition: 0,
-            last_partition: 255,
-        }],
+        surfaces: fleet_surfaces(),
+        destinations: Vec::new(),
+        change_scope: None,
+        profile_overrides: Vec::new(),
         retention: RetentionPolicy {
             policy_id: "fleet-retention-v1".into(),
             policy_digest: digest("fleet-retention-policy"),
             require_corresponding_source: true,
         },
-        public_evidence_policy_digest: digest("fleet-public-evidence-policy"),
         restricted_operator_policy_digest: digest("fleet-restricted-operator-policy"),
     };
-    let mut contract: aos_release::qualification::QualificationContract = canonical::from_slice(
-        include_bytes!("../../../aos-release/tests/fixtures/qualification-contract.json"),
-        "fixture contract",
+
+    // The fleet has no predecessor manifest to compare, so every population
+    // is affecting (the fail-closed scope).
+    plan.change_scope = Some(ChangeScope::everything_planned(
+        &plan,
+        "fleet fixture: no predecessor manifest; every population is affecting",
+    ));
+    let requested =
+        [SurfaceRole::Staging, SurfaceRole::Production].map(|surface| RequestedDestination {
+            surface,
+            channel: CHANNEL.into(),
+            effective: None,
+        });
+    plan.destinations = planned_destinations(
+        &plan.qualification,
+        &plan.registry,
+        &requested,
+        plan.change_scope.as_ref(),
     )?;
-    contract.package_rules = vec![aos_release::qualification::PackageRule {
-        name: "fleet-package".into(),
-        role: aos_release::qualification::PackageRole::GeneralCatalog,
-        inherit_dependency_obligations: true,
-        execution: None,
-    }];
-    plan.schema_version = aos_release::RELEASE_PLAN_V2.into();
-    plan.gates = contract.gates(&plan.registry, plan.release_class)?;
-    plan.public_evidence_policy_digest = contract.digest()?;
-    plan.qualification = Some(contract);
-    plan.qualification_predecessor = Some(
-        aos_release::qualification_evidence::QualificationPredecessor {
-            registry: plan.registry.clone(),
-            release_id: "fleet-predecessor".into(),
-            manifest_digest: digest("fleet-predecessor"),
-        },
-    );
-    plan.images = vec![aos_release::plan::ImagePlan {
-        system_variant: "server".into(),
-        platforms: Platform::LINUX
-            .into_iter()
-            .map(|platform| PlatformCell {
-                platform,
-                decision: MatrixCell::Artifact {
-                    artifact: PlannedArtifactSet {
-                        configuration: None,
-                        artifacts: [
-                            format!("image/server/{platform}"),
-                            format!("image/server/{platform}/metadata"),
-                        ]
-                        .into_iter()
-                        .map(|id| PlannedArtifact {
-                            id,
-                            derivation: None,
-                            output: None,
-                            store_path: None,
-                            source_store_paths: Vec::new(),
-                        })
-                        .collect(),
-                    },
-                },
-            })
-            .collect(),
-    }];
     Ok(plan)
+}
+
+/// Returns the fleet's staging and production Hub surfaces.
+fn fleet_surfaces() -> Vec<PlannedSurface> {
+    [
+        (SurfaceRole::Staging, STAGING_ORIGIN, STAGING_DEPLOYMENT),
+        (
+            SurfaceRole::Production,
+            PRODUCTION_ORIGIN,
+            PRODUCTION_DEPLOYMENT,
+        ),
+    ]
+    .into_iter()
+    .map(|(role, origin, identity)| PlannedSurface {
+        role,
+        kind: SurfaceKind::Hub,
+        origin: origin.into(),
+        readback_origin: None,
+        identity: identity.into(),
+    })
+    .collect()
 }
 
 fn inventory_tree(
@@ -625,8 +686,8 @@ fn signing_request(
     manifest_digest: Option<Sha256Digest>,
     payload_digest: Sha256Digest,
     algorithm: SignatureAlgorithm,
-) -> SigningRequestV1 {
-    SigningRequestV1 {
+) -> SigningRequest {
+    SigningRequest {
         schema_version: SIGNING_REQUEST_DOMAIN.into(),
         request_id: format!("fleet/{artifact_kind}"),
         nonce: "2".repeat(64),
@@ -648,11 +709,11 @@ fn signing_request(
 }
 
 fn signature_response(
-    request: &SigningRequestV1,
+    request: &SigningRequest,
     key: &SigningKey,
     signed_bytes: &[u8],
-) -> Result<SignatureResponseV1> {
-    Ok(SignatureResponseV1 {
+) -> Result<SignatureResponse> {
+    Ok(SignatureResponse {
         schema_version: "aos.release.signature-response/v1".into(),
         request_digest: request.digest()?,
         role: request.role,
@@ -673,23 +734,24 @@ fn signature_response(
 }
 
 fn write_journal(path: PathBuf, plan: Sha256Digest, manifest: Sha256Digest) -> Result<()> {
-    let mut entries: Vec<JournalEntryV1> = Vec::new();
+    // Only the global build lifecycle is prepared; every destination entry is
+    // appended by the `aos release step` commands under test.
+    let mut entries: Vec<JournalEntry> = Vec::new();
     for state in [
         ReleaseState::Planned,
         ReleaseState::Built,
         ReleaseState::Finalized,
     ] {
         let prior = entries.last();
-        entries.push(JournalEntryV1 {
-            schema_version: aos_release::RELEASE_JOURNAL_ENTRY_V1.into(),
+        entries.push(JournalEntry {
+            schema_version: aos_release::RELEASE_JOURNAL_ENTRY.into(),
             sequence: u64::try_from(entries.len() + 1)?,
-            previous_entry_digest: prior
-                .map(|entry| Sha256Digest::of_canonical("aos.release.journal-entry/v1", entry))
-                .transpose()?,
+            previous_entry_digest: prior.map(JournalEntry::digest).transpose()?,
             plan_digest: plan,
             manifest_digest: (state >= ReleaseState::Finalized).then_some(manifest),
             prior_state: prior.map(|entry| entry.new_state),
             new_state: state,
+            destination: None,
             operation_ids: vec![format!("fleet-{state:?}").to_ascii_lowercase()],
             evidence: Vec::new(),
             recorded_at: TIME.into(),
@@ -712,7 +774,7 @@ fn signer_exchange() -> Result<()> {
     }
     let request_bytes = read_frame(&mut input)?;
     let payload = read_frame(&mut input)?;
-    let request: SigningRequestV1 = canonical::from_slice(&request_bytes, "signing request")?;
+    let request: SigningRequest = canonical::from_slice(&request_bytes, "signing request")?;
     request.validate()?;
     request.verify_payload_bytes(&payload)?;
     let (key, signed_bytes) = match request.role {
@@ -741,7 +803,7 @@ mod qualification_fixture;
 async fn qualification_executor() -> Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
-    let request: QualificationExecutorRequestV1 =
+    let request: QualificationExecutorRequest =
         canonical::from_slice(input.as_bytes(), "qualification request")?;
     request.validate()?;
     let mut builder = reqwest::Client::builder();
@@ -780,13 +842,11 @@ async fn qualification_executor() -> Result<()> {
         "platform": request.platform,
         "objects_verified": request.objects.len()
     });
-    let case = request
-        .qualification_case
-        .as_ref()
-        .context("fleet executor requires v2 case")?;
-    let now = humantime::format_rfc3339(std::time::SystemTime::now()).to_string();
-    let response = QualificationExecutorResponseV1 {
-        schema_version: QUALIFICATION_EXECUTOR_RESPONSE_V1.into(),
+    let case = &request.qualification_case;
+    // Whole seconds, as in `build_evidence`.
+    let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
+    let response = QualificationExecutorResponse {
+        schema_version: QUALIFICATION_EXECUTOR_RESPONSE.into(),
         request_digest: request.digest()?,
         evidence: fixture_evidence(
             case,
@@ -861,8 +921,10 @@ fn fixture_evidence(
         report_digest,
         authority_id: authority.into(),
         nonce,
-        started_at: humantime::format_rfc3339(finished - std::time::Duration::from_secs(seconds))
-            .to_string(),
+        started_at: humantime::format_rfc3339_seconds(
+            finished - std::time::Duration::from_secs(seconds),
+        )
+        .to_string(),
         finished_at: finish.into(),
     })
 }
@@ -871,69 +933,103 @@ fn review(arguments: &[String]) -> Result<()> {
     if arguments.len() != 3 {
         bail!("usage: review PLAN REPORT OUTPUT");
     }
-    let payload = aos_release::qualification_admission::QualificationReviewV1 {
-        schema_version: "aos.release.qualification-review/v1".into(),
+    let payload = QualificationReview {
+        schema_version: QUALIFICATION_REVIEW.into(),
         plan_digest: Sha256Digest::of_bytes(fs::read(&arguments[0])?),
         report_digest: Sha256Digest::of_bytes(fs::read(&arguments[1])?),
         authority_id: RELEASE_KEY_ID.into(),
         accepted: true,
     };
-    let digest = Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, canonical::to_vec(&payload)?);
-    let signature = SigningKey::from_bytes(&RELEASE_SEED).sign(digest.as_bytes());
     write_new(
         PathBuf::from(&arguments[2]),
-        &canonical::to_vec(&SignedReceiptEnvelopeV1 {
-            schema_version: SIGNED_RECEIPT_V1.into(),
-            key_id: RELEASE_KEY_ID.into(),
-            payload: serde_json::to_value(payload)?,
-            signature_base64: base64::engine::general_purpose::STANDARD
-                .encode(signature.to_bytes()),
-        })?,
+        &release_evidence_envelope(&payload)?,
     )
 }
 
-fn completion(arguments: &[String]) -> Result<()> {
-    if arguments.len() != 6 {
-        bail!("usage: completion PLAN MANIFEST PRODUCTION_RECEIPT CHANNEL_RECEIPT JOURNAL OUTPUT");
+/// Writes one signed attestation per fitness kind the production destination demands.
+///
+/// Each attestation is bound to the fleet's live identities: the production
+/// Hub deployment, the plan's signer roster, and the fixed Hub schema,
+/// tooling, and alert-configuration identities the fleet test passes to
+/// `publish` and `channel advance`. It prints those three flag values as JSON.
+fn fitness(arguments: &[String]) -> Result<()> {
+    if arguments.len() != 2 {
+        bail!("usage: fitness PLAN OUTPUT");
     }
-    let plan_bytes = fs::read(&arguments[0])?;
-    let plan: ReleasePlanV1 = canonical::from_slice(&plan_bytes, "release plan")?;
-    let envelope: ManifestEnvelopeV1 =
-        canonical::from_slice(&fs::read(&arguments[1])?, "release manifest")?;
-    let production_digest = Sha256Digest::of_bytes(fs::read(&arguments[2])?);
-    let channel_digest = Sha256Digest::of_bytes(fs::read(&arguments[3])?);
-    let journal = parse_journal(&fs::read(&arguments[4])?)?;
-    let prior = journal.last().context("rolling journal is empty")?;
-    let receipt = CompletionReceiptV1 {
-        schema_version: COMPLETION_RECEIPT_V1.into(),
-        release_id: plan.release_id,
-        plan_digest: Sha256Digest::of_bytes(plan_bytes),
-        manifest_digest: envelope.payload_digest,
-        production_receipt_digest: production_digest,
-        channel_receipt_digests: vec![channel_digest],
-        prior_journal_entry_digest: Sha256Digest::of_canonical(
-            "aos.release.journal-entry/v1",
-            prior,
-        )?,
-        retention_policy_id: plan.retention.policy_id,
-        retention_policy_digest: plan.retention.policy_digest,
-        corresponding_source_retained: true,
-        operational_handoff_complete: true,
-        authority_id: RELEASE_KEY_ID.into(),
-        completed_at: TIME.into(),
-    };
-    receipt.validate()?;
-    let payload = canonical::to_vec(&receipt)?;
-    let key = SigningKey::from_bytes(&RELEASE_SEED);
-    let signature_digest = Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, &payload);
-    let signed = SignedReceiptEnvelopeV1 {
-        schema_version: SIGNED_RECEIPT_V1.into(),
+    let plan: ReleasePlan = canonical::from_slice(&fs::read(&arguments[0])?, "release plan")?;
+    let output = Path::new(&arguments[1]);
+    if output.exists() {
+        bail!("fitness output must not already exist");
+    }
+
+    let destination = plan.destination(PRODUCTION_DESTINATION)?;
+    let surface = plan.surface(destination.surface)?;
+    let live = fleet_live_bindings(&plan, surface)?;
+    let performed_at = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
+    let profile = plan.qualification.profile(&destination.profile)?;
+    for name in profile.fitness.keys() {
+        let kind = plan.qualification.fitness_kind(name)?;
+        let report = FitnessReport {
+            schema_version: FITNESS_REPORT.into(),
+            performed_at: performed_at.clone(),
+            checks: kind
+                .checks
+                .iter()
+                .map(|check| {
+                    (
+                        check.clone(),
+                        CheckObservation {
+                            passed: true,
+                            detail: "Synthetic fleet exercise; no environment fitness claim".into(),
+                        },
+                    )
+                })
+                .collect(),
+            operator: "fleet-operator".into(),
+        };
+        let evidence_digest = Sha256Digest::of_bytes(canonical::to_vec(&report)?);
+        let attestation = report.attest(kind, &live, evidence_digest, RELEASE_KEY_ID)?;
+        write_new(
+            output.join(name).join(format!("{performed_at}.json")),
+            &release_evidence_envelope(&attestation)?,
+        )?;
+    }
+
+    println!(
+        "{}",
+        json!({
+            "hub_schema": HUB_SCHEMA,
+            "tooling_digest": digest(TOOLING_LABEL).to_string(),
+            "alert_config_digest": digest(ALERT_CONFIG_LABEL).to_string(),
+        })
+    );
+    Ok(())
+}
+
+/// Returns the live identities `aos release step` derives for a Hub surface
+/// when given the fleet's fitness flags.
+fn fleet_live_bindings(plan: &ReleasePlan, surface: &PlannedSurface) -> Result<LiveBindings> {
+    Ok(LiveBindings {
+        registry: plan.registry.clone(),
+        surface: Some(surface.identity.clone()),
+        surface_kind: Some(surface.kind),
+        hub_schema: Some(HUB_SCHEMA.into()),
+        signer_roster: Some(signer_roster_digest(plan)?),
+        tooling: Some(digest(TOOLING_LABEL)),
+        alert_config: Some(digest(ALERT_CONFIG_LABEL)),
+    })
+}
+
+/// Signs a canonical payload with the fixed release-evidence key.
+fn release_evidence_envelope(payload: &impl serde::Serialize) -> Result<Vec<u8>> {
+    let signed = Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, canonical::to_vec(payload)?);
+    let signature = SigningKey::from_bytes(&RELEASE_SEED).sign(signed.as_bytes());
+    canonical::to_vec(&SignedReceiptEnvelope {
+        schema_version: SIGNED_RECEIPT.into(),
         key_id: RELEASE_KEY_ID.into(),
-        payload: serde_json::to_value(receipt)?,
-        signature_base64: base64::engine::general_purpose::STANDARD
-            .encode(key.sign(signature_digest.as_bytes()).to_bytes()),
-    };
-    write_new(&arguments[5], &canonical::to_vec(&signed)?)
+        payload: serde_json::to_value(payload)?,
+        signature_base64: base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()),
+    })
 }
 
 async fn maintainer_upstream_proxy(arguments: &[String]) -> Result<()> {
@@ -1141,25 +1237,23 @@ fn write_frame(writer: &mut impl Write, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use aos_release::artifact::BundlePath;
+    use aos_release::fitness::{FitnessAttestation, require_destination_fitness};
+    use aos_release::qualification::QualificationPhase;
     use aos_release::signing::TrustedEd25519Key;
+    use aos_release::state::parse_journal;
     use aos_release::verify::CapturedFile;
 
     use super::*;
 
-    #[test]
-    fn maintainer_fixture_intercepts_only_the_exact_github_tags_route() {
-        let request = b"GET /repos/andyl-technologies/maintain-fixture/tags?per_page=100&page=1 HTTP/1.1\r\nHost: api.github.com\r\n\r\n";
-        assert!(is_fixture_github_tags_request(request));
-        assert!(!is_fixture_github_tags_request(
-            b"GET /repos/other/project/tags?page=1 HTTP/1.1\r\nHost: api.github.com\r\n\r\n"
-        ));
-        assert!(is_fixture_github_tags_request(
-            b"GET /repos/andyl-technologies/maintain-fixture/tags?page=1 HTTP/1.1\r\nHost: aos.andyl.org\r\n\r\n"
-        ));
+    /// Prepared fixture outputs inside one temporary directory.
+    struct Prepared {
+        _temporary: tempfile::TempDir,
+        output: PathBuf,
+        predecessor: PathBuf,
+        trust: PathBuf,
     }
 
-    #[test]
-    fn prepared_four_platform_surface_verifies_offline() -> Result<()> {
+    fn prepared() -> Result<Prepared> {
         let temporary = tempfile::tempdir()?;
         let base = temporary.path().join("base");
         let output = temporary.path().join("surface");
@@ -1186,9 +1280,51 @@ mod tests {
         }
 
         prepare(&arguments)?;
+        Ok(Prepared {
+            _temporary: temporary,
+            output,
+            predecessor,
+            trust,
+        })
+    }
+
+    fn prepared_plan(prepared: &Prepared) -> Result<(ReleasePlan, ReleaseManifestV1)> {
+        let plan = canonical::from_slice(
+            &fs::read(prepared.output.join("release-plan.json"))?,
+            "fixture plan",
+        )?;
+        let envelope: ManifestEnvelopeV1 = canonical::from_slice(
+            &fs::read(prepared.output.join("release-manifest.json"))?,
+            "fixture manifest",
+        )?;
+        Ok((plan, envelope.payload))
+    }
+
+    #[test]
+    fn maintainer_fixture_intercepts_only_the_exact_github_tags_route() {
+        let request = b"GET /repos/andyl-technologies/maintain-fixture/tags?per_page=100&page=1 HTTP/1.1\r\nHost: api.github.com\r\n\r\n";
+        assert!(is_fixture_github_tags_request(request));
+        assert!(!is_fixture_github_tags_request(
+            b"GET /repos/other/project/tags?page=1 HTTP/1.1\r\nHost: api.github.com\r\n\r\n"
+        ));
+        assert!(is_fixture_github_tags_request(
+            b"GET /repos/andyl-technologies/maintain-fixture/tags?page=1 HTTP/1.1\r\nHost: aos.andyl.org\r\n\r\n"
+        ));
+    }
+
+    #[test]
+    fn prepared_four_platform_surface_verifies_offline() -> Result<()> {
+        let prepared = prepared()?;
+        let Prepared {
+            output,
+            predecessor,
+            trust,
+            ..
+        } = &prepared;
+
         let plan = fs::read(output.join("release-plan.json"))?;
         let envelope = fs::read(output.join("release-manifest.json"))?;
-        let files = captured_files(&output, &output)?;
+        let files = captured_files(output, output)?;
         let key =
             TrustedEd25519Key::from_encoded(RELEASE_KEY_ID, &fs::read(trust.join("release.pub"))?)?;
         let summary = aos_release::verify::verify_release(&plan, &envelope, &files, &[key])?;
@@ -1197,7 +1333,7 @@ mod tests {
 
         let predecessor_plan = fs::read(predecessor.join("release-plan.json"))?;
         let predecessor_envelope = fs::read(predecessor.join("release-manifest.json"))?;
-        let predecessor_files = captured_files(&predecessor, &predecessor)?;
+        let predecessor_files = captured_files(predecessor, predecessor)?;
         let key =
             TrustedEd25519Key::from_encoded(RELEASE_KEY_ID, &fs::read(trust.join("release.pub"))?)?;
         let predecessor_summary = aos_release::verify::verify_release(
@@ -1212,10 +1348,183 @@ mod tests {
                 .starts_with("qualification-snapshot-")
         );
 
-        let journal = fs::read(trust.join("release-journal.jsonl"))?;
+        let journal = parse_journal(&fs::read(trust.join("release-journal.jsonl"))?)?;
         assert_eq!(
-            parse_journal(&journal)?.last().map(|entry| entry.new_state),
+            journal.last().map(|entry| entry.new_state),
             Some(ReleaseState::Finalized)
+        );
+        let plan: ReleasePlan = canonical::from_slice(&plan, "fixture plan")?;
+        let summary = aos_release::verify::verify_journal_for_plan(&plan, &journal)?;
+        assert!(summary.destinations.is_empty());
+        summary.can_publish(&plan, "staging/candidate")?;
+        assert!(summary.can_publish(&plan, PRODUCTION_DESTINATION).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn plan_names_both_candidate_destinations_on_two_hubs() -> Result<()> {
+        let prepared = prepared()?;
+        let (plan, _) = prepared_plan(&prepared)?;
+
+        let destinations: Vec<(&str, &str)> = plan
+            .destinations
+            .iter()
+            .map(|destination| (destination.name.as_str(), destination.profile.as_str()))
+            .collect();
+        assert_eq!(
+            destinations,
+            [
+                ("staging/candidate", "build"),
+                (PRODUCTION_DESTINATION, "functional")
+            ]
+        );
+
+        // The functional profile rolls out in one ring and closes on its own.
+        let production = plan.destination(PRODUCTION_DESTINATION)?;
+        assert_eq!(production.ring_range(1)?, (0, 255));
+        assert!(production.ring_range(2).is_err());
+        assert_eq!(
+            plan.surface(SurfaceRole::Production)?.identity,
+            PRODUCTION_DEPLOYMENT
+        );
+        Ok(())
+    }
+
+    /// Pins the case populations the fleet test's report assertions rely on.
+    #[test]
+    fn production_candidate_phases_select_the_fleet_cases() -> Result<()> {
+        let prepared = prepared()?;
+        let (plan, manifest) = prepared_plan(&prepared)?;
+
+        let cases = |phase| {
+            aos_release::qualification_evidence::cases(
+                &plan,
+                &manifest,
+                Some(PRODUCTION_DESTINATION),
+                phase,
+            )
+        };
+        let requirements = |cases: &[aos_release::qualification_evidence::QualificationCase]| {
+            let mut ids: Vec<String> = cases
+                .iter()
+                .map(|case| case.requirement_id.clone())
+                .collect();
+            ids.sort();
+            ids
+        };
+
+        // Staging: delivery, four package cells, and the two Linux disk and
+        // container functional claims. The disk claims update from the
+        // predecessor, so the fleet passes --predecessor-bundle here.
+        let staging = cases(QualificationPhase::Staging)?;
+        assert_eq!(staging.len(), 9);
+        assert_eq!(
+            staging
+                .iter()
+                .filter(|case| case.requirement_id.starts_with("claim-"))
+                .count(),
+            4
+        );
+        assert_eq!(
+            staging
+                .iter()
+                .filter(|case| case.predecessor.is_some())
+                .count(),
+            2
+        );
+        assert_eq!(
+            staging
+                .iter()
+                .filter(|case| case.requirement_id == "package-function")
+                .count(),
+            4
+        );
+
+        // Rollout: one platform-independent health case, without a predecessor.
+        let rollout = cases(QualificationPhase::Rollout)?;
+        assert_eq!(requirements(&rollout), ["rollout-health"]);
+        assert!(rollout.iter().all(|case| case.predecessor.is_none()));
+
+        // Functional claims stop at A2: there is no complete phase.
+        assert!(cases(QualificationPhase::Complete)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn fitness_attestations_satisfy_the_production_destination() -> Result<()> {
+        let prepared = prepared()?;
+        let (plan, _) = prepared_plan(&prepared)?;
+        let directory = prepared.trust.join("fitness");
+
+        fitness(&[
+            prepared
+                .output
+                .join("release-plan.json")
+                .display()
+                .to_string(),
+            directory.display().to_string(),
+        ])?;
+
+        // Load the store the way `aos release step publish` does.
+        let key = TrustedEd25519Key::from_encoded(
+            RELEASE_KEY_ID,
+            &fs::read(prepared.trust.join("release.pub"))?,
+        )?;
+        let mut attestations = Vec::new();
+        let mut kinds = Vec::new();
+        for kind in fs::read_dir(&directory)? {
+            let kind = kind?;
+            kinds.push(kind.file_name().to_string_lossy().into_owned());
+            for entry in fs::read_dir(kind.path())? {
+                let bytes = fs::read(entry?.path())?;
+                attestations.push(FitnessAttestation::verify_signed(
+                    &bytes,
+                    &plan,
+                    std::slice::from_ref(&key),
+                )?);
+            }
+        }
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            [
+                "alert-delivery",
+                "authority-recovery",
+                "hub-restore",
+                "storage-restore"
+            ]
+        );
+
+        // The live identities `fitness_gate` derives from the fleet's flags.
+        let surface = plan.surface(SurfaceRole::Production)?;
+        let live = LiveBindings {
+            registry: plan.registry.clone(),
+            surface: Some(surface.identity.clone()),
+            surface_kind: Some(surface.kind),
+            hub_schema: Some(HUB_SCHEMA.into()),
+            signer_roster: Some(signer_roster_digest(&plan)?),
+            tooling: Some(Sha256Digest::parse(&digest(TOOLING_LABEL).to_string())?),
+            alert_config: Some(Sha256Digest::parse(
+                &digest(ALERT_CONFIG_LABEL).to_string(),
+            )?),
+        };
+        let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
+        require_destination_fitness(&plan, PRODUCTION_DESTINATION, &attestations, &live, &now)?;
+        require_destination_fitness(&plan, "staging/candidate", &[], &live, &now)?;
+
+        let other_surface = LiveBindings {
+            surface: Some(STAGING_DEPLOYMENT.into()),
+            ..live
+        };
+        assert!(
+            require_destination_fitness(
+                &plan,
+                PRODUCTION_DESTINATION,
+                &attestations,
+                &other_surface,
+                &now
+            )
+            .is_err()
         );
         Ok(())
     }

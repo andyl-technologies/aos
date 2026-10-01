@@ -75,6 +75,11 @@
       drv.systemdUnitInventory
       or (drv.passthru.systemdUnitInventory or {});
     inherit name;
+    version = drv.version or "unknown";
+    exposeArtifact =
+      if drv ? expose
+      then encodePath drv.expose
+      else null;
   };
 in {
   ## Stage-1: serialise the frozen form of `pkgs` (top-level derivations only).
@@ -130,10 +135,16 @@ in {
       {
         type = "derivation";
         name = e.name or name;
+        version = e.version or "unknown";
         outPath = path;
         outputName = builtins.head outputs;
         systemdUnitInventory = e.systemdUnitInventory or {};
         __toString = _: path;
+      }
+      // lib.optionalAttrs ((e.exposeArtifact or null) != null) {
+        # Preserve assertion evidence separately from the live expose API.
+        # Recreating that API would invoke image-only catalog builders on-host.
+        frozenExposeArtifact = decodePath e.exposeArtifact;
       }
       // builtins.listToAttrs (builtins.map (o: {
           name = o;

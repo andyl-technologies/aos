@@ -52,9 +52,48 @@ pub fn aos_nix_env() -> Vec<(&'static str, String)> {
     ]
 }
 
+/// Returns environment bindings for privileged AOS store management.
+///
+/// Root control operations use the local store and image baseline configuration
+/// even when a login shell selects the optional multi-user daemon. Non-root
+/// callers retain their normal client configuration. This helper is intended
+/// for package imports and configuration activation, not ordinary build CLIs.
+pub fn aos_management_nix_env() -> Vec<(&'static str, String)> {
+    management_bindings(aos_nix_env(), rustix::process::geteuid().is_root())
+}
+
+fn management_bindings(
+    mut bindings: Vec<(&'static str, String)>,
+    privileged: bool,
+) -> Vec<(&'static str, String)> {
+    if privileged {
+        bindings.extend([
+            ("NIX_REMOTE", "local".to_owned()),
+            ("NIX_CONF_DIR", "/etc/nix".to_owned()),
+            ("NIX_USER_CONF_FILES", String::new()),
+            ("NIX_CONFIG", String::new()),
+        ]);
+    }
+
+    bindings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn privileged_management_selects_local_baseline_without_changing_clients() {
+        let layout = vec![("NIX_STORE_DIR", "/fixture/store".to_owned())];
+        assert_eq!(management_bindings(layout.clone(), false), layout);
+
+        let management = management_bindings(layout.clone(), true);
+        assert!(management.contains(&layout[0]));
+        assert!(management.contains(&("NIX_REMOTE", "local".to_owned())));
+        assert!(management.contains(&("NIX_CONF_DIR", "/etc/nix".to_owned())));
+        assert!(management.contains(&("NIX_CONFIG", String::new())));
+        assert!(management.contains(&("NIX_USER_CONF_FILES", String::new())));
+    }
 
     // `AOS_ROOT` is process-global state, and cargo runs tests in
     // parallel within one binary. Splitting the scenarios across
