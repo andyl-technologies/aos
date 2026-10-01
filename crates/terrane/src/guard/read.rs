@@ -373,8 +373,8 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 return Err(StoreFailure::new(StoreErrorKind::Absent(identity)));
             }
         }
-        let current = self
-            .authorize_observed(
+        let (current, live) = self
+            .authorize_observed_with_evidence(
                 &snapshot.authority_reference,
                 &snapshot.token,
                 Verb::Read,
@@ -386,10 +386,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
         let record = current
             .record()
             .ok_or_else(|| denied(&snapshot.authority_reference, Verb::Read))?;
-        let live = self
-            .verified_tree_observed(record.commit, observation)
-            .await?
-            .evidence;
+        // Reuse only the evidence freshly checked for this exact current ref.
+        // Every path and content boundary still performs its own authorization.
+        let live = live.ok_or_else(|| denied(&snapshot.authority_reference, Verb::Read))?;
         let live_roots = live.occurrences(self.config().min_chunk_size)?;
         for bound in snapshot
             .evidence

@@ -269,6 +269,27 @@ impl<S: Store, C: Clock> Guard<S, C> {
         surface: &str,
         observation: HistoryObservation<'_>,
     ) -> Result<AuthorizedRef, StoreFailure> {
+        self.authorize_observed_with_evidence(reference, token, verb, paths, surface, observation)
+            .await
+            .map(|(authorized, _)| authorized)
+    }
+
+    /// Retains the fresh tree used for this exact current-policy authorization.
+    ///
+    /// Evidence belongs to the returned complete ref and the same observation;
+    /// it cannot replace a fresh authorization in a subsequent operation.
+    ///
+    /// # Errors
+    /// Preserves current token, ACL, canonical history, and storage failures.
+    async fn authorize_observed_with_evidence(
+        &self,
+        reference: &str,
+        token: &[u8],
+        verb: Verb,
+        paths: &[Vec<u8>],
+        surface: &str,
+        observation: HistoryObservation<'_>,
+    ) -> Result<(AuthorizedRef, Option<TreeEvidence>), StoreFailure> {
         RefName::parse(reference).map_err(|_| denied(reference, verb))?;
         let now = self.now(reference, verb)?;
         let verified = auth::verify(token, &self.keys, now).map_err(|_| denied(reference, verb))?;
@@ -367,7 +388,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
             token_bytes: token.to_vec(),
         };
         self.refresh_authorized_time(&authorized)?;
-        Ok(authorized)
+        Ok((authorized, evidence))
     }
 
     /// Refreshes token authority for the actual previously checked request without I/O.
