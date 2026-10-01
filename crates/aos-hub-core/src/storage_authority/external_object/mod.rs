@@ -23,6 +23,9 @@ pub mod stage;
 /// Exact provider-incarnation commitments for conditional deletion.
 pub mod deletion;
 
+/// Immutable same-binding topology-copy originals and physical ownership.
+pub mod copy;
+
 /// Metadata-only guarded HEAD intervals and explicitly historical replay.
 pub mod observation;
 
