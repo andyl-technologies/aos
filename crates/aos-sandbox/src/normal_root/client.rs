@@ -5,6 +5,8 @@
 //! The original Root peer is joined later, under the real coordinator's lifetime.
 //! None of these objects can produce Intent, Floor or CurrentRead authority.
 
+pub(super) mod source_successor_credential;
+
 use std::fs::File;
 use std::num::NonZeroU32;
 use std::os::fd::OwnedFd;

@@ -754,6 +754,30 @@ impl EffectFailure {
 
 /// Executes idempotent single-node effects through fixed local boundaries.
 pub trait SingleNodeEffectExecutor {
+    /// Issues only the fixed administrative successor on real original owners.
+    ///
+    /// The default is retaining terminal refusal. Production borrows its SAME
+    /// Source field and the sole Controller Journal; returned packet bytes are
+    /// not Source mutation, current ancestry, funding or Root floor authority.
+    ///
+    /// # Errors
+    /// Returns resident first-cause failure requiring deliberate termination;
+    /// it must never be reduced to an ordinary dropped error or retried.
+    #[cfg(target_os = "linux")]
+    fn issue_source_successor_v2<'writers, 'profile, 'credentials>(
+        &'writers mut self,
+        journal: &'writers mut Journal,
+        profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+        credentials: &'credentials mut crate::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
+    ) -> Result<
+        crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2,
+        crate::policy_compiler::FailedOriginalSourceSuccessorInvocationV2<'writers, 'profile, 'credentials>,
+    > {
+        Err(crate::policy_compiler::unavailable_source_successor_issuer_v2(
+            journal, profile, credentials,
+        ))
+    }
+
     /// Completes provisioned Source genesis using the executor's real owner.
     ///
     /// This internal startup hook is closed by default. The production override
@@ -1180,6 +1204,21 @@ where
     pub(crate) fn journal_mut(&mut self) -> &mut Journal {
         self.ledger_validated = false;
         &mut self.journal
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn issue_source_successor_v2<'writers, 'profile, 'credentials>(
+        &'writers mut self,
+        profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+        credentials: &'credentials mut crate::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
+    ) -> Result<
+        crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2,
+        crate::policy_compiler::FailedOriginalSourceSuccessorInvocationV2<'writers, 'profile, 'credentials>,
+    > {
+        self.ledger_validated = false;
+        self.executor.issue_source_successor_v2(
+            &mut self.journal, profile, credentials,
+        )
     }
 
     #[cfg(target_os = "linux")]

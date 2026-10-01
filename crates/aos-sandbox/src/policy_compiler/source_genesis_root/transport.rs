@@ -1,10 +1,11 @@
 //! Deadline-bounded I/O on the one retained fixed Root socket.
 //!
-//! No duplicate or blocking file writer is created. Readiness waits preserve
-//! the original endpoint and deadline; a partial/ambiguous phase is never
-//! retried by opening another connection inside this flight.
+//! Readiness waits preserve the original endpoint and deadline. Issuer custody
+//! additionally retains the raw original description while the unchanged
+//! stream validator admits a CLOEXEC duplicate of that same socket/OFD. No
+//! partial or ambiguous phase is retried on another connection.
 
-use std::os::fd::{AsFd as _, BorrowedFd};
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::time::{Duration, Instant};
 
 use aos_sandbox_linux::unix_stream::RetainedUnixStream;
@@ -44,12 +45,39 @@ fn connect_once(deadline: Instant) -> Result<RetainedUnixStream, SourceGenesisEr
         None,
     )
     .map_err(std::io::Error::from)?;
+    connect_socket(socket.as_fd(), deadline)?;
+    RetainedUnixStream::from_owned(socket).map_err(Into::into)
+}
+
+// The caller parks the only connection before any connect/wait/adoption can
+// fail. This is purpose-private custody, not a supplied descriptor factory.
+pub(super) fn connect_parked(
+    original: &mut Option<OwnedFd>,
+    deadline: Instant,
+) -> Result<RetainedUnixStream, SourceGenesisErrorV1> {
+    if original.is_some() {
+        return Err(SourceGenesisErrorV1::Conflict);
+    }
+    require_remaining(deadline)?;
+    *original = Some(socket_with(
+        AddressFamily::UNIX,
+        SocketType::STREAM,
+        SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+        None,
+    ).map_err(std::io::Error::from)?);
+    let socket = original.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+    connect_socket(socket.as_fd(), deadline)?;
+    let duplicate = rustix::io::fcntl_dupfd_cloexec(socket, 0).map_err(std::io::Error::from)?;
+    RetainedUnixStream::from_owned(duplicate).map_err(Into::into)
+}
+
+fn connect_socket(socket: BorrowedFd<'_>, deadline: Instant) -> Result<(), SourceGenesisErrorV1> {
     let address =
         SocketAddrUnix::new(POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2).map_err(std::io::Error::from)?;
     match connect(&socket, &address) {
         Ok(()) => {}
         Err(rustix::io::Errno::INPROGRESS) => {
-            wait(socket.as_fd(), PollFlags::OUT, deadline)?;
+            wait(socket, PollFlags::OUT, deadline)?;
             rustix::net::sockopt::socket_error(&socket)
                 .map_err(std::io::Error::from)?
                 .map_err(std::io::Error::from)?;
@@ -59,7 +87,7 @@ fn connect_once(deadline: Instant) -> Result<RetainedUnixStream, SourceGenesisEr
         Err(error) => return Err(std::io::Error::from(error).into()),
     }
     require_remaining(deadline)?;
-    RetainedUnixStream::from_owned(socket).map_err(Into::into)
+    Ok(())
 }
 
 pub(super) fn wait(

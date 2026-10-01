@@ -85,6 +85,8 @@ mod source_hold_readback_v2;
 pub use source_genesis_root::{
     CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1, CurrentRootSourceGenesisFloorV1,
     HeldRootSourceGenesisIntentV1, ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1,
+    FailedOriginalSourceSuccessorInvocationV2, OriginalSourceSuccessorInvocationV2,
+    SourceSuccessorIssuancePhaseV2,
     ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1, ROOT_SOURCE_GENESIS_INTENT_BYTES_V1,
     ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1, RootSourceGenesisAuthorityV1,
     RootSourceGenesisFloorProofV1, RootSourceGenesisFrameKindV1, RootSourceGenesisIntentRecordV1,
@@ -100,6 +102,8 @@ pub(crate) use source_genesis_root::{
     require_root_source_genesis_capacity_owner_v1, require_root_source_genesis_mutation_v1,
     validate_root_source_genesis_capacity_admission_v1,
     validate_root_source_genesis_capacity_settlement_v1,
+    SourceSuccessorSigningCutV2,
+    unavailable_source_successor_issuer_v2,
 };
 mod source_project_admission_readback;
 #[cfg(target_os = "linux")]

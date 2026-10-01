@@ -16,6 +16,7 @@ mod flight;
 mod pins;
 mod records;
 mod store;
+mod successor_issuance;
 mod transport;
 mod wire;
 
@@ -31,6 +32,13 @@ pub use controller_readback::{
     sign_controller_source_genesis_readback_v1,
 };
 pub use coordinator::coordinate_provisioned_source_genesis_v1;
+pub use successor_issuance::{
+    FailedOriginalSourceSuccessorInvocationV2, OriginalSourceSuccessorInvocationV2,
+    SourceSuccessorIssuancePhaseV2,
+};
+pub(crate) use successor_issuance::{
+    SourceSuccessorSigningCutV2, unavailable as unavailable_source_successor_issuer_v2,
+};
 pub use current::CurrentRootSourceGenesisFloorV1;
 pub(in crate::policy_compiler) use flight::CompletedRootSourceGenesisFloorV1;
 pub use flight::{HeldRootSourceGenesisIntentV1, RootSourceGenesisFloorProofV1};

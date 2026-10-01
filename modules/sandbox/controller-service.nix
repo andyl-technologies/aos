@@ -154,11 +154,17 @@
     "controller-source-tree-seed-v1:/run/credentials/@system/${cfg.credentials.controllerSourceTreeSeed}"
     "project-authorization-source-v2:/run/credentials/@system/${cfg.credentials.projectAuthorizationSource}"
   ];
+  sourceSuccessorCredentials = lib.optionals cfg.sourceSuccessorIssuance.enable [
+    "controller-source-successor-admin-seed-v2:/run/credentials/@system/controller-source-successor-admin-seed-v2"
+    "controller-source-successor-intent-v2:/run/credentials/@system/controller-source-successor-intent-v2"
+  ];
 in {
   options.aos.sandbox.controllerService = {
     enable = lib.mkEnableOption "the production unprivileged sandbox node controller";
 
     publicApi.enable = lib.mkEnableOption "the registered mutual-TLS controller API on /run/aos/sandboxd/public.sock";
+
+    sourceSuccessorIssuance.enable = lib.mkEnableOption "the exclusive one-shot first Source successor issuer; never the Source mutation consumer";
 
     publisherIngress.enable = lib.mkEnableOption "the exact-process project publisher registration channel; publication effects remain unavailable";
 
@@ -309,6 +315,22 @@ in {
         {
           assertion = cfg.credentials.nodeId != null;
           message = "aos.sandbox.controllerService.credentials.nodeId is required";
+        }
+        {
+          assertion =
+            !cfg.sourceSuccessorIssuance.enable
+            || (!cfg.publicApi.enable && !cfg.publisherIngress.enable
+              && normalRootProfile != null && cfg.package == pkgs.aos-sandboxd);
+          message = "Source successor issuance requires the exact selected Controller/normal-Root image and exclusive nonpublic issue mode";
+        }
+        {
+          assertion =
+            !cfg.sourceSuccessorIssuance.enable
+            || (cfg.credentials.controllerHoldSigningKey != null
+              && cfg.credentials.controllerHoldPublicKey != null
+              && cfg.credentials.controllerSourceTreeSeedIssuer != null
+              && cfg.credentials.projectAuthorizationIssuer != null);
+          message = "Source successor issuance requires separately provisioned Controller readback and independent administrative public role pins";
         }
         {
           assertion =
@@ -543,13 +565,14 @@ in {
         StartLimitBurst = 5;
       };
       serviceConfig = {
-        Type = "notify";
+        Type = if cfg.sourceSuccessorIssuance.enable then "oneshot" else "notify";
         SELinuxContext = lib.mkIf (config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") "system_u:system_r:aos_sandbox_controller_t";
         NotifyAccess = "main";
         ExecStart =
           "${cfg.package}/bin/aos-sandboxd ${toString controller.uid} ${toString controller.gid}"
           + lib.optionalString cfg.publicApi.enable " --public-api"
-          + lib.optionalString cfg.publisherIngress.enable " --publisher-ingress";
+          + lib.optionalString cfg.publisherIngress.enable " --publisher-ingress"
+          + lib.optionalString cfg.sourceSuccessorIssuance.enable " --issue-source-successor";
         Sockets = lib.optional cfg.publisherIngress.enable "aos-sandboxd-publisher.socket";
         # Deliver the same configuration-selected inputs independently. Root's
         # original PID1 image never travels to Controller.
@@ -557,7 +580,7 @@ in {
           lib.optional cfg.method46TpmFloor.required "/proc/1/exe:aos-method46-pid1-image:read-only"
           ++ lib.optional (normalRootProfile != null) "${normalRootProfile}/profile.json:aos-normal-root-client-profile:read-only";
         FileDescriptorStoreMax = lib.mkIf (cfg.method46TpmFloor.required || normalRootProfile != null) 0;
-        ExecStartPre = brokerSessionConfiguration.installCommands;
+        ExecStartPre = lib.optionals (!cfg.sourceSuccessorIssuance.enable) brokerSessionConfiguration.installCommands;
         LoadCredential =
           nodeCredentials
           ++ cacheReplayCredentials
@@ -577,8 +600,9 @@ in {
           ++ publisherPolicySourceCredentials
           ++ projectAuthorizationIssuerCredential
           ++ controllerSourceTreeSeedIssuerCredential
-          ++ sourceGenesisPacketCredentials;
-        Restart = "on-failure";
+          ++ sourceGenesisPacketCredentials
+          ++ sourceSuccessorCredentials;
+        Restart = if cfg.sourceSuccessorIssuance.enable then "no" else "on-failure";
         RestartSec = "2s";
         # Population, not cgroup.procs, retains exiting TPM helper tasks until
         # kernel file-release work drains. Never time out that restart barrier.
@@ -618,11 +642,10 @@ in {
         PrivateDevices = !cfg.method46TpmFloor.required;
         PrivateNetwork = true;
         PrivateTmp = true;
-        # KernelBootId::current requires the read-only boot-ID proc subtree.
-        ProcSubset =
-          if cfg.method46TpmFloor.required
-          then "all"
-          else "pid";
+        # Ordinary protected broker execution guards and original Root/issuer
+        # clocks all sample KernelBootId through the read-only sysctl subtree.
+        # ProtectKernelTunables and the other confinement settings stay intact.
+        ProcSubset = "all";
         ProtectClock = true;
         ProtectControlGroups = true;
         ProtectHome = true;

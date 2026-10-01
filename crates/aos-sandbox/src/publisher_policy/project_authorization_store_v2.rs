@@ -88,6 +88,19 @@ pub(super) struct RetainedProjectAuthorizationHeadV2 {
     row_digest: ObjectDigest,
 }
 
+// A bounded observation from this store's existing authenticated current read.
+// Retaining these fields alone does not retain the Controller writer or heads.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SourceSuccessorAuthorizationDataV2 {
+    pub(crate) publisher_generation: u64,
+    pub(crate) publisher_head: ObjectDigest,
+    pub(crate) publisher_revision: ObjectDigest,
+    pub(crate) authorization_head: ObjectDigest,
+    pub(crate) limits: TreeLimitsV1,
+    pub(crate) packet: [u8; PACKET_BYTES],
+}
+
 /// Describes only the durability result, never Source or Create authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ProjectAuthorizationRetentionV2 {
@@ -309,6 +322,35 @@ pub(super) fn validate_rows_and_heads(
 }
 
 impl PublisherPolicyStore<'_> {
+    /// Rechecks the fixed issuer and borrows the actual current authorization.
+    ///
+    /// This bounded copy is DATA from this store's still-held Controller cut.
+    /// Neither historical genesis heads nor caller-supplied head values are
+    /// used to select it.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn current_source_successor_authorization_v2(
+        &self,
+        project: ProjectId,
+    ) -> Result<SourceSuccessorAuthorizationDataV2, ProjectAuthorizationSourceErrorV2> {
+        let verified = self
+            .current_authenticated_project_authorization_from_fixed_issuer_v2(project)?
+            .ok_or(ProjectAuthorizationSourceErrorV2::Stale)?;
+        let row = self
+            .current_retained_project_authorization_v2(project)?
+            .ok_or(ProjectAuthorizationSourceErrorV2::Stale)?;
+        let authorization_head = self.current_project_authorization_head_digest_v2(project)?;
+
+        self.require_fixed_controller_writer_v2()?;
+        Ok(SourceSuccessorAuthorizationDataV2 {
+            publisher_generation: verified.publisher_generation(),
+            publisher_head: verified.publisher_head_digest(),
+            publisher_revision: verified.publisher_revision_digest(),
+            authorization_head,
+            limits: verified.limits(),
+            packet: row.packet,
+        })
+    }
+
     fn require_fixed_controller_writer_v2(&self) -> Result<(), ProjectAuthorizationSourceErrorV2> {
         let uid = self
             .journal

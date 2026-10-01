@@ -210,7 +210,7 @@ pub(super) fn require_no_compaction(
     Ok(())
 }
 
-fn all_rows(
+pub(super) fn all_rows(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<BTreeMap<ProjectId, ControllerSourceGenesisRowsV1>, JournalError> {
     let mut accepted = BTreeMap::new();

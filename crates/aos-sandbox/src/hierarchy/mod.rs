@@ -27,6 +27,7 @@ pub mod recovery;
 pub(crate) mod source_floor;
 pub(crate) mod source_genesis;
 pub mod source_seed;
+pub mod source_successor;
 pub use source_genesis::{
     HeldSourceTreeGenesisObservationV1, SOURCE_TREE_GENESIS_RECEIPT_BYTES_V1,
     SourceTreeGenesisReceiptV1, SourceTreeGenesisStateV1, observe_source_tree_genesis_v1,

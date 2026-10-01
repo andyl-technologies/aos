@@ -1,8 +1,9 @@
 """Expected effective matrix for existing normal owners and private TPM helpers.
 
 This is data for the existing SETools checker, not a second checker or an
-installed-policy/currentness producer. PID 1's one explicit Root credential
-delivery exception grants no Root state access or preparation authority.
+installed-policy/currentness producer. PID 1's explicit Root and Controller
+credential delivery exceptions grant no owner state access or preparation
+authority.
 """
 
 import view_policy
@@ -32,10 +33,10 @@ ROOT_CUSTODY_CUTS = (
     ("process", "transition"),
 )
 
-ROOT_CREDENTIAL_PID1_FILE_DELIVERY = (
+CREDENTIAL_PID1_FILE_DELIVERY = (
     "create", "getattr", "open", "read", "setattr", "unlink", "write",
 )
-ROOT_CREDENTIAL_PID1_DIR_DELIVERY = (
+CREDENTIAL_PID1_DIR_DELIVERY = (
     "add_name", "create", "getattr", "mounton", "open", "read", "relabelto",
     "remove_name", "search", "setattr", "write",
 )
@@ -105,14 +106,14 @@ def matrix(Access, Transition, accesses, ordinary_domains):
             if other == domain:
                 continue
             for object_type in (state, credential):
-                if role == "policy_authority" and other == "init_t" and object_type == credential:
+                if role in ("controller", "policy_authority") and other == "init_t" and object_type == credential:
                     negative.extend(accesses(other, object_type, "file", tuple(
                         permission for permission in (*file_mutate, "open", "read")
-                        if permission not in ROOT_CREDENTIAL_PID1_FILE_DELIVERY
+                        if permission not in CREDENTIAL_PID1_FILE_DELIVERY
                     )))
                     negative.extend(accesses(other, object_type, "dir", tuple(
                         permission for permission in dir_mutate
-                        if permission not in ROOT_CREDENTIAL_PID1_DIR_DELIVERY
+                        if permission not in CREDENTIAL_PID1_DIR_DELIVERY
                     )))
                 else:
                     negative.extend(accesses(other, object_type, "file", file_mutate))
@@ -188,10 +189,33 @@ def matrix(Access, Transition, accesses, ordinary_domains):
             negative.extend(accesses(other, GATEWAY_CREDENTIAL, "file", ("open", "read", *file_mutate)))
             negative.extend(accesses(other, GATEWAY_CREDENTIAL, "dir", dir_mutate))
 
+    controller = "aos_sandbox_controller_t"
+    controller_credential = "aos_sandbox_controller_credential_t"
+    positive.extend(accesses("init_t", controller_credential, "file", CREDENTIAL_PID1_FILE_DELIVERY))
+    positive.extend(accesses("init_t", controller_credential, "dir", CREDENTIAL_PID1_DIR_DELIVERY))
+    transitions.append(Transition("init_t", controller_credential, "file", controller_credential))
+    positive.extend(accesses(controller, controller_credential, "dir", ("getattr", "open", "read", "search")))
+    positive.extend((
+        Access(controller, "tmpfs_t", "filesystem", "getattr"),
+        Access(controller_credential, "tmpfs_t", "filesystem", "associate"),
+    ))
+    negative.extend(accesses(controller, controller_credential, "file", (
+        *file_mutate, "execute", "execute_no_trans", "entrypoint", "map",
+        "relabelfrom", "relabelto",
+    )))
+    negative.extend(accesses(controller, controller_credential, "dir", (*dir_mutate, "relabelfrom", "relabelto")))
+    negative.extend(accesses("init_t", controller_credential, "file", (
+        "append", "link", "lock", "rename", "relabelfrom", "relabelto",
+    )))
+    negative.extend(accesses("init_t", controller_credential, "dir", ("rename", "rmdir", "relabelfrom")))
+    controller_runtime = "aos_sandbox_controller_runtime_t"
+    negative.extend(accesses("init_t", controller_runtime, "dir", (*dir_mutate, "open", "read", "search")))
+    negative.extend(accesses("init_t", controller_runtime, "sock_file", (*file_mutate, "open", "read")))
+
     root = "aos_sandbox_policy_authority_t"
     root_credential = "aos_sandbox_policy_authority_credential_t"
-    positive.extend(accesses("init_t", root_credential, "file", ROOT_CREDENTIAL_PID1_FILE_DELIVERY))
-    positive.extend(accesses("init_t", root_credential, "dir", ROOT_CREDENTIAL_PID1_DIR_DELIVERY))
+    positive.extend(accesses("init_t", root_credential, "file", CREDENTIAL_PID1_FILE_DELIVERY))
+    positive.extend(accesses("init_t", root_credential, "dir", CREDENTIAL_PID1_DIR_DELIVERY))
     transitions.append(Transition("init_t", root_credential, "file", root_credential))
     positive.extend(accesses(root, root_credential, "dir", ("getattr", "open", "read", "search")))
     negative.extend(accesses(root, root_credential, "file", file_mutate))

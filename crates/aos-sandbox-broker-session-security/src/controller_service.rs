@@ -163,6 +163,7 @@ mod publisher_credential;
 mod publisher_ingress;
 mod publisher_policy_source;
 mod storage_snapshot;
+mod source_successor_issuance;
 mod view_mutations;
 
 const STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";
@@ -349,6 +350,11 @@ where
 /// `--nix-start-admission` requires the original paired Nix startup capture and
 /// twelve fixed public credentials. It admits pending Start operations only;
 /// it does not enable a Nix worker, effect success, or readiness.
+/// The exclusive `--issue-source-successor` mode derives and durably delivers
+/// one fixed administrative approval from real completed generation-one owners.
+/// It starts no listener or worker and sends no READY notification. After its
+/// original resources are acquired, failure terminates with custody resident
+/// instead of returning an ordinary runtime error.
 /// The node identity is read from
 /// `CREDENTIALS_DIRECTORY/node-id`; broker endpoints,
 /// cgroups, journal location, and root-only diagnostic socket are fixed
@@ -369,6 +375,9 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         false,
     )
     .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
+    if configuration.issue_source_successor {
+        return source_successor_issuance::run(&configuration, startup);
+    }
     let crate::production_startup::CapturedControllerStartupV1 {
         publisher_descriptor,
         launch_image,
@@ -382,6 +391,9 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         .admit_selected(configuration.uid, configuration.gid)
         .map_err(ControllerRuntimeError::NormalRootProfile)?
         .map(Arc::new);
+    aos_sandbox::normal_root::require_source_successor_delivery_absent_v2(
+        normal_root_profile.as_deref(),
+    ).map_err(|_| ControllerRuntimeError::InvalidCredential)?;
     let launch_image = launch_image
         .map(|image| image.bind_controller_profile(normal_root_profile.clone()))
         .transpose()
@@ -2187,6 +2199,7 @@ struct RuntimeConfiguration {
     public_api: bool,
     publisher_ingress: bool,
     nix_start_admission: bool,
+    issue_source_successor: bool,
 }
 
 impl RuntimeConfiguration {
@@ -2203,17 +2216,26 @@ impl RuntimeConfiguration {
         let mut public_api = false;
         let mut publisher_ingress = false;
         let mut nix_start_admission = false;
+        let mut issue_source_successor = false;
         for argument in arguments {
             match argument.as_str() {
                 "--public-api" if !public_api => public_api = true,
                 "--publisher-ingress" if !publisher_ingress => publisher_ingress = true,
                 "--nix-start-admission" if !nix_start_admission => nix_start_admission = true,
+                "--issue-source-successor" if !issue_source_successor => {
+                    issue_source_successor = true;
+                }
                 _ => {
                     return Err(ControllerRuntimeError::InvalidArguments(
                         "unknown or duplicate activation flag",
                     ));
                 }
             }
+        }
+        if issue_source_successor && (public_api || publisher_ingress || nix_start_admission) {
+            return Err(ControllerRuntimeError::InvalidArguments(
+                "issue mode is exclusive",
+            ));
         }
         Ok(Self {
             uid,
@@ -2223,6 +2245,7 @@ impl RuntimeConfiguration {
             public_api,
             publisher_ingress,
             nix_start_admission,
+            issue_source_successor,
         })
     }
 
@@ -2332,7 +2355,33 @@ impl ProductionEffectExecutor {
         )
         .map_err(ControllerRuntimeError::ProjectAdmissionRecovery)?;
 
-        Ok(Self {
+        Ok(Self::from_retained_source(
+            sessions,
+            request_scope,
+            broker_plan_signer,
+            attachment_host,
+            attachment_mount,
+            source_domains,
+            controller_uid,
+            node,
+            current_boot_and_boottime(),
+        ))
+    }
+
+    // All fallible admission precedes this infallible move. Ordinary opening
+    // retains its old checks/order; issue mode supplies its parked SAME owner.
+    fn from_retained_source(
+        sessions: SharedControllerBrokerSessions,
+        request_scope: ControllerRequestScopeV1,
+        broker_plan_signer: Option<ControllerBrokerPlanSignerV1>,
+        attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
+        attachment_mount: Option<aos_sandbox::mount_preparation::MountServiceIdentity>,
+        source_domains: ProtectedSourceDomainJournalOwnerV1,
+        controller_uid: u32,
+        node: NodeId,
+        process_start: Option<([u8; 16], u64)>,
+    ) -> Self {
+        Self {
             sessions,
             request_scope,
             broker_plan_signer,
@@ -2352,10 +2401,10 @@ impl ProductionEffectExecutor {
             controller_uid,
             transfer_inventory: None,
             node,
-            process_start: current_boot_and_boottime(),
+            process_start,
             pending_source_commit: None,
             pending_atomic_snapshot: None,
-        })
+        }
     }
 
     fn public_mutation_context(
@@ -4177,6 +4226,27 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             )
         })
         .map_err(aos_sandbox::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?
+    }
+
+    fn issue_source_successor_v2<'writers, 'profile, 'credentials>(
+        &'writers mut self,
+        journal: &'writers mut Journal,
+        profile: &'profile aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+        credentials: &'credentials mut aos_sandbox::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
+    ) -> Result<
+        aos_sandbox::hierarchy::source_successor::SourceSuccessorApprovalDataV2,
+        aos_sandbox::policy_compiler::FailedOriginalSourceSuccessorInvocationV2<'writers, 'profile, 'credentials>,
+    > {
+        let mut original = aos_sandbox::policy_compiler::OriginalSourceSuccessorInvocationV2::park(
+            journal, &mut self.source_domains, profile, credentials,
+        );
+        if let Err(cause) = with_process_controller_hold_signer_v1(|generation, signer| {
+            original.run_with_controller_signer(generation, signer);
+            Ok(())
+        }) {
+            original.fail_controller_signer_admission(cause);
+        }
+        original.into_outcome()
     }
 
     fn prepare_guardian_plan(
@@ -6011,6 +6081,53 @@ mod tests {
     use buffa::Message as _;
 
     #[test]
+    fn source_successor_issue_mode_is_exclusive_and_keeps_fixed_paths() {
+        let configuration = RuntimeConfiguration::from_arguments(
+            ["aos-sandboxd", "1001", "1002", "--issue-source-successor"]
+                .map(str::to_owned).into_iter(),
+        ).unwrap();
+
+        assert!(configuration.issue_source_successor);
+        assert!(!configuration.public_api);
+        assert!(!configuration.publisher_ingress);
+        assert!(!configuration.nix_start_admission);
+        assert_eq!(configuration.state_directory, PathBuf::from(STATE_DIRECTORY));
+        assert_eq!(configuration.diagnostic_socket, PathBuf::from(DIAGNOSTIC_SOCKET));
+
+        for other in ["--public-api", "--publisher-ingress", "--nix-start-admission"] {
+            for flags in [["--issue-source-successor", other], [other, "--issue-source-successor"]] {
+                let arguments = ["aos-sandboxd", "1001", "1002"]
+                    .into_iter().chain(flags).map(str::to_owned);
+                assert!(matches!(
+                    RuntimeConfiguration::from_arguments(arguments),
+                    Err(ControllerRuntimeError::InvalidArguments("issue mode is exclusive")),
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn source_successor_issue_mode_defaults_absent_and_rejects_aliases_or_duplicates() {
+        let normal = RuntimeConfiguration::from_arguments(
+            ["aos-sandboxd", "1001", "1002"].map(str::to_owned).into_iter(),
+        ).unwrap();
+
+        assert!(!normal.issue_source_successor);
+        for flags in [
+            vec!["--issue-source-successor", "--issue-source-successor"],
+            vec!["--issue-source-successor=true"],
+            vec!["--source-successor"],
+        ] {
+            let arguments = ["aos-sandboxd", "1001", "1002"]
+                .into_iter().chain(flags).map(str::to_owned);
+            assert!(matches!(
+                RuntimeConfiguration::from_arguments(arguments),
+                Err(ControllerRuntimeError::InvalidArguments("unknown or duplicate activation flag")),
+            ));
+        }
+    }
+
+    #[test]
     fn nix_start_admission_defaults_closed_without_changing_fixed_paths() {
         let configuration = RuntimeConfiguration::from_arguments(
             ["aos-sandboxd", "1001", "1002"].map(str::to_owned).into_iter(),
@@ -6198,6 +6315,7 @@ mod tests {
             public_api: false,
             publisher_ingress: false,
             nix_start_admission: false,
+            issue_source_successor: false,
         }
     }
 
