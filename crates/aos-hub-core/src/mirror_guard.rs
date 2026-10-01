@@ -268,6 +268,23 @@ pub fn verify_mirror_guard_reply(
     })
 }
 
+/// Checks a retained reply's exact correlation and original observation horizon.
+///
+/// The recorded observation time checks internal consistency, not current
+/// freshness. This does not authenticate the reply or create an opaque guard
+/// proof. Observers must independently correlate the exact body digest and
+/// original request with an authenticated handler's accepted response.
+///
+/// # Errors
+/// Returns an error for changed originals, issuer, nonce, progress, observation
+/// time or canonical control bounds.
+pub fn validate_mirror_guard_reply_observation(
+    request: &MirrorGuardLookup,
+    reply: &MirrorGuardReply,
+) -> Result<()> {
+    validate_reply(reply, request, reply.observed_at)
+}
+
 fn validate_reply(
     reply: &MirrorGuardReply,
     request: &MirrorGuardLookup,

@@ -82,6 +82,25 @@ fn reply(request: &MirrorGuardLookup) -> MirrorGuardReply {
 }
 
 #[test]
+fn retained_observation_checks_do_not_grant_expired_live_proofs() {
+    let request = request();
+    let mut reply = reply(&request);
+    let key = StorageWorkKey::new("independent-guard-role-secret-0001").unwrap();
+    let signed = sign_mirror_guard_reply(&key, &reply, &request).unwrap();
+
+    assert!(
+        verify_mirror_guard_reply(&key, &signed.signature, &signed.body, &request, 200,).is_err()
+    );
+    assert!(validate_mirror_guard_reply_observation(&request, &reply).is_ok());
+
+    reply.progress.destination.as_mut().unwrap().object.etag = "\"changed\"".into();
+    assert!(validate_mirror_guard_reply_observation(&request, &reply).is_err());
+    reply.progress = request.expected.clone();
+    reply.observed_at = request.expires_at;
+    assert!(validate_mirror_guard_reply_observation(&request, &reply).is_err());
+}
+
+#[test]
 fn independent_mac_and_exact_fresh_body_binding() {
     let key = StorageWorkKey::new("independent-guard-role-secret-0001").unwrap();
     let producer = StorageWorkKey::new("producer-role-secret-00000000001").unwrap();

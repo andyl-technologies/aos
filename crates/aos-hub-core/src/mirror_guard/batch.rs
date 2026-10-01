@@ -408,6 +408,24 @@ fn validate_observation(
     Ok(())
 }
 
+/// Checks retained ordered results against their original batch observation.
+///
+/// This checks exact original, issuer, nonce, progress and per-item times under
+/// the recorded aggregate observation horizon. It does not authenticate the
+/// reply, assert present freshness or create opaque proofs. Observers must
+/// independently correlate exact body digests and the original challenge with
+/// an authenticated handler's accepted response.
+///
+/// # Errors
+/// Returns an error for changed or missing items, invalid observation ordering,
+/// malformed refusals, changed challenge fields or exceeded canonical bounds.
+pub fn validate_mirror_guard_batch_reply_observation(
+    request: &MirrorGuardBatchLookup,
+    reply: &MirrorGuardBatchReply,
+) -> Result<()> {
+    validate_batch_reply(reply, request, reply.observed_at)
+}
+
 fn validate_batch_reply(
     reply: &MirrorGuardBatchReply,
     request: &MirrorGuardBatchLookup,

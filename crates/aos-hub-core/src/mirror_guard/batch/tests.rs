@@ -100,6 +100,35 @@ fn key() -> StorageWorkKey {
 }
 
 #[test]
+fn retained_batch_observations_preserve_order_without_renewing_proofs() {
+    let request = request(2);
+    let mut reply = reply(&request);
+    reply.results[1] = MirrorGuardBatchResult::Refused {
+        original_digest: digest(&request.items[1].original).unwrap(),
+        refusal: MirrorGuardBatchRefusal::Unavailable,
+    };
+    let signed = sign_mirror_guard_batch_reply(&key(), &reply, &request).unwrap();
+
+    assert!(verify_mirror_guard_batch_reply(
+        &key(),
+        &signed.signature,
+        &signed.body,
+        &request,
+        200,
+    )
+    .is_err());
+    assert!(validate_mirror_guard_batch_reply_observation(&request, &reply).is_ok());
+
+    reply.results.swap(0, 1);
+    assert!(validate_mirror_guard_batch_reply_observation(&request, &reply).is_err());
+    reply.results.swap(0, 1);
+    if let MirrorGuardBatchResult::Positive { observed_at, .. } = &mut reply.results[0] {
+        *observed_at = reply.observed_at + 1;
+    }
+    assert!(validate_mirror_guard_batch_reply_observation(&request, &reply).is_err());
+}
+
+#[test]
 fn full_phase_batch_preserves_positive_times_and_explicit_refusals() {
     let request = request(64);
     let signed = sign_mirror_guard_batch_lookup(&key(), &request).unwrap();
