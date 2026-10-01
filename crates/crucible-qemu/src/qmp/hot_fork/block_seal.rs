@@ -327,6 +327,9 @@ fn absolute_file_path(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- malformed fixture receipts must fail the protocol test.
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     fn inventory() -> Value {
@@ -378,7 +381,7 @@ mod tests {
         }]);
         let receipt =
             parse_hot_fork_block_seal_state(&sealed, QmpCommandKind::HotForkBlockSeal).unwrap();
-        assert!(receipt.seals(&[request.clone()]));
+        assert!(receipt.seals(std::slice::from_ref(&request)));
 
         sealed["sealed-roots"][0]["snapshot-file-inode"] = json!(35);
         let swapped =
