@@ -19,6 +19,9 @@ use super::StoreFailure;
 #[path = "native_effect/range.rs"]
 mod range;
 
+#[path = "native_effect/directory_retention.rs"]
+mod directory_retention;
+
 // The descendant can construct effects only from genuine sealed producer and
 // held-backend inputs; ordinary callers cannot initialize the private mechanics.
 #[path = "../bucket/publication/effects.rs"]
@@ -106,6 +109,18 @@ impl FencePolicy {
 struct ParentFence {
     path: PathBuf,
     stamp: MetadataStamp,
+}
+
+/// Retains a genuinely opened directory independently of acquired exclusions.
+///
+/// Only descendant native factories populate these private fields. A directory
+/// descriptor is an incarnation observation, never a substitute for a lock.
+struct NativeOpenedDirectory {
+    file: File,
+    path: PathBuf,
+    stamp: MetadataStamp,
+    policy: FencePolicy,
+    parents: Vec<ParentFence>,
 }
 
 fn parent_paths(path: &std::path::Path) -> io::Result<Vec<PathBuf>> {
@@ -366,6 +381,12 @@ impl CreatedDirectory {
 
 /// Fixes one physical command from actual producer-owned paths.
 enum Plan {
+    // Initialization factories retain actual opened directories inside the
+    // submitted command, independently of every genuinely acquired exclusion.
+    RetainedDirectories {
+        directories: Arc<[NativeOpenedDirectory]>,
+        operation: Box<Plan>,
+    },
     ProbeRange {
         path: PathBuf,
         start: u64,
@@ -399,6 +420,23 @@ enum Plan {
         path: PathBuf,
         permissions: std::fs::Permissions,
     },
+}
+
+impl Plan {
+    /// Borrows the actual primitive, refusing unexpected nested wrappers.
+    #[cfg(test)]
+    fn primitive(&self) -> Option<&Self> {
+        match self {
+            Self::RetainedDirectories { operation, .. } => {
+                if matches!(operation.as_ref(), Self::RetainedDirectories { .. }) {
+                    None
+                } else {
+                    Some(operation)
+                }
+            }
+            _ => Some(self),
+        }
+    }
 }
 
 /// Opens a new staging inode with no permission exposure to other users.
@@ -620,7 +658,10 @@ impl NativeFsEffect {
     /// Identifies the fixed effect phase for an existing test fault wrapper.
     #[cfg(test)]
     pub(crate) fn fault_probe(&self) -> EffectFaultProbe<'_> {
-        match &self.plan {
+        let Some(plan) = self.plan.primitive() else {
+            return EffectFaultProbe::Other;
+        };
+        match plan {
             Plan::WriteNew { path, .. } => EffectFaultProbe::WriteNew(path),
             Plan::SyncFile { .. } => EffectFaultProbe::FileSync,
             Plan::SyncDirectory { path } => EffectFaultProbe::DirectorySync(path),
@@ -637,7 +678,7 @@ impl NativeFsEffect {
     /// accessor supplies no constructor or replacement for the fixed operation.
     #[cfg(test)]
     pub(crate) fn rename_noreplace_source(&self) -> Option<&std::path::Path> {
-        match &self.plan {
+        match self.plan.primitive()? {
             Plan::RenameNoReplace { from, .. } => Some(from),
             _ => None,
         }
@@ -672,7 +713,22 @@ impl NativeFsEffect {
             mut gates,
         } = self;
 
+        let (plan, directories) = match plan {
+            Plan::RetainedDirectories {
+                directories,
+                operation,
+            } => (*operation, Some(directories)),
+            primitive => (primitive, None),
+        };
+
         let result = (|| {
+            if matches!(&plan, Plan::RetainedDirectories { .. }) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "nested native directory retention",
+                )
+                .into());
+            }
             #[cfg(all(test, feature = "tokio"))]
             wait_test_gate(&mut gates, TestGatePhase::BeforeChecks)?;
             let durable_parent = |path: &std::path::Path| -> io::Result<()> {
@@ -683,6 +739,11 @@ impl NativeFsEffect {
                 sync_parent(path)
             };
             let fresh_fence = || -> io::Result<()> {
+                if let Some(directories) = &directories {
+                    for directory in directories.iter() {
+                        directory.check()?;
+                    }
+                }
                 for name in &names {
                     name.check(&exclusions)?;
                 }
@@ -883,10 +944,23 @@ impl NativeFsEffect {
                     file.set_permissions(permissions)?;
                     file.sync_all()?;
                 }
+                Plan::RetainedDirectories { .. } => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "nested native directory retention",
+                    )
+                    .into());
+                }
+            }
+            if let Some(directories) = &directories {
+                for directory in directories.iter() {
+                    directory.check()?;
+                }
             }
             Ok(())
         })();
 
+        drop(directories);
         drop(exclusions);
         result
     }
