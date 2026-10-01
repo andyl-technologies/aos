@@ -212,7 +212,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         bucket.check_directory(&bucket.inner.config.root).await?;
         bucket.open_publication(freshly_created).await?;
         {
-            let _guard = bucket.exclusive().await?;
+            let _guard = bucket.existing_exclusive().await?;
             bucket.catalog().await?;
         }
         Ok(bucket)

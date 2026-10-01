@@ -17,6 +17,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[path = "tests/directory.rs"]
 mod directory;
 
+#[path = "tests/range.rs"]
+mod range;
+
 // Deliberately Send, not Sync or Clone: the effect owns only actual descriptor
 // duplicates, so no stronger associated lock contract is needed.
 struct HeldLock {

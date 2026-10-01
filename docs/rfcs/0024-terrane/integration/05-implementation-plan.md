@@ -354,6 +354,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   primitive/barrier assertions unchanged. These are scoped process results,
   not a complete Nix gate pass. Mandatory formatting and the supported non-Send
   std/surface-sdk build pass; inherited unfinished-production warnings remain.
+  The later copied-burn/index-policy and three-walk control candidate builds
+  and passes all 14 focused cases. Its subsequent grouped ref run passes
+  31 of 33 selectors, with cancellation arrival and multiwriter expiry failing
+  at the original 2-second and 30-second bounds. No deadline or assertion has
+  changed. The policy fixtures verify unselected catalog data and detached
+  aliases; they do not qualify selected copied-retirement authority.
+  Shared existing-open prerequisites now require an existing-only final
+  catalog exclusion and a descriptor-bound native range probe. The generic
+  native range reader also uses a nofollow descriptor and preserves ordinary
+  hardlinks. These changes await actual Active-open integration and native
+  qualification; fresh and Pending activation remain separate work.
   The verify-on-get, ranged-get and file-CAS gates now require the appropriate
   exact held-content selectors and reject missing tests. Complete effect routing
   remains pending.

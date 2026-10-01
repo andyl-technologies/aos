@@ -16,6 +16,9 @@ use std::sync::Arc;
 
 use super::StoreFailure;
 
+#[path = "native_effect/range.rs"]
+mod range;
+
 // The descendant can construct effects only from genuine sealed producer and
 // held-backend inputs; ordinary callers cannot initialize the private mechanics.
 #[path = "../bucket/publication/effects.rs"]
@@ -363,6 +366,11 @@ impl CreatedDirectory {
 
 /// Fixes one physical command from actual producer-owned paths.
 enum Plan {
+    ProbeRange {
+        path: PathBuf,
+        start: u64,
+        expected: Vec<u8>,
+    },
     CreateDirectoryNew {
         path: PathBuf,
     },
@@ -533,6 +541,8 @@ impl std::error::Error for NativeEffectFailure {
 /// Identifies actual planned phases only for existing native fault wrappers.
 #[cfg(test)]
 pub(crate) enum EffectFaultProbe<'a> {
+    /// Identifies the exact create-new file whose primitive is requested.
+    WriteNew(&'a std::path::Path),
     /// Identifies an actual file durability command.
     FileSync,
     /// Identifies the directory whose durability is requested.
@@ -611,6 +621,7 @@ impl NativeFsEffect {
     #[cfg(test)]
     pub(crate) fn fault_probe(&self) -> EffectFaultProbe<'_> {
         match &self.plan {
+            Plan::WriteNew { path, .. } => EffectFaultProbe::WriteNew(path),
             Plan::SyncFile { .. } => EffectFaultProbe::FileSync,
             Plan::SyncDirectory { path } => EffectFaultProbe::DirectorySync(path),
             Plan::RenameNoReplace { to, .. } => EffectFaultProbe::RenameNoReplace(to),
@@ -704,6 +715,14 @@ impl NativeFsEffect {
             fresh_projection(None)?;
 
             match plan {
+                Plan::ProbeRange {
+                    path,
+                    start,
+                    expected,
+                } => {
+                    range::verify(&path, start, &expected, &preimages)?;
+                    fresh_projection(None)?;
+                }
                 Plan::CreateDirectoryNew { path } => {
                     #[cfg(unix)]
                     {

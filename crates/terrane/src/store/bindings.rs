@@ -255,8 +255,6 @@ impl LocalFs for TokioLocalFs {
         path: &std::path::Path,
         range: ByteRange,
     ) -> std::io::Result<Vec<u8>> {
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
-
         let length = usize::try_from(range.length)
             .map_err(|source| std::io::Error::new(std::io::ErrorKind::InvalidInput, source))?;
         let mut bytes = Vec::new();
@@ -265,10 +263,65 @@ impl LocalFs for TokioLocalFs {
             .map_err(|source| std::io::Error::new(std::io::ErrorKind::InvalidInput, source))?;
         bytes.resize(length, 0);
 
-        let mut file = tokio::fs::File::open(path).await?;
-        file.seek(std::io::SeekFrom::Start(range.start)).await?;
-        file.read_exact(&mut bytes).await?;
-        Ok(bytes)
+        #[cfg(unix)]
+        {
+            use std::io::{Read, Seek};
+            use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+            tokio::runtime::Handle::try_current().map_err(std::io::Error::other)?;
+            let path = path.to_owned();
+
+            // Seek and read share one nofollow descriptor and one worker.
+            // General file reads permit hardlinks; protected publication probes
+            // separately enforce their captured single-link physical preimage.
+            tokio::task::spawn_blocking(move || {
+                let mut file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                    .open(&path)?;
+                let opened = file.metadata()?;
+                let stamp = |metadata: &std::fs::Metadata| {
+                    (
+                        metadata.dev(),
+                        metadata.ino(),
+                        metadata.uid(),
+                        metadata.mode(),
+                        metadata.nlink(),
+                    )
+                };
+                let check = |metadata: &std::fs::Metadata| -> std::io::Result<()> {
+                    if !metadata.is_file()
+                        || metadata.file_type().is_symlink()
+                        || stamp(metadata) != stamp(&opened)
+                    {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "range read file incarnation changed",
+                        ));
+                    }
+                    Ok(())
+                };
+                check(&opened)?;
+                check(&std::fs::symlink_metadata(&path)?)?;
+
+                file.seek(std::io::SeekFrom::Start(range.start))?;
+                file.read_exact(&mut bytes)?;
+
+                check(&file.metadata()?)?;
+                check(&std::fs::symlink_metadata(&path)?)?;
+                Ok(bytes)
+            })
+            .await
+            .map_err(std::io::Error::other)?
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (path, range, bytes);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "nofollow range reads unavailable",
+            ))
+        }
     }
 
     async fn write_new(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -804,6 +857,54 @@ mod tests {
             );
             assert_eq!(fs.read_nofollow(&source).await.unwrap(), b"verified file");
             assert!(fs.read_nofollow(&link).await.is_err());
+            assert_eq!(
+                fs.read_range(
+                    &source,
+                    ByteRange {
+                        start: 0,
+                        length: 8
+                    }
+                )
+                .await
+                .unwrap(),
+                b"verified"
+            );
+            assert_eq!(
+                fs.read_range(
+                    &alias,
+                    ByteRange {
+                        start: 9,
+                        length: 4
+                    }
+                )
+                .await
+                .unwrap(),
+                b"file"
+            );
+            assert!(
+                fs.read_range(
+                    &link,
+                    ByteRange {
+                        start: 0,
+                        length: 1
+                    }
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(
+                fs.read_range(
+                    &source,
+                    ByteRange {
+                        start: 0,
+                        length: 100
+                    }
+                )
+                .await
+                .unwrap_err()
+                .kind(),
+                std::io::ErrorKind::UnexpectedEof
+            );
             assert_eq!(
                 fs.metadata(&source).await.unwrap().ino(),
                 fs.metadata(&alias).await.unwrap().ino()
