@@ -982,9 +982,9 @@ authority for its shape. The contract those files may rely on:
   lint/test that no layer is folded into another. — satisfies [SPAT-2], [SPAT-33];
   spec §1, §10.
   - Completed by `crates/crucible/src/model.rs`: `ScenarioBuilder` stores world
-    nodes/links, plan entries, property assertions, and seed in separate fields,
+    nodes/links, complete plans, property assertions, and seed in separate fields,
     exposes distinct entry points for each layer, and composes through
-    `World::from_nodes_and_links`, `Plan::from_entries_for_world`,
+    `World::from_nodes_and_links`, world-validated event-graph plans,
     `Properties::from_assertions_for_world`, and
     `World::scenario_def_with_plan_properties_and_seed`. The canonical scenario
     material records only component refs plus seed material, so topology, faults,
@@ -999,8 +999,8 @@ authority for its shape. The contract those files may rely on:
   §8.
   - Completed by `crates/crucible/src/model.rs`: `World`, `Plan`, and
     `Properties` each expose independent canonical bytes and BLAKE3 content
-    addresses in separate domains (`crucible.model.world.v1`,
-    `crucible.model.plan.v1`, and `crucible.model.properties.v1`). Scenario
+    addresses in separate domains (`crucible.model.world.v4`,
+    `crucible.model.plan.v5`, and `crucible.model.properties.v1`). Scenario
     identity composes those component refs plus seed material instead of folding
     component material together. The focused
     `spatial_components_have_independent_content_addresses_and_cross_reuse` test
@@ -1180,10 +1180,10 @@ authority for its shape. The contract those files may rely on:
   topology-size(+shape) producing concrete validated `ScenarioDef`s, with a run
   pinning exactly one instance. — satisfies [SPAT-26], [SPAT-27]; spec §7.
   - Completed in `crates/crucible/src/model.rs`: `ScenarioFamily` now owns a
-    deterministic finite `FamilySpace` over `SeedSpace`, exact fixed-point
-    `FaultDensity`, `TopologySizeRange`, and `TopologyShape`, with bounded
+    deterministic finite `FamilySpace` over `SeedSpace`, `TopologySizeRange`,
+    and `TopologyShape`, with bounded
     cardinality and non-wrapping sample enumeration. Instantiating a `FamilyParams`
-    point builds a concrete `World`, density-scaled `Plan`, and `Properties`,
+    point builds a concrete `World`, an empty `Plan`, and `Properties`,
     validates them through the same component constructors as the code-first
     builder, and returns a `PinnedScenario` carrying only the concrete
     `ScenarioDefForm` plus its parameter point. `PinnedScenario::genesis_configuration`
@@ -1192,7 +1192,7 @@ authority for its shape. The contract those files may rely on:
     executing a family handle. The focused
     `scenario_family_pins_concrete_validated_instances` test and
     `checks.crucible.phase1.spatialScenarioFamily` gate cover deterministic
-    sampling, seed/density/topology identity sensitivity, out-of-space rejection,
+    sampling, seed/topology identity sensitivity, out-of-space rejection,
     and pinned-instance execution.
 - [x] **T-SPAT-18** Implement the self-contained `(seed, scenario, schedule)`
   reproduction artifact, content-addressed and offline-replayable, verified by the
@@ -1235,7 +1235,9 @@ authority for its shape. The contract those files may rely on:
     undeclared targets, incompatible mapping types, malformed effect
     parameters, and exceeded resource ceilings before hashing or execution.
     Typed signal coordinates prevent negative time from entering the runtime,
-    and TOML decoding rejects unknown or unsupported fields. The terminal
+    and TOML decoding rejects unknown or unsupported fields. The focused
+    `checks.crucible.phase1.spatialPlanValidation` gate runs signal-plan admission
+    and codec regressions. The terminal
     `checks.crucible.phase7.gates.signalFaultSystem` gate locks down canonical
     admission and production adapter execution.
 - [x] **T-SPAT-21** Implement the full parse/build-time validation pass (the §9

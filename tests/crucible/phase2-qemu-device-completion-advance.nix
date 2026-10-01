@@ -69,7 +69,7 @@ in
             cat > device-completion-api.c <<'API_FIXTURE'
             #include <stddef.h>
             #include <stdint.h>
-            #include "qemu/qemu-plugin.h"
+            #include "plugins/qemu-plugin.h"
 
             static void wait_for_completion(uint32_t request_id, void *userdata)
             {

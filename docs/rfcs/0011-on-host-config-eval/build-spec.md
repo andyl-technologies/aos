@@ -1940,7 +1940,7 @@ turn an unmeasured image into measured-image policy.
 - `config_modules.origins` — one `registry` or `image` origin aligned with each
   module path. `image` means the exact config companion came from the active
   image-seeded package profile. The evaluator resolves the booted toplevel's
-  `package-profile-seed` through `/nix.lower/store`, requires the mutable
+  `package-profile-seed` through `/usr/lib/aos/nix/store`, requires the mutable
   profile record to exactly match that immutable seed record, requires all
   referenced outputs to exist in the immutable lower store, and hashes the
   lower-store NAR bytes. A remote verifier independently reconstructs the same

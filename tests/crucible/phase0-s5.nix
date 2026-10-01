@@ -271,6 +271,7 @@ in
       pkgs.pkg-config
       pkgs.python3
       pkgs.qemu-crucible
+      pkgs.python3
     ];
 
     QEMU = "${pkgs.qemu-crucible}/bin/qemu-system-x86_64";
@@ -308,12 +309,10 @@ in
             budget="''${4:-5}"
             response_err="$response.err"
 
-            [ "$budget" -gt 0 ] || return 1
-            if [ "$budget" -gt 5 ]; then
-              budget=5
-            fi
-            if ! timeout "$budget" python3 qmp-client.py "$socket" "$request" \
-                 > "$response" 2> "$response_err"; then
+            # A loaded builder can delay migration admission beyond one second.
+            # Wait for the matching QMP reply rather than a transport idle gap.
+            if ! ${pkgs.python3}/bin/python3 ${./_qmp-command.py} \
+              "$socket" "$request" > "$response" 2> "$response_err"; then
               cat "$response_err" >&2
               return 1
             fi

@@ -105,7 +105,11 @@ in
       tool = testing.mkToolCheck {
         pname = "tool-docutils";
         tool = self;
-        command = "printf 'Title\\n=====\\n' | rst2man | grep -Fq '.TH \\\"Title\\\"'";
+        command = ''
+          printf 'Title\n=====\n' > /tmp/title.rst &&
+          rst2man /tmp/title.rst /tmp/title.1 &&
+          grep -F '.TH "Title"' /tmp/title.1
+        '';
       };
     };
 

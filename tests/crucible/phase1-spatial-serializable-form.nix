@@ -176,6 +176,10 @@
         label = "current scenario binary envelope";
         needle = "crucible.scenario-def-form.v7";
       }
+      {
+        label = "truncated binary rejected";
+        needle = "ScenarioDefForm::from_compact_binary(&truncated).is_err()";
+      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

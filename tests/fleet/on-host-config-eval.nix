@@ -343,11 +343,11 @@ in {
       # twice with identical authenticated inputs.
       runtime.succeed(f"""
           set -eu
-          base_lib=$(readlink -f /aos-toplevel/base-lib)
+          base_lib=$(readlink -f /usr/lib/aos/toplevel/base-lib)
           module_abi=""
           while IFS='=' read -r key value; do
             if [ "$key" = AOS_MODULE_ABI ]; then module_abi="$value"; fi
-          done < /aos-toplevel/os-release
+          done < /usr/lib/aos/toplevel/os-release
           test -n "$module_abi"
           rm -rf /run/runtime-config-eval-one /run/runtime-config-eval-two
           mkdir -p /run/runtime-config-eval-one /run/runtime-config-eval-two

@@ -65,7 +65,8 @@ in
       version = testing.mkToolCheck {
         pname = "tool-longhorn-engine";
         tool = self;
-        command = "longhorn-engine version";
+        command = ''longhorn-engine version --client-only | ${pkgs.jq}/bin/jq -e '.clientVersion.version == "${version}" and .serverVersion == null' '';
+        extraDeps = [pkgs.jq];
       };
     };
 

@@ -194,7 +194,7 @@ In scope:
 - [`permissions.md`](permissions.md) — **the privilege manifest** (canonical
   model). The permission surface and its mapping to per-unit directives,
   default-deny least privilege, manifest examples (including k3s), introspection
-  (`apm info --permissions`) / policy / signing, the computed confinement label,
+  (`apm show --permissions`) / policy / signing, the computed confinement label,
   and the honest host-level limits (`kernel-modules`, `network: host`).
 - [`container-model.md`](container-model.md) — the substrate. The resolved
   per-unit sandboxing default (`RootDirectory=` + isolation directives), how

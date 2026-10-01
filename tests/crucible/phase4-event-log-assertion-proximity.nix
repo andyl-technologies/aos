@@ -161,6 +161,10 @@
     ]
     ++ failuresFor "crates/crucible/tests/event_kind_catalog.rs" catalogTest [
       {
+        label = "assertion proximity catalog golden vector";
+        needle = "event_kind_catalog_canonical_serialization_matches_golden_vector";
+      }
+      {
         label = "assertion proximity catalog class test";
         needle = "(\"assertion_proximity\", SchedulerEventLogClass::Observational)";
       }

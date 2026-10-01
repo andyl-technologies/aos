@@ -59,6 +59,18 @@ fn fault_observations_append_as_typed_causal_evidence() {
         entry.payload(),
         &SchedulerEventLogPayload::FaultObservation(observation)
     );
+    assert_eq!(
+        entry.event_payload().string("binding"),
+        Some("network-delay")
+    );
+    assert_eq!(
+        entry.event_payload().string("evidence"),
+        Some(
+            ContentHash::from_bytes(b"applied evidence")
+                .to_hex()
+                .as_str()
+        )
+    );
     assert!(entry.has_valid_content_hash());
     assert!(
         append

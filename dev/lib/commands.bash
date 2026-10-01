@@ -86,14 +86,14 @@ aos_dev_all() {
   shift
   case $category in
     packages) aos_dev_nix_build -A allPackages "$@" ;;
-    checks) aos_dev_nix_build -A checks "$@" ;;
+    checks) aos_dev_nix_build -A allChecks "$@" ;;
     builds) aos_dev_all_builds "$@" ;;
     format) aos_dev_fmt all --check "$@" ;;
     ci)
       aos_dev_fmt all --check
       aos_dev_nix_build -A checks.eval "$@"
       aos_dev_all_builds "$@"
-      aos_dev_nix_build -A checks "$@"
+      aos_dev_nix_build -A allChecks "$@"
       ;;
     *) aos_dev_error 'all requires packages, checks, builds, format, or ci' ;;
   esac

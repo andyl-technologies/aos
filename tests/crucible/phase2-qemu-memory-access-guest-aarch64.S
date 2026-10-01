@@ -213,6 +213,8 @@ retrying_load:
 .else
     .error "unknown TEST_MODE"
 .endif
+    /* Let the next TB callback observe the stored result before WFE parks. */
+    b 2f
 2:
     // Keep crossing translation-block boundaries after publishing the result.
     yield
@@ -238,6 +240,8 @@ exception_handler:
     add x1, x1, :lo12:scenario_result
     mov w0, #0xe1
     strb w0, [x1]
+    /* Observe the exception result at a TB boundary before parking. */
+    b 4f
 4:
     yield
     b 4b

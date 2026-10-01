@@ -21,6 +21,9 @@ in {
       registry = "andyl/testing";
       rootEpoch = 1;
       clientName = "andyl-testing";
+      # Shared-root ownership requires operator authorization in addition to
+      # authenticated membership in the registry provenance signer roster.
+      rootOwnerSigners = ["andyl-testing-provenance-v1"];
       channel = lib.mkDefault "edge";
       warning = ''
         ANDYL OS TESTING

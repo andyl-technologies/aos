@@ -102,7 +102,7 @@
 
       echo "==> Maintainer seed: create and publish an empty remote registry"
       set_isolated_home /tmp/origin-default-seed originseed
-      $APR create origin-default-reg
+      create_publish_registry origin-default-reg
       SEED_REG_DIR="$XDG_DATA_HOME/apm/registries/origin-default-reg"
       DEFAULT_BRANCH=$(git -C "$SEED_REG_DIR" symbolic-ref --short HEAD)
       git init --bare --object-format=sha256 /tmp/origin-default.git
@@ -200,7 +200,7 @@
       assert_file_not_exists "$SYSTEM_REG_CONFIG" \
         "apr origin config does not write redirected system registry config"
 
-      ssh-keygen -q -t ed25519 -N "" -f /tmp/origin-default-release-key
+      register_publish_key origin-default-reg vm /tmp/vm-publish-keys/origin-default-reg
       $APR --json release 1.0.0 \
         --registry origin-default-reg \
         --store-path "$ROOT_STORE" \
@@ -208,7 +208,7 @@
         --description "Origin default upload workflow root" \
         --license MIT \
         --maintainer origin-default@example.invalid \
-        --key /tmp/origin-default-release-key \
+        --key-id vm \
         --cache-url "$HTTP_ORIGIN_URL" \
         > /tmp/origin-default-release.json 2>&1 || {
         cat /tmp/origin-default-release.json

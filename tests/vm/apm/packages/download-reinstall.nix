@@ -108,10 +108,10 @@
         "download-only wrapper has a real Nix reference to dependency"
 
       echo "==> Maintainer: publish download-only wrapper and static cache"
-      $APR create download-reg
+      create_publish_registry download-reg
       REG_DIR="$REG_STORAGE/download-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
-      $APR publish "$DEP_STORE" \
+      publish_vm_package "$DEP_STORE" \
         --name idempkg \
         --version 1.0.0 \
         --description "Shared dependency for download-only workflow" \
@@ -119,7 +119,7 @@
         --maintainer download-workflow@example.invalid \
         --registry download-reg \
         --no-commit
-      $APR publish "$WRAPPER_STORE" \
+      publish_vm_package "$WRAPPER_STORE" \
         --name download-only-wrapper \
         --version 1.0.0 \
         --description "Wrapper for download-only workflow" \
@@ -409,10 +409,10 @@
       assert_store_valid "$PEER_STORE" "reinstall-peer"
 
       echo "==> Maintainer: publish reinstall packages and static cache"
-      $APR create reinstall-reg
+      create_publish_registry reinstall-reg
       REG_DIR="$REG_STORAGE/reinstall-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
-      $APR publish "$TOOL_STORE" \
+      publish_vm_package "$TOOL_STORE" \
         --name reinstall-tool \
         --version 1.0.0 \
         --description "Tool for reinstall workflow" \
@@ -420,7 +420,7 @@
         --maintainer reinstall-workflow@example.invalid \
         --registry reinstall-reg \
         --no-commit
-      $APR publish "$PEER_STORE" \
+      publish_vm_package "$PEER_STORE" \
         --name reinstall-peer \
         --version 1.0.0 \
         --description "Peer tool for reinstall workflow" \

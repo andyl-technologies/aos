@@ -14,22 +14,13 @@
       inherit lib;
       entry = ../../crates/crucible-qemu-plugin/src/block_io.rs;
     })
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io_tests.rs)
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu-plugin/src/block_io_tests.rs;
+    })
   ];
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  shmemSources = builtins.concatStringsSep "\n" (
-    [(builtins.readFile ../../crates/crucible-shmem/src/lib.rs)]
-    ++ map (
-      entry:
-        import ./_rust-module-source.nix {
-          inherit lib entry;
-        }
-    ) [
-      ../../crates/crucible-shmem/src/shmem/frame_node.rs
-      ../../crates/crucible-shmem/src/shmem/region.rs
-      ../../crates/crucible-shmem/src/shmem/ring_coverage.rs
-    ]
-  );
+  shmemSources = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;

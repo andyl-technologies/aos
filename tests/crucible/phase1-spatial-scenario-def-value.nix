@@ -161,7 +161,7 @@
         needle = "fn graph_plan_is_the_scenario_plan_component()";
       }
       {
-        label = "test asserts plan component accessor";
+        label = "plan component accessor";
         needle = "assert_eq!(form.plan(), &plan);";
       }
       {

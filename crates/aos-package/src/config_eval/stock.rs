@@ -857,7 +857,7 @@ impl RegistryConfigModules {
 }
 
 fn immutable_image_seed_catalog() -> Result<BTreeMap<String, crate::types::InstalledMeta>> {
-    let toplevel = std::fs::read_link("/aos-toplevel")
+    let toplevel = std::fs::read_link("/usr/lib/aos/toplevel")
         .context("reading the booted immutable toplevel link")?;
     let toplevel = toplevel
         .to_str()
@@ -1044,6 +1044,17 @@ impl ConfigModuleResolver for RegistryConfigModules {
 mod tests {
     use super::*;
     use crate::types::{ApmMeta, ModuleAbiCompat};
+
+    #[test]
+    fn retained_bundle_evaluation_locks_the_entire_source_tree() {
+        let root = "/nix/store/cccccccccccccccccccccccccccccccc-source";
+        let input = std::path::PathBuf::from(format!("{root}/host.nix"));
+        let expression =
+            super::locked_store_input(&input, Some(&format!("sha256:{}", "a".repeat(64)))).unwrap();
+        assert!(expression.contains(&format!("path = \"{root}\"")));
+        assert!(expression.contains("narHash = "));
+        assert!(expression.ends_with("+ \"/host.nix\")"));
+    }
 
     fn member(pkg: &str, config_output: Option<&str>) -> WorkingSetMember {
         WorkingSetMember {

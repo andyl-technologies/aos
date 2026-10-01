@@ -14,10 +14,16 @@
     entry = ../../crates/crucible/src/tests/world_validation.rs;
   };
   qemuLaunch =
-    builtins.readFile ../../crates/crucible-qemu/src/launch.rs
+    import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/src/launch.rs;
+    }
     + builtins.readFile ../../crates/crucible-qemu/src/launch/canonical.rs;
   qemuLaunchTest =
-    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
+    import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu/tests/deterministic_launch.rs;
+    }
     + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
   replayOracleTest = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
   propertyTest = builtins.readFile ../../crates/crucible/tests/coverage_condition_leaf.rs;

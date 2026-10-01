@@ -770,6 +770,7 @@ in
 
             #endif
             AIO_FIXTURE
+            cp fixture/include/block/aio.h fixture/include/qemu/aio.h
 
             cat > fixture/include/block/block-io.h <<'BLOCK_IO_FIXTURE'
             #ifndef BLOCK_BLOCK_IO_H
@@ -783,6 +784,8 @@ in
 
             #include <stddef.h>
             #include <stdint.h>
+
+            #include "block/aio.h"
 
             #define GRAPH_RDLOCK
 

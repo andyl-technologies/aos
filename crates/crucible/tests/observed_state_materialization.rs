@@ -119,6 +119,36 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
 }
 
 #[test]
+fn fault_evidence_does_not_expose_internal_state_to_assertion_predicates() {
+    use crucible::model::{FaultCoordinate, FaultObservation, FaultObservationKind};
+
+    let observation = FaultObservation {
+        semantic_version: 1,
+        kind: FaultObservationKind::EffectApplied,
+        coordinate: FaultCoordinate {
+            virtual_nanos: 5,
+            retired_instructions: Some(5),
+        },
+        binding: None,
+        target: None,
+        opportunity: None,
+        evidence: ContentHash::from_bytes(b"internal fault evidence"),
+    };
+    let entry = payload_entry(
+        0,
+        time(5),
+        SchedulerEventLogPayload::FaultObservation(observation),
+    );
+    let prefix =
+        crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![entry])
+            .expect("typed fault evidence should form a checked prefix");
+
+    let state = prefix.observed_state();
+    assert!(state.observable_events().is_empty());
+    assert!(state.ordering_facts().is_empty());
+}
+
+#[test]
 fn observed_state_rejects_future_invalid_or_non_dense_prefixes() {
     let future = ObservableEvent::console_output(time(9), node("db-0"), b"future\n".to_vec());
     let invalid_hash = crucible::test_support::condition_entry_with_content_hash_for_test(

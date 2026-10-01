@@ -204,7 +204,7 @@
     #   upperdir = /run/etc/upper-<gen>/dir      — runtime writes (tmpfs-backed)
     #
     # The immutable toplevel of the image that actually booted is read from
-    # `/sysroot/aos-toplevel`. The config-generation pointer is deliberately
+    # `/sysroot/usr/lib/aos/toplevel`. The config-generation pointer is deliberately
     # not used for the bottom lower: after an A/B transition it may still name
     # a child of the previous image until first-boot re-evaluation commits.
     "etc-overlay-setup" = {
@@ -248,7 +248,7 @@
         # (initrd→toplevel→initrd cycle). nix-overlay-setup mounts
         # /sysroot/nix as the merged overlay, so /sysroot$toplevel
         # resolves through that.
-        toplevel=$(readlink /sysroot/aos-toplevel)
+        toplevel=$(readlink /sysroot/usr/lib/aos/toplevel)
         gen=$AOS_PROFILE_GEN
         # Per-gen mountpoints live under the initrd's own /run/etc
         # (the tmpfs that run-etc-setup.service mounted before
@@ -311,8 +311,8 @@
     };
 
     # /nix overlay: stack a writable upper on /var over the image's
-    # immutable /nix.lower so the Nix package manager can install new
-    # store paths at runtime. The image builder ships /nix.lower
+    # immutable /usr/lib/aos/nix so the Nix package manager can install new
+    # store paths at runtime. The image builder ships /usr/lib/aos/nix
     # populated and /nix as an empty mountpoint (lib/build/rootfs.nix),
     # so this unit is unconditional — no first-boot rename, no
     # remount,rw window, identical on fresh installs and post-upgrade
@@ -355,14 +355,14 @@
 
         if ! mountpoint -q "$sysroot/nix"; then
           ${pkgs.util-linux}/bin/mount -t overlay overlay \
-            -o nosuid,nodev,lowerdir="$sysroot/nix.lower",upperdir="$sysroot/var/lib/nix-overlay/upper",workdir="$sysroot/var/lib/nix-overlay/work" \
+            -o nosuid,nodev,lowerdir="$sysroot/usr/lib/aos/nix",upperdir="$sysroot/var/lib/nix-overlay/upper",workdir="$sysroot/var/lib/nix-overlay/work" \
             "$sysroot/nix"
         fi
       '';
     };
 
     # Seed apm system-profile state on first boot. Reads the
-    # toplevel path from `/sysroot/aos-toplevel` (the seed pointer
+    # toplevel path from `/sysroot/usr/lib/aos/toplevel` (the seed pointer
     # the rootfs ships at lib/build/rootfs.nix) rather than
     # interpolating `${config.system.build.toplevel}` directly —
     # the initrd builder's closure scan
@@ -400,13 +400,13 @@
         image_dir=/sysroot/var/lib/profiles/image
 
         # The seed pointer is a symlink the rootfs builder writes at
-        # /aos-toplevel -> /nix/store/<hash>-toplevel. readlink
+        # /usr/lib/aos/toplevel -> /nix/store/<hash>-toplevel. readlink
         # returns the literal target (a /nix/store/... path); we
         # access toplevel-resident files by prefixing /sysroot
         # because the real root is still under /sysroot in the
         # initrd. /sysroot/nix is the merged overlay (set up by
         # nix-overlay-setup.service, which we ordered After).
-        toplevel=$(readlink /sysroot/aos-toplevel)
+        toplevel=$(readlink /sysroot/usr/lib/aos/toplevel)
 
         read_meta() {
           tr -d '\n' < "/sysroot$toplevel/meta/$1" 2>/dev/null \
@@ -604,7 +604,7 @@
               source_path: $source, sha256: $digest, byte_size: $size,
               release: $release, recovery_abi: $abi}')
         ''}
-        # `/aos-toplevel` is baked into the booted immutable root. Reconcile
+        # `/usr/lib/aos/toplevel` is baked into the booted immutable root. Reconcile
         # the userspace image index to that identity before stage 2; the
         # currently selected config generation is never used as authority.
         mkdir -p "$image_dir"

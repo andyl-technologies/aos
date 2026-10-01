@@ -17,7 +17,9 @@
     inherit lib;
     entry = ../../crates/crucible/src/lib.rs;
   };
-  payloadTest = builtins.readFile ../../crates/crucible/tests/event_log_payload.rs;
+  payloadTest =
+    builtins.readFile ../../crates/crucible/tests/event_log_payload.rs
+    + builtins.readFile ../../crates/crucible/tests/fault_observation_log.rs;
   formalTraceTest = builtins.readFile ../../crates/crucible/tests/formal_trace_export.rs;
   reproductionTest = builtins.readFile ../../crates/crucible/tests/assertion_violation_reproduction.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
@@ -191,6 +193,10 @@
         needle = "payload.u64(\"retired_icount\"), None";
       }
       {
+        label = "fault typed accessor tested";
+        needle = "entry.event_payload().string(\"binding\")";
+      }
+      {
         label = "level typed accessor tested";
         needle = "payload.level(\"severity\")";
       }
@@ -308,6 +314,7 @@ in
               --target-dir "$TMPDIR/crucible-event-log-payload-target" \
               -p crucible \
               --test event_log_payload \
+              --test fault_observation_log \
               --test assertion_violation_reproduction \
               --test formal_trace_export \
               -- --test-threads=1

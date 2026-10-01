@@ -211,7 +211,7 @@ in
             }
             PATCHED_POSITIVE
             cc -std=c11 -Wall -Werror \
-              -Iinclude $(pkg-config --cflags glib-2.0) \
+              -Iinclude/plugins $(pkg-config --cflags glib-2.0) \
               -c patched-preemption-positive.c \
               -o patched-preemption-positive.o
 

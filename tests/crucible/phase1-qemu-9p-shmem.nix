@@ -348,6 +348,7 @@ in
             #include <sys/uio.h>
 
             #define g_autofree
+            #define coroutine_fn
             #define g_assert assert
             #define coroutine_fn
             #define QEMU_PACKED __attribute__((packed))
@@ -695,6 +696,7 @@ in
             } TypeInfo;
 
             #define TYPE_VIRTIO_DEVICE "virtio-device"
+            #define VIRTQUEUE_MAX_SIZE 1024
             #define VIRTIO_ID_9P 9
             #define VIRTQUEUE_MAX_SIZE 1024
             #define VIRTIO_9P_MOUNT_TAG 0
@@ -736,7 +738,7 @@ in
             #endif
             VIRTIO_ACCESS_FIXTURE
 
-            cat > fixture/include/hw/qdev-properties.h <<'QDEV_FIXTURE'
+            cat > fixture/include/hw/core/qdev-properties.h <<'QDEV_FIXTURE'
             #ifndef HW_QDEV_PROPERTIES_H
             #define HW_QDEV_PROPERTIES_H
 

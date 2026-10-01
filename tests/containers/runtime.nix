@@ -314,8 +314,8 @@ in
           grep -Fx 'root:!:1::::::' production-metadata/etc/shadow >/dev/null
           grep -Fx 'sandbox = false' production-metadata/etc/nix/nix.conf >/dev/null
           grep -Fx 'substituters =' production-metadata/etc/nix/nix.conf >/dev/null
-          test -s production-metadata/aos-registration
-          cmp production-metadata/aos-registration ${productionReferenceGraph}/registration \
+          test -s production-metadata/usr/lib/aos/nix-registration
+          cmp production-metadata/usr/lib/aos/nix-registration ${productionReferenceGraph}/registration \
             || fail "embedded production registration differs from the authoritative graph"
           cmp production-metadata/usr/lib/aos-container/store-paths \
             ${productionReferenceGraph}/store-paths \

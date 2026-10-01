@@ -3,7 +3,7 @@
 //! Registry release versions use semantic versioning. Individual package
 //! versions also include upstream dates, patch suffixes, and bootstrap labels.
 
-use anyhow::{Result, ensure};
+use anyhow::{ensure, Result};
 
 /// Validates a bounded upstream package version suitable for a registry coordinate.
 ///

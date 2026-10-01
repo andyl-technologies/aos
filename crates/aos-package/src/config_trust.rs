@@ -187,6 +187,27 @@ pub fn authenticate_host_nix_file(
     let Ok(bytes) = std::fs::read(host_nix_path) else {
         return Err(HostNixTrustError::MissingSignature);
     };
+    if bytes.starts_with(b"# aos.config-bundle/v1 ") {
+        let parent = host_nix_path
+            .parent()
+            .ok_or(HostNixTrustError::MissingSignature)?;
+        let bundle_bytes = std::fs::read(parent.join(crate::metadata::bundle::BUNDLE_FILE))
+            .map_err(|_| HostNixTrustError::MissingSignature)?;
+        let bundle = crate::metadata::bundle::parse(&bundle_bytes)
+            .map_err(|_| HostNixTrustError::Untrusted)?
+            .ok_or(HostNixTrustError::Untrusted)?;
+        if bytes != bundle.host_module(&bundle_bytes).as_bytes()
+            || bundle
+                .verify_tree(&parent.join(crate::metadata::bundle::SOURCE_DIR))
+                .is_err()
+        {
+            return Err(HostNixTrustError::Untrusted);
+        }
+        let signature = ["config-bundle.json.sig", "user-data.sig", "host.nix.sig"]
+            .into_iter()
+            .find_map(|name| std::fs::read_to_string(parent.join(name)).ok());
+        return authenticate_host_nix(&bundle_bytes, signature.as_deref(), trusted_dirs);
+    }
     let sig_path = sig_path_for(host_nix_path);
     let sig = std::fs::read_to_string(&sig_path).ok();
     authenticate_host_nix(&bytes, sig.as_deref(), trusted_dirs)

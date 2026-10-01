@@ -3,7 +3,10 @@
   lib,
 }: let
   cratesDir = ../../crates;
-  testingStandardsRust = builtins.readFile ../../crates/crucible-harness/tests/testing_standards.rs;
+  testingStandardsRust = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-harness/tests/testing_standards.rs;
+  };
   testingStandardsSupport = builtins.readFile ../../crates/crucible-harness/tests/support/testing_standards.rs;
   testingStandardsSourceInventory =
     builtins.readFile ../../crates/crucible-harness/tests/support/testing_standards/source_inventory.rs;

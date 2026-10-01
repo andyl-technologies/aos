@@ -51,13 +51,13 @@ pub struct MergeResult {
     pub conflicts: Vec<FileConflict>,
 }
 
-/// A file conflict where two packages provide the same path.
+/// A path conflict where two packages provide incompatible entries.
 pub struct FileConflict {
     /// The contested relative path (e.g. `bin/python3`).
     pub path: String,
-    /// Package whose file was linked (later in the install order).
+    /// Readable package name and version whose entry was selected.
     pub winner: String,
-    /// Package whose file was shadowed.
+    /// Readable package name and version whose entry was shadowed.
     pub loser: String,
 }
 
@@ -97,8 +97,8 @@ pub fn build_generation_fhs_tree(
 ///
 /// # Errors
 ///
-/// Returns an error if a store path cannot be scanned or a symlink (or its
-/// parent directory) cannot be created.
+/// Returns an error if generation metadata cannot be read, a store path cannot
+/// be scanned, or a symlink (or its parent directory) cannot be created.
 pub fn build_fhs_tree(
     generation: &Generation,
     store_paths: &[(String, PathBuf)],
@@ -107,7 +107,8 @@ pub fn build_fhs_tree(
     let mut merged: BTreeMap<String, MergedEntry> = BTreeMap::new();
     let mut conflicts = Vec::new();
 
-    for (package, store_path) in store_paths {
+    for (package_id, store_path) in store_paths {
+        let package = package_label(generation, package_id, store_path)?;
         let entries = scan_store_path(store_path)
             .with_context(|| format!("scanning store path {}", store_path.display()))?;
 
@@ -122,7 +123,7 @@ pub fn build_fhs_tree(
                         winner: package.clone(),
                     });
                     printer.warning(&format!(
-                        "conflict: {relative_path} provided by both {} and {package} (using {package})",
+                        "path conflict at {relative_path}: using {package}; shadows {}",
                         previous.package,
                     ));
                 }
@@ -164,6 +165,25 @@ pub fn build_fhs_tree(
         symlinks_created,
         conflicts,
     })
+}
+
+/// Prefer recorded package identity; legacy roots retain the readable store name.
+fn package_label(generation: &Generation, hash: &str, store_path: &Path) -> Result<String> {
+    if let Some(apm) = read_generation_meta(generation, hash)?.and_then(|meta| meta.apm) {
+        return Ok(format!(
+            "{} {} [registry: {}]",
+            apm.name, apm.version, apm.registry
+        ));
+    }
+
+    let store_name = store_path.file_name().and_then(|name| name.to_str());
+    let label = store_name
+        .and_then(|name| name.strip_prefix(hash))
+        .and_then(|suffix| suffix.strip_prefix('-'))
+        .filter(|name| !name.is_empty())
+        .unwrap_or(hash);
+
+    Ok(label.to_string())
 }
 
 /// Return generation roots in merge order.
@@ -357,6 +377,8 @@ mod tests {
         hash: &str,
         store_path: &Path,
         explicit: bool,
+        name: &str,
+        version: &str,
     ) {
         let meta_dir = generation.path.join("meta");
         fs::create_dir_all(&meta_dir).unwrap();
@@ -369,8 +391,8 @@ mod tests {
             last_accessed: 0,
             access_count: 0,
             apm: Some(ApmMeta {
-                name: "priority-tool".to_string(),
-                version: "1.0.0".to_string(),
+                name: name.to_string(),
+                version: version.to_string(),
                 explicit,
                 registry: "test".to_string(),
                 installed_at: "1970-01-01T00:00:00Z".to_string(),
@@ -518,6 +540,46 @@ mod tests {
     }
 
     #[test]
+    fn conflicts_use_package_metadata_instead_of_root_hashes() {
+        let tmp = TempDir::new().unwrap();
+        let generation = make_generation(&tmp, 1);
+        let first = make_store_path(&tmp, "aaa-python-3.11", &["bin/python3"]);
+        let second = make_store_path(&tmp, "bbb-python-3.12", &["bin/python3"]);
+        write_generation_apm_meta(&generation, "aaa", &first, true, "python", "3.11");
+        write_generation_apm_meta(&generation, "bbb", &second, true, "python", "3.12");
+
+        let result = build_fhs_tree(
+            &generation,
+            &[("aaa".into(), first), ("bbb".into(), second.clone())],
+            &test_printer(),
+        )
+        .unwrap();
+
+        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(result.conflicts[0].loser, "python 3.11 [registry: test]");
+        assert_eq!(result.conflicts[0].winner, "python 3.12 [registry: test]");
+        assert_eq!(
+            fs::read_link(generation.path.join("bin/python3")).unwrap(),
+            second.join("bin/python3"),
+        );
+    }
+
+    #[test]
+    fn legacy_root_labels_strip_only_the_matching_store_hash() {
+        let tmp = TempDir::new().unwrap();
+        let generation = make_generation(&tmp, 1);
+
+        assert_eq!(
+            package_label(&generation, "aaa", Path::new("/nix/store/aaa-python-3.11")).unwrap(),
+            "python-3.11",
+        );
+        assert_eq!(
+            package_label(&generation, "python", Path::new("/tmp/unrelated")).unwrap(),
+            "python",
+        );
+    }
+
+    #[test]
     fn generation_merge_prefers_explicit_roots_over_auto_dependencies() {
         let tmp = TempDir::new().unwrap();
         let gn = make_generation(&tmp, 1);
@@ -526,8 +588,15 @@ mod tests {
 
         add_generation_root(&gn, "zzzauto", &automatic);
         add_generation_root(&gn, "aaaexplicit", &explicit);
-        write_generation_apm_meta(&gn, "zzzauto", &automatic, false);
-        write_generation_apm_meta(&gn, "aaaexplicit", &explicit, true);
+        write_generation_apm_meta(&gn, "zzzauto", &automatic, false, "priority-tool", "1.0.0");
+        write_generation_apm_meta(
+            &gn,
+            "aaaexplicit",
+            &explicit,
+            true,
+            "priority-tool",
+            "1.0.0",
+        );
 
         let result = build_generation_fhs_tree(&gn, &test_printer()).unwrap();
 
