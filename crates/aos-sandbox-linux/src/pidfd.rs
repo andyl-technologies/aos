@@ -13,8 +13,10 @@ use crate::uapi::{self, NamespaceIoctl};
 use crate::{Error, Result};
 
 mod identity;
+mod proc_observations;
 
 pub use identity::PidFdProcessIdentity;
+pub use proc_observations::PidFdProcObservationsV1;
 
 const LIVENESS_POLL_INTERRUPT_LIMIT: usize = 8;
 

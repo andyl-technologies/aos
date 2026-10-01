@@ -18,10 +18,290 @@ mod traffic;
 
 use aos_sandbox::{JournalTransaction, ProtectedJournalLockCustodyV1};
 
-use super::backend::{AuthenticatedTpmNvIoV1, FloorAdvanceV1, TpmNvExtendFloorBackendV1};
+use super::backend::{
+    AuthenticatedTpmNvIoV1, FloorAdvanceV1, PhysicalTpmNvIoV1, TpmNvExtendFloorBackendV1,
+};
 use super::{FloorErrorV1, FloorIntentV1, FloorProfileV1, FloorRecoveryV1, reconcile_floor_v1};
-use store::{FinalSuffixPreflightV1, FloorStoreV1, StoredFloorV1};
+use store::{
+    BrokerSidecarOpenErrorV1, BrokerSidecarOpenV1, FinalSuffixPreflightV1, FloorStoreV1,
+    StoredFloorV1,
+};
 use traffic::HeldTrafficWriterV1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum BrokerAttachmentPhaseV1 {
+    Fresh,
+    Checking,
+    Ready,
+    Failed,
+}
+
+enum BrokerAttachmentFailureV1 {
+    Floor(FloorErrorV1),
+    Sidecar(BrokerSidecarOpenErrorV1),
+    Native(aos_sandbox::JournalError),
+    Endpoint(crate::BrokerSessionSecurityError),
+    Unfinished,
+}
+
+/// Keeps genuine partial attachment owners resident before each later gate.
+pub(super) struct BrokerAttachmentAttemptV1 {
+    // Preserve carrier/backend before sidecar destruction; traffic remains on
+    // the whole original Journal owner, never borrowed into a sibling field.
+    backend: Option<TpmNvExtendFloorBackendV1<PhysicalTpmNvIoV1>>,
+    physical: Option<PhysicalTpmNvIoV1>,
+    store: Option<FloorStoreV1>,
+    opening: Option<BrokerSidecarOpenV1>,
+    main_lock: Option<ProtectedJournalLockCustodyV1>,
+    sidecar_lock: Option<ProtectedJournalLockCustodyV1>,
+    phase: BrokerAttachmentPhaseV1,
+    first_failure: Option<BrokerAttachmentFailureV1>,
+}
+
+impl BrokerAttachmentAttemptV1 {
+    pub(super) const fn fresh() -> Self {
+        Self {
+            backend: None,
+            physical: None,
+            store: None,
+            opening: None,
+            main_lock: None,
+            sidecar_lock: None,
+            phase: BrokerAttachmentPhaseV1::Fresh,
+            first_failure: None,
+        }
+    }
+
+    pub(super) fn is_failed(&self) -> bool {
+        matches!(
+            self.phase,
+            BrokerAttachmentPhaseV1::Checking | BrokerAttachmentPhaseV1::Failed
+        )
+    }
+
+    pub(super) fn is_ready(&self) -> bool {
+        self.phase == BrokerAttachmentPhaseV1::Ready
+    }
+
+    pub(super) fn fence(&mut self) {
+        self.phase = BrokerAttachmentPhaseV1::Failed;
+        if self.first_failure.is_none() {
+            self.first_failure = Some(BrokerAttachmentFailureV1::Unfinished);
+        }
+    }
+
+    pub(super) fn record_native_failure(&mut self, cause: aos_sandbox::JournalError) {
+        self.record(BrokerAttachmentFailureV1::Native(cause));
+    }
+
+    pub(super) fn record_endpoint_failure(&mut self, cause: crate::BrokerSessionSecurityError) {
+        self.record(BrokerAttachmentFailureV1::Endpoint(cause));
+    }
+
+    fn failure_projection(&self) -> FloorErrorV1 {
+        match &self.first_failure {
+            Some(BrokerAttachmentFailureV1::Floor(error)) => *error,
+            Some(BrokerAttachmentFailureV1::Sidecar(error)) => error.projection(),
+            // Endpoint and unfinished failures keep their actual cause here;
+            // the original Broker facade has always projected Unavailable.
+            _ => FloorErrorV1::Unavailable,
+        }
+    }
+
+    fn record(&mut self, failure: BrokerAttachmentFailureV1) {
+        if self.first_failure.is_none() {
+            self.first_failure = Some(failure);
+        }
+        self.phase = BrokerAttachmentPhaseV1::Failed;
+    }
+
+    pub(super) fn begin(
+        &mut self,
+        expected: BrokerAttachmentPhaseV1,
+    ) -> Result<BrokerAttachmentOperationV1<'_>, FloorErrorV1> {
+        if self.phase != expected || self.first_failure.is_some() {
+            let cause = self.failure_projection();
+            self.fence();
+            return Err(cause);
+        }
+        self.phase = BrokerAttachmentPhaseV1::Checking;
+        Ok(BrokerAttachmentOperationV1 {
+            attempt: self,
+            complete: false,
+        })
+    }
+
+    pub(super) fn admit(
+        &mut self,
+        owner: &mut super::super::ProtectedBrokerSessionJournalV1,
+        profile: FloorProfileV1,
+        salt_name: [u8; 34],
+        auth: &[u8; 32],
+        launch_image: &crate::production_startup::Pid1LaunchImageV1,
+    ) -> Result<(), FloorErrorV1> {
+        if self.phase != BrokerAttachmentPhaseV1::Checking {
+            return Err(self.failure_projection());
+        }
+        traffic::BrokerTrafficWriterV1::borrow(owner).cuts(profile, None)?;
+        self.require_endpoint(owner)?;
+        self.opening = Some(BrokerSidecarOpenV1::prepare(
+            owner.owner,
+            &owner.directory,
+            owner.limits,
+        )?);
+        let result = self.opening.as_mut()
+            .ok_or(FloorErrorV1::Unavailable)?
+            .open();
+        if let Err(cause) = result {
+            let projection = cause.projection();
+            self.record(BrokerAttachmentFailureV1::Sidecar(cause));
+            return Err(projection);
+        }
+        self.opening.as_mut()
+            .ok_or(FloorErrorV1::Unavailable)?
+            .finish_into(&mut self.store)?;
+        // Only the empty opening shell moves away; the actual sidecar is now
+        // resident BEFORE traffic's original endpoint postcheck.
+        self.opening = None;
+        self.require_endpoint(owner)?;
+
+        self.main_lock = Some(
+            traffic::BrokerTrafficWriterV1::borrow(owner).loan_lock_custody()?,
+        );
+        self.sidecar_lock = Some(
+            self.store.as_ref()
+                .ok_or(FloorErrorV1::Unavailable)?
+                .loan_lock_custody()?,
+        );
+        let (main, sidecar) = (self.main_lock.take(), self.sidecar_lock.take());
+        match (main, sidecar) {
+            (Some(main), Some(sidecar)) => {
+                // Retain is infallible on the restricted actual inputs. No gate
+                // or callback can run between the OFD move and its owning slot.
+                self.physical = Some(PhysicalTpmNvIoV1::retain(
+                    profile,
+                    salt_name,
+                    auth,
+                    [main, sidecar],
+                    launch_image,
+                ));
+            }
+            (main, sidecar) => {
+                self.main_lock = main;
+                self.sidecar_lock = sidecar;
+                return Err(FloorErrorV1::Unavailable);
+            }
+        }
+        self.physical.as_mut()
+            .ok_or(FloorErrorV1::Unavailable)?
+            .admit()?;
+        if let Some(physical) = self.physical.take() {
+            self.backend = Some(TpmNvExtendFloorBackendV1::retain(profile, physical));
+        } else {
+            return Err(FloorErrorV1::Unavailable);
+        }
+        // Keep both original READs: physical admission's READ precedes this
+        // backend READ; both execute only after their actual owners are parked.
+        self.backend.as_mut()
+            .ok_or(FloorErrorV1::Unavailable)?
+            .read()?;
+        let mut traffic = traffic::BrokerTrafficWriterV1::borrow(owner);
+        let mut floor = self.borrow(&mut traffic, profile)?;
+        floor.classify()?;
+        if floor.recover()? != FloorProgressV1::Current {
+            return Err(FloorErrorV1::Diverged);
+        }
+        Ok(())
+    }
+
+    fn require_endpoint(
+        &mut self,
+        owner: &mut super::super::ProtectedBrokerSessionJournalV1,
+    ) -> Result<(), FloorErrorV1> {
+        if let Err(cause) = owner.endpoint.revalidate() {
+            self.record(BrokerAttachmentFailureV1::Endpoint(cause));
+            return Err(FloorErrorV1::Unavailable);
+        }
+        Ok(())
+    }
+
+    pub(super) fn check(
+        &mut self,
+        owner: &mut super::super::ProtectedBrokerSessionJournalV1,
+        profile: FloorProfileV1,
+    ) -> Result<(), FloorErrorV1> {
+        let mut traffic = traffic::BrokerTrafficWriterV1::borrow(owner);
+        self.borrow(&mut traffic, profile)?.require_current()
+    }
+
+    pub(super) fn commit(
+        &mut self,
+        owner: &mut super::super::ProtectedBrokerSessionJournalV1,
+        profile: FloorProfileV1,
+        transaction: &JournalTransaction,
+    ) -> Result<(), FloorErrorV1> {
+        let mut traffic = traffic::BrokerTrafficWriterV1::borrow(owner);
+        let mut floor = self.borrow(&mut traffic, profile)?;
+        floor.prepare(transaction)?;
+        if floor.recover()? != FloorProgressV1::Current {
+            return Err(FloorErrorV1::Diverged);
+        }
+        Ok(())
+    }
+
+    fn borrow<'operation, Traffic: HeldTrafficWriterV1>(
+        &'operation mut self,
+        traffic: &'operation mut Traffic,
+        profile: FloorProfileV1,
+    ) -> Result<BorrowedDurableFloorV1<'operation, Traffic, PhysicalTpmNvIoV1>, FloorErrorV1> {
+        if self.phase != BrokerAttachmentPhaseV1::Checking {
+            return Err(self.failure_projection());
+        }
+        Ok(BorrowedDurableFloorV1 {
+            backend: self.backend.as_mut().ok_or(FloorErrorV1::Unavailable)?,
+            store: self.store.as_mut().ok_or(FloorErrorV1::Unavailable)?,
+            traffic,
+            profile,
+        })
+    }
+}
+
+pub(super) struct BrokerAttachmentOperationV1<'operation> {
+    pub(super) attempt: &'operation mut BrokerAttachmentAttemptV1,
+    complete: bool,
+}
+
+impl BrokerAttachmentOperationV1<'_> {
+    pub(super) fn finish<T>(mut self, result: Result<T, FloorErrorV1>) -> Result<T, FloorErrorV1> {
+        let result = match result {
+            Ok(value)
+                if self.attempt.phase == BrokerAttachmentPhaseV1::Checking
+                    && self.attempt.first_failure.is_none() =>
+            {
+                self.attempt.phase = BrokerAttachmentPhaseV1::Ready;
+                Ok(value)
+            }
+            Ok(_) => {
+                self.attempt.fence();
+                Err(self.attempt.failure_projection())
+            }
+            Err(cause) => {
+                self.attempt.record(BrokerAttachmentFailureV1::Floor(cause));
+                Err(cause)
+            }
+        };
+        self.complete = true;
+        result
+    }
+}
+
+impl Drop for BrokerAttachmentOperationV1<'_> {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.attempt.fence();
+        }
+    }
+}
 
 pub(super) fn attach_broker_floor_v1<Io: AuthenticatedTpmNvIoV1>(
     owner: &mut super::super::ProtectedBrokerSessionJournalV1,
@@ -129,10 +409,68 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1> DurableTpmFloorV1
         Ok(owner)
     }
 
+    // Owning compatibility callers and resident production callers execute
+    // this same algorithm through references to their exact original fields.
+    fn borrow(&mut self) -> BorrowedDurableFloorV1<'_, Traffic, Io> {
+        BorrowedDurableFloorV1 {
+            backend: &mut self.backend,
+            store: &mut self.store,
+            traffic: &mut self.traffic,
+            profile: self.profile,
+        }
+    }
+
+    pub(super) fn prepare(&mut self, transaction: &JournalTransaction) -> Result<(), FloorErrorV1> {
+        self.borrow().prepare(transaction)
+    }
+
+    pub(super) fn recover(&mut self) -> Result<FloorProgressV1, FloorErrorV1> {
+        self.borrow().recover()
+    }
+
+    pub(super) fn require_current(&mut self) -> Result<(), FloorErrorV1> {
+        self.borrow().require_current()
+    }
+
+    /// Releases only the temporary traffic borrow, retaining sidecar and TPM custody.
+    pub(super) fn detach(self) -> AttachedFloorV1<Io> {
+        AttachedFloorV1 {
+            store: self.store,
+            backend: self.backend,
+            profile: self.profile,
+        }
+    }
+
+    pub(super) fn resume(traffic: Traffic, attached: AttachedFloorV1<Io>) -> Self {
+        Self {
+            traffic,
+            store: attached.store,
+            backend: attached.backend,
+            profile: attached.profile,
+        }
+    }
+
+    fn classify(&mut self) -> Result<(StoredFloorV1, FloorRecoveryV1), FloorErrorV1> {
+        self.borrow().classify()
+    }
+}
+
+// A temporary borrow, never a second owner, cached authority or policy factory.
+struct BorrowedDurableFloorV1<'operation, Traffic, Io> {
+    backend: &'operation mut TpmNvExtendFloorBackendV1<Io>,
+    store: &'operation mut FloorStoreV1,
+    traffic: &'operation mut Traffic,
+    profile: FloorProfileV1,
+}
+
+impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
+    BorrowedDurableFloorV1<'_, Traffic, Io>
+{
     /// Persists the full exact transaction before the first possible NV extension.
     ///
-    /// A failure after the append requires dropping/reopening this composition;
-    /// no I/O error is converted into a vacant preparation or retry authority.
+    /// A failure after the append grants no vacant preparation or retry. The
+    /// consuming compatibility owner must be reopened; Required production
+    /// keeps its failed originals resident and refuses reopening that owner.
     pub(super) fn prepare(&mut self, transaction: &JournalTransaction) -> Result<(), FloorErrorV1> {
         let stored = self.store.read(self.profile)?;
         if stored.prepared.is_some() {
@@ -188,8 +526,8 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1> DurableTpmFloorV1
         if phase == FloorRecoveryV1::ExtendPrepared {
             let suffix = self.require_prospective(&stored, *intent, transaction)?;
             let profile = self.profile;
-            let traffic = &mut self.traffic;
-            let store = &mut self.store;
+            let traffic = &mut *self.traffic;
+            let store = &mut *self.store;
             let advanced = self.backend.advance_with_held_cut(*intent, || {
                 require_prospective_cut(traffic, profile, *intent, transaction)?;
                 store.validate_final_preflight(&suffix, &stored, profile)
@@ -206,7 +544,7 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1> DurableTpmFloorV1
             if self.backend.read()? != intent.target().nv_value() {
                 return Err(FloorErrorV1::Diverged);
             }
-            require_prospective_cut(&mut self.traffic, self.profile, *intent, transaction)?;
+            require_prospective_cut(&mut *self.traffic, self.profile, *intent, transaction)?;
             self.store
                 .validate_final_preflight(&suffix, &stored, self.profile)?;
             self.traffic
@@ -238,24 +576,6 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1> DurableTpmFloorV1
         }
     }
 
-    /// Releases only the temporary traffic borrow, retaining sidecar and TPM custody.
-    pub(super) fn detach(self) -> AttachedFloorV1<Io> {
-        AttachedFloorV1 {
-            store: self.store,
-            backend: self.backend,
-            profile: self.profile,
-        }
-    }
-
-    pub(super) fn resume(traffic: Traffic, attached: AttachedFloorV1<Io>) -> Self {
-        Self {
-            traffic,
-            store: attached.store,
-            backend: attached.backend,
-            profile: attached.profile,
-        }
-    }
-
     fn classify(&mut self) -> Result<(StoredFloorV1, FloorRecoveryV1), FloorErrorV1> {
         let stored = self.store.read(self.profile)?;
         let (cut, _) = self.traffic.cuts(self.profile, None)?;
@@ -281,7 +601,7 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1> DurableTpmFloorV1
         intent: FloorIntentV1,
         transaction: &JournalTransaction,
     ) -> Result<FinalSuffixPreflightV1, FloorErrorV1> {
-        require_prospective_cut(&mut self.traffic, self.profile, intent, transaction)?;
+        require_prospective_cut(&mut *self.traffic, self.profile, intent, transaction)?;
         let suffix = self.store.preflight_final(stored, self.profile)?;
         self.store.require_same(stored, self.profile)?;
         Ok(suffix)
@@ -311,3 +631,67 @@ pub(super) struct AttachedFloorV1<Io> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod resident_attempt_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_same_successful_attempt_reopens_ready() {
+        let mut attempt = BrokerAttachmentAttemptV1::fresh();
+        attempt.begin(BrokerAttachmentPhaseV1::Fresh).unwrap()
+            .finish(Ok(())).unwrap();
+        assert!(attempt.is_ready());
+
+        let error = attempt.begin(BrokerAttachmentPhaseV1::Ready).unwrap()
+            .finish::<()>(Err(FloorErrorV1::Provisioning));
+        assert_eq!(error, Err(FloorErrorV1::Provisioning));
+        assert!(attempt.is_failed());
+        assert!(attempt.begin(BrokerAttachmentPhaseV1::Ready).is_err());
+        assert_eq!(attempt.failure_projection(), FloorErrorV1::Provisioning);
+    }
+
+    #[test]
+    fn dropped_forgotten_and_caught_unwind_attempts_are_failed() {
+        let mut dropped = BrokerAttachmentAttemptV1::fresh();
+        drop(dropped.begin(BrokerAttachmentPhaseV1::Fresh).unwrap());
+        assert!(dropped.is_failed());
+
+        let mut forgotten = BrokerAttachmentAttemptV1::fresh();
+        std::mem::forget(forgotten.begin(BrokerAttachmentPhaseV1::Fresh).unwrap());
+        assert!(forgotten.is_failed());
+        assert!(forgotten.begin(BrokerAttachmentPhaseV1::Fresh).is_err());
+
+        let mut unwound = BrokerAttachmentAttemptV1::fresh();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _operation = unwound.begin(BrokerAttachmentPhaseV1::Fresh).unwrap();
+            panic!("pure attempt unwind");
+        }));
+        assert!(caught.is_err());
+        assert!(unwound.is_failed());
+    }
+
+    #[test]
+    fn a_closed_attempt_cannot_be_restored_by_an_ok_result() {
+        let mut attempt = BrokerAttachmentAttemptV1::fresh();
+        let operation = attempt.begin(BrokerAttachmentPhaseV1::Fresh).unwrap();
+        operation.attempt.record(BrokerAttachmentFailureV1::Floor(FloorErrorV1::Diverged));
+
+        assert_eq!(operation.finish(Ok(())), Err(FloorErrorV1::Diverged));
+        assert!(attempt.is_failed());
+    }
+
+    #[test]
+    fn first_native_cause_is_not_replaced_by_projection_or_unfinished() {
+        let mut attempt = BrokerAttachmentAttemptV1::fresh();
+        attempt.record_native_failure(aos_sandbox::JournalError::ProtectedBoundary);
+        attempt.record(BrokerAttachmentFailureV1::Floor(FloorErrorV1::Successor));
+        attempt.fence();
+
+        assert!(matches!(
+            &attempt.first_failure,
+            Some(BrokerAttachmentFailureV1::Native(aos_sandbox::JournalError::ProtectedBoundary))
+        ));
+        assert_eq!(attempt.failure_projection(), FloorErrorV1::Unavailable);
+    }
+}

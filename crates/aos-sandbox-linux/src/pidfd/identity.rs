@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::Read as _;
 use std::num::NonZeroU32;
 
-use super::PidFd;
+use super::{PidFd, PidFdInfo};
 use crate::{Error, Result};
 
 const MAXIMUM_PROC_STAT_BYTES: usize = 4096;
@@ -79,29 +79,12 @@ impl PidFd {
         let stat = read_proc_stat(before.pid())?;
         let after = self.info()?;
 
-        if before != after
-            || stat.pid != before.pid()
-            || stat.parent_pid != before.parent_pid()
-            || !self.is_alive()?
-        {
-            return Err(Error::invalid(
-                "pidfd process identity",
-                "process changed or exited during observation",
-            ));
-        }
-
-        Ok(PidFdProcessIdentity {
-            pid: before.pid(),
-            thread_group_id: before.thread_group_id(),
-            parent_pid: before.parent_pid(),
-            cgroup_id: before.cgroup_id(),
-            start_time_ticks: stat.start_time_ticks,
-        })
+        identity_from_stat(self, before, stat, after)
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ProcStatIdentity {
+pub(super) struct ProcStatIdentity {
     pid: u32,
     parent_pid: u32,
     start_time_ticks: u64,
@@ -137,7 +120,7 @@ fn read_proc_stat(pid: u32) -> Result<ProcStatIdentity> {
     parse_proc_stat(&bytes)
 }
 
-fn parse_proc_stat(bytes: &[u8]) -> Result<ProcStatIdentity> {
+pub(super) fn parse_proc_stat(bytes: &[u8]) -> Result<ProcStatIdentity> {
     let open = bytes
         .windows(2)
         .position(|pair| pair == b" (")
@@ -188,6 +171,34 @@ fn parse_decimal_u64(value: &[u8], field: &'static str) -> Result<u64> {
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .ok_or_else(|| Error::invalid("pidfd process identity", format!("invalid {field}")))
+}
+
+// Both routes keep the same info -> stat -> info -> conditional liveness
+// ordering. In particular, a contradicted stat does not trigger another syscall.
+pub(super) fn identity_from_stat(
+    pidfd: &PidFd,
+    before: PidFdInfo,
+    stat: ProcStatIdentity,
+    after: PidFdInfo,
+) -> Result<PidFdProcessIdentity> {
+    if before != after
+        || stat.pid != before.pid()
+        || stat.parent_pid != before.parent_pid()
+        || !pidfd.is_alive()?
+    {
+        return Err(Error::invalid(
+            "pidfd process identity",
+            "process changed or exited during observation",
+        ));
+    }
+
+    Ok(PidFdProcessIdentity {
+        pid: before.pid(),
+        thread_group_id: before.thread_group_id(),
+        parent_pid: before.parent_pid(),
+        cgroup_id: before.cgroup_id(),
+        start_time_ticks: stat.start_time_ticks,
+    })
 }
 
 #[cfg(test)]

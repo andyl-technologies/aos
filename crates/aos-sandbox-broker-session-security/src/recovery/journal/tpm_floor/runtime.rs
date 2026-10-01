@@ -1,8 +1,8 @@
 //! Attaches the physical floor to the actual two fixed Storage journal owners.
 //!
 //! Required mode retains the sidecar and helper between opaque traffic borrows.
-//! Taking that attachment never enables raw public reads: the enclosing owner
-//! is left unavailable until reconciliation returns. Schema-only validation
+//! A private whole-owner guard keeps raw public reads unavailable during each
+//! reconciliation and restores that same fenced floor on unwind. Schema-only validation
 //! is private and grants no currentness. There is no reentrant boolean bypass.
 //! Legacy mode admits unrelated Storage traffic but cannot adopt a sidecar or
 //! any retained execution-output (46/47/48) history. Public method 46 remains
@@ -17,10 +17,8 @@ use aos_sandbox_broker_session_protocol::{
 };
 
 use super::FloorErrorV1;
-use super::backend::PhysicalTpmNvIoV1;
 use super::durable::{
-    AttachedFloorV1, attach_broker_floor_v1, check_broker_floor_v1, commit_broker_floor_v1,
-    commit_unfloored_broker_v1,
+    BrokerAttachmentAttemptV1, BrokerAttachmentPhaseV1, commit_unfloored_broker_v1,
 };
 use super::format::FloorEndpointV1;
 use super::provisioning::{ImageFloorModeV1, ModePinV1, ProvisionPinV1};
@@ -47,7 +45,7 @@ enum FloorStateV1 {
         mode: ModePinV1,
         provision: ProvisionPinV1,
         launch_image: crate::production_startup::Pid1LaunchImageV1,
-        attached: Option<AttachedFloorV1<PhysicalTpmNvIoV1>>,
+        attached: BrokerAttachmentAttemptV1,
     },
 }
 
@@ -128,7 +126,7 @@ impl BrokerFloorV1 {
                         mode,
                         provision: ProvisionPinV1::open(endpoint)?,
                         launch_image: launch_image.ok_or(FloorErrorV1::Unavailable)?,
-                        attached: None,
+                        attached: BrokerAttachmentAttemptV1::fresh(),
                     },
                 })
             }
@@ -142,6 +140,39 @@ impl BrokerFloorV1 {
         )
     }
 
+    // Only this actual private state owns the resident attempt that must
+    // survive unfinished operations. Other dispositions retain legacy Drop.
+    pub(in crate::recovery::journal) fn has_resident_required_attempt(&self) -> bool {
+        matches!(&self.state, FloorStateV1::Required { .. })
+    }
+
+    pub(in crate::recovery::journal) fn revalidate_endpoint_for_reopen(
+        &mut self,
+        endpoint: &mut crate::recovery::journal::ProtectedEndpointV1,
+    ) -> Result<(), crate::BrokerSessionSecurityError> {
+        match &mut self.state {
+            FloorStateV1::Required { attached, .. } => {
+                // This borrows disjoint actual owner fields before extraction.
+                // A caught unwind fences the original attempt in place.
+                let operation = attached.begin(BrokerAttachmentPhaseV1::Ready)
+                    .map_err(|_| crate::BrokerSessionSecurityError::Currentness)?;
+                match endpoint.revalidate() {
+                    Ok(()) => operation.finish(Ok(()))
+                        .map_err(|_| crate::BrokerSessionSecurityError::Currentness),
+                    Err(cause) => {
+                        // This public facade error contains static labels only;
+                        // the actual cause remains on the resident attempt.
+                        let projected = cause.clone();
+                        operation.attempt.record_endpoint_failure(cause);
+                        let _ = operation.finish::<()>(Err(FloorErrorV1::Unavailable));
+                        Err(projected)
+                    }
+                }
+            }
+            _ => endpoint.revalidate(),
+        }
+    }
+
     pub(in crate::recovery::journal) fn attach(
         &mut self,
         owner: &mut ProtectedBrokerSessionJournalV1,
@@ -153,20 +184,28 @@ impl BrokerFloorV1 {
                 launch_image,
                 attached,
             } => {
+                let operation = attached.begin(BrokerAttachmentPhaseV1::Fresh)?;
                 // Main writer is already retained. Open sidecar next, then
                 // TPM; this call recovers only its exact persisted transaction.
-                mode.revalidate()?;
-                let profile = provision.profile();
-                if owner.endpoint.protected_protocol_and_node().1 != profile.node() {
-                    return Err(FloorErrorV1::Provisioning);
-                }
-                let auth = provision.current_auth()?;
-                let salt_name = provision.salt_name();
-                *attached = Some(attach_broker_floor_v1(owner, profile, |locks| {
-                    PhysicalTpmNvIoV1::open(profile, salt_name, &auth, locks, launch_image)
-                })?);
-                provision.revalidate()?;
-                mode.revalidate()
+                let result = (|| {
+                    mode.revalidate()?;
+                    let profile = provision.profile();
+                    if owner.endpoint.protected_protocol_and_node().1 != profile.node() {
+                        return Err(FloorErrorV1::Provisioning);
+                    }
+                    let auth = provision.current_auth()?;
+                    let salt_name = provision.salt_name();
+                    operation.attempt.admit(
+                        owner,
+                        profile,
+                        salt_name,
+                        &auth,
+                        launch_image,
+                    )?;
+                    provision.revalidate()?;
+                    mode.revalidate()
+                })();
+                operation.finish(result)
             }
             _ => self.check(owner),
         }
@@ -176,7 +215,8 @@ impl BrokerFloorV1 {
         if let FloorStateV1::Required { attached, .. } = &mut self.state {
             // Release TPM/sidecar before replacing the main writer, then acquire
             // main → sidecar → TPM again. Mode/provisioning pins stay retained.
-            drop(attached.take());
+            let old = std::mem::replace(attached, BrokerAttachmentAttemptV1::fresh());
+            drop(old);
         }
     }
 
@@ -199,12 +239,15 @@ impl BrokerFloorV1 {
                 attached,
                 ..
             } => {
-                mode.revalidate()?;
-                provision.revalidate()?;
-                let retained = attached.take().ok_or(FloorErrorV1::Unavailable)?;
-                *attached = Some(check_broker_floor_v1(owner, retained)?);
-                provision.revalidate()?;
-                mode.revalidate()
+                let operation = attached.begin(BrokerAttachmentPhaseV1::Ready)?;
+                let result = (|| {
+                    mode.revalidate()?;
+                    provision.revalidate()?;
+                    operation.attempt.check(owner, provision.profile())?;
+                    provision.revalidate()?;
+                    mode.revalidate()
+                })();
+                operation.finish(result)
             }
         }
     }
@@ -224,10 +267,13 @@ impl BrokerFloorV1 {
                 attached,
                 ..
             } => {
-                let retained = attached.take().ok_or(FloorErrorV1::Unavailable)?;
-                *attached = Some(commit_broker_floor_v1(owner, retained, transaction)?);
-                provision.revalidate()?;
-                mode.revalidate()
+                let operation = attached.begin(BrokerAttachmentPhaseV1::Ready)?;
+                let result = (|| {
+                    operation.attempt.commit(owner, provision.profile(), transaction)?;
+                    provision.revalidate()?;
+                    mode.revalidate()
+                })();
+                operation.finish(result)
             }
             FloorStateV1::NotScoped | FloorStateV1::Legacy { .. } => {
                 // Prospective legacy history cannot introduce a hidden 46 row.
@@ -248,11 +294,11 @@ impl BrokerFloorV1 {
         if method == BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT {
             if !METHOD46_INSTALLED_QUALIFIED
                 || !matches!(
-                    self.state,
+                    &self.state,
                     FloorStateV1::Required {
-                        attached: Some(_),
+                        attached,
                         ..
-                    }
+                    } if attached.is_ready()
                 )
             {
                 return Err(FloorErrorV1::Unavailable);
@@ -262,6 +308,32 @@ impl BrokerFloorV1 {
             return Err(FloorErrorV1::Unavailable);
         }
         Ok(())
+    }
+
+    // A failed (or abandoned in-progress) Required owner cannot touch current
+    // names, release sidecar/TPM custody or replace its main writer on reopen.
+    pub(in crate::recovery::journal) fn require_reopen_allowed(&self) -> Result<(), FloorErrorV1> {
+        if matches!(&self.state, FloorStateV1::Required { attached, .. } if attached.is_failed()) {
+            return Err(FloorErrorV1::Unavailable);
+        }
+        Ok(())
+    }
+
+    pub(in crate::recovery::journal) fn fence_required(&mut self) {
+        if let FloorStateV1::Required { attached, .. } = &mut self.state {
+            attached.fence();
+        }
+    }
+
+    pub(in crate::recovery::journal) fn record_native_failure(
+        &mut self,
+        cause: aos_sandbox::JournalError,
+    ) {
+        if let FloorStateV1::Required { attached, .. } = &mut self.state {
+            attached.record_native_failure(cause);
+        }
+        // Unrelated/legacy owners retain their original redacted consuming
+        // error contract; no missing lower cause is synthesized for them.
     }
 }
 
@@ -367,6 +439,12 @@ fn require_no_output_record(key: &[u8], value: &[u8]) -> Result<(), FloorErrorV1
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_dispositions_do_not_select_required_unwind_restoration() {
+        assert!(!BrokerFloorV1::test_not_scoped().has_resident_required_attempt());
+        assert!(!BrokerFloorV1::unavailable().has_resident_required_attempt());
+    }
 
     #[test]
     fn tpm_floor_method46_is_closed_without_installed_qualification() {
