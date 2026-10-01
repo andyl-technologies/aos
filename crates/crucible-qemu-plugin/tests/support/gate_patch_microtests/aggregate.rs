@@ -27,6 +27,19 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
 
     let aggregate = fs::read_to_string(root.join("tests/crucible/phase2-patch-microtests.nix"))?;
     assert_contains(&aggregate, "gate=gate:patch-microtests");
+    assert_contains(&aggregate, "liveCheck = qemuQueuedInvalidation;");
+    assert_contains(
+        &aggregate,
+        "evidenceName = \"queued-runtime-tb-invalidation\";",
+    );
+    for evidence in [
+        "main_loop_instruction_installation=true",
+        "cpu1_cached_instruction_retranslated=true",
+        "global_flushes=1",
+        "direct_flush_negative_asserts=true",
+    ] {
+        assert_contains(&aggregate, evidence);
+    }
     assert_contains(
         &aggregate,
         "taskIds ? [\"T-PKG-4\" \"T-HARN-20\" \"T-PATCH-2\" \"T-PATCH-20\" \"T-PATCH-21\" \"T-PATCH-22\" \"T-PATCH-23\" \"T-PATCH-24\"]",

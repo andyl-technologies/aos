@@ -53,7 +53,18 @@ in
     inherit version src;
 
     buildDeps =
-      [(if isDarwinCross then rustForBuild else rust) cmake ninja gettext pkg-config python3]
+      [
+        (
+          if isDarwinCross
+          then rustForBuild
+          else rust
+        )
+        cmake
+        ninja
+        gettext
+        pkg-config
+        python3
+      ]
       ++ lib.optionals isLinuxCross [rustForBuild];
     runtimeDeps =
       [
@@ -98,6 +109,17 @@ in
 
           sed -i "1s|^#!.*|#!$CONFIG_SHELL|" build_tools/git_version_gen.sh
           sed -i "1s|^#!.*|#!${python3}/bin/python3|" tests/test_driver.py
+
+          # Installed binaries cannot reuse a sandbox source or build tree.
+          # Keep runtime detection outside the installed layout without
+          # changing the paths used by Cargo's compile-time asset embedding.
+          sed -i \
+            's|env!("FISH_RESOLVED_BUILD_DIR")|concat!(env!("PREFIX"), "/share/fish/.build-tree")|' \
+            src/common.rs
+          sed -i \
+            -e '/^use fish_build_helper::workspace_root;$/d' \
+            -e 's|let workspace_root = workspace_root();|let packaged_source_root = Path::new(PREFIX).join("share/fish/.source-tree");\n        let workspace_root = packaged_source_root.as_path();|' \
+            src/env/config_paths.rs
         '';
       }
       {

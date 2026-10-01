@@ -18,7 +18,7 @@
     failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
       {
         label = "T-SPAT-12 completion names independent plan hash";
-        needle = "`Plan` now carries an";
+        needle = "`Plan` carries one event";
       }
       {
         label = "T-SPAT-12 completion names scenario composition";
@@ -26,7 +26,7 @@
       }
       {
         label = "T-SPAT-12 completion names gate";
-        needle = "`checks.crucible.phase1.spatialPlanComponent`";
+        needle = "`checks.crucible.phase7.gates.signalFaultSystem`";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
@@ -40,23 +40,23 @@
       }
       {
         label = "plan hash domain";
-        needle = "\"crucible.model.plan.v1\"";
+        needle = "\"crucible.model.plan.v5\"";
       }
       {
         label = "plan canonical entry helper";
-        needle = "fn canonical_plan_entries(entries: &[PlanEntry]) -> Vec<PlanEntry>";
+        needle = "fn from_canonical_parts(graph: EventGraph, fault_signals: FaultSignalPlan)";
       }
       {
-        label = "virtual-time plan ordering";
-        needle = "plan_entry_time(left)";
+        label = "world-validated event graph";
+        needle = "validate_event_graph_plan";
       }
       {
         label = "plan material helper";
         needle = "fn plan_material(plan: &Plan) -> String";
       }
       {
-        label = "plan entry material helper";
-        needle = "fn plan_entry_material(entry: &PlanEntry) -> String";
+        label = "signal plan identity enters canonical material";
+        needle = "fault_signals.id().to_hex()";
       }
       {
         label = "world-plan scenario helper";
@@ -97,31 +97,23 @@
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
       {
-        label = "plan content-address test";
-        needle = "plan_content_address_is_orthogonal_and_canonical";
+        label = "plan content-address regression";
+        needle = "fn plan_content_address_preserves_declared_event_order()";
       }
       {
-        label = "test checks authoring order";
-        needle = "let authored_order = vec![";
+        label = "declared event order affects canonical bytes";
+        needle = "assert_ne!(plan.canonical_bytes(), reordered_plan.canonical_bytes());";
       }
       {
-        label = "test checks canonical entries";
-        needle = "assert_eq!(plan.entries(), same_plan.entries());";
+        label = "declared event order affects plan identity";
+        needle = "assert_ne!(plan.content_hash(), reordered_plan.content_hash());";
       }
       {
-        label = "test checks plan reuse across compatible worlds";
-        needle = "same_plan_changed_world.content_hash()";
+        label = "reuse and scenario sensitivity regression";
+        needle = "spatial_components_have_independent_content_addresses_and_cross_reuse";
       }
       {
-        label = "test checks scenario plan sensitivity";
-        needle = "plan should affect scenario identity";
-      }
-      {
-        label = "test checks empty-plan compatibility";
-        needle = "let empty_plan = Plan::empty();";
-      }
-      {
-        label = "test rejects incompatible world";
+        label = "incompatible world rejection";
         needle = "incompatible_world.scenario_def_with_plan(&plan)";
       }
     ]
@@ -202,7 +194,7 @@ in
             related_gates=gate:content-address,gate:e2e-determinism
             spatial_graph_task=orthogonal-plan-component
             component=plan
-            canonical_order=virtual-time
+            canonical_order=declared-event-order-and-signal-binding-identity
             scenario_identity=world-ref-plus-plan-ref
             RESULT
           '';

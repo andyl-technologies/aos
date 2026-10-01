@@ -394,20 +394,34 @@ impl Dialect {
             && s.contains("CREATE TABLE")
             && (s.contains("package_documentation(") || s.contains("package_documentation_search("))
         {
-            // Migration v1 is immutable. Its generic TEXT keys exceed the
-            // InnoDB composite-index limit under utf8mb4, so only the MySQL
-            // physical DDL uses bounded, byte-exact keys. The parent and
-            // search table must have identical foreign-key column types.
-            for column in ["package_name", "package_version", "platform"] {
+            // Preserve byte-exact comparisons and matching parent/search
+            // foreign-key types. The version can contain multi-byte text;
+            // package names and platforms have a 512-byte token contract.
+            for column in ["package_name", "platform"] {
                 s = s.replace(
                     &format!("{column} VARCHAR(255) NOT NULL"),
                     &format!("{column} VARBINARY(512) NOT NULL"),
                 );
             }
+            s = s.replace(
+                "package_version VARCHAR(255) NOT NULL",
+                "package_version VARBINARY(1024) NOT NULL",
+            );
             if s.contains("package_documentation_search(") {
+                // The full search tuple exceeds InnoDB's composite-key limit.
+                // A unique generated digest rejects duplicates or collisions;
+                // ordinary lookups still compare the original binary values.
+                // HEX gives JSON_ARRAY text inputs on both MySQL and MariaDB,
+                // retaining every byte without binary-character-set coercion.
                 s = s.replace(
-                    "document_key VARCHAR(255) NOT NULL",
-                    "document_key VARBINARY(1024) NOT NULL",
+                    "document_key VARCHAR(255) NOT NULL,",
+                    "document_key VARBINARY(1024) NOT NULL,\n  document_identity_digest BINARY(32) \
+GENERATED ALWAYS AS (UNHEX(SHA2(JSON_ARRAY(HEX(package_name), HEX(package_version), \
+HEX(platform), HEX(kind), HEX(document_key)), 256))) STORED,",
+                );
+                s = s.replace(
+                    "PRIMARY KEY(\n    registry_id, package_name, package_version, platform, kind, document_key\n  )",
+                    "UNIQUE(registry_id, document_identity_digest)",
                 );
             }
         }

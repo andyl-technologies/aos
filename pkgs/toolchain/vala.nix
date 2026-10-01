@@ -20,8 +20,20 @@ in
     };
 
     buildDeps = [buildPackages.gnumake buildPackages.pkg-config buildPackages.gobject-introspection buildPackages.dbus buildPackages.flex buildPackages.bison];
-    runtimeDeps = [glib graphviz] ++ (if stdenv.hostPlatform.isLinux then [util-linux] else []);
-    propagatedDeps = [glib] ++ (if stdenv.hostPlatform.isLinux then [util-linux] else []);
+    runtimeDeps =
+      [glib graphviz]
+      ++ (
+        if stdenv.hostPlatform.isLinux
+        then [util-linux]
+        else []
+      );
+    propagatedDeps =
+      [glib]
+      ++ (
+        if stdenv.hostPlatform.isLinux
+        then [util-linux]
+        else []
+      );
 
     phases =
       [

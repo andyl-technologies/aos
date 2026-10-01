@@ -1133,7 +1133,7 @@ in
         rootfsDeps = [self iproute2];
         memory = 4096;
         testScript = ''
-          ${nix}/bin/nix-store --load-db < /aos-registration
+          ${nix}/bin/nix-store --load-db < /usr/lib/aos/nix-registration
           export NIX_REMOTE=""
           ${iproute2}/sbin/ip link set lo up
           ${self}/bin/aos-hub-worker-do-e2e

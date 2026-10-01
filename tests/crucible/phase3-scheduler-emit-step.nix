@@ -330,7 +330,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-emit-step-target" \
               -p crucible \
-              --test scheduler_resolve_rng \
+              --test scheduler_resolve \
               -- --test-threads=1
             cargo test \
               --frozen \

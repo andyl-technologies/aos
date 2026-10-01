@@ -58,6 +58,10 @@
       expected = "library";
     }
     {
+      package = "crucible-debug-gateway";
+      expected = "debug-gateway";
+    }
+    {
       package = "crucible-cli";
       expected = "cli-binary";
     }
@@ -167,8 +171,12 @@
         ++ lib.optionals layout.hasSrcBinDir [
           "${spec.package}: CLI must not add extra implicit binary targets under src/bin"
         ]
-      else if spec.expected == "guest-emitter"
+      else if builtins.elem spec.expected ["guest-emitter" "debug-gateway"]
       then let
+        artifactLabel =
+          if spec.expected == "guest-emitter"
+          then "guest emitter"
+          else "debug gateway";
         bins = binTargets manifest;
         binCount = builtins.length bins;
         bin =
@@ -177,28 +185,28 @@
           else {};
       in
         lib.optionals (!(declaresOrImpliesLibTarget manifest layout)) [
-          "${spec.package}: guest emitter must expose a library target"
+          "${spec.package}: ${artifactLabel} must expose a library target"
         ]
         ++ lib.concatMap (
           crateType:
             lib.optionals (!(builtins.elem crateType ["lib" "rlib"])) [
-              "${spec.package}: forbidden crate-type `${crateType}` for guest emitter library target"
+              "${spec.package}: forbidden crate-type `${crateType}` for ${artifactLabel} library target"
             ]
         ) (crateTypes manifest)
         ++ lib.optionals (binCount != 1) [
-          "${spec.package}: guest emitter must declare exactly one [[bin]] target, found ${builtins.toString binCount}"
+          "${spec.package}: ${artifactLabel} must declare exactly one [[bin]] target, found ${builtins.toString binCount}"
         ]
-        ++ lib.optionals (binCount == 1 && (!(bin ? name) || bin.name != "crucible-guest")) [
-          "${spec.package}: guest emitter [[bin]] name must be `crucible-guest`"
+        ++ lib.optionals (binCount == 1 && (!(bin ? name) || bin.name != spec.package)) [
+          "${spec.package}: ${artifactLabel} [[bin]] name must be `${spec.package}`"
         ]
         ++ lib.optionals (binCount == 1 && (!(bin ? path) || bin.path != "src/main.rs")) [
-          "${spec.package}: guest emitter [[bin]] path must be `src/main.rs`"
+          "${spec.package}: ${artifactLabel} [[bin]] path must be `src/main.rs`"
         ]
         ++ lib.optionals (!layout.hasMainRs) [
-          "${spec.package}: guest emitter target must have src/main.rs"
+          "${spec.package}: ${artifactLabel} target must have src/main.rs"
         ]
         ++ lib.optionals layout.hasSrcBinDir [
-          "${spec.package}: guest emitter must not add extra implicit binary targets under src/bin"
+          "${spec.package}: ${artifactLabel} must not add extra implicit binary targets under src/bin"
         ]
       else if spec.expected == "fleet-store-binary"
       then let

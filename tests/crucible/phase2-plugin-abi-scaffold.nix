@@ -10,8 +10,14 @@
 
   pluginCargo = builtins.readFile ../../crates/crucible-qemu-plugin/Cargo.toml;
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
-  pluginAbiTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
+  pluginAbi = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/abi.rs;
+  };
+  pluginAbiTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
+  };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -74,7 +80,7 @@
       }
       {
         label = "plugin API version constant";
-        needle = "pub const QEMU_PLUGIN_API_VERSION: c_int = 4;";
+        needle = "pub const QEMU_PLUGIN_API_VERSION: c_int = 7;";
       }
       {
         label = "version symbol constant";

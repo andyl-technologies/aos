@@ -9,7 +9,10 @@
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
+  crateRoot = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   observedStateTest = builtins.readFile ../../crates/crucible/tests/observed_state_materialization.rs;
   deterministicConditionTest = builtins.readFile ../../crates/crucible/tests/deterministic_condition_evaluation.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
@@ -23,164 +26,7 @@
   # string forced after every chunk. A whole-file per-character fold builds a
   # haystack-deep chain of unforced `+` thunks and overflows the evaluator
   # stack on large sources.
-  scrubCommentsAndStrings = content: let
-    scrubChunk = chunkState: chunk: let
-      length = builtins.stringLength chunk;
-      charAt = index: builtins.substring index 1 chunk;
-      indexes = builtins.genList (index: index) length;
-      folded = builtins.foldl' step chunkState indexes;
-      step = state: index:
-        if state.skip
-        then
-          state
-          // {
-            skip = false;
-          }
-        else let
-          ch = charAt index;
-          next =
-            if (index + 1) < length
-            then charAt (index + 1)
-            else "";
-        in
-          if state.mode == "code"
-          then
-            if ch == "/" && next == "/"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                mode = "line";
-                skip = true;
-              }
-            else if ch == "/" && next == "*"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                mode = "block";
-                depth = 1;
-                skip = true;
-              }
-            else if ch == "\""
-            then
-              state
-              // {
-                out = state.out + " ";
-                mode = "string";
-              }
-            else
-              state
-              // {
-                out = state.out + ch;
-              }
-          else if state.mode == "line"
-          then
-            if ch == "\n"
-            then
-              state
-              // {
-                out = state.out + "\n";
-                mode = "code";
-              }
-            else
-              state
-              // {
-                out = state.out + " ";
-              }
-          else if state.mode == "block"
-          then
-            if ch == "/" && next == "*"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                depth = state.depth + 1;
-                skip = true;
-              }
-            else if ch == "*" && next == "/"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                mode =
-                  if state.depth == 1
-                  then "code"
-                  else "block";
-                depth =
-                  if state.depth == 1
-                  then 0
-                  else state.depth - 1;
-                skip = true;
-              }
-            else
-              state
-              // {
-                out =
-                  state.out
-                  + (
-                    if ch == "\n"
-                    then "\n"
-                    else " "
-                  );
-              }
-          else if ch == "\\" && next != ""
-          then
-            state
-            // {
-              out =
-                state.out
-                + " "
-                + (
-                  if next == "\n"
-                  then "\n"
-                  else " "
-                );
-              skip = true;
-            }
-          else if ch == "\""
-          then
-            state
-            // {
-              out = state.out + " ";
-              mode = "code";
-            }
-          else
-            state
-            // {
-              out =
-                state.out
-                + (
-                  if ch == "\n"
-                  then "\n"
-                  else " "
-                );
-            };
-    in
-      # Force the accumulated output flat before the next chunk so thunk
-      # depth stays bounded by the longest line, not the whole file.
-      builtins.seq (builtins.stringLength folded.out) folded;
-    lines = lib.splitString "\n" content;
-    lineCount = builtins.length lines;
-    chunkAt = index:
-      builtins.elemAt lines index
-      + (
-        if index + 1 < lineCount
-        then "\n"
-        else ""
-      );
-    result =
-      builtins.foldl'
-      (state: index: scrubChunk state (chunkAt index))
-      {
-        out = "";
-        mode = "code";
-        depth = 0;
-        skip = false;
-      }
-      (builtins.genList (index: index) lineCount);
-  in
-    result.out;
+  scrubCommentsAndStrings = import ./_rust-scrub.nix {inherit lib;};
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
@@ -208,16 +54,16 @@
         needle = "pub fn ordering_facts(self) -> &'log [ObservedOrderingFact]";
       }
       {
-        label = "fault facts view";
-        needle = "pub fn fault_facts(self) -> &'log [ObservedFaultFact]";
+        label = "typed fault evidence folded separately";
+        needle = "SchedulerEventLogPayload::FaultObservation(_)";
       }
       {
         label = "ordering fact enum";
         needle = "pub enum ObservedOrderingFact";
       }
       {
-        label = "fault fact enum";
-        needle = "pub enum ObservedFaultFact";
+        label = "private observed-state storage";
+        needle = "pub(super) observable_events:";
       }
       {
         label = "checked prefix constructor";
@@ -288,8 +134,8 @@
         needle = "ObservedOrderingFact";
       }
       {
-        label = "observed fault fact export";
-        needle = "ObservedFaultFact";
+        label = "checked prefix export";
+        needle = "ConditionEventLogPrefix";
       }
       {
         label = "test typed payload constructor";
@@ -297,6 +143,10 @@
       }
     ]
     ++ failuresFor "crates/crucible/tests/observed_state_materialization.rs" observedStateTest [
+      {
+        label = "internal fault evidence does not enter assertion state";
+        needle = "fault_evidence_does_not_expose_internal_state_to_assertion_predicates";
+      }
       {
         label = "checked prefix materialization test";
         needle = "observed_state_materializes_only_checked_event_log_prefix";

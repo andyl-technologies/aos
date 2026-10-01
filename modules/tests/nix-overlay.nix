@@ -1,6 +1,6 @@
 ##! modules/tests/nix-overlay.nix — /nix overlayfs verification
 ##!
-##! AOS ships its Nix closure read-only at /nix.lower; the initrd unit
+##! AOS ships its Nix closure read-only at /usr/lib/aos/nix; the initrd unit
 ##! `nix-overlay-setup.service` (modules/services/boot-substrate.nix) stacks
 ##! an overlayfs at /nix with a writable upper on /var, so the Nix
 ##! package manager can install new store paths at runtime.
@@ -22,14 +22,17 @@
       }
       {
         name = "lower-visible-through-overlay";
-        description = "the closure under /nix.lower surfaces at /nix";
+        description = "the closure under /usr/lib/aos/nix surfaces at /nix";
         script = ''
           # /sbin/init resolves through merged-usr to /usr/bin/init,
           # which is a symlink into the store. Reading it via /nix/store
-          # (the overlay) and via /nix.lower/store (the on-disk lower)
+          # (the overlay) and via /usr/lib/aos/nix/store (the on-disk lower)
           # must produce the same closure root.
-          vm.succeed("test -d /nix.lower/store")
+          vm.succeed("test -d /usr/lib/aos/nix/store")
           vm.succeed("test -d /nix/store")
+          vm.succeed("test -L /usr/lib/aos/toplevel")
+          vm.succeed("test -s /usr/lib/aos/nix-registration")
+          vm.succeed("test ! -e /nix.lower && test ! -L /aos-toplevel && test ! -e /aos-registration")
         '';
       }
       {
@@ -46,7 +49,7 @@
               "cat /var/lib/nix-overlay/upper/store/.aos-overlay-marker"
           )
           # And confirm the lower was NOT touched (immutability invariant).
-          vm.succeed("test ! -e /nix.lower/store/.aos-overlay-marker")
+          vm.succeed("test ! -e /usr/lib/aos/nix/store/.aos-overlay-marker")
         '';
       }
     ];

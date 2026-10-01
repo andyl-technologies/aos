@@ -50,7 +50,7 @@ The current repository CLI and bootable-image workflow is supported on
 
 System scope fails closed before loading package state. The selected root must
 identify `ID=aos` and provide a numeric `AOS_MODULE_ABI`; live runtime commands
-also require the immutable `/aos-toplevel/os-release` identity.
+also require the immutable `/usr/lib/aos/toplevel/os-release` identity.
 
 ## Work in a repository checkout
 

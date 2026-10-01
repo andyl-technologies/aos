@@ -1468,7 +1468,8 @@ fn storage_topology_renders_arrays_and_volumes() {
 
     // Member partitions are typed linux-raid and left raw; the plain partition
     // keeps its repart format.
-    let var_conf = std::fs::read_to_string(output.path().join("repart.d/0000/0010-var.conf")).unwrap();
+    let var_conf =
+        std::fs::read_to_string(output.path().join("repart.d/0000/0010-var.conf")).unwrap();
     assert!(var_conf.contains(&format!("Type={LINUX_RAID_TYPE_GUID}\n")));
     assert!(!var_conf.contains("Format="));
     let targets = std::fs::read_to_string(output.path().join("repart-targets")).unwrap();
@@ -1479,9 +1480,19 @@ fn storage_topology_renders_arrays_and_volumes() {
     let scratch_conf = std::fs::read_dir(output.path().join("repart.d").join(disk_c_dir))
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .find(|path| path.file_name().unwrap().to_str().unwrap().ends_with("-scratch.conf"))
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .ends_with("-scratch.conf")
+        })
         .unwrap();
-    assert!(std::fs::read_to_string(scratch_conf).unwrap().contains("Format=ext4\n"));
+    assert!(
+        std::fs::read_to_string(scratch_conf)
+            .unwrap()
+            .contains("Format=ext4\n")
+    );
 }
 
 #[test]
@@ -1497,7 +1508,11 @@ fn storage_topology_rejects_invalid_arrays() {
         ),
         // Member declares its own filesystem.
         topology_plan(
-            &[("var", None, None, None), ("a", Some(DISK_B), Some("ext4"), None), ("b", Some(DISK_B), None, None)],
+            &[
+                ("var", None, None, None),
+                ("a", Some(DISK_B), Some("ext4"), None),
+                ("b", Some(DISK_B), None, None),
+            ],
             &[("data", "raid1", &["a", "b"], Some("ext4"), None)],
         ),
         // Too few members for the level.
@@ -1507,7 +1522,11 @@ fn storage_topology_rejects_invalid_arrays() {
         ),
         // The var array omits the root-disk var partition.
         topology_plan(
-            &[("var", None, None, None), ("a", Some(DISK_B), None, None), ("b", Some(DISK_B), None, None)],
+            &[
+                ("var", None, None, None),
+                ("a", Some(DISK_B), None, None),
+                ("b", Some(DISK_B), None, None),
+            ],
             &[("var", "raid1", &["a", "b"], Some("ext4"), None)],
         ),
         // The var partition joins an unrelated array.
@@ -1517,22 +1536,42 @@ fn storage_topology_rejects_invalid_arrays() {
         ),
         // Array name collides with a partition label.
         topology_plan(
-            &[("var", None, None, None), ("a", Some(DISK_B), None, None), ("b", Some(DISK_B), None, None), ("data", Some(DISK_B), Some("ext4"), None)],
+            &[
+                ("var", None, None, None),
+                ("a", Some(DISK_B), None, None),
+                ("b", Some(DISK_B), None, None),
+                ("data", Some(DISK_B), Some("ext4"), None),
+            ],
             &[("data", "raid1", &["a", "b"], Some("ext4"), None)],
         ),
         // One partition in two arrays.
         topology_plan(
-            &[("var", None, None, None), ("a", Some(DISK_B), None, None), ("b", Some(DISK_B), None, None), ("c", Some(DISK_B), None, None)],
-            &[("x", "raid1", &["a", "b"], Some("ext4"), None), ("y", "raid1", &["b", "c"], Some("ext4"), None)],
+            &[
+                ("var", None, None, None),
+                ("a", Some(DISK_B), None, None),
+                ("b", Some(DISK_B), None, None),
+                ("c", Some(DISK_B), None, None),
+            ],
+            &[
+                ("x", "raid1", &["a", "b"], Some("ext4"), None),
+                ("y", "raid1", &["b", "c"], Some("ext4"), None),
+            ],
         ),
         // Unsupported level.
         topology_plan(
-            &[("var", None, None, None), ("a", Some(DISK_B), None, None), ("b", Some(DISK_B), None, None)],
+            &[
+                ("var", None, None, None),
+                ("a", Some(DISK_B), None, None),
+                ("b", Some(DISK_B), None, None),
+            ],
             &[("data", "linear", &["a", "b"], Some("ext4"), None)],
         ),
     ];
     for plan in invalid {
-        assert!(validate_provisioning_plan(&plan, false).is_err(), "{plan:?}");
+        assert!(
+            validate_provisioning_plan(&plan, false).is_err(),
+            "{plan:?}"
+        );
     }
 }
 
@@ -1553,7 +1592,10 @@ fn storage_encryption_follows_measured_boot_policy() {
     // A sealed volume is rendered raw so the unlock unit can format it; a data
     // partition may opt in on a measured image.
     let mut plan = topology_plan(
-        &[("var", None, None, None), ("data", Some(DISK_B), Some("ext4"), Some("tpm2"))],
+        &[
+            ("var", None, None, None),
+            ("data", Some(DISK_B), Some("ext4"), Some("tpm2")),
+        ],
         &[],
     );
     let output = tempdir().unwrap();
@@ -1565,7 +1607,8 @@ fn storage_encryption_follows_measured_boot_policy() {
         "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
     )
     .unwrap();
-    let var_conf = std::fs::read_to_string(output.path().join("repart.d/0000/0010-var.conf")).unwrap();
+    let var_conf =
+        std::fs::read_to_string(output.path().join("repart.d/0000/0010-var.conf")).unwrap();
     assert!(!var_conf.contains("Format="));
     let volumes = std::fs::read_to_string(output.path().join(VOLUMES_FILE)).unwrap();
     assert_eq!(
@@ -1576,22 +1619,50 @@ fn storage_encryption_follows_measured_boot_policy() {
 
     let invalid = [
         // Sealing needs measured boot.
-        (topology_plan(&[("var", None, None, None), ("data", Some(DISK_B), Some("ext4"), Some("tpm2"))], &[]), false),
+        (
+            topology_plan(
+                &[
+                    ("var", None, None, None),
+                    ("data", Some(DISK_B), Some("ext4"), Some("tpm2")),
+                ],
+                &[],
+            ),
+            false,
+        ),
         // A measured image never runs a plaintext system-state volume.
-        (topology_plan(&[("var", None, None, Some("none"))], &[]), true),
+        (
+            topology_plan(&[("var", None, None, Some("none"))], &[]),
+            true,
+        ),
         // Only ext4 volumes can be sealed.
-        (topology_plan(&[("var", None, None, None), ("esp2", Some(DISK_B), Some("vfat"), Some("tpm2"))], &[]), true),
+        (
+            topology_plan(
+                &[
+                    ("var", None, None, None),
+                    ("esp2", Some(DISK_B), Some("vfat"), Some("tpm2")),
+                ],
+                &[],
+            ),
+            true,
+        ),
         // Members are never encrypted individually.
         (
             topology_plan(
-                &[("var", None, None, None), ("a", Some(DISK_B), None, Some("tpm2")), ("b", Some(DISK_B), None, None)],
+                &[
+                    ("var", None, None, None),
+                    ("a", Some(DISK_B), None, Some("tpm2")),
+                    ("b", Some(DISK_B), None, None),
+                ],
                 &[("data", "raid1", &["a", "b"], Some("ext4"), None)],
             ),
             true,
         ),
     ];
     for (plan, measured_boot) in invalid {
-        assert!(validate_provisioning_plan(&plan, measured_boot).is_err(), "{plan:?}");
+        assert!(
+            validate_provisioning_plan(&plan, measured_boot).is_err(),
+            "{plan:?}"
+        );
     }
 }
 
@@ -1613,12 +1684,18 @@ fn storage_topology_admits_xfs_data_volumes_only() {
         &[("bulk", "raid1", &["a", "b"], Some("xfs"), None)],
     );
     let topology = resolve_topology(&plan, true).unwrap();
-    assert!(topology.volumes.iter().any(|volume| {
-        volume.name == "bulk" && volume.filesystem.as_deref() == Some("xfs")
-    }));
-    assert!(topology.volumes.iter().any(|volume| {
-        volume.name == "scratch" && volume.encryption.as_str() == "tpm2"
-    }));
+    assert!(
+        topology
+            .volumes
+            .iter()
+            .any(|volume| { volume.name == "bulk" && volume.filesystem.as_deref() == Some("xfs") })
+    );
+    assert!(
+        topology
+            .volumes
+            .iter()
+            .any(|volume| { volume.name == "scratch" && volume.encryption.as_str() == "tpm2" })
+    );
 
     let invalid = [
         // The system-state array is ext4 only.
@@ -1630,22 +1707,36 @@ fn storage_topology_admits_xfs_data_volumes_only() {
         topology_plan(&[("var", None, Some("xfs"), None)], &[]),
         // An xfs array name must fit the 12-byte xfs label.
         topology_plan(
-            &[("var", None, None, None), ("a", Some(DISK_B), None, None), ("b", Some(DISK_B), None, None)],
+            &[
+                ("var", None, None, None),
+                ("a", Some(DISK_B), None, None),
+                ("b", Some(DISK_B), None, None),
+            ],
             &[("thirteen-char", "raid1", &["a", "b"], Some("xfs"), None)],
         ),
         // An xfs partition label must fit as well.
         topology_plan(
-            &[("var", None, None, None), ("thirteen-char", Some(DISK_B), Some("xfs"), None)],
+            &[
+                ("var", None, None, None),
+                ("thirteen-char", Some(DISK_B), Some("xfs"), None),
+            ],
             &[],
         ),
     ];
     for plan in invalid {
-        assert!(validate_provisioning_plan(&plan, false).is_err(), "{plan:?}");
+        assert!(
+            validate_provisioning_plan(&plan, false).is_err(),
+            "{plan:?}"
+        );
     }
 
     // The same 13-byte name is fine for ext4.
     let ext4 = topology_plan(
-        &[("var", None, None, None), ("a", Some(DISK_B), None, None), ("b", Some(DISK_B), None, None)],
+        &[
+            ("var", None, None, None),
+            ("a", Some(DISK_B), None, None),
+            ("b", Some(DISK_B), None, None),
+        ],
         &[("thirteen-char", "raid1", &["a", "b"], Some("ext4"), None)],
     );
     validate_provisioning_plan(&ext4, false).unwrap();

@@ -106,8 +106,8 @@ const ROOT_A_DEVICE: &str = "/dev/disk/by-partlabel/root-a";
 const ROOT_B_DEVICE: &str = "/dev/disk/by-partlabel/root-b";
 const ROOT_A_HASH_DEVICE: &str = "/dev/disk/by-partlabel/root-a-hash";
 const ROOT_B_HASH_DEVICE: &str = "/dev/disk/by-partlabel/root-b-hash";
-const RUNNING_TOPLEVEL_LINK: &str = "/aos-toplevel";
-const RUNNING_OS_RELEASE: &str = "/aos-toplevel/os-release";
+const RUNNING_TOPLEVEL_LINK: &str = "/usr/lib/aos/toplevel";
+const RUNNING_OS_RELEASE: &str = "/usr/lib/aos/toplevel/os-release";
 const IMMUTABLE_DRAIN_SCRIPT: &str = "/usr/lib/aos/drain";
 const RUNNING_CMDLINE: &str = "/proc/cmdline";
 const IMMUTABLE_ACTIVE_DB_CERTS: &str = "/usr/lib/aos/image-trust/active-db-certs.pem";
@@ -244,7 +244,7 @@ impl ImageSlotLayout {
 /// Resolves the booted image generation from immutable image identity.
 ///
 /// The `/var` image index is accepted only after its running record agrees
-/// with the baked `/aos-toplevel` pointer and metadata, the measured
+/// with the baked `/usr/lib/aos/toplevel` pointer and metadata, the measured
 /// `AOS_MODULE_ABI` and `AOS_BASELIB_DIGEST` fields from the running image's
 /// `os-release`, and the root slot/verity hash in `/proc/cmdline`.
 /// Config-generation state is deliberately not consulted. The initrd seed
@@ -5667,7 +5667,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let image_profile = tmp.path().join("image");
         let toplevel = tmp.path().join("toplevel");
-        let toplevel_link = tmp.path().join("aos-toplevel");
+        let toplevel_link = tmp.path().join("usr/lib/aos/toplevel");
+        std::fs::create_dir_all(toplevel_link.parent().unwrap()).unwrap();
         let cmdline = tmp.path().join("cmdline");
         std::fs::create_dir_all(image_profile.as_path()).unwrap();
         std::fs::create_dir_all(toplevel.join("meta")).unwrap();

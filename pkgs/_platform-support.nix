@@ -830,6 +830,7 @@ let
     "security/_grype-database.nix" = "target-independent-source";
     "security/_grype-scan-check.nix" = "native-build-helper";
     "tools/_device-test-coreutils.nix" = "linux-only-build-helper";
+    "tools/_nix-daemon-checks.nix" = "linux-only-build-helper";
     "tools/miniflare/_blake3-wasm.nix" = "native-build-helper";
     "tools/miniflare/_sharp-addon.nix" = "cross-build-helper";
     "tools/workerd/_binaryen.nix" = "native-build-helper";
@@ -1103,6 +1104,8 @@ let
     "tests/_config-module-smoke/module.nix" = "linux-only-test-source";
     "tests/_config-module-smoke/private.nix" = "linux-only-test-source";
     "tools/_conntrackd-config/module.nix" = "linux-only-config-source";
+    "tools/_nix-daemon-config/module.nix" = "linux-only-config-source";
+    "tools/_nix-daemon-config/documentation.nix" = "linux-only-config-source";
     "tools/_rsyncd-config/module.nix" = "linux-only-config-source";
   };
 

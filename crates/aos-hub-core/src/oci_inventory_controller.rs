@@ -1410,6 +1410,7 @@ mod tests {
         evidence_delay_ms: Arc<AtomicU64>,
         evidence_calls: Arc<AtomicUsize>,
         provider_version: Arc<Mutex<Option<String>>>,
+        evidence_started: Arc<tokio::sync::Notify>,
     }
 
     #[async_trait]
@@ -1493,6 +1494,7 @@ mod tests {
             maximum_bytes: u64,
         ) -> Result<Option<SurfaceInventoryChunk>> {
             self.evidence_calls.fetch_add(1, Ordering::SeqCst);
+            self.evidence_started.notify_one();
             let delay_ms = self.evidence_delay_ms.load(Ordering::SeqCst);
             if delay_ms > 0 {
                 crate::clock::sleep(Duration::from_millis(delay_ms)).await;
@@ -1656,6 +1658,7 @@ mod tests {
                 evidence_delay_ms: Arc::new(AtomicU64::new(0)),
                 evidence_calls: Arc::new(AtomicUsize::new(0)),
                 provider_version: Arc::new(Mutex::new(None)),
+                evidence_started: Arc::new(tokio::sync::Notify::new()),
             },
             opened: AtomicUsize::new(0),
         });
@@ -2354,21 +2357,31 @@ mod tests {
         provider
             .fetch
             .evidence_delay_ms
-            .store(500, Ordering::SeqCst);
+            .store(60_000, Ordering::SeqCst);
         let controller = OciProviderInventoryController::new(db.clone(), provider.clone());
         let now = crate::clock::now_unix_secs();
 
-        let timed_out = controller
-            .run_due_bounded(
-                "worker",
-                "slow",
-                now,
-                1,
-                None,
-                test_dispatch_budget(1, 1, 1024, Duration::from_millis(100)),
-            )
-            .await
-            .unwrap();
+        let dispatch = controller.run_due_bounded(
+            "worker",
+            "slow",
+            now,
+            1,
+            None,
+            test_dispatch_budget(1, 1, 1024, Duration::from_secs(30)),
+        );
+        tokio::pin!(dispatch);
+        tokio::select! {
+            () = provider.fetch.evidence_started.notified() => {}
+            result = &mut dispatch => panic!("dispatch finished before fetching an object: {result:?}"),
+        }
+
+        // Enter the provider operation before advancing its deadline. Database
+        // setup uses real time; leave time paused only while the fetch is pending
+        // so SQLite worker scheduling cannot consume the test's timer budget.
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(31)).await;
+        tokio::time::resume();
+        let timed_out = dispatch.await.unwrap();
         let continuation = timed_out.continuation.unwrap();
         let active = db
             .active_oci_provider_inventory(placement.id)
@@ -2387,7 +2400,7 @@ mod tests {
                 now + 1,
                 1,
                 Some(&continuation),
-                test_dispatch_budget(1, 1, 1024, Duration::from_secs(1)),
+                test_dispatch_budget(1, 1, 1024, Duration::from_secs(5)),
             )
             .await
             .unwrap();

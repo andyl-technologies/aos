@@ -2,9 +2,12 @@
 #
 # A destination is one (surface role, registry tier, channel kind) triple. The
 # exported table is closed: anything not listed here is not a destination and
-# plan validation rejects it. The registry tier decides which channels exist,
-# because the testing registries carry edge only and the main registry never
-# publishes edge.
+# plan validation rejects it. The registry tier decides which channels exist:
+# the main registry carries every kind, so the integration stream ships through
+# the same keys and pipeline as supported releases, while the testing
+# registries carry edge only. A channel kind selects the same profile on both
+# tiers, because the tier changes the infrastructure behind a release, not
+# what the release must prove.
 {
   config,
   lib,
@@ -29,6 +32,20 @@
     builtins.all (role: role == "staging") row.after && (row.surface != "staging" || row.after == []);
 
   destinations = builtins.attrValues cfg.destinations;
+
+  otherTier = tier:
+    if tier == "production"
+    then "testing"
+    else "production";
+
+  sameProfile = row:
+    cfg.destinations."${row.surface}/${otherTier row.registry_tier}/${row.channel}".profile == row.profile;
+
+  # An undeclared profile is reported by its own assertion; here it counts as
+  # unreviewed so the two messages do not depend on evaluation order.
+  reviewedClaims = row:
+    builtins.hasAttr row.profile cfg.profiles
+    && (cfg.profiles.${row.profile}.claims == "none" || cfg.profiles.${row.profile}.review_threshold > 0);
 in {
   options.qualification.destinations = lib.mkOption {
     type = lib.types.attrsOf types.destination;
@@ -39,9 +56,11 @@ in {
   config.qualification = {
     destinations = {
       "staging/testing/edge" = destination "staging" "testing" "edge" "build";
+      "staging/production/edge" = destination "staging" "production" "edge" "build";
       "staging/production/candidate" = destination "staging" "production" "candidate" "build";
       "staging/production/stable" = destination "staging" "production" "stable" "build";
       "production/testing/edge" = destination "production" "testing" "edge" "smoke";
+      "production/production/edge" = destination "production" "production" "edge" "smoke";
       "production/production/candidate" = destination "production" "production" "candidate" "functional";
       "production/production/stable" = destination "production" "production" "stable" "soak";
     };
@@ -60,8 +79,15 @@ in {
         message = "Testing registries carry the edge channel only.";
       }
       {
-        assertion = builtins.all (row: row.registry_tier != "production" || row.channel != "edge") destinations;
-        message = "The production registry never publishes edge.";
+        # Supported channels publish assurance claims only after a human
+        # review; edge makes no support promise and may rest on automated
+        # evidence alone.
+        assertion = builtins.all (row: row.channel == "edge" || reviewedClaims row) destinations;
+        message = "Candidate and stable destinations with claims require at least one reviewer.";
+      }
+      {
+        assertion = builtins.all (row: cfg.destinations ? "${row.surface}/${otherTier row.registry_tier}/${row.channel}" -> sameProfile row) destinations;
+        message = "A channel kind selects the same profile on every tier that carries it.";
       }
       {
         assertion = builtins.all orderedAfterStaging destinations;

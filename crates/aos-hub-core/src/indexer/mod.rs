@@ -2720,17 +2720,13 @@ async fn verify_documentation_selection(
             .inspect_package_documentation(package_name, package_version, platform, artifact)
             .await?
     } else {
-        let document = fetch_package_documentation(
-            fetch, package_name, package_version, platform, artifact,
-        )
-        .await?;
+        let document =
+            fetch_package_documentation(fetch, package_name, package_version, platform, artifact)
+                .await?;
         crate::fetch::DocumentationInspection::from_document(&document)
     };
     anyhow::ensure!(
-        documentation_digest_matches(
-            &inspection.identity.runtime_nar_hash,
-            &entry.nar_hash,
-        )?,
+        documentation_digest_matches(&inspection.identity.runtime_nar_hash, &entry.nar_hash,)?,
         "package documentation runtime identity mismatch"
     );
     if let Some(config) = &entry.config_module {
@@ -2739,10 +2735,7 @@ async fn verify_documentation_selection(
                 .identity
                 .config_module_nar_hash
                 .as_deref()
-                .map(|digest| documentation_digest_matches(
-                    digest,
-                    &config.config_output.nar_hash,
-                ))
+                .map(|digest| documentation_digest_matches(digest, &config.config_output.nar_hash,))
                 .transpose()?
                 == Some(true),
             "package documentation config-module identity mismatch"
@@ -3860,7 +3853,9 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
         let artifacts = release_snapshot_artifacts(&[package]);
 
         assert_eq!(artifacts.len(), 3);
-        assert!(artifacts.iter().all(|entry| entry.artifact_kind == "output"));
+        assert!(artifacts
+            .iter()
+            .all(|entry| entry.artifact_kind == "output"));
         assert_eq!(
             artifacts
                 .iter()

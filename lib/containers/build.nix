@@ -302,7 +302,7 @@
       # initialization script or references to its unrelated runtime tools.
       ++ lib.optionals needsStoreInit [
         {
-          path = "/aos-registration";
+          path = "/usr/lib/aos/nix-registration";
           mode = "0444";
           source = "${referenceGraph}/registration";
         }

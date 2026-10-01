@@ -11,14 +11,7 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginNinePIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  shmemSources =
-    builtins.concatStringsSep "\n"
-    (map builtins.readFile [
-      ../../crates/crucible-shmem/src/lib.rs
-      ../../crates/crucible-shmem/src/shmem/frame_node.rs
-      ../../crates/crucible-shmem/src/shmem/region.rs
-      ../../crates/crucible-shmem/src/shmem/ring_coverage.rs
-    ]);
+  shmemSources = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;

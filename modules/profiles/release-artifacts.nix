@@ -15,6 +15,7 @@
     url = cfg.url;
     channel = cfg.channel;
     trustKeys = cfg.trustKeys;
+    rootOwnerSigners = cfg.rootOwnerSigners;
     required = true;
     priority = 100;
     caches = [];
@@ -90,6 +91,12 @@ in {
       description = "Out-of-band APM trust lines baked into both artifact forms.";
     };
 
+    rootOwnerSigners = lib.mkOption {
+      type = lib.types.listOf lib.types.nonEmptyStr;
+      default = [];
+      description = "Provenance key IDs authorized for shared-root ownership in disk and OCI artifacts.";
+    };
+
     warning = lib.mkOption {
       type = lib.types.lines;
       default = "";
@@ -134,8 +141,10 @@ in {
         message = "release registry identity must encode every trust-root epoch after epoch one";
       }
       {
-        assertion = cfg.tier != "testing" || cfg.warning != "";
-        message = "testing artifacts require a non-empty user-visible warning";
+        # Neither a testing artifact nor an edge artifact comes with a support
+        # promise, so both tell the user before they rely on it.
+        assertion = (cfg.tier != "testing" && cfg.channel != "edge") || cfg.warning != "";
+        message = "testing and edge artifacts require a non-empty user-visible warning";
       }
     ];
 

@@ -59,6 +59,8 @@ in
       pname = "crucible-phase2-qemu-vcpu-service";
       version = "0";
       src = null;
+      # The stock negative control is referenced by path below; adding it here
+      # would put its public plugin header ahead of the patched header.
       buildDeps = [
         pkgs.binutils
         pkgs.coreutils
@@ -66,7 +68,6 @@ in
         pkgs.glib.dev
         pkgs.llvm
         pkgs.pkg-config
-        pkgs.qemu
         qemuPackage
       ];
       phases = [

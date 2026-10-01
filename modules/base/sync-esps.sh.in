@@ -4,7 +4,7 @@ set -euo pipefail
 PATH=@coreutils@/bin:@jq@/bin:@rsync@/bin:@util_linux@/bin:@util_linux@/sbin
 export PATH
 
-metadata=/aos-toplevel/meta/boot-storage.json
+metadata=/usr/lib/aos/toplevel/meta/boot-storage.json
 [ -r "$metadata" ] || {
   echo "aos-sync-esps: boot-storage metadata is unavailable" >&2
   exit 1

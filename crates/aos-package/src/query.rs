@@ -113,7 +113,9 @@ pub async fn search(
         printer.json(&serde_json::json!(json_results));
     } else {
         for (name, registry, version, description) in &results {
-            printer.plain(&format!("{name}/{registry} {version} - {description}"));
+            printer.plain(&format!(
+                "{name} {version} [registry: {registry}] - {description}"
+            ));
         }
     }
 
@@ -177,7 +179,9 @@ async fn search_installed(
         printer.json(&serde_json::json!(json_results));
     } else {
         for (name, registry, version, description) in &results {
-            printer.plain(&format!("{name}/{registry} {version} - {description}"));
+            printer.plain(&format!(
+                "{name} {version} [registry: {registry}] - {description}"
+            ));
         }
     }
 
@@ -252,28 +256,18 @@ pub async fn show(
     }
 }
 
-/// Display package information, or just RFC-0001 permissions.
-///
-/// `apm info` is the compatibility spelling for users expecting a package
-/// information command. Without `--permissions`, it renders the same detail as
-/// [`show`]. With `--permissions`, it emits only the signed permission manifest
-/// and computed confinement summary.
+/// Displays the signed permission manifest and computed confinement summary.
 ///
 /// # Errors
 ///
 /// Returns an error under the same resolution conditions as [`show`], or when
 /// serializing the permission manifest fails.
-pub async fn info(
+pub async fn show_package_permissions(
     config: &ApmConfig,
     package: &str,
     registry_filter: Option<&str>,
-    permissions_only: bool,
     printer: &Printer,
 ) -> Result<()> {
-    if !permissions_only {
-        return show(config, package, registry_filter, printer).await;
-    }
-
     let registries = load_registries(config)?;
     let profile = Profile::open_readonly(config.scope);
     let meta_list = list_meta(&profile)?;

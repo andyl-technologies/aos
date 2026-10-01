@@ -2599,14 +2599,14 @@ in
             "$k3s_worker_host_paths"
           grep -q "ExecStart=${pkgs.coreutils}/bin/mkdir -p '/var/lib/rancher' '/var/lib/kubelet' '/etc/rancher/k3s' '/etc/rancher/node'" \
             "$k3s_worker_host_paths"
-          grep -q 'ExecStart=${pkgs.kmod}/sbin/modprobe -a br_netfilter vxlan ip_set' \
+          grep -q 'ExecStart=${pkgs.kmod}/sbin/modprobe -a br_netfilter xt_physdev vxlan ip_set' \
             "$k3s_worker_modules"
           grep -q '"confinement":{"class":"unconfined"' "$k3s_worker_manifest"
           grep -q '"label":"unconfined"' "$k3s_worker_manifest"
           grep -q '"network":"host"' "$k3s_worker_manifest"
           grep -q '"privileged-users":true' "$k3s_worker_manifest"
           grep -q '"cgroup-delegate":true' "$k3s_worker_manifest"
-          grep -q '"kernel-modules":\["br_netfilter","vxlan","ip_set"\]' "$k3s_worker_manifest"
+          grep -q '"kernel-modules":\["br_netfilter","xt_physdev","vxlan","ip_set"\]' "$k3s_worker_manifest"
           grep -q '"security-label":"aos-pkg-k3s-worker"' "$k3s_worker_manifest"
           grep -q '"allowedTCP":\[10250\]' "$k3s_worker_manifest"
           grep -q '"allowedUDP":\[8472\]' "$k3s_worker_manifest"

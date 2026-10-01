@@ -1256,11 +1256,121 @@ async fn mysql_contract() {
     let db = Database::connect(&url)
         .await
         .expect("connect + migrate mysql");
+    assert_mysql_documentation_identity(&db, &url).await;
     exercise(&db).await;
     drop(db);
 
     assert_mysql_baseline_crash_replay_and_concurrent_start(&url).await;
     println!("dialect contract: mysql production baseline and crash/concurrency replay OK");
+}
+
+/// Preserves exact documentation keys without an oversized utf8mb4 index.
+#[cfg(feature = "mysql")]
+async fn assert_mysql_documentation_identity(db: &Database, url: &str) {
+    use sqlx::{Connection as _, MySqlConnection};
+
+    let registry_id = db
+        .register_registry("documentation-dialect", &[], false)
+        .await
+        .unwrap();
+    let mut connection = MySqlConnection::connect(url).await.unwrap();
+    // Names and platforms follow the byte-bounded token contract. Versions
+    // retain the multi-byte text that an ordinary VARCHAR(255) could store.
+    let package_name = "n".repeat(512);
+    let package_version = "😀".repeat(255);
+    let platform = "p".repeat(512);
+    sqlx::query(
+        "INSERT INTO package_documentation
+         (registry_id, indexed_commit, package_name, package_version, platform,
+          format, store_path, nar_hash, nar_size, document_sha256, document_size,
+          semantic_schema_sha256)
+         VALUES (?, 'commit', ?, ?, ?, 'aos.package-documentation/v1+json',
+                 '/nix/store/documentation', 'nar-hash', 1, 'digest', 1, 'schema')",
+    )
+    .bind(registry_id)
+    .bind(&package_name)
+    .bind(&package_version)
+    .bind(&platform)
+    .execute(&mut connection)
+    .await
+    .unwrap();
+
+    let insert = "INSERT INTO package_documentation_search
+                  (registry_id, package_name, package_version, platform, kind,
+                   document_key, title, summary, terms)
+                  VALUES (?, ?, ?, ?, 'option', ?, 'title', 'summary', '{}')";
+    let keys = [
+        "A".to_owned(),
+        "a".to_owned(),
+        "A ".to_owned(),
+        "A\0".to_owned(),
+        "😀".repeat(255),
+    ];
+    for key in &keys {
+        sqlx::query(insert)
+            .bind(registry_id)
+            .bind(&package_name)
+            .bind(&package_version)
+            .bind(&platform)
+            .bind(key)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+    }
+
+    let stored: Vec<Vec<u8>> = sqlx::query_scalar(
+        "SELECT document_key FROM package_documentation_search WHERE registry_id = ?",
+    )
+    .bind(registry_id)
+    .fetch_all(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(stored.len(), keys.len());
+    for key in &keys {
+        assert!(
+            stored.iter().any(|bytes| bytes == key.as_bytes()),
+            "documentation key was changed"
+        );
+        let exact: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM package_documentation_search
+             WHERE registry_id = ? AND document_key = ?",
+        )
+        .bind(registry_id)
+        .bind(key)
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(exact, 1, "documentation lookup must be byte-exact");
+    }
+    assert!(
+        sqlx::query(insert)
+            .bind(registry_id)
+            .bind(&package_name)
+            .bind(&package_version)
+            .bind(&platform)
+            .bind(&keys[0])
+            .execute(&mut connection)
+            .await
+            .is_err(),
+        "duplicate documentation identity must be rejected"
+    );
+
+    sqlx::query("DELETE FROM package_documentation WHERE registry_id = ?")
+        .bind(registry_id)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM package_documentation_search WHERE registry_id = ?",
+    )
+    .bind(registry_id)
+    .fetch_one(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(
+        remaining, 0,
+        "documentation removal must cascade to search rows"
+    );
 }
 
 /// Drops every table in the target postgres database, so the subsequent

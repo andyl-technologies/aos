@@ -36,6 +36,10 @@ in
         name = "build";
         script = ''
           make -j"$NIX_BUILD_CORES" -f Makefile.cmdline
+          # Shared objects must declare their math dependency themselves;
+          # downstream consumers should only need to link libduktape.
+          sed -i 's|$(DUKTAPE_SRCDIR)/duktape.c$|$(DUKTAPE_SRCDIR)/duktape.c -lm|' \
+            Makefile.sharedlibrary
           # Upstream detects the build host with uname, which is Linux here.
           ${
             if stdenv.hostPlatform.isDarwin
@@ -86,7 +90,8 @@ in
       tool = testing.mkToolCheck {
         pname = "tool-duktape";
         tool = self;
-        command = "printf 'print(6 * 7);' | duk | grep -qx 42";
+        command = "duk -e 'print(6 * 7);'";
+        expectedOutput = "42";
       };
     };
 

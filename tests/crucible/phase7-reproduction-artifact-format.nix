@@ -40,9 +40,11 @@
         label = "runtime serde dependency";
         needle = "serde = { workspace = true }";
       }
+    ]
+    ++ forbiddenFor "crates/crucible-harness/src/reproduction.rs" reproduction [
       {
-        label = "runtime serde_json dependency";
-        needle = "serde_json = { workspace = true }";
+        label = "JSON artifact serialization";
+        needle = "serde_json::";
       }
     ]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
