@@ -44,4 +44,5 @@ impl NativeOpenedDirectory {
 }
 
 #[cfg(all(test, feature = "tokio", unix))]
+#[path = "directory_retention/tests.rs"]
 mod tests;
