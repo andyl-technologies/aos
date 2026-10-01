@@ -2,6 +2,7 @@
 
 mod exact_restore;
 mod exact_writers;
+mod hot_fork_overlay;
 
 use std::ffi::OsString;
 use std::fs::File;

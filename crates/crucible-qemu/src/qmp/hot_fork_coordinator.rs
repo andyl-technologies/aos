@@ -10,6 +10,123 @@ impl<S> QmpClient<S>
 where
     S: QmpTimeoutStream,
 {
+    /// Reads complete native graph and file custody for the original prepared source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on native refusal, malformed membership, or a different
+    /// source process or template generation.
+    pub fn query_hot_fork_source_graph(
+        &mut self,
+        expected_qemu_pid: i64,
+        expected_template_generation: u64,
+    ) -> Result<QmpHotForkSourceGraphReceipt, QmpError> {
+        let response = self.send_command_return(QmpCommand::HotForkSourceGraph {
+            expected_qemu_pid,
+            expected_template_generation,
+        })?;
+        parse_hot_fork_source_graph(
+            &response.value,
+            expected_qemu_pid,
+            expected_template_generation,
+        )
+    }
+
+    /// Reads QEMU's current writable block roots and any retained seal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] if the exchange fails or the closed native
+    /// inventory has invalid identities, ordering, or version.
+    pub fn query_hot_fork_block_seal(&mut self) -> Result<QmpHotForkBlockSealState, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryHotForkBlockSeal)?;
+        parse_hot_fork_block_seal_state(&response.value, QmpCommandKind::QueryHotForkBlockSeal)
+    }
+
+    /// Opens an already-created empty qcow2 file as a detached graph node.
+    ///
+    /// Only the native seal can attach this node. A refused or ambiguous
+    /// `blockdev-add` leaves its named file owned by the source transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] if the file path is not absolute or an exact guarded
+    /// overlay basename, or QEMU refuses
+    /// the typed node creation.
+    pub fn add_hot_fork_detached_root_overlay(
+        &mut self,
+        request: &QmpHotForkBlockSealRequest,
+        file_path: &std::path::Path,
+    ) -> Result<(), QmpError> {
+        let relative_overlay = file_path.to_str().is_some_and(|name| {
+            name.strip_prefix("crucible-hot-fork-overlay-")
+                .and_then(|value| value.strip_suffix(".qcow2"))
+                .is_some_and(|generation| {
+                    generation
+                        .parse::<u64>()
+                        .is_ok_and(|value| value > 0 && value.to_string() == generation)
+                })
+        });
+        if (!file_path.is_absolute() && !relative_overlay) || file_path.as_os_str().is_empty() {
+            return Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkDetachedBlockdevAdd,
+                response: "detached overlay path lacks an absolute path or exact guarded basename"
+                    .to_owned(),
+            });
+        }
+        self.send_command(QmpCommand::HotForkDetachedBlockdevAdd {
+            node_name: request.overlay_node_name(),
+            file_path,
+        })?;
+        Ok(())
+    }
+
+    /// Installs a fresh empty overlay over every current writable root.
+    ///
+    /// The caller must retain the exact source files and separately verify
+    /// their current contents and backing chains. A failed or ambiguous
+    /// exchange leaves ownership of detached nodes and files with the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when QEMU refuses the transaction, the response
+    /// is malformed, or its retained receipt differs from the request.
+    pub fn seal_hot_fork_block_roots(
+        &mut self,
+        inventory: &QmpHotForkBlockSealState,
+        roots: &[QmpHotForkBlockSealRequest],
+    ) -> Result<QmpHotForkBlockSealState, QmpError> {
+        if roots.is_empty()
+            || inventory.candidates().len() != roots.len()
+            || !inventory
+                .candidates()
+                .iter()
+                .zip(roots)
+                .all(|(candidate, root)| candidate == root.candidate())
+        {
+            return Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkBlockSeal,
+                response: "seal request differs from current writable roots".to_owned(),
+            });
+        }
+
+        let response = self.send_command_return(QmpCommand::HotForkBlockSeal {
+            expected_qemu_pid: inventory.qemu_pid(),
+            expected_backend_generation: inventory.backend_generation(),
+            expected_graph_mutation_generation: inventory.graph_mutation_generation(),
+            roots,
+        })?;
+        let sealed =
+            parse_hot_fork_block_seal_state(&response.value, QmpCommandKind::HotForkBlockSeal)?;
+        if sealed.qemu_pid() != inventory.qemu_pid() || !sealed.seals(roots) {
+            return Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkBlockSeal,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(sealed)
+    }
+
     /// Returns QEMU's exact sealed inventory of Crucible plugin resources.
     ///
     /// The OOB query binds the plugin/process identity, shared-memory backing,

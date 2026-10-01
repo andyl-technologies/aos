@@ -42,6 +42,9 @@ mod block_boundary;
 mod collection;
 #[path = "node_set/concurrent.rs"]
 mod concurrent;
+#[cfg(target_os = "linux")]
+#[path = "node_set/disk_seal.rs"]
+mod disk_seal;
 #[path = "node_set/fault_events.rs"]
 mod fault_events;
 #[path = "node_set/lifecycle.rs"]

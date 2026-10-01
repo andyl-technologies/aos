@@ -231,6 +231,21 @@ pub(super) enum QmpCommand<'a> {
     HotForkBlockBarrier {
         action: HotForkBlockBarrierAction,
     },
+    HotForkSourceGraph {
+        expected_qemu_pid: i64,
+        expected_template_generation: u64,
+    },
+    QueryHotForkBlockSeal,
+    HotForkBlockSeal {
+        expected_qemu_pid: i64,
+        expected_backend_generation: u64,
+        expected_graph_mutation_generation: u64,
+        roots: &'a [QmpHotForkBlockSealRequest],
+    },
+    HotForkDetachedBlockdevAdd {
+        node_name: &'a str,
+        file_path: &'a std::path::Path,
+    },
     HotForkTemplate {
         action: HotForkTemplateAction,
         block_snapshot_bindings: Option<&'a [QmpHotForkBlockSnapshotBinding]>,
@@ -321,6 +336,10 @@ impl QmpCommand<'_> {
             Self::HotForkRcuBarrier { .. } => QmpCommandKind::HotForkRcuBarrier,
             Self::HotForkAsyncWorkerBarrier { .. } => QmpCommandKind::HotForkAsyncWorkerBarrier,
             Self::HotForkBlockBarrier { .. } => QmpCommandKind::HotForkBlockBarrier,
+            Self::HotForkSourceGraph { .. } => QmpCommandKind::HotForkSourceGraph,
+            Self::QueryHotForkBlockSeal => QmpCommandKind::QueryHotForkBlockSeal,
+            Self::HotForkBlockSeal { .. } => QmpCommandKind::HotForkBlockSeal,
+            Self::HotForkDetachedBlockdevAdd { .. } => QmpCommandKind::HotForkDetachedBlockdevAdd,
             Self::HotForkTemplate { .. } => QmpCommandKind::HotForkTemplate,
             Self::HotFork { .. } => QmpCommandKind::HotFork,
             Self::HotForkChildProcess { .. } => QmpCommandKind::HotForkChildProcess,
@@ -435,6 +454,49 @@ impl QmpCommand<'_> {
                 "execute": QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
                 "arguments": {
                     "action": action.wire_name(),
+                },
+            }),
+            Self::HotForkSourceGraph {
+                expected_qemu_pid,
+                expected_template_generation,
+            } => json!({
+                "execute": super::hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_COMMAND,
+                "arguments": {
+                    "expected-qemu-pid": expected_qemu_pid,
+                    "expected-template-generation": expected_template_generation,
+                    "maximum-nodes": super::hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_MAX_NODES,
+                    "maximum-bytes": super::hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_MAX_BYTES,
+                },
+            }),
+            Self::QueryHotForkBlockSeal => json!({
+                "execute": QMP_QUERY_HOT_FORK_BLOCK_SEAL_COMMAND,
+            }),
+            Self::HotForkBlockSeal {
+                expected_qemu_pid,
+                expected_backend_generation,
+                expected_graph_mutation_generation,
+                roots,
+            } => json!({
+                "execute": QMP_HOT_FORK_BLOCK_SEAL_COMMAND,
+                "arguments": {
+                    "expected-qemu-pid": expected_qemu_pid,
+                    "expected-backend-generation": expected_backend_generation,
+                    "expected-graph-mutation-generation": expected_graph_mutation_generation,
+                    "roots": roots.iter().map(QmpHotForkBlockSealRequest::wire_value).collect::<Vec<_>>(),
+                },
+            }),
+            Self::HotForkDetachedBlockdevAdd {
+                node_name,
+                file_path,
+            } => json!({
+                "execute": "blockdev-add",
+                "arguments": {
+                    "driver": "qcow2",
+                    "node-name": node_name,
+                    "file": {
+                        "driver": "file",
+                        "filename": file_path,
+                    },
                 },
             }),
             Self::HotForkTemplate {

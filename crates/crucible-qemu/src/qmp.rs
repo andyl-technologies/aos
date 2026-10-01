@@ -58,18 +58,20 @@ pub(crate) use hot_fork::source_mapping_extent;
 use hot_fork::{
     HotForkChildFilesAction, HotForkChildProcessAction, HotForkChildProcessContractAction,
     parse_hot_fork_async_worker_barrier_state, parse_hot_fork_block_barrier_state,
-    parse_hot_fork_child_console_state, parse_hot_fork_child_diagnostic_state,
-    parse_hot_fork_child_files_state, parse_hot_fork_child_process_contract_state,
-    parse_hot_fork_child_process_state, parse_hot_fork_child_qmp_state,
-    parse_hot_fork_child_runtime_state, parse_hot_fork_plugin_barrier_state,
-    parse_hot_fork_plugin_endpoint_state, parse_hot_fork_plugin_resource_inventory,
-    parse_hot_fork_private_ring_state, parse_hot_fork_rcu_barrier_state, parse_hot_fork_state,
+    parse_hot_fork_block_seal_state, parse_hot_fork_child_console_state,
+    parse_hot_fork_child_diagnostic_state, parse_hot_fork_child_files_state,
+    parse_hot_fork_child_process_contract_state, parse_hot_fork_child_process_state,
+    parse_hot_fork_child_qmp_state, parse_hot_fork_child_runtime_state,
+    parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_endpoint_state,
+    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_private_ring_state,
+    parse_hot_fork_rcu_barrier_state, parse_hot_fork_source_graph, parse_hot_fork_state,
     parse_hot_fork_template_state,
 };
 pub use hot_fork::{
     QMP_HOT_FORK_ASYNC_WORKER_BARRIER_COMMAND, QMP_HOT_FORK_ASYNC_WORKER_BARRIER_SCHEMA_VERSION,
     QMP_HOT_FORK_BLOCK_BARRIER_COMMAND, QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION,
-    QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
+    QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_SEAL_COMMAND,
+    QMP_HOT_FORK_BLOCK_SEAL_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_CONSOLE_COMMAND, QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND, QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION,
     QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD, QMP_HOT_FORK_CHILD_FILES_COMMAND,
@@ -83,10 +85,12 @@ pub use hot_fork::{
     QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
     QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
     QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_SCHEMA_VERSION,
-    QMP_HOT_FORK_TEMPLATE_COMMAND, QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS,
-    QMP_HOT_FORK_TEMPLATE_RESOURCE_STAGE_SCHEMA_VERSION, QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION,
+    QMP_HOT_FORK_SOURCE_GRAPH_SCHEMA_VERSION, QMP_HOT_FORK_TEMPLATE_COMMAND,
+    QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_RESOURCE_STAGE_SCHEMA_VERSION,
+    QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION, QMP_QUERY_HOT_FORK_BLOCK_SEAL_COMMAND,
     QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND, QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND,
-    QmpHotForkBlockBarrierState, QmpHotForkBlockSnapshotBinding,
+    QmpHotForkBlockBarrierState, QmpHotForkBlockSealCandidate, QmpHotForkBlockSealRequest,
+    QmpHotForkBlockSealState, QmpHotForkBlockSealedRoot, QmpHotForkBlockSnapshotBinding,
     QmpHotForkBlockSnapshotBindingError, QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof,
     QmpHotForkChildConsoleState, QmpHotForkChildDiagnosticState, QmpHotForkChildFile,
     QmpHotForkChildFileRoot, QmpHotForkChildFilesState, QmpHotForkChildProcessContractIdentity,
@@ -96,7 +100,8 @@ pub use hot_fork::{
     QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
     QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
     QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
-    QmpHotForkRcuBarrierState, QmpHotForkRequest, QmpHotForkRequestError, QmpHotForkState,
+    QmpHotForkRcuBarrierState, QmpHotForkRequest, QmpHotForkRequestError,
+    QmpHotForkSourceGraphMember, QmpHotForkSourceGraphReceipt, QmpHotForkState,
     QmpHotForkTemplateFailureStage, QmpHotForkTemplateOutcome,
     QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
 };
@@ -1364,6 +1369,14 @@ pub enum QmpCommandKind {
     HotForkAsyncWorkerBarrier,
     /// QEMU-owned reversible all-block drain-barrier operation.
     HotForkBlockBarrier,
+    /// QEMU-owned complete original source graph and descriptor receipt.
+    HotForkSourceGraph,
+    /// QEMU-owned current root and retained block-seal query.
+    QueryHotForkBlockSeal,
+    /// QEMU-owned all-root block-seal transaction.
+    HotForkBlockSeal,
+    /// Creates one detached empty file-backed qcow2 node for the seal.
+    HotForkDetachedBlockdevAdd,
     /// QEMU-owned retained hot-fork template coordinator operation.
     HotForkTemplate,
     /// QEMU-owned retained-template fork operation.
@@ -1422,6 +1435,10 @@ impl QmpCommandKind {
             Self::HotForkRcuBarrier => QMP_HOT_FORK_RCU_BARRIER_COMMAND,
             Self::HotForkAsyncWorkerBarrier => QMP_HOT_FORK_ASYNC_WORKER_BARRIER_COMMAND,
             Self::HotForkBlockBarrier => QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
+            Self::HotForkSourceGraph => hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_COMMAND,
+            Self::QueryHotForkBlockSeal => QMP_QUERY_HOT_FORK_BLOCK_SEAL_COMMAND,
+            Self::HotForkBlockSeal => QMP_HOT_FORK_BLOCK_SEAL_COMMAND,
+            Self::HotForkDetachedBlockdevAdd => "blockdev-add",
             Self::HotForkTemplate => QMP_HOT_FORK_TEMPLATE_COMMAND,
             Self::HotFork => QMP_HOT_FORK_COMMAND,
             Self::HotForkChildProcess => QMP_HOT_FORK_CHILD_PROCESS_COMMAND,

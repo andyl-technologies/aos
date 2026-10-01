@@ -6,6 +6,7 @@
 
 mod async_worker_barrier;
 mod block_barrier;
+mod block_seal;
 mod child_console;
 mod child_files;
 mod child_process;
@@ -18,6 +19,7 @@ mod plugin;
 mod plugin_endpoints;
 mod private_rings;
 mod rcu_barrier;
+mod source_graph;
 mod template;
 pub(crate) use async_worker_barrier::QmpHotForkAsyncWorkerBarrierState;
 pub(crate) use async_worker_barrier::parse_hot_fork_async_worker_barrier_state;
@@ -30,6 +32,12 @@ pub use block_barrier::{
     QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
     QmpHotForkBlockBarrierState, QmpHotForkBlockSnapshotBinding,
     QmpHotForkBlockSnapshotBindingError, QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof,
+};
+pub(crate) use block_seal::parse_hot_fork_block_seal_state;
+pub use block_seal::{
+    QMP_HOT_FORK_BLOCK_SEAL_COMMAND, QMP_HOT_FORK_BLOCK_SEAL_SCHEMA_VERSION,
+    QMP_QUERY_HOT_FORK_BLOCK_SEAL_COMMAND, QmpHotForkBlockSealCandidate,
+    QmpHotForkBlockSealRequest, QmpHotForkBlockSealState, QmpHotForkBlockSealedRoot,
 };
 pub(crate) use child_console::parse_hot_fork_child_console_state;
 pub use child_console::{
@@ -91,6 +99,12 @@ pub(crate) use rcu_barrier::parse_hot_fork_rcu_barrier_state;
 pub use rcu_barrier::{
     QMP_HOT_FORK_RCU_BARRIER_COMMAND, QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION,
     QmpHotForkRcuBarrierState,
+};
+pub(crate) use source_graph::parse_hot_fork_source_graph;
+pub use source_graph::{
+    QMP_HOT_FORK_SOURCE_GRAPH_COMMAND, QMP_HOT_FORK_SOURCE_GRAPH_MAX_BYTES,
+    QMP_HOT_FORK_SOURCE_GRAPH_MAX_NODES, QMP_HOT_FORK_SOURCE_GRAPH_SCHEMA_VERSION,
+    QmpHotForkSourceGraphMember, QmpHotForkSourceGraphReceipt,
 };
 pub(crate) use template::parse_hot_fork_template_state;
 pub use template::{

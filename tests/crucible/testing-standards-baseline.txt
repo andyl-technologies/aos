@@ -16,6 +16,8 @@
 # The delayed cancellation fixture delivers one cancellation, and the moved
 # node fixture waits for loader completion before its single audit assertion.
 # Hot-fork `retry` names classify resource recovery; they never rerun a test.
+# The lifecycle launcher retries cleanup through the original image-helper
+# child handle; it never repeats a failed assertion or test invocation.
 # Campaign GC `retry` names authenticated journal recovery; they never rerun a test.
 # The native scenario retry domain and selected-retry metric model a guest
 # choice and its observation; neither retries a failed test.
@@ -100,6 +102,7 @@ crucible-daemon	src/qemu_hot_fork_world_factory/tests/native_acceptance/failures
 crucible-daemon	src/qemu_hot_fork_world_factory/tests/native_acceptance/failures	std::thread::sleep	1
 crucible-daemon	src/qemu_hot_fork_world_factory/tests/native_acceptance/failures	thread::sleep	1
 crucible-daemon	src/qemu_hot_fork_reconciliation/tests	retry	1
+crucible-daemon	src/qemu_lifecycle_launcher	retry	1
 crucible-daemon	src/supervision	std::thread::sleep	1
 crucible-daemon	src/supervision	thread::sleep	1
 crucible-daemon	src/qemu_campaign_lifecycle/tests/fresh_execution	retry	1
@@ -139,6 +142,8 @@ crucible-qemu	src/supervision/bounded_scheduler_preemption	thread::sleep	1
 crucible-qemu	src/supervision/bounded_scheduler_preemption/tests	thread::sleep	1
 crucible-api	src/vm_lifecycle/hot_fork	std::thread::sleep	1
 crucible-api	src/vm_lifecycle/hot_fork	thread::sleep	1
+crucible-api	src/vm_lifecycle/hot_fork/native_disk_seal	std::thread::sleep	1
+crucible-api	src/vm_lifecycle/hot_fork/native_disk_seal	thread::sleep	1
 crucible-qemu	src/crash_detection	retry	1
 crucible-qemu	src/live_plugin_gate/support	thread::sleep	1
 crucible-qemu	src/node	std::thread::sleep	1

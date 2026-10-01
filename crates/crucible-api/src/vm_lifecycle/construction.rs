@@ -280,6 +280,8 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     let mut node_leases = BTreeMap::new();
     let mut node_service_states = BTreeMap::new();
     let mut immutable_root_images = BTreeMap::new();
+    let mut retained_hot_fork_disk_files = Vec::new();
+    let mut hot_fork_backing_files = BTreeMap::new();
     let mut debug_backend_paths = BTreeMap::new();
     let mut initial_ticks = None;
     let mut repository_restore = restore_checkpoint
@@ -327,6 +329,9 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         let hot_fork_immutable_root = hot_fork_restore
             .as_mut()
             .and_then(|restore| restore.immutable_root_images.remove(&vm.id));
+        let hot_fork_disk_basis = hot_fork_restore
+            .as_mut()
+            .and_then(|restore| restore.disk_bases.remove(&vm.id));
         let restored_service_state = restore_checkpoint
             .as_ref()
             .and_then(|checkpoint| checkpoint.node_service_states.get(&vm.id))
@@ -419,6 +424,23 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                     vm.id.name,
                     expected.to_hex(),
                     immutable_root_image.to_hex()
+                )));
+            }
+            if let Some(basis) = hot_fork_disk_basis {
+                let mut files = basis
+                    .reopen_current(immutable_root_image)
+                    .map_err(|error| {
+                        loop_factory_error(format!(
+                            "recheck hot-fork child disk basis for `{}`: {error}",
+                            vm.id.name
+                        ))
+                    })?;
+                hot_fork_backing_files.insert(vm.id.clone(), basis.immutable_backing_chain());
+                retained_hot_fork_disk_files.append(&mut files);
+            } else if !cfg!(any(test, feature = "test-support")) {
+                return Err(loop_factory_error(format!(
+                    "rooted hot-fork child `{}` has no sealed current disk basis",
+                    vm.id.name
                 )));
             }
         }
@@ -972,6 +994,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         !restore.expected_times.is_empty()
             || !restore.adoptions.is_empty()
             || !restore.immutable_root_images.is_empty()
+            || !restore.disk_bases.is_empty()
             || !restore.block_bindings.is_empty()
             || !restore.ninep_bindings.is_empty()
     }) {
@@ -1489,7 +1512,11 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         debug_runtime_evidence: Vec::new(),
         node_launcher,
         _run_directory: run_directory,
-        retained_resource_owners: Vec::new(),
+        hot_fork_backing_files,
+        retained_resource_owners: retained_hot_fork_disk_files
+            .into_iter()
+            .map(|file| Box::new(file) as Box<dyn Send>)
+            .collect(),
     };
     if let Some(checkpoint) = &restore_checkpoint {
         let prefix = lifecycle
