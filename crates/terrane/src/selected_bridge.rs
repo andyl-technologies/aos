@@ -287,14 +287,16 @@ impl GcCheckpointEffectContext {
 
 /// Describes independently checked predicates for one retained control owner.
 pub(crate) struct GcControlOwner {
-    registration: terrane_core::gc::publication::PhysicalRegistration,
+    registration: terrane_core::gc::publication::evidence::PhysicalRegistration,
     configured_operator_uid: u32,
-    pins: Vec<terrane_core::gc::publication::RequiredControlPin>,
+    pins: Vec<terrane_core::gc::publication::evidence::RequiredControlPin>,
 }
 
 impl GcControlOwner {
     /// Borrows the complete independently verified physical registration.
-    pub(crate) fn registration(&self) -> &terrane_core::gc::publication::PhysicalRegistration {
+    pub(crate) fn registration(
+        &self,
+    ) -> &terrane_core::gc::publication::evidence::PhysicalRegistration {
         &self.registration
     }
 
@@ -304,7 +306,7 @@ impl GcControlOwner {
     }
 
     /// Borrows exact checked record pins belonging to this registration.
-    pub(crate) fn pins(&self) -> &[terrane_core::gc::publication::RequiredControlPin] {
+    pub(crate) fn pins(&self) -> &[terrane_core::gc::publication::evidence::RequiredControlPin] {
         &self.pins
     }
 }
