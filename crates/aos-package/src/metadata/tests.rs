@@ -1126,6 +1126,7 @@ fn provisioning_state_persists_audit_definitions_and_runtime_input() {
             trust_mode: ProvisioningTrust::Platform,
             platform_id: "aos-metadata".into(),
             host_nix_sha256: super::stash::sha256_hex(host),
+            bundle_sha256: None,
             signer: None,
         })
         .unwrap(),
@@ -1739,4 +1740,129 @@ fn storage_topology_admits_xfs_data_volumes_only() {
         &[("thirteen-char", "raid1", &["a", "b"], Some("ext4"), None)],
     );
     validate_provisioning_plan(&ext4, false).unwrap();
+}
+
+#[test]
+fn signed_bundle_retains_all_sources_across_metadata_outage() {
+    use super::provisioning::{
+        AuthorizeOptions, ProvisioningTrust, run_authorize, verify_host_binding,
+    };
+    use super::state::{cache_runtime_input, restore_runtime_input};
+    use crate::config_trust::{CONFIG_SIGNATURE_NAMESPACE, authenticate_host_nix_file};
+    use crate::security::sign_payload_signature;
+    use crate::sshkey::Ed25519Keypair;
+    use base64::Engine;
+
+    let stash_dir = tempdir().unwrap();
+    let media = tempdir().unwrap();
+    let keys = tempdir().unwrap();
+    let state = tempdir().unwrap();
+    let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    let bundle = serde_json::to_vec(&serde_json::json!({
+        "schema": "aos.config-bundle/v1",
+        "entrypoint": "host.nix",
+        "files": {
+            "host.nix": encode(b"{ imports = [ ./services.nix ]; }"),
+            "services.nix": encode(b"{ value = builtins.fromJSON (builtins.readFile ./data.json); }"),
+            "data.json": encode(b"{\"original\":true}"),
+            "data.toml": encode(b"original = true\n")
+        }
+    })).unwrap();
+    let key = Ed25519Keypair::generate();
+    let private = keys.path().join("ops.key");
+    std::fs::write(&private, key.to_openssh_private_key("ops")).unwrap();
+    std::fs::write(keys.path().join("ops.pub"), key.trust_key_line("ops")).unwrap();
+    let signature = sign_payload_signature(&private, CONFIG_SIGNATURE_NAMESPACE, &bundle).unwrap();
+    std::fs::write(media.path().join("host.nix"), &bundle).unwrap();
+    std::fs::write(media.path().join("host.nix.sig"), signature).unwrap();
+
+    let stash = Stash::open(stash_dir.path()).unwrap();
+    stash
+        .write_platform_env(&PlatformEnv {
+            platform_id: "aos-metadata".into(),
+            metadata_dir: Some(media.path().display().to_string()),
+            need_network: false,
+        })
+        .unwrap();
+    block_on(super::run_fetch_with(
+        &stash,
+        &AosMetadataFetcher::new(media.path()),
+        &RecordedHttp::new(),
+        None,
+        "aos-metadata",
+    ))
+    .unwrap();
+    let options = AuthorizeOptions {
+        stash_dir: stash_dir.path().to_path_buf(),
+        trust: ProvisioningTrust::Signed,
+        trusted_config_key_dirs: vec![keys.path().to_path_buf()],
+    };
+    let authorization = run_authorize(&options).unwrap().unwrap();
+    assert_eq!(
+        authorization.bundle_sha256,
+        Some(super::stash::sha256_hex(&bundle))
+    );
+    authenticate_host_nix_file(
+        &stash_dir.path().join("host.nix"),
+        &options.trusted_config_key_dirs,
+    )
+    .unwrap();
+    cache_runtime_input(stash_dir.path(), state.path()).unwrap();
+
+    stash.clear_authorized_outputs().unwrap();
+    assert!(restore_runtime_input(stash_dir.path(), state.path()).unwrap());
+    verify_host_binding(stash_dir.path()).unwrap();
+    authenticate_host_nix_file(
+        &stash_dir.path().join("host.nix"),
+        &options.trusted_config_key_dirs,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read(stash_dir.path().join("source/data.toml")).unwrap(),
+        b"original = true\n"
+    );
+
+    std::fs::write(stash_dir.path().join("source/data.json"), b"{}").unwrap();
+    assert!(verify_host_binding(stash_dir.path()).is_err());
+    assert!(
+        authenticate_host_nix_file(
+            &stash_dir.path().join("host.nix"),
+            &options.trusted_config_key_dirs
+        )
+        .is_err()
+    );
+    std::fs::remove_file(stash_dir.path().join("config-bundle.json")).unwrap();
+    assert!(verify_host_binding(stash_dir.path()).is_err());
+}
+
+#[test]
+fn shared_bundle_pointer_checks_pin_and_entrypoint() {
+    use super::fetcher::UserData;
+    use super::http::RecordedMethod;
+
+    let bytes =
+        br#"{"schema":"aos.config-bundle/v1","entrypoint":"host.nix","files":{"host.nix":"e30K"}}"#;
+    let pointer = |entrypoint: &str, digest: &str| UserData::Inline {
+        payload: serde_json::to_vec(&serde_json::json!({
+            "schema":"aos.config-bundle-pointer/v1", "url":"https://config.example/bundle",
+            "sha256":digest, "entrypoint":entrypoint
+        }))
+        .unwrap(),
+        sig: None,
+    };
+    let http = RecordedHttp::new().on(
+        RecordedMethod::Get,
+        "https://config.example/bundle",
+        200,
+        bytes,
+    );
+    let digest = super::stash::sha256_hex(bytes);
+    assert_eq!(
+        block_on(pointer("host.nix", &digest).resolve(&http))
+            .unwrap()
+            .payload,
+        bytes
+    );
+    assert!(block_on(pointer("other.nix", &digest).resolve(&http)).is_err());
+    assert!(block_on(pointer("host.nix", &"0".repeat(64)).resolve(&http)).is_err());
 }
