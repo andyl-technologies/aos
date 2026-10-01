@@ -405,7 +405,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   fixtures and 14 prior record/control/content cases. Native and supported
   non-Send library builds and both mandatory formatting commands pass on that
   candidate. Exact gates now require the six binding and seven consumer cases;
-  their current hermetic builds remain pending. The narrow FsRef adapter
+  hermetic qualification passes all 44 exact `bucket-file-cas` cases and all
+  10 exact `bucket-probe` cases on the reviewed joint candidate. The capability
+  gate passes 19 exact cases on its preceding checkpoint. Qualification exposed
+  an overwrite fixture still targeting the previous rename primitive and three
+  fixtures retaining their own namespace receipts while waiting to reacquire.
+  The reviewed test-only corrections inject a real write at the current
+  create-new primitive and drop the actual owning adapters before reacquisition;
+  original assertions and timing bounds remain unchanged. Earlier failed and
+  interrupted logs remain separate from the corrected qualifications. The
+  narrow FsRef adapter
   forwards only to its actual underlying binding; FaultFs keeps scalar
   interception. A separate original multiwriter selector on the assembled
   joint candidate returns `Expired` at the first joined result with its
@@ -415,9 +424,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   test takes 36.140 seconds, including setup and final assertions. Initial
   whole `admit_join` calls take about 6.05 seconds each and the losing request's
   whole `admit_rebase` takes 4.22 seconds. The successful trace does not explain
-  the earlier failure's unmeasured phase or establish reliable timing. Internal
-  phase diagnosis and complete reference-gate qualification remain pending. No
-  deadline change or speedup is claimed.
+  the earlier failure's unmeasured phase or establish reliable timing. A deeper
+  test-only trace passes the same case in 32.851 seconds; it separates fresh
+  policy/history/tree verification from synchronous merge and encoding, which
+  take milliseconds. The observed acknowledgments arrive 8.67 and 17.19 seconds
+  after the unchanged original origins. Complete reference-gate qualification
+  and the earlier untraced expiration remain unresolved. No deadline change or
+  speedup is claimed.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,
@@ -469,6 +482,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   through durability. These declarations grant no authority and remain
   unqualified until the producer, fixed consumer and positive native singleton
   lease tests are integrated.
+  A separate private mark-checkpoint handoff and five runtime hooks retain
+  the complete checked roots, raw canonical digests, whole selected root/state
+  preimages, actual physical read receipts and each independently configured
+  control owner. Only the genuine descendant producer can construct the
+  handoff. The fixed consumer must derive canonical cycle/shard/revision paths
+  and refresh its retained live clock and poisoned-session check before staging,
+  slot dispatch and acknowledgment. These declarations grant no sweep,
+  deletion or availability-loss authority; actual native checkpoint production,
+  marking, resume verification and full collector gates remain pending.
   An unrepaired observation hook retains the actual writable holder role and
   fresh complete chain checks so live-other-holder, stale lease or Guard
   rejection can precede every cache effect. A separately anchored test clock
