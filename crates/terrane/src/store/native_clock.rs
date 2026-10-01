@@ -4,6 +4,11 @@
 //! It grants no actor, policy or physical authority. Generic clocks keep their
 //! existing representation and may refuse this optional native operation.
 
+/// Supplies a test clock that retains the same injected lease-clock state.
+#[cfg(test)]
+#[path = "../gc/lease/clock.rs"]
+pub(crate) mod gc_test_clock;
+
 #[cfg(not(feature = "send"))]
 use std::rc::Rc as Shared;
 #[cfg(feature = "send")]

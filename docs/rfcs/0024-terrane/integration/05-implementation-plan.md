@@ -342,9 +342,21 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   that still return Unsupported. Reviewed test-only retargeting selects the
   actual retained content rename and staged Guard/Candidate transaction while
   preserving whole predecessor, head and absent-target assertions; its native
-  qualification remains pending. A fresh per-operation held-content candidate
-  also awaits qualification and preservation of the original physical cache
-  namespace checks. Complete effect routing remains pending.
+  qualification passes all three targeted native regressions. The fresh
+  per-operation held-content candidate preserves physical CAPABILITIES and
+  MANIFEST namespace checks and passes six native parity, ancestry, incarnation,
+  integrity and intervening-publication cases. The committed coordination
+  creation-mode correction also passes with those six cases under umask 000.
+  Its broader 33-selector run passes 32 cases, including the unchanged
+  30-second multiwriter case; cancellation arrival still fails under that
+  grouped load. The same cancellation case passes once as the isolated exact
+  selector used by the hermetic gate, with its original 2-second limit and
+  primitive/barrier assertions unchanged. These are scoped process results,
+  not a complete Nix gate pass. Mandatory formatting and the supported non-Send
+  std/surface-sdk build pass; inherited unfinished-production warnings remain.
+  The verify-on-get, ranged-get and file-CAS gates now require the appropriate
+  exact held-content selectors and reject missing tests. Complete effect routing
+  remains pending.
   Ordered ancestry and record-parent batching preserve all
   metadata observations, duplicate reads, exact payload reads and initial/final
   fences. The CAS gate
@@ -405,6 +417,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   through durability. These declarations grant no authority and remain
   unqualified until the producer, fixed consumer and positive native singleton
   lease tests are integrated.
+  An unrepaired observation hook retains the actual writable holder role and
+  fresh complete chain checks so live-other-holder, stale lease or Guard
+  rejection can precede every cache effect. A separately anchored test clock
+  retains its exact injected state for queued-expiry and continuity witnesses;
+  production clock constructors remain private. The selected lease worker's
+  native implementation and qualification remain pending.
   Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,
