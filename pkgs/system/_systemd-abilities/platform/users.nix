@@ -1,5 +1,6 @@
 ##! Package-owned systemd service accounts.
 {
+  config,
   lib,
   ...
 }: let
@@ -60,7 +61,7 @@
     })
     systemdUsers;
 in {
-  config = {
+  config = lib.mkIf ((config.aos.boot.stage or "host") == "host") {
     aos.users.users = systemdUsers;
     aos.users.groups = systemdGroups;
   };

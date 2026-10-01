@@ -52,12 +52,13 @@ in
       inherit configuration;
       selectedRoots = map builtins.toString packages;
       envelopes = builtins.map (package: package.deployment) (packages ++ [interface]);
+      # Replay needs the module-only interface companion as well as payload envelopes.
       publications =
         builtins.map (package: {
           envelope = "${package.deploymentArtifact}/deployment.json";
           documentation = "${package.documentationArtifact}/options.json";
         })
-        packages;
+        (packages ++ [interface]);
       document = evaluated.deployment;
     };
   }

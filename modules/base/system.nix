@@ -11,6 +11,7 @@
   config,
   pkgs,
   lib,
+  packageModulesAvailable ? false,
   ...
 }: let
   cfg = config.aos.system;
@@ -24,6 +25,8 @@
     + "\n"
   );
 in {
+  imports = lib.optionals (!packageModulesAvailable) [../../pkgs/data/_glibc-locales/module.nix];
+
   options.aos.system = {
     ## Operating system name used in os-release and branding.
     name = lib.mkOption {
@@ -64,24 +67,6 @@ in {
         build-identity removal checks, reserved Nix IDs, login fragments, and
         declared package child slices for independently recoverable resources.
       '';
-    };
-
-    ## System locale (LANG environment variable).
-    ##
-    ## # Examples
-    ## ```nix
-    ## aos.system.locale = "en_US.UTF-8";
-    ## ```
-    locale = lib.mkOption {
-      type = lib.types.str;
-      default = "C.UTF-8";
-      description = "System locale (LANG environment variable).";
-    };
-
-    localePackages = lib.mkOption {
-      type = lib.types.listOf lib.types.package;
-      default = [pkgs.glibc-locales];
-      description = "Source-built locale data packages used by the system C library.";
     };
 
     ## System timezone (e.g. UTC, America/New_York).
@@ -168,23 +153,6 @@ in {
       };
 
       environment.systemPackages = [pkgs.glibc-tools] ++ cfg.localePackages;
-      environment.sessionVariables = {
-        LANG = lib.mkDefault cfg.locale;
-        LOCPATH = lib.mkDefault (lib.concatStringsSep ":" (map (package: "${package}/lib/locale") cfg.localePackages));
-      };
-      environment.etc."profile.d/20-locale.sh".text = ''
-        export LANG=${lib.escapeShellArg cfg.locale}
-        export LOCPATH=${lib.escapeShellArg (lib.concatStringsSep ":" (map (package: "${package}/lib/locale") cfg.localePackages))}
-      '';
-
-      # Locale configuration via systemd's locale.conf.
-      # systemd reads /etc/locale.conf and exports LANG to all services.
-      environment.etc."locale.conf" = {
-        text = ''
-          LANG=${cfg.locale}
-        '';
-      };
-
       # Timezone: symlink /etc/localtime to the zoneinfo database.
       # This is the standard mechanism for glibc and systemd. Source is
       # the hermetic `pkgs.tzdata` package, not the host's

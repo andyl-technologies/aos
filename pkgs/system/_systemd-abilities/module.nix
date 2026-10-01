@@ -17,6 +17,7 @@ in {
     ./journald-policy.nix
     ./crash-dump-policy.nix
     ./pam-policy.nix
+    ./platform/users.nix
   ];
   aos.abilities = {
     serviceManagement.operations.realize.handler = {inherit program;};

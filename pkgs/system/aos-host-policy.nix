@@ -9,6 +9,7 @@
   aos-configuration-lower,
   aos-metadata-provider,
   ca-certificates,
+  glibc-locales,
 }:
 mkDerivation {
   platformSupport = {
@@ -31,7 +32,7 @@ mkDerivation {
   pname = "aos-host-policy";
   version = "1";
   module = ./_aos-host-policy;
-  moduleDeps = [kmod aos-kernel-tunable-provider service-management aos-configuration-lower aos-metadata-provider];
+  moduleDeps = [kmod aos-kernel-tunable-provider service-management aos-configuration-lower aos-metadata-provider glibc-locales];
   runtimeDeps = [coreutils bash ca-certificates];
   phases = [
     {

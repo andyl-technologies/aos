@@ -6,7 +6,8 @@
   package ? null,
   ...
 }: let
-  basePath = lib.removePrefix "/run/wrappers/bin:" (config.system.build.systemPath or "/var/lib/profiles/system/current/bin:/var/lib/profiles/system/current/sbin");
+  # Login follows the activated profile rather than image-only package paths.
+  basePath = "/var/lib/profiles/system/current/bin:/var/lib/profiles/system/current/sbin";
   sessionPath = user:
     lib.concatStringsSep ":" [
       "/run/wrappers/bin"
