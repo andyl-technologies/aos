@@ -177,16 +177,32 @@ fn verify_root_service_connection(
     cgroup: &RetainedCgroupAnchor,
     peer: &ConnectionPeerIdentity,
 ) -> Result<PidFdInfo, ()> {
+    verify_root_service_connection_typed(cgroup, peer).map_err(|_| ())
+}
+
+/// Keeps policy refusal distinct from the original Linux observation failure.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RootServicePeerError {
+    /// The observed account or process relation does not match the closed role.
+    #[error("root service peer provenance did not match")]
+    PolicyMismatch,
+    /// The original membership or liveness observation failed.
+    #[error("root service peer observation failed: {0}")]
+    Linux(#[from] aos_sandbox_linux::Error),
+}
+
+fn verify_root_service_connection_typed(
+    cgroup: &RetainedCgroupAnchor,
+    peer: &ConnectionPeerIdentity,
+) -> Result<PidFdInfo, RootServicePeerError> {
     let credentials = peer.credentials();
     if credentials.uid() != 0 || credentials.gid() != 0 {
-        return Err(());
+        return Err(RootServicePeerError::PolicyMismatch);
     }
-    let info = cgroup
-        .verify_exact_membership(peer.pidfd())
-        .map_err(|_| ())?;
+    let info = cgroup.verify_exact_membership(peer.pidfd())?;
     let pid = credentials.pid().get();
-    if info.pid() != pid || info.thread_group_id() != pid || !peer.is_alive().map_err(|_| ())? {
-        return Err(());
+    if info.pid() != pid || info.thread_group_id() != pid || !peer.is_alive()? {
+        return Err(RootServicePeerError::PolicyMismatch);
     }
     Ok(info)
 }
@@ -197,27 +213,34 @@ fn verify_root_service_record(
     peer: &ConnectionPeerIdentity,
     subject: &KernelAuthorizedRecordSubject,
 ) -> Result<(), ()> {
+    verify_root_service_record_typed(cgroup, expected, peer, subject).map_err(|_| ())
+}
+
+fn verify_root_service_record_typed(
+    cgroup: &RetainedCgroupAnchor,
+    expected: PidFdInfo,
+    peer: &ConnectionPeerIdentity,
+    subject: &KernelAuthorizedRecordSubject,
+) -> Result<(), RootServicePeerError> {
     // Recheck the original connection both before and after authenticating
     // the independently reported record subject.
-    let current = verify_root_service_connection(cgroup, peer)?;
+    let current = verify_root_service_connection_typed(cgroup, peer)?;
     let credentials = subject.credentials();
     if !same_process(current, expected)
         || credentials.uid() != 0
         || credentials.gid() != 0
         || credentials.pid().get() != expected.pid()
-        || !subject.is_alive().map_err(|_| ())?
+        || !subject.is_alive()?
     {
-        return Err(());
+        return Err(RootServicePeerError::PolicyMismatch);
     }
-    let record_info = cgroup
-        .verify_exact_membership(subject.pidfd())
-        .map_err(|_| ())?;
+    let record_info = cgroup.verify_exact_membership(subject.pidfd())?;
     if !same_process(record_info, expected) {
-        return Err(());
+        return Err(RootServicePeerError::PolicyMismatch);
     }
-    let after = verify_root_service_connection(cgroup, peer)?;
+    let after = verify_root_service_connection_typed(cgroup, peer)?;
     if !same_process(after, expected) {
-        return Err(());
+        return Err(RootServicePeerError::PolicyMismatch);
     }
     Ok(())
 }
@@ -292,6 +315,18 @@ impl ProviderLiveExportPeerVerifier {
         verify_root_service_connection(&self.provider_cgroup, peer)
     }
 
+    /// Retains the actual observation cause for a Storage-private consumer.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a root-role mismatch or retains the exact Linux observation error.
+    pub(crate) fn verify_connection_typed(
+        &self,
+        peer: &ConnectionPeerIdentity,
+    ) -> Result<PidFdInfo, RootServicePeerError> {
+        verify_root_service_connection_typed(&self.provider_cgroup, peer)
+    }
+
     pub(crate) fn verify_record(
         &self,
         expected: PidFdInfo,
@@ -299,5 +334,45 @@ impl ProviderLiveExportPeerVerifier {
         subject: &KernelAuthorizedRecordSubject,
     ) -> Result<(), ()> {
         verify_root_service_record(&self.provider_cgroup, expected, peer, subject)
+    }
+
+    /// Reuses the same currentness sandwich without erasing its Linux cause.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an execution mismatch or retains the exact Linux observation error.
+    pub(crate) fn verify_record_typed(
+        &self,
+        expected: PidFdInfo,
+        peer: &ConnectionPeerIdentity,
+        subject: &KernelAuthorizedRecordSubject,
+    ) -> Result<(), RootServicePeerError> {
+        verify_root_service_record_typed(&self.provider_cgroup, expected, peer, subject)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_peer_failure_keeps_policy_and_linux_observation_distinct() {
+        use std::error::Error as _;
+
+        assert!(RootServicePeerError::PolicyMismatch.source().is_none());
+        let error = RootServicePeerError::Linux(
+            aos_sandbox_linux::Error::WrongDescriptorType {
+                expected: "cgroup",
+            },
+        );
+
+        let RootServicePeerError::Linux(cause) = &error else {
+            panic!("Linux observation was reclassified as policy refusal");
+        };
+        let source = error.source().unwrap();
+        assert!(std::ptr::eq(
+            source.downcast_ref::<aos_sandbox_linux::Error>().unwrap(),
+            cause,
+        ));
     }
 }

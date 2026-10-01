@@ -39,8 +39,10 @@ use aos_sandbox_linux::cgroup::{
     CgroupPopulationMonitor, CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor,
 };
 use aos_sandbox_linux::process::{FixedProcessOutcome, FixedProcessRequest, run_fixed_process};
+use aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord;
 use aos_sandbox_linux::seqpacket::{
-    ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError, SeqpacketSocket,
+    ConnectionPeerIdentity, KernelAuthorizedRecordSubject, ReceivedRecord,
+    RetainedSeqpacketReceiveErrorV1, SeqpacketError, SeqpacketSocket,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -1230,28 +1232,142 @@ fn verify_worker_peer(
     Ok(worker_cgroup)
 }
 
+/// Parks exactly one actual receive outcome before any caller-side checks.
+///
+/// These slots provide custody, not permission to receive or a request clock.
+/// A fatal result cannot be replaced; retry policy belongs to a later owner.
+#[derive(Default)]
+struct RetainedWorkerRecordSlot {
+    outcome: Option<Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1>>,
+}
+
+impl RetainedWorkerRecordSlot {
+    fn capture_once(
+        &mut self,
+        socket: &mut SeqpacketSocket,
+        maximum: usize,
+    ) -> Result<(), ZfsWorkerError> {
+        if self.outcome.is_some() {
+            return Err(ZfsWorkerError::Protocol(
+                "retained worker receive slot is occupied",
+            ));
+        }
+
+        self.outcome = Some(socket.receive_retaining(maximum));
+        Ok(())
+    }
+
+    fn outcome(&self) -> Option<&Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1>> {
+        self.outcome.as_ref()
+    }
+}
+
+/// Retains the complete exact-one-descriptor response or its opaque failure.
+#[derive(Default)]
+struct RetainedWorkerDescriptorSlot {
+    outcome: Option<Result<ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1>>,
+}
+
+impl RetainedWorkerDescriptorSlot {
+    fn capture_once(
+        &mut self,
+        socket: &mut SeqpacketSocket,
+        maximum: usize,
+    ) -> Result<(), ZfsWorkerError> {
+        if self.outcome.is_some() {
+            return Err(ZfsWorkerError::Protocol(
+                "retained worker descriptor slot is occupied",
+            ));
+        }
+
+        self.outcome = Some(socket.receive_with_descriptors_retaining(maximum, 1));
+        Ok(())
+    }
+
+    fn outcome(
+        &self,
+    ) -> Option<&Result<ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1>> {
+        self.outcome.as_ref()
+    }
+}
+
+/// Owns cleanup observations separately from the attempt's first failure.
+#[derive(Default)]
+struct WorkerCleanupReport {
+    initial_proof: Option<Result<bool, ZfsWorkerError>>,
+    cancellation: Option<Result<(), aos_sandbox_linux::Error>>,
+    failure_recheck: Option<Result<bool, ZfsWorkerError>>,
+    bounded_wait: Option<Result<(), ZfsWorkerError>>,
+}
+
+impl WorkerCleanupReport {
+    /// Consumes only a legacy temporary report, preserving its old error text.
+    fn into_legacy_result(self) -> Result<(), ZfsWorkerError> {
+        match self.initial_proof {
+            Some(Err(error)) => Err(error),
+            Some(Ok(true)) => Ok(()),
+            Some(Ok(false)) => match (self.cancellation, self.failure_recheck, self.bounded_wait) {
+                (Some(Err(kill_error)), Some(proof), None) => match proof {
+                    Ok(true) => Ok(()),
+                    Ok(false) => Err(kill_error.into()),
+                    Err(proof_error) => Err(ZfsWorkerError::Quiescence(format!(
+                        "cgroup kill failed and the quiescence recheck also failed; kill: {kill_error}; recheck: {proof_error}"
+                    ))),
+                },
+                (Some(Ok(())), None, Some(wait)) => wait,
+                _ => Err(ZfsWorkerError::Protocol(
+                    "worker cleanup report is incomplete",
+                )),
+            },
+            None => Err(ZfsWorkerError::Protocol("worker cleanup report is empty")),
+        }
+    }
+}
+
+fn capture_worker_cleanup(
+    report: &mut WorkerCleanupReport,
+    subject: &KernelAuthorizedRecordSubject,
+    worker_cgroup: &RetainedCgroupAnchor,
+    population: &CgroupPopulationMonitor,
+) -> Result<(), ZfsWorkerError> {
+    if report.initial_proof.is_some()
+        || report.cancellation.is_some()
+        || report.failure_recheck.is_some()
+        || report.bounded_wait.is_some()
+    {
+        return Err(ZfsWorkerError::Protocol("worker cleanup report is occupied"));
+    }
+
+    report.initial_proof = Some(worker_is_quiescent(subject, population));
+    if !matches!(&report.initial_proof, Some(Ok(false))) {
+        return Ok(());
+    }
+
+    report.cancellation = Some(worker_cgroup.kill_all());
+    if matches!(&report.cancellation, Some(Err(_))) {
+        // Systemd can empty or remove the unit cgroup before this write.
+        // Accept that race only when exact pidfd death plus the retained
+        // monitor proves either an empty active subtree or its retirement.
+        report.failure_recheck = Some(worker_is_quiescent(subject, population));
+        return Ok(());
+    }
+
+    report.bounded_wait = Some(wait_for_worker_quiescence(
+        subject,
+        population,
+        QUIESCENCE_TIMEOUT,
+    ));
+    Ok(())
+}
+
 fn quiesce_worker(
     subject: &KernelAuthorizedRecordSubject,
     worker_cgroup: &RetainedCgroupAnchor,
     population: &CgroupPopulationMonitor,
 ) -> Result<(), ZfsWorkerError> {
-    if worker_is_quiescent(subject, population)? {
-        return Ok(());
-    }
-    if let Err(kill_error) = worker_cgroup.kill_all() {
-        // Systemd can empty or remove the unit cgroup before this write.
-        // Accept that race only when exact pidfd death plus the retained
-        // monitor proves either an empty active subtree or its retirement.
-        return match worker_is_quiescent(subject, population) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(kill_error.into()),
-            Err(proof_error) => Err(ZfsWorkerError::Quiescence(format!(
-                "cgroup kill failed and the quiescence recheck also failed; kill: {kill_error}; recheck: {proof_error}"
-            ))),
-        };
-    }
-
-    wait_for_worker_quiescence(subject, population, QUIESCENCE_TIMEOUT)
+    let mut report = WorkerCleanupReport::default();
+    capture_worker_cleanup(&mut report, subject, worker_cgroup, population)?;
+    report.into_legacy_result()
 }
 
 fn worker_is_quiescent(
@@ -1490,6 +1606,113 @@ pub(crate) fn open_cgroup_root() -> Result<CgroupV2Root, ZfsWorkerError> {
         rustix::fs::Mode::empty(),
     )?;
     Ok(CgroupV2Root::from_owned(descriptor)?)
+}
+
+#[cfg(test)]
+mod lower_custody_tests {
+    use super::*;
+
+    fn kill_failure() -> aos_sandbox_linux::Error {
+        aos_sandbox_linux::Error::WrongDescriptorType {
+            expected: "cgroup.kill",
+        }
+    }
+
+    #[test]
+    fn receive_slots_start_without_a_record_or_a_fabricated_failure() {
+        let record = RetainedWorkerRecordSlot::default();
+        let descriptors = RetainedWorkerDescriptorSlot::default();
+
+        assert!(record.outcome().is_none());
+        assert!(descriptors.outcome().is_none());
+    }
+
+    #[test]
+    fn initial_cleanup_failure_remains_the_legacy_first_error() {
+        let report = WorkerCleanupReport {
+            initial_proof: Some(Err(ZfsWorkerError::Protocol("initial proof"))),
+            ..WorkerCleanupReport::default()
+        };
+
+        assert!(report.cancellation.is_none());
+        assert!(matches!(
+            report.into_legacy_result(),
+            Err(ZfsWorkerError::Protocol("initial proof")),
+        ));
+    }
+
+    #[test]
+    fn proved_race_keeps_kill_debt_until_explicit_legacy_projection() {
+        let report = WorkerCleanupReport {
+            initial_proof: Some(Ok(false)),
+            cancellation: Some(Err(kill_failure())),
+            failure_recheck: Some(Ok(true)),
+            bounded_wait: None,
+        };
+
+        assert!(matches!(&report.cancellation, Some(Err(_))));
+        assert!(matches!(&report.failure_recheck, Some(Ok(true))));
+        assert!(report.into_legacy_result().is_ok());
+    }
+
+    #[test]
+    fn kill_failure_without_exit_proof_retains_the_original_linux_variant() {
+        let report = WorkerCleanupReport {
+            initial_proof: Some(Ok(false)),
+            cancellation: Some(Err(kill_failure())),
+            failure_recheck: Some(Ok(false)),
+            bounded_wait: None,
+        };
+
+        assert!(matches!(
+            report.into_legacy_result(),
+            Err(ZfsWorkerError::Linux(
+                aos_sandbox_linux::Error::WrongDescriptorType {
+                    expected: "cgroup.kill",
+                },
+            )),
+        ));
+    }
+
+    #[test]
+    fn dual_cleanup_failures_are_typed_until_the_same_legacy_formatting_edge() {
+        let kill = kill_failure();
+        let proof = ZfsWorkerError::Protocol("failure recheck");
+        let expected = format!(
+            "cgroup kill failed and the quiescence recheck also failed; kill: {kill}; recheck: {proof}"
+        );
+        let report = WorkerCleanupReport {
+            initial_proof: Some(Ok(false)),
+            cancellation: Some(Err(kill)),
+            failure_recheck: Some(Err(proof)),
+            bounded_wait: None,
+        };
+
+        assert!(matches!(&report.cancellation, Some(Err(_))));
+        assert!(matches!(
+            &report.failure_recheck,
+            Some(Err(ZfsWorkerError::Protocol("failure recheck"))),
+        ));
+        let Err(ZfsWorkerError::Quiescence(detail)) = report.into_legacy_result() else {
+            panic!("dual cleanup failure changed its legacy variant");
+        };
+        assert_eq!(detail, expected);
+    }
+
+    #[test]
+    fn successful_cancellation_projects_the_same_bounded_wait_error() {
+        let report = WorkerCleanupReport {
+            initial_proof: Some(Ok(false)),
+            cancellation: Some(Ok(())),
+            failure_recheck: None,
+            bounded_wait: Some(Err(ZfsWorkerError::Protocol("bounded wait"))),
+        };
+
+        assert!(matches!(
+            report.into_legacy_result(),
+            Err(ZfsWorkerError::Protocol("bounded wait")),
+        ));
+    }
 }
 
 struct Decoder<'a> {
