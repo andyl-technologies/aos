@@ -18,6 +18,10 @@ impl Backend for Arc<ReplaceDuringIam> {
         self.inner.dialect()
     }
 
+    async fn migrate_schema(&self) -> anyhow::Result<()> {
+        self.inner.migrate_schema().await
+    }
+
     async fn execute(&self, sql: &str, params: &[Value]) -> anyhow::Result<u64> {
         self.inner.execute(sql, params).await
     }

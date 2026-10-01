@@ -11,7 +11,7 @@
 
 use std::io::Write;
 
-use anyhow::{Result, ensure};
+use anyhow::{ensure, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::Zeroizing;
 
@@ -48,6 +48,7 @@ pub(super) enum MigrationDigests {
     Generation5([String; 5]),
     Generation6([String; 6]),
     Generation7([String; 7]),
+    Generation8([String; 8]),
 }
 
 impl MigrationDigests {
@@ -66,6 +67,9 @@ impl MigrationDigests {
                 anyhow::anyhow!("snapshot migration shape differs")
             })?)),
             7 => Ok(Self::Generation7(values.try_into().map_err(|_| {
+                anyhow::anyhow!("snapshot migration shape differs")
+            })?)),
+            8 => Ok(Self::Generation8(values.try_into().map_err(|_| {
                 anyhow::anyhow!("snapshot migration shape differs")
             })?)),
             _ => anyhow::bail!("snapshot migration generation is unsupported"),

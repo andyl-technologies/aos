@@ -4370,8 +4370,8 @@ impl Database {
             .collect()
     }
 
-    /// Lists every route, gateway generation, and default pinned to one exact
-    /// endpoint generation in deterministic order.
+    /// Lists routes, selected gateway revisions, and defaults pinned to one
+    /// exact endpoint generation in deterministic order.
     ///
     /// # Errors
     ///
@@ -4381,6 +4381,8 @@ impl Database {
         endpoint_id: &str,
         generation: i64,
     ) -> Result<Vec<EndpointImpactRecord>> {
+        // Retained gateway revisions describe history. Only the selected
+        // revision pins an endpoint; routes and defaults retain their own pins.
         self.backend
             .query(
                 "SELECT 'route', id, endpoint_generation, resource_version
@@ -4389,7 +4391,8 @@ impl Database {
                  UNION ALL
                  SELECT 'gateway', g.id, r.generation, g.resource_version
                    FROM gateway_revisions r
-                   JOIN gateways g ON g.id = r.gateway_id
+                   JOIN gateways g
+                     ON g.id = r.gateway_id AND g.desired_generation = r.generation
                   WHERE r.endpoint_id = ?1 AND r.endpoint_generation = ?2
                  UNION ALL
                  SELECT 'topology_default', scope_key, endpoint_generation,

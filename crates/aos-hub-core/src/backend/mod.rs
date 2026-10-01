@@ -36,6 +36,8 @@
 //! helpers every driver reuses. The concrete drivers live in the deployment
 //! crates (`SqlxBackend` in the native hub, the `HubDb` bridge in the Worker).
 
+pub mod schema_lineage;
+
 use anyhow::{Context, Result};
 
 use crate::dialect::{order_params, Dialect};
@@ -169,6 +171,19 @@ pub trait Backend: BackendBounds {
     /// Reports a native connection pool snapshot when this backend has one.
     fn pool_stats(&self) -> Option<PoolStats> {
         None
+    }
+
+    /// Initializes an empty schema or reopens the current serving singleton.
+    ///
+    /// Implementors hold one dialect migration lock and the same connection
+    /// through read-only lineage inspection, all bookkeeping writes, and final
+    /// serving identity validation. An unsupported backend refuses before DDL.
+    ///
+    /// # Errors
+    /// Returns reset/import guidance for unsupported source lineage, or a
+    /// driver error when its lock, inspection, transaction or migration fails.
+    async fn migrate_schema(&self) -> Result<()> {
+        anyhow::bail!(schema_lineage::RESET_REQUIRED)
     }
 
     /// Runs a non-`SELECT` statement, returning the number of rows affected.

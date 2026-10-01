@@ -485,6 +485,14 @@ let
   # The Darwin AOS clients retain their non-VM commands without target GLib.
   linuxScoped = [
     "aos-hub-cloudflare"
+    # WebAssembly and Cargo developer tools for downstream project dev shells.
+    # They are portable, but their Darwin cross builds are not yet qualified.
+    "cargo-deny"
+    "cargo-fuzz"
+    "cargo-llvm-cov"
+    "wac-cli"
+    "wasm-tools"
+    "wasmtime"
     "aos-vm"
     "cairo"
     # The controller compiles the Linux QEMU launcher; the fleet store shares
@@ -521,6 +529,7 @@ let
   # interfaces and have no Darwin execution contract.  A portable sub-tool
   # must be split into its own package before it can leave this list.
   linuxOnly = [
+    "nix-daemon"
     "libglycin"
     "glycin-image-rs"
     "libevdev"
@@ -575,6 +584,7 @@ let
     "fuse-overlayfs"
     "getent"
     "glibc"
+    "glibc-tools"
     "hdparm"
     # The complete iperf3 build retains SCTP through Linux lksctp-tools.
     "iperf3"
@@ -627,6 +637,7 @@ let
     "longhorn-instance-manager"
     "longhorn-manager"
     "lvm2"
+    "mdadm"
     "nftables"
     "numactl"
     "numad"

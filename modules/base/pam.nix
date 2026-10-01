@@ -108,6 +108,16 @@
       }
     ];
     session = autoOrderRules [
+      # A fresh kernel session keyring per login, revoked when the session
+      # ends, so keys one session links (fscrypt, kerberos, dm-crypt) never
+      # leak into another. Optional: a kernel without keyrings just skips it.
+      {
+        name = "keyinit";
+        enable = service.startSession;
+        control = "optional";
+        modulePath = "${pkgs.linux-pam}/lib/security/pam_keyinit.so";
+        args = ["force" "revoke"];
+      }
       {
         name = "env";
         enable = service.setEnvironment;
@@ -251,7 +261,10 @@
             if builtins.isList v
             then lib.concatStringsSep ":" v
             else toString v;
-        in ''${n}   DEFAULT="${value}"''
+          # SSH may already supply PATH; package profiles must remain visible
+          # in that case as well as in sessions without an inherited value.
+          override = lib.optionalString (n == "PATH") " OVERRIDE=\"${value}\"";
+        in ''${n}   DEFAULT="${value}"${override}''
       ) (lib.filterAttrs (_: v: v != null) vars)
     );
 
@@ -369,8 +382,6 @@ in {
         session  optional ${pkgs.systemd}/lib/security/pam_systemd.so
       '';
     };
-
-    environment.sessionVariables.PATH = lib.mkDefault config.system.build.systemPath;
 
     environment.etc =
       pamServiceFiles

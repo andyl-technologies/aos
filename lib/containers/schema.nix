@@ -190,7 +190,7 @@ in {
       shell = mkOption {
         type = validatedBool;
         default = false;
-        description = "Whether /bin/sh is exposed from the AOS bash package.";
+        description = "Whether /bin/sh and /bin/bash are exposed from the AOS bash package.";
       };
     };
 

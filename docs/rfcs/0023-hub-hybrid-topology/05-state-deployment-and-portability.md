@@ -129,6 +129,32 @@ An operator explicitly identifies the environment and records what state is
 being discarded. Changing topology is not an implicit data conversion or a
 silent fallback when the selected database is unavailable.
 
+The merged serving schema has identity `aos-hub/canonical-serving/8`.
+Two historical branches used `aos-hub/production-baseline/1` and migration
+version two for different DDL. Neither the integer version nor the historical
+identity can authorize an automatic upgrade. Canonical migration scripts
+001–007 and the appended master channel script remain unchanged. A fresh
+initializer applies all eight scripts, then stamps the new serving identity
+with a checked driver statement.
+
+The driver acquires its migration lock before reading the owned schema, and
+keeps the same connection through initialization. It accepts an empty schema
+or the exact new identity and current version singletons. Other nonempty
+schemas, including interrupted implicit-DDL initialization, require explicit
+reset or separately reviewed manual import before any bookkeeping DDL. This
+rule is a serving eligibility check, not an attestation of arbitrary catalogue
+integrity. SQLite, PostgreSQL and MySQL-family implementations preserve their
+existing SQL support; actual engine receipts distinguish exercised MariaDB
+from unexercised genuine MySQL.
+
+Genuine generation-three through generation-seven archives retain their
+original identity, scripts and authenticated verification contracts. Generation
+eight is a separate current contract with the new identity. Verifying an old
+archive does not rewrite it or authorize serving. A manual import into a fresh
+current database must explicitly adapt retained data to the new contract;
+provider authority, outstanding effects and credentials still require their
+independent reconciliation.
+
 A database-native backup before reset is a useful low-cost safeguard when the
 source supports it. It is not a portable Hub snapshot: it omits object bytes
 and may only restore into the same database engine and deployment identity.

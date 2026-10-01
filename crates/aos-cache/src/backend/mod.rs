@@ -13,7 +13,12 @@
 //!
 //! [`from_url`] dispatches on the URL scheme and wires CLI-supplied
 //! [`AuthOptions`] into the engine's per-host credential store.
+//!
+//! Beyond the cache layout, the `file`, `s3`, and `sftp` backends support
+//! compare-and-swap writes of small mutable static objects;
+//! [`conditional`] describes the per-backend semantics.
 
+pub mod conditional;
 pub mod fs;
 pub mod http;
 pub mod s3;
@@ -22,6 +27,10 @@ pub mod sftp;
 use std::sync::Arc;
 
 use anyhow::Result;
+
+pub use conditional::{
+    ConditionalOutcome, ConditionalWriteUnsupported, Expectation, ObjectVersion,
+};
 
 /// One admitted cache-object upload returned by a batch control request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -298,6 +307,58 @@ pub trait CacheBackend: Send + Sync {
         content_disposition: Option<&str>,
         sha256: Option<&str>,
     ) -> Result<()>;
+
+    /// Reads a small static object and its current [`ObjectVersion`].
+    ///
+    /// Returns `Ok(None)` when no object exists at `relative_path`. The
+    /// version is the token to pass back in [`Expectation::Version`] to
+    /// [`put_static_file_conditional`](CacheBackend::put_static_file_conditional).
+    /// Objects larger than `max_bytes` are refused rather than buffered:
+    /// this is for small records such as channel generation files.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConditionalWriteUnsupported`] from backends without
+    /// conditional-write support (the default, including the HTTP backend).
+    /// Supporting backends return an error when `relative_path` is not a
+    /// normalized relative path, the object exceeds `max_bytes`, the
+    /// transport cannot supply a version, or the read fails.
+    async fn get_static_object(
+        &self,
+        _relative_path: &str,
+        _max_bytes: usize,
+    ) -> Result<Option<(Vec<u8>, ObjectVersion)>> {
+        Err(ConditionalWriteUnsupported::new("get_static_object").into())
+    }
+
+    /// Uploads a static file only if the object at `relative_path` meets
+    /// `expect`, replacing it atomically.
+    ///
+    /// Readers observe either the previous object or the complete new one.
+    /// A failed expectation is not an error: it yields
+    /// [`ConditionalOutcome::PreconditionFailed`] with the version that
+    /// refused the write, and nothing is written. `content_type` and
+    /// `cache_control` apply where the transport stores metadata (S3).
+    /// See [`conditional`] for the per-backend mechanism.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConditionalWriteUnsupported`] from backends without
+    /// conditional-write support (the default, including the HTTP backend).
+    /// Supporting backends return an error when `relative_path` is not a
+    /// normalized relative path, `source` cannot be read, another writer's
+    /// lock stays held past the lock timeout (filesystem and SFTP), the
+    /// transport does not report the new version, or the upload fails.
+    async fn put_static_file_conditional(
+        &self,
+        _relative_path: &str,
+        _source: &std::path::Path,
+        _content_type: Option<&str>,
+        _cache_control: Option<&str>,
+        _expect: Expectation,
+    ) -> Result<ConditionalOutcome> {
+        Err(ConditionalWriteUnsupported::new("put_static_file_conditional").into())
+    }
 
     /// Returns whether this backend supports AOS pack upload.
     ///

@@ -48,7 +48,8 @@ const OCI_MANIFEST_COLUMNS: &str = "manifest.registry_id, manifest.digest,
     manifest.platform_os_version, manifest.platform_os_features_json,
     manifest.annotations_json, manifest.descriptor_count,
     stored_blob.surface_object_id, object.object_key, manifest.created_at";
-const OCI_MANIFEST_REFERENCE_PREDICATE: &str = "((link.digest = ?2 AND CAST(?2 AS VARCHAR) IS NOT NULL)
+const OCI_MANIFEST_REFERENCE_PREDICATE: &str =
+    "((link.digest = ?2 AND CAST(?2 AS VARCHAR) IS NOT NULL)
                          OR (tag.name = ?3 AND CAST(?3 AS VARCHAR) IS NOT NULL))";
 const OCI_UPLOAD_COLUMNS: &str = "id, registry_id, repository_id, publication_id,
     quota_reservation_id, writer_id, token_id, expected_digest, expected_size,
@@ -2872,6 +2873,10 @@ mod tests {
     impl crate::backend::Backend for CountedClaimBackend {
         fn dialect(&self) -> crate::dialect::Dialect {
             self.inner.dialect()
+        }
+
+        async fn migrate_schema(&self) -> anyhow::Result<()> {
+            self.inner.migrate_schema().await
         }
 
         async fn execute(&self, sql: &str, params: &[crate::value::Value]) -> Result<u64> {

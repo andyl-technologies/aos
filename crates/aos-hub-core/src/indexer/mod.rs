@@ -53,7 +53,7 @@ use aos_oci_types::{
     RepositoryName, Sha256Digest, CONTAINER_DSSE_SIGNATURE_NAMESPACE,
 };
 use aos_registry_surface::manifest::{ImageVerificationState, RegistryRootConfig};
-use aos_registry_surface::object::{Commit, ObjectKind};
+use aos_registry_surface::object::{Commit, ObjectKind, Oid};
 use aos_registry_surface::refs::{parse_head, parse_info_refs, Refs};
 use aos_registry_surface::sshsig;
 use aos_registry_surface::tag::{parse_signed_tag, verify_signed_tag, SignedTag};
@@ -61,7 +61,7 @@ use aos_registry_surface::tagobject::{verify_name_binding, TagTarget};
 use axum::body::to_bytes;
 use base64::Engine as _;
 use ed25519_dalek::VerifyingKey;
-use futures_util::{future::try_join_all, TryStreamExt as _};
+use futures_util::{future::try_join_all, stream, StreamExt as _, TryStreamExt as _};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tracing::Instrument as _;
@@ -97,6 +97,10 @@ pub const MAX_RELEASE_TAGS: usize = 1024;
 /// avoids making a complete channel cost hundreds of serial object-store round
 /// trips while remaining below Worker subrequest and memory limits.
 const CHANNEL_FETCH_CONCURRENCY: usize = 32;
+
+/// Caps documentation reads so a complete registry fits the Worker wall-time
+/// budget without holding many maximum-sized canonical documents at once.
+const DOCUMENTATION_FETCH_CONCURRENCY: usize = 4;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -554,10 +558,6 @@ async fn index_registry_inner(
         .as_ref()
         .is_some_and(|status| status.state == "fresh")
         && indexed_roster_matches(db, registry.id, &roster_rows).await?
-        // Signed container roots bind exact placement evidence. The reusable
-        // artifact projection does not rehydrate that evidence, so force the
-        // normal signed-release validation path for container registries.
-        && !db.has_container_release_catalog(registry.id).await?
     {
         reusable_release_snapshots(db, registry.id).await?
     } else {
@@ -600,10 +600,28 @@ async fn index_registry_inner(
                 tag_oid = %tag_oid,
             );
             async move {
-                if let Some(reusable) = reusable.filter(|reusable| {
-                    reusable.release.tag_oid == tag_oid.to_hex()
-                        && (reusable.image.is_none() || publication.is_some())
+                let reusable = match reusable.filter(|snapshot| {
+                    snapshot.release.tag_oid == tag_oid.to_hex()
+                        && (snapshot.image.is_none() || publication.is_some())
                 }) {
+                    Some(snapshot) => {
+                        // Container evidence binds an exact placement. Reuse
+                        // package-only releases; container-bearing releases
+                        // still take the complete signed validation path.
+                        let commit_oid = Oid::from_hex(&snapshot.release.commit_oid)?;
+                        if reader
+                            .retained_container_release(commit_oid)
+                            .await?
+                            .is_none()
+                        {
+                            Some(snapshot)
+                        } else {
+                            None
+                        }
+                    }
+                    None => None,
+                };
+                if let Some(reusable) = reusable {
                     tracing::debug!(release = %tag_name, "revalidating reusable release snapshot");
                     let mut release_leases = Vec::new();
                     let (release_image, release_presence, image_tag_oid) = match reusable.image {
@@ -842,6 +860,11 @@ async fn index_registry_inner(
         images = release_images.len(),
         "registry index phase completed"
     );
+
+    // The verified trees own their parsed data. Release the compressed,
+    // decoded, and parsed Git caches before documentation and SQL projections
+    // expand those same packages into additional buffers in a Worker isolate.
+    drop(reader);
 
     // Channels: branches are channel names; each resolves through 256
     // partition payloads pointing at release tag objects.
@@ -2650,91 +2673,29 @@ async fn verify_package_documentation(
     fetch: &dyn SurfaceFetch,
     packages: &[aos_registry_surface::manifest::PackageToml],
 ) -> Result<Vec<IndexedPackageDocumentation>> {
-    let mut indexed = Vec::new();
+    let mut pending = Vec::new();
     for package in packages {
         for version in &package.versions {
             for (platform, entry) in &version.platforms {
-                let Some(artifact) = &entry.documentation else {
-                    continue;
-                };
-                let inspection = if fetch.storage_local_documentation_inspection() {
-                    fetch
-                        .inspect_package_documentation(
-                            &package.package.name,
-                            &version.version,
-                            platform,
-                            artifact,
-                        )
-                        .await?
-                } else {
-                    let document = fetch_package_documentation(
+                if let Some(artifact) = &entry.documentation {
+                    pending.push(verify_documentation_selection(
                         fetch,
                         &package.package.name,
                         &version.version,
                         platform,
+                        entry,
                         artifact,
-                    )
-                    .await?;
-                    crate::fetch::DocumentationInspection::from_document(&document)
-                };
-                anyhow::ensure!(
-                    documentation_digest_matches(
-                        &inspection.identity.runtime_nar_hash,
-                        &entry.nar_hash,
-                    )?,
-                    "package documentation runtime identity mismatch"
-                );
-                if let Some(config) = &entry.config_module {
-                    anyhow::ensure!(
-                        inspection
-                            .identity
-                            .config_module_nar_hash
-                            .as_deref()
-                            .map(|digest| documentation_digest_matches(
-                                digest,
-                                &config.config_output.nar_hash,
-                            ))
-                            .transpose()?
-                            == Some(true),
-                        "package documentation config-module identity mismatch"
-                    );
+                    ));
                 }
-                anyhow::ensure!(
-                    inspection.identity.system_module_nar_hash.as_deref()
-                        == artifact.system_module_nar_hash.as_deref(),
-                    "package documentation system-module identity mismatch"
-                );
-                if let Some(expose) = &entry.expose_artifact {
-                    anyhow::ensure!(
-                        inspection
-                            .identity
-                            .expose_artifact_nar_hash
-                            .as_deref()
-                            .map(|digest| documentation_digest_matches(digest, &expose.nar_hash))
-                            .transpose()?
-                            == Some(true),
-                        "package documentation expose-artifact identity mismatch"
-                    );
-                }
-                indexed.push(IndexedPackageDocumentation {
-                    package_name: package.package.name.clone(),
-                    package_version: version.version.clone(),
-                    platform: platform.clone(),
-                    artifact: artifact.clone(),
-                    search: inspection.search,
-                    options: inspection
-                        .options
-                        .into_iter()
-                        .map(|option| crate::db::IndexedDocumentationOption {
-                            key: option.key,
-                            path: option.path,
-                            type_signature: option.type_signature,
-                        })
-                        .collect(),
-                });
             }
         }
     }
+
+    let mut indexed: Vec<IndexedPackageDocumentation> = stream::iter(pending)
+        .buffer_unordered(DOCUMENTATION_FETCH_CONCURRENCY)
+        .try_collect()
+        .await?;
+
     indexed.sort_by(|left, right| {
         (&left.package_name, &left.package_version, &left.platform).cmp(&(
             &right.package_name,
@@ -2743,6 +2704,83 @@ async fn verify_package_documentation(
         ))
     });
     Ok(indexed)
+}
+
+// A named future keeps the native Send requirement independent of iterator closures.
+async fn verify_documentation_selection(
+    fetch: &dyn SurfaceFetch,
+    package_name: &str,
+    package_version: &str,
+    platform: &str,
+    entry: &aos_registry_surface::manifest::PlatformEntry,
+    artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+) -> Result<IndexedPackageDocumentation> {
+    let inspection = if fetch.storage_local_documentation_inspection() {
+        fetch
+            .inspect_package_documentation(package_name, package_version, platform, artifact)
+            .await?
+    } else {
+        let document = fetch_package_documentation(
+            fetch, package_name, package_version, platform, artifact,
+        )
+        .await?;
+        crate::fetch::DocumentationInspection::from_document(&document)
+    };
+    anyhow::ensure!(
+        documentation_digest_matches(
+            &inspection.identity.runtime_nar_hash,
+            &entry.nar_hash,
+        )?,
+        "package documentation runtime identity mismatch"
+    );
+    if let Some(config) = &entry.config_module {
+        anyhow::ensure!(
+            inspection
+                .identity
+                .config_module_nar_hash
+                .as_deref()
+                .map(|digest| documentation_digest_matches(
+                    digest,
+                    &config.config_output.nar_hash,
+                ))
+                .transpose()?
+                == Some(true),
+            "package documentation config-module identity mismatch"
+        );
+    }
+    anyhow::ensure!(
+        inspection.identity.system_module_nar_hash.as_deref()
+            == artifact.system_module_nar_hash.as_deref(),
+        "package documentation system-module identity mismatch"
+    );
+    if let Some(expose) = &entry.expose_artifact {
+        anyhow::ensure!(
+            inspection
+                .identity
+                .expose_artifact_nar_hash
+                .as_deref()
+                .map(|digest| documentation_digest_matches(digest, &expose.nar_hash))
+                .transpose()?
+                == Some(true),
+            "package documentation expose-artifact identity mismatch"
+        );
+    }
+    Ok::<_, anyhow::Error>(IndexedPackageDocumentation {
+        package_name: package_name.to_string(),
+        package_version: package_version.to_string(),
+        platform: platform.to_string(),
+        artifact: artifact.clone(),
+        search: inspection.search,
+        options: inspection
+            .options
+            .into_iter()
+            .map(|option| crate::db::IndexedDocumentationOption {
+                key: option.key,
+                path: option.path,
+                type_signature: option.type_signature,
+            })
+            .collect(),
+    })
 }
 
 fn documentation_digest_matches(left: &str, right: &str) -> Result<bool> {

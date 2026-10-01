@@ -3,7 +3,7 @@
 //! These checks preserve the original private bytes. They do not authenticate
 //! provider proof, renew authority or permit a restored job to resume effects.
 
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{ensure, Context as _, Result};
 
 use crate::db::MirrorImportRecord;
 use crate::value::{FromValue, Row};
@@ -28,8 +28,13 @@ pub(super) fn validate_row(name: &str, table: &TableContract, row: &Row) -> Resu
         cells.get("updated_at")?,
     )
     .map_err(|_| anyhow::anyhow!("snapshot mirror original or lifecycle differs"))?;
-    if table.columns.iter().any(|column| column.name == "publication_commit_version") {
-        record.validate_publication_commit_version(cells.get("publication_commit_version")?)
+    if table
+        .columns
+        .iter()
+        .any(|column| column.name == "publication_commit_version")
+    {
+        record
+            .validate_publication_commit_version(cells.get("publication_commit_version")?)
             .map_err(|_| anyhow::anyhow!("snapshot mirror publication qualifier differs"))?;
     }
     if table

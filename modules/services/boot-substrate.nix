@@ -111,9 +111,10 @@
         ++ lib.optional (!zfsState && disksUnit != null) disksUnit
         ++ lib.optional zfsState "aos-zfs-unlock.service"
         ++ ["systemd-udev-settle.service"];
-      unitConfig = lib.optionalAttrs (!zfsState) {
-        ConditionPathExists = "/dev/disk/by-partlabel/var";
-      };
+      # No ConditionPathExists on a var device: the system-state volume may
+      # be a partition, an MD array, or a LUKS2 mapper, and udev can surface
+      # any of them late. The script resolves and waits for the device and
+      # fails closed if none carries the ext4 `var` filesystem.
       environment.PATH = bootPath + lib.optionalString zfsState ":${zfsPackage}/bin:${zfsPackage}/sbin";
       serviceConfig = {
         Type = "oneshot";
@@ -127,8 +128,9 @@
           mkdir -p /sysroot/var
           # When measured boot seals /var (RFC-0006 phase 3), the
           # aos-var-crypt service runs first and exposes the unlocked
-          # LUKS volume as /dev/mapper/var; mount that. Otherwise the
-          # raw partition is mounted directly (unchanged behaviour).
+          # LUKS volume as /dev/mapper/var. When host.nix declares a `var`
+          # array, aos-storage-topology has assembled /dev/md/var. Otherwise
+          # the raw partition is mounted directly.
           if ${
           if zfsState
           then "true"
@@ -141,14 +143,45 @@
               ${lib.escapeShellArg "${config.aos.filesystems.zfs.poolName}/var/log"} /sysroot/var/log
             mount -t zfs -o zfsutil,nosuid,nodev \
               ${lib.escapeShellArg "${config.aos.filesystems.zfs.poolName}/var/lib"} /sysroot/var/lib
-          elif [ -e /dev/mapper/var ]; then
-            mount -o nosuid,nodev /dev/mapper/var /sysroot/var
           else
-            mount -o nosuid,nodev /dev/disk/by-partlabel/var /sysroot/var
+            # Resolve the device that carries the system-state filesystem.
+            # The mapper wins when aos-var-crypt unlocked a sealed volume; the
+            # array wins over its member partition, which still answers to
+            # the `var` partlabel but only carries an MD superblock.
+            var_dev=""
+            i=0
+            while [ -z "$var_dev" ] && [ "$i" -lt 60 ]; do
+              for candidate in /dev/mapper/var /dev/md/var /dev/disk/by-partlabel/var; do
+                if [ -e "$candidate" ]; then
+                  var_dev="$candidate"
+                  break
+                fi
+              done
+              [ -n "$var_dev" ] || { i=$((i + 1)); sleep 0.5; }
+            done
+            if [ -z "$var_dev" ]; then
+              echo "mount-var: no device carries the system-state volume" >&2
+              exit 1
+            fi
+            fs_type=$(blkid -p -s TYPE -o value "$var_dev" 2>/dev/null || true)
+            if [ "$fs_type" != ext4 ]; then
+              echo "mount-var: refusing $var_dev with filesystem type ''${fs_type:-none}; expected ext4" >&2
+              exit 1
+            fi
+            mount -o nosuid,nodev "$var_dev" /sysroot/var
           fi
         fi
         # Standard /var subdirectories expected by systemd and daemons.
-        mkdir -p /sysroot/var/{log,lib,tmp}
+        # /var/srv backs the /srv bind mount that data volumes mount under
+        # (modules/services/storage-topology.nix); it must exist before
+        # local-fs.target, earlier than tmpfiles runs.
+        mkdir -p /sysroot/var/{log,lib,tmp,srv}
+        # Backing directories for the /root and /home bind mounts
+        # (modules/base/homes.nix). Both always exist so a host can enable
+        # persistent homes from host.nix without a new image; either may
+        # itself be a mount point for a dedicated volume or dataset.
+        mkdir -p -m 0700 /sysroot/var/roothome
+        mkdir -p -m 0755 /sysroot/var/home
         # /var/etc is the host-persistent allowlist of the /etc
         # overlay (spec v12 §5.4) — created eagerly so
         # aos-machine-id and sshd-keygen find it on first boot.

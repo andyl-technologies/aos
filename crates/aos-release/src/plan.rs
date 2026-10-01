@@ -2,6 +2,11 @@
 //!
 //! A plan closes package eligibility across all four targets and closes image
 //! intent across both Linux targets. There is no implicit missing cell.
+//!
+//! The plan embeds the shared [`QualificationContract`], names its two
+//! [`PlannedSurface`]s (staging and production), and freezes every
+//! [`PlannedDestination`] with the gates, soak, and rollout rings its profile
+//! selected. The release class is derived from the version string.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -9,19 +14,31 @@ use anyhow::{Context as _, Result, bail};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::RELEASE_PLAN_V1;
+use crate::RELEASE_PLAN;
 use crate::artifact::{require_identifier, require_store_path};
 use crate::digest::Sha256Digest;
 use crate::evidence::GateRequirement;
-use crate::inventory::{DerivationInventoryV1, PackageInventoryV1, PackagePublicationMetadata};
+use crate::inventory::PackagePublicationMetadata;
 use crate::platform::{
     MatrixCell, Platform, require_complete_image_platforms, require_complete_package_platforms,
 };
+use crate::qualification::QualificationContract;
+use crate::qualification::change_scope::ChangeScope;
 use crate::registry::registry_policy;
 use crate::signing::{SignerRequirement, SignerRole};
 
-/// Exact schema for pre-evaluation planner inputs.
-pub const PLAN_REQUEST_V1: &str = "aos.release.plan-request/v1";
+pub mod destinations;
+mod request;
+
+pub use crate::qualification::profiles::RolloutRing;
+pub use destinations::{
+    PlannedDestination, PlannedSurface, ProfileOverrideRef, RequestedDestination, SurfaceKind,
+    SurfaceRole, class_allows_channel_kind, parse_destination_name,
+};
+pub use request::{ReleasePlanRequest, planned_destinations};
+
+/// Exact schema for planner inputs with surfaces and destinations.
+pub const PLAN_REQUEST: &str = "aos.release.plan-request/v1";
 
 /// Reserved release-id prefix for a retained, non-public qualification snapshot.
 pub const QUALIFICATION_SNAPSHOT_RELEASE_PREFIX: &str = "qualification-snapshot-";
@@ -29,25 +46,52 @@ pub const QUALIFICATION_SNAPSHOT_RELEASE_PREFIX: &str = "qualification-snapshot-
 /// Reserved source-tag prefix for a retained, non-public qualification snapshot.
 pub const QUALIFICATION_SNAPSHOT_TAG_PREFIX: &str = "qualification-snapshot/";
 
-/// Release maturity and authorization class.
+/// Release maturity derived from the version format; selects the TUF role.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReleaseClass {
-    /// Changed-business-day integration snapshot.
+    /// Changed-business-day integration snapshot (`-dev.YYYYMMDD.N`).
     Edge,
-    /// Weekly release candidate.
+    /// Weekly release candidate (`-rc.N`).
     Candidate,
-    /// Supported monthly production release.
+    /// Supported production release (no prerelease component).
     Stable,
-    /// Fix-forward security or availability release.
-    Emergency,
 }
 
 impl ReleaseClass {
-    /// Returns whether this release class must contain no blocked matrix cell.
+    /// Derives the class from a calendar version string.
+    ///
+    /// # Errors
+    /// Returns an error for a `v` prefix, a non-SemVer version, a version
+    /// outside the `YYYY.M.P` calendar form, or an unknown prerelease format.
+    pub fn from_version(value: &str) -> Result<Self> {
+        if value.starts_with('v') {
+            bail!("release version must not have a v prefix");
+        }
+        let version = Version::parse(value).context("parsing release version")?;
+        if version.major < 2026 || !(1..=12).contains(&version.minor) {
+            bail!("release version must use YYYY.M.P calendar components");
+        }
+        let prerelease = version.pre.as_str();
+        if prerelease.is_empty() {
+            Ok(Self::Stable)
+        } else if prerelease.starts_with("dev.") {
+            Ok(Self::Edge)
+        } else if prerelease.starts_with("rc.") {
+            Ok(Self::Candidate)
+        } else {
+            bail!("release version prerelease must be -dev.YYYYMMDD.N or -rc.N: {value}")
+        }
+    }
+
+    /// Returns the exact public spelling.
     #[must_use]
-    pub const fn requires_complete_matrix(self) -> bool {
-        matches!(self, Self::Stable | Self::Emergency)
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Edge => "edge",
+            Self::Candidate => "candidate",
+            Self::Stable => "stable",
+        }
     }
 
     /// Returns the TUF delegated role required to authorize this class.
@@ -56,8 +100,14 @@ impl ReleaseClass {
         match self {
             Self::Edge => SignerRole::TufEdge,
             Self::Candidate => SignerRole::TufCandidate,
-            Self::Stable | Self::Emergency => SignerRole::TufStable,
+            Self::Stable => SignerRole::TufStable,
         }
+    }
+}
+
+impl std::fmt::Display for ReleaseClass {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 
@@ -278,18 +328,6 @@ pub struct PlanningSource {
     pub contributor_authorization_digest: Sha256Digest,
 }
 
-/// Intended later channel operation; it is not part of release authoring.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ChannelIntent {
-    /// `edge`, `candidate`, or `stable`.
-    pub channel: String,
-    /// Inclusive first partition intended for the rollout.
-    pub first_partition: u16,
-    /// Inclusive final partition intended for the rollout.
-    pub last_partition: u16,
-}
-
 /// Retention requirements frozen before publication.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -305,15 +343,11 @@ pub struct RetentionPolicy {
 /// Versioned release intent that authorizes all later effects.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ReleasePlanV1 {
+pub struct ReleasePlan {
     /// Exact plan schema identifier.
     pub schema_version: String,
-    /// Limits publication to unqualified staging with no channel operations.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub staging_only: bool,
-    /// Shared qualification contract; required by v2, absent in archival v1 plans.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub qualification: Option<crate::qualification::QualificationContract>,
+    /// Shared qualification contract.
+    pub qualification: QualificationContract,
     /// Frozen preceding snapshot for the required update/recovery cycle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qualification_predecessor: Option<crate::qualification_evidence::QualificationPredecessor>,
@@ -321,7 +355,7 @@ pub struct ReleasePlanV1 {
     pub release_id: String,
     /// SemVer-compatible calendar release version.
     pub version: String,
-    /// Maturity and authorization class.
+    /// Maturity class; must equal the class derived from `version`.
     pub release_class: ReleaseClass,
     /// Canonical public registry identity.
     pub registry: String,
@@ -335,62 +369,18 @@ pub struct ReleasePlanV1 {
     pub packages: Vec<PackagePlan>,
     /// Complete Linux system-image matrix.
     pub images: Vec<ImagePlan>,
-    /// Versioned qualification and release gates.
-    pub gates: Vec<GateRequirement>,
-    /// Staging Hub deployment identity.
-    pub staging_deployment_id: String,
-    /// Production Hub deployment identity.
-    pub production_deployment_id: String,
     /// Role-separated signer thresholds and public key ids.
     pub signers: Vec<SignerRequirement>,
-    /// Reviewed future channel operations.
-    pub intended_channels: Vec<ChannelIntent>,
-    /// Retention and corresponding-source policy.
-    pub retention: RetentionPolicy,
-    /// Digest of the public evidence policy.
-    pub public_evidence_policy_digest: Sha256Digest,
-    /// Digest of the restricted operator policy, without private contents.
-    pub restricted_operator_policy_digest: Sha256Digest,
-}
-
-/// Reviewed planner input whose package matrix is derived from Nix.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReleasePlanRequestV1 {
-    /// Exact planner-input schema identifier.
-    pub schema_version: String,
-    /// Builds and signs a staging publication without qualification execution.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub staging_only: bool,
-    /// Same-registry preceding snapshot, required for shared server qualification.
+    /// Staging and production publication surfaces.
+    pub surfaces: Vec<PlannedSurface>,
+    /// Publication destinations and their bound obligations; empty for snapshots.
+    pub destinations: Vec<PlannedDestination>,
+    /// Recorded change scope; required when any destination profile is change-scoped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub qualification_predecessor: Option<crate::qualification_evidence::QualificationPredecessor>,
-    /// Immutable release identity.
-    pub release_id: String,
-    /// SemVer-compatible calendar release version.
-    pub version: String,
-    /// Maturity and authorization class.
-    pub release_class: ReleaseClass,
-    /// Canonical public registry identity.
-    pub registry: String,
-    /// Exact registry commit on which authoring must begin.
-    pub registry_base_commit: String,
-    /// Exact compare-and-swap registry generation.
-    pub registry_base_generation: u64,
-    /// Source reachability and authorization policy.
-    pub source: PlanningSource,
-    /// Complete Linux system-image intent.
-    pub images: Vec<ImagePlan>,
-    /// Versioned qualification and release gates.
-    pub gates: Vec<GateRequirement>,
-    /// Staging Hub deployment identity.
-    pub staging_deployment_id: String,
-    /// Production Hub deployment identity.
-    pub production_deployment_id: String,
-    /// Role-separated signer thresholds and public key ids.
-    pub signers: Vec<SignerRequirement>,
-    /// Reviewed future channel operations.
-    pub intended_channels: Vec<ChannelIntent>,
+    pub change_scope: Option<ChangeScope>,
+    /// Accepted signed profile overrides bound into this plan.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profile_overrides: Vec<ProfileOverrideRef>,
     /// Retention and corresponding-source policy.
     pub retention: RetentionPolicy,
     /// Digest of the public evidence policy.
@@ -399,125 +389,88 @@ pub struct ReleasePlanRequestV1 {
     pub restricted_operator_policy_digest: Sha256Digest,
 }
 
-impl ReleasePlanRequestV1 {
-    /// Combines reviewed inputs, Nix eligibility, and locally derived Git data.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for the wrong request schema, inconsistent derived
-    /// source policy, invalid inventory, or any invalid final release plan.
-    pub fn materialize(
-        self,
-        inventory: &PackageInventoryV1,
-        derivations: &[DerivationInventoryV1],
-        source: SourceIdentity,
-    ) -> Result<ReleasePlanV1> {
-        if self.schema_version != PLAN_REQUEST_V1 {
-            bail!("unsupported release plan request schema");
-        }
-        if source.protected_branch != self.source.protected_branch
-            || source.source_tag != self.source.source_tag
-            || source.contributor_authorization_digest
-                != self.source.contributor_authorization_digest
-        {
-            bail!("derived source identity is outside the requested source policy");
-        }
-        let plan = ReleasePlanV1 {
-            schema_version: RELEASE_PLAN_V1.to_owned(),
-            staging_only: self.staging_only,
-            qualification: None,
-            qualification_predecessor: self.qualification_predecessor,
-            release_id: self.release_id,
-            version: self.version,
-            release_class: self.release_class,
-            registry: self.registry,
-            registry_base_commit: self.registry_base_commit,
-            registry_base_generation: self.registry_base_generation,
-            source,
-            packages: inventory.package_plan(derivations)?,
-            images: self.images,
-            gates: self.gates,
-            staging_deployment_id: self.staging_deployment_id,
-            production_deployment_id: self.production_deployment_id,
-            signers: self.signers,
-            intended_channels: self.intended_channels,
-            retention: self.retention,
-            public_evidence_policy_digest: self.public_evidence_policy_digest,
-            restricted_operator_policy_digest: self.restricted_operator_policy_digest,
-        };
-        plan.validate()?;
-        Ok(plan)
-    }
-}
-
-impl ReleasePlanV1 {
+impl ReleasePlan {
     /// Returns whether this plan is the reserved non-public predecessor snapshot.
     #[must_use]
     pub fn is_qualification_snapshot(&self) -> bool {
-        self.schema_version == crate::RELEASE_PLAN_V2
-            && self.qualification.is_some()
-            && self.qualification_predecessor.is_none()
+        self.qualification_predecessor.is_none()
             && self.release_id == format!("{QUALIFICATION_SNAPSHOT_RELEASE_PREFIX}{}", self.version)
             && self.source.source_tag
                 == format!("{QUALIFICATION_SNAPSHOT_TAG_PREFIX}{}", self.version)
-            && self.intended_channels.is_empty()
+            && self.destinations.is_empty()
     }
 
-    /// Requires the shared contract before a new public release operation.
+    /// Returns the planned surface with one role.
     ///
     /// # Errors
-    /// Returns an error for an archival plan or invalid shared contract.
-    pub fn require_current_qualification(&self) -> Result<()> {
-        self.validate()?;
-        if self.staging_only {
-            bail!(
-                "staging-only publications cannot be qualified, promoted, or assigned to channels"
-            );
-        }
-        if self.schema_version != crate::RELEASE_PLAN_V2
-            || self
-                .qualification
-                .as_ref()
-                .is_none_or(|contract| contract.schema_version != crate::qualification::CONTRACT_V2)
-        {
-            bail!(
-                "archival release plans are read-only; new publication requires a v2 shared qualification contract"
-            );
-        }
-        Ok(())
+    /// Returns an error when the plan declares no such surface.
+    pub fn surface(&self, role: SurfaceRole) -> Result<&PlannedSurface> {
+        self.surfaces
+            .iter()
+            .find(|surface| surface.role == role)
+            .ok_or_else(|| anyhow::anyhow!("release plan has no {role} surface"))
     }
 
-    /// Requires a current plan that is authorized to cross a Hub boundary.
+    /// Returns the planned destination with one name, such as `production/stable`.
+    ///
+    /// # Errors
+    /// Returns an error when the plan has no such destination.
+    pub fn destination(&self, name: &str) -> Result<&PlannedDestination> {
+        self.destinations
+            .iter()
+            .find(|destination| destination.name == name)
+            .ok_or_else(|| anyhow::anyhow!("release plan has no destination {name}"))
+    }
+
+    /// Returns the planned destination for a surface role and channel name.
+    ///
+    /// # Errors
+    /// Returns an error when the plan has no such destination.
+    pub fn destination_for(
+        &self,
+        surface: SurfaceRole,
+        channel: &str,
+    ) -> Result<&PlannedDestination> {
+        self.destinations
+            .iter()
+            .find(|destination| destination.surface == surface && destination.channel == channel)
+            .ok_or_else(|| anyhow::anyhow!("release plan has no destination {surface}/{channel}"))
+    }
+
+    /// Returns the union of every destination's gates.
+    #[must_use]
+    pub fn all_gates(&self) -> BTreeSet<GateRequirement> {
+        self.destinations
+            .iter()
+            .flat_map(|destination| destination.gates.iter())
+            .cloned()
+            .collect()
+    }
+
+    /// Returns whether any destination profile rejects blocked matrix cells.
+    ///
+    /// An unresolvable profile is treated as requiring completeness (fail
+    /// closed).
+    #[must_use]
+    pub fn requires_complete_matrix(&self) -> bool {
+        self.qualification
+            .requires_complete_matrix(self)
+            .unwrap_or(true)
+    }
+
+    /// Requires a valid plan that is authorized to cross a publication boundary.
     ///
     /// Qualification snapshots deliberately use the ordinary build and signing
     /// pipeline, but remain local inputs to predecessor testing. They cannot be
-    /// staged, bootstrapped, qualified, promoted, or assigned to a channel.
+    /// published to any destination or assigned to a channel.
     ///
     /// # Errors
-    /// Returns an error for an archival plan, invalid shared contract, or
+    /// Returns an error for an invalid plan or shared contract, or a
     /// non-public qualification snapshot.
     pub fn require_publishable_qualification(&self) -> Result<()> {
-        self.require_current_qualification()?;
-        if self.is_qualification_snapshot() {
-            bail!("qualification snapshots cannot cross a Hub publication boundary");
-        }
-        Ok(())
-    }
-
-    /// Requires a current plan authorized to publish to the isolated staging Hub.
-    ///
-    /// # Errors
-    /// Returns an error for an archival plan, invalid contract, or private snapshot.
-    pub fn require_staging_publication(&self) -> Result<()> {
         self.validate()?;
-        if self.schema_version != crate::RELEASE_PLAN_V2
-            || self
-                .qualification
-                .as_ref()
-                .is_none_or(|contract| contract.schema_version != crate::qualification::CONTRACT_V2)
-            || self.is_qualification_snapshot()
-        {
-            bail!("staging publication requires a current public release plan");
+        if self.is_qualification_snapshot() {
+            bail!("qualification snapshots cannot cross a publication boundary");
         }
         Ok(())
     }
@@ -526,37 +479,14 @@ impl ReleasePlanV1 {
     ///
     /// # Errors
     ///
-    /// Returns an error for the wrong schema or registry, invalid versioning,
-    /// malformed source identity, duplicate or incomplete matrix entries,
-    /// stable blockers, malformed gates/signers/channels, or absent mandatory
-    /// signer roles.
+    /// Returns an error for the wrong schema or registry, a class that differs
+    /// from the version format, malformed source identity, duplicate or
+    /// incomplete matrix entries, blocked cells where completeness is required,
+    /// malformed gates/signers/channels/surfaces/destinations, or absent
+    /// mandatory signer roles.
     pub fn validate(&self) -> Result<()> {
-        if self.staging_only {
-            if self.registry != "andyl/testing"
-                || !self.intended_channels.is_empty()
-                || self.qualification_predecessor.is_some()
-            {
-                bail!(
-                    "staging-only publication requires andyl/testing with no channels or predecessor"
-                );
-            }
-            if self
-                .packages
-                .iter()
-                .flat_map(|package| &package.platforms)
-                .chain(self.images.iter().flat_map(|image| &image.platforms))
-                .any(|cell| matches!(cell.decision, MatrixCell::Blocked { .. }))
-            {
-                bail!("staging-only publication cannot omit blocked inventory cells");
-            }
-        }
-        if self.schema_version != RELEASE_PLAN_V1 && self.schema_version != crate::RELEASE_PLAN_V2 {
+        if self.schema_version != RELEASE_PLAN {
             bail!("unsupported release plan schema: {}", self.schema_version);
-        }
-        match (&self.qualification, self.schema_version.as_str()) {
-            (Some(contract), crate::RELEASE_PLAN_V2) => contract.validate_plan(self)?,
-            (None, RELEASE_PLAN_V1) => {}
-            _ => bail!("release plan version and qualification contract disagree"),
         }
         let registry_policy = registry_policy(&self.registry)?;
         require_identifier(&self.release_id, "release id")?;
@@ -565,11 +495,9 @@ impl ReleasePlanV1 {
         validate_source_git_oid(&self.source.commit)?;
         require_identifier(&self.source.protected_branch, "protected branch")?;
         require_identifier(&self.source.source_tag, "source tag")?;
-        require_identifier(&self.staging_deployment_id, "staging deployment id")?;
-        require_identifier(&self.production_deployment_id, "production deployment id")?;
-        if self.staging_deployment_id == self.production_deployment_id {
-            bail!("staging and production deployment identities must differ");
-        }
+        self.qualification.validate_plan(self)?;
+        // Matrix, image, and signer completeness follow the destination profiles.
+        let complete = self.requires_complete_matrix();
 
         if self.packages.is_empty() {
             bail!("release plan must classify at least one package");
@@ -604,7 +532,7 @@ impl ReleasePlanV1 {
             {
                 bail!("publishable package lacks distribution metadata");
             }
-            validate_cells(&package.platforms, false, self.release_class)?;
+            validate_cells(&package.platforms, false, complete)?;
         }
 
         require_unique_by(
@@ -614,32 +542,30 @@ impl ReleasePlanV1 {
         )?;
         for image in &self.images {
             require_identifier(&image.system_variant, "system variant")?;
-            validate_cells(&image.platforms, true, self.release_class)?;
+            validate_cells(&image.platforms, true, complete)?;
         }
-        if self.release_class.requires_complete_matrix() && self.images.is_empty() {
-            bail!("stable and emergency releases require the Linux image matrix");
-        }
-
-        if self.gates.is_empty() {
-            bail!("release plan must select at least one qualification gate");
-        }
-        require_unique_by(&self.gates, |gate| &gate.policy_id, "gate policy")?;
-        for gate in &self.gates {
-            require_identifier(&gate.policy_id, "gate policy id")?;
-        }
-        // Current contracts bind advisory claims explicitly and independently
-        // enforce the mandatory assurance floors in validate_plan.
-        if self.release_class.requires_complete_matrix()
-            && self.gates.iter().any(|gate| !gate.required_for_stable)
-            && !self.qualification.as_ref().is_some_and(|contract| {
-                contract.schema_version == crate::qualification::CONTRACT_V2
-            })
-        {
-            bail!("stable plans cannot select advisory-only release gates");
+        if complete && self.images.is_empty() {
+            bail!("complete-matrix releases require the Linux image matrix");
         }
 
+        self.validate_signers(complete)?;
+
+        let channels: Vec<String> = self
+            .destinations
+            .iter()
+            .map(|destination| destination.channel.clone())
+            .collect();
+        registry_policy.require_release(&channels)?;
+        require_identifier(&self.retention.policy_id, "retention policy id")?;
+        if !self.retention.require_corresponding_source {
+            bail!("canonical releases must retain corresponding source");
+        }
+        Ok(())
+    }
+
+    fn validate_signers(&self, complete: bool) -> Result<()> {
         let mut roles = BTreeSet::new();
-        let mut signer_key_roles = std::collections::BTreeMap::new();
+        let mut signer_key_roles = BTreeMap::new();
         for signer in &self.signers {
             signer.validate()?;
             if !roles.insert(signer.role) {
@@ -670,67 +596,36 @@ impl ReleasePlanV1 {
                 bail!("release plan lacks mandatory signer role {required:?}");
             }
         }
-        if !self.intended_channels.is_empty() && !roles.contains(&SignerRole::Channel) {
+        if !self.destinations.is_empty() && !roles.contains(&SignerRole::Channel) {
             bail!("planned channel operation requires a channel signer policy");
         }
-        if self.release_class.requires_complete_matrix() {
+        if self
+            .surfaces
+            .iter()
+            .any(|surface| surface.kind == SurfaceKind::Static)
+            && !roles.contains(&SignerRole::SurfaceReceipt)
+        {
+            bail!("static publication surfaces require a surface-receipt signer policy");
+        }
+        if complete {
             for required in [
                 SignerRole::SecureBootDb,
                 SignerRole::KernelModule,
                 SignerRole::PcrPolicy,
             ] {
                 if !roles.contains(&required) {
-                    bail!("stable plan lacks mandatory image signer role {required:?}");
+                    bail!("complete-matrix plan lacks mandatory image signer role {required:?}");
                 }
             }
-        }
-
-        require_unique_by(
-            &self.intended_channels,
-            |intent| &intent.channel,
-            "channel intent",
-        )?;
-        for intent in &self.intended_channels {
-            if !matches!(intent.channel.as_str(), "edge" | "candidate" | "stable") {
-                bail!("unknown release channel: {}", intent.channel);
-            }
-            if intent.first_partition > intent.last_partition || intent.last_partition > 255 {
-                bail!("channel partition range must be within 0..=255");
-            }
-            match self.release_class {
-                ReleaseClass::Edge if intent.channel != "edge" => {
-                    bail!("edge releases can target only the edge channel")
-                }
-                ReleaseClass::Candidate if intent.channel == "stable" => {
-                    bail!("candidate releases cannot target stable")
-                }
-                _ => {}
-            }
-        }
-        registry_policy.require_release(
-            self.release_class,
-            &self
-                .intended_channels
-                .iter()
-                .map(|intent| intent.channel.clone())
-                .collect::<Vec<_>>(),
-        )?;
-        require_identifier(&self.retention.policy_id, "retention policy id")?;
-        if !self.retention.require_corresponding_source {
-            bail!("canonical releases must retain corresponding source");
         }
         Ok(())
     }
 }
 
-fn is_false(value: &bool) -> bool {
-    !value
-}
-
 fn validate_cells(
     cells: &[PlatformCell<PlannedArtifactSet>],
     image: bool,
-    release_class: ReleaseClass,
+    complete: bool,
 ) -> Result<()> {
     if image {
         require_complete_image_platforms(cells.iter().map(|cell| &cell.platform))?;
@@ -748,33 +643,17 @@ fn validate_cells(
                 bail!("image artifacts cannot declare package configuration companions");
             }
         }
-        if release_class.requires_complete_matrix() && cell.decision.is_blocked() {
-            bail!("stable or emergency release contains a blocked matrix cell");
+        if complete && cell.decision.is_blocked() {
+            bail!("complete-matrix release contains a blocked matrix cell");
         }
     }
     Ok(())
 }
 
 fn validate_version(value: &str, release_class: ReleaseClass) -> Result<()> {
-    if value.starts_with('v') {
-        bail!("release version must not have a v prefix");
-    }
-    let version = Version::parse(value).context("parsing release version")?;
-    if version.major < 2026 || !(1..=12).contains(&version.minor) {
-        bail!("release version must use YYYY.M.P calendar components");
-    }
-    let prerelease = version.pre.as_str();
-    match release_class {
-        ReleaseClass::Edge if !prerelease.starts_with("dev.") => {
-            bail!("edge release version must use -dev.YYYYMMDD.N")
-        }
-        ReleaseClass::Candidate if !prerelease.starts_with("rc.") => {
-            bail!("candidate release version must use -rc.N")
-        }
-        ReleaseClass::Stable | ReleaseClass::Emergency if !prerelease.is_empty() => {
-            bail!("stable and emergency release versions cannot have prerelease components")
-        }
-        _ => {}
+    let derived = ReleaseClass::from_version(value)?;
+    if derived != release_class {
+        bail!("release class {release_class} differs from the {derived} version format: {value}");
     }
     Ok(())
 }

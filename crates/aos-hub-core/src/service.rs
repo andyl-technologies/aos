@@ -48,6 +48,8 @@ mod publication_manifest;
 mod registry_metadata;
 mod registry_policy;
 mod release_publication;
+#[cfg(test)]
+mod release_publication_tests;
 mod surface_topology;
 mod storage_authority;
 
@@ -2553,6 +2555,8 @@ pub struct RpcService {
     pub external_url: String,
     /// Explicit protected deployment identity; independent of direct readiness.
     pub deployment_id: Option<String>,
+    /// Cache-specific Nix public keys published in each registry's setup instructions.
+    pub(crate) registry_cache_public_keys: BTreeMap<String, Vec<String>>,
     /// Public base URL exposing the instance-default storage binding directly.
     ///
     /// When configured, public registries on a reconciled complete placement
@@ -10169,6 +10173,7 @@ impl RpcService {
             db,
             jwt_keys,
             external_url,
+            registry_cache_public_keys: BTreeMap::new(),
             default_public_delivery_url: None,
             container_rollout: crate::container_rollout::ContainerRollout::default(),
             ratelimit,
@@ -10190,6 +10195,33 @@ impl RpcService {
             release_evidence: None,
             pack_validation: pack_validation_gate(),
         }
+    }
+
+    /// Attaches the Nix cache public keys advertised for each registry.
+    ///
+    /// Registry SSH signing keys authenticate Git objects. Cache keys authenticate
+    /// NAR archives and use Nix's raw Ed25519 key format instead.
+    ///
+    /// # Errors
+    /// Returns an error if a cache key is unnamed, malformed, or noncanonical.
+    pub fn with_registry_cache_public_keys(
+        mut self,
+        keys: BTreeMap<String, Vec<String>>,
+    ) -> anyhow::Result<Self> {
+        for registry_keys in keys.values() {
+            for key in registry_keys {
+                let (name, encoded) = key
+                    .split_once(':')
+                    .context("Nix cache public key requires name:base64")?;
+                anyhow::ensure!(!name.is_empty(), "Nix cache public key name is empty");
+                let canonical =
+                    crate::nix_sign::nix_public_key_from_raw(name, encoded.trim_end_matches('='))?;
+                anyhow::ensure!(canonical == *key, "Nix cache public key is noncanonical");
+            }
+        }
+
+        self.registry_cache_public_keys = keys;
+        Ok(self)
     }
 
     /// Attaches the public origin for the instance-default storage binding.
@@ -26515,6 +26547,10 @@ impl RpcService {
                 )
                 .await
                 .map_err(RpcError::internal)?;
+            self.db
+                .refresh_registry_publication_delivery_manifests(&req.publication_id)
+                .await
+                .map_err(RpcError::internal)?;
             self.refresh_registry_index_after_publication(&registry, &req.publication_id)
                 .await;
             return self
@@ -26663,6 +26699,10 @@ impl RpcService {
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        self.db
+            .refresh_registry_publication_delivery_manifests(&req.publication_id)
+            .await
+            .map_err(RpcError::internal)?;
         self.lease.release(registry.id, &req.publication_id).await;
         self.refresh_registry_index_after_publication(&registry, &req.publication_id)
             .await;
@@ -37112,6 +37152,12 @@ mod cache_upload_tests {
     pub(super) async fn delivery_test_service() -> (RpcService, Arc<Database>) {
         let (service, database, _, _) = injected_service(vec![], vec![]).await;
         (service, database)
+    }
+
+    /// Builds a service and a bearer token holding instance-wide `publish`.
+    pub(super) async fn release_test_service() -> (RpcService, Arc<Database>, String) {
+        let (service, database, _, auth) = injected_service(vec![], vec![]).await;
+        (service, database, auth)
     }
 
     async fn injected_service_with_sealer(

@@ -538,6 +538,7 @@ mod direct_identity;
 mod direct_upload;
 pub use direct_upload::*;
 mod session_identity;
+mod publication_delivery;
 pub use delivery_workflow::*;
 mod egress_nonce;
 mod gc_topology;
@@ -619,6 +620,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("005-mirror-imports.sql"),
     include_str!("006-mirror-import-generations.sql"),
     include_str!("007-catalogue-lifetimes.sql"),
+    include_str!("release_channel_advances.sql"),
 ];
 
 // Shared by production initialization and trusted disposable schema compilation.
@@ -629,7 +631,25 @@ pub(crate) const SCHEMA_VERSION_DDL: &str =
 ///
 /// Historical development ledgers are incompatible even when their integer
 /// version happens to match a production migration.
-pub const SCHEMA_IDENTITY: &str = "aos-hub/production-baseline/1";
+pub const SCHEMA_IDENTITY: &str = "aos-hub/canonical-serving/8";
+
+/// Identifies genuine generation-three through generation-seven archives.
+///
+/// Historical verification preserves this identity; it grants no current
+/// serving eligibility and never selects an automatic live upgrade.
+pub const HISTORICAL_SCHEMA_IDENTITY: &str = "aos-hub/production-baseline/1";
+
+/// Returns the identity committed by a supported snapshot generation.
+///
+/// # Errors
+/// Returns an error for an unsupported generation.
+pub fn snapshot_schema_identity(generation: usize) -> Result<&'static str> {
+    match generation {
+        3..=7 => Ok(HISTORICAL_SCHEMA_IDENTITY),
+        8 => Ok(SCHEMA_IDENTITY),
+        _ => anyhow::bail!("unsupported snapshot schema generation"),
+    }
+}
 
 /// Returns every migration's individual SQL statements, in order.
 ///
@@ -3686,184 +3706,11 @@ impl Database {
     }
 
     async fn migrate(&self) -> Result<()> {
-        self.backend.execute(SCHEMA_VERSION_DDL, &[]).await?;
-        let mysql = self.dialect() == Dialect::Mysql;
-        if mysql {
-            // MySQL DDL can commit before the version marker. A keyed ledger
-            // coordinates replay and concurrent starters; id 1 avoids MySQL's
-            // generated-identity behavior for zero-valued primary keys.
-            self.backend
-                .execute(
-                    "CREATE TABLE IF NOT EXISTS hub_schema_version (
-                       id INTEGER PRIMARY KEY, version INTEGER NOT NULL)",
-                    &[],
-                )
-                .await?;
-            self.backend
-                .execute(
-                    "INSERT INTO hub_schema_version(id, version)
-                     VALUES (1, 0)
-                     ON CONFLICT(id) DO NOTHING",
-                    &[],
-                )
-                .await?;
-        }
-        let marker_query = if mysql {
-            "SELECT version, id FROM hub_schema_version"
-        } else {
-            "SELECT version FROM schema_version"
-        };
-        let rows = self.backend.query(marker_query, &[]).await?;
-        anyhow::ensure!(
-            rows.len() <= 1,
-            "Hub schema version ledger has duplicate rows"
-        );
-        let current = rows
-            .first()
-            .map(|row| row.get::<i64>(0))
-            .transpose()?
-            .unwrap_or(0);
-        let target = MIGRATIONS.len() as i64;
-        anyhow::ensure!(current >= 0, "Hub schema version cannot be negative");
-        if current > target {
-            bail!("hub database schema {current} is newer than this build supports ({target})");
-        }
-        if mysql {
-            anyhow::ensure!(
-                rows.len() == 1 && rows[0].get::<i64>(1)? == 1,
-                "Hub keyed schema version ledger is not a singleton"
-            );
-            let portable_rows = self
-                .backend
-                .query("SELECT version FROM schema_version", &[])
-                .await?;
-            anyhow::ensure!(
-                portable_rows.len() <= 1,
-                "Hub schema version ledger has duplicate rows"
-            );
-            anyhow::ensure!(
-                current == 0 || portable_rows.len() == 1,
-                "Hub portable schema version marker is missing"
-            );
-            if let Some(row) = portable_rows.first() {
-                anyhow::ensure!(
-                    row.get::<i64>(0)? == current,
-                    "Hub schema version ledgers disagree"
-                );
-            }
-        }
-        if current > 0 {
-            self.require_schema_identity().await?;
-        }
-
-        // Apply every pending migration *and* advance the version marker in one
-        // portable transaction. Keeping the marker in the same batch matters
-        // for Durable Objects: if an isolate is evicted after DDL commits but
-        // before a separate marker write, startup would replay a non-idempotent
-        // `ALTER TABLE` and permanently wedge the object.
-        if (current as usize) < MIGRATIONS.len() {
-            if mysql {
-                // MySQL implicitly commits DDL. Apply one replay-safe
-                // statement at a time, checking indexes through the catalog,
-                // then atomically advance the singleton ledger after each
-                // complete migration. A crash can repeat only idempotent work.
-                for (offset, migration) in MIGRATIONS[current as usize..].iter().enumerate() {
-                    let migration_version = current + offset as i64 + 1;
-                    for sql in crate::backend::split_statements(migration) {
-                        if let Some((table, index)) = mysql_migration_index_identity(&sql) {
-                            let exists = self
-                                .backend
-                                .query_opt(
-                                    "SELECT 1 FROM information_schema.statistics
-                                      WHERE table_schema = DATABASE()
-                                        AND table_name = ?1 AND index_name = ?2 LIMIT 1",
-                                    &vals![table, index],
-                                )
-                                .await?
-                                .is_some();
-                            if exists {
-                                continue;
-                            }
-                        }
-                        let replay_safe = mysql_replay_safe_migration_sql(&sql);
-                        if let Err(error) = self.backend.execute(&replay_safe, &[]).await {
-                            // Concurrent starters can both observe an absent
-                            // index. Treat the losing CREATE as success only
-                            // after the catalog proves the exact index exists.
-                            let concurrently_created = if let Some((table, index)) =
-                                mysql_migration_index_identity(&sql)
-                            {
-                                self.backend
-                                    .query_opt(
-                                        "SELECT 1 FROM information_schema.statistics
-                                          WHERE table_schema = DATABASE()
-                                            AND table_name = ?1 AND index_name = ?2 LIMIT 1",
-                                        &vals![table, index],
-                                    )
-                                    .await?
-                                    .is_some()
-                            } else {
-                                false
-                            };
-                            if !concurrently_created {
-                                return Err(error).with_context(|| {
-                                    format!("applying MySQL schema migration v{migration_version}")
-                                });
-                            }
-                        }
-                    }
-                    self.backend
-                        .batch(&[
-                            Statement::new(
-                                "UPDATE hub_schema_version SET version = ?1 WHERE id = 1",
-                                vals![migration_version],
-                            ),
-                            Statement::new("DELETE FROM schema_version", Vec::new()),
-                            Statement::new(
-                                "INSERT INTO schema_version (version) VALUES (?1)",
-                                vals![migration_version],
-                            ),
-                        ])
-                        .await?;
-                }
-            } else {
-                let mut pending = MIGRATIONS[current as usize..].join("\n");
-                pending.push_str("\nDELETE FROM schema_version;\n");
-                pending.push_str(&format!(
-                    "INSERT INTO schema_version (version) VALUES ({target});\n"
-                ));
-                let statements = crate::backend::split_statements(&pending)
-                    .into_iter()
-                    .map(|sql| Statement::new(sql, Vec::new()))
-                    .collect::<Vec<_>>();
-                self.backend
-                    .migration_batch(current, target, &statements)
-                    .await
-                    .with_context(|| format!("applying migrations v{}..=v{target}", current + 1))?;
-            }
-            self.require_schema_identity().await?;
-        }
+        // The driver admits lineage before even creating bookkeeping tables,
+        // under the same connection/lock used for the canonical forward writes.
+        self.backend.migrate_schema().await?;
         self.backfill_mirror_import_index().await?;
         self.backfill_binding_identity_reservations().await?;
-        Ok(())
-    }
-
-    /// Rejects databases from a different migration lineage before changing data.
-    async fn require_schema_identity(&self) -> Result<()> {
-        let rows = self
-            .backend
-            .query("SELECT identity FROM hub_schema_identity", &[])
-            .await
-            .context("database predates the first stable production baseline")?;
-        anyhow::ensure!(
-            rows.len() == 1,
-            "Hub schema identity ledger must contain exactly one row"
-        );
-        let identity: String = rows[0].get(0)?;
-        anyhow::ensure!(
-            identity == SCHEMA_IDENTITY,
-            "unsupported Hub schema identity '{identity}'; expected '{SCHEMA_IDENTITY}'"
-        );
         Ok(())
     }
 
@@ -4357,7 +4204,12 @@ impl Database {
                         catalog_artifacts
                             .push(("documentation", documentation.store_path.as_str()));
                     }
-                    for (artifact_kind, store_path) in catalog_artifacts {
+                    // Disk encodings can share metadata, and named outputs can
+                    // repeat the primary output. Project each role/path once.
+                    let distinct_artifacts = catalog_artifacts
+                        .into_iter()
+                        .collect::<std::collections::BTreeSet<_>>();
+                    for (artifact_kind, store_path) in distinct_artifacts {
                         let store_hash = store_hash_component(store_path);
                         let metadata_digest = hex::encode(sha2::Sha256::digest(
                             serde_json::to_vec(&serde_json::json!({
@@ -4384,6 +4236,8 @@ impl Database {
                 }
             }
         }
+        // The statements own each row's parameters. Do not retain a second
+        // complete copy while preparing later projections and remote SQL.
         extend_multirow_insert(
             &mut stmts,
             "INSERT INTO packages
@@ -4391,6 +4245,7 @@ impl Database {
             &package_rows,
             "",
         )?;
+        drop(package_rows);
 
         let mut documentation_rows = Vec::new();
         let mut documentation_search_rows = Vec::new();
@@ -4434,6 +4289,7 @@ impl Database {
             &documentation_rows,
             "",
         )?;
+        drop(documentation_rows);
         extend_multirow_insert(
             &mut stmts,
             "INSERT INTO package_documentation_search
@@ -4442,12 +4298,14 @@ impl Database {
             &documentation_search_rows,
             "",
         )?;
+        drop(documentation_search_rows);
         extend_multirow_insert(
             &mut stmts,
             "INSERT INTO package_versions (id, package_id, version, previous)",
             &version_rows,
             "",
         )?;
+        drop(version_rows);
         extend_multirow_insert(
             &mut stmts,
             "INSERT INTO version_platforms
@@ -4456,6 +4314,7 @@ impl Database {
             &platform_rows,
             "",
         )?;
+        drop(platform_rows);
         extend_multirow_insert(
             &mut stmts,
             "INSERT INTO registry_catalog_artifacts
@@ -4464,6 +4323,7 @@ impl Database {
             &catalog_rows,
             "",
         )?;
+        drop(catalog_rows);
 
         for release in &snapshot.releases {
             if let Some(existing) = self
@@ -27569,7 +27429,9 @@ source_nar_hash = ""
                         'etag', 'legacy', 1, 'confirmed_absent', 0, 1);",
             )
             .unwrap();
-        connection.execute_batch(MIGRATIONS[1]).unwrap();
+        connection
+            .execute_batch(include_str!("release_channel_advances.sql"))
+            .unwrap();
 
         let inventory_version: Option<String> = connection
             .query_row(
@@ -27594,8 +27456,8 @@ source_nar_hash = ""
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            6,
-            "production baseline plus retained R2, physical authority, direct-upload and mirror originals"
+            8,
+            "immutable migrations 001–007 plus the channel ledger"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection
@@ -27610,7 +27472,9 @@ source_nar_hash = ""
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(identity, SCHEMA_IDENTITY);
+        // Immutable scripts keep their historical marker. Only the checked
+        // serving initializer stamps the new identity after all eight settle.
+        assert_eq!(identity, HISTORICAL_SCHEMA_IDENTITY);
 
         let violations: i64 = connection
             .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {

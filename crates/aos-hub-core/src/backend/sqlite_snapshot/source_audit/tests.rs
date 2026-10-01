@@ -6,8 +6,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use tempfile::TempDir;
 
 use super::*;
-use crate::backend::SqlxBackend;
 use crate::backend::sqlite_snapshot::SqliteSnapshotLimits;
+use crate::backend::SqlxBackend;
 use crate::db::Database;
 
 async fn fixture() -> (TempDir, PathBuf, sqlx::SqlitePool) {
@@ -54,7 +54,7 @@ async fn audit_and_enumeration_share_the_original_snapshot() {
 
     assert_eq!(audit.table_counts().len(), reader.schema().tables.len());
     assert!(audit.progress_callbacks() > 0);
-    assert_eq!(audit.checked_expressions(), 679);
+    assert_eq!(audit.checked_expressions(), 683);
     for (count, table) in audit.table_counts().iter().zip(&reader.schema().tables) {
         assert_eq!(count.table, table.name);
     }

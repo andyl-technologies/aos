@@ -13,7 +13,23 @@ use serde::{Deserialize, Serialize};
 use crate::artifact::{BundlePath, require_identifier};
 use crate::digest::Sha256Digest;
 use crate::platform::Platform;
-use crate::registry::registry_policy;
+use crate::registry::{channel_kind, registry_policy};
+
+/// Payload kinds the static-surface receipt authority may sign.
+pub const SURFACE_RECEIPT_ARTIFACT_KINDS: [&str; 2] = ["publication-receipt", "channel-receipt"];
+
+/// Payload kinds the release-evidence authority may sign as raw receipt digests.
+///
+/// Qualification reviews, completion approvals, fitness attestations, and
+/// profile overrides are signed receipt envelopes whose signature covers the
+/// domain-separated envelope digest, so the provider must sign those digest
+/// bytes directly with [`SignatureAlgorithm::Ed25519Payload`].
+pub const RELEASE_EVIDENCE_ARTIFACT_KINDS: [&str; 4] = [
+    "qualification-review",
+    "completion-receipt",
+    "fitness-attestation",
+    "profile-override",
+];
 
 /// Signature domain for canonical release signing requests.
 pub const SIGNING_REQUEST_DOMAIN: &str = "aos.release.signing-request/v1";
@@ -54,6 +70,11 @@ pub enum SignerRole {
     Qualification,
     /// Signed channel-operation authority.
     Channel,
+    /// Static-surface publication and channel receipt authority.
+    ///
+    /// Hub surfaces sign receipts with the Hub's own receipt key and never use
+    /// this role.
+    SurfaceReceipt,
 }
 
 /// Supported signature mechanisms at the release-contract boundary.
@@ -202,7 +223,7 @@ impl SignerRequirement {
 /// Canonical, policy-bound request sent to an external signing adapter.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct SigningRequestV1 {
+pub struct SigningRequest {
     /// Exact request schema identifier.
     pub schema_version: String,
     /// Unique request id retained in the authenticated journal evidence.
@@ -235,7 +256,7 @@ pub struct SigningRequestV1 {
     pub approval_policy_digest: Sha256Digest,
 }
 
-impl SigningRequestV1 {
+impl SigningRequest {
     /// Validates the complete signer-facing policy boundary.
     ///
     /// # Errors
@@ -308,6 +329,25 @@ impl SigningRequestV1 {
                     SigningContext::Payload { artifact_kind }
                 ) if artifact_kind == "qualification-receipt-digest"
             )
+            // Static surfaces sign the domain-separated receipt digest bytes
+            // directly so the result is a verifiable signed receipt envelope.
+            && !matches!(
+                (&self.role, &self.context),
+                (
+                    SignerRole::SurfaceReceipt,
+                    SigningContext::Payload { artifact_kind }
+                ) if SURFACE_RECEIPT_ARTIFACT_KINDS.contains(&artifact_kind.as_str())
+            )
+            // Release evidence (reviews, approvals, attestations, overrides)
+            // uses the same signed receipt envelope, so it follows the same
+            // raw-digest pattern for its closed set of evidence kinds.
+            && !matches!(
+                (&self.role, &self.context),
+                (
+                    SignerRole::ReleaseEvidence,
+                    SigningContext::Payload { artifact_kind }
+                ) if RELEASE_EVIDENCE_ARTIFACT_KINDS.contains(&artifact_kind.as_str())
+            )
         {
             bail!("raw Ed25519 payload signing is not authorized for this role and context");
         }
@@ -356,7 +396,7 @@ impl SigningRequestV1 {
 /// Public result returned by an external signing adapter.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct SignatureResponseV1 {
+pub struct SignatureResponse {
     /// Exact response schema identifier.
     pub schema_version: String,
     /// Digest of the complete canonical signing request.
@@ -396,6 +436,13 @@ impl SigningContext {
                 }
                 if matches!(role, SignerRole::Cache) && artifact_kind != "narinfo-fingerprint" {
                     bail!("cache signing requires narinfo-fingerprint payloads");
+                }
+                if matches!(role, SignerRole::SurfaceReceipt)
+                    && !SURFACE_RECEIPT_ARTIFACT_KINDS.contains(&artifact_kind.as_str())
+                {
+                    bail!(
+                        "surface-receipt signing requires publication or channel receipt payloads"
+                    );
                 }
             }
             (
@@ -501,9 +548,7 @@ impl SigningContext {
                 },
                 SigningOperation::SignPayload,
             ) => {
-                if !matches!(channel.as_str(), "edge" | "candidate" | "stable") {
-                    bail!("unknown release channel");
-                }
+                channel_kind(channel)?;
                 if first_partition > last_partition || *last_partition > 255 {
                     bail!("channel partition range must be within 0..=255");
                 }
@@ -600,8 +645,8 @@ fn parse_public_key(encoded: &[u8]) -> Result<[u8; 32]> {
 /// Returns an error for any request-binding mismatch, wrong key, malformed
 /// base64, malformed signature, or invalid signature.
 pub fn verify_ed25519_response(
-    request: &SigningRequestV1,
-    response: &SignatureResponseV1,
+    request: &SigningRequest,
+    response: &SignatureResponse,
     trusted_key: &TrustedEd25519Key,
 ) -> Result<()> {
     verify_response_binding(request, response)?;
@@ -634,8 +679,8 @@ pub fn verify_ed25519_response(
 /// role, key, provider-revision, or algorithm mismatch, or missing public
 /// verification identity.
 pub fn verify_response_binding(
-    request: &SigningRequestV1,
-    response: &SignatureResponseV1,
+    request: &SigningRequest,
+    response: &SignatureResponse,
 ) -> Result<()> {
     if response.schema_version != "aos.release.signature-response/v1" {
         bail!("unsupported signature response schema");
@@ -667,8 +712,8 @@ pub fn verify_response_binding(
 mod tests {
     use super::*;
 
-    fn request() -> SigningRequestV1 {
-        SigningRequestV1 {
+    fn request() -> SigningRequest {
+        SigningRequest {
             schema_version: SIGNING_REQUEST_DOMAIN.to_owned(),
             request_id: "request-1".to_owned(),
             nonce: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
@@ -687,6 +732,53 @@ mod tests {
             payload_digest: Sha256Digest::of_bytes("payload"),
             approval_policy_digest: Sha256Digest::of_bytes("approval"),
         }
+    }
+
+    #[test]
+    fn surface_receipt_role_signs_only_receipt_payloads() {
+        let mut request = request();
+        request.role = SignerRole::SurfaceReceipt;
+        for kind in SURFACE_RECEIPT_ARTIFACT_KINDS {
+            request.context = SigningContext::Payload {
+                artifact_kind: kind.to_owned(),
+            };
+            assert!(request.validate().is_ok(), "{kind}");
+        }
+        request.context = SigningContext::Payload {
+            artifact_kind: "release-manifest".to_owned(),
+        };
+        assert!(request.validate().is_err());
+        request.context = SigningContext::Channel {
+            channel: "stable".to_owned(),
+            first_partition: 0,
+            last_partition: 3,
+            prior_generation: 0,
+        };
+        assert!(request.validate().is_err());
+        assert_eq!(
+            serde_json::to_string(&SignerRole::SurfaceReceipt).unwrap(),
+            "\"surface-receipt\""
+        );
+    }
+
+    #[test]
+    fn channel_context_accepts_per_train_channels_by_kind() {
+        let mut request = request();
+        request.role = SignerRole::Channel;
+        request.context = SigningContext::Channel {
+            channel: "stable-2026.3".to_owned(),
+            first_partition: 0,
+            last_partition: 3,
+            prior_generation: 0,
+        };
+        assert!(request.validate().is_ok());
+        request.context = SigningContext::Channel {
+            channel: "nightly".to_owned(),
+            first_partition: 0,
+            last_partition: 3,
+            prior_generation: 0,
+        };
+        assert!(request.validate().is_err());
     }
 
     #[test]
@@ -731,6 +823,68 @@ mod tests {
             artifact_kind: "qualification-receipt-digest".to_owned(),
         };
         assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn surface_receipt_role_signs_raw_receipt_digests() {
+        let mut request = request();
+        request.role = SignerRole::SurfaceReceipt;
+        request.algorithm = SignatureAlgorithm::Ed25519Payload;
+        for kind in SURFACE_RECEIPT_ARTIFACT_KINDS {
+            request.context = SigningContext::Payload {
+                artifact_kind: kind.to_owned(),
+            };
+            assert!(request.validate().is_ok(), "{kind}");
+        }
+
+        request.context = SigningContext::Payload {
+            artifact_kind: "qualification-receipt-digest".to_owned(),
+        };
+        assert!(request.validate().is_err());
+
+        request.role = SignerRole::Registry;
+        request.context = SigningContext::Payload {
+            artifact_kind: "publication-receipt".to_owned(),
+        };
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn release_evidence_role_signs_raw_evidence_digests() {
+        let mut request = request();
+        request.role = SignerRole::ReleaseEvidence;
+        request.algorithm = SignatureAlgorithm::Ed25519Payload;
+        for kind in RELEASE_EVIDENCE_ARTIFACT_KINDS {
+            request.context = SigningContext::Payload {
+                artifact_kind: kind.to_owned(),
+            };
+            assert!(request.validate().is_ok(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn raw_release_evidence_signing_rejects_other_kinds_and_roles() {
+        let mut request = request();
+        request.role = SignerRole::ReleaseEvidence;
+        request.algorithm = SignatureAlgorithm::Ed25519Payload;
+        for kind in ["release-manifest", "publication-receipt", "evidence"] {
+            request.context = SigningContext::Payload {
+                artifact_kind: kind.to_owned(),
+            };
+            assert!(request.validate().is_err(), "{kind}");
+        }
+
+        for role in [
+            SignerRole::Qualification,
+            SignerRole::SurfaceReceipt,
+            SignerRole::Registry,
+        ] {
+            request.role = role;
+            request.context = SigningContext::Payload {
+                artifact_kind: "qualification-review".to_owned(),
+            };
+            assert!(request.validate().is_err(), "{role:?}");
+        }
     }
 
     #[test]

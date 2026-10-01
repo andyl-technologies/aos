@@ -25,19 +25,6 @@ use futures_util::stream::{StreamExt as _, TryStreamExt as _};
 /// Bounds each part to the publication service's 8 MiB wire contract.
 const MAX_PUBLICATION_PART_BYTES: u64 = 8 * 1024 * 1024;
 
-#[cfg(test)]
-/// Inventories an offline fixture through the actual publication adapter.
-///
-/// # Errors
-///
-/// Returns an error for inadmissible paths, Git pointers, or NAR identities.
-pub(crate) fn inspect_publication_for_test(
-    root: &std::path::Path,
-    registry: &str,
-) -> Result<hub_types::BeginRegistryPublicationRequest> {
-    Ok(publication_from_root(root, registry)?.request)
-}
-
 /// Handles the hub publish command family through the public API.
 ///
 /// # Errors
@@ -829,4 +816,4 @@ fn publication_manifest_chunk_digest(
     ))
 }
 
-mod inventory;
+pub(crate) mod inventory;

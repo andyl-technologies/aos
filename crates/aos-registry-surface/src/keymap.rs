@@ -11,10 +11,13 @@ const MACHINE_DIRS: [&str; 9] = [
     "releases",
     "publication-receipts",
     "nar",
+    "tuf",
     "web",
     "browse",
-    "tuf",
 ];
+
+/// The only replaceable TUF object; every versioned metadata file is immutable.
+const TUF_TIMESTAMP_PATH: &str = "tuf/timestamp.json";
 
 /// Cache-control for content-addressed payloads.
 pub const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
@@ -44,13 +47,16 @@ pub fn cache_control(path: &str) -> &'static str {
             && !is_git_pack_index_path(path)
     } else if let Some(rest) = path.strip_prefix("web/") {
         rest != "config.json" && rest != "index.json" && !rest.starts_with("packages/")
+    } else if path.starts_with("tuf/") {
+        // Root, targets, delegated, and snapshot metadata are versioned by
+        // filename and never change; the timestamp pointer is renewed in place.
+        path != TUF_TIMESTAMP_PATH
     } else {
         (path.starts_with("releases/")
             && !is_release_object_info_path(path)
             && !is_git_pack_index_path(path))
             || path.starts_with("publication-receipts/")
             || path.starts_with("nar/")
-            || (path.starts_with("tuf/") && path != "tuf/timestamp.json")
             || is_image_object_path(path)
     };
     if immutable {
@@ -254,6 +260,7 @@ mod tests {
             "web/config.json",
             "web/index.json",
             "web/packages/aos.json",
+            "tuf/timestamp.json",
             "releases/1/0/0/objects/info/packs",
             "objects/ab/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             "objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx",
@@ -269,6 +276,10 @@ mod tests {
             "releases/1/0/0/objects/pack/pack-demo.pack",
             "objects/pack/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pack",
             "nar/aos.nar.zst",
+            "tuf/1.root.json",
+            "tuf/43.targets.json",
+            "tuf/19.stable.json",
+            "tuf/44.snapshot.json",
             "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aos.qcow2",
         ] {
             assert!(is_machine_path(path), "{path}");
@@ -279,17 +290,18 @@ mod tests {
     }
 
     #[test]
-    fn dumb_git_advertisement_uses_the_exact_fallback_media_type() {
-        assert_eq!(content_type("info/refs"), "text/plain");
-        assert_eq!(content_type("HEAD"), "text/plain; charset=utf-8");
+    fn tuf_metadata_is_machine_surface_with_one_mutable_pointer() {
+        assert!(is_machine_path("tuf"));
+        assert!(is_mutable_path("tuf/timestamp.json"));
+        assert!(!is_mutable_path("tuf/12.root.json"));
+        assert!(!is_mutable_path("tuf/timestamp.json.bak"));
+        assert_eq!(content_type("tuf/44.snapshot.json"), "application/json");
+        assert!(!is_machine_path("tufs/timestamp.json"));
     }
 
     #[test]
-    fn tuf_metadata_admits_immutable_versions_and_a_mutable_timestamp() {
-        assert!(is_machine_path("tuf/1.root.json"));
-        assert!(!is_mutable_path("tuf/1.root.json"));
-        assert!(is_machine_path("tuf/timestamp.json"));
-        assert!(is_mutable_path("tuf/timestamp.json"));
-        assert_eq!(content_type("tuf/timestamp.json"), "application/json");
+    fn dumb_git_advertisement_uses_the_exact_fallback_media_type() {
+        assert_eq!(content_type("info/refs"), "text/plain");
+        assert_eq!(content_type("HEAD"), "text/plain; charset=utf-8");
     }
 }

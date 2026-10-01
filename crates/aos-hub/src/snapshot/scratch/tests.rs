@@ -73,7 +73,7 @@ async fn valid_capture_enforces_child_before_parent_and_preserves_private_origin
     let fixture = fixture().await;
     let result = scratch(&fixture).await.unwrap();
     assert_eq!(result.records().counts(), &fixture.output.counts);
-    assert_eq!(result.checked_tables(), 268);
+    assert_eq!(result.checked_tables(), 269);
     assert_eq!(result.synthetic_lineage_rows(), 2);
     assert!(result.records().counts().private_cells >= 2);
     assert!(!format!("{result:?}").contains("private-credential"));
@@ -793,4 +793,31 @@ async fn generation7_private_delete_history_requires_exact_confirmation_and_perm
             .is_err()
     );
     pool.close().await;
+}
+
+// Captured and privately replayed by genuine generation-seven code before append008.
+fn historical_generation7_inputs() -> ScratchVerificationInputs<Cursor<Vec<u8>>, Cursor<Vec<u8>>> {
+    let signer = ArchiveSigningKey::from_seed("snapshot-operator", [1; 32]).unwrap();
+    ScratchVerificationInputs {
+        root: include_bytes!("fixtures/generation7-root.json").to_vec(),
+        trust: ArchiveSignerTrust::new([(signer.id().to_owned(), signer.public_key())]).unwrap(),
+        wrapping: ArchiveWrappingKeys::new(
+            ArchiveWrappingKey::from_bytes("metadata-wrap", [2; 32]).unwrap(),
+            ArchiveWrappingKey::from_bytes("private-wrap", [3; 32]).unwrap(),
+        )
+        .unwrap(),
+        exclusions: Vec::new(),
+        metadata: Cursor::new(include_bytes!("fixtures/generation7-metadata.enc").to_vec()),
+        private: Cursor::new(include_bytes!("fixtures/generation7-private.enc").to_vec()),
+    }
+}
+
+#[tokio::test]
+async fn genuine_generation7_uses_original_catalogue_without_channel_backfill() {
+    let inputs = historical_generation7_inputs();
+    let retained = verify_capture_in_scratch(inputs, Default::default(), Default::default())
+        .await
+        .unwrap();
+    assert_eq!(retained.checked_tables(), 268);
+    assert_eq!(retained.synthetic_lineage_rows(), 2);
 }

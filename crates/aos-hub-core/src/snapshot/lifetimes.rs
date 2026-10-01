@@ -3,7 +3,7 @@
 //! Row validation preserves exact accounting and reservation originals. It
 //! performs no backfill, deletion settlement or restored runtime activation.
 
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{ensure, Context as _, Result};
 
 use crate::db::{BindingIdentityReservation, SurfaceObjectUsageRecord};
 use crate::value::{FromValue, Row};

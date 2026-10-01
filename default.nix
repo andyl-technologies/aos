@@ -436,16 +436,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     identity = qualificationExecutorIdentity;
     reportRoot = "/run/aos-release/qualification-reports/${hostPlatform.system}";
   };
-  operatorRecoveryScenario = testing.mkQualificationReportScenario {
-    name = "aos-qualification-operator-recovery";
-    identity = qualificationExecutorIdentity;
-    reportPath = "/run/aos-release/qualification-reports/operator-recovery.json";
-  };
-  productionRecoveryScenario = testing.mkQualificationReportScenario {
-    name = "aos-qualification-production-recovery";
-    identity = qualificationExecutorIdentity;
-    reportPath = "/run/aos-release/qualification-reports/production-recovery.json";
-  };
   qualificationPackageScenario = testing.mkQualificationPackageScenario {
     name = "aos-qualification-${hostPlatform.system}-package-function";
     identity = qualificationExecutorIdentity;
@@ -545,13 +535,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     name = "aos-qualification-${hostPlatform.system}";
     platform = hostPlatform.system;
     identity = qualificationExecutorIdentity;
-    scenarios =
-      qualificationReportScenarios
-      // qualificationAutomatedScenarios
-      // lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
-        operator-recovery = "${operatorRecoveryScenario}/bin/aos-qualification-operator-recovery";
-        production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";
-      };
+    scenarios = qualificationReportScenarios // qualificationAutomatedScenarios;
     caseScenarios =
       k3sPackageScenarios
       // lib.optionalAttrs hostPlatform.isLinux {
@@ -619,6 +603,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   };
   selinuxBaseCheck = import ./lib/testing/selinux-base.nix {
     inherit pkgs mkSystem testing;
+  };
+  homesEnabledCheck = import ./lib/testing/homes.nix {
+    inherit lib pkgs mkSystem testing;
   };
 
   # Stdenv cross-cutting integration check
@@ -1842,6 +1829,7 @@ in {
         hub-native-operations = hubNativeOperationsTest;
         hub-settings = hubSettingsTest;
         apm-install-at-boot = apmInstallAtBootCheck;
+        homes-enabled = homesEnabledCheck;
         package-expose-lifecycle = packageExposeLifecycleCheck;
         package-preset = packagePresetCheck;
         package-test-http-server = packageTestHttpServerCheck;

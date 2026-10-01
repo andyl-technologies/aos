@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, bail};
 use aos_release::canonical;
 use aos_release::signing::{
-    SignatureAlgorithm, SignatureResponseV1, SignerRole, SigningContext, SigningOperation,
+    SignatureAlgorithm, SignatureResponse, SignerRole, SigningContext, SigningOperation,
     verify_response_binding,
 };
 use base64::Engine as _;
@@ -35,7 +35,7 @@ pub struct FinalizedRecoveryV1 {
     /// Rebuilt slot-B recovery initrd containing manifest and signature.
     pub initrd_b: PathBuf,
     /// Audited detached-signature provider response.
-    pub signing_operation: SignatureResponseV1,
+    pub signing_operation: SignatureResponse,
 }
 
 #[derive(Serialize)]

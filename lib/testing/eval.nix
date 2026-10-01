@@ -610,6 +610,47 @@
         "aos-provisioning-eval.service"
         system.config.boot.initrd.systemd.services.aos-repart.after)
     then throw "aos-repart.service must run after restricted provisioning evaluation"
+    else if !(builtins.hasAttr "aos-storage-topology" system.config.boot.initrd.systemd.services)
+    then throw "the stock system must emit aos-storage-topology.service"
+    else if
+      !(builtins.elem
+        "aos-repart.service"
+        system.config.boot.initrd.systemd.services."aos-storage-topology".requires)
+    then throw "array assembly must require the partition layer"
+    else if
+      !(builtins.elem
+        "aos-storage-topology.service"
+        system.config.boot.initrd.systemd.services."mount-var".requires)
+    then throw "the persistent /var mount must require array assembly"
+    else if
+      containsStr
+      "sfdisk --part-label"
+      system.config.boot.initrd.systemd.services.aos-repart.script
+    then throw "the provenance marker must commit after arrays and filesystems exist, not in aos-repart"
+    else if
+      !(containsStr
+        "aos-provenance-operator-v1"
+        system.config.boot.initrd.systemd.services."aos-storage-topology".script)
+    then throw "aos-storage-topology.service must commit the provenance marker"
+    else if
+      !(builtins.elem
+        "systemd-veritysetup@root.service"
+        system.config.boot.initrd.systemd.services."aos-storage-topology".before)
+    then throw "the marker relabel rescans the partition table, so dm-verity must open root-a only after aos-storage-topology"
+    else if
+      !(containsStr
+        "refusing to overwrite"
+        system.config.boot.initrd.systemd.services."aos-storage-topology".script)
+    then throw "array creation must refuse members that already carry a signature"
+    else if
+      !(builtins.any
+        (mount: mount.where == "/srv" && mount.what == "/var/srv")
+        system.config.systemd.mounts)
+    then throw "every host must bind the persistent /var/srv over the image's /srv mount point"
+    else if !(builtins.elem "raid1" system.config.aos.boot.initrd.modules)
+    then throw "the initrd must carry the MD RAID personalities"
+    else if !(builtins.elem "xfs" system.config.aos.boot.initrd.modules)
+    then throw "the initrd must carry xfs so a declared xfs volume can be created before switch-root"
     else "ok";
 
   # The edge release artifact is an authenticated capability
@@ -1390,6 +1431,80 @@
     else if bareMetalStorageSystem.config.system.build.installBundle == null
     then throw "ZFS-backed bare-metal systems must expose an installer bundle"
     else "ok";
+
+  # Persistent home directories (modules/base/homes.nix): /root is always
+  # bound from the state volume, /home only when enabled, and interactive
+  # accounts pick up managed homes without any per-user configuration.
+  homesEnabledSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.homes.enable = true;
+      aos.homes.skel.".bashrc".text = "export AOS_HOMES_SKEL=seeded\n";
+      aos.users.users.alice = {
+        uid = 1000;
+        group = "users";
+        shell = "/bin/bash";
+      };
+      aos.users.users.svc = {
+        uid = 900;
+        group = "users";
+      };
+    }
+  ];
+  homesDisabledUserSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.users.users.alice = {
+        uid = 1000;
+        group = "users";
+        shell = "/bin/bash";
+      };
+    }
+  ];
+  homesOutsideVarSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.homes.enable = true;
+      aos.homes.directory = "/srv/home";
+    }
+  ];
+  mountUnitFor = sys: where:
+    lib.findFirst (m: m.where == where) null sys.config.systemd.mounts;
+  homesTmpfiles = homesEnabledSystem.config.environment.etc."tmpfiles.d/aos-homes.conf".text;
+  persistentHomes = let
+    rootBind = mountUnitFor system "/root";
+    homeBind = mountUnitFor homesEnabledSystem "/home";
+    outsideVar = builtins.tryEval (homesOutsideVarSystem.config.system.build.toplevel.outPath);
+  in
+    if rootBind == null || rootBind.what != "/var/roothome" || rootBind.options != "bind,nosuid,nodev"
+    then throw "/root must always be bound nosuid,nodev from /var/roothome"
+    else if mountUnitFor system "/home" != null
+    then throw "/home must not be bound while aos.homes is disabled"
+    else if homeBind == null || homeBind.what != "/var/home" || homeBind.options != "bind,nosuid,nodev"
+    then throw "/home must be bound nosuid,nodev from aos.homes.directory when homes are enabled"
+    else if homesDisabledUserSystem.config.aos.users.users.alice.home != "/"
+    then throw "interactive accounts must keep the placeholder home while aos.homes is disabled"
+    else if homesDisabledUserSystem.config.aos.users.users.alice.createHome
+    then throw "no home may be created while aos.homes is disabled"
+    else if homesEnabledSystem.config.aos.users.users.alice.home != "/var/home/alice"
+    then throw "interactive accounts must default to a home under aos.homes.directory"
+    else if !homesEnabledSystem.config.aos.users.users.alice.createHome
+    then throw "managed homes must default to createHome"
+    else if homesEnabledSystem.config.aos.users.users.svc.home != "/"
+    then throw "system accounts must not receive a managed home"
+    else if !(containsStr "d  /var/home/alice  0700  alice  users  -  -" homesTmpfiles)
+    then throw "the homes tmpfiles policy must create each managed home with the account's ownership"
+    else if !(containsStr "C  /var/home/alice/.bashrc  0644  alice  users  -  /etc/skel/.bashrc" homesTmpfiles)
+    then throw "the homes tmpfiles policy must seed skeleton files once per managed home"
+    else if !(homesEnabledSystem.config.environment.etc ? "skel/.bashrc")
+    then throw "skeleton files must be rendered under /etc/skel"
+    else if !(containsStr "d  /root/.config/apm/registries.d" system.config.environment.etc."tmpfiles.d/aos-apm.conf".text)
+    then throw "the root apm authoring tree must be created by tmpfiles on the state volume"
+    else if outsideVar.success
+    then throw "aos.homes.directory outside /var must be rejected"
+    else if !(containsStr "pam_keyinit.so force revoke" serverRoleSystem.config.environment.etc."pam.d/sshd".text)
+    then throw "SSH logins must start a per-session kernel keyring"
+    else "root always, /home opt-in, keyring per login";
 in
   # Use a raw derivation with AOS bash so we don't pull in host tools. The
   # builtins.toJSON calls still force the system config at instantiation time;
@@ -1665,6 +1780,7 @@ in
         echo "verity LUKS gate: exact (${verityDisablesGenericLuks})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
         echo "server SSH:      waits for live host policy (${serverSshWaitsForLiveHostPolicy})"
+        echo "persistent homes: ${persistentHomes}"
         echo "activation recovery: routed sources (${activationRestoresRoutedSources})"
         echo "activation overlay: changed job scripts and removed image artifacts (${activationImageOverride}), structural replacements (${activationStructuralReplacement})"
         echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"

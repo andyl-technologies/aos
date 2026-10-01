@@ -1639,6 +1639,13 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkAccacheEnvironment;
       inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
+
+      # Downstream flakes build their own packages and development shells
+      # from this set. callPackage resolves a package file's arguments here
+      # exactly as auto-discovery does for AOS's own packages.
+      inherit callPackage;
+      inherit (lib) mkShell;
+
       inherit (cargoArtifactsSupport) mkCargoDummySource;
       inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;
       inherit bootstrapTools;

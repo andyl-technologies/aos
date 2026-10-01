@@ -179,6 +179,13 @@ impl<B: Backend> Backend for TimingBackend<B> {
         r
     }
 
+    async fn migrate_schema(&self) -> Result<()> {
+        let started = Instant::now();
+        let result = self.inner.migrate_schema().await;
+        self.timings.record("migrate_schema", "", started);
+        result
+    }
+
     async fn execute_insert(&self, sql: &str, params: &[Value]) -> Result<i64> {
         let started = Instant::now();
         let r = self.inner.execute_insert(sql, params).await;

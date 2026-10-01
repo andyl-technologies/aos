@@ -9,14 +9,14 @@ use crate::db::{
     SetRegistryPublicationPlacement,
 };
 use crate::mirror_guard::{
-    MirrorGuardExecution, MirrorGuardIssuer, MirrorGuardLookup, MirrorGuardReply,
-    sign_mirror_guard_reply, verify_mirror_guard_reply,
+    sign_mirror_guard_reply, verify_mirror_guard_reply, MirrorGuardExecution, MirrorGuardIssuer,
+    MirrorGuardLookup, MirrorGuardReply,
 };
 use crate::storage_work::StorageWorkKey;
 use crate::value::{Row, Value};
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
+    Arc,
 };
 
 use super::super::mirror_imports::tests::{original, progress as build_progress};
@@ -177,8 +177,8 @@ async fn accounting_contract(db: &Database) {
     )
     .await
     .unwrap();
-    assert!(
-        db.commit_mirror_import(
+    assert!(db
+        .commit_mirror_import(
             &original,
             &progress,
             &proof(&original, &progress, 101),
@@ -186,17 +186,15 @@ async fn accounting_contract(db: &Database) {
             101
         )
         .await
-        .is_err()
-    );
-    assert!(
-        db.surface_object_named(
+        .is_err());
+    assert!(db
+        .surface_object_named(
             SurfaceTarget::Registry(original.registry_id),
             &original.path
         )
         .await
         .unwrap()
-        .is_none()
-    );
+        .is_none());
     assert_eq!(db.org_usage(org).await.unwrap().used_bytes, 0);
     assert_eq!(
         db.mirror_import(&original.job_id)
@@ -246,11 +244,10 @@ async fn accounting_contract(db: &Database) {
     );
     let usage = db.org_usage(org).await.unwrap();
     assert_eq!((usage.used_bytes, usage.object_count), (11, 1));
-    assert!(
-        db.mirror_committed_catalogue_matches(&original, &progress)
-            .await
-            .unwrap()
-    );
+    assert!(db
+        .mirror_committed_catalogue_matches(&original, &progress)
+        .await
+        .unwrap());
 
     // Expired proof is sufficient only for an exact already-committed replay.
     let replay = db
@@ -273,11 +270,10 @@ async fn accounting_contract(db: &Database) {
         )
         .await
         .unwrap();
-    assert!(
-        !db.mirror_committed_catalogue_matches(&original, &progress)
-            .await
-            .unwrap()
-    );
+    assert!(!db
+        .mirror_committed_catalogue_matches(&original, &progress)
+        .await
+        .unwrap());
     db.retire_acknowledged_mirror_import(&original, &progress)
         .await
         .unwrap();
@@ -321,13 +317,12 @@ async fn long_original_is_retained_but_refuses_new_publication_before_mutation()
     original.job_id = original.identity().unwrap();
     let progress = build_progress(&original);
     retain(&db, &original, &progress, 100).await;
-    assert!(
-        db.validate_mirror_publication_dispatch(&original, &progress, None, 101)
-            .await
-            .is_err()
-    );
-    assert!(
-        db.commit_mirror_import(
+    assert!(db
+        .validate_mirror_publication_dispatch(&original, &progress, None, 101)
+        .await
+        .is_err());
+    assert!(db
+        .commit_mirror_import(
             &original,
             &progress,
             &proof(&original, &progress, 101),
@@ -335,8 +330,7 @@ async fn long_original_is_retained_but_refuses_new_publication_before_mutation()
             101
         )
         .await
-        .is_err()
-    );
+        .is_err());
     assert_eq!(
         db.mirror_import(&original.job_id)
             .await
@@ -385,13 +379,12 @@ async fn legacy_terminal_is_readable_but_cannot_attest_generation7_commit() {
             .publication_commit_version,
         None
     );
-    assert!(
-        !db.mirror_committed_catalogue_matches(&original, &progress)
-            .await
-            .unwrap()
-    );
-    assert!(
-        db.commit_mirror_import(
+    assert!(!db
+        .mirror_committed_catalogue_matches(&original, &progress)
+        .await
+        .unwrap());
+    assert!(db
+        .commit_mirror_import(
             &original,
             &progress,
             &proof(&original, &progress, 101),
@@ -399,8 +392,7 @@ async fn legacy_terminal_is_readable_but_cannot_attest_generation7_commit() {
             101
         )
         .await
-        .is_err()
-    );
+        .is_err());
 }
 
 async fn publication(db: &Database, original: &MirrorOriginal, pointer: &MirrorOriginal) {
@@ -484,11 +476,10 @@ async fn barrier_contract(db: &Database) {
         0,
         "manifest placeholders are uncharged"
     );
-    assert!(
-        db.validate_mirror_publication_dispatch(&pointer, &pointer_progress, id, 103)
-            .await
-            .is_err()
-    );
+    assert!(db
+        .validate_mirror_publication_dispatch(&pointer, &pointer_progress, id, 103)
+        .await
+        .is_err());
     db.validate_mirror_publication_dispatch(&original, &leaf_progress, id, 103)
         .await
         .unwrap();
@@ -501,16 +492,15 @@ async fn barrier_contract(db: &Database) {
     )
     .await
     .unwrap();
-    assert!(
-        db.advance_registry_publication(
+    assert!(db
+        .advance_registry_publication(
             "mirror-atomic-publication",
             "preparing",
             "writing_pointers",
             104
         )
         .await
-        .unwrap()
-    );
+        .unwrap());
     let placement = db
         .surface_placement(original.placement_id)
         .await
@@ -544,11 +534,10 @@ async fn barrier_contract(db: &Database) {
         )
         .await
         .unwrap();
-    assert!(
-        db.validate_mirror_publication_dispatch(&pointer, &pointer_progress, id, 104)
-            .await
-            .is_err()
-    );
+    assert!(db
+        .validate_mirror_publication_dispatch(&pointer, &pointer_progress, id, 104)
+        .await
+        .is_err());
     db.backend
         .execute(
             "UPDATE surface_objects SET content_hash=?2 WHERE id=?1",
@@ -566,13 +555,12 @@ async fn barrier_contract(db: &Database) {
         )
         .await
         .unwrap();
-    assert!(
-        db.validate_mirror_publication_dispatch(&pointer, &pointer_progress, id, 104)
-            .await
-            .is_err()
-    );
-    assert!(
-        db.commit_mirror_import(
+    assert!(db
+        .validate_mirror_publication_dispatch(&pointer, &pointer_progress, id, 104)
+        .await
+        .is_err());
+    assert!(db
+        .commit_mirror_import(
             &pointer,
             &pointer_progress,
             &proof(&pointer, &pointer_progress, 104),
@@ -580,20 +568,18 @@ async fn barrier_contract(db: &Database) {
             104
         )
         .await
-        .is_err()
-    );
+        .is_err());
     assert_eq!(db.org_usage(org).await.unwrap().used_bytes, 11);
     let pointer_object = db
         .surface_object_named(SurfaceTarget::Registry(original.registry_id), "HEAD")
         .await
         .unwrap()
         .unwrap();
-    assert!(
-        db.surface_object_usage(pointer_object.id)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(db
+        .surface_object_usage(pointer_object.id)
+        .await
+        .unwrap()
+        .is_none());
 
     db.backend
         .execute(
@@ -643,11 +629,10 @@ async fn barrier_contract(db: &Database) {
     next_progress.destination = None;
     retain(db, &next, &next_progress, 106).await;
     // Exact content in the former namespace is not a current required copy.
-    assert!(
-        db.validate_mirror_publication_dispatch(&next, &next_progress, id, 107)
-            .await
-            .is_err()
-    );
+    assert!(db
+        .validate_mirror_publication_dispatch(&next, &next_progress, id, 107)
+        .await
+        .is_err());
     assert_eq!(
         db.mirror_import(&next.job_id).await.unwrap().unwrap().state,
         "staged_verified"
@@ -681,6 +666,10 @@ impl Backend for PublicationBackend {
     fn dialect(&self) -> crate::dialect::Dialect {
         self.inner.dialect()
     }
+    async fn migrate_schema(&self) -> anyhow::Result<()> {
+        self.inner.migrate_schema().await
+    }
+
     async fn execute(&self, sql: &str, values: &[Value]) -> Result<u64> {
         self.inner.execute(sql, values).await
     }
@@ -743,8 +732,8 @@ async fn authority_change_after_reads_rolls_back_catalogue_accounting_and_termin
     let progress = build_progress(&original);
     retain(&db, &original, &progress, 100).await;
     armed.store(true, Ordering::SeqCst);
-    assert!(
-        db.commit_mirror_import(
+    assert!(db
+        .commit_mirror_import(
             &original,
             &progress,
             &proof(&original, &progress, 101),
@@ -752,18 +741,16 @@ async fn authority_change_after_reads_rolls_back_catalogue_accounting_and_termin
             101
         )
         .await
-        .is_err()
-    );
+        .is_err());
     assert_eq!(db.org_usage(org).await.unwrap().used_bytes, 0);
-    assert!(
-        db.surface_object_named(
+    assert!(db
+        .surface_object_named(
             SurfaceTarget::Registry(original.registry_id),
             &original.path
         )
         .await
         .unwrap()
-        .is_none()
-    );
+        .is_none());
     assert_eq!(
         db.mirror_import(&original.job_id)
             .await
@@ -874,11 +861,10 @@ async fn postgres_binding_revocation_waits_for_the_actual_publication_transactio
     );
     assert_eq!(revoke.await.unwrap().unwrap().rows_affected(), 1);
     assert_eq!(db.org_usage(org).await.unwrap().used_bytes, 11);
-    assert!(
-        !db.mirror_committed_catalogue_matches(&original, &progress)
-            .await
-            .unwrap()
-    );
+    assert!(!db
+        .mirror_committed_catalogue_matches(&original, &progress)
+        .await
+        .unwrap());
     drop(barrier);
     pool.close().await;
 }
@@ -951,15 +937,14 @@ async fn guard_deadline_cancels_delayed_sql_without_ack_or_fabricated_settlement
     assert_eq!(retained.state, "published");
     assert_eq!(retained.publication_commit_version, None);
     assert_eq!(db.org_usage(org).await.unwrap().used_bytes, 0);
-    assert!(
-        db.surface_object_named(
+    assert!(db
+        .surface_object_named(
             SurfaceTarget::Registry(original.registry_id),
             &original.path
         )
         .await
         .unwrap()
-        .is_none()
-    );
+        .is_none());
 }
 
 async fn refund_contract(db: &Database) {
@@ -994,11 +979,10 @@ async fn refund_contract(db: &Database) {
         )
         .await
         .unwrap();
-    assert!(
-        db.mirror_usage_retirement_statements(original.registry_id, Some(org), now)
-            .await
-            .is_err()
-    );
+    assert!(db
+        .mirror_usage_retirement_statements(original.registry_id, Some(org), now)
+        .await
+        .is_err());
     assert!(db.surface_object_usage(object.id).await.unwrap().is_some());
     db.backend
         .execute(
@@ -1011,12 +995,11 @@ async fn refund_contract(db: &Database) {
     // The existing helper executes the real purge/empty inventory and registry
     // deletion API, including its complete restrictive FK graph.
     super::super::mirror_imports::tests::delete_after_existing_gc_fences(db, &original).await;
-    assert!(
-        db.registry_by_id(original.registry_id)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(db
+        .registry_by_id(original.registry_id)
+        .await
+        .unwrap()
+        .is_none());
     assert!(db.surface_object_usage(object.id).await.unwrap().is_none());
     let usage = db.org_usage(org).await.unwrap();
     assert_eq!((usage.used_bytes, usage.object_count), (0, 0));
@@ -1092,11 +1075,10 @@ async fn pointer_manifest(
     )
     .await
     .unwrap();
-    assert!(
-        db.advance_registry_publication(id, "preparing", "writing_pointers", now)
-            .await
-            .unwrap()
-    );
+    assert!(db
+        .advance_registry_publication(id, "preparing", "writing_pointers", now)
+        .await
+        .unwrap());
     let placement = db
         .surface_placement(original.placement_id)
         .await
@@ -1183,8 +1165,8 @@ async fn resize_contract(db: &Database) {
     )
     .await
     .unwrap();
-    assert!(
-        db.commit_mirror_import(
+    assert!(db
+        .commit_mirror_import(
             &next,
             &resized,
             &proof(&next, &resized, 108),
@@ -1192,8 +1174,7 @@ async fn resize_contract(db: &Database) {
             108
         )
         .await
-        .is_err()
-    );
+        .is_err());
     assert_eq!(db.org_usage(org).await.unwrap().used_bytes, 11);
     let object = db
         .surface_object_named(SurfaceTarget::Registry(next.registry_id), "HEAD")

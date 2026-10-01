@@ -2,9 +2,10 @@
 
 This runbook owns every routine operation for the experimental hosted registry.
 The registry is public but uses experimental build and release infrastructure
-and may be rebuilt from scratch. It supports `edge`, `candidate`, and `stable`;
-these classify software maturity, not pipeline provenance. The default is `edge`.
-Its signing material remains separate from `andyl/main`.
+and may be rebuilt from scratch. It carries the `edge` channel only: each
+release is published to `staging/edge` and then to `production/edge` under the
+`smoke` profile. Candidate and stable streams belong to `andyl/main`. Its
+signing material remains separate from `andyl/main`.
 
 `andyl/testing` does not use an HSM. Its release signer is the
 [file-backed adapter](canonical-releases.md#file-backed-signer-for-registries-without-an-hsm)
@@ -13,8 +14,9 @@ reading operator-held key files. The intended key management for
 
 The testing TUF root keeps a separate key for each of the root, targets,
 stable, candidate, edge, snapshot, and timestamp roles. Each role uses a
-one-of-one threshold in this experimental registry. The stronger multi-key
-thresholds remain mandatory for `andyl/main`.
+one-of-one threshold in this experimental registry. Because testing plans only
+edge versions, the stable and candidate delegated roles sign no release. The
+stronger multi-key thresholds remain mandatory for `andyl/main`.
 
 The [public key inventory](registry-testing-public-keys.json) records separate
 testing and production Hub receipt authorities. A prepared key is not an
@@ -49,19 +51,22 @@ manifests, private requests, and conditional requests continue through the Hub.
    `origin/master` commit.
 2. Complete the contributor-authorization check in
    [`contributor-licensing.md`](contributor-licensing.md).
-3. Deploy and validate that exact Hub build in staging and production using
-   [`aos-hub-deployment.md`](aos-hub-deployment.md). An empty testing-only Hub
-   reset may use that runbook's direct-production setup procedure; it does not
-   substitute for the staging evidence required by release publication.
+3. For each Hub surface, deploy and validate that exact Hub build in staging
+   and production using [`aos-hub-deployment.md`](aos-hub-deployment.md). An
+   empty testing-only Hub reset may use that runbook's direct-production setup
+   procedure; it does not substitute for the staging publication required by
+   `production/edge`. A [static surface](canonical-releases.md#static-surfaces)
+   needs only its origin, read-back route, and `.aos-surface` identity.
 4. Take and verify the backup set in
    [`aos-hub-backup-recovery.md`](aos-hub-backup-recovery.md), unless this is an
    explicitly approved empty rebuild.
 5. Load only testing credentials. Main-registry signing keys and production Hub
    tokens must not be present during testing authoring or staging.
 
-Record the source commit, Hub deployment identities, registry base commit and
+Record the source commit, surface identities, registry base commit and
 generation, testing root epoch, operator, UTC start time, and intended release
-version in the operation log.
+version in the operation log. Testing destinations require no fitness
+attestations; the maintainer machine's weekly checks still run.
 
 ## Inspect live state
 
@@ -127,7 +132,7 @@ apr create andyl-testing \
 The Hub slug and signed release identity are `andyl/testing`; the clone name and
 trust-line prefix are `andyl-testing`. Generate threshold-signed bootstrap
 intents for the exact staging and production deployment identities and run
-`aos release bootstrap` once per environment as documented in
+`aos release step bootstrap` once per surface as documented in
 [`canonical-releases.md`](canonical-releases.md). Bootstrap refuses a destination
 that already contains a publication.
 
@@ -163,14 +168,14 @@ aos hub registry show \
 Bootstrap and qualify the empty base in staging. Only then repeat the topology
 plan/apply/show and bootstrap against `https://aos.andyl.org`, using the
 production access profile, deployment identity, plan, and idempotency key. The
-topology row and `aos release bootstrap` publication are separate: create and
+topology row and `aos release step bootstrap` publication are separate: create and
 inspect the row first, then install the independently approved empty base.
 
 ## Prepare the image signing authorities
 
 The `aos-testing` variant is a canonical release image: `aos.image` emits only
 `system.build.unsignedImageAssembly` and every signature is applied later by
-`aos release finalize-image` through the registry's signer adapter. Four public
+`aos release step finalize-image` through the registry's signer adapter. Four public
 trust inputs are therefore committed, and their private halves are prepared once
 and held in operator custody with the registry and TUF keys.
 
@@ -189,7 +194,7 @@ blobs and never participate in a release, so they stay offline after generation.
 
 Regenerating the `.auth` blobs from the same certificates reproduces identical
 bytes: both the owner GUID and the signing timestamp are fixed. Do not mint a
-different key under an already-published identity — that is a trust-root epoch
+different key under an already-published identity: that is a trust-root epoch
 reset, not a key rotation.
 
 The file-backed adapter reads all of these from one configuration; see the
@@ -224,8 +229,9 @@ The other three are operator inputs, digested from whatever bytes the file
 holds, so a document that lives outside the repository makes its digest
 unreproducible for anyone auditing the release.
 
-Both public documents are therefore committed, and a release names them by
-path:
+Both public documents are therefore committed, and the testing maintainer
+configuration names them by path in `contributor_authorization` and
+`retention_policy`:
 
 | Digest | Document |
 | --- | --- |
@@ -239,24 +245,36 @@ reproducible derivation.
 
 Plan the snapshot while the `.0` revision is still the head of `master`.
 Planning derives its source identity from the checked-out commit and refuses
-one that is merely an ancestor: `aos release plan` requires `HEAD` to equal the
-protected branch head for every class except `emergency`, and accepts no
-protected branch other than `master`. Merging the `.0` and `.1` revisions
-together therefore leaves no revision from which the snapshot can be planned,
-and recovering means putting `.0` back at the head of `master` before trying
-again. Land `.0`, plan and build the snapshot, and only then land `.1`. Do not upload the `.0` snapshot or use its isolated registry
-commit as the public registry base. The `.1` request names the snapshot's
-verified release id and manifest digest while retaining the approved empty Hub
-base commit and generation.
+one that is merely an ancestor: `aos release step plan` requires `HEAD` to
+equal the protected branch head, and accepts no protected branch other than
+`master`. The hotfix-branch exception applies only to main plans that carry a
+profile override. Merging the `.0` and `.1` revisions together therefore
+leaves no revision from which the snapshot can be planned, and recovering means
+putting `.0` back at the head of `master` before trying again. Land `.0`, plan
+and build the snapshot, and only then land `.1`. Do not upload the `.0`
+snapshot or use its isolated registry commit as the public registry base. The
+`.1` plan names the snapshot's verified release id and manifest digest while
+retaining the approved empty base commit and generation.
 
-The public plan request must use the exact prepared version and contain:
+Set the testing configuration's `predecessor_bundle` to the retained
+snapshot, write the reviewed Linux image decisions to `images.json`, then
+freeze the public plan with the exact prepared version:
 
-- `registry: "andyl/testing"` (or the active epoch identity);
-- a release class matching the software version (`edge` for this example);
-- intended channels matching the software class (`edge` for this example);
-- the exact current testing registry base commit and generation;
-- the staging and production deployment identities already verified above;
-- complete package and image decisions and all required signer roles.
+```sh
+aos release new --registry andyl/testing --version 2026.9.0-dev.20260917.1 --images images.json
+```
+
+Check the printed summary: registry `andyl/testing` (or the active epoch
+identity), the edge version, destinations `staging/edge` (`build`) and
+`production/edge` (`smoke`), the exact current testing registry base commit and
+generation, the surface identities verified above, the change scope, and
+complete package and image decisions with all required signer roles. Then
+publish with:
+
+```sh
+aos release advance --to staging/edge
+aos release advance --to production/edge
+```
 
 Follow the [release checklist](release-checklist.md), using
 [`canonical-releases.md`](canonical-releases.md) for command arguments.
@@ -295,18 +313,21 @@ aos container publish aos "$TESTING_OCI_REFERENCE" \
   --stage-only
 ```
 
-Include those exact `container-release.json` and `signature-input.json` paths in
-both `aos release prepare-registry` and `aos release finalize-registry`. The
-generated transaction's reviewed catalog digest includes the sidecar, and
-finalization verifies its exact bytes again. After the signed registry release
-is promoted and the Hub has indexed it, rerun the same `aos container publish`
-command without `--stage-only`, add the production Hub credentials, and use a
-new stable idempotency key. Record the returned verified root and tag resource
-version. Do not use a generic OCI push for the release tag.
+Place those exact `container-release.json` and `signature-input.json` files
+where `aos release advance` asks for the OCI sidecar; it passes them to both
+`step prepare-registry` and `step finalize-registry`. The generated
+transaction's reviewed catalog digest includes the sidecar, and finalization
+verifies its exact bytes again. After the signed registry release is published
+to `production/edge` and the production Hub has indexed it, rerun the same
+`aos container publish` command without `--stage-only`, add the production Hub
+credentials, and use a new stable idempotency key. Record the returned
+verified root and tag resource version. Do not use a generic OCI push for the
+release tag.
 
-Do not omit staging qualification even though testing data is disposable. Each
-command consumes the prior phase's exact evidence, refuses replacement outputs,
-and binds `andyl/testing` into the signed values. Preserve the closed release
+Do not skip the staging destination even though testing data is disposable:
+`production/edge` accepts only smoke evidence collected against the staging
+publication. Each step consumes the prior phase's exact evidence, refuses
+replacement outputs, and binds `andyl/testing` into the signed values. Preserve the closed release
 bundle, plan request, plan, journal, receipts, TUF set, source checkout identity,
 and signer audit records.
 
@@ -475,7 +496,7 @@ storage-retention procedure.
 
 ## Audit, rollback, and retirement
 
-Use `aos release verify` with independently supplied public keys for every
+Use `aos release step verify` with independently supplied public keys for every
 retained release bundle. Compare the public deployment probe, registry release,
 channel partitions, timestamp, and object digests to the operation log. A bad
 edge release is fixed forward with a new immutable release; channel rollback is

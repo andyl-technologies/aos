@@ -320,6 +320,7 @@ fn configure_pure_eval_command(
     let store = std::env::var_os("AOS_NIX_EVAL_STORE");
 
     command.env_clear();
+    command.envs(aos_core::nix::aos_management_nix_env());
     if let Some(store) = store {
         command.arg("--store").arg(store);
     }
@@ -599,6 +600,7 @@ fn configure_realise_command(
     nix_cache_dir: &Path,
     verbose: u8,
 ) {
+    command.envs(aos_core::nix::aos_management_nix_env());
     command.env("XDG_CACHE_HOME", nix_cache_dir);
     command.arg("--realise").arg(store_path);
     if !substituters.is_empty() {

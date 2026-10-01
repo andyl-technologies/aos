@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn worker_sql_accepts_production_baseline_and_forward_migrations() {
-        assert_eq!(MIGRATIONS.len(), 7);
+        assert_eq!(MIGRATIONS.len(), 8);
         for statement in MIGRATIONS
             .iter()
             .flat_map(|migration| split_statements(migration))

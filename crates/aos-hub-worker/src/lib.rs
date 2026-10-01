@@ -62,8 +62,9 @@
 //! The outer `fetch` handler assigns public requests to deterministic control,
 //! tenant, registry, or cache execution objects. Those objects bridge to the
 //! shared router and make only short, seal-gated SQL calls to `HubDb`; they do
-//! not copy relational state. Internal and administrative endpoints remain
-//! pinned to `HubDb`. The schema is migrated there on first use (no external
+//! not copy relational state. SQL and administrative endpoints remain
+//! pinned to `HubDb`; the seal-gated job endpoint uses the same outer execution
+//! path as queue deliveries. The schema is migrated there on first use (no external
 //! init step), and the root admin is bootstrapped over a seal-gated endpoint.
 //! Cron and queue handlers run outside the database object and likewise keep
 //! provider or network I/O outside its serialized request turn. See `README.md`
@@ -135,6 +136,8 @@ mod bridge_dispatch;
 
 #[cfg(target_arch = "wasm32")]
 mod authority_issuer_storage;
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) mod binding_custody;
 #[cfg(target_arch = "wasm32")]
 pub mod bridge;
 #[cfg(target_arch = "wasm32")]
@@ -144,11 +147,9 @@ pub mod coordinatorobj;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod direct_digest;
 #[cfg(any(test, target_arch = "wasm32"))]
-mod direct_upload;
-#[cfg(any(test, target_arch = "wasm32"))]
 mod direct_guard;
 #[cfg(any(test, target_arch = "wasm32"))]
-pub(crate) mod binding_custody;
+mod direct_upload;
 #[cfg(target_arch = "wasm32")]
 pub use direct_upload::HybridDirectUpload;
 #[cfg(all(target_arch = "wasm32", feature = "do-e2e"))]
@@ -169,8 +170,6 @@ mod digest;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod documentation_projection;
 
-#[cfg(any(target_arch = "wasm32", test))]
-mod tree_projection;
 #[cfg(target_arch = "wasm32")]
 pub mod hybrid_authority;
 #[cfg(target_arch = "wasm32")]
@@ -189,12 +188,14 @@ pub mod hybrid_object;
 mod hybrid_object_state;
 #[cfg(target_arch = "wasm32")]
 pub mod indexer;
+#[cfg(any(target_arch = "wasm32", test))]
+mod tree_projection;
 // Pure (no `worker`/wasm dependency) DO-SQLite placeholder translation, so it
 // is unit-tested on the native target too — see [`placeholder`].
+mod hybrid_front;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod pitr;
 pub mod placeholder;
-mod hybrid_front;
 mod private_namespace;
 mod mirror_import;
 pub(crate) mod r2_adapter;
@@ -235,9 +236,9 @@ fn registry_index_build_id(
     use sha2::{Digest as _, Sha256};
 
     let mut digest = Sha256::new();
-    // Version 3 rebuilds the release catalog and lazy documentation tree on
-    // existing installations, even when their signed publication is unchanged.
-    digest.update(b"aos-registry-index-build-v3\0");
+    // Version 4 retries generations previously marked unchanged while an
+    // active publication or unreadable surface actually deferred indexing.
+    digest.update(b"aos-registry-index-build-v4\0");
     digest.update(registry_id.to_be_bytes());
     digest.update(registry_resource_version.to_be_bytes());
     digest.update(placement_id.to_be_bytes());
@@ -249,6 +250,18 @@ fn registry_index_build_id(
         None => digest.update([0]),
     }
     hex::encode(digest.finalize())
+}
+
+/// Keeps deferred index runs retryable instead of recording a completed no-op.
+#[cfg(any(test, target_arch = "wasm32"))]
+fn completed_index_outcome(
+    outcome: aos_hub_core::indexer::IndexOutcome,
+) -> anyhow::Result<aos_hub_core::indexer::IndexOutcome> {
+    anyhow::ensure!(
+        !outcome.pending,
+        "registry index is deferred until publication and surface reads are ready"
+    );
+    Ok(outcome)
 }
 
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -315,9 +328,42 @@ impl RequestShardingMode {
 #[cfg(test)]
 mod index_build_identity_tests {
     use super::{
-        oci_inventory_follow_up, parse_oci_capability, registry_index_build_id,
-        scheduled_maintenance_jobs, RequestShardingMode,
+        completed_index_outcome, oci_inventory_follow_up, parse_oci_capability,
+        registry_index_build_id, scheduled_maintenance_jobs, RequestShardingMode,
     };
+
+    #[test]
+    fn pending_index_runs_are_retryable_but_empty_indexes_can_finish() {
+        let outcome = |pending| aos_hub_core::indexer::IndexOutcome {
+            commit: String::new(),
+            packages: 0,
+            releases: 0,
+            channels: 0,
+            incremental: false,
+            pending,
+        };
+
+        assert!(completed_index_outcome(outcome(true)).is_err());
+        assert!(completed_index_outcome(outcome(false)).is_ok());
+    }
+
+    #[test]
+    fn deferred_index_upgrade_does_not_reuse_finished_v3_builds() {
+        use sha2::{Digest as _, Sha256};
+
+        let mut old = Sha256::new();
+        old.update(b"aos-registry-index-build-v3\0");
+        old.update(7_i64.to_be_bytes());
+        old.update(3_i64.to_be_bytes());
+        old.update(11_i64.to_be_bytes());
+        old.update([1]);
+        old.update(b"publication-a");
+
+        assert_ne!(
+            registry_index_build_id(7, 3, Some("publication-a"), 11),
+            hex::encode(old.finalize())
+        );
+    }
 
     #[test]
     fn identity_coalesces_duplicates_and_tracks_every_input_version() {
@@ -823,8 +869,14 @@ mod entry {
             None,
         )
         .with_container_rollout(container_rollout(env)?)
-        .with_deployment_id(env.var(HUB_DEPLOYMENT_ID).ok().map(|value| value.to_string()))
-        .map_err(|_| worker::Error::RustError("configured deployment identity is invalid".into()))?;
+        .with_deployment_id(
+            env.var(HUB_DEPLOYMENT_ID)
+                .ok()
+                .map(|value| value.to_string()),
+        )
+        .map_err(|_| {
+            worker::Error::RustError("configured deployment identity is invalid".into())
+        })?;
 
         let service = Arc::new(service);
         let egress = worker_egress(env)?;
@@ -1187,8 +1239,25 @@ mod entry {
             env.kv(crate::handlers::bindings::KV_SESSIONS)?,
         )));
         service = service
-            .with_deployment_id(env.var(HUB_DEPLOYMENT_ID).ok().map(|value| value.to_string()))
-            .map_err(|_| worker::Error::RustError("configured deployment identity is invalid".into()))?;
+            .with_deployment_id(
+                env.var(HUB_DEPLOYMENT_ID)
+                    .ok()
+                    .map(|value| value.to_string()),
+            )
+            .map_err(|_| {
+                worker::Error::RustError("configured deployment identity is invalid".into())
+            })?;
+        if let Ok(keys) = env.var("HUB_REGISTRY_CACHE_PUBLIC_KEYS") {
+            service = service
+                .with_registry_cache_public_keys(serde_json::from_str(&keys.to_string()).map_err(
+                    |error| {
+                        worker::Error::RustError(format!("registry cache public keys: {error}"))
+                    },
+                )?)
+                .map_err(|error| {
+                    worker::Error::RustError(format!("registry cache public keys: {error:#}"))
+                })?;
+        }
         if let Some(authority) = release_evidence {
             service = service.with_release_evidence(authority);
         }
@@ -1238,7 +1307,7 @@ mod entry {
     /// no unauthenticated init path. A handler error is logged and returned as a
     /// `500` so a binding/back-end failure never panics the isolate.
     #[worker::event(fetch, respond_with_errors)]
-    async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
+    async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         // Route the shared core's `tracing` events to the console so handler
         // errors land in Workers Logs (idempotent; see `crate::tracinglog`).
         crate::tracinglog::init();
@@ -1284,6 +1353,28 @@ mod entry {
                 return Response::error("hybrid origin deployment mismatch", 503);
             }
             return Ok(response);
+        }
+
+        // Manual jobs must have the same isolation as queue deliveries. R2
+        // reads and hashing must not occupy the authoritative database turn.
+        if req.method() == Method::Post && req.url()?.path() == "/_internal/job" {
+            let expected_seal = env
+                .secret(HUB_SEAL_KEY)
+                .map(|secret| secret.to_string())
+                .unwrap_or_default();
+            let supplied_seal = req.headers().get("x-hub-seal")?.unwrap_or_default();
+            if expected_seal.is_empty() || supplied_seal != expected_seal {
+                return Response::error("forbidden", 403);
+            }
+
+            let envelope: aos_hub_core::jobs::JobEnvelope = match req.json().await {
+                Ok(envelope) => envelope,
+                Err(error) => return Response::error(format!("job decode: {error}"), 400),
+            };
+            return match run_job_envelope(&envelope, None, &env).await {
+                Ok(()) => Response::ok("ok"),
+                Err(error) => Response::error(format!("job: {error}"), 500),
+            };
         }
 
         if req.url()?.path() == DEPLOYMENT_ID_PATH {
@@ -2133,7 +2224,6 @@ mod entry {
                 let db = Arc::new(aos_hub_core::db::Database::attach(make()));
                 match db.registry_by_id(*registry_id).await {
                     Ok(Some(registry)) => {
-                        use aos_hub_core::reindex::Reindexer as _;
                         let egress = match worker_egress(env) {
                             Ok(egress) => egress,
                             Err(error) => {
@@ -2208,7 +2298,11 @@ mod entry {
                                 return Ok(());
                             }
                         };
-                        if let Err(error) = reindexer.reindex(&registry).await {
+                        let result = reindexer
+                            .index(&registry)
+                            .await
+                            .and_then(crate::completed_index_outcome);
+                        if let Err(error) = result {
                             let detail =
                                 aos_hub_core::jobs::redacted_job_failure(&format!("{error:#}"));
                             if let Err(failure_error) = db
@@ -2838,6 +2932,34 @@ mod entry {
                         "/_admin/recovery/bookmark" | "/_admin/recovery/restore"
                     )
                 });
+            #[cfg(feature = "do-e2e")]
+            if req.method() == Method::Post && req.url()?.path() == "/_e2e/schema-initialization" {
+                let expected = self.env.secret(HUB_SEAL_KEY)?.to_string();
+                if expected.is_empty()
+                    || req.headers().get("x-hub-seal")?.as_deref() != Some(expected.as_str())
+                {
+                    return Response::error("forbidden", 403);
+                }
+                let action = req.text().await?;
+                let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage());
+                let before = backend
+                    .e2e_schema_fingerprint()
+                    .await
+                    .map_err(|error| worker::Error::RustError(error.to_string()))?;
+                let result = match action.as_str() {
+                    "seed-master2" => backend.e2e_seed_master_two().await,
+                    "initialize" => self.ensure_migrated().await,
+                    "inspect" => Ok(()),
+                    _ => return Response::error("unknown fixture action", 400),
+                };
+                let after = backend
+                    .e2e_schema_fingerprint()
+                    .await
+                    .map_err(|error| worker::Error::RustError(error.to_string()))?;
+                return Response::from_json(
+                    &serde_json::json!({"accepted":result.is_ok(),"before":before,"after":after}),
+                );
+            }
             if !recovery_request {
                 if let Err(err) = self.ensure_migrated().await {
                     return Response::error(format!("hubdb migrate: {err:#}"), 500);
@@ -3393,7 +3515,9 @@ mod entry {
                 .create_session(user_id, 3_600, 0)
                 .await
                 .map_err(|error| worker::Error::RustError(format!("e2e session: {error:#}")))?;
-            let session_auth = db.validate_session(&session).await
+            let session_auth = db
+                .validate_session(&session)
+                .await
                 .map_err(|_| worker::Error::RustError("e2e session validation failed".into()))?
                 .ok_or_else(|| worker::Error::RustError("e2e session validation failed".into()))?;
             let jwt = JwtKeys::from_secret(self.env.secret(HUB_JWT_SECRET)?.to_string().as_bytes());

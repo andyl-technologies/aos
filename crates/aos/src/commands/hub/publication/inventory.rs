@@ -4,11 +4,11 @@ use anyhow::{Context as _, Result};
 use aos_remote::hub_types;
 
 /// Keeps the admitted publication manifest with its pinned root directory handle.
-pub(super) struct PinnedPublication {
+pub(crate) struct PinnedPublication {
     /// Admitted manifest used to begin the staged publication.
-    pub(super) request: hub_types::BeginRegistryPublicationRequest,
+    pub(crate) request: hub_types::BeginRegistryPublicationRequest,
     /// Directory handle used to open objects beneath the admitted root.
-    pub(super) root: std::os::fd::OwnedFd,
+    pub(crate) root: std::os::fd::OwnedFd,
 }
 
 // A complete package origin includes immutable Git/index objects and paired
@@ -22,7 +22,9 @@ pub(super) struct PinnedPublication {
 /// Returns an error if request validation, credential resolution, or a hub API call fails.
 pub(super) const MAX_PUBLICATION_OBJECTS: usize = 50_000;
 
-const MAX_PUBLICATION_ENTRIES: usize = 50_000;
+// Entries include directories. A valid 50,000-object surface needs additional
+// room for its directory structure without relaxing the object limit.
+const MAX_PUBLICATION_ENTRIES: usize = 75_000;
 
 const MAX_PUBLICATION_PATH_BYTES: usize = 512;
 
@@ -33,7 +35,7 @@ const MAX_PUBLICATION_DIRECTORY_DEPTH: usize = 32;
 /// # Errors
 ///
 /// Returns an error if files cannot be read or violate publication path, size, or hash rules.
-pub(super) fn publication_from_root(
+pub(crate) fn publication_from_root(
     root: &std::path::Path,
     registry: &str,
 ) -> Result<PinnedPublication> {
@@ -333,7 +335,14 @@ fn publication_input(
     })
 }
 
-fn publication_generation(objects: &[hub_types::RegistryPublicationObjectInput]) -> Result<String> {
+/// Derives the publication generation: the SHA-256 of every object's identity tuple.
+///
+/// # Errors
+///
+/// Returns an error if the identity tuples cannot be encoded.
+pub(crate) fn publication_generation(
+    objects: &[hub_types::RegistryPublicationObjectInput],
+) -> Result<String> {
     use sha2::{Digest as _, Sha256};
 
     let canonical = objects
@@ -455,7 +464,7 @@ pub(super) fn open_publication_object(
 /// # Errors
 ///
 /// Returns an error if the file cannot be copied or differs from its admitted size or hash.
-pub(super) fn snapshot_publication_object(
+pub(crate) fn snapshot_publication_object(
     root: &std::os::fd::OwnedFd,
     expected: &hub_types::RegistryPublicationObjectInput,
 ) -> Result<std::fs::File> {
@@ -511,7 +520,13 @@ fn copy_and_hash_exact(
     Ok(format!("{:x}", digest.finalize()))
 }
 
-fn publication_default_commit(head: &[u8], refs: &[u8]) -> Result<String> {
+/// Resolves the default-branch commit named by `HEAD`, through `info/refs` for a symref.
+///
+/// # Errors
+///
+/// Returns an error for non-UTF-8 input, an unresolvable symref, or a commit
+/// that is not a lowercase SHA-256 object id.
+pub(crate) fn publication_default_commit(head: &[u8], refs: &[u8]) -> Result<String> {
     let head = std::str::from_utf8(head)
         .context("HEAD is not UTF-8")?
         .trim();

@@ -5,13 +5,13 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use aos_hub_core::backend::{sqlite_snapshot::*, SqlxBackend};
+use aos_hub_core::backend::{SqlxBackend, sqlite_snapshot::*};
 use aos_hub_core::db::Database;
 use aos_hub_core::snapshot::archive::records::*;
 use aos_hub_core::snapshot::archive::root::*;
 use aos_hub_core::snapshot::archive::*;
-use rand::{rngs::StdRng, SeedableRng};
-use serde_json::{json, Value as Json};
+use rand::{SeedableRng, rngs::StdRng};
+use serde_json::{Value as Json, json};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 
@@ -169,7 +169,7 @@ fn bytes(lines: &[Json]) -> Vec<u8> {
 // Rejecting them must come from records/reconstruction, not a stale byte hash.
 pub(super) fn reseal(f: &mut Fixture, mut metadata: Vec<Json>, mut private: Vec<Json>) {
     use aos_hub_core::snapshot::archive::root::{
-        prepare_archive_keys, sign_declared_root, FreshArchiveId,
+        FreshArchiveId, prepare_archive_keys, sign_declared_root,
     };
     use aos_hub_core::snapshot::archive::{FreshStreamKey, StreamContext, StreamEncoder};
     let mut rng = StdRng::seed_from_u64(89789);

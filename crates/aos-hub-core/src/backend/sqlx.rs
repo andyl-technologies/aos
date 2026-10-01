@@ -39,6 +39,8 @@
 //! when a request is cancelled. File-backed pools retain the default acquisition
 //! checks and enable WAL. Every pool enforces foreign keys.
 
+mod schema_migration;
+
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -209,6 +211,10 @@ impl super::Backend for SqlxBackend {
             #[cfg(feature = "mysql")]
             Self::Mysql(_) => Dialect::Mysql,
         }
+    }
+
+    async fn migrate_schema(&self) -> Result<()> {
+        schema_migration::migrate(self).await
     }
 
     fn pool_stats(&self) -> Option<PoolStats> {

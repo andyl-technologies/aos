@@ -2,12 +2,13 @@
 
 use super::*;
 
+mod channels;
 mod direct;
 mod direct_oci;
 mod direct_receipts;
+mod lifetimes;
 mod mirror;
 mod privacy;
-mod lifetimes;
 
 #[test]
 fn historical_contract_keeps_exact_digests_and_refuses_mixed_generations() {
@@ -23,19 +24,31 @@ fn historical_contract_keeps_exact_digests_and_refuses_mixed_generations() {
     assert_eq!(generation6.tables.len(), 276);
     assert_eq!(current.tables.len(), 278);
     assert_eq!(generation6.manifest().migration_digests, digests()[..6]);
-    assert_eq!(generation6.manifest().classification_digest,
-        hex::encode(Sha256::digest(GENERATION6_CONTRACT)));
+    assert_eq!(
+        generation6.manifest().classification_digest,
+        hex::encode(Sha256::digest(GENERATION6_CONTRACT))
+    );
     assert!(!generation6.tables.contains_key("surface_object_usage"));
-    assert!(!generation6.tables.contains_key("binding_identity_reservations"));
+    assert!(!generation6
+        .tables
+        .contains_key("binding_identity_reservations"));
     assert_eq!(current.tables["surface_object_usage"].columns.len(), 5);
-    assert_eq!(current.tables["binding_identity_reservations"].columns.len(), 3);
+    assert_eq!(
+        current.tables["binding_identity_reservations"]
+            .columns
+            .len(),
+        3
+    );
     assert_eq!(generation5.manifest().migration_digests, digests()[..5]);
     assert_eq!(
         generation5.manifest().classification_digest,
         hex::encode(Sha256::digest(GENERATION5_CONTRACT))
     );
     assert_eq!(generation5.tables["mirror_import_objects"].columns.len(), 9);
-    assert_eq!(generation6.tables["mirror_import_objects"].columns.len(), 12);
+    assert_eq!(
+        generation6.tables["mirror_import_objects"].columns.len(),
+        12
+    );
     assert_eq!(current.tables["mirror_import_objects"].columns.len(), 13);
     assert!(!historical.tables.contains_key("direct_upload_sessions"));
     assert_eq!(historical.manifest().migration_digests, digests()[..3]);
@@ -54,7 +67,7 @@ fn historical_contract_keeps_exact_digests_and_refuses_mixed_generations() {
     assert!(SnapshotClassifier::new(SCHEMA_IDENTITY, 3, &digests(), &shapes()).is_err());
     assert!(SnapshotClassifier::new(SCHEMA_IDENTITY, 4, &digests()[..3], &shapes()).is_err());
     assert!(SnapshotClassifier::new(SCHEMA_IDENTITY, 5, &digests()[..4], &shapes()).is_err());
-    for version in [0, 1, 2, 8, usize::MAX] {
+    for version in [0, 1, 2, 9, usize::MAX] {
         assert!(SnapshotClassifier::for_supported_generation(version).is_err());
     }
 }
@@ -108,7 +121,9 @@ fn row(table: &str, overrides: &[(&str, Value)]) -> Row {
                         _ if column.rule == "idp_locator" => {
                             Value::Text("https://idp.example.invalid".into())
                         }
-                        _ if table == "binding_identity_reservations" && column.name == "reservation_id" => {
+                        _ if table == "binding_identity_reservations"
+                            && column.name == "reservation_id" =>
+                        {
                             Value::Text("11111111-1111-4111-8111-111111111111".into())
                         }
                         _ => Value::Text(
@@ -193,13 +208,13 @@ async fn contract_covers_the_actual_production_initializer() {
     let tables = sqlx::query("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .fetch_all(&pool).await.unwrap();
     let contracts = contract().unwrap();
-    assert_eq!(contracts.len(), 278);
+    assert_eq!(contracts.len(), 279);
     assert_eq!(
         contracts
             .values()
             .map(|table| table.columns.len())
             .sum::<usize>(),
-        2714
+        2725
     );
     assert_eq!(tables.len(), contracts.len());
 
@@ -323,12 +338,10 @@ fn null_secret_remains_null_and_creates_no_private_dependency() {
         classified.cells["password_hash"],
         ClassifiedCell::Scalar(SnapshotScalar::Null)
     );
-    assert!(
-        classified
-            .private_dependencies
-            .iter()
-            .all(|dependency| dependency.column != "password_hash")
-    );
+    assert!(classified
+        .private_dependencies
+        .iter()
+        .all(|dependency| dependency.column != "password_hash"));
 }
 
 #[test]
@@ -345,11 +358,9 @@ fn sealed_dynamic_setting_is_private_and_unknown_keys_fail_closed() {
         classified.private_dependencies[0].reason,
         PrivateDependencyReason::Secret
     );
-    assert!(
-        !serde_json::to_string(&classified)
-            .unwrap()
-            .contains("PRIVATE-SIGNING-SEED")
-    );
+    assert!(!serde_json::to_string(&classified)
+        .unwrap()
+        .contains("PRIVATE-SIGNING-SEED"));
 
     let unknown = row(
         "instance_config",
@@ -440,20 +451,16 @@ fn historical_idp_plan_externalizes_exact_cell_without_rewriting_hashes() {
         classified.cells["confirmation_hash"],
         ClassifiedCell::Scalar(SnapshotScalar::Text("original-confirmation-hash".into()))
     );
-    assert!(
-        !serde_json::to_string(&classified)
-            .unwrap()
-            .contains("PRIVATE-SEALED-IDP")
-    );
-    assert!(
-        json::validate_private(
-            "topology_plans",
-            "input_versions_json",
-            &json.replace("replace", "preserve"),
-            Some("set_identity_provider")
-        )
+    assert!(!serde_json::to_string(&classified)
         .unwrap()
-    );
+        .contains("PRIVATE-SEALED-IDP"));
+    assert!(json::validate_private(
+        "topology_plans",
+        "input_versions_json",
+        &json.replace("replace", "preserve"),
+        Some("set_identity_provider")
+    )
+    .unwrap());
 }
 
 #[test]
@@ -469,19 +476,15 @@ fn secret_bearing_typed_json_rejects_unknown_fields_versions_and_nested_roles() 
     }
     let mut value = idp();
     value["role_map_json"] = serde_json::json!("{\"engineers\":\"future_superadmin\"}");
-    assert!(
-        classifier()
-            .classify("topology_plans", &idp_plan(&value.to_string()))
-            .is_err()
-    );
+    assert!(classifier()
+        .classify("topology_plans", &idp_plan(&value.to_string()))
+        .is_err());
     let duplicate = serde_json::to_string(&idp())
         .unwrap()
         .replacen('{', "{\"org_id\":2,", 1);
-    assert!(
-        classifier()
-            .classify("topology_plans", &idp_plan(&duplicate))
-            .is_err()
-    );
+    assert!(classifier()
+        .classify("topology_plans", &idp_plan(&duplicate))
+        .is_err());
 }
 
 #[test]
@@ -504,11 +507,9 @@ fn opaque_history_is_private_and_unknown_wire_versions_reject_recursively() {
             .classify("change_request_revisions", &history)
             .unwrap(),
     );
-    assert!(
-        !serde_json::to_string(&classified)
-            .unwrap()
-            .contains("PRIVATE-HISTORY")
-    );
+    assert!(!serde_json::to_string(&classified)
+        .unwrap()
+        .contains("PRIVATE-HISTORY"));
     for json in [
         "{\"schema_version\":99}",
         "{\"child\":{\"apiVersion\":\"future\"}}",
@@ -519,11 +520,9 @@ fn opaque_history_is_private_and_unknown_wire_versions_reject_recursively() {
             "change_request_revisions",
             &[("old_json", Value::Text(json.into()))],
         );
-        assert!(
-            classifier()
-                .classify("change_request_revisions", &input)
-                .is_err()
-        );
+        assert!(classifier()
+            .classify("change_request_revisions", &input)
+            .is_err());
     }
 }
 
@@ -651,23 +650,19 @@ fn unknown_storage_classes_nulls_width_and_oversize_cells_reject() {
         Value::Text("1".into()),
         Value::Bytes(vec![1]),
     ] {
-        assert!(
-            classifier
-                .classify("users", &row("users", &[("id", value)]))
-                .is_err()
-        );
+        assert!(classifier
+            .classify("users", &row("users", &[("id", value)]))
+            .is_err());
     }
-    assert!(
-        classifier
-            .classify(
+    assert!(classifier
+        .classify(
+            "users",
+            &row(
                 "users",
-                &row(
-                    "users",
-                    &[("password_hash", Value::Text("p".repeat(MAX_CELL_BYTES + 1)))]
-                )
+                &[("password_hash", Value::Text("p".repeat(MAX_CELL_BYTES + 1)))]
             )
-            .is_err()
-    );
+        )
+        .is_err());
     assert!(scalar(&Value::Real(f64::NAN)).is_err());
 }
 
@@ -752,28 +747,24 @@ fn authority_json_cannot_gain_unknown_keys_versions_or_missing_qualification_cei
     escape["qualified_managed_prefix"] = serde_json::json!("managed/../outside");
     variants.push(escape);
     for variant in variants {
-        assert!(
-            classifier()
-                .classify(
+        assert!(classifier()
+            .classify(
+                "physical_storage_authorities",
+                &row(
                     "physical_storage_authorities",
-                    &row(
-                        "physical_storage_authorities",
-                        &[("specification_json", Value::Text(variant.to_string())),]
-                    )
+                    &[("specification_json", Value::Text(variant.to_string())),]
                 )
-                .is_err()
-        );
+            )
+            .is_err());
     }
     let wrong_plan = serde_json::json!({"kind":"create", "input":authority()});
-    assert!(
-        json::validate_private(
-            "topology_plans",
-            "input_versions_json",
-            &wrong_plan.to_string(),
-            Some("set_storage_authority_admission")
-        )
-        .is_err()
-    );
+    assert!(json::validate_private(
+        "topology_plans",
+        "input_versions_json",
+        &wrong_plan.to_string(),
+        Some("set_storage_authority_admission")
+    )
+    .is_err());
 }
 
 #[test]
@@ -838,37 +829,31 @@ fn typed_permissions_and_image_delivery_reject_unknown_contract_extensions() {
     let marker = aos_registry_surface::manifest::ImageDelivery::store_only();
     let value = serde_json::to_value(marker).unwrap();
     let current = serde_json::json!({"store_path":"/nix/store/example", "nar_hash":"sha256:example", "nar_size":1, "delivery":value});
-    assert!(
-        json::validate_private(
-            "registry_system_images",
-            "delivery",
-            &current.to_string(),
-            None
-        )
-        .is_ok()
-    );
+    assert!(json::validate_private(
+        "registry_system_images",
+        "delivery",
+        &current.to_string(),
+        None
+    )
+    .is_ok());
     let mut future = current.clone();
     future["delivery"]["schema_version"] = serde_json::json!(99);
-    assert!(
-        json::validate_private(
-            "registry_system_images",
-            "delivery",
-            &future.to_string(),
-            None
-        )
-        .is_err()
-    );
+    assert!(json::validate_private(
+        "registry_system_images",
+        "delivery",
+        &future.to_string(),
+        None
+    )
+    .is_err());
     let mut extension = current;
     extension["delivery"]["secret_runtime_flags"] = serde_json::json!("private");
-    assert!(
-        json::validate_private(
-            "registry_system_images",
-            "delivery",
-            &extension.to_string(),
-            None
-        )
-        .is_err()
-    );
+    assert!(json::validate_private(
+        "registry_system_images",
+        "delivery",
+        &extension.to_string(),
+        None
+    )
+    .is_err());
 }
 
 #[test]
@@ -903,8 +888,8 @@ fn oversized_total_row_rejects_before_structured_or_private_output() {
 
 #[tokio::test]
 async fn bounded_reader_page_classifies_private_cells_without_source_mutation() {
-    use crate::backend::SqlxBackend;
     use crate::backend::sqlite_snapshot::{SqliteSnapshotLimits, SqliteSnapshotReader};
+    use crate::backend::SqlxBackend;
     use crate::db::Database;
 
     let directory = tempfile::TempDir::new().unwrap();
@@ -938,11 +923,9 @@ async fn bounded_reader_page_classifies_private_cells_without_source_mutation() 
         .unwrap();
     assert_eq!(page.rows.len(), 1);
     let classified = classifier.classify("users", &page.rows[0]).unwrap();
-    assert!(
-        !serde_json::to_string(&classified)
-            .unwrap()
-            .contains("PRIVATE-SOURCE-PHC")
-    );
+    assert!(!serde_json::to_string(&classified)
+        .unwrap()
+        .contains("PRIVATE-SOURCE-PHC"));
     drop(table);
     reader.close().await.unwrap();
 
@@ -970,10 +953,24 @@ fn original_session_owner_pin_remains_excluded_as_authentication_transient_state
         "auth_transient"
     );
     let historical = SnapshotClassifier::for_supported_generation(3).unwrap();
-    assert!(
-        !historical.tables["sessions"]
-            .columns
-            .iter()
-            .any(|column| column.name == "owner_incarnation")
+    assert!(!historical.tables["sessions"]
+        .columns
+        .iter()
+        .any(|column| column.name == "owner_incarnation"));
+}
+
+#[test]
+fn generation8_adds_channel_classification_without_changing_generation7() {
+    let previous = SnapshotClassifier::for_supported_generation(7).unwrap();
+    let current = SnapshotClassifier::for_supported_generation(8).unwrap();
+
+    assert_eq!(previous.manifest.migration_digests, digests()[..7]);
+    assert_eq!(
+        previous.manifest.classification_digest,
+        hex::encode(Sha256::digest(GENERATION7_CONTRACT))
     );
+    assert!(!previous.tables.contains_key("release_channel_advances"));
+    assert_eq!(current.tables.len(), previous.tables.len() + 1);
+    assert_eq!(current.tables["release_channel_advances"].columns.len(), 11);
+    assert_eq!(current.manifest.migration_digests, digests());
 }

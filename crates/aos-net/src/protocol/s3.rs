@@ -4,7 +4,12 @@
 //! - GetObject with streaming body (no full-buffer)
 //! - PutObject with streaming / multi-part from file (chunked reads, no full-buffer)
 //! - HeadObject, DeleteObject
+//! - Conditional PutObject (`If-Match` / `If-None-Match: *`) with `ETag`
+//!   results; see [`super::conditional`]
 //! - Custom endpoints (MinIO, B2, Wasabi)
+//!
+//! Successful GetObject, HeadObject, and single-request PutObject results
+//! carry the object's `ETag` response header verbatim.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -16,6 +21,7 @@ use aws_sdk_s3::operation::head_object::HeadObjectError;
 use bytes::Bytes;
 use tokio::io::AsyncReadExt;
 
+use super::conditional::{precondition_failed_result, WritePrecondition, ETAG};
 use super::{ByteStream, Protocol};
 use crate::auth::Credential;
 use crate::multipart::{
@@ -378,6 +384,7 @@ impl S3Protocol {
             .map_err(|e| s3_operation_error("GetObject", &format!("{bucket}/{key}"), &target, e))?;
 
         let content_length = resp.content_length().map(|l| l as u64);
+        let headers = etag_header(resp.e_tag());
 
         // Stream the body in chunks via the SDK's async reader.
         let mut body_reader = resp.body.into_async_read();
@@ -393,7 +400,7 @@ impl S3Protocol {
 
                 Ok(TransferResult {
                     status: 200,
-                    headers: Vec::new(),
+                    headers,
                     bytes_transferred,
                     content_length,
                     body: Some(buf),
@@ -436,7 +443,7 @@ impl S3Protocol {
 
                 Ok(TransferResult {
                     status: 200,
-                    headers: Vec::new(),
+                    headers,
                     bytes_transferred: bytes_written + resume_offset,
                     content_length,
                     body: None,
@@ -462,7 +469,7 @@ impl S3Protocol {
 
                 Ok(TransferResult {
                     status: 200,
-                    headers: Vec::new(),
+                    headers,
                     bytes_transferred: bytes_transferred + resume_offset,
                     content_length,
                     body: None,
@@ -491,7 +498,7 @@ impl S3Protocol {
 
                 Ok(TransferResult {
                     status: 200,
-                    headers: Vec::new(),
+                    headers,
                     bytes_transferred,
                     content_length,
                     body: None,
@@ -535,7 +542,7 @@ impl S3Protocol {
 
         let result = TransferResult {
             status: 200,
-            headers: Vec::new(),
+            headers: etag_header(resp.e_tag()),
             bytes_transferred: resume_offset,
             content_length,
             body: None,
@@ -579,6 +586,11 @@ impl S3Protocol {
     /// PutObject upload. File bodies above the 5 MB threshold use
     /// multi-part upload; smaller files and byte bodies upload in one
     /// shot. Stream bodies are rejected on this path.
+    ///
+    /// A conditional request (see [`super::conditional`]) always uses one
+    /// PutObject, whatever its size, because the precondition must be
+    /// evaluated atomically with the write. Conditional writes are meant for
+    /// small records; S3 caps a single PutObject at 5 GiB.
     async fn do_put(
         &self,
         request: &TransferRequest,
@@ -587,6 +599,15 @@ impl S3Protocol {
         let client = self.build_client(auth).await?;
         let (bucket, key) = Self::parse_url(&request.url)?;
         let target = s3_target(auth);
+        let conditional = WritePrecondition::from_headers(&request.headers)?.is_some();
+        let single = SinglePut {
+            client: &client,
+            bucket: &bucket,
+            key: &key,
+            headers: &request.headers,
+            conditional,
+            target: &target,
+        };
 
         match &request.body {
             Some(TransferBody::File(path)) => {
@@ -595,7 +616,7 @@ impl S3Protocol {
                     .with_context(|| format!("stat {}", path.display()))?;
                 let file_len = metadata.len();
 
-                if file_len > MULTIPART_THRESHOLD {
+                if file_len > MULTIPART_THRESHOLD && !conditional {
                     let backend = S3MultipartBackend {
                         client: &client,
                         bucket: &bucket,
@@ -618,78 +639,29 @@ impl S3Protocol {
                     TransferEngine::new(TransferEngineConfig::default())
                         .upload_multipart(upload, &backend)
                         .await?;
-                } else {
-                    // Small file: read and upload in one shot.
-                    let data = tokio::fs::read(path)
-                        .await
-                        .with_context(|| format!("reading {}", path.display()))?;
-                    let put = client
-                        .put_object()
-                        .bucket(&bucket)
-                        .key(&key)
-                        .body(data.into());
-                    let put = apply_put_object_headers(put, &request.headers);
-                    put.send().await.map_err(|e| {
-                        s3_operation_error("PutObject", &format!("{bucket}/{key}"), &target, e)
-                    })?;
+
+                    return Ok(TransferResult {
+                        status: 200,
+                        headers: Vec::new(),
+                        bytes_transferred: file_len,
+                        content_length: Some(file_len),
+                        body: None,
+                        hash: None,
+                        resumed: false,
+                    });
                 }
 
-                Ok(TransferResult {
-                    status: 200,
-                    headers: Vec::new(),
-                    bytes_transferred: file_len,
-                    content_length: Some(file_len),
-                    body: None,
-                    hash: None,
-                    resumed: false,
-                })
+                // Small (or conditional) file: read and upload in one shot.
+                let data = tokio::fs::read(path)
+                    .await
+                    .with_context(|| format!("reading {}", path.display()))?;
+                single.send(data).await
             }
-            Some(TransferBody::Bytes(data)) => {
-                let data_len = data.len() as u64;
-                let put = client
-                    .put_object()
-                    .bucket(&bucket)
-                    .key(&key)
-                    .body(data.clone().into());
-                let put = apply_put_object_headers(put, &request.headers);
-                put.send().await.map_err(|e| {
-                    s3_operation_error("PutObject", &format!("{bucket}/{key}"), &target, e)
-                })?;
-
-                Ok(TransferResult {
-                    status: 200,
-                    headers: Vec::new(),
-                    bytes_transferred: data_len,
-                    content_length: Some(data_len),
-                    body: None,
-                    hash: None,
-                    resumed: false,
-                })
-            }
+            Some(TransferBody::Bytes(data)) => single.send(data.clone()).await,
             Some(TransferBody::Stream(_)) => {
                 anyhow::bail!("stream body not directly supported for S3 put via Protocol::execute(); use TransferEngine");
             }
-            None => {
-                let put = client
-                    .put_object()
-                    .bucket(&bucket)
-                    .key(&key)
-                    .body(Vec::new().into());
-                let put = apply_put_object_headers(put, &request.headers);
-                put.send().await.map_err(|e| {
-                    s3_operation_error("PutObject", &format!("{bucket}/{key}"), &target, e)
-                })?;
-
-                Ok(TransferResult {
-                    status: 200,
-                    headers: Vec::new(),
-                    bytes_transferred: 0,
-                    content_length: Some(0),
-                    body: None,
-                    hash: None,
-                    resumed: false,
-                })
-            }
+            None => single.send(Vec::new()).await,
         }
     }
 
@@ -711,7 +683,7 @@ impl S3Protocol {
                 let content_length = output.content_length().map(|l| l as u64);
                 Ok(TransferResult {
                     status: 200,
-                    headers: Vec::new(),
+                    headers: etag_header(output.e_tag()),
                     bytes_transferred: 0,
                     content_length,
                     body: None,
@@ -782,9 +754,85 @@ impl S3Protocol {
     }
 }
 
+/// One single-request PutObject target, shared by every non-multipart
+/// branch of [`S3Protocol::do_put`].
+struct SinglePut<'a> {
+    client: &'a aws_sdk_s3::Client,
+    bucket: &'a str,
+    key: &'a str,
+    headers: &'a [(String, String)],
+    /// Whether the request carries a [`WritePrecondition`].
+    conditional: bool,
+    /// Endpoint description for diagnostics (see [`s3_target`]).
+    target: &'a str,
+}
+
+impl SinglePut<'_> {
+    /// Uploads `data` with one PutObject and reports the stored `ETag`.
+    ///
+    /// For a conditional request, a refused precondition becomes a
+    /// [`PRECONDITION_FAILED`](super::conditional::PRECONDITION_FAILED)
+    /// result instead of an error: nothing was written, and the caller
+    /// decides whether to re-read and retry.
+    async fn send(&self, data: Vec<u8>) -> Result<TransferResult> {
+        let data_len = data.len() as u64;
+        let put = self
+            .client
+            .put_object()
+            .bucket(self.bucket)
+            .key(self.key)
+            .body(data.into());
+        let put = apply_put_object_headers(put, self.headers);
+
+        match put.send().await {
+            Ok(output) => Ok(TransferResult {
+                status: 200,
+                headers: etag_header(output.e_tag()),
+                bytes_transferred: data_len,
+                content_length: Some(data_len),
+                body: None,
+                hash: None,
+                resumed: false,
+            }),
+            Err(error) if self.conditional && is_precondition_refusal(&error) => {
+                Ok(precondition_failed_result(None))
+            }
+            Err(error) => Err(s3_operation_error(
+                "PutObject",
+                &format!("{}/{}", self.bucket, self.key),
+                self.target,
+                error,
+            )),
+        }
+    }
+}
+
+/// Returns whether a failed conditional PutObject was refused without
+/// writing: `412 Precondition Failed`, or AWS's `409
+/// ConditionalRequestConflict` when a concurrent conditional write to the
+/// same key won the race.
+fn is_precondition_refusal<E: ProvideErrorMetadata>(error: &SdkError<E>) -> bool {
+    match error
+        .raw_response()
+        .map(|response| response.status().as_u16())
+    {
+        Some(412) => true,
+        Some(409) => error.code() == Some("ConditionalRequestConflict"),
+        _ => false,
+    }
+}
+
+/// Builds the `ETag` response header list for an S3 result, empty when the
+/// service reported no `ETag`.
+fn etag_header(etag: Option<&str>) -> Vec<(String, String)> {
+    etag.map(|etag| vec![(ETAG.to_string(), etag.to_string())])
+        .unwrap_or_default()
+}
+
 /// Map recognized HTTP-style request headers (`Content-Type`,
-/// `Cache-Control`) onto PutObject builder fields; other headers are
-/// ignored because S3 models them as typed parameters, not headers.
+/// `Cache-Control`, `If-Match`, `If-None-Match`) onto PutObject builder
+/// fields; other headers are ignored because S3 models them as typed
+/// parameters, not headers.
 fn apply_put_object_headers(
     mut builder: aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder,
     headers: &[(String, String)],
@@ -797,13 +845,19 @@ fn apply_put_object_headers(
             "cache-control" => {
                 builder = builder.cache_control(value);
             }
+            "if-match" => {
+                builder = builder.if_match(value);
+            }
+            "if-none-match" => {
+                builder = builder.if_none_match(value);
+            }
             _ => {}
         }
     }
     builder
 }
 
-/// Same header mapping as [`apply_put_object_headers`], for the
+/// Same metadata mapping as [`apply_put_object_headers`], for the
 /// CreateMultipartUpload builder.
 fn apply_create_multipart_headers(
     mut builder: aws_sdk_s3::operation::create_multipart_upload::builders::CreateMultipartUploadFluentBuilder,
@@ -876,6 +930,9 @@ impl Protocol for S3Protocol {
         Some(MULTIPART_THRESHOLD)
     }
 }
+
+#[cfg(test)]
+mod conditional_tests;
 
 #[cfg(test)]
 mod tests {

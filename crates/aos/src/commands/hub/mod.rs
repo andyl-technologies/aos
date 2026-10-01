@@ -41,9 +41,6 @@ pub(super) use mutation::{new_idempotency_key, topology_mutation, topology_read}
 pub(super) use output::print_topology_message;
 pub(crate) use publication::{prepare_registry_publication, upload_registry_publication};
 
-#[cfg(test)]
-pub(crate) use publication::inspect_publication_for_test;
-
 mod access_policy;
 mod access_token;
 mod audit;
@@ -67,7 +64,7 @@ mod output;
 mod package;
 mod pins;
 mod placement;
-mod publication;
+pub(crate) mod publication;
 mod registry;
 mod route;
 mod signing_key;

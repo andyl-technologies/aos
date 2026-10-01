@@ -293,6 +293,10 @@ impl crate::backend::Backend for PausingAcknowledgementBackend {
         self.inner.dialect()
     }
 
+    async fn migrate_schema(&self) -> anyhow::Result<()> {
+        self.inner.migrate_schema().await
+    }
+
     async fn execute(&self, sql: &str, params: &[crate::value::Value]) -> Result<u64> {
         self.inner.execute(sql, params).await
     }

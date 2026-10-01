@@ -93,6 +93,56 @@
       "target": "disk-x86_64-linux"
     }
   ],
+  "destinations": [
+    {
+      "after": [
+        "staging"
+      ],
+      "channel": "candidate",
+      "profile": "functional",
+      "registry_tier": "production",
+      "surface": "production"
+    },
+    {
+      "after": [
+        "staging"
+      ],
+      "channel": "stable",
+      "profile": "soak",
+      "registry_tier": "production",
+      "surface": "production"
+    },
+    {
+      "after": [
+        "staging"
+      ],
+      "channel": "edge",
+      "profile": "smoke",
+      "registry_tier": "testing",
+      "surface": "production"
+    },
+    {
+      "after": [],
+      "channel": "candidate",
+      "profile": "build",
+      "registry_tier": "production",
+      "surface": "staging"
+    },
+    {
+      "after": [],
+      "channel": "stable",
+      "profile": "build",
+      "registry_tier": "production",
+      "surface": "staging"
+    },
+    {
+      "after": [],
+      "channel": "edge",
+      "profile": "build",
+      "registry_tier": "testing",
+      "surface": "staging"
+    }
+  ],
   "exclusions": [
     "No implicit qualification of other hardware, hypervisors, clouds, or container runtimes.",
     "No SELinux enforcement claim until labeled-root and enforcing-policy gates pass.",
@@ -100,7 +150,71 @@
     "No stock unprivileged per-user package mutation contract.",
     "No uptime SLA or failure-rate inference from a finite qualification campaign."
   ],
-  "id": "aos-system-v2",
+  "fitness": [
+    {
+      "bindings": [
+        "alert-config"
+      ],
+      "checks": [
+        "failed-unit-alert-delivered",
+        "acknowledged-by-on-call",
+        "no-secret-material-in-alert"
+      ],
+      "kind": "alert-delivery",
+      "method": "automated"
+    },
+    {
+      "bindings": [
+        "signer-roster"
+      ],
+      "checks": [
+        "key-custody",
+        "recover-encrypted-authority-backup",
+        "test-signature-per-role-verifies"
+      ],
+      "kind": "authority-recovery",
+      "method": "operator"
+    },
+    {
+      "bindings": [
+        "surface",
+        "hub-schema"
+      ],
+      "checks": [
+        "isolated-hub-restore",
+        "portable-database-export-import",
+        "anonymous-readback-of-restored-deployment"
+      ],
+      "kind": "hub-restore",
+      "method": "operator"
+    },
+    {
+      "bindings": [
+        "signer-roster",
+        "surface"
+      ],
+      "checks": [
+        "registry-key-rotation-trust-continuity",
+        "unauthorized-replacement-rejected",
+        "interrupted-publication-single-final-state"
+      ],
+      "kind": "key-rotation",
+      "method": "operator"
+    },
+    {
+      "bindings": [
+        "tooling"
+      ],
+      "checks": [
+        "independent-encrypted-backup",
+        "restore-to-clean-environment",
+        "offline-verification-of-restored-bundle"
+      ],
+      "kind": "storage-restore",
+      "method": "automated"
+    }
+  ],
+  "id": "aos-system",
   "package_rules": [
     {
       "inherit_dependency_obligations": true,
@@ -121,6 +235,162 @@
       "inherit_dependency_obligations": true,
       "name": "runc",
       "role": "qualified-workload"
+    }
+  ],
+  "profiles": [
+    {
+      "change_scoped": false,
+      "claims": "none",
+      "description": "Reproducible, authorized build of the complete closure.",
+      "fitness": {},
+      "name": "build",
+      "override": {
+        "rings": false,
+        "soak_seconds": false
+      },
+      "require_complete_matrix": false,
+      "requirements": [
+        "build-integrity"
+      ],
+      "review_registry_transaction": false,
+      "review_threshold": 0,
+      "rollout": {
+        "rings": [
+          {
+            "observe_seconds": 0,
+            "partitions": 256
+          }
+        ]
+      },
+      "soak_seconds": 0
+    },
+    {
+      "change_scoped": false,
+      "claims": "functional",
+      "description": "Reviewed functional qualification of every target with fresh environment fitness.",
+      "fitness": {
+        "alert-delivery": {
+          "max_age_seconds": 1209600
+        },
+        "authority-recovery": {
+          "max_age_seconds": 7776000
+        },
+        "hub-restore": {
+          "max_age_seconds": 7776000
+        },
+        "storage-restore": {
+          "max_age_seconds": 1209600
+        }
+      },
+      "name": "functional",
+      "override": {
+        "rings": false,
+        "soak_seconds": false
+      },
+      "require_complete_matrix": false,
+      "requirements": [
+        "build-integrity",
+        "staging-delivery",
+        "package-function",
+        "rollout-health"
+      ],
+      "review_registry_transaction": true,
+      "review_threshold": 1,
+      "rollout": {
+        "rings": [
+          {
+            "observe_seconds": 0,
+            "partitions": 256
+          }
+        ]
+      },
+      "soak_seconds": 0
+    },
+    {
+      "change_scoped": true,
+      "claims": "functional",
+      "description": "Automated exact-byte functional checks on the changed targets.",
+      "fitness": {},
+      "name": "smoke",
+      "override": {
+        "rings": false,
+        "soak_seconds": false
+      },
+      "require_complete_matrix": false,
+      "requirements": [
+        "build-integrity",
+        "staging-delivery",
+        "package-function"
+      ],
+      "review_registry_transaction": false,
+      "review_threshold": 0,
+      "rollout": {
+        "rings": [
+          {
+            "observe_seconds": 0,
+            "partitions": 256
+          }
+        ]
+      },
+      "soak_seconds": 0
+    },
+    {
+      "change_scoped": false,
+      "claims": "qualified",
+      "description": "Complete-matrix qualification with a week of observation and staged rollout.",
+      "fitness": {
+        "alert-delivery": {
+          "max_age_seconds": 1209600
+        },
+        "authority-recovery": {
+          "max_age_seconds": 7776000
+        },
+        "hub-restore": {
+          "max_age_seconds": 7776000
+        },
+        "key-rotation": {
+          "max_age_seconds": 7776000
+        },
+        "storage-restore": {
+          "max_age_seconds": 1209600
+        }
+      },
+      "name": "soak",
+      "override": {
+        "rings": true,
+        "soak_seconds": true
+      },
+      "require_complete_matrix": true,
+      "requirements": [
+        "build-integrity",
+        "staging-delivery",
+        "package-function",
+        "rollout-health",
+        "rollout-observation"
+      ],
+      "review_registry_transaction": true,
+      "review_threshold": 1,
+      "rollout": {
+        "rings": [
+          {
+            "observe_seconds": 86400,
+            "partitions": 4
+          },
+          {
+            "observe_seconds": 86400,
+            "partitions": 32
+          },
+          {
+            "observe_seconds": 172800,
+            "partitions": 128
+          },
+          {
+            "observe_seconds": 0,
+            "partitions": 256
+          }
+        ]
+      },
+      "soak_seconds": 604800
     }
   ],
   "promises": [
@@ -153,7 +423,6 @@
       "measurements": {},
       "method": "automated",
       "phase": "build",
-      "production_only": false,
       "regressions": [
         "checks.build.critical-pkgs",
         "checks.build.package-platform-support"
@@ -188,7 +457,6 @@
       },
       "method": "automated",
       "phase": "staging",
-      "production_only": false,
       "regressions": [
         "checks.container.all",
         "checks.fleet.container-runtime",
@@ -221,7 +489,6 @@
       },
       "method": "automated",
       "phase": "complete",
-      "production_only": false,
       "regressions": [],
       "scope": "containers"
     },
@@ -256,7 +523,6 @@
       },
       "method": "automated",
       "phase": "staging",
-      "production_only": false,
       "regressions": [
         "checks.fleet.install-from-image",
         "checks.fleet.provisioning-boot"
@@ -283,7 +549,6 @@
       "measurements": {},
       "method": "automated",
       "phase": "staging",
-      "production_only": false,
       "regressions": [
         "checks.fleet.runtime-config-all",
         "checks.fleet.qualification-workload"
@@ -315,7 +580,6 @@
       },
       "method": "automated",
       "phase": "complete",
-      "production_only": false,
       "regressions": [],
       "scope": "images"
     },
@@ -348,36 +612,12 @@
       },
       "method": "automated",
       "phase": "staging",
-      "production_only": false,
       "regressions": [
         "checks.fleet.system-image-rollback",
         "checks.fleet.boot-identity-fail-closed",
         "checks.fleet.measured-boot"
       ],
       "scope": "images"
-    },
-    {
-      "checks": [
-        "key-custody",
-        "independent-encrypted-backup",
-        "restore-to-clean-environment",
-        "registry-key-rotation",
-        "alert-delivery",
-        "abandoned-and-fix-forward-release"
-      ],
-      "id": "operator-recovery",
-      "invalidated_by": [
-        "subject",
-        "policy",
-        "executor",
-        "environment"
-      ],
-      "measurements": {},
-      "method": "operator",
-      "phase": "staging",
-      "production_only": false,
-      "regressions": [],
-      "scope": "release"
     },
     {
       "checks": [
@@ -397,34 +637,12 @@
       "measurements": {},
       "method": "automated",
       "phase": "staging",
-      "production_only": false,
       "regressions": [
         "checks.fleet.apm-e2e",
         "checks.fleet.k3s-combined-worker",
         "checks.fleet.k3s-control-plane-worker"
       ],
       "scope": "packages"
-    },
-    {
-      "checks": [
-        "portable-hub-database-export-import",
-        "isolated-hub-restore",
-        "independent-authority-control",
-        "compatibility-and-support-window"
-      ],
-      "id": "production-recovery",
-      "invalidated_by": [
-        "subject",
-        "policy",
-        "executor",
-        "environment"
-      ],
-      "measurements": {},
-      "method": "operator",
-      "phase": "staging",
-      "production_only": true,
-      "regressions": [],
-      "scope": "release"
     },
     {
       "checks": [
@@ -444,7 +662,6 @@
       "measurements": {},
       "method": "automated",
       "phase": "rollout",
-      "production_only": false,
       "regressions": [],
       "scope": "release"
     },
@@ -466,7 +683,6 @@
       "measurements": {},
       "method": "automated",
       "phase": "complete",
-      "production_only": false,
       "regressions": [],
       "scope": "release"
     },
@@ -488,14 +704,13 @@
       "measurements": {},
       "method": "automated",
       "phase": "staging",
-      "production_only": false,
       "regressions": [
         "checks.fleet.native-hub-release-pipeline"
       ],
       "scope": "release"
     }
   ],
-  "schema_version": "aos.release.qualification-contract/v2",
+  "schema_version": "aos.release.qualification-contract/v1",
   "support": {
     "default": {
       "kind": "standard",
@@ -787,31 +1002,5 @@
       "platform": "x86_64-linux",
       "required": true
     }
-  ],
-  "thresholds": {
-    "candidate": {
-      "exercise_max_age_seconds": 2592000,
-      "require_complete_matrix": false,
-      "require_independent_review": true,
-      "soak_seconds": 604800
-    },
-    "edge": {
-      "exercise_max_age_seconds": 2592000,
-      "require_complete_matrix": false,
-      "require_independent_review": false,
-      "soak_seconds": 86400
-    },
-    "emergency": {
-      "exercise_max_age_seconds": 2592000,
-      "require_complete_matrix": true,
-      "require_independent_review": true,
-      "soak_seconds": 1209600
-    },
-    "stable": {
-      "exercise_max_age_seconds": 2592000,
-      "require_complete_matrix": true,
-      "require_independent_review": true,
-      "soak_seconds": 1209600
-    }
-  }
+  ]
 }

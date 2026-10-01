@@ -4,13 +4,13 @@
 //! no archive completeness, independent archive FK proof, application reference
 //! closure, provider state, credential custody or activation authority.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, ensure};
+use anyhow::{ensure, Result};
 
-use super::{SqliteSnapshotReader, quote_identifier};
+use super::{quote_identifier, SqliteSnapshotReader};
 
 const PROGRESS_INTERVAL: i32 = 1_000;
 const MAX_PROGRESS_CALLBACKS: u64 = 1_000_000;

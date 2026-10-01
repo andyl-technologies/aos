@@ -4,6 +4,10 @@
 ##! and /etc/shadow entries. On an immutable system these are baked into
 ##! the image; on-host configuration can layer additional users.
 ##!
+##! Home directories are owned by modules/base/homes.nix: interactive
+##! accounts default to a home under `aos.homes.directory` when persistent
+##! homes are enabled, and `createHome` marks the homes that module creates.
+##!
 ##! Absorbed TOML config values:
 ##!   [users.*] uid, group, home, shell, description, extra_groups
 ##!   [groups.*] gid, members
@@ -14,6 +18,11 @@
   ...
 }: let
   cfg = config.aos.users;
+  homes = config.aos.homes;
+
+  # Interactive accounts start at UID 1000; system accounts below that keep
+  # the placeholder home unless a module sets one explicitly.
+  interactiveUidStart = 1000;
 
   # Generate a passwd(5) line for a user.
   mkPasswdLine = name: u: "${name}:x:${toString u.uid}:${
@@ -60,7 +69,11 @@ in {
     ## - `aos.users.groups`
     users = lib.mkOption {
       type = lib.types.attrsOf (
-        lib.types.submodule {
+        lib.types.submodule ({
+          name,
+          config,
+          ...
+        }: {
           options = {
             ## User ID (UID). System users should use UIDs below 1000.
             uid = lib.mkOption {
@@ -74,10 +87,30 @@ in {
               description = "Primary group name for this user.";
             };
             ## Home directory path.
+            ##
+            ## Interactive accounts (UID 1000 and above) default to a
+            ## directory under `aos.homes.directory` once `aos.homes.enable`
+            ## is set; every other account defaults to the placeholder "/".
             home = lib.mkOption {
               type = lib.types.str;
-              default = "/";
+              default =
+                if homes.enable && config.uid >= interactiveUidStart
+                then "${homes.directory}/${name}"
+                else "/";
+              defaultText = lib.literalExpression ''"''${aos.homes.directory}/<name>" for interactive accounts when aos.homes.enable is set, otherwise "/"'';
               description = "Home directory path.";
+            };
+            ## Whether the home directory is created and owned by this account.
+            ##
+            ## Defaults to true exactly when the home lies under
+            ## `aos.homes.directory`, so homes on the state volume are
+            ## created at boot and on activation (modules/base/homes.nix)
+            ## while service accounts manage their own state directories.
+            createHome = lib.mkOption {
+              type = lib.types.bool;
+              default = homes.enable && lib.hasPrefix "${homes.directory}/" config.home;
+              defaultText = lib.literalExpression "aos.homes.enable && lib.hasPrefix aos.homes.directory home";
+              description = "Create the home directory on the persistent state volume with this account's ownership.";
             };
             ## Login shell. Use /sbin/nologin for system accounts.
             shell = lib.mkOption {
@@ -98,7 +131,7 @@ in {
               description = "Additional groups this user belongs to.";
             };
           };
-        }
+        })
       );
       default = {};
       description = "System user accounts.";
@@ -140,6 +173,41 @@ in {
   };
 
   config = {
+    # The multi-user Nix pool must never be recycled, including after package
+    # removal: old store objects and retained generations carry numeric owners.
+    assertions = [
+      {
+        assertion = builtins.all (name: let
+          uid = cfg.users.${name}.uid;
+        in
+          uid < 30001 || uid > 30064 || (name == "nixbld${toString (uid - 30000)}" && cfg.users.${name}.group == "nixbld")) (builtins.attrNames cfg.users);
+        message = "UIDs 30001 through 30064 are permanently reserved for their matching nixbld build accounts";
+      }
+      {
+        assertion = builtins.all (name: cfg.groups.${name}.gid != 30000 || name == "nixbld") (builtins.attrNames cfg.groups);
+        message = "GID 30000 is permanently reserved for nixbld";
+      }
+      {
+        assertion = builtins.all (index: let
+          name = "nixbld${toString index}";
+        in
+          !(cfg.users ? ${name}) || (cfg.users.${name}.uid == 30000 + index && cfg.users.${name}.group == "nixbld")) (lib.range 1 64);
+        message = "Nix build account names must retain their reserved UID and primary group";
+      }
+      {
+        assertion = !(cfg.groups ? nixbld) || cfg.groups.nixbld.gid == 30000;
+        message = "The nixbld group must retain GID 30000";
+      }
+      {
+        assertion = builtins.length (lib.unique (lib.mapAttrsToList (_: user: user.uid) cfg.users)) == builtins.length (builtins.attrNames cfg.users);
+        message = "System user UIDs must be unique";
+      }
+      {
+        assertion = builtins.length (lib.unique (lib.mapAttrsToList (_: group: group.gid) cfg.groups)) == builtins.length (builtins.attrNames cfg.groups);
+        message = "System group GIDs must be unique";
+      }
+    ];
+
     # Baseline system users and groups. Declared in a `config` block
     # (rather than as the option's `default = { … }`) so they merge
     # cleanly with entries other modules add via

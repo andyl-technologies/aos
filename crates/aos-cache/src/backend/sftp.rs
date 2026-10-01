@@ -1,13 +1,27 @@
 //! SFTP (`sftp://` / `ssh://`) cache backend.
+//!
+//! Every write replaces its target atomically (temp file + rename).
+//! Conditional writes compare the SHA-256 of the current file under an
+//! exclusive-create `.<name>.lock` sibling; see [`super::conditional`].
+//! Existence checks treat any failed remote `stat` as absence, so
+//! [`get_static_object`](CacheBackend::get_static_object) can report an
+//! unreadable object as missing; the conditional write itself re-reads the
+//! object under the lock and fails closed.
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
+use aos_net::protocol::conditional::content_version;
 use aos_net::{TransferEngine, TransferRequest};
 
-use super::{CacheBackend, add_static_metadata_headers};
+use super::conditional::{
+    outcome_with_reported_versions, read_small_object, send_conditional_put, validate_relative_path,
+};
+use super::{
+    CacheBackend, ConditionalOutcome, Expectation, ObjectVersion, add_static_metadata_headers,
+};
 
 /// SFTP cache backend.
 ///
@@ -190,5 +204,43 @@ impl CacheBackend for SftpBackend {
             .await
             .with_context(|| format!("uploading static file via SFTP: {url}"))?;
         Ok(())
+    }
+
+    async fn get_static_object(
+        &self,
+        relative_path: &str,
+        max_bytes: usize,
+    ) -> Result<Option<(Vec<u8>, ObjectVersion)>> {
+        validate_relative_path(relative_path)?;
+        let url = self.remote_url(relative_path);
+
+        let object = read_small_object(&self.engine, &url, max_bytes).await?;
+        Ok(object.map(|object| {
+            let version = ObjectVersion(content_version(&object.bytes));
+            (object.bytes, version)
+        }))
+    }
+
+    async fn put_static_file_conditional(
+        &self,
+        relative_path: &str,
+        source: &std::path::Path,
+        content_type: Option<&str>,
+        cache_control: Option<&str>,
+        expect: Expectation,
+    ) -> Result<ConditionalOutcome> {
+        validate_relative_path(relative_path)?;
+        let url = self.remote_url(relative_path);
+
+        let response = send_conditional_put(
+            &self.engine,
+            &url,
+            source,
+            content_type,
+            cache_control,
+            &expect,
+        )
+        .await?;
+        outcome_with_reported_versions(&url, response)
     }
 }

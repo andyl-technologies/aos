@@ -21,6 +21,10 @@ impl Backend for HeldEnsureBackend {
         self.inner.backend.dialect()
     }
 
+    async fn migrate_schema(&self) -> anyhow::Result<()> {
+        self.inner.backend.migrate_schema().await
+    }
+
     async fn execute(&self, sql: &str, params: &[Value]) -> anyhow::Result<u64> {
         self.inner.backend.execute(sql, params).await
     }

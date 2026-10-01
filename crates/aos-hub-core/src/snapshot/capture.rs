@@ -397,7 +397,7 @@ impl<'de> Deserialize<'de> for PrivateScalarWire {
                         _ => {
                             return Err(de::Error::custom(
                                 "snapshot scalar member is unknown or duplicated",
-                            ))
+                            ));
                         }
                     }
                 }

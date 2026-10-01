@@ -1,7 +1,7 @@
 //! Cooperative lifetime/deadline and approximate SQLite VM work budgets.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
 use super::{

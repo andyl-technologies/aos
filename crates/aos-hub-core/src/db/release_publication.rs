@@ -3,6 +3,23 @@
 //! These operations turn ordinary ready registry publications into a
 //! fail-closed release protocol. Each transition is an atomic `INSERT SELECT`
 //! whose joins prove the complete predecessor chain inside the database.
+//!
+//! # Channel advances
+//!
+//! A channel advance is a generation compare-and-swap over one partition
+//! range. The evidence that authorizes it depends on which of the bundle's
+//! pinned deployments executes the advance:
+//!
+//! ```text
+//! executing deployment             required evidence
+//! bundle.production_deployment_id  release_promotions row for the receipt
+//! bundle.staging_deployment_id     committed staging publication receipt
+//!   (only when it differs from production)
+//! any other deployment             rejected
+//! ```
+//!
+//! Channel names are a kind (`edge`, `candidate`, `stable`) with an optional
+//! per-train suffix; see [`is_release_channel_name`].
 
 use anyhow::{bail, Context, Result};
 use aos_release::digest::Sha256Digest;
@@ -147,7 +164,9 @@ pub struct NewReleaseTimestampPublication {
 pub struct NewReleaseChannelOperation {
     /// Registry owning the channel.
     pub registry_id: i64,
-    /// `edge`, `candidate`, or `stable`.
+    /// Deployment executing the advance; selects the authorizing evidence.
+    pub deployment_id: String,
+    /// Channel name accepted by [`is_release_channel_name`].
     pub channel: String,
     /// Generation the caller observed before the advance.
     pub prior_generation: i64,
@@ -157,8 +176,12 @@ pub struct NewReleaseChannelOperation {
     pub last_partition: i64,
     /// Release manifest selected by the channel.
     pub manifest_digest: String,
-    /// Exact promoted production receipt authorizing the selection.
-    pub production_receipt_digest: String,
+    /// This deployment's publication receipt authorizing the selection.
+    ///
+    /// On the production deployment this is the promoted production receipt;
+    /// on the staging deployment it is the committed staging receipt. The
+    /// signed channel receipt carries it as `publication_receipt_digest`.
+    pub publication_receipt_digest: String,
     /// SHA-256 identity of the canonical channel operation.
     pub operation_digest: String,
     /// Canonical signed channel receipt as UTF-8 JSON.
@@ -176,12 +199,84 @@ pub struct ReleaseChannelOperationRecord {
     pub last_partition: i64,
     /// Release manifest selected by the operation.
     pub manifest_digest: String,
-    /// Production receipt authorizing the operation.
-    pub production_receipt_digest: String,
+    /// Publication receipt of the deployment that authorized the operation.
+    pub publication_receipt_digest: String,
     /// Digest of the signed channel receipt.
     pub operation_digest: String,
     /// Canonical signed channel receipt.
     pub receipt_json: String,
+}
+
+/// SQL predicate proving that deployment `?5` may advance a channel to the
+/// bundle aliased `bundle` using receipt `?4`.
+///
+/// The production deployment needs a completed promotion whose production
+/// receipt is `?4`. The staging deployment needs its own committed staging
+/// receipt `?4`, and qualifies only when it is distinct from the production
+/// deployment: a shared deployment serves production consumers, so it keeps
+/// the promotion requirement and fails closed on staging-only evidence.
+const CHANNEL_ADVANCE_EVIDENCE: &str = "(
+      (?5 = bundle.production_deployment_id
+       AND EXISTS (SELECT 1 FROM release_promotions promotion
+            WHERE promotion.bundle_digest = bundle.bundle_digest
+              AND promotion.production_receipt_digest = ?4))
+   OR (?5 = bundle.staging_deployment_id
+       AND ?5 <> bundle.production_deployment_id
+       AND EXISTS (SELECT 1 FROM release_bundle_publications staging
+            WHERE staging.bundle_digest = bundle.bundle_digest
+              AND staging.environment = 'staging'
+              AND staging.deployment_id = ?5
+              AND staging.receipt_digest = ?4)))";
+
+/// Reports whether `name` is a release channel the Hub may advance.
+///
+/// A channel name is a kind, `edge`, `candidate`, or `stable`, optionally
+/// followed by a per-train suffix:
+///
+/// ```text
+/// ^(edge|candidate|stable)(-[0-9]{4}\.[0-9]{1,2})?$
+/// ```
+///
+/// The suffix must also be a canonical calendar train: a year without a
+/// leading zero and a month in `1..=12` without a leading zero. One train
+/// therefore has exactly one channel name, so two spellings can never hold
+/// independent generation histories.
+///
+/// # Examples
+///
+/// ```
+/// use aos_hub_core::db::is_release_channel_name;
+///
+/// assert!(is_release_channel_name("stable"));
+/// assert!(is_release_channel_name("stable-2026.3"));
+/// assert!(!is_release_channel_name("stable-2026.13"));
+/// assert!(!is_release_channel_name("nightly"));
+/// ```
+#[must_use]
+pub fn is_release_channel_name(name: &str) -> bool {
+    let (kind, train) = match name.split_once('-') {
+        Some((kind, train)) => (kind, Some(train)),
+        None => (name, None),
+    };
+    matches!(kind, "edge" | "candidate" | "stable") && train.is_none_or(is_release_train)
+}
+
+/// Accepts a canonical `YYYY.M` or `YYYY.MM` train suffix.
+fn is_release_train(train: &str) -> bool {
+    let Some((year, month)) = train.split_once('.') else {
+        return false;
+    };
+    let canonical_digits = |digits: &str| {
+        !digits.is_empty()
+            && digits.bytes().all(|byte| byte.is_ascii_digit())
+            && !digits.starts_with('0')
+    };
+
+    let year_is_valid = year.len() == 4 && canonical_digits(year);
+    let month_is_valid = matches!(month.len(), 1 | 2)
+        && canonical_digits(month)
+        && month.parse::<u8>().is_ok_and(|month| month <= 12);
+    year_is_valid && month_is_valid
 }
 
 impl Database {
@@ -621,11 +716,18 @@ impl Database {
 
     /// Advances a release channel with a generation compare-and-swap.
     ///
+    /// The operation, the channel frontier, and every partition in the range
+    /// are written in one checked batch. Each statement independently proves
+    /// that `input.deployment_id` holds the evidence described in the module
+    /// documentation, so no partial projection can survive a rejected advance.
+    ///
     /// # Errors
     ///
-    /// Returns an error for malformed input, stale generation, a production
-    /// receipt without a completed promotion, release mismatch, conflicting
-    /// replay, or storage failure.
+    /// Returns an error for malformed input, stale generation, a deployment
+    /// that is neither of the bundle's pinned deployments, a receipt that is
+    /// not this deployment's authorizing evidence (a production receipt without
+    /// a completed promotion, or a missing staging commit), release mismatch,
+    /// conflicting replay, or storage failure.
     pub async fn advance_release_channel(
         &self,
         input: &NewReleaseChannelOperation,
@@ -638,33 +740,37 @@ impl Database {
             }
             bail!("release channel evidence exists but its public projection differs");
         }
+
+        // Every statement binds ?1 registry, ?2 channel, ?3 manifest,
+        // ?4 authorizing receipt, and ?5 executing deployment so that the
+        // shared evidence predicate reads the same parameters everywhere.
         let new_generation = input.prior_generation + 1;
         let mut statements = vec![CheckedStatement::exact(
-            "INSERT INTO release_channel_operations
-               (registry_id, channel, prior_generation, new_generation,
-                first_partition, last_partition, manifest_digest,
-                production_receipt_digest, operation_digest, receipt_json,
-                committed_at)
-             SELECT bundle.registry_id, ?2, ?3, ?4, ?5, ?6,
-                    bundle.manifest_digest, promotion.production_receipt_digest,
-                    ?9, ?10, ?11
-               FROM release_promotions promotion
-               JOIN release_bundles bundle
-                 ON bundle.bundle_digest = promotion.bundle_digest
-              WHERE bundle.registry_id = ?1 AND bundle.manifest_digest = ?7
-                AND promotion.production_receipt_digest = ?8
-                AND ?3 = COALESCE((SELECT MAX(new_generation)
-                    FROM release_channel_operations
-                    WHERE registry_id = ?1 AND channel = ?2), 0)",
+            format!(
+                "INSERT INTO release_channel_advances
+                   (registry_id, channel, prior_generation, new_generation,
+                    first_partition, last_partition, manifest_digest,
+                    publication_receipt_digest, operation_digest, receipt_json,
+                    committed_at)
+                 SELECT bundle.registry_id, ?2, ?6, ?7, ?8, ?9,
+                        bundle.manifest_digest, ?4, ?10, ?11, ?12
+                   FROM release_bundles bundle
+                  WHERE bundle.registry_id = ?1 AND bundle.manifest_digest = ?3
+                    AND {CHANNEL_ADVANCE_EVIDENCE}
+                    AND ?6 = COALESCE((SELECT MAX(new_generation)
+                        FROM release_channel_advances
+                        WHERE registry_id = ?1 AND channel = ?2), 0)"
+            ),
             vals![
                 input.registry_id,
                 input.channel,
+                input.manifest_digest,
+                input.publication_receipt_digest,
+                input.deployment_id,
                 input.prior_generation,
                 new_generation,
                 input.first_partition,
                 input.last_partition,
-                input.manifest_digest,
-                input.production_receipt_digest,
                 input.operation_digest,
                 input.receipt_json,
                 now
@@ -672,42 +778,44 @@ impl Database {
             1,
         )];
         statements.push(CheckedStatement::exact(
-            "UPDATE channels
-                SET frontier = (SELECT release_id FROM release_bundles
-                    WHERE registry_id = ?1 AND manifest_digest = ?3), active = 1
-              WHERE registry_id = ?1 AND name = ?2
-                AND EXISTS (SELECT 1 FROM release_promotions promotion
-                    JOIN release_bundles bundle
-                      ON bundle.bundle_digest = promotion.bundle_digest
-                   WHERE bundle.registry_id = ?1 AND bundle.manifest_digest = ?3
-                     AND promotion.production_receipt_digest = ?4)",
+            format!(
+                "UPDATE channels
+                    SET frontier = (SELECT release_id FROM release_bundles
+                        WHERE registry_id = ?1 AND manifest_digest = ?3), active = 1
+                  WHERE registry_id = ?1 AND name = ?2
+                    AND EXISTS (SELECT 1 FROM release_bundles bundle
+                       WHERE bundle.registry_id = ?1 AND bundle.manifest_digest = ?3
+                         AND {CHANNEL_ADVANCE_EVIDENCE})"
+            ),
             vals![
                 input.registry_id,
                 input.channel,
                 input.manifest_digest,
-                input.production_receipt_digest
+                input.publication_receipt_digest,
+                input.deployment_id
             ],
             1,
         ));
         for bucket in input.first_partition..=input.last_partition {
             statements.push(CheckedStatement::exact(
-                "INSERT INTO channel_partitions (channel_id, bucket, release)
-                 SELECT channel.id, ?3, bundle.release_id
-                   FROM channels channel
-                   JOIN release_bundles bundle
-                     ON bundle.registry_id = channel.registry_id
-                    AND bundle.manifest_digest = ?4
-                   JOIN release_promotions promotion
-                     ON promotion.bundle_digest = bundle.bundle_digest
-                    AND promotion.production_receipt_digest = ?5
-                  WHERE channel.registry_id = ?1 AND channel.name = ?2
-                 ON CONFLICT(channel_id, bucket) DO UPDATE SET release = excluded.release",
+                format!(
+                    "INSERT INTO channel_partitions (channel_id, bucket, release)
+                     SELECT channel.id, ?6, bundle.release_id
+                       FROM channels channel
+                       JOIN release_bundles bundle
+                         ON bundle.registry_id = channel.registry_id
+                        AND bundle.manifest_digest = ?3
+                      WHERE channel.registry_id = ?1 AND channel.name = ?2
+                        AND {CHANNEL_ADVANCE_EVIDENCE}
+                     ON CONFLICT(channel_id, bucket) DO UPDATE SET release = excluded.release"
+                ),
                 vals![
                     input.registry_id,
                     input.channel,
-                    bucket,
                     input.manifest_digest,
-                    input.production_receipt_digest
+                    input.publication_receipt_digest,
+                    input.deployment_id,
+                    bucket
                 ],
                 1,
             ));
@@ -727,18 +835,15 @@ impl Database {
         channel: &str,
         new_generation: i64,
     ) -> Result<Option<ReleaseChannelOperationRecord>> {
-        if registry_id <= 0
-            || new_generation <= 0
-            || !matches!(channel, "edge" | "candidate" | "stable")
-        {
+        if registry_id <= 0 || new_generation <= 0 || !is_release_channel_name(channel) {
             bail!("release channel operation identity is invalid");
         }
         self.backend
             .query_opt(
                 "SELECT prior_generation, first_partition, last_partition,
-                        manifest_digest, production_receipt_digest,
+                        manifest_digest, publication_receipt_digest,
                         operation_digest, receipt_json
-                   FROM release_channel_operations
+                   FROM release_channel_advances
                   WHERE registry_id = ?1 AND channel = ?2 AND new_generation = ?3",
                 &vals![registry_id, channel, new_generation],
             )
@@ -749,7 +854,7 @@ impl Database {
                     first_partition: row.get(1)?,
                     last_partition: row.get(2)?,
                     manifest_digest: row.get(3)?,
-                    production_receipt_digest: row.get(4)?,
+                    publication_receipt_digest: row.get(4)?,
                     operation_digest: row.get(5)?,
                     receipt_json: row.get(6)?,
                 })
@@ -852,9 +957,9 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT prior_generation, first_partition, last_partition,
-                    manifest_digest, production_receipt_digest,
+                    manifest_digest, publication_receipt_digest,
                     operation_digest, receipt_json
-               FROM release_channel_operations
+               FROM release_channel_advances
               WHERE registry_id = ?1 AND channel = ?2 AND new_generation = ?3",
                 &vals![input.registry_id, input.channel, generation],
             )
@@ -864,7 +969,7 @@ impl Database {
                 && row.get::<i64>(1)? == input.first_partition
                 && row.get::<i64>(2)? == input.last_partition
                 && row.get::<String>(3)? == input.manifest_digest
-                && row.get::<String>(4)? == input.production_receipt_digest
+                && row.get::<String>(4)? == input.publication_receipt_digest
                 && row.get::<String>(5)? == input.operation_digest
                 && row.get::<String>(6)? == input.receipt_json)
         })
@@ -1013,13 +1118,14 @@ fn validate_channel(input: &NewReleaseChannelOperation) -> Result<()> {
     {
         bail!("release channel operation is invalid");
     }
-    if !matches!(input.channel.as_str(), "edge" | "candidate" | "stable") {
+    if !is_release_channel_name(&input.channel) {
         bail!("release channel is invalid");
     }
+    validate_key_bytes(&input.deployment_id, "deployment id", 128)?;
     validate_key_bytes(&input.manifest_digest, "release manifest digest", 128)?;
     validate_key_bytes(
-        &input.production_receipt_digest,
-        "production receipt digest",
+        &input.publication_receipt_digest,
+        "publication receipt digest",
         128,
     )?;
     validate_key_bytes(&input.operation_digest, "channel operation digest", 128)
@@ -1223,12 +1329,13 @@ mod tests {
 
         let edge = NewReleaseChannelOperation {
             registry_id,
+            deployment_id: "production-deployment".into(),
             channel: "edge".into(),
             prior_generation: 0,
             first_partition: 0,
             last_partition: 31,
             manifest_digest: bundle.manifest_digest.clone(),
-            production_receipt_digest: "6".repeat(64),
+            publication_receipt_digest: "6".repeat(64),
             operation_digest: "7".repeat(64),
             receipt_json: "{\"generation\":1}".into(),
         };
@@ -1528,5 +1635,456 @@ mod tests {
             .record_release_timestamp_publication(&skipped, 12)
             .await
             .is_err());
+    }
+
+    const STAGING_RECEIPT: char = '3';
+    const PRODUCTION_RECEIPT: char = '6';
+
+    /// Admits the fixture bundle into a new registry named `slug`.
+    async fn admitted_bundle(db: &Database, slug: &str) -> NewReleaseBundle {
+        let registry_id = db.register_registry(slug, &[], false).await.unwrap();
+        ready_publication(
+            db,
+            registry_id,
+            &format!("{slug}-source"),
+            &format!("{slug}-source-generation"),
+            '1',
+            &"c".repeat(64),
+        )
+        .await;
+        let bundle = bundle(registry_id);
+        db.admit_release_bundle(&bundle, &format!("{slug}-source"), 11)
+            .await
+            .unwrap();
+        bundle
+    }
+
+    /// Commits the bundle's staging publication with the fixture receipt.
+    async fn commit_staging(db: &Database, bundle: &NewReleaseBundle, slug: &str) {
+        ready_publication(
+            db,
+            bundle.registry_id,
+            &format!("{slug}-staging"),
+            &format!("{slug}-staging-generation"),
+            '2',
+            &"d".repeat(64),
+        )
+        .await;
+        db.record_release_bundle_publication(
+            &NewReleaseBundlePublication {
+                bundle_digest: bundle.bundle_digest.clone(),
+                registry_id: bundle.registry_id,
+                environment: "staging".into(),
+                publication_id: format!("{slug}-staging"),
+                deployment_id: bundle.staging_deployment_id.clone(),
+                receipt_digest: STAGING_RECEIPT.to_string().repeat(64),
+                receipt_json: "{\"environment\":\"staging\"}".into(),
+                staging_receipt_digest: None,
+            },
+            12,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Qualifies the staged bundle and promotes it with the fixture receipt.
+    async fn promote(db: &Database, bundle: &NewReleaseBundle, slug: &str) {
+        db.record_release_qualification(
+            &NewReleaseQualification {
+                bundle_digest: bundle.bundle_digest.clone(),
+                staging_receipt_digest: STAGING_RECEIPT.to_string().repeat(64),
+                staging_receipt_json: "{\"environment\":\"staging\"}".into(),
+                qualification_digest: "4".repeat(64),
+                receipt_json: "{\"qualified\":true}".into(),
+            },
+            13,
+        )
+        .await
+        .unwrap();
+        ready_publication(
+            db,
+            bundle.registry_id,
+            &format!("{slug}-production"),
+            &format!("{slug}-production-generation"),
+            '5',
+            &"e".repeat(64),
+        )
+        .await;
+        db.promote_release_bundle(
+            &NewReleaseBundlePublication {
+                bundle_digest: bundle.bundle_digest.clone(),
+                registry_id: bundle.registry_id,
+                environment: "production".into(),
+                publication_id: format!("{slug}-production"),
+                deployment_id: bundle.production_deployment_id.clone(),
+                receipt_digest: PRODUCTION_RECEIPT.to_string().repeat(64),
+                receipt_json: "{\"environment\":\"production\"}".into(),
+                staging_receipt_digest: Some(STAGING_RECEIPT.to_string().repeat(64)),
+            },
+            &NewReleasePromotion {
+                bundle_digest: bundle.bundle_digest.clone(),
+                staging_receipt_digest: STAGING_RECEIPT.to_string().repeat(64),
+                qualification_digest: "4".repeat(64),
+                production_receipt_digest: PRODUCTION_RECEIPT.to_string().repeat(64),
+            },
+            15,
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn create_channel(db: &Database, registry_id: i64, channel_id: i64, name: &str) {
+        db.backend
+            .execute(
+                "INSERT INTO channels (id, registry_id, name, frontier, active)
+                 VALUES (?1, ?2, ?3, NULL, 1)",
+                &vals![channel_id, registry_id, name],
+            )
+            .await
+            .unwrap();
+    }
+
+    fn advance(
+        bundle: &NewReleaseBundle,
+        deployment_id: &str,
+        channel: &str,
+        receipt: char,
+    ) -> NewReleaseChannelOperation {
+        NewReleaseChannelOperation {
+            registry_id: bundle.registry_id,
+            deployment_id: deployment_id.into(),
+            channel: channel.into(),
+            prior_generation: 0,
+            first_partition: 0,
+            last_partition: 255,
+            manifest_digest: bundle.manifest_digest.clone(),
+            publication_receipt_digest: receipt.to_string().repeat(64),
+            operation_digest: format!("{deployment_id}-{channel}-{receipt}"),
+            receipt_json: format!("{{\"channel\":\"{channel}\"}}"),
+        }
+    }
+
+    async fn frontier(db: &Database, registry_id: i64, name: &str) -> Option<String> {
+        db.list_channels(registry_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|channel| channel.name == name)
+            .and_then(|channel| channel.frontier)
+    }
+
+    #[test]
+    fn release_channel_names_follow_kind_and_train_syntax() {
+        for accepted in [
+            "edge",
+            "candidate",
+            "stable",
+            "stable-2026.3",
+            "stable-2026.12",
+            "candidate-2026.10",
+            "edge-2027.1",
+        ] {
+            assert!(is_release_channel_name(accepted), "rejected {accepted}");
+        }
+
+        for rejected in [
+            "",
+            "nightly",
+            "Stable",
+            "stable-",
+            "stable-2026",
+            "stable-2026.",
+            "stable-2026.0",
+            "stable-2026.03",
+            "stable-2026.13",
+            "stable-02026.3",
+            "stable-0999.3",
+            "stable-2026.3-rc",
+            "stable-2026.3.1",
+            "stable_2026.3",
+            "nightly-2026.3",
+            "stable-２０２６.3",
+        ] {
+            assert!(!is_release_channel_name(rejected), "accepted {rejected}");
+        }
+    }
+
+    #[tokio::test]
+    async fn staging_deployment_advances_after_its_staging_commit() {
+        let db = Database::open_in_memory().await.unwrap();
+        let bundle = admitted_bundle(&db, "staging-advance").await;
+        create_channel(&db, bundle.registry_id, 1, "edge").await;
+        let staged = advance(&bundle, "staging-deployment", "edge", STAGING_RECEIPT);
+
+        assert!(
+            db.advance_release_channel(&staged, 13).await.is_err(),
+            "staging advance requires a committed staging publication"
+        );
+        assert_eq!(frontier(&db, bundle.registry_id, "edge").await, None);
+
+        commit_staging(&db, &bundle, "staging-advance").await;
+        for rejected in [
+            advance(&bundle, "staging-deployment", "edge", '9'),
+            advance(&bundle, "production-deployment", "edge", STAGING_RECEIPT),
+            advance(&bundle, "unrelated-deployment", "edge", STAGING_RECEIPT),
+        ] {
+            assert!(
+                db.advance_release_channel(&rejected, 14).await.is_err(),
+                "accepted {rejected:?}"
+            );
+        }
+
+        db.advance_release_channel(&staged, 14).await.unwrap();
+        db.advance_release_channel(&staged, 14).await.unwrap();
+
+        assert_eq!(
+            frontier(&db, bundle.registry_id, "edge").await.as_deref(),
+            Some("2026.03.0")
+        );
+        let recorded = db
+            .release_channel_operation(bundle.registry_id, "edge", 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            recorded.publication_receipt_digest,
+            STAGING_RECEIPT.to_string().repeat(64)
+        );
+    }
+
+    #[tokio::test]
+    async fn production_deployment_still_requires_a_promotion() {
+        let db = Database::open_in_memory().await.unwrap();
+        let bundle = admitted_bundle(&db, "production-advance").await;
+        create_channel(&db, bundle.registry_id, 1, "stable").await;
+        commit_staging(&db, &bundle, "production-advance").await;
+
+        let staging_evidence = advance(&bundle, "production-deployment", "stable", STAGING_RECEIPT);
+        assert!(
+            db.advance_release_channel(&staging_evidence, 14)
+                .await
+                .is_err(),
+            "production advance accepted staging-only evidence"
+        );
+
+        promote(&db, &bundle, "production-advance").await;
+        let crossed = advance(&bundle, "staging-deployment", "stable", PRODUCTION_RECEIPT);
+        assert!(
+            db.advance_release_channel(&crossed, 16).await.is_err(),
+            "staging advance accepted the production receipt"
+        );
+
+        let promoted = advance(
+            &bundle,
+            "production-deployment",
+            "stable",
+            PRODUCTION_RECEIPT,
+        );
+        db.advance_release_channel(&promoted, 16).await.unwrap();
+        assert_eq!(
+            frontier(&db, bundle.registry_id, "stable").await.as_deref(),
+            Some("2026.03.0")
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_deployment_keeps_the_promotion_requirement() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("shared-advance", &[], false)
+            .await
+            .unwrap();
+        ready_publication(
+            &db,
+            registry_id,
+            "shared-advance-source",
+            "shared-advance-source-generation",
+            '1',
+            &"c".repeat(64),
+        )
+        .await;
+        let shared = NewReleaseBundle {
+            staging_deployment_id: "shared-deployment".into(),
+            production_deployment_id: "shared-deployment".into(),
+            ..bundle(registry_id)
+        };
+        db.admit_release_bundle(&shared, "shared-advance-source", 11)
+            .await
+            .unwrap();
+        commit_staging(&db, &shared, "shared-advance").await;
+        create_channel(&db, registry_id, 1, "edge").await;
+
+        let staged = advance(&shared, "shared-deployment", "edge", STAGING_RECEIPT);
+        assert!(db.advance_release_channel(&staged, 14).await.is_err());
+        assert_eq!(frontier(&db, registry_id, "edge").await, None);
+    }
+
+    #[tokio::test]
+    async fn per_train_channels_advance_and_malformed_names_are_rejected() {
+        let db = Database::open_in_memory().await.unwrap();
+        let bundle = admitted_bundle(&db, "train-advance").await;
+        commit_staging(&db, &bundle, "train-advance").await;
+        create_channel(&db, bundle.registry_id, 1, "candidate-2026.12").await;
+        create_channel(&db, bundle.registry_id, 2, "stable-2026.13").await;
+
+        let train = advance(
+            &bundle,
+            "staging-deployment",
+            "candidate-2026.12",
+            STAGING_RECEIPT,
+        );
+        db.advance_release_channel(&train, 14).await.unwrap();
+        assert_eq!(
+            frontier(&db, bundle.registry_id, "candidate-2026.12")
+                .await
+                .as_deref(),
+            Some("2026.03.0")
+        );
+
+        for malformed in ["stable-2026.13", "nightly", "stable-"] {
+            let operation = advance(&bundle, "staging-deployment", malformed, STAGING_RECEIPT);
+            assert!(db.advance_release_channel(&operation, 14).await.is_err());
+            assert!(db
+                .release_channel_operation(bundle.registry_id, malformed, 1)
+                .await
+                .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn per_train_ledger_migration_retains_baseline_operations() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("hub.db");
+        let db = Database::open(&path).await.unwrap();
+        let bundle = admitted_bundle(&db, "ledger-upgrade").await;
+        commit_staging(&db, &bundle, "ledger-upgrade").await;
+        create_channel(&db, bundle.registry_id, 1, "edge").await;
+        drop(db);
+
+        // Rewind to the baseline: the successor ledger is additive, so a v1
+        // database is exactly this schema without it. The retained operation
+        // lives in the frozen baseline ledger.
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch("DROP TABLE release_channel_advances")
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO release_channel_operations
+                   (registry_id, channel, prior_generation, new_generation,
+                    first_partition, last_partition, manifest_digest,
+                    production_receipt_digest, operation_digest, receipt_json,
+                    committed_at)
+                 VALUES (?1, 'edge', 0, 1, 0, 31, ?2, ?3, ?4, '{\"legacy\":1}', 13)",
+                rusqlite::params![
+                    bundle.registry_id,
+                    bundle.manifest_digest,
+                    STAGING_RECEIPT.to_string().repeat(64),
+                    "8".repeat(64)
+                ],
+            )
+            .unwrap();
+        connection
+            .execute_batch("UPDATE schema_version SET version = 1")
+            .unwrap();
+        drop(connection);
+
+        let db = Database::open(&path).await.unwrap();
+        let version: i64 = db
+            .backend
+            .query_opt("SELECT version FROM schema_version", &[])
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(version, 2);
+        let retained = db
+            .release_channel_operation(bundle.registry_id, "edge", 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.operation_digest, "8".repeat(64));
+        assert_eq!(
+            retained.publication_receipt_digest,
+            STAGING_RECEIPT.to_string().repeat(64)
+        );
+
+        // The copied history keeps the compare-and-swap continuous.
+        let stale = advance(&bundle, "staging-deployment", "edge", STAGING_RECEIPT);
+        assert!(db.advance_release_channel(&stale, 14).await.is_err());
+        let next = NewReleaseChannelOperation {
+            prior_generation: 1,
+            ..stale
+        };
+        db.advance_release_channel(&next, 14).await.unwrap();
+    }
+
+    #[test]
+    fn per_train_ledger_migration_replays_after_any_interruption() {
+        let migration = crate::backend::split_statements(super::super::MIGRATIONS[1]);
+        for cut in 0..=migration.len() {
+            let connection = rusqlite::Connection::open_in_memory().unwrap();
+            connection
+                .execute_batch(super::super::MIGRATIONS[0])
+                .unwrap();
+
+            // This test checks statement replay, not release continuity, so
+            // the retained row stands alone without its parent evidence.
+            connection
+                .execute_batch("PRAGMA foreign_keys = OFF")
+                .unwrap();
+            connection
+                .execute_batch(
+                    "INSERT INTO release_channel_operations
+                       (registry_id, channel, prior_generation, new_generation,
+                        first_partition, last_partition, manifest_digest,
+                        production_receipt_digest, operation_digest,
+                        receipt_json, committed_at)
+                     VALUES (1, 'stable', 0, 1, 0, 255, 'manifest', 'receipt',
+                             'operation', '{}', 1)",
+                )
+                .unwrap();
+
+            // Interrupt after `cut` statements, then replay the whole script
+            // the way the MySQL migrator does: rewritten statements, with
+            // indexes skipped once the catalog shows them.
+            for statement in &migration[..cut] {
+                connection.execute_batch(statement).unwrap();
+            }
+            for statement in &migration {
+                if let Some((_, index)) = super::super::mysql_migration_index_identity(statement) {
+                    let exists: i64 = connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM sqlite_master
+                              WHERE type = 'index' AND name = ?1",
+                            [index],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    if exists == 1 {
+                        continue;
+                    }
+                }
+                let replay = super::super::mysql_replay_safe_migration_sql(statement).replacen(
+                    "INSERT IGNORE INTO ",
+                    "INSERT OR IGNORE INTO ",
+                    1,
+                );
+                connection
+                    .execute_batch(&replay)
+                    .unwrap_or_else(|error| panic!("replay after {cut}: {error}\n{replay}"));
+            }
+
+            let copied: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM release_channel_advances
+                      WHERE channel = 'stable' AND publication_receipt_digest = 'receipt'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(copied, 1, "interruption after {cut} statements");
+        }
     }
 }

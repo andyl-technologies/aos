@@ -7,11 +7,11 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use anyhow::{Result, ensure};
+use anyhow::{ensure, Result};
 use sha2::{Digest, Sha256};
 
-use super::{SqliteSnapshotSchema, compiled_schema_for_generation};
-use crate::db::{MIGRATIONS, SCHEMA_IDENTITY};
+use super::{compiled_schema_for_generation, SqliteSnapshotSchema};
+use crate::db::{snapshot_schema_identity, MIGRATIONS};
 use crate::snapshot::{SnapshotClassifier, SnapshotSchemaManifest};
 
 /// A supported object kind in the independently compiled SQLite catalogue.
@@ -119,7 +119,7 @@ impl CompiledSqliteSnapshotCatalogue {
     async fn load_inner(version: usize) -> Result<Self> {
         let (objects, tables) = compiled_schema_for_generation(version).await?;
         let schema = SqliteSnapshotSchema {
-            identity: SCHEMA_IDENTITY.into(),
+            identity: snapshot_schema_identity(version)?.into(),
             version,
             migration_digests: MIGRATIONS
                 .get(..version)
@@ -231,18 +231,14 @@ mod generation_tests {
         assert_eq!(generation4.schema().tables.len(), 275);
         assert_eq!(generation6.schema().tables.len(), 276);
         assert_eq!(current.schema().tables.len(), 278);
-        assert!(
-            !generation4
-                .definitions()
-                .iter()
-                .any(|value| value.name() == "mirror_import_objects")
-        );
-        assert!(
-            current
-                .definitions()
-                .iter()
-                .any(|value| value.name() == "mirror_import_objects")
-        );
+        assert!(!generation4
+            .definitions()
+            .iter()
+            .any(|value| value.name() == "mirror_import_objects"));
+        assert!(current
+            .definitions()
+            .iter()
+            .any(|value| value.name() == "mirror_import_objects"));
         assert_eq!(generation4.schema_manifest().migration_digests.len(), 4);
         assert_eq!(generation5.schema_manifest().migration_digests.len(), 5);
         assert_eq!(generation6.schema_manifest().migration_digests.len(), 6);
@@ -260,18 +256,14 @@ mod generation_tests {
         assert_eq!(mirror_columns(&generation5), 9);
         assert_eq!(mirror_columns(&generation6), 12);
         assert_eq!(mirror_columns(&current), 13);
-        assert!(
-            !historical
-                .definitions()
-                .iter()
-                .any(|value| value.name() == "direct_upload_sessions")
-        );
-        assert!(
-            current
-                .definitions()
-                .iter()
-                .any(|value| value.name() == "direct_upload_sessions")
-        );
+        assert!(!historical
+            .definitions()
+            .iter()
+            .any(|value| value.name() == "direct_upload_sessions"));
+        assert!(current
+            .definitions()
+            .iter()
+            .any(|value| value.name() == "direct_upload_sessions"));
         let config = |catalogue: &CompiledSqliteSnapshotCatalogue| {
             catalogue
                 .schema()
@@ -286,10 +278,8 @@ mod generation_tests {
         assert!(config(&current).contains(&"config_representation".to_owned()));
         assert_eq!(historical.schema_manifest().version, 3);
         assert_eq!(historical.schema_manifest().migration_digests.len(), 3);
-        assert!(
-            CompiledSqliteSnapshotCatalogue::load_generation(8)
-                .await
-                .is_err()
-        );
+        assert!(CompiledSqliteSnapshotCatalogue::load_generation(9)
+            .await
+            .is_err());
     }
 }

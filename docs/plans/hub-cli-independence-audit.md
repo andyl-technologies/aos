@@ -104,7 +104,7 @@ channel floor state. It also checks the configured APM consumer's continuity
 anchors and immutable release identity before extracted metadata or rotated
 keys can be published. Moving selectors share their accepted TUF root anchor
 without sharing selected-commit ancestry. Selection keys use full commit identities and do not include architecture/format filters.
-An exact archival release retains its own immutable TUF counters under the
+An exact retained release keeps its own immutable TUF counters under the
 current verified roster; it cannot lower moving-channel counters, reset a
 channel floor, renew channel freshness, or change package tracking. APM and
 image consumers retain the first freshness observation of an unchanged floor.

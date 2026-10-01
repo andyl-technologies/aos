@@ -8,9 +8,9 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{Result, ensure};
-use serde::Deserialize;
+use anyhow::{ensure, Result};
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 use crate::storage_authority::{
@@ -199,8 +199,8 @@ pub(super) fn validate_private(
 
 fn validate_receipt(value: JsonValue, table: &str, column: &str) -> Result<()> {
     use aos_release::receipt::{
-        ChannelReceiptV1, PublicationReceiptV1, QualificationReceiptV1, SIGNED_RECEIPT_V1,
-        SignedReceiptEnvelopeV1,
+        ChannelReceiptV1, PublicationReceiptV1, QualificationReceiptV1, SignedReceiptEnvelopeV1,
+        SIGNED_RECEIPT_V1,
     };
     let envelope: SignedReceiptEnvelopeV1 = closed(value)?;
     ensure!(
@@ -424,4 +424,35 @@ pub(super) fn validate_idp_locator(raw: &str) -> Result<()> {
     // Historical debug loopback locators may be recorded, but this check grants
     // no network access and does not depend on current runtime opt-in flags.
     Ok(())
+}
+
+/// Admits generation-eight evidence without rewriting historical private cells.
+pub(super) fn validate_current_release_receipt(table: &str, text: &str) -> Result<()> {
+    use aos_release::receipt::{
+        ChannelReceipt, PublicationReceipt, SignedReceiptEnvelope, SIGNED_RECEIPT,
+    };
+
+    let envelope: SignedReceiptEnvelope = closed(parse(text)?)?;
+    ensure!(
+        envelope.schema_version == SIGNED_RECEIPT,
+        "snapshot signed receipt version is unknown"
+    );
+    if envelope.payload.get("surface_kind").is_some() {
+        // Current producers use the complete surface-neutral shape. Mixed or
+        // partial historical fields fail its deny_unknown_fields decoder.
+        let validation = match table {
+            "release_channel_advances" => closed::<ChannelReceipt>(envelope.payload)?.validate(),
+            _ => closed::<PublicationReceipt>(envelope.payload)?.validate(),
+        };
+        return validation
+            .map_err(|_| anyhow::anyhow!("snapshot current release receipt is invalid"));
+    }
+
+    // Append008 copies old channel evidence byte for byte. Its closed original
+    // shape is preserved as evidence, never upgraded to current signing rights.
+    let historical = match table {
+        "release_channel_advances" => "release_channel_operations",
+        _ => "release_bundle_publications",
+    };
+    validate_receipt(parse(text)?, historical, "receipt_json")
 }

@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::mirror_work::{
-    MirrorOriginal, MirrorPart, MirrorProgress, MirrorVerification, MirrorVerifiedObject, digest,
+    digest, MirrorOriginal, MirrorPart, MirrorProgress, MirrorVerification, MirrorVerifiedObject,
 };
 use crate::storage_work::StorageObjectIdentity;
 
@@ -225,14 +225,12 @@ fn changed_original_or_noncanonical_unknown_json_is_refused() {
         canonical.replacen('{', "{\"unknown\":true,", 1),
         canonical.replacen('{', "{\"job_id\":\"changed\",", 1),
     ] {
-        assert!(
-            classifier()
-                .classify(
-                    "mirror_import_objects",
-                    &change(&source, "original_json", Value::Text(json))
-                )
-                .is_err()
-        );
+        assert!(classifier()
+            .classify(
+                "mirror_import_objects",
+                &change(&source, "original_json", Value::Text(json))
+            )
+            .is_err());
     }
 }
 
@@ -281,18 +279,16 @@ fn mirror_progress_requires_original_nar_geometry_and_provider_incarnations() {
     variants.push(changed);
 
     for changed in variants {
-        assert!(
-            classifier()
-                .classify(
-                    "mirror_import_objects",
-                    &change(
-                        &source,
-                        "progress_json",
-                        Value::Text(serde_json::to_string(&changed).unwrap())
-                    )
+        assert!(classifier()
+            .classify(
+                "mirror_import_objects",
+                &change(
+                    &source,
+                    "progress_json",
+                    Value::Text(serde_json::to_string(&changed).unwrap())
                 )
-                .is_err()
-        );
+            )
+            .is_err());
     }
 }
 
@@ -306,11 +302,9 @@ fn missing_or_duplicate_mirror_private_originals_cannot_reconstruct() {
     let SnapshotRowDisposition::Retained(classified) = capture.classified() else {
         panic!("mirror original omitted")
     };
-    assert!(
-        classifier()
-            .reconstruct_private_row(classified, &capture.private_cells()[..1])
-            .is_err()
-    );
+    assert!(classifier()
+        .reconstruct_private_row(classified, &capture.private_cells()[..1])
+        .is_err());
     let mut encoded = Vec::new();
     capture.private_cells()[0]
         .write_private_scalar_json(&mut encoded)
@@ -328,11 +322,9 @@ fn missing_or_duplicate_mirror_private_originals_cannot_reconstruct() {
         )
         .unwrap(),
     ];
-    assert!(
-        classifier()
-            .reconstruct_private_row(classified, &duplicates)
-            .is_err()
-    );
+    assert!(classifier()
+        .reconstruct_private_row(classified, &duplicates)
+        .is_err());
 }
 
 #[test]
@@ -360,11 +352,9 @@ fn historical5_original_bytes_remain_canonical_and_backfilled6_indexes_are_exact
         .reconstruct_private_row(classified, capture.private_cells())
         .unwrap()
         .with_private_row(|recovered| assert_eq!(recovered, &legacy));
-    assert!(
-        classifier()
-            .classify("mirror_import_objects", &current)
-            .is_ok()
-    );
+    assert!(classifier()
+        .classify("mirror_import_objects", &current)
+        .is_ok());
 
     // A future operation cannot enter the closed historical schema by hiding
     // its index fields. Migrated old originals retain their omitted field.
@@ -374,11 +364,9 @@ fn historical5_original_bytes_remain_canonical_and_backfilled6_indexes_are_exact
             .map(|index| fresh.value(index).unwrap().clone())
             .collect(),
     );
-    assert!(
-        historical
-            .classify("mirror_import_objects", &disguised)
-            .is_err()
-    );
+    assert!(historical
+        .classify("mirror_import_objects", &disguised)
+        .is_err());
 }
 
 #[test]

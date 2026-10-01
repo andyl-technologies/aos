@@ -10,7 +10,9 @@
 //! ├── desired/
 //! │   ├── provisioning-plan.json
 //! │   ├── repart-targets
-//! │   └── repart.d/
+//! │   ├── repart.d/
+//! │   ├── storage-arrays
+//! │   └── storage-volumes
 //! └── current/
 //!     ├── host.nix
 //!     ├── host.nix.sig
@@ -34,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use super::fetcher::Facts;
 use super::provisioning::{PROVISIONING_RESULT_FILE, ProvisioningResult, ProvisioningSource};
 use super::repart::{REPART_DIR, REPART_TARGETS_FILE, STORAGE_PLAN_FILE};
+use super::topology::{ARRAYS_FILE, VOLUMES_FILE};
 use super::stash::{MetadataResult, sha256_hex};
 
 /// Default durable state directory.
@@ -286,6 +289,12 @@ fn replace_desired(
     copy_required(plan, &temp.join(STORAGE_PLAN_FILE))?;
     copy_required(targets, &temp.join(REPART_TARGETS_FILE))?;
     copy_tree(definitions, &temp.join(REPART_DIR))?;
+    // The array and volume indexes are rendered next to the plan; an
+    // operator replaying a device attachment by hand needs them alongside
+    // the repart definitions.
+    let stash = plan.parent().unwrap_or(plan);
+    copy_required(&stash.join(ARRAYS_FILE), &temp.join(ARRAYS_FILE))?;
+    copy_required(&stash.join(VOLUMES_FILE), &temp.join(VOLUMES_FILE))?;
     replace_directory(state_dir, "desired", &temp)
 }
 

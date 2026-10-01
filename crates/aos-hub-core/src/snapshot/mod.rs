@@ -19,11 +19,11 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{Result, ensure};
+use anyhow::{ensure, Result};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::db::{MIGRATIONS, SCHEMA_IDENTITY};
+use crate::db::{snapshot_schema_identity, MIGRATIONS, SCHEMA_IDENTITY};
 use crate::value::{Row, Value};
 
 pub mod archive;
@@ -48,7 +48,8 @@ const LEGACY_CONTRACT: &str = include_str!("schema-v3.tsv");
 const GENERATION4_CONTRACT: &str = include_str!("schema-v4.tsv");
 const GENERATION5_CONTRACT: &str = include_str!("schema-v5.tsv");
 const GENERATION6_CONTRACT: &str = include_str!("schema-v6.tsv");
-const CONTRACT: &str = include_str!("schema-v7.tsv");
+const GENERATION7_CONTRACT: &str = include_str!("schema-v7.tsv");
+const CONTRACT: &str = include_str!("schema-v8.tsv");
 const LEGACY_CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
     "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
     "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
@@ -75,6 +76,15 @@ const GENERATION6_MIGRATION_DIGESTS: &[&str] = &[
     "a65b54c031446a5960de39354623d8e9ce22bc116ce3f735ae065cf96d54faf4",
     "24ad86fc4c15974cdacbb0d3f1374c7b2061778777e97fa78e0fb9673171bc26",
 ];
+const GENERATION7_MIGRATION_DIGESTS: &[&str] = &[
+    "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
+    "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
+    "1378ed62ac1a61f2abaf960d64a4617bdf523a437dcf326f3cb083f7e75ccdb1",
+    "aed8c7be101fe114a4b989184d79c5224fb27ba0b1065b881f1a0779b71d09c3",
+    "a65b54c031446a5960de39354623d8e9ce22bc116ce3f735ae065cf96d54faf4",
+    "24ad86fc4c15974cdacbb0d3f1374c7b2061778777e97fa78e0fb9673171bc26",
+    "0053f400c189667dfd0bc59dfc8818d02e2fbc0694d1e4cd9ccbd8d319dd4e93",
+];
 const CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
     "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
     "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
@@ -83,6 +93,7 @@ const CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
     "a65b54c031446a5960de39354623d8e9ce22bc116ce3f735ae065cf96d54faf4",
     "24ad86fc4c15974cdacbb0d3f1374c7b2061778777e97fa78e0fb9673171bc26",
     "0053f400c189667dfd0bc59dfc8818d02e2fbc0694d1e4cd9ccbd8d319dd4e93",
+    "7d9f4b656245f8e533bf497ef1db9854d0371c54e95dd1942d5b615d63fdd7cb",
 ];
 
 const MAX_CELL_BYTES: usize = 1024 * 1024;
@@ -189,7 +200,7 @@ pub struct SnapshotSchemaManifest {
     pub classification_version: String,
     /// Exact compiled production lineage, never inferred from a migration count.
     pub identity: String,
-    /// Exact supported source generation, currently three through seven.
+    /// Exact supported source generation, currently three through eight.
     pub version: usize,
     /// Ordered SHA-256 hashes of the compiled schema scripts.
     pub migration_digests: Vec<String>,
@@ -240,7 +251,7 @@ impl SnapshotClassifier {
             .map(|script| hex::encode(Sha256::digest(script.as_bytes())))
             .collect();
         ensure!(
-            identity == SCHEMA_IDENTITY
+            identity == snapshot_schema_identity(version)?
                 && migration_digests == expected_digests
                 && expected_digests
                     .iter()
@@ -310,7 +321,12 @@ impl SnapshotClassifier {
             .iter()
             .map(|script| hex::encode(Sha256::digest(script.as_bytes())))
             .collect::<Vec<_>>();
-        Self::new(SCHEMA_IDENTITY, version, &hashes, &shapes)
+        Self::new(
+            snapshot_schema_identity(version)?,
+            version,
+            &hashes,
+            &shapes,
+        )
     }
 
     /// Accepts the catalogue of the read-only Native SQLite adapter.
@@ -409,7 +425,7 @@ impl SnapshotClassifier {
             let reason = if matches!(value, Value::Null) {
                 None
             } else {
-                classify_cell(table_name, table, column, row, value)?
+                classify_cell(table_name, table, column, row, value, self.manifest.version)?
             };
             let cell = if let Some(reason) = reason {
                 let digest = cell_digest(value);
@@ -442,7 +458,8 @@ fn generation_contract(version: usize) -> Result<(&'static str, &'static [&'stat
         4 => Ok((GENERATION4_CONTRACT, GENERATION4_MIGRATION_DIGESTS)),
         5 => Ok((GENERATION5_CONTRACT, GENERATION5_MIGRATION_DIGESTS)),
         6 => Ok((GENERATION6_CONTRACT, GENERATION6_MIGRATION_DIGESTS)),
-        7 => Ok((CONTRACT, CONTRACT_MIGRATION_DIGESTS)),
+        7 => Ok((GENERATION7_CONTRACT, GENERATION7_MIGRATION_DIGESTS)),
+        8 => Ok((CONTRACT, CONTRACT_MIGRATION_DIGESTS)),
         _ => anyhow::bail!("snapshot generation is unsupported"),
     }
 }
@@ -518,6 +535,7 @@ fn classify_cell(
     column: &ColumnContract,
     row: &Row,
     value: &Value,
+    generation: usize,
 ) -> Result<Option<PrivateDependencyReason>> {
     match column.rule.as_str() {
         "secret" => Ok(Some(PrivateDependencyReason::Secret)),
@@ -561,7 +579,18 @@ fn classify_cell(
             } else {
                 None
             };
-            let secret = json::validate_private(table_name, &column.name, text(value)?, plan_kind)?;
+            let secret = if generation >= 8
+                && matches!(
+                    (table_name, column.name.as_str()),
+                    ("release_channel_advances", "receipt_json")
+                        | ("release_bundle_publications", "receipt_json")
+                        | ("release_qualifications", "staging_receipt_json")
+                ) {
+                json::validate_current_release_receipt(table_name, text(value)?)?;
+                false
+            } else {
+                json::validate_private(table_name, &column.name, text(value)?, plan_kind)?
+            };
             Ok(Some(if secret {
                 PrivateDependencyReason::Secret
             } else {
