@@ -27,6 +27,21 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Operation {
+    /// Export the current reviewed SQL authority publication in any admission state.
+    ExportPublication {
+        /// Select the permanent authority already approved through root Plan/Apply.
+        #[arg(long)]
+        authority_id: String,
+        /// Bind the actual configured Worker guard namespace identity.
+        #[arg(long)]
+        guard_namespace_id: String,
+        /// Bind the actual configured Worker storage executor identity.
+        #[arg(long)]
+        executor_identity: String,
+        /// Create a new private export directory under an existing private parent.
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Recover held historical delete material for an active frozen cleanup claim.
     StageCleanupCredential {
         /// Select the original claimed OCI placement action.
@@ -135,6 +150,23 @@ async fn run(args: Args) -> Result<()> {
         .await
         .map_err(|_| anyhow::anyhow!("opening live operator database failed"))?;
     match args.operation {
+        Operation::ExportPublication {
+            authority_id,
+            guard_namespace_id,
+            executor_identity,
+            output,
+        } => {
+            let authority = PhysicalStorageAuthorityId::parse(&authority_id)?;
+            bootstrap::export_publication(
+                &db,
+                &authority,
+                &guard_namespace_id,
+                &executor_identity,
+                &output,
+            )
+            .await?;
+            println!("Reviewed SQL authority publication exported.");
+        }
         Operation::StageCleanupCredential {
             action_id,
             claim_token_file,

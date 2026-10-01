@@ -27,6 +27,9 @@ mod credential_registration;
 #[path = "binding_lifetime_tests.rs"]
 mod binding_lifetime;
 
+#[path = "publication_tests.rs"]
+mod publication_export;
+
 const AUTHORITY: &str = "00000000-0000-4000-8000-000000000041";
 const EXECUTOR: &str = "qualification-executor";
 const NAMESPACE: &str = "qualification-guard-namespace";

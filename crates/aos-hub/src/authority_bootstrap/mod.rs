@@ -1,8 +1,11 @@
-//! Operator export and hydration of an actual reviewed external qualification domain.
+//! Operator export of reviewed authority metadata and qualification hydration.
 //!
 //! Local database custody authorizes this interface. It transports no object
 //! bytes and produces no provider contract, runtime acceptance, or readiness.
-//! The closed metadata is supplied to independent issuer/Worker configuration:
+//! The closed metadata is supplied to independent issuer/Worker configuration.
+//!
+//! Publication-only export writes the actual admitted, blocked or retired SQL
+//! head and its byte commitment without selecting a qualification association.
 //!
 //! ```text
 //! export-directory/
@@ -33,8 +36,10 @@ use sha2::{Digest as _, Sha256};
 
 mod credential;
 mod custody;
+mod publication;
 
 pub use credential::{stage_queued_credential, write_cleanup_stage_receipt, write_stage_receipt};
+pub use publication::export_publication;
 
 #[cfg(test)]
 mod tests;
