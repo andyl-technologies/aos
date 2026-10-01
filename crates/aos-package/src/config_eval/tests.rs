@@ -1571,3 +1571,37 @@ fn base_lib_identity_cross_checks_schema_and_module_abi() {
     std::fs::write(root.path().join("option-schema.json"), "[]").expect("tampered schema");
     assert!(read_base_lib_abi_hash(root.path(), 7).is_err());
 }
+
+#[test]
+fn retained_bundle_identity_binds_original_sources_before_re_evaluation() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    let bytes = br#"{"schema":"aos.config-bundle/v1","entrypoint":"host.nix","files":{"host.nix":"e30K","data.json":"e30K"}}"#;
+    let bundle = crate::metadata::bundle::parse(bytes).unwrap().unwrap();
+    bundle.materialize(&root.join("source")).unwrap();
+    std::fs::write(root.join("config-bundle.json"), bytes).unwrap();
+    let host_nix = root.join("host.nix");
+    let wrapper = bundle.host_module(bytes);
+    std::fs::write(&host_nix, &wrapper).unwrap();
+    let (mut source, retained) = retained_identity_inputs(&host_nix);
+    source.inputs.host_nix.content_hash = super::sha256_identity(wrapper.as_bytes());
+    let expected_nar = source.inputs.config_modules.nar_hashes[0].clone();
+    let verify =
+        || {
+            super::validate_retained_content_identities(&source, &retained, |_| {
+                Ok(expected_nar.clone())
+            })
+        };
+
+    verify().unwrap();
+    std::fs::write(root.join("source/data.json"), b"[]\n").unwrap();
+    assert!(verify().is_err());
+    std::fs::write(root.join("source/data.json"), b"{}\n").unwrap();
+    verify().unwrap();
+
+    std::fs::remove_file(root.join("source/data.json")).unwrap();
+    assert!(verify().is_err());
+    std::fs::write(root.join("source/data.json"), b"{}\n").unwrap();
+    std::fs::remove_file(root.join("config-bundle.json")).unwrap();
+    assert!(verify().is_err());
+}

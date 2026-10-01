@@ -67,6 +67,9 @@ pub struct ImageDownloadArgs {
     /// Destination file; defaults to the signed useful filename.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
+    /// Download the authenticated image-info companion instead of disk bytes.
+    #[arg(long)]
+    pub metadata_only: bool,
     /// Restart rather than resume an existing partial file.
     #[arg(long)]
     pub no_resume: bool,
