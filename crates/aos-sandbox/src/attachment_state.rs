@@ -226,6 +226,72 @@ pub struct DurableAttachmentDesiredStateV1 {
     record: Record,
 }
 
+/// Retains complete protected logical attachment history at one journal head.
+///
+/// Both latest records and all retained generations are included, regardless
+/// of presence, consumer generation, source view, or presentation. Released
+/// and superseded rows remain available for later residual-owner joins.
+/// This DATA supplies neither current namespace authority nor Mount drainage.
+#[must_use = "attachment inventory must retain its original journal borrow"]
+#[allow(dead_code, reason = "logical inventory awaits its separate consumer")]
+pub(crate) struct RetainedAttachmentInventoryDataV1<'journal> {
+    journal: &'journal Journal,
+    sequence: u64,
+    current: Vec<DurableAttachmentDesiredStateV1>,
+    generations: Vec<DurableAttachmentDesiredStateV1>,
+}
+
+#[allow(dead_code, reason = "logical inventory awaits its separate consumer")]
+impl RetainedAttachmentInventoryDataV1<'_> {
+    /// Returns the original whole-journal watermark, without granting authority.
+    pub(crate) const fn journal_sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Borrows every latest record in canonical attachment order.
+    ///
+    /// # Errors
+    ///
+    /// Rejects lost named writer custody, poison, or a changed watermark.
+    pub(crate) fn current(
+        &self,
+    ) -> Result<&[DurableAttachmentDesiredStateV1], AttachmentDesiredStateError> {
+        self.recheck()?;
+        Ok(&self.current)
+    }
+
+    /// Borrows all generations in canonical attachment/generation order.
+    ///
+    /// Complete intents preserve consumer and source-view references in both
+    /// directions; no presumed completed release removes historical rows.
+    ///
+    /// # Errors
+    ///
+    /// Rejects lost named writer custody, poison, or a changed watermark.
+    pub(crate) fn generations(
+        &self,
+    ) -> Result<&[DurableAttachmentDesiredStateV1], AttachmentDesiredStateError> {
+        self.recheck()?;
+        Ok(&self.generations)
+    }
+
+    /// Rechecks the retained journal/lock names and original logical head.
+    ///
+    /// This does not re-resolve the directory path or authenticate another
+    /// owner's namespace, source handles, release receipt, or physical state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for lost named custody, poison, or a changed sequence.
+    pub(crate) fn recheck(&self) -> Result<(), AttachmentDesiredStateError> {
+        self.journal.validate_held_protected_names()?;
+        if self.journal.snapshot_sequence() != self.sequence {
+            return Err(JournalError::StaleAuthoritySnapshot.into());
+        }
+        Ok(())
+    }
+}
+
 impl DurableAttachmentDesiredStateV1 {
     /// Returns whether this generation should be present or released.
     #[must_use]
@@ -800,6 +866,57 @@ pub(crate) fn get_operation(
         .map(|record| DurableAttachmentDesiredStateV1 { record }))
 }
 
+/// Reads complete protected attachment DATA from the original retained journal.
+///
+/// The existing bounded replay also validates every historical view and slot
+/// reference. No consumer or producer filter may hide a reverse dependency.
+/// The returned borrow prevents local commits until this inventory is dropped.
+///
+/// # Errors
+///
+/// Rejects lost named custody, malformed history or cross-references, replay
+/// bounds, bounded allocation failure, or a changed whole-journal watermark.
+#[allow(dead_code, reason = "logical inventory awaits its separate consumer")]
+pub(crate) fn retained_attachment_inventory_data_v1(
+    journal: &Journal,
+) -> Result<RetainedAttachmentInventoryDataV1<'_>, AttachmentDesiredStateError> {
+    journal.validate_held_protected_names()?;
+    let sequence = journal.snapshot_sequence();
+    let history = History::load(journal)?;
+
+    // Move replayed rows without cloning their canonical intent buffers.
+    let mut current = Vec::new();
+    current
+        .try_reserve_exact(history.records.len())
+        .map_err(|_| AttachmentDesiredStateError::Capacity)?;
+    current.extend(
+        history
+            .records
+            .into_values()
+            .map(|record| DurableAttachmentDesiredStateV1 { record }),
+    );
+
+    let mut generations = Vec::new();
+    generations
+        .try_reserve_exact(history.generations.len())
+        .map_err(|_| AttachmentDesiredStateError::Capacity)?;
+    generations.extend(
+        history
+            .generations
+            .into_values()
+            .map(|record| DurableAttachmentDesiredStateV1 { record }),
+    );
+
+    let inventory = RetainedAttachmentInventoryDataV1 {
+        journal,
+        sequence,
+        current,
+        generations,
+    };
+    inventory.recheck()?;
+    Ok(inventory)
+}
+
 /// Returns current desired attachments for one exact consumer generation.
 pub(crate) fn current_for_consumer(
     journal: &Journal,
@@ -1170,6 +1287,58 @@ mod tests {
                 .unwrap();
         }
         outcome
+    }
+
+    #[test]
+    fn inventory_data_retains_released_and_superseded_attachment_generations() {
+        let (_directory, mut journal) = journal();
+        let first = mutation(AttachmentDesiredPresenceV1::Present, intent(1, 2, 1), None);
+        commit_without_target(&mut journal, &first);
+        let released = mutation(
+            AttachmentDesiredPresenceV1::Released,
+            intent(1, 2, 2),
+            Some(ObjectDigest::from_bytes(first.record.digest)),
+        );
+        commit_without_target(&mut journal, &released);
+        let other = mutation(AttachmentDesiredPresenceV1::Present, intent(3, 4, 1), None);
+        commit_without_target(&mut journal, &other);
+        let sequence = journal.snapshot_sequence();
+
+        let inventory = retained_attachment_inventory_data_v1(&journal).unwrap();
+        let current = inventory.current().unwrap();
+        let generations = inventory.generations().unwrap();
+
+        assert_eq!(inventory.journal_sequence(), sequence);
+        assert_eq!(current.len(), 2);
+        assert_eq!(
+            current[0].record_digest(),
+            ObjectDigest::from_bytes(released.record.digest)
+        );
+        assert_eq!(current[0].presence(), AttachmentDesiredPresenceV1::Released);
+        assert_eq!(
+            current[1].record_digest(),
+            ObjectDigest::from_bytes(other.record.digest)
+        );
+        assert_eq!(generations.len(), 3);
+        assert_eq!(generations[0].intent(), &first.record.intent);
+        assert_eq!(generations[1].intent(), &released.record.intent);
+        assert_eq!(generations[2].intent(), &other.record.intent);
+    }
+
+    #[test]
+    fn inventory_data_rechecks_the_original_attachment_journal_name() {
+        let (directory, journal) = journal();
+        let inventory = retained_attachment_inventory_data_v1(&journal).unwrap();
+
+        std::fs::rename(
+            directory.path().join("controller.journal"),
+            directory.path().join("retained-controller.journal"),
+        )
+        .unwrap();
+
+        assert!(inventory.recheck().is_err());
+        assert!(inventory.current().is_err());
+        assert!(inventory.generations().is_err());
     }
 
     #[test]

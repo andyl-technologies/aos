@@ -142,6 +142,67 @@ pub struct DurableAttachmentSlotV1 {
     record: Record,
 }
 
+/// Retains complete protected logical slot history at one journal head.
+///
+/// Available slots, permanent release tombstones, and every retained revision
+/// remain included for future attachment and residual-owner joins. This DATA
+/// proves no current assignment, destination catalog, or physical drainage.
+#[must_use = "slot inventory must retain its original journal borrow"]
+#[allow(dead_code, reason = "logical inventory awaits its separate consumer")]
+pub(crate) struct RetainedAttachmentSlotInventoryDataV1<'journal> {
+    journal: &'journal Journal,
+    sequence: u64,
+    current: Vec<DurableAttachmentSlotV1>,
+    revisions: Vec<DurableAttachmentSlotV1>,
+}
+
+#[allow(dead_code, reason = "logical inventory awaits its separate consumer")]
+impl RetainedAttachmentSlotInventoryDataV1<'_> {
+    /// Returns the original whole-journal watermark, without granting authority.
+    pub(crate) const fn journal_sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Borrows every latest record in canonical slot order.
+    ///
+    /// # Errors
+    ///
+    /// Rejects lost named writer custody, poison, or a changed watermark.
+    pub(crate) fn current(&self) -> Result<&[DurableAttachmentSlotV1], AttachmentSlotStateError> {
+        self.recheck()?;
+        Ok(&self.current)
+    }
+
+    /// Borrows all revisions in canonical slot/revision order.
+    ///
+    /// Original sandbox, incarnation, namespace and specification bindings are
+    /// retained even after logical release; no physical cleanup is inferred.
+    ///
+    /// # Errors
+    ///
+    /// Rejects lost named writer custody, poison, or a changed watermark.
+    pub(crate) fn revisions(&self) -> Result<&[DurableAttachmentSlotV1], AttachmentSlotStateError> {
+        self.recheck()?;
+        Ok(&self.revisions)
+    }
+
+    /// Rechecks the retained journal/lock names and original logical head.
+    ///
+    /// This does not re-resolve the directory path or authenticate another
+    /// owner's assignment, namespace catalog, or physical state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for lost named custody, poison, or a changed sequence.
+    pub(crate) fn recheck(&self) -> Result<(), AttachmentSlotStateError> {
+        self.journal.validate_held_protected_names()?;
+        if self.journal.snapshot_sequence() != self.sequence {
+            return Err(JournalError::StaleAuthoritySnapshot.into());
+        }
+        Ok(())
+    }
+}
+
 impl DurableAttachmentSlotV1 {
     /// Returns whether this slot is available or released.
     #[must_use]
@@ -779,6 +840,57 @@ pub(crate) fn commit_for_test(
     Ok((DurableAttachmentSlotV1 { record }, outcome))
 }
 
+/// Reads complete protected slot DATA from the original retained journal.
+///
+/// The existing bounded replay validates all creation declarations and exact
+/// release successors. The returned borrow prevents local commits until this
+/// inventory is dropped; no caller supplies a selected or filtered row set.
+///
+/// # Errors
+///
+/// Rejects lost named custody, malformed history or specification references,
+/// replay bounds, bounded allocation failure, or a changed journal watermark.
+#[allow(dead_code, reason = "logical inventory awaits its separate consumer")]
+pub(crate) fn retained_attachment_slot_inventory_data_v1(
+    journal: &Journal,
+) -> Result<RetainedAttachmentSlotInventoryDataV1<'_>, AttachmentSlotStateError> {
+    journal.validate_held_protected_names()?;
+    let sequence = journal.snapshot_sequence();
+    let history = History::load(journal)?;
+
+    // Preserve the replay engine's latest and historical sets without new clones.
+    let mut current = Vec::new();
+    current
+        .try_reserve_exact(history.current.len())
+        .map_err(|_| AttachmentSlotStateError::Capacity)?;
+    current.extend(
+        history
+            .current
+            .into_values()
+            .map(|record| DurableAttachmentSlotV1 { record }),
+    );
+
+    let mut revisions = Vec::new();
+    revisions
+        .try_reserve_exact(history.revisions.len())
+        .map_err(|_| AttachmentSlotStateError::Capacity)?;
+    revisions.extend(
+        history
+            .revisions
+            .into_values()
+            .map(|record| DurableAttachmentSlotV1 { record }),
+    );
+
+    let inventory = RetainedAttachmentSlotInventoryDataV1 {
+        journal,
+        sequence,
+        current,
+        revisions,
+    };
+    inventory.recheck()?;
+    Ok(inventory)
+}
+
 pub(crate) fn get_current(
     journal: &Journal,
     slot_id: AttachmentSlotId,
@@ -997,6 +1109,56 @@ mod tests {
         let sandbox_spec =
             crate::sandbox_spec_state::publish_slot_spec_for_test(journal, mutation.slot_id());
         commit_bound(journal, mutation, binding, &sandbox_spec)
+    }
+
+    #[test]
+    fn inventory_data_retains_available_and_released_slot_revisions() {
+        let (_directory, mut journal) = journal();
+        let create = mutation(AttachmentSlotPresenceV1::Available, 1, None);
+        let (first, _) = commit_declared(&mut journal, &create, binding()).unwrap();
+        let release = mutation(
+            AttachmentSlotPresenceV1::Released,
+            2,
+            Some(ObjectDigest::from_bytes(first.digest)),
+        );
+        let (released, _) = commit_declared(&mut journal, &release, binding()).unwrap();
+        let sequence = journal.snapshot_sequence();
+
+        let inventory = retained_attachment_slot_inventory_data_v1(&journal).unwrap();
+        let current = inventory.current().unwrap();
+        let revisions = inventory.revisions().unwrap();
+
+        assert_eq!(inventory.journal_sequence(), sequence);
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].presence(), AttachmentSlotPresenceV1::Released);
+        assert_eq!(
+            current[0].record_digest(),
+            ObjectDigest::from_bytes(released.digest)
+        );
+        assert_eq!(revisions.len(), 2);
+        assert_eq!(revisions[0].revision(), Revision::new(1));
+        assert_eq!(revisions[1].revision(), Revision::new(2));
+        assert_eq!(revisions[0].sandbox_spec(), revisions[1].sandbox_spec());
+        assert_eq!(
+            revisions[0].record_digest(),
+            ObjectDigest::from_bytes(first.digest)
+        );
+    }
+
+    #[test]
+    fn inventory_data_rechecks_the_original_slot_lock_name() {
+        let (directory, journal) = journal();
+        let inventory = retained_attachment_slot_inventory_data_v1(&journal).unwrap();
+
+        std::fs::rename(
+            directory.path().join("controller.journal.lock"),
+            directory.path().join("retained-controller.journal.lock"),
+        )
+        .unwrap();
+
+        assert!(inventory.recheck().is_err());
+        assert!(inventory.current().is_err());
+        assert!(inventory.revisions().is_err());
     }
 
     #[test]
