@@ -136,6 +136,30 @@ impl StorageOperatorRecoveryCredentialsV1 {
         .map_err(|_| invalid("operator receipt journal is unavailable"))
     }
 
+    /// Opens only empty fixed sidecar custody, preserving the concrete cause.
+    pub(crate) fn provision_empty_owner_v4(
+        &self,
+    ) -> Result<StorageOperatorRecoveryOwnerV1, crate::StorageRuntimeError> {
+        self.recheck_for_provisioning_v4()?;
+        let owner = StorageOperatorRecoveryOwnerV1::provision_empty_v4(
+            self.controller_key,
+            self.controller_generation,
+            self.owner_key.clone(),
+            self.owner_id,
+            self.owner_generation,
+        )?;
+        self.recheck_for_provisioning_v4()?;
+        owner.recheck_empty_provisioned_v4()?;
+        Ok(owner)
+    }
+
+    /// Preserves the first credential cause at this new provision-only boundary.
+    pub(crate) fn recheck_for_provisioning_v4(&self) -> Result<(), crate::StorageRuntimeError> {
+        self.recheck().map_err(|error| {
+            crate::StorageRuntimeError::OperatorProvisionCredentials(Box::new(error))
+        })
+    }
+
     /// Opens the existing owner without creating missing hold or floor state.
     ///
     /// # Errors

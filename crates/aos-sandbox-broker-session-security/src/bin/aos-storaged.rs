@@ -68,7 +68,7 @@ fn run() -> Result<(), StorageServiceError> {
         let source = parse_provision_source(&command_line)?;
         return provision_execution_output_ledger(state_root, &source);
     }
-    let arguments = parse_arguments(command_line)?;
+    let (command, arguments) = parse_startup_command(command_line)?;
 
     // Claim the complete systemd table before any inherited slot can be
     // reused. The broker session owns only its fixed control listener.
@@ -108,6 +108,73 @@ fn run() -> Result<(), StorageServiceError> {
     } else {
         None
     };
+    if command == StorageStartupCommandV4::ProvisionOperator {
+        let credentials = operator_credentials.as_ref().ok_or_else(|| {
+            StorageServiceError::Activation(
+                "operator provisioning requires the existing operator listener role".to_owned(),
+            )
+        })?;
+        activation.storage_listener_fd().map_err(production_error)?;
+        for listener in [
+            Some(&export_listener),
+            live_export_listener.as_ref(),
+            zfs_hold_listener.as_ref(),
+            operator_listener.as_ref(),
+            existing_output_listener.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            listener.validate_current()?;
+        }
+        credentials.recheck()?;
+
+        DormantStorageApplyCompositionV1::provision_empty_operator_repair_v4(
+            &arguments.authority_directory,
+            &arguments.bootstrap_directory,
+            state_root,
+            arguments.resolver_policy_directory.as_deref(),
+            identity_pool,
+            arguments.zfs_executable,
+            executor,
+            credentials,
+        )?;
+
+        credentials.recheck()?;
+        activation.storage_listener_fd().map_err(production_error)?;
+        for listener in [
+            Some(&export_listener),
+            live_export_listener.as_ref(),
+            zfs_hold_listener.as_ref(),
+            operator_listener.as_ref(),
+            existing_output_listener.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            listener.validate_current()?;
+        }
+        if let Some(key) = &zfs_hold_key {
+            key.recheck()?;
+        }
+        if let Some(custody) = &output_custody {
+            custody.recheck(state_root)?;
+        }
+        let current_template = ProtectedGuestRootTemplateV1::open(&arguments.guest_root_template)
+            .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+        if current_template.root() != guest_root_template.root()
+            || current_template.package_binding() != guest_root_template.package_binding()
+            || current_template.root_tree_digest() != guest_root_template.root_tree_digest()
+        {
+            return Err(StorageServiceError::Activation(
+                "guest-root template changed during operator provisioning".to_owned(),
+            ));
+        }
+        // Keep the actual template and complete inherited table until all
+        // provisioning bookends finish. No actor or effect owner is returned.
+        drop(guest_root_template);
+        return Ok(());
+    }
     let (mut storage, mut operator_owner) = match operator_credentials.as_ref() {
         Some(credentials) => {
             let (storage, owner) = DormantStorageApplyCompositionV1::open_existing_operator_repair_v4(
@@ -463,6 +530,27 @@ fn prepare_readiness_diagnostic(readiness: StoragePrepareReadiness) -> Option<&'
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StorageStartupCommandV4 {
+    Serve,
+    ProvisionOperator,
+}
+
+fn parse_startup_command(
+    mut arguments: Vec<std::ffi::OsString>,
+) -> Result<(StorageStartupCommandV4, Arguments), StorageServiceError> {
+    let command = if arguments
+        .get(1)
+        .is_some_and(|argument| argument == "--provision-operator-recovery")
+    {
+        arguments.remove(1);
+        StorageStartupCommandV4::ProvisionOperator
+    } else {
+        StorageStartupCommandV4::Serve
+    };
+    parse_arguments(arguments).map(|arguments| (command, arguments))
+}
+
 struct Arguments {
     #[allow(dead_code, reason = "retained for stable daemon CLI compatibility")]
     controller_identity: (u32, u32),
@@ -578,7 +666,7 @@ fn optional_path(
 
 fn usage_error() -> StorageServiceError {
     StorageServiceError::Activation(
-        "usage: aos-storaged --provision-output OUTPUT_KEY_SOURCE | aos-storaged CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY RESOLVER_POLICY_DIRECTORY|- GUEST_ROOT_TEMPLATE ZFS_HOLD_KEY_V1|- OUTPUT_KEY_SOURCE|-"
+        "usage: aos-storaged --provision-output OUTPUT_KEY_SOURCE | aos-storaged [--provision-operator-recovery] CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY RESOLVER_POLICY_DIRECTORY|- GUEST_ROOT_TEMPLATE ZFS_HOLD_KEY_V1|- OUTPUT_KEY_SOURCE|-"
             .to_owned(),
     )
 }
@@ -587,7 +675,9 @@ fn usage_error() -> StorageServiceError {
 mod tests {
     use std::ffi::OsString;
 
-    use super::{parse_arguments, parse_provision_source};
+    use super::{
+        StorageStartupCommandV4, parse_arguments, parse_provision_source, parse_startup_command,
+    };
 
     fn service_arguments(zfs_key: &str, output_key: &str) -> Vec<OsString> {
         [
@@ -607,6 +697,43 @@ mod tests {
         .into_iter()
         .map(OsString::from)
         .collect()
+    }
+
+    #[test]
+    fn operator_provisioning_keeps_the_complete_normal_argument_contract() {
+        let ordinary = service_arguments("-", "-");
+        let (command, arguments) = parse_startup_command(ordinary.clone()).unwrap();
+        assert_eq!(command, StorageStartupCommandV4::Serve);
+        assert_eq!(arguments.identity_pool_start, 65536);
+
+        let mut provisioning = ordinary;
+        provisioning.insert(1, "--provision-operator-recovery".into());
+        let (command, arguments) = parse_startup_command(provisioning).unwrap();
+        assert_eq!(command, StorageStartupCommandV4::ProvisionOperator);
+        assert_eq!(arguments.identity_pool_start, 65536);
+        assert_eq!(arguments.controller_identity, (1000, 1000));
+        assert!(arguments.output_key_source.is_none());
+    }
+
+    #[test]
+    fn operator_provisioning_refuses_short_extra_and_repeated_verbs() {
+        let mut complete = service_arguments("-", "-");
+        complete.insert(1, "--provision-operator-recovery".into());
+        assert!(parse_startup_command(complete[..2].to_vec()).is_err());
+
+        let mut extra = complete.clone();
+        extra.push("/var/lib/aos/alternate-state".into());
+        assert!(parse_startup_command(extra).is_err());
+
+        complete.insert(1, "--provision-operator-recovery".into());
+        assert!(parse_startup_command(complete).is_err());
+    }
+
+    #[test]
+    fn operator_provisioning_refuses_a_similar_unknown_verb() {
+        let mut arguments = service_arguments("-", "-");
+        arguments.insert(1, "--provision-operator".into());
+        assert!(parse_startup_command(arguments).is_err());
     }
 
     #[test]

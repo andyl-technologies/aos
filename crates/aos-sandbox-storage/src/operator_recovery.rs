@@ -135,6 +135,47 @@ enum StoredReservationDecisionV2 {
 }
 
 impl StorageOperatorRecoveryOwnerV1 {
+    /// Provisions only physically empty custody at the fixed Storage location.
+    ///
+    /// This retains the actual exclusive writer and uses the ordinary owner
+    /// validator. It neither repairs history nor produces a signed receipt.
+    pub(crate) fn provision_empty_v4(
+        controller_key: VerifyingKey,
+        controller_key_generation: u64,
+        owner_key: SigningKey,
+        owner_id: [u8; 16],
+        owner_key_generation: u64,
+    ) -> Result<Self, StorageOperatorRecoveryErrorV1> {
+        validate_owner_roles(
+            &controller_key,
+            controller_key_generation,
+            &owner_key,
+            owner_id,
+            owner_key_generation,
+        )?;
+        let journal = Journal::provision_empty_storage_operator_recovery_v4(
+            operator_journal_limits(),
+        )?;
+        let owner = Self::from_journal(
+            journal,
+            controller_key,
+            controller_key_generation,
+            owner_key,
+            owner_id,
+            owner_key_generation,
+        )?;
+        owner.recheck_empty_provisioned_v4()?;
+        Ok(owner)
+    }
+
+    /// Rechecks the same fixed named writer, not merely an empty projection.
+    pub(crate) fn recheck_empty_provisioned_v4(
+        &self,
+    ) -> Result<(), StorageOperatorRecoveryErrorV1> {
+        self.journal.validate_empty_storage_operator_recovery_v4()?;
+        Ok(())
+    }
+
     /// Signs and durably retains the complete pre-effect admission probe.
     ///
     /// The packet exposes the exact historical probe hash preimage, including
@@ -338,13 +379,13 @@ impl StorageOperatorRecoveryOwnerV1 {
         owner_id: [u8; 16],
         owner_key_generation: u64,
     ) -> Result<Self, StorageOperatorRecoveryErrorV1> {
-        if owner_id == [0; 16]
-            || controller_key_generation == 0
-            || owner_key_generation == 0
-            || controller_key == owner_key.verifying_key()
-        {
-            return Err(StorageOperatorRecoveryErrorV1::Binding);
-        }
+        validate_owner_roles(
+            &controller_key,
+            controller_key_generation,
+            &owner_key,
+            owner_id,
+            owner_key_generation,
+        )?;
         let (journal, _) = Journal::open_protected_at(directory, name, operator_journal_limits())?;
         Self::from_journal(journal, controller_key, controller_key_generation,
             owner_key, owner_id, owner_key_generation)
@@ -377,13 +418,13 @@ impl StorageOperatorRecoveryOwnerV1 {
         owner_id: [u8; 16],
         owner_key_generation: u64,
     ) -> Result<Self, StorageOperatorRecoveryErrorV1> {
-        if owner_id == [0; 16]
-            || controller_key_generation == 0
-            || owner_key_generation == 0
-            || controller_key == owner_key.verifying_key()
-        {
-            return Err(StorageOperatorRecoveryErrorV1::Binding);
-        }
+        validate_owner_roles(
+            &controller_key,
+            controller_key_generation,
+            &owner_key,
+            owner_id,
+            owner_key_generation,
+        )?;
         let authority = journal.claim_protected_authority(RecordNamespace::OperatorRecovery)?;
         let records: Vec<_> = authority.records()?.collect();
         for (key, value) in &records {
@@ -960,6 +1001,23 @@ impl StoredRepairV2 {
     }
 }
 
+fn validate_owner_roles(
+    controller_key: &VerifyingKey,
+    controller_generation: u64,
+    owner_key: &SigningKey,
+    owner_id: [u8; 16],
+    owner_generation: u64,
+) -> Result<(), StorageOperatorRecoveryErrorV1> {
+    if owner_id == [0; 16]
+        || controller_generation == 0
+        || owner_generation == 0
+        || *controller_key == owner_key.verifying_key()
+    {
+        return Err(StorageOperatorRecoveryErrorV1::Binding);
+    }
+    Ok(())
+}
+
 fn operator_journal_limits() -> JournalLimits {
     JournalLimits {
         maximum_journal_bytes: 16 * 1024 * 1024,
@@ -1036,6 +1094,35 @@ mod tests {
     use aos_sandbox_core::operator_recovery_effect::{
         OperatorRecoveryEffectIntentV1, sign_operator_recovery_effect_intent_v1,
     };
+
+    #[test]
+    fn operator_owner_roles_reject_missing_generations_identity_and_key_reuse() {
+        let controller = SigningKey::from_bytes(&[1; 32]);
+        let owner = SigningKey::from_bytes(&[2; 32]);
+        let public = controller.verifying_key();
+
+        assert!(validate_owner_roles(&public, 1, &owner, [3; 16], 1).is_ok());
+        for (controller_generation, owner_id, owner_generation) in [
+            (0, [3; 16], 1),
+            (1, [0; 16], 1),
+            (1, [3; 16], 0),
+        ] {
+            assert!(matches!(
+                validate_owner_roles(
+                    &public,
+                    controller_generation,
+                    &owner,
+                    owner_id,
+                    owner_generation,
+                ),
+                Err(StorageOperatorRecoveryErrorV1::Binding),
+            ));
+        }
+        assert!(matches!(
+            validate_owner_roles(&public, 1, &controller, [3; 16], 1),
+            Err(StorageOperatorRecoveryErrorV1::Binding),
+        ));
+    }
 
     fn sample() -> (StoredRepairV2, SigningKey, SigningKey) {
         let controller_key = SigningKey::from_bytes(&[1; 32]);

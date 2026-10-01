@@ -1034,6 +1034,8 @@ fn encode_runtime_error(
         | StorageRuntimeError::Recovery
         | StorageRuntimeError::ReopenRequired
         | StorageRuntimeError::WorkspacePinScope
+        | StorageRuntimeError::OperatorProvision(_)
+        | StorageRuntimeError::OperatorProvisionCredentials(_)
         | StorageRuntimeError::Admission(_) => (
             BrokerErrorCode::BROKER_ERROR_CODE_BACKEND_FAILURE,
             "Storage request requires reconciliation",
