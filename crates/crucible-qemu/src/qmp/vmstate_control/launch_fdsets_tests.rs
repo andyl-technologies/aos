@@ -96,10 +96,12 @@ fn seal_fixture(
     Ok((inventory, request, json!({"return": state})))
 }
 
-fn commands(channel: &QemuQmpVmStateControlChannel<ScriptedStream>) -> Vec<Value> {
+fn commands(
+    channel: &QemuQmpVmStateControlChannel<ScriptedStream>,
+) -> Result<Vec<Value>, serde_json::Error> {
     String::from_utf8_lossy(&channel.client.stream.get_ref().written)
         .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
+        .map(serde_json::from_str)
         .collect()
 }
 
@@ -110,13 +112,13 @@ fn launch_fdsets_retire_after_sealing_and_only_once() -> Result<(), Box<dyn std:
         seal_fixture("private-one", "private-two", 35)?;
     let mut channel = channel(&[sealed, json!({"return": {}}), next_sealed])?;
     channel.retain_guarded_launch_fdsets_until_disk_seal();
-    assert_eq!(commands(&channel).len(), 1);
+    assert_eq!(commands(&channel)?.len(), 1);
 
     channel.seal_hot_fork_block_roots(&inventory, &[request])?;
     assert!(!channel.guarded_launch_fdsets_pending);
     channel.seal_hot_fork_block_roots(&next_inventory, &[next_request])?;
 
-    let commands = commands(&channel);
+    let commands = commands(&channel)?;
     assert_eq!(commands.len(), 4);
     assert_eq!(commands[1]["execute"], "crucible-hot-fork-block-seal");
     assert_eq!(commands[2]["execute"], "x-crucible-adopt-launch-fdsets");
@@ -141,7 +143,7 @@ fn seal_refusal_retains_launch_custody_without_adoption() -> Result<(), Box<dyn 
                 .is_err()
         );
         assert!(channel.guarded_launch_fdsets_pending);
-        assert_eq!(commands(&channel).len(), 2);
+        assert_eq!(commands(&channel)?.len(), 2);
     }
     Ok(())
 }
@@ -160,7 +162,7 @@ fn adoption_failure_cannot_publish_seal_custody() -> Result<(), Box<dyn std::err
                 .is_err()
         );
         assert!(channel.guarded_launch_fdsets_pending);
-        assert_eq!(commands(&channel).len(), 3);
+        assert_eq!(commands(&channel)?.len(), 3);
         assert_eq!(
             channel.client.query_hot_fork_block_seal(),
             Err(QmpError::ConnectionPoisoned)
@@ -177,6 +179,6 @@ fn adopted_child_channel_has_no_launch_fdsets_to_retire() -> Result<(), Box<dyn 
 
     channel.seal_hot_fork_block_roots(&inventory, &[request])?;
     assert!(!channel.guarded_launch_fdsets_pending);
-    assert_eq!(commands(&channel).len(), 2);
+    assert_eq!(commands(&channel)?.len(), 2);
     Ok(())
 }
