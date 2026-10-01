@@ -3,8 +3,9 @@
 //! Exactly two stable residents borrow one fixed credential acceptor. The
 //! existing transport, original-request, funding and disposal engines remain
 //! sole owners. There is no response, READY callback, Git effect, remote Drain
-//! receipt or authority conversion. The missing node-network envelope is a
-//! functional startup denial, not a successful service awaiting qualification.
+//! receipt or authority conversion. Hard service memcg limits and known body
+//! funding are distinct from advisory live node-memory admission. This profile
+//! promises no hard all-node network bound or per-project Git operation budget.
 
 use std::sync::Arc;
 
@@ -40,9 +41,15 @@ pub enum GitGatewayServiceErrorV1 {
     /// Fixed credential delivery or the existing acceptor rejects its inputs.
     #[error("Gateway fixed credential delivery rejected")]
     Credentials,
-    /// No genuine selected node-network envelope producer exists in this slice.
+    /// A stronger node-network profile is unavailable; retained for compatibility.
     #[error("Gateway node-network envelope producer is not implemented")]
     NodeNetworkEnvelopeMissing,
+    /// The original procfs/meminfo objects or bounded kernel estimate are unavailable.
+    #[error("Gateway original node-memory observation rejected")]
+    NodeMemoryObservation,
+    /// A fresh available-memory estimate is below the selected admission minimum.
+    #[error("Gateway observed node-memory pressure rejected admission")]
+    NodeMemoryPressure,
     /// The sole original numeric TCP listener is unavailable or changed.
     #[error("Gateway original listener rejected")]
     Listener,
@@ -62,16 +69,19 @@ pub enum GitGatewayServiceErrorV1 {
 
 /// Runs only the installed Gateway's fixed-environment transport lifecycle.
 ///
-/// This slice deliberately refuses startup before credentials, TCP binding or
-/// acceptance because no genuine node-network envelope producer exists. Even
-/// after that separate dependency is implemented, transport READY will not
-/// authorize Git or produce a successful Git response.
+/// Requires an explicit service-memcg/observed-node-memory profile and minimum,
+/// the original fixed PID1 owner, and fresh observations before TCP binding and
+/// at acceptance/processing bookends. Observations may race other allocations;
+/// they are not reserved capacity, a hard node limit or guaranteed headroom.
+/// This transport lifecycle neither authorizes Git nor returns a successful Git
+/// response. Project operation budgets and the backend remain separate work.
 ///
 /// # Errors
 ///
 /// Rejects foreign launch FDs, configuration, PID1 delivery, original images,
-/// credentials, MAC, task/cgroup hard limits, the missing node envelope,
-/// listener custody, transport shutdown debt or accounting release.
+/// credentials, MAC, task/cgroup hard limits, original node-memory observations,
+/// observed pressure below the explicit minimum, listener custody, transport
+/// shutdown debt or accounting release.
 ///
 /// # Panics
 ///
@@ -223,18 +233,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn node_network_dependency_is_a_functional_refusal() {
-        assert_eq!(
-            startup::require_node_network_envelope(),
-            Err(GitGatewayServiceErrorV1::NodeNetworkEnvelopeMissing),
-        );
-    }
-
-    #[test]
     fn public_error_is_finite_and_redacted() {
         assert_eq!(
             GitGatewayServiceErrorV1::NodeNetworkEnvelopeMissing.to_string(),
             "Gateway node-network envelope producer is not implemented",
+        );
+        assert_eq!(
+            GitGatewayServiceErrorV1::NodeMemoryObservation.to_string(),
+            "Gateway original node-memory observation rejected",
+        );
+        assert_eq!(
+            GitGatewayServiceErrorV1::NodeMemoryPressure.to_string(),
+            "Gateway observed node-memory pressure rejected admission",
         );
     }
 

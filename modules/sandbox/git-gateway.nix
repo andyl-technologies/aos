@@ -1,4 +1,4 @@
-##! Dedicated, currently closed Gateway transport service (not Git activation).
+##! Dedicated service-bounded Gateway transport with advisory node-memory admission.
 {
   config,
   lib,
@@ -10,7 +10,13 @@
   name = "aos-git-gateway";
   program = "${cfg.package}/bin/aos-sandbox-git-gateway";
   policyPath = "${selinux._canonicalReadback}/policy.33";
-  arguments = [program cfg.endpoint (toString cfg.uid) (toString cfg.gid) policyPath];
+  residencyProfile = "service-memcg-observed-node-memory-v1";
+  selectedProfile = if cfg.residencyProfile == null then "" else cfg.residencyProfile;
+  selectedMinimum =
+    if cfg.minimumObservedNodeAvailableBytes == null
+    then ""
+    else toString cfg.minimumObservedNodeAvailableBytes;
+  arguments = [program cfg.endpoint (toString cfg.uid) (toString cfg.gid) policyPath selectedProfile selectedMinimum];
   credentialNames = {
     serverCert = "public-api-server-cert";
     serverKey = "public-api-server-key";
@@ -25,7 +31,19 @@
   otherGroups = lib.filterAttrs (group: _: group != name) config.aos.users.groups;
 in {
   options.aos.sandbox.gitGatewayTransport = {
-    enable = lib.mkEnableOption "the dedicated transport-only Gateway (currently functionally unavailable)";
+    enable = lib.mkEnableOption "the dedicated transport-only Gateway without Git backend activation";
+
+    residencyProfile = lib.mkOption {
+      type = lib.types.nullOr (lib.types.enum [residencyProfile]);
+      default = null;
+      description = "Explicit service-memcg and advisory node-memory profile; no hard all-node or per-tenant network residency promise.";
+    };
+
+    minimumObservedNodeAvailableBytes = lib.mkOption {
+      type = lib.types.nullOr (lib.types.addCheck lib.types.int (value: value >= 1073741824));
+      default = null;
+      description = "Explicit minimum live MemAvailable estimate before admission, at least the 1 GiB service limit. This load-shedding threshold reserves no node capacity and guarantees no allocation headroom.";
+    };
 
     package = lib.mkOption {
       type = lib.types.package;
@@ -62,10 +80,11 @@ in {
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        # No Boolean, unsigned profile, path-shaped promise or new format can
-        # stand in for the absent genuine node-network envelope producer.
-        assertion = false;
-        message = "Gateway transport is functionally unavailable: a genuine selected node-network residency envelope producer and original-owner readback must be implemented before enablement.";
+        # These are policy coordinates in the exact immutable unit, not an
+        # authority Boolean. Startup retains and reads the actual kernel file.
+        assertion = cfg.residencyProfile == residencyProfile
+          && cfg.minimumObservedNodeAvailableBytes != null;
+        message = "Gateway requires the explicit service-memcg/observed-node-memory profile and minimum. Hard tenant or all-node network profiles are unsupported; live startup must independently admit the original service and kernel observation.";
       }
       {
         assertion = selinux.enable && selinux.mode == "enforcing"
@@ -118,6 +137,8 @@ in {
           && (service.FileDescriptorStoreMax or null) == 0
           && (service.ReadWritePaths or []) == [] && (service.BindPaths or []) == []
           && (service.StateDirectory or []) == [] && (service.RuntimeDirectory or []) == []
+          && (service.ProtectProc or null) == "invisible" && (service.ProcSubset or null) == "all"
+          && (service.RootDirectory or "") == "" && (service.RootImage or "") == ""
           && (service.RestrictAddressFamilies or []) == ["AF_UNIX" "AF_INET" "AF_INET6"];
         message = "Gateway final unit must retain the fixed dedicated launch, credential delivery, two-slot hard envelope and read-only confinement without owner/helper authority.";
       }
@@ -177,7 +198,8 @@ in {
         ProtectSystem = "strict";
         ProtectHome = true;
         ProtectProc = "invisible";
-        # Original socket/session clocks need the fixed read-only boot-ID file.
+        # Original clocks and advisory node-memory reads need global proc files.
+        # No proc networking allocator or reservation authority is inferred.
         ProcSubset = "all";
         ProtectClock = true;
         ProtectControlGroups = true;
