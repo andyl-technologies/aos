@@ -207,6 +207,78 @@ fn qemu_node_timeout_reports_crash_and_runs_shutdown() -> Result<(), Box<dyn Err
 
     Ok(())
 }
+
+#[test]
+fn qemu_node_terminates_after_indeterminate_qmp_save_failure() -> Result<(), Box<dyn Error>> {
+    assert_native_capture_failure_reaps(
+        ScriptedNodeOptions {
+            fail_qmp_snapshot: true,
+            ..ScriptedNodeOptions::default()
+        },
+        "QMP error",
+    )
+}
+
+#[test]
+fn qemu_node_qmp_timeout_terminates_indeterminate_save_job() -> Result<(), Box<dyn Error>> {
+    assert_native_capture_failure_reaps(
+        ScriptedNodeOptions {
+            qmp_snapshot_timeout: true,
+            ..ScriptedNodeOptions::default()
+        },
+        "timed out",
+    )
+}
+
+fn assert_native_capture_failure_reaps(
+    options: ScriptedNodeOptions,
+    expected_failure: &str,
+) -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node =
+        scripted_node_with_options(Arc::clone(&log), options, [QemuAsyncWaitOutcome::Completed])?;
+    let mut checkpoint = checkpoint("indeterminate-native-save");
+    checkpoint.virtual_time = node.synchronize_observed_time()?;
+    let node_identity = node_id("vm-a");
+    checkpoint.node_icounts.insert(
+        node_identity.clone(),
+        Icount {
+            retired: checkpoint.virtual_time.ticks,
+        },
+    );
+
+    // The current native hot-fork path uses the same post-save failure cleanup
+    // as admitted descriptor capture, and must never resume an uncertain job.
+    let error = node
+        .capture_native_hot_fork_vmstate_paused(&node_identity, checkpoint.clone())
+        .expect_err("indeterminate QMP save must reject native capture");
+
+    let message = error.to_string();
+    assert!(message.contains("save_checkpoint_vmstate"), "{message}");
+    assert!(message.contains(expected_failure), "{message}");
+    assert!(message.contains("terminated and reaped"), "{message}");
+    assert!(node.child_reaped());
+    assert_eq!(
+        node.lifecycle_state(),
+        QemuNodeLifecycleState::ShutdownRequested
+    );
+    assert_eq!(
+        recorded(&log),
+        vec![
+            ChannelCall::ShmemCurrentIcount,
+            ChannelCall::ShmemCurrentIcount,
+            ChannelCall::QmpStop,
+            ChannelCall::HostCheckpointClearWhileStopped,
+            ChannelCall::ShmemCurrentIcount,
+            ChannelCall::QmpExactSave(checkpoint.id),
+            ChannelCall::PluginQuit,
+            ChannelCall::QmpQuit,
+        ]
+    );
+
+    Ok(())
+}
+
 #[test]
 fn qemu_node_shutdown_continues_to_reap_when_plugin_quit_fails() -> Result<(), Box<dyn Error>> {
     let log = shared_log();

@@ -75,6 +75,10 @@
     ]
     ++ failuresFor "crates/crucible-qemu/src/node.rs" nodeLib [
       {
+        label = "native QMP save failure reaps the indeterminate process";
+        needle = "qemu_node_terminates_after_indeterminate_qmp_save_failure";
+      }
+      {
         label = "QemuNode wrapper";
         needle = "pub struct QemuNode {";
       }
@@ -245,10 +249,6 @@
       {
         label = "shmem failure test";
         needle = "qemu_node_reports_shmem_failures_as_backend_rejections";
-      }
-      {
-        label = "QMP failure test";
-        needle = "qemu_node_terminates_after_indeterminate_qmp_save_failure";
       }
       {
         label = "plugin shutdown failure test";
