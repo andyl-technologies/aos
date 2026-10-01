@@ -408,8 +408,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   their current hermetic builds remain pending. The narrow FsRef adapter
   forwards only to its actual underlying binding; FaultFs keeps scalar
   interception. A separate original multiwriter selector on the assembled
-  joint candidate still returns `Expired` at the first joined result with its
-  original 30-second request window; phase diagnosis remains pending. No
+  joint candidate returns `Expired` at the first joined result with its
+  original 30-second request window. A separate opt-in test-only phase trace
+  passes that exact case with unchanged assertions: its durable acknowledgments
+  arrive 9.18 and 18.77 seconds after the original request origins. The complete
+  test takes 36.140 seconds, including setup and final assertions. Initial
+  whole `admit_join` calls take about 6.05 seconds each and the losing request's
+  whole `admit_rebase` takes 4.22 seconds. The successful trace does not explain
+  the earlier failure's unmeasured phase or establish reliable timing. Internal
+  phase diagnosis and complete reference-gate qualification remain pending. No
   deadline change or speedup is claimed.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
