@@ -16,6 +16,13 @@ use ed25519_dalek::VerifyingKey;
 
 const MAX_ACCEPTANCE_BYTES: usize = 256 * 1024;
 
+#[derive(Clone, Copy)]
+enum AcceptanceLoad {
+    CurrentProducer,
+    PositiveMetadataRecovery,
+}
+
+#[derive(Clone)]
 struct AcceptedProfile {
     deployment: String,
     origin: String,
@@ -25,8 +32,11 @@ struct AcceptedProfile {
 }
 
 /// Verified runtime acceptance bound to separately configured reviewer keys.
+#[derive(Clone)]
 pub struct NativeDirectUploadAcceptances {
     accepted: Vec<AcceptedProfile>,
+    source_digest: String,
+    script_version: String,
 }
 
 impl NativeDirectUploadAcceptances {
@@ -48,6 +58,31 @@ impl NativeDirectUploadAcceptances {
     }
 
     fn from_bytes(bytes: &[u8], keys: &[u8], now: u64) -> Result<Self> {
+        Self::load_bytes(bytes, keys, now, AcceptanceLoad::CurrentProducer)
+    }
+
+    /// Loads current producer facts or genuinely expired, signed guard history.
+    ///
+    /// Historical loading grants no producer qualification. `profiles` continues
+    /// to reject expiry, and only fresh exact held-positive metadata recovery may
+    /// use the retained issuer and clock-policy facts.
+    ///
+    /// # Errors
+    /// Rejects missing files, invalid signatures, future/invalid validity windows,
+    /// untrusted reviewers, malformed facts or unsupported clock/provider policy.
+    pub fn from_files_for_positive_recovery(
+        acceptance_path: &Path,
+        review_keys_path: &Path,
+    ) -> Result<Self> {
+        Self::load_bytes(
+            &bounded_file(acceptance_path)?,
+            &bounded_file(review_keys_path)?,
+            super::current_time()?,
+            AcceptanceLoad::PositiveMetadataRecovery,
+        )
+    }
+
+    fn load_bytes(bytes: &[u8], keys: &[u8], now: u64, mode: AcceptanceLoad) -> Result<Self> {
         ensure!(
             bytes.len() <= MAX_ACCEPTANCE_BYTES && keys.len() <= MAX_ACCEPTANCE_BYTES,
             "direct acceptance exceeds configured bound"
@@ -71,12 +106,23 @@ impl NativeDirectUploadAcceptances {
         let reviewer = review_keys
             .get(&artifact.reviewer_key_id)
             .context("direct reviewer is not trusted")?;
-        artifact.verify(
-            &artifact.deployment_id,
-            &artifact.public_origin,
-            reviewer,
-            now,
-        )?;
+        if matches!(mode, AcceptanceLoad::PositiveMetadataRecovery)
+            && now >= artifact.evidence.valid_until.get()
+        {
+            artifact.verify_expired_guard_history(
+                &artifact.deployment_id,
+                &artifact.public_origin,
+                reviewer,
+                now,
+            )?;
+        } else {
+            artifact.verify(
+                &artifact.deployment_id,
+                &artifact.public_origin,
+                reviewer,
+                now,
+            )?;
+        }
         let origin = url::Url::parse(&artifact.public_origin)?;
         ensure!(
             origin.origin().ascii_serialization() == artifact.public_origin,
@@ -114,7 +160,11 @@ impl NativeDirectUploadAcceptances {
                 expires_at: artifact.evidence.valid_until.get(),
             })
             .collect();
-        Ok(Self { accepted })
+        Ok(Self {
+            accepted,
+            source_digest: artifact.source_digest,
+            script_version: artifact.script_version,
+        })
     }
 
     pub(super) fn valid_until(&self, deployment: &str, origin: &str, now: u64) -> Result<u64> {
@@ -131,7 +181,7 @@ impl NativeDirectUploadAcceptances {
             .context("direct acceptance missing or expired")
     }
 
-    pub(super) fn profiles(
+    pub(crate) fn profiles(
         &self,
         deployment: &str,
         origin: &str,
@@ -150,6 +200,83 @@ impl NativeDirectUploadAcceptances {
             .collect::<Vec<_>>();
         ensure!(!profiles.is_empty(), "direct acceptance missing or expired");
         Ok(profiles)
+    }
+
+    pub(super) fn retained_clock_policy(&self, deployment: &str, origin: &str) -> Result<u64> {
+        let mut clocks = self
+            .accepted
+            .iter()
+            .filter(|item| item.deployment == deployment && item.origin == origin)
+            .map(|item| match &item.profile {
+                DirectProtectedProfile::Managed { profile, .. } => {
+                    profile.clock_uncertainty_seconds.get()
+                }
+                DirectProtectedProfile::External { profile, .. } => {
+                    profile.clock_uncertainty.get() as u64
+                }
+            });
+        let clock = clocks
+            .next()
+            .context("direct reviewed clock policy absent")?;
+        ensure!(
+            (1..30).contains(&clock) && clocks.all(|item| item == clock),
+            "direct reviewed clock policies differ"
+        );
+        Ok(clock)
+    }
+
+    pub(super) fn retained_profiles(
+        &self,
+        deployment: &str,
+        origin: &str,
+    ) -> Result<Vec<DirectProtectedProfile>> {
+        let profiles = self
+            .accepted
+            .iter()
+            .filter(|item| item.deployment == deployment && item.origin == origin)
+            .map(|item| item.profile.clone())
+            .collect::<Vec<_>>();
+        ensure!(!profiles.is_empty(), "direct reviewed guard history absent");
+        Ok(profiles)
+    }
+
+    /// Returns previously reviewed guard issuer pins without granting dispatch.
+    ///
+    /// Terminal metadata evidence remains readable after a producer acceptance
+    /// expires. Exact profile selection is still required; this method cannot
+    /// authorize a new provider operation or renew that acceptance.
+    pub(crate) fn retained_guard_issuer(
+        &self,
+        deployment: &str,
+        origin: &str,
+        profile_digest: &str,
+    ) -> Result<(String, String, u64)> {
+        let uncertainty = self
+            .accepted
+            .iter()
+            .find_map(|accepted| {
+                if accepted.deployment != deployment
+                    || accepted.origin != origin
+                    || !accepted
+                        .profile
+                        .digest()
+                        .is_ok_and(|digest| digest == profile_digest)
+                {
+                    return None;
+                }
+                match &accepted.profile {
+                    DirectProtectedProfile::Managed { profile, .. } => {
+                        Some(profile.clock_uncertainty_seconds.get())
+                    }
+                    DirectProtectedProfile::External { .. } => None,
+                }
+            })
+            .context("mirror original has no reviewed managed guard issuer")?;
+        Ok((
+            self.source_digest.clone(),
+            self.script_version.clone(),
+            uncertainty,
+        ))
     }
 }
 

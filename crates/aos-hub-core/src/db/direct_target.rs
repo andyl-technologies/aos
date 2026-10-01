@@ -9,8 +9,10 @@ use crate::{
     value::Value,
 };
 
-mod publication;
+mod dependency_locks;
+mod locks;
 mod provenance;
+mod publication;
 pub use provenance::{validate_direct_presence_provenance, DirectPresenceProvenance};
 
 impl Database {
@@ -194,7 +196,8 @@ impl Database {
                      AND generation.generation = usage.signing_key_generation
                    WHERE usage.consumer_stable_id = binary_caches.stable_id AND usage.purpose = 'narinfo'
                      AND usage.state = 'active' AND usage.signing_key_id = ?5
-                     AND usage.signing_key_generation = ?6 AND generation.public_key_fingerprint = ?7))",
+                     AND usage.signing_key_generation = ?6 AND generation.public_key_fingerprint = ?7
+                     AND generation.state = 'active' AND generation.retired_at IS NULL))",
             vals![cache_id, path, sha256, byte_size, signing.map(|key| key.stable_id.as_str()),
                 signing.map(|key| key.generation), signing.map(|key| key.public_key_fingerprint.as_str())],
         ).expecting(1))
@@ -213,24 +216,15 @@ impl Database {
             "direct publication identity absent"
         );
         Ok(Statement::new(
-            "UPDATE registry_publications SET state = state
+            format!("UPDATE registry_publications SET state = state
              WHERE publication_id = ?1
                AND ((?2 = 0 AND state = 'preparing') OR (?2 = 1 AND state = 'writing_pointers'
-                 AND EXISTS (SELECT 1 FROM registry_publication_placements required
-                   WHERE required.publication_id = ?1 AND required.required = 1)
-                 AND NOT EXISTS (SELECT 1 FROM registry_publication_objects object
-                   JOIN registry_publication_placements required ON required.publication_id = object.publication_id
-                     AND required.required = 1
-                   WHERE object.publication_id = ?1 AND object.object_kind = 'immutable'
-                     AND NOT EXISTS (SELECT 1 FROM object_placements presence
-                       WHERE presence.surface_object_id = object.surface_object_id
-                         AND presence.placement_id = required.placement_id AND presence.state = 'present'
-                         AND presence.observed_hash = object.expected_hash AND presence.observed_size = object.expected_size))
+                 AND {barrier}
                  AND NOT EXISTS (SELECT 1 FROM registry_publication_placements required
                    WHERE required.publication_id = ?1 AND required.required = 1
                      AND NOT EXISTS (SELECT 1 FROM registry_placement_publication_watermarks watermark
                        WHERE watermark.placement_id = required.placement_id
-                         AND watermark.pending_publication_id = ?1 AND watermark.mutable_publication_id IS NULL))))",
+                         AND watermark.pending_publication_id = ?1 AND watermark.mutable_publication_id IS NULL))))", barrier = super::mirror_publication::IMMUTABLE_BARRIER),
             vals![publication, i64::from(pointer)],
         ).expecting(1))
     }
@@ -244,7 +238,7 @@ impl Database {
     ///
     /// # Errors
     /// Returns an error for malformed claims, missing current credentials or unsupported permission.
-    pub async fn direct_iam_fence(
+    pub(crate) async fn direct_iam_fence(
         &self,
         claims: &crate::auth::jwt::Claims,
         scope: &str,

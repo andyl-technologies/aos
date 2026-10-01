@@ -1032,11 +1032,11 @@ async fn main() -> Result<()> {
                 let storage_key = aos_hub::auth::seal::read_secret_file(&storage_key_file)?;
                 match (direct_upload_acceptance_file, direct_upload_review_keys_file, direct_upload_guard_key_file) {
                     (Some(acceptance_file), Some(review_keys_file), Some(guard_key_file)) => {
-                        let acceptances = aos_hub::direct_upload::authority::NativeDirectUploadAcceptances::from_files(
+                        let acceptances = aos_hub::direct_upload::authority::NativeDirectUploadAcceptances::from_files_for_positive_recovery(
                             &acceptance_file, &review_keys_file,
                         )?;
                         let guard_key = aos_hub::auth::seal::read_secret_file(&guard_key_file)?;
-                        direct_runtime = Some(Arc::new(aos_hub::direct_upload::authority::NativeDirectUploadRuntime::new(
+                        direct_runtime = Some(Arc::new(aos_hub::direct_upload::authority::NativeDirectUploadRuntime::new_for_positive_recovery(
                             &worker_url, &deployment_id, &storage_key, &guard_key, acceptances,
                         )?));
                     }

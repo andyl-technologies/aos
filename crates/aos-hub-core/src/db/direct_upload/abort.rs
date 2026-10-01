@@ -81,7 +81,7 @@ impl Database {
                     code: DirectItemErrorCode::Conflict
                 }
             );
-            self.backend
+            self.direct_batch(&record)
                 .checked_batch(&[current_guard_with_recovery(&record, now, true)?])
                 .await?;
             return Ok(record);
@@ -98,7 +98,7 @@ impl Database {
         integer(record.resource_version)?
             .checked_add(1)
             .context("direct resource version exhausted")?;
-        self.backend
+        self.direct_batch(&record)
             .checked_batch(&[
                 current_guard_with_recovery(&record, now, true)?,
                 Statement::new(
@@ -247,6 +247,6 @@ impl Database {
             )
             .expecting(1),
         ]);
-        self.backend.checked_batch(&statements).await
+        self.direct_batch(&record).checked_batch(&statements).await
     }
 }

@@ -165,7 +165,7 @@ impl Database {
                     code: DirectItemErrorCode::Conflict
                 }
             );
-            self.backend
+            self.direct_batch(&existing)
                 .checked_batch(
                     &[
                         vec![current_guard(&existing, now)?],
@@ -272,7 +272,7 @@ impl Database {
         };
         statements.push(current_guard(&record, now)?);
         statements.extend(authority_statements.clone());
-        if let Err(error) = self.backend.checked_batch(&statements).await {
+        if let Err(error) = self.direct_batch(&record).checked_batch(&statements).await {
             // A concurrent exact admission may win; a business uniqueness conflict
             // with another session or immutable original remains a hard refusal.
             if let Some(existing) = self
@@ -283,7 +283,7 @@ impl Database {
                     && existing.owner == *owner
                     && existing.owner_scope_key == owner_scope_key
                 {
-                    self.backend
+                    self.direct_batch(&existing)
                         .checked_batch(
                             &[
                                 vec![current_guard(&existing, now)?],
@@ -327,7 +327,7 @@ impl Database {
                     code: DirectItemErrorCode::Conflict
                 }
             );
-            self.backend
+            self.direct_batch(&record)
                 .checked_batch(&[current_guard(&record, now)?])
                 .await?;
             return Ok(record);
@@ -339,7 +339,7 @@ impl Database {
                 code: DirectItemErrorCode::Conflict
             }
         );
-        self.backend
+        self.direct_batch(&record)
             .checked_batch(&[
                 current_guard(&record, now)?,
                 Statement::new(
@@ -367,6 +367,28 @@ impl Database {
             .context("retained direct complete disappeared")
     }
 
+    /// Reads an exact retained Complete after independent held-positive authorization.
+    ///
+    /// This path cannot create an intent, extend admission or reserve a destination.
+    /// The service must first authenticate fresh positive stage provenance and IAM.
+    ///
+    /// # Errors
+    /// Rejects absent positive originals, changed Complete, current pins or SQL failure.
+    pub(crate) async fn retain_direct_positive_complete(
+        &self, deployment: &str, session_id: &str, intent: &DirectCompleteRequest, now: i64,
+    ) -> Result<DirectUploadSessionRecord> {
+        let record = self.direct_upload_session(deployment, session_id).await?
+            .context("direct positive recovery session absent")?;
+        validate_complete(&record.admission, intent, deployment)?;
+        ensure!(record.state == DirectSessionState::StagedVerified
+            && record.complete_intent.as_ref() == Some(intent)
+            && record.stage_evidence.is_some()
+            && record.baselines.len() == record.admission.placements.len(),
+            "direct positive recovery original absent or changed");
+        self.direct_batch(&record).checked_batch(&[current_guard_with_recovery(&record, now, true)?]).await?;
+        Ok(record)
+    }
+
     pub(crate) async fn retain_direct_verified_stage(
         &self,
         deployment: &str,
@@ -391,7 +413,7 @@ impl Database {
                     code: DirectItemErrorCode::Conflict
                 }
             );
-            self.backend
+            self.direct_batch(&record)
                 .checked_batch(&[current_guard(record, now)?])
                 .await?;
             return Ok(());
@@ -403,7 +425,7 @@ impl Database {
         integer(record.resource_version)?
             .checked_add(1)
             .context("direct resource version exhausted")?;
-        self.backend
+        self.direct_batch(&record)
             .checked_batch(&[
                 current_guard(record, now)?,
                 Statement::new(
@@ -508,8 +530,10 @@ impl Database {
             );
         }
 
+        // Fresh independent final verification settles originals after expiry
+        // without authorizing another provider effect.
         let mut statements = self.direct_publication_accounting_prefix(record).await?;
-        statements.push(current_guard(record, now)?);
+        statements.push(current_guard_with_recovery(record, now, true)?);
         statements.append(&mut target_statements);
         statements.push(Statement::new(
             "INSERT INTO direct_upload_completion_receipts
@@ -527,7 +551,7 @@ impl Database {
                 "UPDATE direct_upload_sessions SET state = 'committed', completed_at = ?4,
                updated_at = ?4, resource_version = resource_version + 1
              WHERE deployment_id = ?1 AND session_id = ?2 AND resource_version = ?3
-               AND state = 'staged_verified' AND expires_at > ?4",
+               AND state = 'staged_verified'",
                 vals![
                     deployment,
                     evidence.session_id,
@@ -537,7 +561,7 @@ impl Database {
             )
             .expecting(1),
         );
-        self.backend.checked_batch(&statements).await
+        self.direct_batch(&record).checked_batch(&statements).await
     }
 }
 

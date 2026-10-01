@@ -39,6 +39,15 @@ pub struct ResolvedDirectAdmission {
     pub authority_statements: Vec<CheckedStatement>,
 }
 
+/// Exact metadata phases eligible for held-positive recovery after producer expiry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectPositiveMetadataPhase {
+    /// Reads the already retained original Complete without new provider effects.
+    Freeze,
+    /// Commits exact independently verified final receipts and logical accounting.
+    Commit,
+}
+
 /// Configured current target and independent receipt authority.
 ///
 /// Every method accepts bounded typed metadata. Implementations must refuse
@@ -91,6 +100,7 @@ pub trait DirectUploadAuthority: Send + Sync {
         context: &DirectRequestContext,
         record: &DirectUploadSessionRecord,
         action: DirectLogicalAction,
+        metadata_phase: Option<DirectPositiveMetadataPhase>,
         now: i64,
     ) -> Result<()>;
 
@@ -313,7 +323,18 @@ impl DirectUploadService {
                             let mut record =
                                 self.load_owned(context, &session.session, &actor).await?;
                             authority
-                                .authorize_session(claims, context, &record, *action, now)
+                                .authorize_session(
+                                    claims,
+                                    context,
+                                    &record,
+                                    *action,
+                                    if *complete_step == Some(DirectCompleteStep::Freeze) {
+                                        Some(DirectPositiveMetadataPhase::Freeze)
+                                    } else {
+                                        None
+                                    },
+                                    now,
+                                )
                                 .await?;
                             let now = self.refresh_time(claims, context, now)?;
                             match action {
@@ -322,15 +343,29 @@ impl DirectUploadService {
                                         .complete_intent
                                         .as_ref()
                                         .context("direct Complete original absent")?;
-                                    record = self
-                                        .db
-                                        .retain_direct_complete(
-                                            &context.deployment_id,
-                                            &session.session.session_id,
-                                            intent,
-                                            now,
-                                        )
-                                        .await?;
+                                    record = if *complete_step == Some(DirectCompleteStep::Freeze)
+                                        && record.state == DirectSessionState::StagedVerified
+                                        && record.baselines.len()
+                                            == record.admission.placements.len()
+                                    {
+                                        self.db
+                                            .retain_direct_positive_complete(
+                                                &context.deployment_id,
+                                                &session.session.session_id,
+                                                intent,
+                                                now,
+                                            )
+                                            .await?
+                                    } else {
+                                        self.db
+                                            .retain_direct_complete(
+                                                &context.deployment_id,
+                                                &session.session.session_id,
+                                                intent,
+                                                now,
+                                            )
+                                            .await?
+                                    };
                                     if record.state == DirectSessionState::Committed {
                                         return Ok((record, Vec::new()));
                                     }
@@ -525,6 +560,7 @@ impl DirectUploadService {
                                     context,
                                     &record,
                                     DirectLogicalAction::Complete,
+                                    Some(DirectPositiveMetadataPhase::Commit),
                                     now,
                                 )
                                 .await?;
@@ -550,6 +586,7 @@ impl DirectUploadService {
                                     original == item && record.final_guards == guards,
                                     "direct terminal replay changed"
                                 );
+                                self.refresh_time(claims, context, now)?;
                                 return Ok(record);
                             }
                             ensure!(
@@ -568,17 +605,39 @@ impl DirectUploadService {
                                 .verify_final(claims, context, &record, item, &guards, now)
                                 .await?;
                             let now = self.refresh_time(claims, context, now)?;
-                            self.db
-                                .commit_direct_upload(
-                                    &context.deployment_id,
-                                    &record,
-                                    item,
-                                    &guards,
-                                    statements,
-                                    now,
-                                )
-                                .await?;
-                            self.load_owned(context, &session, &actor).await
+                            let expires_at = context.expires_at.get()
+                                .min(u64::try_from(claims.exp)?);
+                            let remaining = expires_at.checked_sub(u64::try_from(now)?)
+                                .filter(|seconds| *seconds > 0)
+                                .context("direct final SQL authority expired")?;
+                            // A blocked SQL transaction cannot outlive the exact
+                            // lookup or authenticated claims window. Cancellation provides no
+                            // settlement assertion; exact retained replay resolves
+                            // a possibly committed result after the reply is lost.
+                            let transaction = self.db.commit_direct_upload(
+                                &context.deployment_id,
+                                &record,
+                                item,
+                                &guards,
+                                statements,
+                                now,
+                            );
+                            let deadline = crate::clock::sleep(
+                                std::time::Duration::from_secs(remaining),
+                            );
+                            futures_util::pin_mut!(transaction, deadline);
+                            match futures_util::future::select(transaction, deadline).await {
+                                futures_util::future::Either::Left((result, _)) => result?,
+                                futures_util::future::Either::Right(((), _)) => {
+                                    anyhow::bail!("direct final SQL outcome unavailable at authority deadline");
+                                }
+                            }
+                            // Both futures can become ready before a delayed executor
+                            // polls select. A SQL result never extends reply authority.
+                            let after_commit = self.refresh_time(claims, context, now)?;
+                            let committed = self.load_owned(context, &session, &actor).await?;
+                            self.refresh_time(claims, context, after_commit)?;
+                            Ok(committed)
                         }
                         .await;
                         (item, result)
@@ -589,6 +648,12 @@ impl DirectUploadService {
                     .collect::<Vec<_>>()
                     .await;
                 for (item, result) in results {
+                    // A different batch item may have waited after this one loaded
+                    // its receipt. Expiry refuses ACK without rewriting SQL outcome.
+                    let result = result.and_then(|record| {
+                        self.refresh_time(claims, context, now)?;
+                        Ok(record)
+                    });
                     append_record(&mut reply, &context.deployment_id, &item.session_id, result)?;
                 }
             }
@@ -604,6 +669,7 @@ impl DirectUploadService {
                                     context,
                                     &record,
                                     DirectLogicalAction::Abort,
+                                    None,
                                     now,
                                 )
                                 .await?;

@@ -15,6 +15,9 @@ use sha2::Digest as _;
 #[path = "empty_tests.rs"]
 mod empty_tests;
 
+#[path = "recovery_tests.rs"]
+mod recovery_tests;
+
 fn context(origin: &str, nonce: u8) -> DirectRequestContext {
     let now = current_time().unwrap();
     DirectRequestContext {

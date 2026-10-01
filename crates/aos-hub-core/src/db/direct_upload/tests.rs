@@ -5,6 +5,10 @@ use super::*;
 #[path = "service_tests.rs"]
 mod service_tests;
 
+#[cfg(feature = "postgres")]
+#[path = "../direct_target/concurrency_tests.rs"]
+mod authority_lock_tests;
+
 #[test]
 fn retained_document_rejects_noncanonical_encoding() {
     let original = DirectSessionRef {

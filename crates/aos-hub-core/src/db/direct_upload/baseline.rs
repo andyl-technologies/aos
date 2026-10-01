@@ -92,7 +92,7 @@ impl Database {
                 "direct baseline original or accounting replay changed"
             );
             return self
-                .backend
+                .direct_batch(record)
                 .checked_batch(&[vec![current_guard(record, now)?], authority_statements].concat())
                 .await;
         }
@@ -127,6 +127,6 @@ impl Database {
             );
         }
         statements.append(&mut activation_statements);
-        self.backend.checked_batch(&statements).await
+        self.direct_batch(record).checked_batch(&statements).await
     }
 }

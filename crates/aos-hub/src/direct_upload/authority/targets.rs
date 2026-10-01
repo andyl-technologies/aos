@@ -470,13 +470,18 @@ impl NativeDirectUploadAuthority {
                     projection.verify_selected_key(&key.name, &key.public_key)?;
                 }
                 let hash = aos_core::nar::cache::canonical_sha256_hex(&projection.file_hash)?;
-                Ok(vec![Database::direct_cache_metadata_fence(
+                let mut statements = self
+                    .db
+                    .direct_cache_dependency_locks(cache_id, &projection.nar_url, signing.as_ref())
+                    .await?;
+                statements.push(Database::direct_cache_metadata_fence(
                     cache_id,
                     &projection.nar_url,
                     &hash,
                     projection.file_size.parse()?,
                     signing.as_ref(),
-                )?])
+                )?);
+                Ok(statements)
             }
             DirectUploadTarget::PublicationObject {
                 publication_id,
@@ -525,17 +530,24 @@ impl NativeDirectUploadAuthority {
                         && ticket.declared_size == i64::try_from(evidence.byte_size.get())?,
                     "direct cache final source differs from baseline activation"
                 );
-                statements.extend(Database::complete_cache_write_ticket_statements(
-                    ticket_id,
+                statements.extend(Database::complete_direct_cache_write_ticket_statements(
+                    record,
+                    evidence,
+                    &self.deployment,
                     ticket.resource_version,
                     now,
                 )?);
             }
             (DirectSqlOwner::Publication, DirectUploadTarget::PublicationObject { .. }) => {
                 statements.extend(
-                    self.db.direct_publication_presence_statements(
-                        record, evidence, &self.deployment, now,
-                    ).await?,
+                    self.db
+                        .direct_publication_presence_statements(
+                            record,
+                            evidence,
+                            &self.deployment,
+                            now,
+                        )
+                        .await?,
                 );
             }
             (DirectSqlOwner::Oci, DirectUploadTarget::OciBlob { upload_id }) => {

@@ -35,6 +35,11 @@ pub struct NativeDirectUploadRuntime {
     clock_uncertainty_seconds: u64,
 }
 
+enum RuntimeFacts {
+    CurrentProducer,
+    PositiveMetadataRecovery,
+}
+
 impl NativeDirectUploadRuntime {
     /// Constructs a runtime whose independent guard key differs from the broker key.
     ///
@@ -47,6 +52,50 @@ impl NativeDirectUploadRuntime {
         storage_key: &[u8],
         guard_key: &[u8],
         acceptances: NativeDirectUploadAcceptances,
+    ) -> Result<Self> {
+        Self::configured(
+            origin,
+            deployment,
+            storage_key,
+            guard_key,
+            acceptances,
+            RuntimeFacts::CurrentProducer,
+        )
+    }
+
+    /// Constructs a runtime retaining reviewed clock and guard facts after expiry.
+    ///
+    /// The acceptance loader must independently authenticate historical facts.
+    /// Provider dispatch still requires current acceptance; recovery authorizes
+    /// only exact held-positive metadata with fresh independent guard readback.
+    ///
+    /// # Errors
+    /// Rejects invalid audience, absent reviewed facts, incompatible clock policies
+    /// or reused broker/guard authentication keys.
+    pub fn new_for_positive_recovery(
+        origin: &str,
+        deployment: &str,
+        storage_key: &[u8],
+        guard_key: &[u8],
+        acceptances: NativeDirectUploadAcceptances,
+    ) -> Result<Self> {
+        Self::configured(
+            origin,
+            deployment,
+            storage_key,
+            guard_key,
+            acceptances,
+            RuntimeFacts::PositiveMetadataRecovery,
+        )
+    }
+
+    fn configured(
+        origin: &str,
+        deployment: &str,
+        storage_key: &[u8],
+        guard_key: &[u8],
+        acceptances: NativeDirectUploadAcceptances,
+        facts: RuntimeFacts,
     ) -> Result<Self> {
         let url = url::Url::parse(origin)?;
         let canonical = url.origin().ascii_serialization();
@@ -62,7 +111,15 @@ impl NativeDirectUploadRuntime {
                 && storage_key != guard_key,
             "invalid direct Native runtime configuration"
         );
-        let profiles = acceptances.profiles(deployment, &canonical, current_time()?)?;
+        let profiles = match facts {
+            RuntimeFacts::CurrentProducer => {
+                acceptances.profiles(deployment, &canonical, current_time()?)?
+            }
+            RuntimeFacts::PositiveMetadataRecovery => {
+                acceptances.retained_clock_policy(deployment, &canonical)?;
+                acceptances.retained_profiles(deployment, &canonical)?
+            }
+        };
         let mut uncertainties = profiles.iter().map(|profile| match profile {
             DirectProtectedProfile::Managed { profile, .. } => {
                 profile.clock_uncertainty_seconds.get()
@@ -190,22 +247,32 @@ impl DirectUploadAuthority for NativeDirectUploadAuthority {
                 original.admission.intent == *intent && original.admission.actor_slot == actor,
                 "direct original operation conflicts"
             );
-            if !matches!(original.state, DirectSessionState::Committed | DirectSessionState::Aborted) {
+            if !matches!(
+                original.state,
+                DirectSessionState::Committed | DirectSessionState::Aborted
+            ) {
+                self.current_profiles(context, self.current_time()?).await?;
                 self.ensure_new_effect_accounting(intent).await?;
             }
-            self.authorize_session(claims, context, &original, DirectLogicalAction::Status, now)
-                .await?;
+            self.authorize_session(
+                claims,
+                context,
+                &original,
+                DirectLogicalAction::Status,
+                None,
+                now,
+            )
+            .await?;
             return Ok(ResolvedDirectAdmission {
-                authority_statements: vec![
-                    self.db
-                        .direct_iam_fence(
-                            claims,
-                            &original.owner_scope_key,
-                            target_permission(&original),
-                            self.current_time()?,
-                        )
-                        .await?,
-                ],
+                authority_statements: self
+                    .db
+                    .direct_iam_statements(
+                        claims,
+                        &original.owner_scope_key,
+                        target_permission(&original),
+                        self.current_time()?,
+                    )
+                    .await?,
                 admission: original.admission,
                 owner_scope_key: original.owner_scope_key,
                 owner: original.owner,
@@ -347,11 +414,10 @@ impl DirectUploadAuthority for NativeDirectUploadAuthority {
         } else {
             aos_hub_core::domain::Permission::Publish
         };
-        let authority_statements = vec![
-            self.db
-                .direct_iam_fence(claims, &target.scope, permission, self.current_time()?)
-                .await?,
-        ];
+        let authority_statements = self
+            .db
+            .direct_iam_statements(claims, &target.scope, permission, self.current_time()?)
+            .await?;
         Ok(ResolvedDirectAdmission {
             admission,
             owner_scope_key: target.scope,
@@ -366,6 +432,7 @@ impl DirectUploadAuthority for NativeDirectUploadAuthority {
         context: &DirectRequestContext,
         record: &DirectUploadSessionRecord,
         action: DirectLogicalAction,
+        metadata_phase: Option<DirectPositiveMetadataPhase>,
         now: i64,
     ) -> Result<()> {
         let target = self
@@ -390,11 +457,39 @@ impl DirectUploadAuthority for NativeDirectUploadAuthority {
         ) {
             return Ok(());
         }
-        ensure!(
-            u64::try_from(now)? < record.admission.expires_at.get(),
-            "direct original admission expired"
-        );
-        let profiles = self.current_profiles(context, now).await?;
+        let recovering_positive = metadata_phase.is_some()
+            && (u64::try_from(now)? >= record.admission.expires_at.get()
+                || self
+                    .acceptances
+                    .profiles(&self.deployment, &self.origin, u64::try_from(now)?)
+                    .is_err());
+        if metadata_phase.is_none() && action == DirectLogicalAction::Complete {
+            self.ensure_new_effect_accounting(&record.admission.intent)
+                .await?;
+        }
+        let profiles = if recovering_positive {
+            ensure!(
+                action == DirectLogicalAction::Complete
+                    && record.state == DirectSessionState::StagedVerified
+                    && record.complete_intent.is_some()
+                    && record.baselines.len() == record.admission.placements.len(),
+                "direct held-positive metadata original absent"
+            );
+            let stage = record
+                .stage_evidence
+                .as_ref()
+                .context("direct held-positive stage absent")?;
+            stage.validate_against(&record.admission, &self.deployment)?;
+            self.lookup_stage(context, record, stage, now).await?;
+            self.acceptances
+                .retained_profiles(&self.deployment, &self.origin)?
+        } else {
+            ensure!(
+                u64::try_from(now)? < record.admission.expires_at.get(),
+                "direct original admission expired"
+            );
+            self.current_profiles(context, now).await?
+        };
         ensure!(
             target.placements.len() == record.admission.placements.len(),
             "direct required placement set changed"
@@ -436,7 +531,13 @@ impl DirectUploadAuthority for NativeDirectUploadAuthority {
         use futures_util::{stream, StreamExt as _, TryStreamExt as _};
         use std::collections::BTreeSet;
 
-        self.ensure_new_effect_accounting(&record.admission.intent).await?;
+        ensure!(
+            u64::try_from(now)? < record.admission.expires_at.get(),
+            "direct baseline original expired"
+        );
+        self.ensure_new_effect_accounting(&record.admission.intent)
+            .await?;
+        self.current_profiles(context, now).await?;
         let complete = record
             .complete_intent
             .as_ref()
@@ -486,7 +587,13 @@ impl DirectUploadAuthority for NativeDirectUploadAuthority {
                 witness_digest: witness.fingerprint()?,
                 request_nonce: context.request_nonce.clone(),
                 expires_at: WireInteger::new(
-                    context.expires_at.get().min(witness.expires_at.get()),
+                    context.expires_at.get().min(witness.expires_at.get()).min(
+                        self.acceptances.valid_until(
+                            &self.deployment,
+                            &self.origin,
+                            self.latest_now()?,
+                        )?,
+                    ),
                 ),
             });
         }
@@ -539,32 +646,47 @@ impl DirectUploadAuthority for NativeDirectUploadAuthority {
         } else {
             Vec::new()
         };
-        let mut authority = vec![
-            self.db
-                .direct_iam_fence(
-                    claims,
-                    &record.owner_scope_key,
-                    target_permission(record),
-                    fresh_now,
-                )
-                .await?,
-        ];
+        let mut authority = self
+            .db
+            .direct_iam_statements(
+                claims,
+                &record.owner_scope_key,
+                target_permission(record),
+                fresh_now,
+            )
+            .await?;
         authority.extend(self.dependency_statements(record).await?);
         let mutation_now = self.current_time()?;
         context.validate(&self.deployment, &self.origin, u64::try_from(mutation_now)?)?;
+        self.acceptances
+            .profiles(&self.deployment, &self.origin, u64::try_from(mutation_now)?)?;
         for (baseline, witness) in evidence.iter().zip(witnesses) {
             witness.validate_for(baseline, context, u64::try_from(mutation_now)?)?;
         }
-        self.db
-            .retain_direct_baselines(
+        let deadline = witnesses
+            .iter()
+            .map(|witness| witness.expires_at.get())
+            .chain(std::iter::once(context.expires_at.get()))
+            .chain(std::iter::once(u64::try_from(claims.exp)?))
+            .min()
+            .context("direct baseline authority deadline absent")?;
+        let remaining = deadline
+            .checked_sub(u64::try_from(mutation_now)?)
+            .filter(|seconds| *seconds > 0)
+            .context("direct baseline SQL authority expired")?;
+        tokio::time::timeout(
+            Duration::from_secs(remaining),
+            self.db.retain_direct_baselines(
                 &self.deployment,
                 record,
                 &originals,
                 authority,
                 activation,
                 mutation_now,
-            )
-            .await?;
+            ),
+        )
+        .await
+        .context("direct baseline SQL outcome unavailable at authority deadline")??;
         Ok(permissions)
     }
 
@@ -603,18 +725,16 @@ impl DirectUploadAuthority for NativeDirectUploadAuthority {
             .await?;
         let fresh_now = self.current_time()?;
         context.validate(&self.deployment, &self.origin, u64::try_from(fresh_now)?)?;
-        let mut statements = self.final_statements(record, evidence, fresh_now).await?;
-        statements.insert(
-            0,
-            self.db
-                .direct_iam_fence(
-                    claims,
-                    &record.owner_scope_key,
-                    target_permission(record),
-                    fresh_now,
-                )
-                .await?,
-        );
+        let mut statements = self
+            .db
+            .direct_iam_statements(
+                claims,
+                &record.owner_scope_key,
+                target_permission(record),
+                fresh_now,
+            )
+            .await?;
+        statements.extend(self.final_statements(record, evidence, fresh_now).await?);
         Ok(statements)
     }
 
@@ -644,16 +764,15 @@ impl DirectUploadAuthority for NativeDirectUploadAuthority {
         .await?;
         let fresh_now = self.current_time()?;
         context.validate(&self.deployment, &self.origin, u64::try_from(fresh_now)?)?;
-        let mut statements = vec![
-            self.db
-                .direct_iam_fence(
-                    claims,
-                    &record.owner_scope_key,
-                    target_permission(record),
-                    fresh_now,
-                )
-                .await?,
-        ];
+        let mut statements = self
+            .db
+            .direct_iam_statements(
+                claims,
+                &record.owner_scope_key,
+                target_permission(record),
+                fresh_now,
+            )
+            .await?;
         match &record.owner {
             DirectSqlOwner::Cache { ticket_id, .. } => {
                 let ticket = self

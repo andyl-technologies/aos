@@ -1230,7 +1230,9 @@ impl Database {
         {
             bail!("cache write ticket input is invalid");
         }
-        let statements = vec![Statement::new(
+        let statements = vec![
+            CheckedStatement::exact("UPDATE cache_gc_state SET epoch = epoch WHERE cache_id = ?1", vals![cache_id], 1),
+            Statement::new(
             "INSERT INTO cache_write_tickets
                  (ticket_id, cache_id, object_key, declared_size, upload_kind, placement_id,
                   prior_object_size, prior_object_hash, prior_object_etag, intended_object_hash,
@@ -1457,7 +1459,9 @@ impl Database {
         {
             bail!("presigned cache write ticket input is invalid");
         }
-        let statements = vec![Statement::new(
+        let statements = vec![
+            CheckedStatement::exact("UPDATE cache_gc_state SET epoch = epoch WHERE cache_id = ?1", vals![cache_id], 1),
+            Statement::new(
             "INSERT INTO cache_write_tickets
              (ticket_id, cache_id, object_key, declared_size, upload_kind, placement_id,
               prior_object_size, prior_object_hash, prior_object_etag, intended_object_hash,
@@ -2569,6 +2573,38 @@ impl Database {
         expected_version: i64,
         now: i64,
     ) -> Result<Vec<CheckedStatement>> {
+        Self::cache_write_ticket_completion_statements(ticket_id, expected_version, now, false)
+    }
+
+    /// Builds accounting settlement for an independently verified DirectUpload final.
+    ///
+    /// Admission expiry blocks new effects. An exact held-positive final may still
+    /// settle its original reservation after expiry; current writer and ticket CAS
+    /// remain mandatory. The authority must freshly authenticate every final guard.
+    ///
+    /// # Errors
+    /// Rejects absent retained positives, changed source/owner, invalid CAS or SQL pins.
+    pub fn complete_direct_cache_write_ticket_statements(
+        record: &super::DirectUploadSessionRecord,
+        evidence: &crate::direct_upload::DirectCompletionEvidence,
+        deployment: &str,
+        expected_version: i64,
+        now: i64,
+    ) -> Result<Vec<CheckedStatement>> {
+        evidence.validate_against(&record.admission, deployment)?;
+        let super::DirectSqlOwner::Cache { ticket_id, .. } = &record.owner else {
+            bail!("direct cache settlement original owner differs");
+        };
+        anyhow::ensure!(record.state == crate::direct_upload::DirectSessionState::StagedVerified
+            && record.stage_evidence.is_some() && record.complete_intent.is_some()
+            && record.baselines.len() == record.admission.placements.len(),
+            "direct cache settlement positive originals absent");
+        Self::cache_write_ticket_completion_statements(ticket_id, expected_version, now, true)
+    }
+
+    fn cache_write_ticket_completion_statements(
+        ticket_id: &str, expected_version: i64, now: i64, held_positive: bool,
+    ) -> Result<Vec<CheckedStatement>> {
         validate_key_bytes(ticket_id, "cache write ticket id", 64)?;
         if expected_version <= 0 || now <= 0 {
             bail!("cache write completion metadata is invalid");
@@ -2597,7 +2633,7 @@ impl Database {
                        FROM cache_write_ticket_parts part
                        WHERE part.ticket_id = cache_write_tickets.ticket_id
                          AND part.state = 'confirmed')))
-                   AND expires_at > ?3
+                   AND (?4 = 1 OR expires_at > ?3)
                    AND EXISTS (SELECT 1 FROM surface_placement_effective placement
                      JOIN bindings binding
                        ON binding.id = placement.binding_id
@@ -2620,7 +2656,7 @@ impl Database {
                        AND binding.resource_version
                          = cache_write_tickets.binding_resource_version
                        AND credential.validation_state = 'valid')",
-                    vals![ticket_id, expected_version, now],
+                    vals![ticket_id, expected_version, now, i64::from(held_positive)],
                 )
                 .expecting(1),
                 Statement::new(
@@ -6942,7 +6978,7 @@ impl Database {
         }
         statements.push(
             Statement::new(
-                "UPDATE object_placements SET state = 'deleting'
+                "UPDATE object_placements SET state = 'deleting', direct_upload_session_id = NULL
                  WHERE cache_id = ?1 AND state IN ('present', 'corrupt')
                    AND EXISTS (SELECT 1 FROM cache_gc_plan_actions action
                      WHERE action.cache_id = ?1 AND action.plan_id = ?2
@@ -7159,7 +7195,7 @@ impl Database {
         }
         let statements = vec![
             Statement::new(
-                "UPDATE object_placements SET state = 'missing', observed_at = ?4
+                "UPDATE object_placements SET state = 'missing', observed_at = ?4, direct_upload_session_id = NULL
                  WHERE cache_id = ?1 AND state = 'deleting'
                    AND surface_object_id = (SELECT surface_object_id
                      FROM object_deletion_jobs WHERE cache_id = ?1 AND job_id = ?2

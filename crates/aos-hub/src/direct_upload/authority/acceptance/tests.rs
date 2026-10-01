@@ -1,5 +1,6 @@
 //! Independent reviewer signatures, exact audiences and provider class isolation.
 
+use super::super::NativeDirectUploadRuntime;
 use super::*;
 use aos_hub_core::storage_authority::{
     control::StorageAuthorityPublication, lease::*, ApproveStorageAuthorityAlias,
@@ -270,6 +271,75 @@ fn encoded(item: &DirectWorkerQualificationArtifact) -> (Vec<u8>, Vec<u8>) {
     )
 }
 
+#[test]
+fn cold_expired_acceptance_retains_guard_facts_and_refuses_new_producer_permission() {
+    let item = artifact();
+    let (bytes, keys) = encoded(&item);
+    let expiry = item.evidence.valid_until.get();
+    let history = NativeDirectUploadAcceptances::load_bytes(
+        &bytes,
+        &keys,
+        expiry,
+        AcceptanceLoad::PositiveMetadataRecovery,
+    )
+    .unwrap();
+    assert!(history
+        .profiles(&item.deployment_id, &item.public_origin, expiry)
+        .is_err());
+    assert!(NativeDirectUploadAcceptances::from_bytes(&bytes, &keys, expiry).is_err());
+    assert!(NativeDirectUploadRuntime::new(
+        &item.public_origin,
+        &item.deployment_id,
+        &[11; 32],
+        &[12; 32],
+        history.clone()
+    )
+    .is_err());
+    NativeDirectUploadRuntime::new_for_positive_recovery(
+        &item.public_origin,
+        &item.deployment_id,
+        &[11; 32],
+        &[12; 32],
+        history,
+    )
+    .unwrap();
+    let mut invalid = item.clone();
+    invalid.signature.replace_range(..2, "00");
+    let (invalid, _) = encoded(&invalid);
+    assert!(NativeDirectUploadAcceptances::load_bytes(
+        &invalid,
+        &keys,
+        expiry,
+        AcceptanceLoad::PositiveMetadataRecovery
+    )
+    .is_err());
+    assert!(NativeDirectUploadAcceptances::load_bytes(
+        &bytes,
+        b"{}",
+        expiry,
+        AcceptanceLoad::PositiveMetadataRecovery
+    )
+    .is_err());
+    let mut future = item.clone();
+    future.evidence.issued_at = WireInteger::new(expiry + 10);
+    resign(&mut future);
+    let (future, _) = encoded(&future);
+    assert!(NativeDirectUploadAcceptances::load_bytes(
+        &future,
+        &keys,
+        expiry,
+        AcceptanceLoad::PositiveMetadataRecovery
+    )
+    .is_err());
+    assert!(NativeDirectUploadAcceptances::load_bytes(
+        b"",
+        &keys,
+        expiry,
+        AcceptanceLoad::PositiveMetadataRecovery
+    )
+    .is_err());
+}
+
 pub(in crate::direct_upload::authority) fn managed_fixture(
     origin: &str,
     now: u64,
@@ -287,6 +357,25 @@ pub(in crate::direct_upload::authority) fn managed_fixture(
         .unwrap()
         .remove(0);
     (accepted, profile)
+}
+
+pub(in crate::direct_upload::authority) fn managed_expired_fixture(
+    origin: &str,
+    now: u64,
+) -> NativeDirectUploadAcceptances {
+    let (mut item, _) = measured_fixture::direct_worker_qualification_fixture();
+    item.public_origin = origin.into();
+    item.evidence.issued_at = WireInteger::new(now - 60);
+    item.evidence.valid_until = WireInteger::new(now - 30);
+    resign(&mut item);
+    let (bytes, keys) = encoded(&item);
+    NativeDirectUploadAcceptances::load_bytes(
+        &bytes,
+        &keys,
+        now,
+        AcceptanceLoad::PositiveMetadataRecovery,
+    )
+    .unwrap()
 }
 
 pub(in crate::direct_upload::authority) fn external_fixture(

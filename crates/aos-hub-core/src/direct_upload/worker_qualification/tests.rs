@@ -11,6 +11,63 @@ fn resign(artifact: &mut DirectWorkerQualificationArtifact) {
 }
 
 #[test]
+fn expired_guard_history_verifies_original_facts_without_qualifying_dispatch() {
+    let (original, reviewer) = fixtures::direct_worker_qualification_fixture();
+    let expiry = original.evidence.valid_until.get();
+    original
+        .verify_expired_guard_history(
+            "deployment-1",
+            "https://hub.example.test",
+            &reviewer,
+            expiry,
+        )
+        .unwrap();
+    assert!(original
+        .verify(
+            "deployment-1",
+            "https://hub.example.test",
+            &reviewer,
+            expiry
+        )
+        .is_err());
+    assert!(original
+        .verify_expired_guard_history("deployment-1", "https://hub.example.test", &reviewer, 100)
+        .is_err());
+    let mut invalid = original.clone();
+    invalid.signature.replace_range(..2, "00");
+    assert!(invalid
+        .verify_expired_guard_history(
+            "deployment-1",
+            "https://hub.example.test",
+            &reviewer,
+            expiry
+        )
+        .is_err());
+    let mut future = original.clone();
+    future.evidence.issued_at = WireInteger::new(expiry + 10);
+    resign(&mut future);
+    assert!(future
+        .verify_expired_guard_history(
+            "deployment-1",
+            "https://hub.example.test",
+            &reviewer,
+            expiry
+        )
+        .is_err());
+    let mut changed_policy = original.clone();
+    changed_policy.evidence.clock_policy.uncertainty_seconds = WireInteger::new(3);
+    resign(&mut changed_policy);
+    assert!(changed_policy
+        .verify_expired_guard_history(
+            "deployment-1",
+            "https://hub.example.test",
+            &reviewer,
+            expiry
+        )
+        .is_err());
+}
+
+#[test]
 fn metadata_qualification_uses_the_actual_narinfo_parser_size_bound() {
     let parser_limit = crate::fetch::MAX_CACHE_NARINFO_BYTES as u64;
     for runtime_limit in [parser_limit / 2, 1024 * 1024] {

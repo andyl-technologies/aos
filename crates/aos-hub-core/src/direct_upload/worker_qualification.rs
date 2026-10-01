@@ -20,6 +20,12 @@ use super::*;
 
 const DOMAIN: &[u8] = b"aos.direct-upload.accepted-worker-qualification.v1\0";
 
+#[derive(Clone, Copy)]
+enum QualificationValidity {
+    Producer,
+    ExpiredGuardHistory,
+}
+
 /// Closed execution environment independently covered by the acceptance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -65,6 +71,21 @@ impl DirectWorkerQualificationArtifact {
     /// Returns a value-free error for changed bindings,
     /// malformed or insufficient measurements, expired evidence or unknown fields.
     pub fn validate_unsigned(&self, deployment: &str, public_origin: &str, now: u64) -> Result<()> {
+        self.validate_unsigned_for(
+            deployment,
+            public_origin,
+            now,
+            QualificationValidity::Producer,
+        )
+    }
+
+    fn validate_unsigned_for(
+        &self,
+        deployment: &str,
+        public_origin: &str,
+        now: u64,
+        validity: QualificationValidity,
+    ) -> Result<()> {
         ensure!(
             self.version == 1
                 && self.deployment_id == deployment
@@ -104,7 +125,7 @@ impl DirectWorkerQualificationArtifact {
                 "emulated Worker source identity or reserved origin differs"
             ),
         }
-        self.evidence.validate(self, now)
+        self.evidence.validate(self, now, validity)
     }
 
     /// Verifies independent reviewer trust, exact audience and measured evidence.
@@ -123,6 +144,36 @@ impl DirectWorkerQualificationArtifact {
         now: u64,
     ) -> Result<()> {
         self.validate_unsigned(deployment, public_origin, now)?;
+        self.verify_signature(trusted_public_hex)
+    }
+
+    /// Verifies genuinely expired, previously issued guard facts without qualifying dispatch.
+    ///
+    /// This distinct historical check preserves all signed profile, installation,
+    /// source, runtime and clock-policy facts. It rejects future or invalid windows
+    /// and never projects a fresh qualification deadline or provider permission.
+    /// Callers may use it only for independently authenticated held-positive metadata.
+    ///
+    /// # Errors
+    /// Rejects a current or future artifact, malformed facts, changed audience,
+    /// unknown reviewer, insufficient original validity or invalid signature.
+    pub fn verify_expired_guard_history(
+        &self,
+        deployment: &str,
+        public_origin: &str,
+        trusted_public_hex: &str,
+        now: u64,
+    ) -> Result<()> {
+        self.validate_unsigned_for(
+            deployment,
+            public_origin,
+            now,
+            QualificationValidity::ExpiredGuardHistory,
+        )?;
+        self.verify_signature(trusted_public_hex)
+    }
+
+    fn verify_signature(&self, trusted_public_hex: &str) -> Result<()> {
         ensure!(
             valid_direct_digest(trusted_public_hex)
                 && self.signature.len() == 128
@@ -220,7 +271,12 @@ pub struct DirectWorkerQualificationEvidence {
 }
 
 impl DirectWorkerQualificationEvidence {
-    fn validate(&self, artifact: &DirectWorkerQualificationArtifact, now: u64) -> Result<()> {
+    fn validate(
+        &self,
+        artifact: &DirectWorkerQualificationArtifact,
+        now: u64,
+        validity: QualificationValidity,
+    ) -> Result<()> {
         if let Some(installation) = &self.installation {
             installation.validate(artifact)?;
         }
@@ -244,12 +300,26 @@ impl DirectWorkerQualificationEvidence {
                 && self.runtime.maximum_parallel_provider_requests.get() >= 2,
             "direct runtime requires a reserved metadata verification slot"
         );
+        let valid_time = match validity {
+            QualificationValidity::Producer => {
+                self.issued_at.get() <= now
+                    && now
+                        .checked_add(self.clock.uncertainty_seconds.get())
+                        .is_some_and(|latest| latest < self.valid_until.get())
+            }
+            QualificationValidity::ExpiredGuardHistory => {
+                self.issued_at.get() <= now
+                    && self
+                        .issued_at
+                        .get()
+                        .checked_add(self.clock.uncertainty_seconds.get())
+                        .is_some_and(|latest| latest < self.valid_until.get())
+                    && now >= self.valid_until.get()
+            }
+        };
         ensure!(
             self.clock.uncertainty_seconds == self.clock_policy.uncertainty_seconds
-                && self.issued_at.get() <= now
-                && now
-                    .checked_add(self.clock.uncertainty_seconds.get())
-                    .is_some_and(|latest| latest < self.valid_until.get())
+                && valid_time
                 && self.clock.samples.get() > 0
                 && valid_direct_digest(&self.clock.observation_sha256)
                 && (1..30).contains(&self.clock.uncertainty_seconds.get())

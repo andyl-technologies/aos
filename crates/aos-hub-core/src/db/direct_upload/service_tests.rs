@@ -76,6 +76,7 @@ impl DirectUploadAuthority for RefusedStorageAuthority {
         _context: &DirectRequestContext,
         _record: &DirectUploadSessionRecord,
         _action: DirectLogicalAction,
+        _metadata_phase: Option<DirectPositiveMetadataPhase>,
         _now: i64,
     ) -> Result<()> {
         Ok(())

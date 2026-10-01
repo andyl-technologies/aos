@@ -180,6 +180,45 @@ root from a pending or merely staged reply. The verified final placement and
 current Native authorization must be present before the same publication
 barrier can advance.
 
+Native terminal publication holds the exact current actor, granting membership,
+credential head, writer, binding, placement, catalogue and immutable dependency
+rows through its checked transaction. Parent organization/quota/usage and
+registry rows precede topology, retained Direct source receipts and copy rows.
+This order applies under PostgreSQL's ordinary transaction isolation; an
+unlocked `EXISTS` observation alone does not fence a concurrent revocation.
+Shared cache parent/state locks also fence first signing-usage and ticket
+insertions whose absence matters to metadata admission.
+
+A final Direct registry copy carries the exact committed source session ID.
+Canonical original Complete, source evidence, original baseline and independently
+verified final guard establish that link. A nonversioned guard stamp is never
+serialized as a provider version. Inventory observations clear the source link,
+even when hash, size and ETag remain equal. Visibility checks validate and lock
+that exact source; bounded copy/source plans retain compact digests and versions,
+with one full source document at a time.
+
+Verified registry publication charges the durable logical object ledger in the
+same transaction as copy presence and terminal receipt. A new generation-7
+publication/mirror insertion records its accounting origin; existing conflicts,
+inventory and OCI rows do not acquire it. A known ledger controls resize and
+reimport deltas. A legacy object without a ledger or known origin refuses new
+publication effects until explicit manual reconciliation or reset, rather than
+inferring prior billing from storage presence.
+
+An expired, previously valid acceptance can be loaded only for recovery after
+its independent signature, closed facts, audience, source/script/guard issuer
+and clock policy pass historical verification at the actual current clock.
+Future or malformed windows remain invalid. This loader grants no producer
+profile: admission, baseline permission and new storage effects still require
+current qualification. Exact held-positive Freeze/Commit instead requires fresh
+independently authenticated original stage/final readback and current Native
+IAM, target and SQL fences. Neither configured pins nor old HEAD/stage visibility
+prove a final publication. SQL execution is bounded by the original lookup
+context deadline and current JWT expiry (also the baseline witness deadline
+for baseline retention). A timeout returns no success acknowledgement and makes
+no settlement claim; exact original replay resolves
+the retained result without repeating a provider effect.
+
 Standard OCI PATCH clients may keep authenticated Worker byte ingress because
 PATCH is not a presigned UploadPart PUT. AOS direct OCI producers must use the
 explicit staged-session contract. Neither compatibility path sends OCI layer
