@@ -5393,6 +5393,7 @@ mod tests {
             source_drv: String::new(),
             source_nar_hash: String::new(),
             named_outputs: std::collections::BTreeMap::new(),
+            version_requirement: None,
             os_version: None,
             module_dependencies: Vec::new(),
             closure_size: 0,

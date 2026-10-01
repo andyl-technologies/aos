@@ -285,9 +285,14 @@ pub(crate) fn record_native_artifacts(
     deployment: &crate::types::NativeArtifactMeta,
     documentation: Option<&crate::types::NativeArtifactMeta>,
     qualification: Option<&crate::types::NativeArtifactMeta>,
+    version_requirement: Option<&str>,
     os_version: Option<&str>,
     dependencies: &[crate::deployment::model::ModuleDependency],
 ) -> Result<String> {
+    aos_registry_surface::native_dependencies::check_version_requirement(
+        version,
+        version_requirement,
+    )?;
     aos_registry_surface::native_dependencies::check_resolution_metadata(os_version, dependencies)?;
     deployment.validate()?;
     if let Some(documentation) = documentation {
@@ -319,6 +324,14 @@ pub(crate) fn record_native_artifacts(
         .and_then(toml::Value::as_table_mut)
         .with_context(|| format!("package {name} {version} is missing platform {platform}"))?;
     entry.insert("deployment".into(), toml::Value::try_from(deployment)?);
+    if let Some(requirement) = version_requirement {
+        entry.insert(
+            "version_requirement".into(),
+            toml::Value::String(requirement.into()),
+        );
+    } else {
+        entry.remove("version_requirement");
+    }
     if let Some(requirement) = os_version {
         entry.insert("osVersion".into(), toml::Value::String(requirement.into()));
     } else {

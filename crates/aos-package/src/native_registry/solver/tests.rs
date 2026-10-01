@@ -23,6 +23,7 @@ fn envelope(name: &str, version: &str, hash: char) -> Envelope {
             source: format!("/nix/store/{}-{name}-module", hash.to_string().repeat(32)),
             entrypoint: "module.nix".into(),
         }),
+        version_requirement: None,
         os_version: None,
         module_dependencies: Vec::new(),
         runtime_dependencies: BTreeMap::new(),

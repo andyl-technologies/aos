@@ -59,6 +59,15 @@ pub struct PackageIdentity {
     pub name: String,
     /// Records its selected version.
     pub version: String,
+    /// Captures the compatibility requirement generated from the package version recipe.
+    ///
+    /// Non-SemVer packages omit this field and retain exact source dependencies.
+    #[serde(
+        rename = "versionRequirement",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub version_requirement: Option<String>,
 }
 
 /// Describes an option projected from the native module fixed point.

@@ -27,6 +27,7 @@ fn envelope(name: &str, version: &str, hash: char) -> Envelope {
             source: format!("/nix/store/{}-{name}-module", hash.to_string().repeat(32)),
             entrypoint: "module.nix".into(),
         }),
+        version_requirement: None,
         os_version: None,
         runtime_dependencies: BTreeMap::new(),
         module_dependencies: Vec::new(),
@@ -166,7 +167,7 @@ fn rejects_moduleless_os_requirements_without_a_matching_retained_release() {
         })
         .unwrap();
         assert_eq!(
-            projected,
+            projected.os_requirements,
             vec![aos_doc_model::runtime::OsRequirement {
                 owner: "consumer".into(),
                 os_version: "^2".into(),
@@ -355,4 +356,30 @@ fn accepts_a_compatible_current_target_without_replacing_retained_identity() {
     .unwrap();
 
     assert_eq!(descriptor, original);
+}
+
+#[test]
+fn projects_original_recipe_policy_for_moduleless_payload_releases() {
+    let (descriptor, mut companions) = fixture(false, true);
+    let root = descriptor.package_envelopes[&descriptor.packages.artifacts[0].path].clone();
+    companions.get_mut(&root).unwrap().version_requirement = Some("^1.0.0".into());
+
+    let declarations = validate_with(&descriptor, |path| {
+        Ok(serde_json::to_vec(&companions[path.parent().unwrap()])?)
+    })
+    .unwrap();
+
+    let consumer = declarations
+        .package_releases
+        .iter()
+        .find(|release| release.name == "consumer")
+        .unwrap();
+    assert_eq!(consumer.version, "1.0.0");
+    assert_eq!(consumer.version_requirement.as_deref(), Some("^1.0.0"));
+    let provider = declarations
+        .package_releases
+        .iter()
+        .find(|release| release.name == "provider")
+        .unwrap();
+    assert_eq!(provider.version_requirement, None);
 }

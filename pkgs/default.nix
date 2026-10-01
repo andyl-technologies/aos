@@ -213,6 +213,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       };
     });
 
+  packageVersions = import ../lib/packages/version.nix;
   artifactLib = import ../lib/packages/artifacts.nix {};
   nativeArtifactsFor = package: let
     deploymentLib = import ../lib {system = stdenv.hostPlatform.system;};
@@ -260,6 +261,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         pname = null;
         catalogName = null;
         version = null;
+        versionRequirement = null;
         meta = null;
         module = null;
         moduleDeps = null;
@@ -426,6 +428,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   # the scrubPhase from lib/derivations.nix can rewrite build-toolchain
   # store paths out of the output (matches nixpkgs nuke-refs idiom).
   mkDerivation = args: let
+    release = packageVersions.normalize (args.version or "0");
     packageName =
       args.catalogName
       or args.pname
@@ -453,7 +456,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         qualificationArtifactsFor (drv
           // {
             catalogName = packageName;
-            version = args.version or "0";
+            version = release.version;
             qualification = checkedQualification;
             inherit moduleDeps;
             buildDeps = args.buildDeps or [];
@@ -506,6 +509,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       # Deployment modules are retained as source artifacts, never evaluated by
       # the payload builder or passed as low-level derivation attributes.
       (builtins.removeAttrs args ["abilities" "module" "moduleDeps" "catalogName" "platformSupport" "qualification" "configModule" "sharedBuildCache" "cacheCCompilers" "accacheLlvmOptions"])
+      // lib.optionalAttrs (args ? version) {inherit (release) version;}
       // lib.optionalAttrs cacheCCompilers (builtins.removeAttrs cCompilerCacheEnvironment ["RUSTC_WRAPPER"])
       // {
         meta =
@@ -533,6 +537,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     deploymentAttrs =
       {
         catalogName = packageName;
+        inherit (release) versionRequirement;
         inherit moduleDeps;
         inherit (nativeArtifacts) deployment documentation deploymentArtifact documentationArtifact;
         targetSystem = stdenv.hostPlatform.system;
@@ -561,7 +566,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
                 pname = args.pname or packageName;
                 meta = drv.meta or {};
               }
-              // lib.optionalAttrs (args ? version) {inherit (args) version;}
+              // lib.optionalAttrs (args ? version) {inherit (release) version;}
               // deploymentAttrs
               // platformAttrs
               // secondaryOutputAttrs
@@ -574,7 +579,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     );
     result = drv // secondaryOutputAttrs // {${drv.outputName} = result;} // deploymentAttrs // platformAttrs;
   in
-    builtins.deepSeq checkedQualification (addBuilderOverrides mkDerivation args result);
+    if args ? versionRequirement || args ? moduleCompatibility
+    then throw "Package compatibility is derived from version; versionRequirement and moduleCompatibility cannot be authored."
+    else builtins.deepSeq checkedQualification (addBuilderOverrides mkDerivation args result);
 
   # The stdenv cc-wrapper provides gcc/g++/ld/ar/etc.
   bootstrapTools =
@@ -1172,7 +1179,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     deps =
       args.bazelDeps
       or (fetchBazelDeps {
-        name = "${args.pname or "bazel"}-deps-${args.version or "0"}";
+        name = "${args.pname or "bazel"}-deps-${(packageVersions.normalize (args.version or "0")).version}";
         inherit (args) src;
         hash = args.depsHash or lib.fakeHash;
         inherit bazel jdk tools;

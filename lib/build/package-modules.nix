@@ -27,6 +27,7 @@
         dependencies = runtimeReferences package;
       };
     }
+    // builtins.removeAttrs (artifacts.releaseIdentity package) ["name" "version"]
     // (
       if osVersion == null
       then {}
@@ -39,7 +40,7 @@
     );
   identity = record:
     if
-      builtins.removeAttrs record ["artifacts" "configRoot" "module" "name" "version" "osVersion" "moduleRequirements"]
+      builtins.removeAttrs record ["artifacts" "configRoot" "module" "name" "version" "osVersion" "moduleRequirements" "versionRequirement"]
       != {}
       || !(builtins.all (name: record ? ${name}) ["artifacts" "configRoot" "module" "name" "version"])
     then throw "Package module record has a non-canonical shape."
@@ -48,6 +49,11 @@
         (
           if (record.osVersion or null) == null
           then ["osVersion"]
+          else []
+        )
+        ++ (
+          if (record.versionRequirement or null) == null
+          then ["versionRequirement"]
           else []
         )
         ++ (

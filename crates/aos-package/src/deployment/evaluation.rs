@@ -91,6 +91,8 @@ pub fn resolve_packages(
 
 /// Supplies the immutable inputs for one target-independent evaluation.
 pub struct Evaluation {
+    /// Projects original selected releases and their recipe compatibility policy.
+    pub package_releases: Vec<aos_doc_model::runtime::PackageIdentity>,
     /// Supplies the fixed host release for runtime compatibility checks.
     pub os_release: Option<aos_doc_model::runtime::OsRelease>,
     /// Projects authenticated requirements from moduleless payload envelopes.
@@ -150,6 +152,7 @@ impl Evaluation {
         let packages = nix_string(&serde_json::to_string(&self.packages.modules)?);
         let artifacts = nix_string(&serde_json::to_string(&self.packages.artifacts)?);
         let requirements = nix_string(&serde_json::to_string(&self.module_requirements)?);
+        let package_releases = nix_string(&serde_json::to_string(&self.package_releases)?);
         let os_release = nix_string(&serde_json::to_string(&self.os_release)?);
         let os_requirements = nix_string(&serde_json::to_string(&self.os_requirements)?);
         let system = nix_string(&self.packages.system);
@@ -173,6 +176,7 @@ impl Evaluation {
                packageModules = builtins.fromJSON {packages};\n\
                packageArtifacts = builtins.fromJSON {artifacts};\n\
                moduleRequirements = builtins.fromJSON {requirements};\n\
+               packageReleases = builtins.fromJSON {package_releases};\n\
                osRelease = builtins.fromJSON {os_release};\n\
                osRequirements = builtins.fromJSON {os_requirements};\n\
                enforceOsRequirements = true;\n\

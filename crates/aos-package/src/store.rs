@@ -616,6 +616,7 @@ mod tests {
     fn test_package(name: &str, hash: &str, source_drv: &str) -> PackageMeta {
         PackageMeta {
             named_outputs: Default::default(),
+            version_requirement: None,
             os_version: None,
             module_dependencies: Vec::new(),
             name: name.into(),

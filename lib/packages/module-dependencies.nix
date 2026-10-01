@@ -1,16 +1,30 @@
-##! Exact module edges and explicitly compatible dependency declarations.
+##! Inferred release requirements, explicit ranges, and immutable source pins.
 let
   semver = import ./semver.nix;
-  compatible = dependency:
+  isDeclaration = dependency:
     builtins.isAttrs dependency
     && dependency ? package
     && (dependency.type or null) != "derivation";
+  versions = import ./version.nix;
   normalize = dependency:
-    if !compatible dependency
-    then {
+    if !isDeclaration dependency
+    then let
+      packageVersion = versions.requirementFor dependency;
+    in {
       package = dependency;
-      requirements = null;
+      requirements =
+        if packageVersion == null
+        then null
+        else {inherit packageVersion;};
     }
+    else if dependency ? exact
+    then
+      if dependency.exact != true || builtins.removeAttrs dependency ["package" "exact"] != {}
+      then throw "Exact module dependency requires package and exact = true, with no other fields."
+      else {
+        inherit (dependency) package;
+        requirements = null;
+      }
     else let
       extra = builtins.removeAttrs dependency ["package" "packageVersion"];
       packageVersion = dependency.packageVersion or null;

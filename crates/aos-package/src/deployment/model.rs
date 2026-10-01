@@ -48,6 +48,9 @@ pub struct Envelope {
     pub package: Artifact,
     /// Supplies an optional deployment module.
     pub module: Option<ModuleSource>,
+    /// Retains the generated compatibility requirement for this package release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_requirement: Option<String>,
     /// Restricts the host operating system release accepted by this package.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_version: Option<String>,
@@ -64,11 +67,14 @@ impl Envelope {
     /// Returns an error when OS constraints or dependency requests differ from authenticated bytes.
     pub fn verify_catalog_resolution(
         &self,
+        version_requirement: Option<&str>,
         os_version: Option<&str>,
         dependencies: &[ModuleDependency],
     ) -> Result<()> {
         ensure!(
-            self.os_version.as_deref() == os_version && self.module_dependencies == dependencies,
+            self.version_requirement.as_deref() == version_requirement
+                && self.os_version.as_deref() == os_version
+                && self.module_dependencies == dependencies,
             "native resolution catalog differs from its authenticated envelope"
         );
         Ok(())
@@ -89,6 +95,10 @@ impl Envelope {
             "package target platform is absent"
         );
         envelope.package.check()?;
+        aos_registry_surface::native_dependencies::check_version_requirement(
+            &envelope.package.version,
+            envelope.version_requirement.as_deref(),
+        )?;
         if let Some(module) = &envelope.module {
             module.check()?;
             ensure!(
@@ -115,6 +125,7 @@ impl Envelope {
             version: module.version.clone(),
             config_root: module.source.clone(),
             module: format!("{}/{}", module.source, module.entrypoint),
+            version_requirement: self.version_requirement.clone(),
             os_version: self.os_version.clone(),
             module_requirements: self
                 .module_dependencies
@@ -196,6 +207,9 @@ pub struct PackageModule {
     pub config_root: String,
     /// Names its canonical module entry point.
     pub module: String,
+    /// Retains the generated compatibility requirement for this package release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_requirement: Option<String>,
     /// Retains the host release compatibility constraint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_version: Option<String>,
@@ -265,6 +279,10 @@ impl Deployment {
             let mut indexed = BTreeMap::new();
             for record in records {
                 record.artifacts.package.check()?;
+                aos_registry_surface::native_dependencies::check_version_requirement(
+                    &record.version,
+                    record.version_requirement.as_deref(),
+                )?;
                 store_root(&record.config_root)?;
                 ensure!(
                     record.module == format!("{}/module.nix", record.config_root),
@@ -464,9 +482,13 @@ mod resolution_tests {
         let mut value = document();
         let envelope = Envelope::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
         envelope
-            .verify_catalog_resolution(envelope.os_version.as_deref(), &[])
+            .verify_catalog_resolution(
+                envelope.version_requirement.as_deref(),
+                envelope.os_version.as_deref(),
+                &[],
+            )
             .unwrap();
-        assert!(envelope.verify_catalog_resolution(None, &[]).is_err());
+        assert!(envelope.verify_catalog_resolution(None, None, &[]).is_err());
         assert_eq!(
             envelope.module_record().unwrap().os_version,
             envelope.os_version
@@ -474,6 +496,34 @@ mod resolution_tests {
 
         value["module"] = Value::Null;
         assert!(Envelope::decode(&serde_json::to_vec(&value).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn generated_package_requirement_is_bound_to_catalog_and_module_identity() {
+        let mut value = document();
+        value["package"]["version"] = json!("7.2.3");
+        value["module"]["version"] = json!("7.2.3");
+        value["versionRequirement"] = json!("~7.2.3");
+        let envelope = Envelope::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
+
+        assert_eq!(
+            envelope
+                .module_record()
+                .unwrap()
+                .version_requirement
+                .as_deref(),
+            Some("~7.2.3")
+        );
+        envelope
+            .verify_catalog_resolution(Some("~7.2.3"), Some("^1.0"), &[])
+            .unwrap();
+        assert!(
+            envelope
+                .verify_catalog_resolution(Some("^7.2.3"), Some("^1.0"), &[])
+                .is_err()
+        );
+        value["versionRequirement"] = json!("~7.2.4");
+        assert!(Envelope::decode(&serde_json::to_vec(&value).unwrap()).is_err());
     }
 
     #[test]
@@ -489,7 +539,11 @@ mod resolution_tests {
         assert_eq!(module.module_requirements[0].package_version, "^2.0");
         assert!(
             envelope
-                .verify_catalog_resolution(envelope.os_version.as_deref(), &[])
+                .verify_catalog_resolution(
+                    envelope.version_requirement.as_deref(),
+                    envelope.os_version.as_deref(),
+                    &[]
+                )
                 .is_err()
         );
     }

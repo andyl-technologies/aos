@@ -261,6 +261,7 @@ pub(crate) fn publish_native_documents(
             .and_then(|candidate| candidate.platforms.get(platform))
             .context("named output lacks its primary native catalog")?;
         envelope.verify_catalog_resolution(
+            primary.version_requirement.as_deref(),
             primary.os_version.as_deref(),
             &primary.module_dependencies,
         )?;
@@ -288,6 +289,7 @@ pub(crate) fn publish_native_documents(
         &deployment_meta,
         documentation.as_ref(),
         qualification.as_ref(),
+        envelope.version_requirement.as_deref(),
         envelope.os_version.as_deref(),
         &envelope.module_dependencies,
     )?;
@@ -303,6 +305,18 @@ fn verify_documented_resolution(envelope: &Envelope, document: &RuntimeDocument)
     let reference = document
         .reference()
         .context("native module reference is absent")?;
+    let identities = reference
+        .packages
+        .iter()
+        .filter(|package| package.name == envelope.package.name)
+        .collect::<Vec<_>>();
+    ensure!(
+        identities.len() == 1
+            && identities[0].version == envelope.package.version
+            && identities[0].version_requirement == envelope.version_requirement,
+        "module documentation package requirement differs from native envelope"
+    );
+
     let declared_os =
         envelope
             .os_version
@@ -390,13 +404,13 @@ mod tests {
         let path = "/nix/store/00000000000000000000000000000000-example";
         let envelope = Envelope::decode(&serde_json::to_vec(&json!({
             "schema":"aos.package.deployment","system":"x86_64-linux",
-            "package":{"name":"example","version":"7","path":path,"outputs":{"out":path},"mainProgram":null},
-            "module":{"name":"example","version":"7","source":"/nix/store/11111111111111111111111111111111-example-source","entrypoint":"module.nix"},
-            "osVersion":"^1.0","runtimeDependencies":{},
+            "package":{"name":"example","version":"7.0.0","path":path,"outputs":{"out":path},"mainProgram":null},
+            "module":{"name":"example","version":"7.0.0","source":"/nix/store/11111111111111111111111111111111-example-source","entrypoint":"module.nix"},
+            "versionRequirement":"~7.0.0","osVersion":"^1.0","runtimeDependencies":{},
             "moduleDependencies":[{"package":{"name":"interfaces","version":"9","source":"/nix/store/22222222222222222222222222222222-interfaces","entrypoint":"module.nix"},"packageVersion":"^9.0"}]
         })).unwrap()).unwrap();
         let mut reference = json!({"schema":"aos.module.documentation","scope":["package","example"],
-            "system":"x86_64-linux","packages":[{"name":"example","version":"7"}],"options":[],"abilities":{},
+            "system":"x86_64-linux","packages":[{"name":"example","version":"7.0.0","versionRequirement":"~7.0.0"}],"options":[],"abilities":{},
             "osRequirements":[{"owner":"example","osVersion":"^1.0"}],
             "moduleRequirements":[{"owner":"example","package":"interfaces","packageVersion":"^9.0"}]});
         let decode = |value: &serde_json::Value| {
@@ -405,6 +419,9 @@ mod tests {
 
         verify_documented_resolution(&envelope, &decode(&reference)).unwrap();
 
+        reference["packages"][0]["versionRequirement"] = json!("^7.0.0");
+        assert!(verify_documented_resolution(&envelope, &decode(&reference)).is_err());
+        reference["packages"][0]["versionRequirement"] = json!("~7.0.0");
         reference["osRequirements"][0]["osVersion"] = json!("^2.0");
         assert!(verify_documented_resolution(&envelope, &decode(&reference)).is_err());
         reference["osRequirements"][0]["osVersion"] = json!("^1.0");
@@ -430,6 +447,7 @@ mod tests {
             system: "x86_64-linux".into(),
             package: dependency.clone(),
             module: None,
+            version_requirement: None,
             os_version: None,
             runtime_dependencies: BTreeMap::from([("lexical-role".into(), dependency.clone())]),
             module_dependencies: Vec::new(),
@@ -481,7 +499,7 @@ mod tests {
 name = "example"
 
 [[versions]]
-version = "1"
+version = "1.0.0"
 
 [versions.platforms.x86_64-linux]
 store_path = "/nix/store/11111111111111111111111111111111-example"
@@ -493,11 +511,12 @@ contract = { legacy = true }
         let encoded = record_native_artifacts(
             content,
             "example",
-            "1",
+            "1.0.0",
             "x86_64-linux",
             &artifact,
             Some(&artifact),
             Some(&artifact),
+            Some("^1.0.0"),
             Some("^1.0"),
             &dependencies,
         )
@@ -522,6 +541,7 @@ contract = { legacy = true }
             platform["references"]["requires-features"][0].as_str(),
             Some("native-package-modules-v1")
         );
+        assert_eq!(platform["version_requirement"].as_str(), Some("^1.0.0"));
         assert_eq!(platform["osVersion"].as_str(), Some("^1.0"));
         let decoded: Vec<ModuleDependency> =
             platform["module_dependencies"].clone().try_into().unwrap();
@@ -530,26 +550,29 @@ contract = { legacy = true }
         let rewritten = record_native_artifacts(
             &encoded,
             "example",
-            "1",
+            "1.0.0",
             "x86_64-linux",
             &artifact,
             Some(&artifact),
             Some(&artifact),
+            None,
             None,
             &[],
         )
         .unwrap();
         let rewritten: toml::Value = toml::from_str(&rewritten).unwrap();
         let rewritten = &rewritten["versions"][0]["platforms"]["x86_64-linux"];
+        assert!(rewritten.get("version_requirement").is_none());
         assert!(rewritten.get("osVersion").is_none());
         assert!(rewritten.get("module_dependencies").is_none());
         assert!(
             record_native_artifacts(
                 content,
                 "different",
-                "1",
+                "1.0.0",
                 "x86_64-linux",
                 &artifact,
+                None,
                 None,
                 None,
                 None,

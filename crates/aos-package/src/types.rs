@@ -479,6 +479,9 @@ pub struct PackageMeta {
     /// Authenticated native package deployment envelope directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment: Option<NativeArtifactMeta>,
+    /// Retains the generated compatibility requirement for this package release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_requirement: Option<String>,
     /// Host operating system release compatibility requirement.
     #[serde(rename = "osVersion", default, skip_serializing_if = "Option::is_none")]
     pub os_version: Option<String>,
@@ -551,11 +554,17 @@ pub fn validate_supported_package_meta_with(
     supported_format: u32,
     supported_features: &[&str],
 ) -> Result<()> {
+    aos_registry_surface::native_dependencies::check_version_requirement(
+        &meta.version,
+        meta.version_requirement.as_deref(),
+    )?;
     aos_registry_surface::native_dependencies::check_resolution_metadata(
         meta.os_version.as_deref(),
         &meta.module_dependencies,
     )?;
-    if (meta.os_version.is_some() || !meta.module_dependencies.is_empty())
+    if (meta.version_requirement.is_some()
+        || meta.os_version.is_some()
+        || !meta.module_dependencies.is_empty())
         && meta.deployment.is_none()
     {
         bail!("native resolution catalog lacks an authenticated deployment document");
@@ -2589,6 +2598,7 @@ last_update = "2026-02-13T10:30:00Z"
     fn attestation_package_meta(requires_features: Vec<&str>) -> PackageMeta {
         PackageMeta {
             named_outputs: Default::default(),
+            version_requirement: None,
             os_version: None,
             module_dependencies: Vec::new(),
             name: "verity-app".into(),
@@ -3130,6 +3140,7 @@ pin = "v2026.02"
     fn sample_package_meta() -> PackageMeta {
         PackageMeta {
             named_outputs: Default::default(),
+            version_requirement: None,
             os_version: None,
             module_dependencies: Vec::new(),
             name: "firewall".to_string(),

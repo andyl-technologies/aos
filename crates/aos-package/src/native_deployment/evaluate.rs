@@ -19,6 +19,14 @@ use crate::store::verification::dump_store_path_identity_in;
 
 mod validation;
 
+/// Contains declarations derived from original retained envelopes.
+pub(crate) struct RetainedDeclarations {
+    /// Preserves host requirements from packages without module records.
+    pub(crate) os_requirements: Vec<aos_doc_model::runtime::OsRequirement>,
+    /// Preserves selected release coordinates and original recipe policy.
+    pub(crate) package_releases: Vec<aos_doc_model::runtime::PackageIdentity>,
+}
+
 /// Replays one immutable source descriptor without building or applying effects.
 ///
 /// The descriptor and its sources remain temporarily rooted during evaluation.
@@ -49,7 +57,7 @@ pub fn evaluate_input(
 
     let descriptor = EvaluationInput::read_in(input, nix_store, cancellation)?;
     retained.retain(source_roots(&descriptor)?, cancellation)?;
-    let os_requirements = validation::validate(&descriptor, nix_store, cancellation)?;
+    let declarations = validation::validate(&descriptor, nix_store, cancellation)?;
     let library_root = root_string(&descriptor.library)?;
     let (actual, _) = dump_store_path_identity_in(&library_root, Some(nix_store))?;
     ensure!(
@@ -64,7 +72,8 @@ pub fn evaluate_input(
         .collect();
     let evaluation = Evaluation {
         os_release: descriptor.os_release.clone(),
-        os_requirements,
+        os_requirements: declarations.os_requirements,
+        package_releases: declarations.package_releases,
         module_requirements: descriptor
             .resolution_lock
             .as_ref()
@@ -139,20 +148,34 @@ pub(crate) fn os_requirements(
     nix_store: &Path,
     cancellation: &CancellationToken,
 ) -> Result<Vec<aos_doc_model::runtime::OsRequirement>> {
+    Ok(validation::validate(descriptor, nix_store, cancellation)?.os_requirements)
+}
+
+/// Validates and projects original retained package declarations.
+///
+/// # Errors
+/// Returns an error for changed envelopes, incompatible choices or OS releases,
+/// unavailable sources, or cancellation.
+pub(crate) fn validated_declarations(
+    descriptor: &EvaluationInput,
+    nix_store: &Path,
+    cancellation: &CancellationToken,
+) -> Result<RetainedDeclarations> {
     validation::validate(descriptor, nix_store, cancellation)
 }
 
-/// Projects host constraints from retained payload envelope companions.
+/// Projects OS constraints and selected releases from retained payload envelopes.
 ///
 /// # Errors
 /// Returns an error for inaccessible or malformed envelope companions, changed
 /// payload identities, or constraints incompatible with the retained host.
-pub(crate) fn retained_os_requirements(
+pub(crate) fn retained_declarations(
     envelopes: &std::collections::BTreeMap<String, PathBuf>,
     release: Option<&aos_doc_model::runtime::OsRelease>,
     nix_store: &Path,
-) -> Result<Vec<aos_doc_model::runtime::OsRequirement>> {
+) -> Result<RetainedDeclarations> {
     let mut requirements = Vec::new();
+    let mut package_releases = Vec::new();
     for (artifact, root) in envelopes {
         let bytes = super::read_regular_store_document_in(
             &root.join("deployment.json"),
@@ -162,9 +185,14 @@ pub(crate) fn retained_os_requirements(
         let envelope = crate::deployment::model::Envelope::decode(&bytes)?;
         ensure!(
             envelope.package.canonical_catalog().path == *artifact,
-            "retained OS requirement envelope has a changed payload identity"
+            "retained declaration envelope has a changed payload identity"
         );
         crate::native_registry::solver::check_os_requirement(&envelope, release)?;
+        package_releases.push(aos_doc_model::runtime::PackageIdentity {
+            name: envelope.package.name.clone(),
+            version: envelope.package.version.clone(),
+            version_requirement: envelope.version_requirement.clone(),
+        });
         if envelope.module.is_none() {
             if let Some(os_version) = envelope.os_version {
                 requirements.push(aos_doc_model::runtime::OsRequirement {
@@ -174,7 +202,10 @@ pub(crate) fn retained_os_requirements(
             }
         }
     }
-    Ok(requirements)
+    Ok(RetainedDeclarations {
+        os_requirements: requirements,
+        package_releases,
+    })
 }
 
 /// Checks retained package choices against a mutation's current target snapshot.

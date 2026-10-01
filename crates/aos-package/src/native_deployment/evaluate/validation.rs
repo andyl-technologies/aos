@@ -28,7 +28,7 @@ pub(super) fn validate(
     descriptor: &EvaluationInput,
     nix_store: &Path,
     cancellation: &CancellationToken,
-) -> Result<Vec<aos_doc_model::runtime::OsRequirement>> {
+) -> Result<super::RetainedDeclarations> {
     validate_with(descriptor, |path| {
         read_regular_store_document_in(path, nix_store, cancellation)
     })
@@ -44,7 +44,7 @@ pub(super) fn validate_for_release(
     release: Option<aos_doc_model::runtime::OsRelease>,
     nix_store: &Path,
     cancellation: &CancellationToken,
-) -> Result<Vec<aos_doc_model::runtime::OsRequirement>> {
+) -> Result<super::RetainedDeclarations> {
     validate_with_release(descriptor, release, |path| {
         read_regular_store_document_in(path, nix_store, cancellation)
     })
@@ -54,7 +54,7 @@ fn validate_with_release(
     descriptor: &EvaluationInput,
     release: Option<aos_doc_model::runtime::OsRelease>,
     read: impl FnMut(&Path) -> Result<Vec<u8>>,
-) -> Result<Vec<aos_doc_model::runtime::OsRequirement>> {
+) -> Result<super::RetainedDeclarations> {
     let mut target = descriptor.clone();
     target.os_release = release;
     validate_with(&target, read)
@@ -63,7 +63,7 @@ fn validate_with_release(
 fn validate_with(
     descriptor: &EvaluationInput,
     mut read: impl FnMut(&Path) -> Result<Vec<u8>>,
-) -> Result<Vec<aos_doc_model::runtime::OsRequirement>> {
+) -> Result<super::RetainedDeclarations> {
     let payloads: BTreeSet<_> = descriptor
         .packages
         .artifacts
@@ -167,7 +167,18 @@ fn validate_with(
             }
         }
     }
-    Ok(os_requirements)
+    let package_releases = envelopes
+        .values()
+        .map(|envelope| aos_doc_model::runtime::PackageIdentity {
+            name: envelope.package.name.clone(),
+            version: envelope.package.version.clone(),
+            version_requirement: envelope.version_requirement.clone(),
+        })
+        .collect();
+    Ok(super::RetainedDeclarations {
+        os_requirements,
+        package_releases,
+    })
 }
 
 fn insert(envelopes: &mut BTreeMap<String, Envelope>, mut envelope: Envelope) -> Result<()> {

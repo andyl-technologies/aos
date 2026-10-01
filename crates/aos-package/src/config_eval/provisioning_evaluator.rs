@@ -135,13 +135,15 @@ pub(crate) fn evaluate(
         parameters.evaluation_context.clone(),
         parameters.authorized_input,
     ]);
+    let declarations = crate::native_deployment::retained_declarations(
+        &descriptor.package_envelopes,
+        descriptor.os_release.as_ref(),
+        &nix_store,
+    )?;
     let evaluator = Evaluation {
         os_release: descriptor.os_release.clone(),
-        os_requirements: crate::native_deployment::retained_os_requirements(
-            &descriptor.package_envelopes,
-            descriptor.os_release.as_ref(),
-            &nix_store,
-        )?,
+        os_requirements: declarations.os_requirements,
+        package_releases: declarations.package_releases,
         nix_store: nix_store.clone(),
         library: descriptor.library,
         scope: descriptor.scope,

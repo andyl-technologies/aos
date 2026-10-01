@@ -50,6 +50,9 @@ pub(super) fn plain(source: &Source) -> String {
                 .push_str("Declarations and configured uses; no live runtime state.\n\nPackages\n");
             for package in &reference.packages {
                 let _ = writeln!(output, "  {} {}", package.name, package.version);
+                if let Some(requirement) = &package.version_requirement {
+                    let _ = writeln!(output, "    Compatibility requirement: {requirement}");
+                }
             }
             if let Some(release) = &reference.os_release {
                 let _ = writeln!(output, "\nOS release: {} {}", release.name, release.version);
@@ -320,7 +323,7 @@ pub(super) fn html(source: &Source) -> String {
             let versions: BTreeMap<_, _> = reference
                 .packages
                 .iter()
-                .map(|package| (package.name.as_str(), package.version.as_str()))
+                .map(|package| (package.name.as_str(), package))
                 .collect();
             let mut options_by_owner = BTreeMap::<&str, Vec<&NativeOption>>::new();
             for option in reference
@@ -391,8 +394,15 @@ pub(super) fn html(source: &Source) -> String {
                 } else if owner.starts_with('@') {
                     html.push_str("<p>Environment module declarations.</p>");
                 }
-                if let Some(version) = versions.get(owner) {
-                    let _ = write!(html, "<p>Package version: {}</p>", escape(version));
+                if let Some(package) = versions.get(owner) {
+                    let _ = write!(html, "<p>Package version: {}</p>", escape(&package.version));
+                    if let Some(requirement) = &package.version_requirement {
+                        let _ = write!(
+                            html,
+                            "<p>Compatibility requirement: <code>{}</code></p>",
+                            escape(requirement)
+                        );
+                    }
                 }
                 html.push_str("</details>");
             }

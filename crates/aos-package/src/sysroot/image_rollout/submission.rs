@@ -41,14 +41,16 @@ pub(super) fn evaluation(config: &ApmConfig) -> Result<(Evaluation, PathBuf)> {
     )?;
     let mut configuration = input.configuration;
     configuration.extend(input.runtime_configuration);
+    let declarations = crate::native_deployment::retained_declarations(
+        &input.package_envelopes,
+        input.os_release.as_ref(),
+        &nix_store,
+    )?;
     Ok((
         Evaluation {
             os_release: input.os_release.clone(),
-            os_requirements: crate::native_deployment::retained_os_requirements(
-                &input.package_envelopes,
-                input.os_release.as_ref(),
-                &nix_store,
-            )?,
+            os_requirements: declarations.os_requirements,
+            package_releases: declarations.package_releases,
             nix_store,
             library: input.library,
             scope: input.scope,

@@ -67,8 +67,8 @@ fn render_report(report: &CompatibilityReport) -> Result<String> {
         "Incompatible"
     };
     let mut rendered = format!("{status} release interface\n");
-    if report.major_bump {
-        rendered.push_str("The release owner's major version increased.\n");
+    if report.compatibility_boundary {
+        rendered.push_str("The release version leaves the previous compatibility requirement.\n");
     }
     for change in &report.changes {
         let status = if change.waived { "waived" } else { "unwaived" };

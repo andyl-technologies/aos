@@ -207,14 +207,14 @@ fn option_addition_with_default_is_safe_and_default_removal_is_not() {
 }
 
 #[test]
-fn major_release_acknowledges_breaks_without_hiding_diagnostics() {
+fn crossing_previous_compatibility_range_acknowledges_breaks_without_hiding_diagnostics() {
     let before = fixture();
     let mut after = before.clone();
     after["options"] = json!([]);
     after["packages"][0]["version"] = json!("2.0.0");
     let report = check(&before, &after);
     assert!(report.compatible);
-    assert!(report.major_bump);
+    assert!(report.compatibility_boundary);
     assert_eq!(report.changes.len(), 1);
     assert!(!report.changes[0].waived);
 }
@@ -338,4 +338,112 @@ fn build_metadata_does_not_change_release_precedence() {
     let mut after = before.clone();
     after["packages"][0]["version"] = json!("1.0.0+a");
     assert!(check(&before, &after).compatible);
+}
+
+#[test]
+fn captured_tilde_policy_allows_breaks_at_minor_boundary_only() {
+    let mut before = fixture();
+    before["packages"][0]["version"] = json!("7.4.2");
+    before["packages"][0]["versionRequirement"] = json!("~7.4.2");
+    let mut after = before.clone();
+    after["options"] = json!([]);
+    after["packages"][0]["version"] = json!("7.4.3");
+    after["packages"][0]["versionRequirement"] = json!("~7.4.3");
+    let inside = check(&before, &after);
+    assert!(!inside.compatible);
+    assert!(!inside.compatibility_boundary);
+
+    after["packages"][0]["version"] = json!("7.5.0");
+    after["packages"][0]["versionRequirement"] = json!("~7.5.0");
+    let outside = check(&before, &after);
+    assert!(outside.compatible);
+    assert!(outside.compatibility_boundary);
+    assert_eq!(outside.changes.len(), 1);
+}
+
+#[test]
+fn caret_zero_versions_preserve_minor_and_patch_compatibility_boundaries() {
+    for (previous, inside, outside) in [
+        ("0.4.2", "0.4.3", "0.5.0"),
+        ("0.0.2", "0.0.2+rebuilt", "0.0.3"),
+    ] {
+        let mut before = fixture();
+        before["packages"][0]["version"] = json!(previous);
+        let mut after = before.clone();
+        after["options"] = json!([]);
+        after["packages"][0]["version"] = json!(inside);
+        assert!(!check(&before, &after).compatible);
+        after["packages"][0]["version"] = json!(outside);
+        assert!(check(&before, &after).compatibility_boundary);
+    }
+}
+
+#[test]
+fn next_release_policy_cannot_relax_previous_consumers_range() {
+    let mut before = fixture();
+    before["packages"][0]["version"] = json!("7.4.2");
+    before["packages"][0]["versionRequirement"] = json!("^7.4.2");
+    let mut after = before.clone();
+    after["options"] = json!([]);
+    after["packages"][0]["version"] = json!("7.5.0");
+    after["packages"][0]["versionRequirement"] = json!("=7.5.0");
+    let report = check(&before, &after);
+    assert!(!report.compatible);
+    assert!(!report.compatibility_boundary);
+}
+
+#[test]
+fn exact_policy_pins_semantic_version_without_pinning_build_artifact() {
+    let mut before = fixture();
+    before["packages"][0]["version"] = json!("7.4.2+old");
+    before["packages"][0]["versionRequirement"] = json!("=7.4.2+old");
+    let mut after = before.clone();
+    after["options"] = json!([]);
+    after["packages"][0]["version"] = json!("7.4.2+new");
+    after["packages"][0]["versionRequirement"] = json!("=7.4.2+new");
+    assert!(!check(&before, &after).compatibility_boundary);
+    after["packages"][0]["version"] = json!("7.4.3");
+    after["packages"][0]["versionRequirement"] = json!("=7.4.3");
+    assert!(check(&before, &after).compatibility_boundary);
+}
+
+#[test]
+fn os_zero_versions_use_caret_semantics_without_package_policy() {
+    let mut before = fixture();
+    before["options"][0]["owner"] = json!("@base");
+    before["osRelease"]["version"] = json!("0.4.2");
+    let mut after = before.clone();
+    after["options"] = json!([]);
+    after["osRelease"]["version"] = json!("0.5.0");
+    let report = check_compatibility(
+        &document(&before),
+        &document(&after),
+        &ReleaseOwner::Os,
+        &[],
+    )
+    .unwrap();
+    assert!(report.compatible);
+    assert!(report.compatibility_boundary);
+}
+
+#[test]
+fn captured_previous_policy_is_part_of_exception_snapshot() {
+    let mut before = fixture();
+    before["packages"][0]["versionRequirement"] = json!("^1.0.0");
+    let mut after = before.clone();
+    after["options"] = json!([]);
+    let exception = CompatibilityException {
+        id: check(&before, &after).changes[0].id.clone(),
+        reason: "Approved for this exact release policy".into(),
+    };
+    before["packages"][0]["versionRequirement"] = json!("~1.0.0");
+    assert!(
+        check_compatibility(
+            &document(&before),
+            &document(&after),
+            &ReleaseOwner::Package("interfaces".into()),
+            &[exception]
+        )
+        .is_err()
+    );
 }
