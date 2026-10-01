@@ -69,6 +69,25 @@
       cargo build --frozen --offline --no-default-features -p terrane-core --lib
       printf 'PASS: terrane-core builds without default features\n' > "$out/result"
     '';
+    formats-no-std = pkgs.mkDerivation {
+      pname = "terrane-gate-formats-no-std";
+      version = "0.1.0";
+      src = null;
+      # Compilation checks the actual core library. The graph check also
+      # requires no_std + alloc and rejects host, default and std features.
+      buildDeps = [foundationGates.core-no-std foundationGates.crate-graph];
+      phases = [
+        {
+          name = "check";
+          script = ''
+            test -s ${foundationGates.core-no-std}/result
+            test -s ${foundationGates.crate-graph}/result
+            mkdir -p "$out"
+            printf 'PASS: portable formats compile without default features and satisfy the core dependency policy\n' > "$out/result"
+          '';
+        }
+      ];
+    };
     tree-node-distribution = sourceGate "tree-node-distribution" ''
       cd crates
       cargo build --release --frozen --offline -p terrane-core --example tree_node_distribution
