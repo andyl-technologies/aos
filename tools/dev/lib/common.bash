@@ -7,7 +7,7 @@ aos_dev_usage() {
   cat <<'HELP'
 Usage: aos-dev [cache flags] <command> [arguments]
 
-Outside the dev shell: bash ./tools/dev/aos-dev [cache flags] <command> [arguments]
+Run in the development shell loaded by direnv or nix develop.
 
 Commands:
   list [packages|images|containers|checks|builds|evals] [filter]
@@ -83,11 +83,11 @@ Use --release or --no-cache for ordinary derivations and no requested cache
 mounts. A daemon-wide static mount remains visible in release sandboxes; use
 a separate builder if release qualification requires a cache-free sandbox.
 Examples:
-  bash ./tools/dev/aos-dev --no-bazel-cache build package aos --no-out-link
-  bash ./tools/dev/aos-dev cache rust intermediates --limit 50
-  bash ./tools/dev/aos-dev cache go prune --before 2026-09-01 --compact
-  bash ./tools/dev/aos-dev --release build package aos --no-out-link
-  source <(bash ./tools/dev/aos-dev completion bash)
+  aos-dev --no-bazel-cache build package aos --no-out-link
+  aos-dev cache rust intermediates --limit 50
+  aos-dev cache go prune --before 2026-09-01 --compact
+  aos-dev --release build package aos --no-out-link
+  source <(aos-dev completion bash)
 The optional sandbox probe may build the source bootstrap tools if they are
 absent on a fresh host.
 HELP

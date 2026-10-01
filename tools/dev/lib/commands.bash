@@ -192,10 +192,8 @@ aos_dev_release() {
 }
 
 aos_dev_completion() {
-  # The generated function retains this checkout path. Completion asks the
-  # same target lister as the CLI, so new attrs appear without shell edits.
+  # Completion asks the CLI's target lister, so new attrs appear without edits.
   [[ ${1:-} == bash ]] || aos_dev_error 'only Bash completion is available'
-  printf 'aos-dev() { bash %q "$@"; }\n' "$aos_dev_root/tools/dev/aos-dev"
   cat <<'COMPLETION'
 _aos_dev_complete() {
   local current=${COMP_WORDS[COMP_CWORD]}
@@ -265,6 +263,6 @@ aos_dev_main() {
     cache) aos_dev_cache_command "$@" ;;
     completion) aos_dev_completion "$@" ;;
     help|-h|--help) aos_dev_usage ;;
-    *) aos_dev_error "unknown command '$command'; run 'bash ./tools/dev/aos-dev help'" ;;
+    *) aos_dev_error "unknown command '$command'; run 'aos-dev help'" ;;
   esac
 }
