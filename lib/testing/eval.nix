@@ -453,7 +453,7 @@
     then throw "aos-eval.service must bind the immutable base library read-only"
     else if
       !(containsStr
-        "readlink /sysroot/aos-toplevel"
+        "readlink /sysroot/usr/lib/aos/toplevel"
         system.config.boot.initrd.systemd.services."etc-overlay-setup".script)
     then throw "the boot /etc lower must come from the image that actually booted"
     else if

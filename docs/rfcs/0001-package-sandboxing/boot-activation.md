@@ -71,7 +71,7 @@ Key services and their wiring (real, from `modules/services/ignition.nix`):
   prerequisite for `apm install` importing NARs.
 - **`aos-seed-profiles.service`** (~line 595) — ordered `After=nix-overlay-setup`
   (~line 607/612). On first boot it reads the toplevel from the
-  `/sysroot/aos-toplevel` seed pointer (~line 588/624) and writes
+  `/sysroot/usr/lib/aos/toplevel` seed pointer (~line 588/624) and writes
   `/var/lib/profiles/system/state.json` with generation 1 marked
   `registry: "seed"` (~line 642–661), a sentinel for "this gen was baked into the
   image, not fetched from a registry."

@@ -267,7 +267,7 @@ mkDerivation {
       rootfsDeps = [self];
       memory = 2048;
       testScript = ''
-        ${nix}/bin/nix-store --load-db < /aos-registration
+        ${nix}/bin/nix-store --load-db < /usr/lib/aos/nix-registration
         ${self}/bin/aos-hub-e2e
       '';
     };

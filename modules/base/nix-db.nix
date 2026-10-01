@@ -1,6 +1,6 @@
 ##! modules/base/nix-db.nix — Seed the single-user Nix database
 ##!
-##! The image ships its store closure in /nix.lower/store and the initrd mounts
+##! The image ships its store closure in /usr/lib/aos/nix/store and the initrd mounts
 ##! it at /nix/store via overlayfs. This stage-2 unit registers that closure in
 ##! Nix's local DB and exposes AOS profile generations as Nix GC roots.
 {pkgs, ...}: {
@@ -31,8 +31,8 @@
         # Initialise the store layout/schema if absent. Loading the registration
         # stream is idempotent and does not canonicalise/chown store contents.
         ${pkgs.nix}/bin/nix-store --init || true
-        if [ -r /aos-registration ]; then
-          ${pkgs.nix}/bin/nix-store --load-db < /aos-registration
+        if [ -r /usr/lib/aos/nix-registration ]; then
+          ${pkgs.nix}/bin/nix-store --load-db < /usr/lib/aos/nix-registration
         fi
 
         # Nix recursively scans directories below gcroots, but does not follow

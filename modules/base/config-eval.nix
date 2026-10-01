@@ -609,9 +609,9 @@ in {
                 # is a configuration overlay and can still belong to the prior image
                 # during the first boot after an A/B transition.
                 module_abi="${toString cfg.moduleAbi}"
-                if [ -r /aos-toplevel/os-release ]; then
+                if [ -r /usr/lib/aos/toplevel/os-release ]; then
                   # shellcheck disable=SC1091
-                  . /aos-toplevel/os-release
+                  . /usr/lib/aos/toplevel/os-release
                   if [ -n "''${AOS_MODULE_ABI:-}" ]; then
                     module_abi="$AOS_MODULE_ABI"
                   fi

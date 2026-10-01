@@ -42,7 +42,7 @@
     sandbox = false
     NIXCONF
     nix-store --init || true
-    nix-store --load-db < /aos-registration
+    nix-store --load-db < /usr/lib/aos/nix-registration
     mkdir -p /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
     if ! ${pkgs.util-linux}/bin/mountpoint -q /nix/var/nix/gcroots/aos-profiles; then
       ${pkgs.util-linux}/bin/mount --bind \
