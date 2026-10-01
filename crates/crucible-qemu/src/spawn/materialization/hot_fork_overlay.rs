@@ -63,6 +63,22 @@ impl QemuPreparedRunDirectory {
             })
         })?;
 
+        // The helper drops to the generation's admitted credentials before it
+        // opens this reserved inode. Keep the file private to that same owner.
+        if let Some(credentials) = self.child_credentials {
+            fchown(
+                &file,
+                Some(Uid::from_raw(credentials.user_id)),
+                Some(Gid::from_raw(credentials.group_id)),
+            )
+            .map_err(|source| {
+                fail(QemuSpawnError::Io {
+                    operation: "assign detached hot-fork root-overlay ownership",
+                    source: source.into(),
+                })
+            })?;
+        }
+
         let args = [
             OsString::from("create"),
             OsString::from("-q"),
