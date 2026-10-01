@@ -142,6 +142,97 @@ def capture_direct_artifacts(worker, tools):
     """, tools, timeout=300))
 
 
+def observe_direct_native_trust(native, tools, artifacts, label):
+    """Retain the live ordinary Native process and its installed trust inputs."""
+    if not re.fullmatch(r"[a-z0-9-]{1,32}", label):
+        raise ValueError("Native trust observation label is invalid")
+    observed = json.loads(direct_guest_python(native, tools["python"], """
+        import hashlib, os, pwd, re, ssl, stat, subprocess
+        from pathlib import Path
+
+        result = subprocess.run(['systemctl', 'show', '--property=MainPID', '--value',
+            'aos-hub.service'], capture_output=True, check=True, timeout=10)
+        pid = int(result.stdout)
+        if pid <= 1:
+            raise ValueError('ordinary Native service has no live process')
+        process = Path('/proc') / str(pid)
+        before = (process / 'stat').read_text().rsplit(')', 1)[1].split()
+        if before[0] == 'Z' or process.stat().st_uid != pwd.getpwnam('aos-hub').pw_uid:
+            raise ValueError('ordinary Native process owner or lifetime differs')
+        with (process / 'exe').open('rb') as executable:
+            executable_sha = hashlib.file_digest(executable, 'sha256').hexdigest()
+        if executable_sha != selected['executableSha256']:
+            raise ValueError('ordinary Native process differs from installed package')
+
+        root = Path('/var/lib/hybrid-native-trust') / selected['label']
+        root.mkdir(mode=0o700, parents=True, exist_ok=False)
+        with (process / 'environ').open('rb') as source:
+            environment = source.read(65537)
+        with (process / 'cmdline').open('rb') as source:
+            arguments = source.read(65537)
+        if len(environment) > 65536 or len(arguments) > 65536:
+            raise ValueError('Native process input observation exceeds its bound')
+        unit = subprocess.run(['systemctl', 'cat', 'aos-hub.service'],
+            capture_output=True, check=True, timeout=10).stdout
+        if len(unit) > 1048576:
+            raise ValueError('Native service configuration observation exceeds its bound')
+        private_inputs = {}
+        for name, body in (('environment', environment), ('arguments', arguments), ('unit', unit)):
+            descriptor = os.open(root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, 'wb') as output:
+                output.write(body)
+                output.flush()
+                os.fsync(output.fileno())
+            private_inputs[name] = {'sha256': hashlib.sha256(body).hexdigest(), 'byteSize': len(body)}
+        variables = {}
+        for field in environment.split(b'\\0'):
+            if not field:
+                continue
+            name, value = field.split(b'=', 1)
+            if name in variables:
+                raise ValueError('Native process environment has duplicate names')
+            variables[name] = value
+        default_bundle = '/etc/ssl/certs/ca-certificates.crt'
+        bundle_path = os.fsdecode(variables.get(b'SSL_CERT_FILE', os.fsencode(default_bundle)))
+        if not bundle_path.startswith('/'):
+            raise ValueError('Native trust bundle path is not absolute')
+        with open(bundle_path, 'rb') as source:
+            metadata = os.fstat(source.fileno())
+            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 2097152
+                    or metadata.st_uid != 0 or metadata.st_mode & 0o022):
+                raise ValueError('Native trust bundle type or bound differs')
+            bundle = source.read(2097153)
+            after_bundle = os.fstat(source.fileno())
+        if (len(bundle) != metadata.st_size or any(getattr(metadata, name) != getattr(after_bundle, name)
+                for name in ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns'))):
+            raise ValueError('Native trust bundle changed during observation')
+        def certificates(body):
+            return {hashlib.sha256(ssl.PEM_cert_to_DER_cert(match.decode())).hexdigest()
+                for match in re.findall(br'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----',
+                    body, flags=re.S)}
+        installed = certificates(bundle)
+        required = certificates(selected['fleetCaPem'].encode()) | certificates(
+            Path(selected['s3PublicTrust']).read_bytes())
+        if len(required) != 2 or not required <= installed:
+            raise ValueError('installed Native trust lacks the selected fixture roots')
+        after = (process / 'stat').read_text().rsplit(')', 1)[1].split()
+        if before[19] != after[19] or after[0] == 'Z':
+            raise ValueError('Native lifetime changed during trust observation')
+        print(json.dumps({'version': 1, 'pid': pid, 'startTicks': before[19],
+            'ownerUid': process.stat().st_uid, 'executableSha256': executable_sha,
+            'privateInputs': private_inputs, 'installedBundleSha256': hashlib.sha256(bundle).hexdigest(),
+            'installedBundlePathSha256': hashlib.sha256(os.fsencode(bundle_path)).hexdigest(),
+            'installedBundleBytes': len(bundle), 'requiredCertificateDerSha256': sorted(required),
+            'sslCertFileOverride': b'SSL_CERT_FILE' in variables,
+            'sslCertDirectoryOverride': b'SSL_CERT_DIR' in variables,
+            'proxyEnvironmentPresent': any(name in variables for name in
+                (b'HTTP_PROXY', b'HTTPS_PROXY', b'ALL_PROXY', b'http_proxy', b'https_proxy', b'all_proxy')),
+            'scope': 'actual ordinary Native process/trust inputs; execution TLS still requires handler joins'}))
+    """, {"label": label, "executableSha256": artifacts["files"]["nativeHub"]["sha256"],
+        "fleetCaPem": tools["fleetCaPem"], "s3PublicTrust": tools["s3PublicTrust"]}, timeout=45))
+    return retain_direct_flow("native-trust-" + label + ".json", observed)
+
+
 def observe_direct_initial_state(native, worker, s3, tools, process):
     """Capture real inventory, namespace and clocks before a new provider original."""
     namespace = direct_namespace_readback(worker, tools["python"], process)
@@ -688,7 +779,10 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     artifacts = capture_direct_artifacts(worker, tools)
     tools = {**tools, "installedNativeExecutableSha256": artifacts["files"]["nativeHub"]["sha256"]}
     artifact_sha = retain_direct_flow("immutable-artifacts.json", artifacts)
-    initial_review = await_direct_review("external-installation-inputs", {"installedArtifacts": artifact_sha}, {
+    native_trust = observe_direct_native_trust(native, tools, artifacts, "bootstrap")
+    initial_review = await_direct_review("external-installation-inputs", {
+        "installedArtifacts": artifact_sha, "nativeProcessTrust": native_trust,
+    }, {
         "reviewerPublicKey", "privateStagePolicy", "providerPrefix", "providerReviewFile", "bindingPrefix",
     })
     inputs = initial_review["selection"]
@@ -784,6 +878,7 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
         "metadataConfiguration": measured["queues"]["metadata"]["sha256"],
         "hydration": hydration["receiptSha256"], "authoritySynchronization": synchronized["receiptSha256"],
     })
+    observe_direct_native_trust(native, tools, artifacts, "accepted-runtime")
     publication = run_external_direct_publication(client, native, worker, s3, tools, controls, credentials,
         authority, process, identity, acceptance)
     issuer_lifecycle = run_direct_issuer_lifecycle(native, worker, tools, shared_controls, authority)
