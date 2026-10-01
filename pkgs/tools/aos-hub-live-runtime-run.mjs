@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import {
   liveCorpusCases, sourceSequenceWatermark, selectLiveSourceRequest,
   liveMetadataOverlap, validateLiveSourceAttempt, validateLiveRefusal, validateLiveStatusRefusal,
+  liveHeldAdmissionExpired,
 } from "./aos-hub-live-runtime-corpus.mjs";
 
 if (!process.execPath.startsWith("/nix/store/") || !process.argv[2]) throw new Error("Explicit source-built runner and fixture root required");
@@ -90,13 +91,19 @@ async function openControl(spec) {
   }
   const id = ++sequence;
   await writeFile(join(root, `live-control-${id}.json`), bytes, { flag: "wx", mode: 0o600 });
-  const sourceWatermark = sourceSequenceWatermark(await sourceObservations());
+  const admissionSources = await sourceObservations();
+  const sourceWatermark = sourceSequenceWatermark(admissionSources);
   const started = performance.now();
+  const dispatchStartedUtcMilliseconds = Date.now();
   const response = await fetch(origin + (query ? "/__hub/mirror-live-query-candidate" : "/__hub/mirror-live-candidate"), {
     method: "POST", headers: { "x-aos-storage-work-signature": signature, "content-type": "application/json" }, body: bytes,
     signal: AbortSignal.timeout(610000),
   });
-  return { id, control, requestBytes: bytes, response, started, query, spec, sourceWatermark };
+  const responseReceivedUtcMilliseconds = Date.now();
+  const opened = { id, control, requestBytes: bytes, response, started, query, spec, sourceWatermark,
+    admissionSources, dispatchStartedUtcMilliseconds, responseReceivedUtcMilliseconds };
+  opened.initialSourceIdentity = await captureSourceIdentity(opened);
+  return opened;
 }
 
 async function captureSourceIdentity(opened) {
@@ -116,7 +123,13 @@ async function bodyRecord(opened, responseSha256, clientBytes, streamErrored, ca
     requestSha256: sha(opened.requestBytes), requestBytes: opened.requestBytes.length,
     responseSha256, clientBytes, streamErrored, cancelled,
     wallMilliseconds: performance.now() - opened.started,
-    sourceWatermark: opened.sourceWatermark, sourceIdentity: await captureSourceIdentity(opened),
+    sourceWatermark: opened.sourceWatermark,
+    sourceIdentity: opened.initialSourceIdentity ?? await captureSourceIdentity(opened),
+    admissionSources: opened.admissionSources,
+    dispatchStartedUtcMilliseconds: opened.dispatchStartedUtcMilliseconds,
+    responseReceivedUtcMilliseconds: opened.responseReceivedUtcMilliseconds,
+    requestIssuedAt: (opened.query ? opened.control.candidate : opened.control).request.issued_at,
+    requestExpiresAt: (opened.query ? opened.control.candidate : opened.control).request.expires_at,
     memory: await memorySample(),
     nativeAuthorizationHeaderBytes: null, nativeBulkBytes: null,
     scope: "Controlled candidate; Native authorization and production acceptance UNKNOWN",
@@ -197,7 +210,11 @@ try {
     let metadataBeforeBulkEOF = null;
     let concurrentMemory = null;
     if (spec.queuedBehind) {
-      auxiliary = await Promise.all(spec.queuedBehind.map(path => openControl({ route: "stream", path, method: "GET" })));
+      // Sequential header admission gives each held source a unique original
+      // watermark before the next identical fixture path can be dispatched.
+      for (const path of spec.queuedBehind) {
+        auxiliary.push(await openControl({ route: "stream", path, method: "GET", sourceStatus: 200 }));
+      }
     }
     const opened = await openControl(spec);
     if (spec.concurrentMetadata) {
@@ -251,7 +268,7 @@ try {
       actual.push(record);
       attempts.push({ spec: spec.additionalAttempt, record });
     }
-    await Promise.all(auxiliary.map(consume));
+    const heldRecords = await Promise.all(auxiliary.map(consume));
     await new Promise(resolve => setTimeout(resolve, 100));
     const after = await sourceObservations();
     sourceSequenceWatermark(after);
@@ -266,7 +283,10 @@ try {
       violations.push(...validateLiveStatusRefusal(attempt.spec, attempt.record).map(code => `${attempt.record.id}:${code}`));
       if (attempt.spec.expectStreamError && !(attempt.record.streamErrored || attempt.record.status >= 400)) violations.push(`${attempt.record.id}:length_refusal`);
     }
-    if (spec.queuedBehind && actual[0].wallMilliseconds < 1000) violations.push("expired_admission_wait_not_observed");
+    if (spec.queuedBehind && !liveHeldAdmissionExpired(actual[0], heldRecords,
+      Number(runtime.vars.HUB_DIRECT_UPLOAD_CLOCK_UNCERTAINTY_SECONDS), originalDispatches)) {
+      violations.push("expired_admission_wait_not_observed");
+    }
     if (spec.expectedClientBytes !== undefined && actual[0].clientBytes !== spec.expectedClientBytes) violations.push("client_bytes");
     if (spec.expectedStatus !== undefined && actual[0].status !== spec.expectedStatus) violations.push("status");
     if (spec.requireChangedBody && actual[0].responseSha256 === actual[1].responseSha256) violations.push("fresh_pointer");

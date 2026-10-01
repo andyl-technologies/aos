@@ -6,10 +6,29 @@ import source, { resetLiveSourceObservations, liveSourceObservations } from "./a
 import {
   liveCorpusCases, correlateLiveCase, sourceSequenceWatermark,
   selectLiveSourceRequest, liveMetadataOverlap, validateLiveSourceAttempt, validateLiveRefusal, validateLiveStatusRefusal,
+  liveHeldAdmissionExpired,
 } from "./aos-hub-live-runtime-corpus.mjs";
 
 const env = { LIVE_RUN_ID: "ab".repeat(16) };
 const origin = `https://upstream.example.invalid/.aos-mirror-qualification/${env.LIVE_RUN_ID}/`;
+
+test("held admission expiry requires actual cutoff crossing and exact occupied sources", () => {
+  const identity = sequence => ({ sequence, path: "channels/hold", method: "GET" });
+  const held = [1, 2].map(sequence => ({ path: "channels/hold", status: 200, sourceIdentity: identity(sequence) }));
+  const record = {
+    status: 409, requestIssuedAt: 100, requestExpiresAt: 102,
+    dispatchStartedUtcMilliseconds: 100063, responseReceivedUtcMilliseconds: 101025,
+    admissionSources: held.map(item => ({ ...item.sourceIdentity, status: 200, ended: false, cancelled: false })),
+  };
+
+  assert.equal(liveHeldAdmissionExpired(record, held, 1, 0), true);
+  assert.equal(liveHeldAdmissionExpired({ ...record, responseReceivedUtcMilliseconds: 100999 }, held, 1, 0), false);
+  assert.equal(liveHeldAdmissionExpired(record, held, 1, 1), false);
+  assert.equal(liveHeldAdmissionExpired(record, held.slice(0, 1), 1, 0), false);
+  assert.equal(liveHeldAdmissionExpired(record, [held[0], held[0]], 1, 0), false);
+  assert.equal(liveHeldAdmissionExpired({ ...record, admissionSources: record.admissionSources.map(item => ({ ...item, ended: true })) }, held, 1, 0), false);
+  assert.equal(liveHeldAdmissionExpired({ ...record, status: 200 }, held, 1, 0), false);
+});
 
 test("actual fixture source produces native bounded views and observes reader cancellation", async () => {
   resetLiveSourceObservations();

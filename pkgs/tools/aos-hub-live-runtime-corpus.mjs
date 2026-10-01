@@ -71,6 +71,27 @@ export function validateLiveRefusal(spec, record, sourceDispatches) {
   return violations;
 }
 
+// Integer UTC plus immutable uncertainty may expire a two-second grant in less
+// than one elapsed second. Require the actual cutoff crossing and both exact
+// occupied metadata admissions rather than an unrelated minimum wait duration.
+export function liveHeldAdmissionExpired(record, heldRecords, uncertainty, sourceDispatches) {
+  const { dispatchStartedUtcMilliseconds: started, responseReceivedUtcMilliseconds: received,
+    requestIssuedAt: issued, requestExpiresAt: expires } = record;
+  if (![started, received, issued, expires, uncertainty].every(Number.isSafeInteger)
+      || uncertainty < 1 || uncertainty >= 30 || received <= started || expires <= issued
+      || record.status < 400 || record.status > 599 || sourceDispatches !== 0) return false;
+  const initialLatest = Math.floor(started / 1000) + uncertainty;
+  const responseLatest = Math.floor(received / 1000) + uncertainty;
+  if (initialLatest < issued || initialLatest >= expires || responseLatest < expires) return false;
+  if (heldRecords.length !== 2 || !Array.isArray(record.admissionSources)) return false;
+  const identities = heldRecords.map(item => item.sourceIdentity?.sequence);
+  if (identities.some(item => !Number.isSafeInteger(item)) || new Set(identities).size !== 2) return false;
+  return heldRecords.every(item => item.status === 200 && item.path === "channels/hold"
+    && record.admissionSources.some(source => source.sequence === item.sourceIdentity.sequence
+      && source.path === item.sourceIdentity.path && source.method === item.sourceIdentity.method
+      && source.status === 200 && !source.ended && !source.cancelled));
+}
+
 // Accept only measured fields supplied by the actual transport/executor joins.
 // UNKNOWN remains explicit when Native authorization, client or source evidence
 // is missing. This function neither invents reports nor signs review artifacts.
