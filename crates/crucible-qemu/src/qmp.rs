@@ -645,52 +645,61 @@ where
         action: HotForkTemplateAction,
         block_snapshot_bindings: Option<&[QmpHotForkBlockSnapshotBinding]>,
     ) -> Result<QmpHotForkTemplateState, QmpError> {
-        let response = self.send_command_return(QmpCommand::HotForkTemplate {
-            action,
-            block_snapshot_bindings,
-        })?;
-        let state = parse_hot_fork_template_state(&response.value)?;
-        // QEMU delivers a pending completion before interpreting the next
-        // action. Query and prepare can therefore observe the previous abort,
-        // and abort can observe an already-completed failed preparation.
-        let postcondition_holds = match action {
-            HotForkTemplateAction::Prepare => matches!(
-                state.outcome(),
-                QmpHotForkTemplateOutcome::Draining
-                    | QmpHotForkTemplateOutcome::Blocked
-                    | QmpHotForkTemplateOutcome::Prepared
-                    | QmpHotForkTemplateOutcome::Aborted
-            ),
-            HotForkTemplateAction::Query => matches!(
-                state.outcome(),
-                QmpHotForkTemplateOutcome::Idle
-                    | QmpHotForkTemplateOutcome::Draining
-                    | QmpHotForkTemplateOutcome::Prepared
-                    | QmpHotForkTemplateOutcome::Blocked
-                    | QmpHotForkTemplateOutcome::Aborted
-            ),
-            HotForkTemplateAction::AdoptChild => {
-                state.outcome() == QmpHotForkTemplateOutcome::ChildAdopted
-            }
-            HotForkTemplateAction::Abort => {
-                matches!(
+        let result = (|| {
+            let response = self.send_command_return(QmpCommand::HotForkTemplate {
+                action,
+                block_snapshot_bindings,
+            })?;
+            let state = parse_hot_fork_template_state(&response.value)?;
+            // QEMU delivers a pending completion before interpreting the next
+            // action. Query and prepare can therefore observe the previous abort,
+            // and abort can observe an already-completed failed preparation.
+            let postcondition_holds = match action {
+                HotForkTemplateAction::Prepare => matches!(
+                    state.outcome(),
+                    QmpHotForkTemplateOutcome::Draining
+                        | QmpHotForkTemplateOutcome::Blocked
+                        | QmpHotForkTemplateOutcome::Prepared
+                        | QmpHotForkTemplateOutcome::Aborted
+                ),
+                HotForkTemplateAction::Query => matches!(
                     state.outcome(),
                     QmpHotForkTemplateOutcome::Idle
+                        | QmpHotForkTemplateOutcome::Draining
+                        | QmpHotForkTemplateOutcome::Prepared
                         | QmpHotForkTemplateOutcome::Blocked
                         | QmpHotForkTemplateOutcome::Aborted
-                ) || (state.outcome() == QmpHotForkTemplateOutcome::Draining
-                    && !state.plugin_barrier().held()
-                    && !state.rcu_barrier().held()
-                    && !state.async_worker_barrier().held())
+                ),
+                HotForkTemplateAction::AdoptChild => {
+                    state.outcome() == QmpHotForkTemplateOutcome::ChildAdopted
+                }
+                HotForkTemplateAction::Abort => {
+                    matches!(
+                        state.outcome(),
+                        QmpHotForkTemplateOutcome::Idle
+                            | QmpHotForkTemplateOutcome::Blocked
+                            | QmpHotForkTemplateOutcome::Aborted
+                    ) || (state.outcome() == QmpHotForkTemplateOutcome::Draining
+                        && !state.plugin_barrier().held()
+                        && !state.rcu_barrier().held()
+                        && !state.async_worker_barrier().held())
+                }
+            };
+            if !postcondition_holds {
+                return Err(QmpError::MalformedTypedResponse {
+                    command: QmpCommandKind::HotForkTemplate,
+                    response: response.value.to_string(),
+                });
             }
-        };
-        if !postcondition_holds {
-            return Err(QmpError::MalformedTypedResponse {
-                command: QmpCommandKind::HotForkTemplate,
-                response: response.value.to_string(),
-            });
+            Ok(state)
+        })();
+        if result.is_err() {
+            // A late response to a possibly effected template command cannot
+            // be interpreted as the result of a rollback or a new query.
+            self.poisoned = true;
+            self.stream.get_mut().poison_qmp_stream();
         }
-        Ok(state)
+        result
     }
 
     fn hot_fork_plugin_barrier(

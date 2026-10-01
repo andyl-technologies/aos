@@ -867,6 +867,47 @@ fn hot_fork_template_abort_is_exact_and_malformed_states_fail_closed() -> Result
 }
 
 #[test]
+fn ambiguous_template_response_poisoned_the_qmp_client() -> Result<(), Box<dyn Error>> {
+    let mut client = QmpClient::connect(scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":29}}"#,
+        r#"{"return":{}}"#,
+    ]))?;
+
+    assert!(matches!(
+        client.prepare_hot_fork_template(&[]),
+        Err(QmpError::MalformedTypedResponse {
+            command: QmpCommandKind::HotForkTemplate,
+            ..
+        })
+    ));
+    assert!(matches!(
+        client.query_hot_fork_template(),
+        Err(QmpError::ConnectionPoisoned)
+    ));
+
+    let mut rejected = QmpClient::connect(scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"error":{"class":"GenericError","desc":"template refused"}}"#,
+        r#"{"return":{}}"#,
+    ]))?;
+    assert!(matches!(
+        rejected.prepare_hot_fork_template(&[]),
+        Err(QmpError::Command {
+            command: QmpCommandKind::HotForkTemplate,
+            ..
+        })
+    ));
+    assert!(matches!(
+        rejected.query_hot_fork_template(),
+        Err(QmpError::ConnectionPoisoned)
+    ));
+    Ok(())
+}
+
+#[test]
 fn typed_status_queries_reject_missing_and_contradictory_fields() -> Result<(), Box<dyn Error>> {
     let mut status_client = QmpClient::connect(scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
