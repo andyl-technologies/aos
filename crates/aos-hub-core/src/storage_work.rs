@@ -1250,7 +1250,9 @@ impl StorageWorkPlan {
                     || delete_binding_write_revision.is_some_and(|revision| revision <= 0)
                     || (delete_binding_write_revision.is_some()
                         && (!matches!(self.binding_kind.as_str(), "s3" | "r2")
-                            || expected_provider_version.as_deref().is_none_or(|version| version == "null")))
+                            || expected_provider_version
+                                .as_deref()
+                                .is_none_or(|version| version == "null")))
                     || expected_provider_version
                         .as_deref()
                         .is_some_and(|version| !valid_provider_version(version))
@@ -1619,26 +1621,46 @@ mod tests {
     fn versioned_delete_authority_is_external_and_preserves_legacy_r2_shape() {
         let mut scoped = plan(100);
         scoped.operation = StorageWorkOperation::DeleteIfMatches {
-            path: "objects/ab/1234".into(), claim_id: "delete-original".into(),
-            expected_etag: "\"original\"".into(), expected_size: 4, expected_hash: None,
+            path: "objects/ab/1234".into(),
+            claim_id: "delete-original".into(),
+            expected_etag: "\"original\"".into(),
+            expected_size: 4,
+            expected_hash: None,
             expected_provider_version: Some("provider-version".into()),
             delete_binding_write_revision: Some(1),
         };
         assert!(scoped.validate("deployment-1", 101).is_err());
+
         scoped.binding_kind = "s3".into();
         scoped.binding_snapshot_revision = Some(binding_snapshot(100).revision().unwrap());
-        scoped.credential_references = vec![StorageCredentialSelector { purpose: "delete".into(), generation: 4 }];
+        scoped.credential_references = vec![StorageCredentialSelector {
+            purpose: "delete".into(),
+            generation: 4,
+        }];
         assert!(scoped.validate("deployment-1", 101).is_ok());
         assert_eq!(scoped.operation.credential_purposes(), &["delete"]);
-        if let StorageWorkOperation::DeleteIfMatches { expected_provider_version, .. } = &mut scoped.operation {
+
+        if let StorageWorkOperation::DeleteIfMatches {
+            expected_provider_version,
+            ..
+        } = &mut scoped.operation
+        {
             *expected_provider_version = Some("null".into());
         }
         assert!(scoped.validate("deployment-1", 101).is_err());
-        if let StorageWorkOperation::DeleteIfMatches { delete_binding_write_revision, .. } = &mut scoped.operation {
+
+        if let StorageWorkOperation::DeleteIfMatches {
+            delete_binding_write_revision,
+            ..
+        } = &mut scoped.operation
+        {
             *delete_binding_write_revision = None;
         }
         assert_eq!(scoped.operation.credential_purposes(), &["delete", "read"]);
-        assert!(serde_json::to_value(&scoped.operation).unwrap().get("delete_binding_write_revision").is_none());
+        assert!(serde_json::to_value(&scoped.operation)
+            .unwrap()
+            .get("delete_binding_write_revision")
+            .is_none());
     }
 
     #[test]

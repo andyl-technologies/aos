@@ -15,6 +15,11 @@ use worker::{Env, Fetch, Headers, Method, Request, RequestInit, RequestRedirect}
 
 use super::super::{config::Config, delete_config, protocol::Intent};
 
+/// Executes the exact leased versioned DELETE and bounded metadata preconditions.
+///
+/// # Errors
+/// Returns an error for changed authority, expiry, unavailable material, provider
+/// I/O, or an ambiguous response that leaves the permanent turn unresolved.
 pub(in crate::external_object) async fn execute(
     env: &Env,
     object: &Config,

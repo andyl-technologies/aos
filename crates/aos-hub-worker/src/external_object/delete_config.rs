@@ -24,20 +24,32 @@ const MAX_CONFIG: usize = 128 * 1024;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Retains one independently configured delete issuer and exact cohort.
 pub(super) struct DeleteDomain {
+    /// Existing issuer installation trusted for this delete cohort.
     pub issuer_installation: IssuerInstallation,
+    /// Exact delete-only cohort already admitted by the object configuration.
     pub delete_cohort: LeaseCohort,
+    /// Independent provider-contract evidence pin, without enabling capability.
     pub versioned_conditional_delete_evidence_digest: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Bounds the independently configured versioned-delete domains.
 pub(super) struct DeleteConfig {
+    /// Closed configuration format version.
     pub version: u8,
+    /// At most sixteen distinct independently admitted delete domains.
     pub domains: Vec<DeleteDomain>,
 }
 
 impl DeleteConfig {
+    /// Parses bounded configuration against the existing admitted object cohorts.
+    ///
+    /// # Errors
+    /// Returns an error for invalid bounds, duplicate domains, another issuer,
+    /// non-delete authority, or a missing provider-contract evidence pin.
     pub(super) fn parse(raw: &str, object: &ObjectConfig) -> Result<Self> {
         ensure!(raw.len() <= MAX_CONFIG, "oversized delete configuration");
         let value: Self = serde_json::from_str(raw)?;
@@ -63,6 +75,10 @@ impl DeleteConfig {
         Ok(value)
     }
 
+    /// Selects exactly one independently configured delete domain.
+    ///
+    /// # Errors
+    /// Returns an error when the exact cohort is missing or ambiguous.
     pub(super) fn domain(&self, cohort: &LeaseCohort) -> Result<&DeleteDomain> {
         let mut domains = self
             .domains
@@ -77,6 +93,10 @@ impl DeleteConfig {
 }
 
 #[cfg(target_arch = "wasm32")]
+/// Loads the explicit delete configuration without constructing new authority.
+///
+/// # Errors
+/// Returns an error when configuration is absent, inaccessible, or invalid.
 pub(super) fn configured(env: &worker::Env, object: &ObjectConfig) -> Result<DeleteConfig> {
     let raw = js_sys::Reflect::get(env.as_ref(), &wasm_bindgen::JsValue::from_str(CONFIG_VAR))
         .map_err(|_| anyhow::anyhow!("delete configuration unavailable"))?

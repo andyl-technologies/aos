@@ -783,9 +783,7 @@ async fn claimed_opener_authorizes_only_its_real_claim_key() {
 async fn versioned_delete_uses_the_reviewed_frozen_claim_and_rejects_changed_receipts() {
     use crate::storage_work::HybridSurfaceWrites;
     use aos_hub_core::surface_write::SurfaceWriteProvider as _;
-    use aos_hub_core::surface_write::{
-        SurfaceDeleteOutcome, SurfaceDeletePrecondition,
-    };
+    use aos_hub_core::surface_write::{SurfaceDeleteOutcome, SurfaceDeletePrecondition};
 
     for reply in [
         Reply::DeleteAcknowledged,
@@ -797,12 +795,10 @@ async fn versioned_delete_uses_the_reviewed_frozen_claim_and_rejects_changed_rec
         let (client, requests, task) = worker(&fixture, reply).await;
         let client = Arc::new(client);
         let writes = HybridSurfaceWrites::new(Arc::clone(&fixture.db), Arc::clone(&client));
-        let deleter = writes.claimed_placement_deleter(
-            &fixture.claim.frozen_access(),
-            &fixture.claim,
-        )
-        .await
-        .unwrap();
+        let deleter = writes
+            .claimed_placement_deleter(&fixture.claim.frozen_access(), &fixture.claim)
+            .await
+            .unwrap();
         let expected = SurfaceDeletePrecondition {
             etag: fixture.claim.expected_strong_etag.clone(),
             content_hash: Some(fixture.claim.expected_hash.to_string()),

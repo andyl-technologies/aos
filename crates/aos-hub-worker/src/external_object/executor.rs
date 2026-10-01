@@ -449,10 +449,15 @@ async fn execute_authorized(
                     && *delete_binding_write_revision == Some(work.binding_write_revision.get()),
                 "delete original differs"
             );
-            let expected = aos_hub_core::storage_authority::external_object::deletion::ExternalDeletePrecondition {
-                provider_version: expected_provider_version.clone().ok_or_else(|| anyhow::anyhow!("versioned delete unsupported"))?,
-                etag: expected_etag.clone(), bytes: expected_size.to_string(), content_hash: expected_hash.clone(),
-            };
+            let expected =
+                aos_hub_core::storage_authority::external_object::deletion::ExternalDeletePrecondition {
+                    provider_version: expected_provider_version
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("versioned delete unsupported"))?,
+                    etag: expected_etag.clone(),
+                    bytes: expected_size.to_string(),
+                    content_hash: expected_hash.clone(),
+                };
             expected.validate()?;
             (path, Effect::Delete { expected }, None, "delete")
         }

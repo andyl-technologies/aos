@@ -28,6 +28,11 @@ pub(super) struct ExternalCurrentDeleter {
 }
 
 impl ExternalCurrentDeleter {
+    /// Opens a deleter for the current validated SQL delete credential.
+    ///
+    /// # Errors
+    /// Returns an error if the binding, placement, revision, or credential changes
+    /// while the protected Worker snapshot is checked.
     pub(super) async fn open(
         db: Arc<Database>,
         work: Arc<RemoteStorageWorkClient>,
@@ -106,11 +111,14 @@ impl ExternalCurrentDeleter {
 
 #[async_trait]
 impl SurfaceWrite for ExternalCurrentDeleter {
-    fn conditional_delete_requires_provider_version(&self) -> bool { true }
+    fn conditional_delete_requires_provider_version(&self) -> bool {
+        true
+    }
 
     async fn write(&self, _path: &str, _bytes: &[u8]) -> Result<()> {
         bail!("external deleter does not authorize writes")
     }
+
     async fn delete(&self, _path: &str) -> Result<()> {
         bail!("external deletion requires an exact conditional claim")
     }
@@ -163,6 +171,10 @@ impl SurfaceWrite for ExternalCurrentDeleter {
     }
 }
 
+/// Requires an exact physical version, strong ETag, and reviewed length.
+///
+/// # Errors
+/// Returns an error for missing, malformed, or oversized inventory evidence.
 pub(super) fn versioned_precondition(
     expected: &SurfaceDeletePrecondition,
 ) -> Result<aos_hub_core::storage_authority::external_object::deletion::ExternalDeletePrecondition>
@@ -196,6 +208,11 @@ pub(super) struct ExternalClaimDeleter {
 }
 
 impl ExternalClaimDeleter {
+    /// Opens a deleter for one exact retained SQL cleanup claim.
+    ///
+    /// # Errors
+    /// Returns an error when access differs from the claim or its credential hold
+    /// and protected snapshot no longer authorize frozen cleanup.
     pub(super) async fn open(
         db: Arc<Database>,
         work: Arc<RemoteStorageWorkClient>,
@@ -218,14 +235,18 @@ impl ExternalClaimDeleter {
 
 #[async_trait]
 impl SurfaceWrite for ExternalClaimDeleter {
-    fn conditional_delete_requires_provider_version(&self) -> bool { true }
+    fn conditional_delete_requires_provider_version(&self) -> bool {
+        true
+    }
 
     async fn write(&self, _path: &str, _bytes: &[u8]) -> Result<()> {
         bail!("frozen external deletion does not authorize writes")
     }
+
     async fn delete(&self, _path: &str) -> Result<()> {
         bail!("frozen external deletion requires original preconditions")
     }
+
     async fn delete_if_matches_claimed(
         &self,
         path: &str,
@@ -325,6 +346,11 @@ pub(super) struct ExternalProbeWriter {
 }
 
 impl ExternalProbeWriter {
+    /// Opens a writer restricted to the retained reserved capability probe.
+    ///
+    /// # Errors
+    /// Returns an error if the original placement, binding, or current immutable
+    /// write revision changes while the protected snapshot is checked.
     pub(super) async fn open(
         db: Arc<Database>,
         work: Arc<RemoteStorageWorkClient>,

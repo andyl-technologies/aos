@@ -10,6 +10,9 @@ use aos_hub_core::storage_authority::external_object::{
 };
 
 /// Checks metadata without turning HEAD into settlement of a pending DELETE.
+///
+/// # Errors
+/// Returns an error when the retained version, ETag, length, or hash is invalid.
 pub(super) fn condition_matches(
     expected: &ExternalDeletePrecondition,
     path: &str,
@@ -26,6 +29,10 @@ pub(super) fn condition_matches(
 }
 
 /// Classifies only the original provider DELETE response, without guessing.
+///
+/// # Errors
+/// Returns an error for an ambiguous status, a different acknowledged version,
+/// or a delete marker instead of the exact version deletion.
 pub(super) fn acknowledgement(
     expected: &ExternalDeletePrecondition,
     status: u16,

@@ -52,7 +52,9 @@ impl SurfaceFetch for VersionedProvider {
 
 #[async_trait]
 impl SurfaceWrite for VersionedProvider {
-    fn conditional_delete_requires_provider_version(&self) -> bool { true }
+    fn conditional_delete_requires_provider_version(&self) -> bool {
+        true
+    }
 
     async fn write(&self, _path: &str, bytes: &[u8]) -> Result<()> {
         let mut versions = self.versions.lock().unwrap();
@@ -63,7 +65,10 @@ impl SurfaceWrite for VersionedProvider {
 
     async fn delete(&self, path: &str) -> Result<()> {
         assert!(crate::storage_work::admitted_probe_path(path));
-        anyhow::ensure!(!self.omits_version, "fixture refuses unsupported versionless cleanup");
+        anyhow::ensure!(
+            !self.omits_version,
+            "fixture refuses unsupported versionless cleanup"
+        );
         self.versions.lock().unwrap().clear();
         Ok(())
     }
@@ -117,12 +122,16 @@ async fn versioned_probe_qualifies_conditions_and_cleans_both_originals() {
     assert_eq!(result.state, ProbeState::Invalid);
     assert!(unsupported.versions.lock().unwrap().is_empty());
 
-    let versionless = VersionedProvider { omits_version: true, ..Default::default() };
-    let result = probe_schedule(&versionless, &versionless, &versionless, key).await.unwrap();
+    let versionless = VersionedProvider {
+        omits_version: true,
+        ..Default::default()
+    };
+    let result = probe_schedule(&versionless, &versionless, &versionless, key)
+        .await
+        .unwrap();
     assert_eq!(result.state, ProbeState::Invalid);
     assert!(result.cleanup_error.is_some());
     // No replacement write or conditional delete was dispatched. The reserved
     // first probe stays retained rather than using an unconditional fallback.
     assert_eq!(versionless.versions.lock().unwrap().len(), 1);
-
 }
