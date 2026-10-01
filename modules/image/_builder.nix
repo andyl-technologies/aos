@@ -1139,6 +1139,7 @@
                   download: $maxDownloadMiB
                 },
                 moduleAbi: $moduleAbi,
+                configurationCapabilities: ["aos.config-bundle/v1"],
                 compatibleTargets: ["bare-metal"],
                 uki: {
                   filename: $ukiFilename,

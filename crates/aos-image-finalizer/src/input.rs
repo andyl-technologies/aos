@@ -154,6 +154,22 @@ pub fn verified_tool(
 /// Returns an error when the path is linked or special, I/O fails, or the file
 /// changes while it is hashed.
 pub fn digest_regular_file(path: &Path) -> Result<(u64, Sha256Digest)> {
+    digest_file(path, true)
+}
+
+/// Hashes a regular file in a private reconstructed image tree.
+///
+/// Firmware and tool aliases can share an inode after filesystem extraction.
+/// Symlinks and files that change during hashing remain rejected.
+///
+/// # Errors
+/// Returns an error for special files, symlinks, I/O failures, or content changes
+/// during hashing.
+pub(crate) fn digest_image_tree_file(path: &Path) -> Result<(u64, Sha256Digest)> {
+    digest_file(path, false)
+}
+
+fn digest_file(path: &Path, require_single_link: bool) -> Result<(u64, Sha256Digest)> {
     let descriptor = open(
         path,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -162,7 +178,10 @@ pub fn digest_regular_file(path: &Path) -> Result<(u64, Sha256Digest)> {
     .with_context(|| format!("opening regular file {}", path.display()))?;
     let mut file = File::from(descriptor);
     let before = file.metadata()?;
-    if !before.is_file() || before.nlink() != 1 {
+    if !before.is_file() {
+        bail!("digest input must be a regular file");
+    }
+    if require_single_link && before.nlink() != 1 {
         bail!("digest input must be a single-link regular file");
     }
     let (size, digest) = hash_reader(&mut file)?;

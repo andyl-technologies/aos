@@ -125,6 +125,9 @@
 
 pub mod keymap;
 
+#[cfg(any(target_arch = "wasm32", test))]
+mod delivery_ingress;
+
 // The method-agnostic nested-console bridge seam is compiled for the Worker
 // and for native unit tests. Keeping the Workers request conversion outside
 // this module makes the routing boundary testable without a JS runtime.
@@ -508,6 +511,7 @@ mod entry {
     const HUB_ROUTE_PUBLICATION_PUBLIC_KEY: &str = "HUB_ROUTE_PUBLICATION_PUBLIC_KEY";
     /// The Wrangler `[vars]` entry holding the hub's externally-reachable URL.
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
+    const HUB_LAYER7_DELIVERY_HOSTS: &str = "HUB_LAYER7_DELIVERY_HOSTS";
     /// Immutable source/build identity used to attest the active deployment.
     const HUB_DEPLOYMENT_ID: &str = "HUB_DEPLOYMENT_ID";
     /// Atomic JSON secret containing role-separated release evidence keys.
@@ -2598,11 +2602,16 @@ mod entry {
         let runtime = shard_request_runtime(env, runtime).await?;
         let started_at = worker::Date::now().as_millis();
         let sql_before = runtime.remote_sql_metrics.snapshot();
+        let layer7_delivery_hosts = env
+            .var(HUB_LAYER7_DELIVERY_HOSTS)
+            .ok()
+            .map(|value| value.to_string());
         let response = crate::bridge::dispatch(
             runtime.router,
             runtime.service.as_ref(),
             runtime.console_deps,
             runtime.delivery_attestation_verifier.as_deref(),
+            layer7_delivery_hosts.as_deref(),
             req,
         )
         .await?;
@@ -2875,6 +2884,7 @@ mod entry {
                                 return Response::error(format!("remote SQL decode: {error}"), 400);
                             }
                         };
+                        drop(body);
                         let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage());
                         return match crate::remotebackend::execute_remote_sql(&backend, operation)
                             .await
@@ -3039,7 +3049,20 @@ mod entry {
                 )));
                 let (router, service, console_deps) =
                     router_from_do_e2e(&self.state, &self.env, db).await?;
-                return crate::bridge::dispatch(router, &service, console_deps, None, req).await;
+                let layer7_delivery_hosts = self
+                    .env
+                    .var(HUB_LAYER7_DELIVERY_HOSTS)
+                    .ok()
+                    .map(|value| value.to_string());
+                return crate::bridge::dispatch(
+                    router,
+                    &service,
+                    console_deps,
+                    None,
+                    layer7_delivery_hosts.as_deref(),
+                    req,
+                )
+                .await;
             }
             // The DO runs the same shared router as the native shell.
             #[cfg(not(feature = "do-e2e"))]
@@ -3053,11 +3076,17 @@ mod entry {
                     .unwrap_or_else(|| "<invalid>".to_string());
                 let started_at = worker::Date::now().as_millis();
                 let sql_before = runtime.sql_metrics.snapshot();
+                let layer7_delivery_hosts = self
+                    .env
+                    .var(HUB_LAYER7_DELIVERY_HOSTS)
+                    .ok()
+                    .map(|value| value.to_string());
                 let result = crate::bridge::dispatch(
                     runtime.router,
                     runtime.service.as_ref(),
                     runtime.console_deps,
                     runtime.delivery_attestation_verifier.as_deref(),
+                    layer7_delivery_hosts.as_deref(),
                     req,
                 )
                 .await;
