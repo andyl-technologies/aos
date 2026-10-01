@@ -5153,6 +5153,17 @@ pub(super) mod tests {
             .unwrap();
 
         assert_eq!(revised.desired_generation, Some(2));
+
+        let gateway_impacts = db
+            .endpoint_generation_impacts(&spec.endpoint_id, spec.endpoint_generation)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|impact| impact.resource_kind == "gateway")
+            .map(|impact| (impact.stable_id, impact.generation))
+            .collect::<Vec<_>>();
+
+        assert_eq!(gateway_impacts, [(gateway.id.clone(), 2)]);
         assert_eq!(
             db.gateway_revision(&gateway.id, 2)
                 .await
