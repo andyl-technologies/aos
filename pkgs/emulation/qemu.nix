@@ -1065,6 +1065,11 @@ in
                 mkdir -p "$out/nix-support"
                 cp "$mutation_manifest" "$out/test-harness.mutations.tsv"
                 cp build/meson-info/intro-tests.json "$out/configured-tests.json"
+                cat > "$out/tested-qemu-build-identity.env" <<'DIAGNOSTIC_IDENTITY'
+                ${qemuBuildIdentityMaterial}
+                qemu_build_id=${qemuBuildIdentity}
+                qemu_test_harness_mutation_hash=${fullUpstreamTestHarnessMutationHash}
+                DIAGNOSTIC_IDENTITY
                 cat > "$out/nix-support/aos-release-policy" <<'DIAGNOSTIC_POLICY'
                 policy_version=1
                 artifact_role=test-evidence
@@ -1434,7 +1439,8 @@ in
               if [ -d "$TMPDIR/qemu-full-test-retained/output" ]; then
                 cp -a "$TMPDIR/qemu-full-test-retained/output/." "$out/"
               fi
-              cp "$serial_log" "$qemu_log" "$runner_identity" "$out/"
+              cp "$serial_log" "$qemu_log" "$out/"
+              cp "$runner_identity" "$out/qemu-test-vm-runner-identity.env"
               if [ "$vm_status" -ne 0 ]; then
                 cat "$qemu_log" >&2
                 echo "generic QEMU test VM failed with status $vm_status" >&2
