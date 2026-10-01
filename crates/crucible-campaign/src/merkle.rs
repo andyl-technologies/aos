@@ -455,9 +455,16 @@ impl MerkleMap {
         limit: usize,
     ) -> Result<(), CampaignStoreError> {
         let mut root_pairs = vec![(prior, next)];
+        let mut compared_roots = BTreeSet::new();
         while let Some((old_root, new_root)) = root_pairs.pop() {
-            if old_root == new_root {
+            if old_root == new_root || !compared_roots.insert((old_root, new_root)) {
                 continue;
+            }
+            // Nested maps can be shared by many owner keys. Comparing the same
+            // authenticated old/new roots again adds no changed position, but
+            // repeating their descendants expands work with every alias path.
+            if compared_roots.len() > limit {
+                return Err(invalid("closure-node-limit"));
             }
             roots.insert(new_root);
             let mut stack = vec![(Some(old_root), None, None, new_root, Vec::new(), None)];
@@ -507,15 +514,19 @@ impl MerkleMap {
                             if !key_has_prefix(*key, &child_prefix) {
                                 return Err(invalid("leaf-ancestor-prefix-mismatch"));
                             }
+                            if matches!(old_entry.as_ref(), Some(MerkleEntry::Leaf { key: old_key, value: old_value }) if old_key == key && old_value == value)
+                            {
+                                // Complete prior authentication already owns
+                                // this exact key/value at the checked prefix.
+                                continue;
+                            }
                             if !self.backend.contains(*value)? {
                                 return Err(crucible_cas::content_store::StoreError::NotFound {
                                     id: *value,
                                 }
                                 .into());
                             }
-                            if value.kind() == ObjectKind::MerkleNode
-                                && !matches!(old_entry.as_ref(), Some(MerkleEntry::Leaf { key: old_key, value: old_value }) if old_key == key && old_value == value)
-                            {
+                            if value.kind() == ObjectKind::MerkleNode {
                                 let old_root = match old_entry.as_ref() {
                                     Some(MerkleEntry::Leaf {
                                         key: old_key,
@@ -528,9 +539,7 @@ impl MerkleMap {
                                     _ => Self::empty_content_id()?,
                                 };
                                 root_pairs.push((old_root, *value));
-                            } else if value.kind() != ObjectKind::MerkleNode
-                                && !matches!(old_entry.as_ref(), Some(MerkleEntry::Leaf { key: old_key, value: old_value }) if old_key == key && old_value == value)
-                            {
+                            } else {
                                 values.insert(*value);
                                 if values.len() > limit {
                                     return Err(invalid("closure-node-limit"));
