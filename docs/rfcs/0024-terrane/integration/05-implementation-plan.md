@@ -500,19 +500,28 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and refresh its retained live clock and poisoned-session check before staging,
   slot dispatch and acknowledgment. These declarations grant no sweep,
   deletion or availability-loss authority. A separate native checkpoint candidate
-  passes six actual cases: selected roots and immutable mark progress, restart
+  passes nine exact tests: selected roots and immutable mark progress, restart
   through completed marking, stale-renewal refusal and permanent session poison,
   incomplete-frontier refusal, canceled checkpoint retention, count-zero
-  metadata witnesses without old chunks, and queued expiry before acknowledgment.
+  metadata witnesses without old chunks, queued expiry before acknowledgment,
+  two finite replay checks and real takeover into a different marking cycle.
   GC-7's optional final leaves are omitted to avoid colliding with immutable
   revision directories; completed selected revision pointers remain unchanged.
   Non-Send and no-default library builds, strict rustdoc and mandatory formatting
-  pass on that candidate. Review requires finite replay validation derived from
-  persisted traversal instead of a global step ceiling, plus direct independent
-  kernel contention in the checkpoint cancellation witness. Strict Clippy still
-  reports unfinished shared diagnostics. Native source integration, those review
-  corrections and full collector gates remain pending; foreign ownership,
+  pass on that candidate. Reviewed replay validation derives finite containment
+  from persisted traversal instead of imposing a global step ceiling. The
+  checkpoint cancellation witness independently observes actual kernel lock
+  contention. Resume requires the original marking epoch; actual takeover
+  refuses old checkpoints and completes a new cycle without changing the old
+  selected state or immutable mark bytes. Strict Clippy still reports unfinished
+  shared diagnostics. The actual singleton-lease Nix gate passes 19 exact cases
+  on the frozen reviewed collector graph: 13 native lease cases, five runner
+  fencing and progress cases, and one independent non-Send Rc case. Native
+  source integration and full collector gates remain pending; foreign ownership,
   disclosure, present Notes, grace, sweep, restore and deletion are incomplete.
+  D-83 reconciles opaque advisory Notes with commit-bearing GC roots while
+  preserving their whole selected values in current fences; actual present-Notes
+  inventory, marking and fence regressions remain pending.
   An unrepaired observation hook retains the actual writable holder role and
   fresh complete chain checks so live-other-holder, stale lease or Guard
   rejection can precede every cache effect. A separately anchored test clock
