@@ -21,7 +21,7 @@ use aos_sandbox_source_provider_protocol::{
     ProviderCatalogManifestErrorV1, ProviderHeldSnapshotCatalogV1,
     SignedStorageNativeAcquireRequestV2, StorageNativeAcquireErrorV2,
     StorageNativeAcquireRequestV2, StorageZfsHoldTransportErrorV1,
-    StorageZfsHoldTransportRequestV1, SourceProviderMethod, digest_acquire_request,
+    StorageZfsHoldTransportRequestV1, SourceProviderMethod,
     native_held_completion::{
         NativeHeldCompletionErrorV1, NativeHeldOwnerV1,
         suffix::NativeHeldCompletionSuffixV1,
@@ -45,7 +45,7 @@ use crate::{
     },
     transaction::{
         canonical_owner_transaction_id, prepare_original_session, projection_session_at,
-        reserve_session, reserved_attempt,
+        reserve_session, reserved_acquire_attempt,
     },
     zfs_hold_challenge::{
         ChallengeRecordV1, StagedZfsHoldChallengeV1, current_seconds, expiry,
@@ -536,30 +536,11 @@ impl FixedProviderOwnerV1 {
         if recovered.attempts.contains_key(&attempt_identity) {
             return Err(ProviderLedgerError::Equivocation.into());
         }
-        let attempt = reserved_attempt(
-            projection.provider_authority().clone(),
-            projection.root_mount_authority().clone(),
+        let attempt = reserved_acquire_attempt(
+            verified,
             root_signer,
-            SourceProviderMethod::Acquire,
-            evidence.request_id(),
-            evidence.signed_request_digest(),
-            digest_acquire_request(request),
-            intent.digest(),
-            request.acquisition_sequence(),
-            evidence.attempt_digest(),
-            projection.session_binding(),
-            request.sequence(),
-            request.deadline_seconds(),
-            projection.verified_at_seconds(),
-            projection.current_valid_until_seconds(),
-            projection.proof_class_capabilities(),
-            projection.supports_recursive(),
-            projection.supports_kernel_coupled(),
-            projection.root_mount_process_instance(),
-            projection.provider_process_instance(),
-            projection.signer_set_commitment(),
+            &intent,
             None,
-            evidence.canonical_signed_request().to_vec(),
         );
         let (mut session, _) = prepare_original_session(
             projection, acquire.provider_execution_identity(), existing, request.sequence(),

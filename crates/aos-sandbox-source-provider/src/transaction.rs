@@ -1250,6 +1250,44 @@ pub(crate) fn reserved_acquisition(
     }
 }
 
+/// Forms Acquire attempt DATA through the existing Reserved-attempt constructor.
+pub(crate) fn reserved_acquire_attempt(
+    verified: &aos_sandbox_source_provider_protocol::VerifiedProviderAcquireRequestV1,
+    root_record_signer: aos_sandbox_source_provider_protocol::SourceProviderSigningKeyV1,
+    normalized_intent: &NormalizedAcquisitionIntentV1,
+    recovery_bridge: Option<&crate::recovery_bridge::RecoveryBridgeLinkV1>,
+) -> AttemptRecordV1 {
+    let projection = verified.ingress_projection();
+    let request = verified.request();
+    let evidence = verified.attempt();
+
+    reserved_attempt(
+        projection.provider_authority().clone(),
+        projection.root_mount_authority().clone(),
+        root_record_signer,
+        SourceProviderMethod::Acquire,
+        evidence.request_id(),
+        evidence.signed_request_digest(),
+        aos_sandbox_source_provider_protocol::digest_acquire_request(request),
+        normalized_intent.digest(),
+        request.acquisition_sequence(),
+        evidence.attempt_digest(),
+        projection.session_binding(),
+        request.sequence(),
+        request.deadline_seconds(),
+        projection.verified_at_seconds(),
+        projection.current_valid_until_seconds(),
+        projection.proof_class_capabilities(),
+        projection.supports_recursive(),
+        projection.supports_kernel_coupled(),
+        projection.root_mount_process_instance(),
+        projection.provider_process_instance(),
+        projection.signer_set_commitment(),
+        recovery_bridge,
+        evidence.canonical_signed_request().to_vec(),
+    )
+}
+
 pub(crate) fn reserved_attempt(
     provider: aos_sandbox_source_provider_protocol::SourceProviderAuthorityV1,
     holder: aos_sandbox_source_provider_protocol::SourceProviderAuthorityV1,
