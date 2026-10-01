@@ -49,7 +49,7 @@ impl QmpHotForkBlockSealCandidate {
         &self.root_node_name
     }
 
-    /// Returns the current root file path reported by QEMU.
+    /// Returns diagnostic display metadata for the native root descriptor.
     #[must_use]
     pub fn file_path(&self) -> &Path {
         Path::new(&self.file_path)
@@ -71,7 +71,8 @@ impl QmpHotForkBlockSealCandidate {
         self.backend_id != 0
             && !self.backend_name.is_empty()
             && valid_node_name(&self.root_node_name)
-            && absolute_file_path(&self.file_path)
+            && self.file_path.len() <= 4096
+            && !self.file_path.as_bytes().contains(&0)
             && self.file_device != 0
             && self.file_inode != 0
             && self.virtual_size != 0
@@ -154,7 +155,7 @@ pub struct QmpHotForkBlockSealedRoot {
 }
 
 impl QmpHotForkBlockSealedRoot {
-    /// Returns the current snapshot file path.
+    /// Returns diagnostic display metadata for the retained snapshot descriptor.
     #[must_use]
     pub fn snapshot_file_path(&self) -> &Path {
         Path::new(&self.snapshot_file_path)
@@ -181,7 +182,6 @@ impl QmpHotForkBlockSealedRoot {
             && self.backend_name == candidate.backend_name
             && self.overlay_node_name == request.overlay_node_name
             && self.snapshot_node_name == candidate.root_node_name
-            && self.snapshot_file_path == candidate.file_path
             && self.snapshot_file_device == candidate.file_device
             && self.snapshot_file_inode == candidate.file_inode
             && self.virtual_size == candidate.virtual_size
@@ -319,10 +319,6 @@ fn valid_node_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-}
-
-fn absolute_file_path(path: &str) -> bool {
-    !path.is_empty() && !path.as_bytes().contains(&0) && Path::new(path).is_absolute()
 }
 
 #[cfg(test)]

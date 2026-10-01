@@ -461,3 +461,4 @@ crucible.e2e.native-gate-evidence	1	tests::crucible::e2e_determinism_native_runn
 aos.crucible.campaign-release-acceptance	2	tests::crucible::phase9_campaign_release_acceptance	gate-evidence	gate:campaign-release-acceptance
 aos.crucible.campaign-release-acceptance-contract	2	tests::crucible::campaign_release_acceptance_contract	gate-contract	gate:campaign-release-acceptance
 aos.crucible.campaign-gate-matrix-inventory	2	tests::crucible::campaign_gate_matrix_inventory	gate-contract	gate:campaign-gate-matrix
+crucible.qemu.hot-fork.source-graph	1	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance

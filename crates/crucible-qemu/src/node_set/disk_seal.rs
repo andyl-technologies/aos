@@ -6,6 +6,25 @@
 use super::*;
 
 impl QemuNodeSet {
+    /// Reads the complete original graph under its prepared template.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the same live node cannot authenticate the receipt.
+    #[cfg(target_os = "linux")]
+    pub fn query_hot_fork_source_graph(
+        &mut self,
+        node: &NodeId,
+        expected_qemu_pid: i64,
+        expected_template_generation: u64,
+    ) -> Result<crate::QmpHotForkSourceGraphReceipt, BackendError> {
+        self.node_mut(node)?
+            .query_hot_fork_source_graph(expected_qemu_pid, expected_template_generation)
+            .map_err(|error| BackendError::Rejected {
+                message: format!("query original hot-fork source graph: {error}"),
+            })
+    }
+
     /// Pauses a retained source and reads its current writable-root inventory.
     ///
     /// The caller creates detached overlays only after this exact pause and

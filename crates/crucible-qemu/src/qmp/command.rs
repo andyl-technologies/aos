@@ -231,6 +231,10 @@ pub(super) enum QmpCommand<'a> {
     HotForkBlockBarrier {
         action: HotForkBlockBarrierAction,
     },
+    HotForkSourceGraph {
+        expected_qemu_pid: i64,
+        expected_template_generation: u64,
+    },
     QueryHotForkBlockSeal,
     HotForkBlockSeal {
         expected_qemu_pid: i64,
@@ -332,6 +336,7 @@ impl QmpCommand<'_> {
             Self::HotForkRcuBarrier { .. } => QmpCommandKind::HotForkRcuBarrier,
             Self::HotForkAsyncWorkerBarrier { .. } => QmpCommandKind::HotForkAsyncWorkerBarrier,
             Self::HotForkBlockBarrier { .. } => QmpCommandKind::HotForkBlockBarrier,
+            Self::HotForkSourceGraph { .. } => QmpCommandKind::HotForkSourceGraph,
             Self::QueryHotForkBlockSeal => QmpCommandKind::QueryHotForkBlockSeal,
             Self::HotForkBlockSeal { .. } => QmpCommandKind::HotForkBlockSeal,
             Self::HotForkDetachedBlockdevAdd { .. } => QmpCommandKind::HotForkDetachedBlockdevAdd,
@@ -449,6 +454,18 @@ impl QmpCommand<'_> {
                 "execute": QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
                 "arguments": {
                     "action": action.wire_name(),
+                },
+            }),
+            Self::HotForkSourceGraph {
+                expected_qemu_pid,
+                expected_template_generation,
+            } => json!({
+                "execute": super::hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_COMMAND,
+                "arguments": {
+                    "expected-qemu-pid": expected_qemu_pid,
+                    "expected-template-generation": expected_template_generation,
+                    "maximum-nodes": super::hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_MAX_NODES,
+                    "maximum-bytes": super::hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_MAX_BYTES,
                 },
             }),
             Self::QueryHotForkBlockSeal => json!({

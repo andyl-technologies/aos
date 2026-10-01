@@ -6,6 +6,19 @@ use super::{QemuNode, QemuNodeChannelPlane, QemuNodeError};
 use crate::{QmpHotForkBlockBarrierState, QmpHotForkBlockSealRequest, QmpHotForkBlockSealState};
 
 impl QemuNode {
+    pub(crate) fn query_hot_fork_source_graph(
+        &mut self,
+        expected_qemu_pid: i64,
+        expected_template_generation: u64,
+    ) -> Result<crate::QmpHotForkSourceGraphReceipt, QemuNodeError> {
+        self.channels
+            .qmp_machine_control
+            .query_hot_fork_source_graph(expected_qemu_pid, expected_template_generation)
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
+            })
+    }
+
     pub(crate) fn query_hot_fork_block_seal(
         &mut self,
     ) -> Result<QmpHotForkBlockSealState, QemuNodeError> {

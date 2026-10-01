@@ -648,6 +648,22 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Reads the complete graph under the exact original prepared template.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if native descriptor custody is unavailable or stale.
+    fn query_hot_fork_source_graph(
+        &mut self,
+        _expected_qemu_pid: i64,
+        _expected_template_generation: u64,
+    ) -> Result<crate::QmpHotForkSourceGraphReceipt, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query hot-fork source graph",
+            "native graph custody is unavailable",
+        ))
+    }
+
     /// Reads the current writable roots and retained native seal receipt.
     ///
     /// # Errors

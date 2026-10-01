@@ -4,8 +4,94 @@
 //! inode remain bound throughout creation and admission into the native graph.
 
 use super::*;
+use crate::spawn::invalid_input;
+use rustix::fs::open;
 
 impl QemuPreparedRunDirectory {
+    /// Authenticates an overlay basename under the original source working directory.
+    ///
+    /// The native process retains its launch cwd even when its ancestor is
+    /// private to the supervisor. This checks that actual cwd against the
+    /// retained directory and the named file against the admitted open inode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on a different cwd, generation path, named inode, or
+    /// missing source process. The caller also retains full process identity.
+    pub fn authenticate_hot_fork_overlay_name(
+        &self,
+        source_pid: u32,
+        file: &File,
+        path: &Path,
+    ) -> Result<std::path::PathBuf, QemuSpawnError> {
+        self.revalidate_identity()?;
+        let name = path
+            .file_name()
+            .filter(|_| path.parent() == Some(self.path.as_path()))
+            .ok_or_else(|| {
+                invalid_input(
+                    "authenticate original hot-fork overlay",
+                    "detached overlay is outside its original directory",
+                )
+            })?;
+        let cwd = open(
+            format!("/proc/{source_pid}/cwd").as_str(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "open original hot-fork source cwd",
+            source: source.into(),
+        })?;
+        let cwd_metadata = fstat(&cwd).map_err(|source| QemuSpawnError::Io {
+            operation: "inspect original hot-fork source cwd",
+            source: source.into(),
+        })?;
+        let directory_metadata = fstat(&self.directory).map_err(|source| QemuSpawnError::Io {
+            operation: "inspect retained hot-fork directory",
+            source: source.into(),
+        })?;
+        if cwd_metadata.st_dev != directory_metadata.st_dev
+            || cwd_metadata.st_ino != directory_metadata.st_ino
+        {
+            return Err(invalid_input(
+                "authenticate original hot-fork overlay",
+                "hot-fork source cwd differs from its retained generation",
+            ));
+        }
+        let named = openat(
+            &self.directory,
+            name,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "reopen admitted detached overlay",
+            source: source.into(),
+        })?;
+        let named_metadata = fstat(&named).map_err(|source| QemuSpawnError::Io {
+            operation: "inspect admitted detached overlay name",
+            source: source.into(),
+        })?;
+        let retained = fstat(file).map_err(|source| QemuSpawnError::Io {
+            operation: "inspect admitted detached overlay inode",
+            source: source.into(),
+        })?;
+        if rustix::fs::FileType::from_raw_mode(retained.st_mode)
+            != rustix::fs::FileType::RegularFile
+            || retained.st_nlink != 1
+            || retained.st_dev != named_metadata.st_dev
+            || retained.st_ino != named_metadata.st_ino
+            || retained.st_size != named_metadata.st_size
+        {
+            return Err(invalid_input(
+                "authenticate original hot-fork overlay",
+                "detached overlay name no longer binds its admitted regular inode",
+            ));
+        }
+        Ok(std::path::PathBuf::from(name))
+    }
+
     /// Creates one detached empty qcow2 overlay for a stopped hot-fork root.
     ///
     /// The sibling source-built image tool runs under this generation's exact

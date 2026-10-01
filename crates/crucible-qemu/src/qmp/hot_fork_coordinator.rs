@@ -10,6 +10,28 @@ impl<S> QmpClient<S>
 where
     S: QmpTimeoutStream,
 {
+    /// Reads complete native graph and file custody for the original prepared source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on native refusal, malformed membership, or a different
+    /// source process or template generation.
+    pub fn query_hot_fork_source_graph(
+        &mut self,
+        expected_qemu_pid: i64,
+        expected_template_generation: u64,
+    ) -> Result<QmpHotForkSourceGraphReceipt, QmpError> {
+        let response = self.send_command_return(QmpCommand::HotForkSourceGraph {
+            expected_qemu_pid,
+            expected_template_generation,
+        })?;
+        parse_hot_fork_source_graph(
+            &response.value,
+            expected_qemu_pid,
+            expected_template_generation,
+        )
+    }
+
     /// Reads QEMU's current writable block roots and any retained seal.
     ///
     /// # Errors
@@ -28,17 +50,28 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`QmpError`] if the file path is not absolute or QEMU refuses
+    /// Returns [`QmpError`] if the file path is not absolute or an exact guarded
+    /// overlay basename, or QEMU refuses
     /// the typed node creation.
     pub fn add_hot_fork_detached_root_overlay(
         &mut self,
         request: &QmpHotForkBlockSealRequest,
         file_path: &std::path::Path,
     ) -> Result<(), QmpError> {
-        if !file_path.is_absolute() || file_path.as_os_str().is_empty() {
+        let relative_overlay = file_path.to_str().is_some_and(|name| {
+            name.strip_prefix("crucible-hot-fork-overlay-")
+                .and_then(|value| value.strip_suffix(".qcow2"))
+                .is_some_and(|generation| {
+                    generation
+                        .parse::<u64>()
+                        .is_ok_and(|value| value > 0 && value.to_string() == generation)
+                })
+        });
+        if (!file_path.is_absolute() && !relative_overlay) || file_path.as_os_str().is_empty() {
             return Err(QmpError::MalformedTypedResponse {
                 command: QmpCommandKind::HotForkDetachedBlockdevAdd,
-                response: "detached overlay path is not absolute".to_owned(),
+                response: "detached overlay path lacks an absolute path or exact guarded basename"
+                    .to_owned(),
             });
         }
         self.send_command(QmpCommand::HotForkDetachedBlockdevAdd {

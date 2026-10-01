@@ -224,6 +224,21 @@ where
             .map_err(QemuNodeChannelError::from)
     }
 
+    /// Reads complete graph and file custody for the original prepared template.
+    ///
+    /// # Errors
+    ///
+    /// Returns a channel error on native refusal or malformed response.
+    pub fn query_hot_fork_source_graph(
+        &mut self,
+        expected_qemu_pid: i64,
+        expected_template_generation: u64,
+    ) -> Result<crate::QmpHotForkSourceGraphReceipt, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_source_graph(expected_qemu_pid, expected_template_generation)
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Reads current native writable roots and the retained seal receipt.
     ///
     /// # Errors
