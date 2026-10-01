@@ -136,7 +136,7 @@ pub fn retain_historical_complete_storage_output_archive_v1(
 ) -> Result<HistoricalRetainedStorageOutputArchiveV1, HistoricalStorageOutputRetentionErrorV1> {
     require_supported_carrier()?;
     let carrier = companion.canonical_carrier()?;
-    let attempt = ControllerStorageOutputReserveAttemptV1::from_original(
+    let (attempt, original_parts) = ControllerStorageOutputReserveAttemptV1::from_original_checked(
         exact_original_body,
         signed_plan.digest(),
     ).map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
@@ -147,8 +147,13 @@ pub fn retain_historical_complete_storage_output_archive_v1(
     {
         return Err(HistoricalStorageOutputRetentionErrorV1::Invalid);
     }
-    super::recovery::validate_carrier_message(&attempt, companion, carrier.message())?;
-    super::recovery::validate_attempt_companion(&attempt, companion)?;
+    super::recovery::validate_carrier_message_checked(
+        &attempt,
+        companion,
+        carrier.message(),
+        &original_parts,
+    )?;
+    super::recovery::validate_attempt_companion_checked(&attempt, companion, &original_parts)?;
     crate::publication::validate_historical_output_publication_v1(
         exact_publication_bytes,
         companion.publication_digest(),
@@ -158,6 +163,8 @@ pub fn retain_historical_complete_storage_output_archive_v1(
         )),
     ).map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
 
+    // Parsing reuse ends before Journal custody, preflight and effects begin.
+    drop(original_parts);
     require_fixed_controller_writer(controller)?;
     let state = load_historical_complete_storage_output_archive_v1(controller, attempt.execution())?;
     if !matches!(state, HistoricalStorageOutputArchiveStateV1::Absent) {

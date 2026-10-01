@@ -31,7 +31,7 @@ use aos_proto::aos::sandbox::local::v1::{
     ReserveStorageExecutionOutputRequestV1,
 };
 use aos_sandbox_core::{
-    BrokerAudience, ExecutionId, ObjectDigest, OperationId, ProtocolId, ProtocolVersion,
+    BrokerAudience, BrokerGrant, ExecutionId, ObjectDigest, OperationId, ProtocolId, ProtocolVersion,
 };
 use aos_sandbox_protocol::host_storage_output_readback::{
     ValidatedHostStorageOutputReadbackRequestV1, host_storage_output_readback_grant_v1,
@@ -80,6 +80,15 @@ pub struct ControllerStorageOutputReserveAttemptV1 {
     semantic_digest: ObjectDigest,
     canonical_body: Vec<u8>,
     record_digest: ObjectDigest,
+}
+
+// These parts belong to one immutable parsing phase, not retained authority.
+// Only the strict inspector constructs them; archive phases pair them with an attempt.
+struct CheckedOriginalStorageOutputV1 {
+    request: ReserveStorageExecutionOutputRequestV1,
+    request_id: [u8; 16],
+    records: StorageOutputReserveRecordsV1,
+    grant: BrokerGrant,
 }
 
 impl ControllerStorageOutputReserveAttemptV1 {
@@ -212,21 +221,32 @@ impl ControllerStorageOutputReserveAttemptV1 {
         body: &[u8],
         signed_plan_digest: ObjectDigest,
     ) -> Result<Self, ControllerStorageOutputReserveAttemptErrorV1> {
-        let (request_id, records, semantic_digest) = inspect_original(body)?;
+        Self::from_original_checked(body, signed_plan_digest).map(|(attempt, _)| attempt)
+    }
+
+    fn from_original_checked(
+        body: &[u8],
+        signed_plan_digest: ObjectDigest,
+    ) -> Result<
+        (Self, CheckedOriginalStorageOutputV1),
+        ControllerStorageOutputReserveAttemptErrorV1,
+    > {
+        let original = inspect_original_checked(body)?;
         if signed_plan_digest.as_bytes() == &[0; 32] {
             return Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid);
         }
+
         let mut attempt = Self {
-            execution: records.host_locator().execution(),
-            create_operation: records.host_locator().create_operation(),
-            original_request_id: request_id,
+            execution: original.records.host_locator().execution(),
+            create_operation: original.records.host_locator().create_operation(),
+            original_request_id: original.request_id,
             signed_plan_digest,
-            semantic_digest,
+            semantic_digest: original.grant.argument_commitment().digest(),
             canonical_body: body.to_vec(),
             record_digest: ObjectDigest::from_bytes([0; 32]),
         };
         attempt.record_digest = digest_record(&attempt.encode_prefix_and_body());
-        Ok(attempt)
+        Ok((attempt, original))
     }
 
     fn encode_prefix_and_body(&self) -> Vec<u8> {
@@ -249,6 +269,15 @@ impl ControllerStorageOutputReserveAttemptV1 {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, ControllerStorageOutputReserveAttemptErrorV1> {
+        Self::decode_checked(bytes).map(|(attempt, _)| attempt)
+    }
+
+    fn decode_checked(
+        bytes: &[u8],
+    ) -> Result<
+        (Self, CheckedOriginalStorageOutputV1),
+        ControllerStorageOutputReserveAttemptErrorV1,
+    > {
         if bytes.len() < FIXED_PREFIX_BYTES + 32 || bytes.get(..8) != Some(MAGIC.as_slice()) {
             return Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid);
         }
@@ -269,14 +298,14 @@ impl ControllerStorageOutputReserveAttemptV1 {
                 .try_into()
                 .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?,
         );
-        let rebuilt = Self::from_original(
+        let (rebuilt, original) = Self::from_original_checked(
             &bytes[FIXED_PREFIX_BYTES..FIXED_PREFIX_BYTES + body_len],
             plan_digest,
         )?;
         if rebuilt.encode() != bytes {
             return Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid);
         }
-        Ok(rebuilt)
+        Ok((rebuilt, original))
     }
 }
 
@@ -358,9 +387,21 @@ fn inspect_original(
     ([u8; 16], StorageOutputReserveRecordsV1, ObjectDigest),
     ControllerStorageOutputReserveAttemptErrorV1,
 > {
+    let original = inspect_original_checked(body)?;
+    Ok((
+        original.request_id,
+        original.records,
+        original.grant.argument_commitment().digest(),
+    ))
+}
+
+fn inspect_original_checked(
+    body: &[u8],
+) -> Result<CheckedOriginalStorageOutputV1, ControllerStorageOutputReserveAttemptErrorV1> {
     if body.is_empty() || body.len() > MAXIMUM_BODY_BYTES {
         return Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid);
     }
+
     let request = ReserveStorageExecutionOutputRequestV1::decode_from_slice(body)
         .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?;
     let header = request
@@ -372,6 +413,7 @@ fn inspect_original(
         .as_slice()
         .try_into()
         .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?;
+
     let records = StorageOutputReserveRecordsV1::from_canonical_records(
         &request.canonical_controller_attempt,
         &request.canonical_controller_settlement,
@@ -379,7 +421,13 @@ fn inspect_original(
     .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?;
     let grant = storage_output_reserve_grant_v1(records.assignment(), request_id, body)
         .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?;
-    Ok((request_id, records, grant.argument_commitment().digest()))
+
+    Ok(CheckedOriginalStorageOutputV1 {
+        request,
+        request_id,
+        records,
+        grant,
+    })
 }
 
 fn persist_attempt(
@@ -754,5 +802,170 @@ pub(crate) mod tests {
             load_controller_storage_output_reserve_attempt_v1(&ordinary, original.execution())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn checked_original_preserves_the_tuple_and_existing_semantic_grant() {
+        let body = original_body();
+
+        let original = inspect_original_checked(&body).unwrap();
+        let (request_id, records, semantic_digest) = inspect_original(&body).unwrap();
+        let grant = storage_output_reserve_grant_v1(records.assignment(), request_id, &body).unwrap();
+
+        assert_eq!(original.request.encode_to_vec(), body);
+        assert_eq!(original.request_id, request_id);
+        assert_eq!(original.records, records);
+        assert_eq!(original.grant, grant);
+        assert_eq!(original.grant.argument_commitment().digest(), semantic_digest);
+    }
+
+    #[test]
+    fn checked_construction_and_decode_keep_the_exact_legacy_record_frame() {
+        let body = original_body();
+        let plan_digest = ObjectDigest::from_bytes([20; 32]);
+        let (request_id, records, semantic_digest) = inspect_original(&body).unwrap();
+        let mut expected = MAGIC.to_vec();
+        expected.extend_from_slice(records.host_locator().execution().as_bytes());
+        expected.extend_from_slice(records.host_locator().create_operation().as_bytes());
+        expected.extend_from_slice(&request_id);
+        expected.extend_from_slice(plan_digest.as_bytes());
+        expected.extend_from_slice(semantic_digest.as_bytes());
+        expected.extend_from_slice(&u16::try_from(body.len()).unwrap().to_be_bytes());
+        expected.extend_from_slice(&body);
+        let record_digest = digest_record(&expected);
+        expected.extend_from_slice(record_digest.as_bytes());
+
+        let (attempt, original) =
+            ControllerStorageOutputReserveAttemptV1::from_original_checked(&body, plan_digest)
+                .unwrap();
+        let (decoded, decoded_original) =
+            ControllerStorageOutputReserveAttemptV1::decode_checked(&expected).unwrap();
+
+        assert_eq!(attempt.encode(), expected);
+        assert_eq!(attempt, decoded);
+        assert_eq!(attempt.record_digest(), record_digest);
+        assert_eq!(
+            original.request.encode_to_vec(),
+            decoded_original.request.encode_to_vec(),
+        );
+        assert_eq!(original.request_id, decoded_original.request_id);
+        assert_eq!(original.records, decoded_original.records);
+        assert_eq!(original.grant, decoded_original.grant);
+        assert_eq!(
+            ControllerStorageOutputReserveAttemptV1::decode(&expected).unwrap(),
+            attempt,
+        );
+        assert_eq!(
+            ControllerStorageOutputReserveAttemptV1::from_original(&body, plan_digest).unwrap(),
+            attempt,
+        );
+    }
+
+    #[test]
+    fn checked_and_legacy_inspection_reject_the_same_bounded_malformed_bodies() {
+        let body = original_body();
+        let request = ReserveStorageExecutionOutputRequestV1::decode_from_slice(&body).unwrap();
+        let mut missing_header = request.clone();
+        missing_header.header = Default::default();
+        let mut short_id = request.clone();
+        short_id.header.as_option_mut().unwrap().request_id.pop();
+        let mut wrong_version = request.clone();
+        wrong_version.header.as_option_mut().unwrap().protocol_major = 2;
+        let mut wrong_record = request;
+        wrong_record.canonical_controller_settlement[0] ^= 1;
+        let mut unknown_field = body.clone();
+        unknown_field.extend_from_slice(&[0xf8, 0x07, 0x01]);
+        let malformed = [
+            Vec::new(),
+            vec![0; MAXIMUM_BODY_BYTES + 1],
+            body[..body.len() - 1].to_vec(),
+            missing_header.encode_to_vec(),
+            short_id.encode_to_vec(),
+            wrong_version.encode_to_vec(),
+            wrong_record.encode_to_vec(),
+            unknown_field,
+        ];
+
+        for body in malformed {
+            assert!(matches!(
+                inspect_original_checked(&body),
+                Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid),
+            ));
+            assert!(matches!(
+                inspect_original(&body),
+                Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid),
+            ));
+        }
+    }
+
+    #[test]
+    fn checked_and_legacy_construction_reject_the_zero_plan_after_inspection() {
+        let body = original_body();
+        let plan_digest = ObjectDigest::from_bytes([0; 32]);
+
+        assert!(matches!(
+            ControllerStorageOutputReserveAttemptV1::from_original_checked(&body, plan_digest),
+            Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid),
+        ));
+        assert!(matches!(
+            ControllerStorageOutputReserveAttemptV1::from_original(&body, plan_digest),
+            Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid),
+        ));
+    }
+
+    #[test]
+    fn checked_and_legacy_decode_reject_resealed_foreign_outer_fields() {
+        let attempt = ControllerStorageOutputReserveAttemptV1::from_original(
+            &original_body(),
+            ObjectDigest::from_bytes([20; 32]),
+        )
+        .unwrap();
+        let original = attempt.encode();
+
+        for offset in [8, 24, 40, 88] {
+            let mut changed = original.clone();
+            changed[offset] ^= 1;
+            let content_len = changed.len() - 32;
+            seal(DOMAIN, &mut changed, content_len);
+
+            assert!(matches!(
+                ControllerStorageOutputReserveAttemptV1::decode_checked(&changed),
+                Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid),
+            ));
+            assert!(matches!(
+                ControllerStorageOutputReserveAttemptV1::decode(&changed),
+                Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid),
+            ));
+        }
+    }
+
+    #[test]
+    fn checked_decode_rechecks_the_body_instead_of_reusing_an_earlier_original() {
+        let body = original_body();
+        let (attempt, prior_original) =
+            ControllerStorageOutputReserveAttemptV1::from_original_checked(
+                &body,
+                ObjectDigest::from_bytes([20; 32]),
+            )
+            .unwrap();
+        let mut changed_request = prior_original.request;
+        changed_request.header.as_option_mut().unwrap().request_id[0] ^= 1;
+        let changed_body = changed_request.encode_to_vec();
+        assert_eq!(changed_body.len(), body.len());
+
+        let mut changed = attempt.encode();
+        changed[FIXED_PREFIX_BYTES..FIXED_PREFIX_BYTES + body.len()]
+            .copy_from_slice(&changed_body);
+        let content_len = changed.len() - 32;
+        seal(DOMAIN, &mut changed, content_len);
+
+        assert!(matches!(
+            ControllerStorageOutputReserveAttemptV1::decode_checked(&changed),
+            Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid),
+        ));
+        assert!(matches!(
+            ControllerStorageOutputReserveAttemptV1::decode(&changed),
+            Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid),
+        ));
     }
 }

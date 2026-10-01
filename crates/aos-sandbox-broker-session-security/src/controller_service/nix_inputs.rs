@@ -169,10 +169,12 @@ pub(super) fn pin_local_inputs_v2<'inputs, 'current: 'inputs>(
 
     let mut pins = Vec::new();
     pins.try_reserve_exact(specs.len())?;
+
+    let mut scratch = [0_u8; INPUT_SCRATCH_BYTES];
     for spec in specs {
         let file = open_input_pin(current, source, &spec)?;
         let pin = NixInputPinV2 { spec, file };
-        verify_input_pin(current, source, &pin)?;
+        verify_input_pin(current, source, &pin, &mut scratch)?;
         pins.push(pin);
     }
 
@@ -263,6 +265,13 @@ struct ProjectedInputV2<'recipe> {
     original: Option<OriginalProjectionV2<'recipe>>,
 }
 
+/// Reports whether a fully checked addition grew this pure projection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProjectionInsertionV2 {
+    Inserted,
+    Existing,
+}
+
 #[derive(Default)]
 struct InputProjectionV2<'recipe> {
     inputs: Vec<ProjectedInputV2<'recipe>>,
@@ -274,7 +283,7 @@ impl<'recipe> InputProjectionV2<'recipe> {
         &mut self,
         descriptor: &ObjectDescriptor,
         original: Option<OriginalProjectionV2<'recipe>>,
-    ) -> Result<(), NixLocalInputErrorV2> {
+    ) -> Result<ProjectionInsertionV2, NixLocalInputErrorV2> {
         if let Some(expected) = original {
             if u64::try_from(expected.bytes.len()).map_err(|_| NixLocalInputErrorV2::Bound)?
                 != descriptor.encoded_size()
@@ -296,7 +305,7 @@ impl<'recipe> InputProjectionV2<'recipe> {
                 (None, Some(expected)) => existing.original = Some(expected),
                 _ => {}
             }
-            return Ok(());
+            return Ok(ProjectionInsertionV2::Existing);
         }
 
         let next_bytes = checked_projection_growth(
@@ -310,7 +319,7 @@ impl<'recipe> InputProjectionV2<'recipe> {
             original,
         });
         self.distinct_bytes = next_bytes;
-        Ok(())
+        Ok(ProjectionInsertionV2::Inserted)
     }
 
     fn into_specs(mut self) -> Result<Vec<InputSpecV2>, NixLocalInputErrorV2> {
@@ -374,7 +383,7 @@ fn project_input_object<'recipe>(
             // Signature-verified recipe validation already proves this complete
             // record set reachable. Enumerate leaves without a second traversal.
             for (record_index, record) in input.portable_objects.iter().enumerate() {
-                projection.add(
+                let insertion = projection.add(
                     &record.descriptor,
                     Some(OriginalProjectionV2 {
                         locator: OriginalInputBytesV2::Reconstruction {
@@ -384,8 +393,13 @@ fn project_input_object<'recipe>(
                         bytes: &record.bytes,
                     }),
                 )?;
-                if record.descriptor.media_type().as_str()
-                    == PortableMediaType::Directory.as_str()
+
+                // Only this loop inserts Directory into a fresh projection.
+                // Its first scan reaches terminal EOF or aborts the projection,
+                // so an exact duplicate cannot contribute unprojected leaves.
+                if matches!(insertion, ProjectionInsertionV2::Inserted)
+                    && record.descriptor.media_type().as_str()
+                        == PortableMediaType::Directory.as_str()
                 {
                     project_directory_leaves(projection, &record.bytes)?;
                 }
@@ -525,10 +539,10 @@ fn verify_input_pin(
     current: &mut CurrentRetainedNixStartV2<'_>,
     source: &ProjectSealedViewObjectSourceV1,
     pin: &NixInputPinV2<'_>,
+    scratch: &mut [u8; INPUT_SCRATCH_BYTES],
 ) -> Result<(), NixLocalInputErrorV2> {
     recheck_input_pin(current, source, pin)?;
     let mut verifier = ObjectDescriptorVerifier::new(pin.spec.descriptor.clone());
-    let mut scratch = [0_u8; INPUT_SCRATCH_BYTES];
     let mut offset = 0_u64;
 
     while offset < pin.spec.descriptor.encoded_size() {
@@ -1098,5 +1112,239 @@ mod tests {
         assert!(matches!(latch.require_open(), Err(NixLocalInputErrorV2::Closed)));
         latch.finish(Ok(())).unwrap();
         assert!(matches!(latch.require_open(), Err(NixLocalInputErrorV2::Closed)));
+    }
+
+    fn recipe_with_shared_tree() -> NixPreadmittedRecipeV2 {
+        let mut fixture = recipe();
+        let mut shared = fixture.inputs[1].clone();
+        shared.path = format!("/nix/store/{}-e", "0".repeat(32));
+        fixture.inputs.push(shared);
+        fixture.validate().unwrap();
+        fixture
+    }
+
+    #[test]
+    fn shared_tree_records_preserve_sorted_specs_and_first_original_locators() {
+        let original = recipe();
+        original.validate().unwrap();
+        let expected = project_inputs(&original).unwrap();
+        let fixture = recipe_with_shared_tree();
+
+        let actual = project_inputs(&fixture).unwrap();
+
+        assert_eq!(actual.len(), 6);
+        assert!(actual.windows(2).all(|pair| pair[0].descriptor < pair[1].descriptor));
+        assert_eq!(
+            actual.iter().map(|spec| (&spec.descriptor, spec.original_bytes)).collect::<Vec<_>>(),
+            expected.iter().map(|spec| (&spec.descriptor, spec.original_bytes)).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            actual.iter().map(|spec| spec.descriptor.encoded_size()).sum::<u64>(),
+            expected.iter().map(|spec| spec.descriptor.encoded_size()).sum::<u64>(),
+        );
+        for (record_index, record) in fixture.inputs[1].portable_objects.iter().enumerate() {
+            let spec = actual.iter().find(|spec| spec.descriptor == record.descriptor).unwrap();
+            assert_eq!(
+                spec.original_bytes,
+                Some(OriginalInputBytesV2::Reconstruction { input_index: 1, record_index }),
+            );
+            require_original_chunk(&fixture, spec, 0, &record.bytes).unwrap();
+        }
+        for bytes in [b"".as_slice(), b"leaf".as_slice()] {
+            let content = descriptor(PortableMediaType::Content, bytes);
+            assert_eq!(actual.iter().filter(|spec| spec.descriptor == content).count(), 1);
+        }
+    }
+
+    #[test]
+    fn an_existing_result_follows_the_original_obligation_upgrade() {
+        let value = descriptor(PortableMediaType::Content, b"same");
+        let mut projection = InputProjectionV2::default();
+        let inserted = projection.add(&value, None).unwrap();
+        let capacity = projection.inputs.capacity();
+
+        let upgraded = projection.add(&value, Some(OriginalProjectionV2 {
+            locator: OriginalInputBytesV2::Derivation,
+            bytes: b"same",
+        })).unwrap();
+        let repeated = projection.add(&value, Some(OriginalProjectionV2 {
+            locator: OriginalInputBytesV2::Reconstruction { input_index: 2, record_index: 0 },
+            bytes: b"same",
+        })).unwrap();
+
+        assert_eq!(inserted, ProjectionInsertionV2::Inserted);
+        assert_eq!(upgraded, ProjectionInsertionV2::Existing);
+        assert_eq!(repeated, ProjectionInsertionV2::Existing);
+        assert_eq!(projection.inputs.capacity(), capacity);
+
+        let specs = projection.into_specs().unwrap();
+
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].original_bytes, Some(OriginalInputBytesV2::Derivation));
+    }
+
+    #[test]
+    fn shared_directory_bytes_are_checked_before_duplicate_scan_suppression() {
+        for truncate in [false, true] {
+            let mut fixture = recipe_with_shared_tree();
+            let record = fixture.inputs[2].portable_objects.iter_mut().find(|record| {
+                record.descriptor.media_type().as_str() == PortableMediaType::Directory.as_str()
+            }).unwrap();
+            if truncate {
+                record.bytes.truncate(record.bytes.len() - 1);
+            } else {
+                record.bytes[0] ^= 1;
+            }
+
+            let result = project_inputs(&fixture);
+
+            if truncate {
+                assert!(matches!(result, Err(NixLocalInputErrorV2::OriginalMismatch)));
+            } else {
+                assert!(matches!(result, Err(NixLocalInputErrorV2::Conflict)));
+            }
+        }
+    }
+
+    #[test]
+    fn a_first_directory_error_aborts_the_fresh_shared_projection() {
+        let mut fixture = recipe_with_shared_tree();
+        let record = fixture.inputs[1].portable_objects.iter_mut().find(|record| {
+            record.descriptor.media_type().as_str() == PortableMediaType::Directory.as_str()
+        }).unwrap();
+        record.bytes[0] ^= 1;
+
+        let result = project_inputs(&fixture);
+
+        assert!(matches!(result, Err(NixLocalInputErrorV2::Directory(_))));
+    }
+
+    #[test]
+    fn duplicate_checks_keep_their_priority_at_both_projection_ceilings() {
+        let value = descriptor(PortableMediaType::Content, b"same");
+        let mut projection = InputProjectionV2::default();
+        projection.add(&value, Some(OriginalProjectionV2 {
+            locator: OriginalInputBytesV2::Derivation,
+            bytes: b"same",
+        })).unwrap();
+        let remainder = ObjectDescriptor::new(
+            value.media_type().clone(),
+            ObjectDigest::from_bytes([9; 32]),
+            MAXIMUM_INPUT_BYTES - value.encoded_size(),
+        );
+        projection.add(&remainder, None).unwrap();
+        for index in 0..MAXIMUM_INPUT_PINS - 2 {
+            let mut digest = [2_u8; 32];
+            digest[..8].copy_from_slice(&(index as u64).to_be_bytes());
+            let empty = ObjectDescriptor::new(
+                value.media_type().clone(), ObjectDigest::from_bytes(digest), 0,
+            );
+            projection.add(&empty, None).unwrap();
+        }
+        let capacity = projection.inputs.capacity();
+        let changed_media = ObjectDescriptor::new(
+            MediaType::new(PortableMediaType::Tree.as_str()).unwrap(),
+            value.digest(),
+            value.encoded_size(),
+        );
+
+        let wrong_length = projection.add(&changed_media, Some(OriginalProjectionV2 {
+            locator: OriginalInputBytesV2::Derivation,
+            bytes: b"short",
+        }));
+        let wrong_descriptor = projection.add(&changed_media, None);
+        let wrong_bytes = projection.add(&value, Some(OriginalProjectionV2 {
+            locator: OriginalInputBytesV2::Derivation,
+            bytes: b"diff",
+        }));
+        let repeated = projection.add(&value, Some(OriginalProjectionV2 {
+            locator: OriginalInputBytesV2::Reconstruction { input_index: 2, record_index: 0 },
+            bytes: b"same",
+        })).unwrap();
+        let extra = ObjectDescriptor::new(
+            value.media_type().clone(), ObjectDigest::from_bytes([8; 32]), 0,
+        );
+        let overflow = projection.add(&extra, None);
+
+        assert!(matches!(wrong_length, Err(NixLocalInputErrorV2::OriginalMismatch)));
+        assert!(matches!(wrong_descriptor, Err(NixLocalInputErrorV2::Conflict)));
+        assert!(matches!(wrong_bytes, Err(NixLocalInputErrorV2::Conflict)));
+        assert_eq!(repeated, ProjectionInsertionV2::Existing);
+        assert!(matches!(overflow, Err(NixLocalInputErrorV2::Bound)));
+        assert_eq!(projection.inputs.len(), MAXIMUM_INPUT_PINS);
+        assert_eq!(projection.distinct_bytes, MAXIMUM_INPUT_BYTES);
+        assert_eq!(projection.inputs.capacity(), capacity);
+        assert_eq!(
+            projection.inputs[0].original.unwrap().locator,
+            OriginalInputBytesV2::Derivation,
+        );
+    }
+
+    #[test]
+    fn shared_empty_directories_keep_the_complete_metadata_only_projection() {
+        let mut fixture = recipe_with_shared_tree();
+        let directory = Directory::new(metadata(), Vec::new()).unwrap();
+        let directory_bytes = aos_sandbox_core::format::encode_directory(&directory);
+        let directory_descriptor = descriptor(PortableMediaType::Directory, &directory_bytes);
+        let tree = Tree::new(directory_descriptor.clone(), Vec::new()).unwrap();
+        let tree_bytes = aos_sandbox_core::format::encode_tree(&tree);
+        let tree_descriptor = descriptor(PortableMediaType::Tree, &tree_bytes);
+        let mut records = vec![
+            NixPortableObjectV2 { descriptor: directory_descriptor.clone(), bytes: directory_bytes },
+            NixPortableObjectV2 { descriptor: tree_descriptor.clone(), bytes: tree_bytes },
+        ];
+        records.sort_by(|left, right| left.descriptor.cmp(&right.descriptor));
+        for input in &mut fixture.inputs[1..] {
+            input.portable = tree_descriptor.clone();
+            input.portable_objects = records.clone();
+        }
+        fixture.source = tree_descriptor.clone();
+        fixture.validate().unwrap();
+
+        let specs = project_inputs(&fixture).unwrap();
+
+        assert_eq!(specs.len(), 4);
+        assert!(specs.windows(2).all(|pair| pair[0].descriptor < pair[1].descriptor));
+        for (record_index, record) in records.iter().enumerate() {
+            let spec = specs.iter().find(|spec| spec.descriptor == record.descriptor).unwrap();
+            assert_eq!(
+                spec.original_bytes,
+                Some(OriginalInputBytesV2::Reconstruction { input_index: 1, record_index }),
+            );
+        }
+        assert!(!specs.iter().any(|spec| {
+            spec.descriptor == descriptor(PortableMediaType::Content, b"")
+        }));
+    }
+
+    #[test]
+    fn reused_scratch_verifies_only_positive_prefixes_with_fresh_object_state() {
+        let objects = [
+            vec![0x11; INPUT_SCRATCH_BYTES + 7],
+            b"a different second object".to_vec(),
+            Vec::new(),
+        ];
+        let mut scratch = [0xa5_u8; INPUT_SCRATCH_BYTES];
+
+        for partial_length in [1, 3, INPUT_SCRATCH_BYTES] {
+            for bytes in &objects {
+                let value = descriptor(PortableMediaType::Content, bytes);
+                let mut verifier = ObjectDescriptorVerifier::new(value.clone());
+                let mut offset = 0_usize;
+                while offset < bytes.len() {
+                    let requested = checked_read_length(
+                        value.encoded_size(), offset as u64, INPUT_SCRATCH_BYTES,
+                    ).unwrap();
+                    let read = requested.min(partial_length);
+                    assert!(read > 0);
+                    scratch[..read].copy_from_slice(&bytes[offset..offset + read]);
+                    verifier.update(&scratch[..read]).unwrap();
+                    offset += read;
+                }
+
+                assert_eq!(offset as u64, value.encoded_size());
+                verifier.finish().unwrap();
+            }
+        }
     }
 }
