@@ -8,6 +8,7 @@
 //! This module grants no capabilities and registers no public RPC handlers.
 
 mod credentials;
+mod handshake_custody;
 mod original_registration;
 mod registration;
 #[cfg(target_os = "linux")]
@@ -27,6 +28,12 @@ use rustls::server::{WebPkiClientVerifier, danger::ClientCertVerifier};
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::TlsAcceptor;
+
+use handshake_custody::{CompletedAdmissionV1, CompletedAdmissionStateV1};
+#[cfg(target_os = "linux")]
+pub(crate) use handshake_custody::{
+    HandshakeInterruptionV1, RetainedPublicTcpCauseV1, RetainedPublicTcpHandshakeV1,
+};
 
 pub(crate) use credentials::{
     PinnedOperatorRecoveryKeyV1, PinnedSystemdCredential, load_entitlement_credentials,
@@ -166,7 +173,7 @@ impl PublicApiSessionAcceptor {
         &self,
         io: IO,
         #[cfg(target_os = "linux")] original: Option<socket::OriginalPublicSocketV1>,
-        #[cfg(not(target_os = "linux"))] _original: Option<()>,
+        #[cfg(not(target_os = "linux"))] original: Option<()>,
     ) -> Result<AuthenticatedPublicApiStream<IO>, PublicApiSessionError>
     where
         IO: AsyncRead + AsyncWrite + Unpin,
@@ -176,6 +183,24 @@ impl PublicApiSessionAcceptor {
             .await
             .map_err(|_| PublicApiSessionError::Authentication)?
             .map_err(|_| PublicApiSessionError::Authentication)?;
+        let mut admission = CompletedAdmissionV1::new(stream, original);
+        self.admit_completed(&mut admission)?;
+        admission.into_authenticated()
+    }
+
+    // Both legacy and retained paths use this one completed-stream identity body.
+    fn admit_completed<IO>(
+        &self,
+        admission: &mut CompletedAdmissionV1<IO>,
+    ) -> Result<(), PublicApiSessionError> {
+        let CompletedAdmissionStateV1::Pending {
+            stream,
+            original,
+            peer,
+        } = &mut admission.state
+        else {
+            return Err(PublicApiSessionError::Authentication);
+        };
         let connection = stream.get_ref().1;
         require_public_protocol(connection)?;
         let chain = connection
@@ -200,7 +225,7 @@ impl PublicApiSessionAcceptor {
         let deadline = boottime()?
             .checked_add(SESSION_LIFETIME_NANOSECONDS)
             .ok_or(PublicApiSessionError::Stale)?;
-        let peer = PublicApiPeer(Arc::new(PeerState {
+        *peer = Some(PublicApiPeer(Arc::new(PeerState {
             registration: *registration,
             key_binding,
             session_binding,
@@ -210,10 +235,12 @@ impl PublicApiSessionAcceptor {
             active: AtomicBool::new(true),
             deadline,
             #[cfg(target_os = "linux")]
-            original,
-        }));
-        peer.recheck()?;
-        Ok(AuthenticatedPublicApiStream::new(stream, peer))
+            original: original.take(),
+        })));
+        peer.as_ref()
+            .ok_or(PublicApiSessionError::Authentication)?
+            .recheck()?;
+        admission.authenticate()
     }
 }
 

@@ -49,6 +49,20 @@ use super::{
 
 type GitConnection = Connection<AuthenticatedPublicApiStream<TcpStream>, Bytes>;
 
+// Both legacy and retained accepts use this closed HTTP/2 configuration.
+pub(super) fn fixed_handshake(
+    transport: AuthenticatedPublicApiStream<TcpStream>,
+) -> h2::server::Handshake<AuthenticatedPublicApiStream<TcpStream>, Bytes> {
+    let mut builder = h2::server::Builder::new();
+    builder
+        .max_concurrent_streams(1)
+        .initial_window_size(FRAME_BYTES as u32)
+        .initial_connection_window_size(FRAME_BYTES as u32)
+        .max_header_list_size(8192)
+        .max_send_buffer_size(FRAME_BYTES);
+    builder.handshake(transport)
+}
+
 const MAXIMUM_BODY_BYTES: usize = 256 * 1024 * 1024;
 const FRAME_BYTES: usize = 16 * 1024;
 const REQUEST_LIFETIME_NANOSECONDS: u64 = 300_000_000_000;
@@ -437,21 +451,30 @@ impl GitHttpConnectionV1 {
         peer.recheck_original_socket()
             .map_err(|cause| before_connection(GitHttpErrorV1::OriginalSocket(cause)))?;
 
-        let mut builder = h2::server::Builder::new();
-        builder
-            .max_concurrent_streams(1)
-            .initial_window_size(FRAME_BYTES as u32)
-            .initial_connection_window_size(FRAME_BYTES as u32)
-            .max_header_list_size(8192)
-            .max_send_buffer_size(FRAME_BYTES);
         let connection = tokio::time::timeout(
             Duration::from_secs(10),
-            builder.handshake(transport),
+            fixed_handshake(transport),
         )
         .await
         .map_err(|cause| before_connection(GitHttpErrorV1::Timeout(cause)))?
         .map_err(|cause| before_connection(GitHttpErrorV1::Transport(cause)))?;
 
+        let owner = Self::from_handshake(connection, peer);
+        if owner.handshake_rejected() {
+            return Err(GitHttpAcceptFailureV1::Retained(owner.into_retained_custody()));
+        }
+        Ok(owner)
+    }
+
+    /// Parks a real TCP handshake without installing a listener or handler.
+    pub(crate) fn begin_retained_handshake(
+        socket: TcpStream,
+        acceptor: Arc<PublicApiSessionAcceptor>,
+    ) -> super::http_handshake::GitHttpHandshakeOwnerV1 {
+        super::http_handshake::GitHttpHandshakeOwnerV1::begin(socket, acceptor)
+    }
+
+    pub(super) fn from_handshake(connection: GitConnection, peer: PublicApiPeer) -> Self {
         let mut owner = Self {
             connection,
             peer,
@@ -461,11 +484,41 @@ impl GitHttpConnectionV1 {
                 original: None,
             },
         };
-        if let Err(cause) = owner.peer.recheck_original_socket() {
-            owner.state.status.end_with(&owner.peer, GitHttpErrorV1::OriginalSocket(cause));
-            return Err(GitHttpAcceptFailureV1::Retained(owner.into_retained_custody()));
+        owner.recheck_handshake();
+        owner
+    }
+
+    pub(super) fn recheck_handshake(&mut self) {
+        if !self.handshake_rejected() {
+            if let Err(cause) = self.peer.recheck_original_socket() {
+                self.state.status.end_with(&self.peer, GitHttpErrorV1::OriginalSocket(cause));
+            }
         }
-        Ok(owner)
+    }
+
+    pub(super) fn handshake_rejected(&self) -> bool {
+        self.state.status.phase == OriginalHttpPhaseV1::Ended
+    }
+
+    pub(super) fn handshake_cause(&self) -> Option<&GitHttpErrorV1> {
+        self.state.status.first_actual_cause()
+    }
+
+    pub(super) fn interrupt_handshake(
+        &mut self,
+        kind: crate::public_api_session::HandshakeInterruptionV1,
+    ) {
+        use crate::public_api_session::HandshakeInterruptionV1;
+        let interruption = match kind {
+            HandshakeInterruptionV1::Cancelled => InterruptionV1::Cancelled,
+            HandshakeInterruptionV1::Unwound => InterruptionV1::Unwound,
+            HandshakeInterruptionV1::Abandoned => InterruptionV1::Abandoned,
+        };
+        self.state.status.end_interrupted(&self.peer, interruption);
+    }
+
+    pub(super) fn handshake_shutdown_debt(&self) -> Option<&GitPublicTransportShutdownErrorV1> {
+        self.state.status.shutdown_debt.as_ref()
     }
 
     /// Receives one original request and exposes only a borrowing READY view.
