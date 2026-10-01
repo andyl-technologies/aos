@@ -768,6 +768,24 @@ impl NativeFsEffect {
                 }
                 Plan::WriteNew { path, bytes } => {
                     use std::io::Write;
+                    #[cfg(test)]
+                    let mut file = if faults.contains(&EffectFault::ReplaceCreateOnce) {
+                        // Model an actual broken create-new primitive, including
+                        // its write and sync, rather than a fabricated success.
+                        let mut options = std::fs::OpenOptions::new();
+                        options.write(true).create(true).truncate(true);
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::OpenOptionsExt;
+                            options
+                                .mode(0o600)
+                                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+                        }
+                        options.open(&path)?
+                    } else {
+                        create_private_file(&path)?
+                    };
+                    #[cfg(not(test))]
                     let mut file = create_private_file(&path)?;
                     file.write_all(&bytes)?;
                     file.sync_all()?;
