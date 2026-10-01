@@ -10,10 +10,10 @@
   realtimeDeadlineProbe ? false,
   cadence ? 100000000,
   requireGuestPass ? true,
-  # The finite four-vCPU workload completes before the 4-billion-instruction
-  # default, leaving a deterministic sustained-contention window before the
-  # predeclared fingerprint horizon.
-  stopAt ? 4000000000,
+  # Linux 7.2 startup extends beyond four billion instructions. Eight billion
+  # reaches the completed four-vCPU workload and sustained contention while
+  # retaining a fixed, predeclared fingerprint horizon.
+  stopAt ? 8000000000,
   memoryMib ? 256,
   vcpuCount ? 4,
   # Some focused boot-prefix probes exercise deterministic INIT/SIPI delivery
@@ -552,9 +552,10 @@ in
           pkgs.jq
           qemuPackage
           tracePluginPackage
-          pkgs.socat
+          pkgs.python3
         ]
-        ++ qemuRuntimeDeps;
+        ++ qemuRuntimeDeps
+        ++ lib.optionals realtimeDeadlineProbe [pkgs.socat];
 
       INITRAMFS = "${initramfs}/initrd.img";
       KERNEL = builtins.toString s11Kernel;
@@ -712,55 +713,30 @@ in
                 || fail "zero S11 provenance digest is not accepted"
             done
 
-            qmp_exchange() {
-              socket="$1"
-              request="$2"
-              response="$3"
-              response_err="$response.err"
-
-              {
-                sleep 0.1
-                printf '{"execute":"qmp_capabilities"}\r\n'
-                sleep 0.1
-                printf '%s\r\n' "$request"
-                sleep 0.5
-              } | socat -T 3 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
-            }
-
             qmp_cmd() {
               socket="$1"
               request="$2"
               response="$3"
               response_err="$response.err"
-              attempts=0
 
-              while [ "$attempts" -lt 5 ]; do
-                qmp_exchange "$socket" "$request" "$response"
-
-                if [ ! -s "$response" ]; then
-                  attempts=$((attempts + 1))
-                  sleep 0.1
-                  continue
-                fi
-
-                if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
-                  cat "$response" >&2
-                  return 1
-                fi
-                if jq -e -s '[.[] | select(has("return"))] | length >= 2' "$response" >/dev/null; then
-                  return 0
-                fi
-
-                attempts=$((attempts + 1))
-                sleep 0.1
-              done
-
-              if [ -s "$response" ]; then
-                cat "$response" >&2
-              else
+              # A loaded builder can delay migration admission beyond one second.
+              # Wait for the matching QMP reply rather than a transport idle gap.
+              if ! ${pkgs.python3}/bin/python3 ${./_qmp-command.py} \
+                "$socket" "$request" > "$response" 2> "$response_err"; then
                 cat "$response_err" >&2
+                return 1
               fi
-              return 1
+
+              if [ ! -s "$response" ]; then
+                cat "$response_err" >&2
+                return 1
+              fi
+
+              if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
+                cat "$response" >&2
+                return 1
+              fi
+              jq -e -s '[.[] | select(has("return"))] | length >= 2' "$response" >/dev/null
             }
 
             wait_for_socket() {

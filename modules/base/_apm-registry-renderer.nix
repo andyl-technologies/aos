@@ -21,6 +21,15 @@
           anchor; all entries are written to `trusted-keys.d`.
         '';
       };
+      rootOwnerSigners = lib.mkOption {
+        type = lib.types.listOf lib.types.nonEmptyStr;
+        default = [];
+        description = ''
+          Authenticated provenance key IDs authorized to claim shared-root
+          ownership. This operator policy is independent of the registry's
+          signer roster; an empty list authorizes no shared-root owners.
+        '';
+      };
       required = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -98,6 +107,7 @@
       else "false"
     }
     public_key = "${builtins.head registry.trustKeys}"
+    root_owner_signers = ${builtins.toJSON registry.rootOwnerSigners}
   '';
 
   trustedKeys = registry:

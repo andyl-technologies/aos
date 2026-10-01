@@ -43,6 +43,7 @@ pkgs.mkDerivation {
         test -f "$systemd/lib/systemd/system/remote-veritysetup.target" \
           || fail "remote-veritysetup.target is missing"
 
+        export SYSTEMD_COLORS=0 SYSTEMD_URLIFY=0
         "$cryptsetup/sbin/veritysetup" --help > veritysetup.help
         "$systemd/lib/systemd/systemd-veritysetup" --help > systemd-veritysetup.help
 
@@ -52,7 +53,7 @@ pkgs.mkDerivation {
           || fail "veritysetup lacks verify action"
         grep -q -- '--root-hash-signature=STRING' veritysetup.help \
           || fail "veritysetup lacks root hash signature support"
-        grep -q -- '^systemd-veritysetup attach ' systemd-veritysetup.help \
+        grep -q -- '^[[:space:]]*attach VOLUME DATADEVICE' systemd-veritysetup.help \
           || fail "systemd-veritysetup lacks attach action"
 
         core_lib=

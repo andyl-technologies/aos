@@ -150,6 +150,7 @@ in rec {
     searchTreeGrowth = import ./phase0-search-tree.nix {inherit pkgs;};
   };
   phase1 = {
+    rustSourceScrub = import ./rust-source-scrub.nix {inherit pkgs lib;};
     aosWorkspaceBuild = import ./phase1-aos-workspace-build.nix {inherit pkgs lib;};
     adversarialHostFixture = import ./phase1-adversarial-host-fixture.nix {inherit pkgs lib;};
     contractAIsolation = import ./phase1-contract-a-isolation.nix {inherit pkgs lib;};
@@ -216,6 +217,7 @@ in rec {
     qemuSimBatchTcgExec = import ./phase1-qemu-sim-batch-tcg-exec.nix {inherit pkgs lib;};
     qemuBlockShmem = import ./phase1-qemu-block-shmem.nix {inherit pkgs lib;};
     qemuNinePShmem = import ./phase1-qemu-9p-shmem.nix {inherit pkgs lib;};
+    qmpCommand = import ./qmp-command.nix {inherit pkgs;};
     simAccel = import ./phase1-sim-accel.nix {inherit pkgs lib;};
     phaseGateOrdering = import ./phase1-phase-gate-ordering.nix {inherit pkgs lib;};
     phaseGateWiring = import ./phase1-phase-gate-wiring.nix {inherit pkgs lib;};

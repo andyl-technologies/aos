@@ -2,6 +2,7 @@
   pkgs,
   lib,
 }: let
+  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   requiredAttrs = [
     "crucible"
     "crucible-controller"
@@ -50,7 +51,7 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase1-aos-workspace-build";
       version = "0";
-      src = null;
+      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
@@ -61,6 +62,14 @@ in
       ];
 
       phases = [
+        {
+          name = "unpack";
+          script = ''
+            cp -R "$src" source
+            chmod -R u+w source
+            cd source
+          '';
+        }
         {
           name = "check";
           script = ''
@@ -108,7 +117,7 @@ in
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^gdb_package=gdb$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^gdb_path=${packages.gdb}/bin/gdb$' \
+            grep -q '^gdb_path=${pkgs.gdb}/bin/gdb$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^gdb_license=GPL-3.0-or-later$' \
               ${packages.crucible}/nix-support/crucible-build-info

@@ -107,11 +107,11 @@
 
       # Create registry and publish a package
       as_maintainer
-      $APR create test-reg
+      create_publish_registry test-reg
       REG_DIR="$REG_STORAGE/test-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
 
-      $APR publish "$LEAF_STORE" \
+      publish_vm_package "$LEAF_STORE" \
         --name removepkg \
         --version 1.0.0 \
         --platform x86_64-linux \
@@ -119,7 +119,7 @@
         --license MIT \
         --maintainer test \
         --registry test-reg
-      $APR publish "$ROOT_STORE" \
+      publish_vm_package "$ROOT_STORE" \
         --name removepkg \
         --version 2.0.0 \
         --platform x86_64-linux \
@@ -128,7 +128,7 @@
         --license MIT \
         --maintainer test \
         --registry test-reg
-      $APR publish "$ROOT_STORE" \
+      publish_vm_package "$ROOT_STORE" \
         --name removepkg \
         --version 2.0.0 \
         --platform aarch64-linux \
@@ -137,7 +137,7 @@
         --license MIT \
         --maintainer test \
         --registry test-reg
-      $APR publish "$RETIRE_DEP_STORE" \
+      publish_vm_package "$RETIRE_DEP_STORE" \
         --name retire-dep \
         --version 1.0.0 \
         --platform x86_64-linux \
@@ -145,7 +145,7 @@
         --license MIT \
         --maintainer test \
         --registry test-reg
-      $APR publish "$RETIRE_STORE" \
+      publish_vm_package "$RETIRE_STORE" \
         --name retire-tool \
         --version 1.0.0 \
         --platform x86_64-linux \

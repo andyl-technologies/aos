@@ -83,4 +83,14 @@ fn command_caused_entries_preserve_command_correlation_source() {
     assert_eq!(entry.source(), &EventSource::Command { command_id });
     assert_eq!(entry.time().stamp.tick, SimInstant { ticks: 12 });
     assert_eq!(entry.time().stamp.retired, None);
+    assert_eq!(entry.class(), SchedulerEventLogClass::Causal);
+    assert!(entry.has_valid_content_hash());
+
+    let mut log = EventLog::new();
+    let append = log
+        .append_entries(vec![entry])
+        .expect("command entry should append");
+    assert!(append.segment_text.contains("entry.source.command_id=12"));
+    assert!(append.segment_text.contains("entry.at_tick=12"));
+    assert!(append.segment_text.contains("entry.at_raw_retired=none"));
 }

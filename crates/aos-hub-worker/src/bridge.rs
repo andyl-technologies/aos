@@ -36,16 +36,21 @@ use worker::{Headers, Request, Response, Result};
 ///
 /// Returns an error if the request URL cannot be parsed, the request body
 /// cannot be streamed, or the assembled [`http::Request`] is malformed (an invalid
-/// method or header value).
-pub async fn to_axum(mut req: Request) -> Result<http::Request<Body>> {
+/// method or header value), or configured Layer 7 delivery hosts are malformed.
+pub async fn to_axum(
+    mut req: Request,
+    layer7_delivery_hosts: Option<&str>,
+) -> Result<http::Request<Body>> {
     let method = req.method().as_ref().to_string();
 
     let url = req.url()?;
     // Preserve the absolute URL until the shared delivery parser has bound the
     // request to its exact scheme/authority/port. Axum still routes by its path.
     let target = url.as_str().to_owned();
+    let ingress_kind = crate::delivery_ingress::ingress_kind(&url, layer7_delivery_hosts)
+        .map_err(|message| worker::Error::RustError(message.into()))?;
     let transport =
-        aos_hub_core::connect::DeliveryTransportEvidence::from_verified_url(&url, "hub")
+        aos_hub_core::connect::DeliveryTransportEvidence::from_verified_url(&url, ingress_kind)
             .ok_or_else(|| {
                 worker::Error::RustError("request URL is not an HTTP(S) origin".into())
             })?;
@@ -174,9 +179,10 @@ pub async fn dispatch(
     delivery_attestation_verifier: Option<
         &aos_hub_core::delivery_attestation::DeliveryAttestationVerifier,
     >,
+    layer7_delivery_hosts: Option<&str>,
     req: Request,
 ) -> Result<Response> {
-    let axum_req = to_axum(req).await?;
+    let axum_req = to_axum(req, layer7_delivery_hosts).await?;
     let axum_req = match aos_hub_core::connect::apply_delivery_attestation(
         axum_req,
         delivery_attestation_verifier,

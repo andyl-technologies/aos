@@ -13,8 +13,12 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
+  signalTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/model/fault_signal/plan_test.rs;
+  };
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "crates/crucible/src/model/fault_signal/plan_test.rs" signalTests [
       {
         label = "T-SPAT-20 completion names signal plan admission";
         needle = "rejects missing programs, duplicate identities, invalid selectors";

@@ -176,7 +176,7 @@
       }
       {
         label = "packaged guest system";
-        needle = "packaged_guest_system=" + "$" + "{lib.system}";
+        needle = "packaged_guest_system=" + "$" + "{stdenv.hostPlatform.system}";
       }
       {
         label = "instruction ABI architectures";
@@ -305,6 +305,10 @@ in
             build_info="${pkgs.crucible-guest}/nix-support/crucible-guest-build-info"
             test -f "$build_info"
             build_info_content="$(cat "$build_info")"
+            doorbell_instruction_abi_version=$(sed -n \
+              's/^pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = \([0-9][0-9]*\);$/\1/p' \
+              crates/crucible-protocol/src/doorbell_abi.rs)
+            test -n "$doorbell_instruction_abi_version"
             case "$build_info_content" in
               *"rustflags=-C target-feature=+crt-static"*) ;;
               *) echo "crucible-guest package missing static Rust flags" >&2; exit 1 ;;
@@ -314,7 +318,7 @@ in
               *) echo "crucible-guest package missing ABI source proof" >&2; exit 1 ;;
             esac
             case "$build_info_content" in
-              *"doorbell_instruction_abi_version=4"*) ;;
+              *"doorbell_instruction_abi_version=$doorbell_instruction_abi_version"*) ;;
               *) echo "crucible-guest package missing instruction ABI version" >&2; exit 1 ;;
             esac
             if patchelf --print-interpreter "${pkgs.crucible-guest}/bin/crucible-guest" \
@@ -338,7 +342,7 @@ in
             package=crucible-guest
             binary=crucible-guest
             static_contract=target-feature=+crt-static
-            packaged_guest_system=${lib.system}
+            packaged_guest_system=${pkgs.stdenv.hostPlatform.system}
             instruction_abi_architectures=x86_64,aarch64
             abi_source=crucible-protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS
             marker_source=crucible-protocol::doorbell_marker

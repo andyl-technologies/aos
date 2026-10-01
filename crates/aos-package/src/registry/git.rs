@@ -169,7 +169,7 @@ pub(crate) async fn sync_git_with_continuity(
     let progress = printer.transfer(&format!("Updating registry '{}'", config.name), 0);
 
     // Step 1: Ensure repo; assemble the trusted key set.
-    progress.phase("Preparing registry update");
+    progress.activity_phase("Preparing registry update");
     let key_store = KeyStore::new(trusted_keys_dirs.to_vec());
     let enforcing = signing_enforced(config);
     let trusted_keys = assemble_trusted_set(&key_store, config);
@@ -184,8 +184,9 @@ pub(crate) async fn sync_git_with_continuity(
             config.name,
         );
     }
+    let client = reqwest::Client::new();
     if is_plain_http_url(&config.url) {
-        preflight_git_native_http_origin(&git_url).await?;
+        preflight_git_native_http_origin(&client, &git_url).await?;
     }
     ensure_repo(&repo_dir, &git_url).await?;
     let previous_selected_commit = state.last_commit.clone();
@@ -199,6 +200,9 @@ pub(crate) async fn sync_git_with_continuity(
         }
     }
 
+    // Reuse prior graph checks only when all object database bytes still match.
+    let mut verified_objects = repo::VerifiedObjectGraph::load(&repo_dir).await;
+
     // Step 2: Fetch refs.
     progress.phase("Fetching registry objects");
     let fetch_roster_head = enforcing && uses_remote_head_roster(tracking_mode);
@@ -209,6 +213,8 @@ pub(crate) async fn sync_git_with_continuity(
             tracking_mode,
             fetch_roster_head,
             &progress,
+            &mut verified_objects,
+            &client,
         )
         .await
         {
@@ -229,11 +235,13 @@ pub(crate) async fn sync_git_with_continuity(
             tracking_mode,
             fetch_roster_head,
             &progress,
+            &mut verified_objects,
+            &client,
         )
         .await?
     };
 
-    progress.phase("Verifying registry trust");
+    progress.activity_phase("Verifying registry trust");
     let channel_roster_head = if let TrackingMode::Channel(channel_name) = tracking_mode {
         if !fetched_roster_head {
             Some(
@@ -292,7 +300,7 @@ pub(crate) async fn sync_git_with_continuity(
     // Step 5: Determine the selected release commit.
     let mut record_successful_freshness = true;
     let resolved_head = if let TrackingMode::Channel(channel_name) = tracking_mode {
-        progress.phase("Resolving signed release channel");
+        progress.activity_phase("Resolving signed release channel");
         match resolve_channel_head(
             config,
             &git_url,
@@ -300,6 +308,7 @@ pub(crate) async fn sync_git_with_continuity(
             &repo_dir,
             &post_pin_trusted_keys,
             state,
+            &client,
         )
         .await
         {
@@ -340,16 +349,25 @@ pub(crate) async fn sync_git_with_continuity(
             .ok_or_else(|| anyhow::anyhow!("channel resolution did not persist a semver floor"))?;
         let target = semver::Version::parse(target)
             .with_context(|| format!("parsing resolved channel release {target}"))?;
-        fetch::resolve_objects_with_progress(
-            &repo_dir,
-            &git_url,
-            &target,
-            &retained_before,
-            printer,
-            Some(&progress),
-        )
-        .await?;
+        let release_ref = format!("refs/tags/{target}");
+        if !verified_objects
+            .missing_objects(&[release_ref])
+            .await?
+            .is_empty()
+        {
+            fetch::resolve_objects_with_progress(
+                &repo_dir,
+                &git_url,
+                &target,
+                &retained_before,
+                printer,
+                Some(&progress),
+            )
+            .await?;
+        }
     }
+
+    progress.activity_phase("Verifying registry release");
 
     // Verify the selected release commit. When the selected commit is also
     // the roster commit, the pre-pin signature check above is the continuity
@@ -422,7 +440,7 @@ pub(crate) async fn sync_git_with_continuity(
     };
 
     // Step 7: Extract authenticated tree files used by consumers.
-    progress.phase("Installing registry catalog");
+    progress.activity_phase("Installing registry catalog");
     let registry_cache_dir = cache_dir.join(&config.name);
     let packages_dir = registry_cache_dir.join("packages");
     let old_packages = count_toml_files(&packages_dir).await;
@@ -501,6 +519,7 @@ pub(crate) async fn sync_git_with_continuity(
         state.tuf_timestamp_version = Some(verified_tuf.timestamp_version);
     }
 
+    verified_objects.persist().await;
     progress.finish();
 
     Ok(SyncResult {
@@ -774,19 +793,18 @@ fn is_plain_http_url(url: &str) -> bool {
 ///
 /// Detects the retired bundle-mode registry layout (`bundle-list.toml`)
 /// and fails with a dedicated migration message for it.
-async fn preflight_git_native_http_origin(base_url: &str) -> Result<()> {
-    let client = reqwest::Client::new();
+async fn preflight_git_native_http_origin(client: &reqwest::Client, base_url: &str) -> Result<()> {
     let head_url = join_cache_url(base_url, "HEAD");
     let refs_url = join_cache_url(base_url, "info/refs");
     let legacy_url = join_cache_url(base_url, "bundle-list.toml");
 
-    let head_status = probe_static_http_status(&client, &head_url).await?;
-    let refs_status = probe_static_http_status(&client, &refs_url).await?;
+    let head_status = probe_static_http_status(client, &head_url).await?;
+    let refs_status = probe_static_http_status(client, &refs_url).await?;
     if head_status.is_success() && refs_status.is_success() {
         return Ok(());
     }
 
-    let legacy_status = probe_static_http_status(&client, &legacy_url).await?;
+    let legacy_status = probe_static_http_status(client, &legacy_url).await?;
     if legacy_status.is_success() {
         bail!(
             "registry origin {base_url} is a legacy bundle-mode registry (`bundle-list.toml` exists) \
@@ -841,6 +859,8 @@ async fn fetch_refs(
     tracking_mode: &TrackingMode,
     fetch_roster_head: bool,
     progress: &TransferProgress,
+    verified: &mut repo::VerifiedObjectGraph,
+    client: &reqwest::Client,
 ) -> Result<bool> {
     let refspecs: Vec<String> = match tracking_mode {
         // Fetch the specific commit by object id (no local ref).
@@ -860,12 +880,26 @@ async fn fetch_refs(
         TrackingMode::Default => vec!["+HEAD:refs/remotes/origin/HEAD".to_string()],
     };
 
-    repo::fetch_with_progress(repo_dir, url, &refspecs, Some(progress.clone()))
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return super::dumb_http::fetch_with_optional_head(
+            repo_dir,
+            url,
+            &refspecs,
+            Some(progress),
+            verified,
+            client,
+            fetch_roster_head,
+        )
+        .await
+        .with_context(|| format!("fetching from {url}"));
+    }
+
+    repo::fetch_with_verified_graph(repo_dir, url, &refspecs, Some(progress.clone()), verified)
         .await
         .with_context(|| format!("fetching from {url}"))?;
 
     if fetch_roster_head {
-        fetch_origin_head(repo_dir, url, progress).await
+        fetch_origin_head(repo_dir, url, progress, verified).await
     } else {
         Ok(false)
     }
@@ -880,12 +914,14 @@ async fn fetch_origin_head(
     repo_dir: &Path,
     url: &str,
     progress: &TransferProgress,
+    verified: &mut repo::VerifiedObjectGraph,
 ) -> Result<bool> {
-    match repo::fetch_with_progress(
+    match repo::fetch_with_verified_graph(
         repo_dir,
         url,
         &["+HEAD:refs/remotes/origin/HEAD".to_string()],
         Some(progress.clone()),
+        verified,
     )
     .await
     {
@@ -969,6 +1005,7 @@ async fn resolve_channel_head(
     repo_dir: &Path,
     trusted_keys: &[String],
     state: &mut RegistryState,
+    client: &reqwest::Client,
 ) -> Result<(verify::VerifiedRelease, String)> {
     if trusted_keys.is_empty() {
         bail!(
@@ -983,7 +1020,6 @@ async fn resolve_channel_head(
         None => channel::select_registry_bucket(&config.name, &channel::generate_bucket_salt()),
     };
 
-    let client = reqwest::Client::new();
     let probes = stream::iter(
         channel::probe_order(assigned_bucket)
             .into_iter()
@@ -1258,12 +1294,11 @@ async fn extract_packages(repo_dir: &Path, commit: &str, output_dir: &Path) -> R
     extract_tree_dir(repo_dir, commit, "packages", output_dir, true).await
 }
 
-/// Materializes the verified maintainer roster beside cached provenance.
+/// Materializes the verified registry identity and roster beside provenance.
 ///
-/// Install-time provenance verification deliberately reads both artifacts
-/// from the authenticated cache tree. Keeping `keys.toml` only in the
-/// registry-root mirror would make a successfully synced signed registry
-/// impossible to install from.
+/// Install-time verification binds signing keys and builder identities to the
+/// committed registry name, which may differ from the consumer's local alias.
+/// These inputs must accompany provenance in the authenticated cache tree.
 async fn extract_registry_cache_trust(
     repo_dir: &Path,
     commit: &str,
@@ -1272,7 +1307,14 @@ async fn extract_registry_cache_trust(
     tokio::fs::create_dir_all(registry_cache_dir)
         .await
         .with_context(|| format!("creating {}", registry_cache_dir.display()))?;
-    extract_optional_root_file(repo_dir, commit, registry_cache_dir, "keys.toml").await
+    for file in ["registry.toml", "keys.toml"] {
+        // Replace stale files and symlinks before materializing authenticated
+        // bytes, and remove old identities when the selected commit lacks one.
+        remove_cached_registry_artifact_target(&registry_cache_dir.join(file)).await?;
+        extract_optional_root_file(repo_dir, commit, registry_cache_dir, file).await?;
+    }
+
+    Ok(())
 }
 
 /// Extract the `store/` realisation graph from a git tree (RFC-0005).
@@ -1302,34 +1344,37 @@ async fn extract_provenance(
 
     let declared_refs = collect_declared_provenance_refs(packages_dir).await?;
     prune_cached_extra_provenance_artifacts(registry_cache_dir, &declared_refs).await?;
+    let mut artifact_paths: Vec<String> = declared_refs.iter().cloned().collect();
     if !declared_refs.is_empty() {
-        extract_required_registry_blob(
-            repo_dir,
-            commit,
-            PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
-            registry_cache_dir,
-        )
-        .await?;
-        let log =
-            tokio::fs::read_to_string(registry_cache_dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG))
-                .await
-                .with_context(|| {
-                    format!(
-                        "reading extracted package transparency log {}",
-                        registry_cache_dir
-                            .join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG)
-                            .display()
-                    )
-                })?;
-        provenance::validate_transparency_log(&log)
-            .context("validating package transparency log")?;
+        artifact_paths.push(PACKAGE_PROVENANCE_TRANSPARENCY_LOG.to_string());
     }
-    for provenance_ref in &declared_refs {
-        clear_declared_registry_artifact_target(provenance_ref, registry_cache_dir).await?;
+    // Load and validate the replacement set before touching matching cache files.
+    // Any failure still removes every declared artifact, so stale provenance
+    // cannot survive an unsuccessful refresh.
+    let artifacts = repo::read_required_blobs_at(repo_dir, commit, &artifact_paths).await;
+    let artifacts = match artifacts {
+        Ok(artifacts) => artifacts,
+        Err(error) => {
+            clear_provenance_artifacts(&artifact_paths, registry_cache_dir).await?;
+            return Err(error);
+        }
+    };
+    if let Some(log_bytes) = artifacts.get(PACKAGE_PROVENANCE_TRANSPARENCY_LOG) {
+        let validation = std::str::from_utf8(log_bytes)
+            .context("reading package transparency log as UTF-8")
+            .and_then(provenance::validate_transparency_log);
+        if let Err(error) = validation {
+            clear_provenance_artifacts(&artifact_paths, registry_cache_dir).await?;
+            return Err(error).context("validating package transparency log");
+        }
     }
-    for provenance_ref in declared_refs {
-        extract_required_registry_blob(repo_dir, commit, &provenance_ref, registry_cache_dir)
-            .await?;
+    for (provenance_ref, bytes) in artifacts {
+        if let Err(error) =
+            write_required_registry_blob(&provenance_ref, &bytes, registry_cache_dir).await
+        {
+            clear_provenance_artifacts(&artifact_paths, registry_cache_dir).await?;
+            return Err(error);
+        }
     }
 
     Ok(())
@@ -1487,54 +1532,29 @@ async fn prune_cached_extra_provenance_artifacts(
     Ok(())
 }
 
-/// Clear one currently-declared artifact path before reading new commit blobs.
-async fn clear_declared_registry_artifact_target(
-    tree_path: &str,
-    registry_cache_dir: &Path,
-) -> Result<()> {
-    validate_attestation_provenance_ref(tree_path)?;
-    let output_path = registry_cache_dir.join(Path::new(tree_path));
-    ensure_registry_artifact_parent(registry_cache_dir, tree_path).await?;
-    remove_cached_registry_artifact_target(&output_path).await
+/// Invalidates the complete declared set after a failed artifact refresh.
+async fn clear_provenance_artifacts(paths: &[String], registry_cache_dir: &Path) -> Result<()> {
+    for tree_path in paths {
+        validate_extractable_registry_blob_ref(tree_path)?;
+        ensure_registry_artifact_parent(registry_cache_dir, tree_path).await?;
+        remove_cached_registry_artifact_target(&registry_cache_dir.join(tree_path)).await?;
+    }
+    Ok(())
 }
 
-/// Copy one declared registry artifact blob from `commit` into the cache root.
-async fn extract_required_registry_blob(
-    repo_dir: &Path,
-    commit: &str,
+/// Write one content-verified registry artifact blob into the cache root.
+async fn write_required_registry_blob(
     tree_path: &str,
+    content: &[u8],
     registry_cache_dir: &Path,
 ) -> Result<()> {
     validate_extractable_registry_blob_ref(tree_path)?;
     let output_path = registry_cache_dir.join(Path::new(tree_path));
     ensure_registry_artifact_parent(registry_cache_dir, tree_path).await?;
-    remove_cached_registry_artifact_target(&output_path).await?;
-
-    let kind = repo::path_object_kind(repo_dir, commit, tree_path)
-        .await
-        .with_context(|| format!("checking registry artifact {tree_path}"))?;
-    match kind {
-        None => bail!(
-            "registry artifact '{}' declared by package metadata is missing from commit {}",
-            tree_path,
-            commit,
-        ),
-        Some(git2::ObjectType::Blob) => {}
-        Some(other) => bail!(
-            "registry artifact '{}' declared by package metadata is a {}, not a file",
-            tree_path,
-            other,
-        ),
+    if cached_artifact_matches(&output_path, content)? {
+        return Ok(());
     }
-
-    let content = repo::read_blob_at(repo_dir, commit, tree_path)
-        .await
-        .with_context(|| format!("reading registry artifact {tree_path}"))?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "registry artifact '{tree_path}' vanished from commit {commit} during read"
-            )
-        })?;
+    remove_cached_registry_artifact_target(&output_path).await?;
 
     let mut output = OpenOptions::new()
         .write(true)
@@ -1544,9 +1564,33 @@ async fn extract_required_registry_blob(
         .open(&output_path)
         .with_context(|| format!("opening registry artifact {}", output_path.display()))?;
     output
-        .write_all(&content)
+        .write_all(content)
         .with_context(|| format!("writing registry artifact {}", output_path.display()))?;
     Ok(())
+}
+
+/// Compares an ordinary cached artifact without following symlinks or opening FIFOs.
+fn cached_artifact_matches(path: &Path, content: &[u8]) -> Result<bool> {
+    use std::io::Read;
+
+    let Ok(file) = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+    else {
+        return Ok(false);
+    };
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspecting {}", path.display()))?;
+    if !metadata.is_file() || metadata.len() != content.len() as u64 {
+        return Ok(false);
+    }
+    let mut cached = Vec::new();
+    file.take(content.len() as u64 + 1)
+        .read_to_end(&mut cached)
+        .with_context(|| format!("reading {}", path.display()))?;
+    Ok(cached == content)
 }
 
 fn validate_extractable_registry_blob_ref(tree_path: &str) -> Result<()> {
@@ -1643,8 +1687,8 @@ fn cache_tree_is_owned_elsewhere(relative_ref: &str) -> bool {
 
 /// Replace `output_dir` with the contents of `commit:tree_path/`.
 ///
-/// The existing directory is removed first so deletions in the registry
-/// propagate. When the tree path is absent from the commit,
+/// The repository layer verifies and reuses identical cached trees, replacing
+/// mismatches so deletions propagate. When the tree path is absent from the commit,
 /// `create_empty_when_absent` selects between leaving an empty directory
 /// (the historical behavior for `packages/`) and leaving no directory at
 /// all (required for `store/`, where presence is meaningful).
@@ -1655,12 +1699,6 @@ async fn extract_tree_dir(
     output_dir: &Path,
     create_empty_when_absent: bool,
 ) -> Result<()> {
-    if output_dir.exists() {
-        tokio::fs::remove_dir_all(output_dir)
-            .await
-            .with_context(|| format!("cleaning {}", output_dir.display()))?;
-    }
-
     // libgit2 tree walk replaces `git archive <commit> <tree_path>/ | tar -x
     // --strip-components=1`: it materializes `commit:tree_path/` directly,
     // preserving file modes and symlinks, and handles the absent-path case via
@@ -2029,6 +2067,7 @@ fn is_leap_year(year: u64) -> bool {
 mod tests {
     use super::*;
     use crate::types::SigningConfig;
+    use std::os::unix::fs::MetadataExt;
     use tokio::process::Command;
 
     /// Build a `git` command for fixture setup with the developer's global
@@ -2419,6 +2458,8 @@ mod tests {
             &TrackingMode::Default,
             false,
             &progress,
+            &mut repo::VerifiedObjectGraph::new(&repo_dir),
+            &reqwest::Client::new(),
         )
         .await
         .unwrap();
@@ -2506,6 +2547,10 @@ mod tests {
         tokio::fs::write(work_dir.join("keys.toml"), "schema = 1\n")
             .await
             .unwrap();
+        let manifest = "[registry]\nname = \"canonical-registry\"\n";
+        tokio::fs::write(work_dir.join("registry.toml"), manifest)
+            .await
+            .unwrap();
 
         // Add and commit.
         let _ = git(&work_dir).args(["add", "."]).output().await;
@@ -2541,6 +2586,15 @@ mod tests {
             .await
             .unwrap();
 
+        // The caller must preserve the cache long enough for verified reuse.
+        let before = std::fs::metadata(output_dir.join("c/curl.toml")).unwrap();
+        extract_packages(&repo_dir, &commit, &output_dir)
+            .await
+            .unwrap();
+        let after = std::fs::metadata(output_dir.join("c/curl.toml")).unwrap();
+        assert_eq!(before.ino(), after.ino());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+
         // Verify extracted files.
         assert!(output_dir.join("c").join("curl.toml").exists());
         let content = tokio::fs::read_to_string(output_dir.join("c").join("curl.toml"))
@@ -2549,6 +2603,13 @@ mod tests {
         assert!(content.contains("curl"));
 
         let cache_dir = tmp.path().join("authenticated-cache");
+        tokio::fs::create_dir_all(&cache_dir).await.unwrap();
+        let outside = tmp.path().join("outside-registry.toml");
+        tokio::fs::write(&outside, "must remain unchanged")
+            .await
+            .unwrap();
+        std::os::unix::fs::symlink(&outside, cache_dir.join("registry.toml")).unwrap();
+
         extract_registry_cache_trust(&repo_dir, &commit, &cache_dir)
             .await
             .unwrap();
@@ -2558,6 +2619,26 @@ mod tests {
                 .unwrap(),
             "schema = 1\n"
         );
+        assert_eq!(
+            tokio::fs::read_to_string(cache_dir.join("registry.toml"))
+                .await
+                .unwrap(),
+            manifest
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&outside).await.unwrap(),
+            "must remain unchanged"
+        );
+
+        tokio::fs::remove_file(work_dir.join("registry.toml"))
+            .await
+            .unwrap();
+        let removed_commit = commit_all(&work_dir, "remove registry identity").await;
+        extract_registry_cache_trust(&work_dir, &removed_commit, &cache_dir)
+            .await
+            .unwrap();
+        assert!(!cache_dir.join("registry.toml").exists());
+        assert!(cache_dir.join("keys.toml").is_file());
     }
 
     #[tokio::test]
@@ -2887,6 +2968,34 @@ provenance = "{provenance}"
                 .await
                 .unwrap(),
             "custom statement\n",
+        );
+
+        let artifact_path = registry_cache_dir.join(custom_ref);
+        let before = std::fs::metadata(&artifact_path).unwrap();
+        extract_provenance(
+            &work_dir,
+            &custom_commit,
+            &packages_dir,
+            &registry_cache_dir,
+        )
+        .await
+        .unwrap();
+        let after = std::fs::metadata(&artifact_path).unwrap();
+        assert_eq!(before.ino(), after.ino());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+
+        std::fs::write(&artifact_path, "changed statement\n").unwrap();
+        extract_provenance(
+            &work_dir,
+            &custom_commit,
+            &packages_dir,
+            &registry_cache_dir,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&artifact_path).unwrap(),
+            "custom statement\n"
         );
 
         let generated_ref = "provenance/w/web/x86_64-linux/abc.intoto.jsonl";

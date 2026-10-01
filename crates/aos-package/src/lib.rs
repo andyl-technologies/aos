@@ -329,6 +329,9 @@ pub enum PackageCommand {
         /// Show package from this registry
         #[arg(long)]
         registry: Option<String>,
+        /// Show permission metadata only
+        #[arg(long)]
+        permissions: bool,
         /// Query the system scope instead of the user scope
         #[arg(long)]
         system: bool,
@@ -365,20 +368,6 @@ pub enum PackageCommand {
         #[arg(long, env = "AOS_TOKEN", requires = "hub")]
         token: Option<String>,
         /// Read the system package profile instead of the user profile
-        #[arg(long)]
-        system: bool,
-    },
-    /// Show package information
-    Info {
-        /// Package name
-        package: String,
-        /// Show package from this registry
-        #[arg(long)]
-        registry: Option<String>,
-        /// Show permission metadata only
-        #[arg(long)]
-        permissions: bool,
-        /// Query the system scope instead of the user scope
         #[arg(long)]
         system: bool,
     },
@@ -1285,7 +1274,6 @@ impl PackageCommand {
             | PackageCommand::Docs { .. }
             | PackageCommand::Options { .. }
             | PackageCommand::Schema { .. }
-            | PackageCommand::Info { .. }
             | PackageCommand::List { .. }
             | PackageCommand::Depends { .. }
             | PackageCommand::Rdepends { .. }
@@ -1330,7 +1318,6 @@ impl PackageCommand {
             PackageCommand::Registry { system, .. } => *system,
             PackageCommand::Search { system, .. } => *system,
             PackageCommand::Show { system, .. } => *system,
-            PackageCommand::Info { system, .. } => *system,
             PackageCommand::List { system, .. } => *system,
             PackageCommand::Depends { system, .. } => *system,
             PackageCommand::Rdepends { system, .. } => *system,
@@ -2933,8 +2920,8 @@ fn parse_system_transition_mode(reboot: bool) -> SystemTransitionMode {
 }
 
 const DEFAULT_SWITCH_HOST_NIX: &str = "/run/aos-metadata/host.nix";
-const DEFAULT_SWITCH_BASE_LIB: &str = "/aos-toplevel/base-lib";
-const DEFAULT_SWITCH_OS_RELEASE: &str = "/aos-toplevel/os-release";
+const DEFAULT_SWITCH_BASE_LIB: &str = "/usr/lib/aos/toplevel/base-lib";
+const DEFAULT_SWITCH_OS_RELEASE: &str = "/usr/lib/aos/toplevel/os-release";
 const DEFAULT_SYSTEM_GENERATION_PROFILE: &str = "/var/lib/profiles/system";
 
 fn resolve_switch_manifest(selector: Option<&str>, profile: &Path) -> Result<(PathBuf, String)> {
@@ -4026,14 +4013,18 @@ pub async fn run(
             .await
         }
         PackageCommand::Show {
-            package, registry, ..
-        } => query::show(&config, package, registry.as_deref(), printer).await,
-        PackageCommand::Info {
             package,
             registry,
             permissions,
             ..
-        } => query::info(&config, package, registry.as_deref(), *permissions, printer).await,
+        } => {
+            if *permissions {
+                query::show_package_permissions(&config, package, registry.as_deref(), printer)
+                    .await
+            } else {
+                query::show(&config, package, registry.as_deref(), printer).await
+            }
+        }
         PackageCommand::List {
             installed,
             upgradable,
@@ -5303,8 +5294,9 @@ pub async fn run_apr(
 /// them, and accepting it would suggest the flag had been considered where it
 /// had not; refusing says plainly that the command never writes anyway.
 ///
-/// `release` is also absent: it carries its own `--dry-run`, which belongs
-/// after the subcommand name and is threaded through separately.
+/// `release` is accepted only when its explicit preview option is set.
+/// Clap propagates that option into the global flag as well, so rejecting
+/// the global value would also reject valid release previews.
 fn implements_global_dry_run(command: &RegistryCommand) -> bool {
     matches!(
         command,
@@ -5324,6 +5316,7 @@ fn implements_global_dry_run(command: &RegistryCommand) -> bool {
             | RegistryCommand::Pull { .. }
             | RegistryCommand::Push { .. }
             | RegistryCommand::Remove { .. }
+            | RegistryCommand::Release { dry_run: true, .. }
             | RegistryCommand::SbCerts { .. }
             | RegistryCommand::Sign { .. }
             | RegistryCommand::Store { .. }
@@ -7637,6 +7630,7 @@ contributable = ["allowedTCPPorts"]
             PackageCommand::Show {
                 package: "curl".into(),
                 registry: None,
+                permissions: false,
                 system: true,
             }
             .is_system()

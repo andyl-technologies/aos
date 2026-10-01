@@ -1,8 +1,8 @@
-//! Exact-`host.nix` authorization and the restricted first-boot projection.
+//! Whole-input authorization and the restricted first-boot projection.
 //!
 //! Fetchers write user-data bytes without interpreting them. Authorization
-//! authenticates those complete bytes and promotes them, unchanged, to
-//! `host.nix`. A separate restricted Nix evaluation then projects only
+//! authenticates those complete bytes. Literal modules remain unchanged;
+//! versioned bundles materialize a checked source tree and content-bound wrapper. A separate restricted Nix evaluation then projects only
 //! `aos.provisioning` from that module and hands the resulting JSON to the
 //! strict Rust storage validator.
 
@@ -73,6 +73,9 @@ pub struct ProvisioningResult {
     /// Matching trusted-key fingerprint in signed mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signer: Option<String>,
+    /// SHA-256 of the complete source bundle; absent for legacy literal input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_sha256: Option<String>,
 }
 
 /// Options for exact-`host.nix` authorization.
@@ -141,11 +144,11 @@ impl FromStr for ProvisioningSource {
     }
 }
 
-/// Authorizes fetched user-data as literal `host.nix`.
+/// Authorizes fetched literal modules or complete configuration source bundles.
 ///
-/// No user-data is a successful no-op. Any present payload is copied byte for
-/// byte after the selected trust policy succeeds. There is no second storage
-/// language and no JSON envelope to unwrap.
+/// No user-data is a successful no-op. Literal payloads remain byte-for-byte
+/// unchanged. Bundles are authenticated before their regular files and bound
+/// host wrapper become visible; Nix remains the sole configuration language.
 ///
 /// # Errors
 ///
@@ -193,11 +196,23 @@ fn authorize_inner(stash: &Stash, opts: &AuthorizeOptions) -> Result<Option<Prov
         ),
     };
 
-    std::fs::write(stash.dir().join("host.nix"), &raw).context("writing accepted host.nix")?;
+    let bundle = super::bundle::parse(&raw)?;
+    let (host, bundle_sha256) = if let Some(bundle) = bundle {
+        bundle.materialize(&stash.dir().join(super::bundle::SOURCE_DIR))?;
+        std::fs::write(stash.dir().join(super::bundle::BUNDLE_FILE), &raw)?;
+        (
+            bundle.host_module(&raw).into_bytes(),
+            Some(sha256_hex(&raw)),
+        )
+    } else {
+        (raw, None)
+    };
+    std::fs::write(stash.dir().join("host.nix"), &host).context("writing accepted host.nix")?;
     let result = ProvisioningResult {
         trust_mode: opts.trust,
         platform_id: env.platform_id,
-        host_nix_sha256: sha256_hex(&raw),
+        host_nix_sha256: sha256_hex(&host),
+        bundle_sha256,
         signer,
     };
     let encoded = serde_json::to_vec_pretty(&result).context("serializing authorization result")?;
@@ -253,7 +268,12 @@ pub fn run_eval_provisioning(opts: &EvalProvisioningOptions) -> Result<Provision
         .arg("-I")
         .arg(&opts.base_lib);
     if host_path.is_file() {
+        verify_host_binding(&opts.stash_dir)?;
         command.arg("-I").arg(&host_path);
+        let source = opts.stash_dir.join(super::bundle::SOURCE_DIR);
+        if source.is_dir() {
+            command.arg("-I").arg(source);
+        }
     }
     let output = command
         .arg(&entry)
@@ -323,6 +343,26 @@ pub fn verify_host_binding(stash_dir: &Path) -> Result<()> {
             "accepted host.nix hash mismatch: expected {}, got {}",
             record.host_nix_sha256,
             actual
+        );
+    }
+    if let Some(expected) = &record.bundle_sha256 {
+        let bytes = std::fs::read(stash_dir.join(super::bundle::BUNDLE_FILE))
+            .context("reading authorized configuration bundle")?;
+        anyhow::ensure!(
+            sha256_hex(&bytes) == *expected,
+            "authorized configuration bundle hash mismatch"
+        );
+        let bundle =
+            super::bundle::parse(&bytes)?.context("authorized bundle has no supported schema")?;
+        anyhow::ensure!(
+            host == bundle.host_module(&bytes).as_bytes(),
+            "bundle wrapper does not match authorized source"
+        );
+        bundle.verify_tree(&stash_dir.join(super::bundle::SOURCE_DIR))?;
+    } else {
+        anyhow::ensure!(
+            !host.starts_with(b"# aos.config-bundle/"),
+            "bundle wrapper has no source authorization"
         );
     }
     Ok(())

@@ -3,8 +3,9 @@
 //! Initrd phases own cross-cloud acquisition and the narrow first-boot trust
 //! boundary. Fetch stores exact bytes. Authorization applies the measured
 //! `platform` or `signed` policy and is the only phase allowed to produce exact
-//! `host.nix`. Restricted evaluation then projects one-time provisioning and
-//! renders transient repart definitions. Full evaluation remains in stage 2.
+//! `host.nix` and any bound bundle source tree. Restricted evaluation projects
+//! one-time provisioning and renders transient repart definitions. Full
+//! evaluation remains in stage 2.
 //!
 //! ```text
 //! aos metadata detect   # DMI/SMBIOS/ISO → /run/aos-metadata/platform.env
@@ -28,6 +29,7 @@
 //! - [`staticnet`] — DHCP-less network parsing + networkd render.
 //! - [`facts_render`] — `facts.json` → `host-facts.nix`.
 //! - [`stash`] — the `/run/aos-metadata` stash format.
+//! - [`bundle`] — bounded source envelopes, exact tree verification, and wrappers.
 //! - [`provisioning`] — whole-input authorization and host extraction.
 //! - [`repart`] — typed storage validation and transient repart rendering.
 //! - [`topology`] — MD array and volume resolution above the partition layer.
@@ -41,6 +43,7 @@
 //! IMDS, and the initrd systemd services.
 
 pub mod aws;
+pub mod bundle;
 pub mod cloud;
 pub mod detect;
 pub mod facts_render;

@@ -380,7 +380,7 @@
   # Preamble for headless system tests.
   # These tests use rootfsDeps mode, where the test script is PID 1 and the
   # stage-2 aos-nix-db.service never runs. The headless rootfs still ships
-  # /aos-registration, so load that stream explicitly after setting up Nix's
+  # /usr/lib/aos/nix-registration, so load that stream explicitly after setting up Nix's
   # runtime library path.
   # nix-store needs its runtime libraries (RPATH doesn't cover all deps yet)
   nixLibPath = builtins.concatStringsSep ":" (map (p: "${p}/lib") [
@@ -443,7 +443,7 @@
         # Nix DB from the same registration stream full images load at boot.
         export NIX_REMOTE=""
         nix-store --init || true
-        nix-store --load-db < /aos-registration
+        nix-store --load-db < /usr/lib/aos/nix-registration
         mkdir -p /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
         if ! ${pkgs.util-linux}/bin/mountpoint -q /nix/var/nix/gcroots/aos-profiles; then
           ${pkgs.util-linux}/bin/mount --bind \
@@ -463,7 +463,7 @@
     sandbox = false
     NIXCONF
     nix-store --init || true
-    nix-store --load-db < /aos-registration
+    nix-store --load-db < /usr/lib/aos/nix-registration
     mkdir -p /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
     if ! ${pkgs.util-linux}/bin/mountpoint -q /nix/var/nix/gcroots/aos-profiles; then
       ${pkgs.util-linux}/bin/mount --bind \
@@ -508,11 +508,11 @@
     }
 
     echo "==> Maintainer: publish server sysroot and static cache"
-    $APR create system-reg
+    create_publish_registry system-reg
     REG_DIR="$REG_STORAGE/system-reg"
     DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
 
-    $APR publish "$TOPLEVEL_STORE" \
+    publish_vm_package "$TOPLEVEL_STORE" \
       --name server \
       --version 2026.03 \
       --description "System install workflow sysroot" \

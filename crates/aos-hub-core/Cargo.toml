@@ -109,8 +109,8 @@ sqlx = { workspace = true, features = ["sqlite"] }
 tokio = { workspace = true }
 
 [dev-dependencies]
-# The native SqlxBackend batch tests are async; drive them on a tokio runtime.
-tokio = { workspace = true }
+# Native tests use Tokio, including controlled time for provider deadlines.
+tokio = { workspace = true, features = ["test-util"] }
 # The Database migration tests stage old-schema sqlite files with raw rusqlite,
 # then reopen them through the sqlx Database to assert the upgrade path; other
 # tests use a temp dir for a file-backed hub.db (RFC-0004 Phase 5).

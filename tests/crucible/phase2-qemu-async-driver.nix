@@ -26,7 +26,10 @@
     inherit lib;
     entry = ../../crates/crucible-qemu/src/qmp.rs;
   };
-  qmpTest = builtins.readFile ../../crates/crucible-qemu/tests/qmp.rs;
+  qmpTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/tests/qmp.rs;
+  };
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -248,6 +251,10 @@
       {
         label = "node timeout crash test";
         needle = "qemu_node_timeout_reports_crash_and_runs_shutdown";
+      }
+      {
+        label = "node QMP timeout crash test";
+        needle = "qemu_node_qmp_timeout_terminates_indeterminate_save_job";
       }
       {
         label = "QMP channel timeout classification";

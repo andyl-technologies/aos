@@ -114,7 +114,7 @@ in
           require_fixed "$S11_RESULT" "accelerator=sim,thread=single"
           require_fixed "$S11_RESULT" "vcpus=4"
           require_fixed "$S11_RESULT" "rr_switch_quantum=4096"
-          require_fixed "$S11_RESULT" "horizon_icount=4000000000"
+          require_fixed "$S11_RESULT" "horizon_icount=8000000000"
           require_fixed "$S11_RESULT" "workload_affinity_active=true"
           require_fixed "$S11_RESULT" "aggregate_fingerprint_match=true"
           require_fixed "$S11_RESULT" "exact_horizon_authoritative=true"

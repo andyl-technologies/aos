@@ -130,6 +130,10 @@
         needle = "fn step_quantum";
       }
       {
+        label = "STEP derives the scheduler frontier from node counters";
+        needle = "let frontier = frontier_for(&self.nodes, self.timeline.shift())?;";
+      }
+      {
         label = "STEP updates scheduler frontier";
         needle = "let frontier = frontier_for(&self.nodes, self.timeline.shift(), Some(self.frontier))?;";
       }

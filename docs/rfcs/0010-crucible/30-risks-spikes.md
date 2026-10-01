@@ -1587,6 +1587,16 @@ its two trace files have identical SHA-256
 The four-vCPU sim execution is the S11 validation path; this diskless proof
 does not claim full device-event determinism.
 
+The 2026-09-30 Linux 7.2 qualification refresh retains the same deterministic
+comparison and host-preemption requirements. Its longer startup requires a
+fixed `horizon_icount=8000000000`, with 80 periodic samples and one final sample.
+Both runs reach the finite workload's completion and sustained contention on
+vCPUs `0,1,2,3`; their horizon fingerprints and RR traces match. This supersedes
+the four-billion default above; the earlier result remains historical evidence.
+The S6 address-randomization probe likewise passes at a fixed six-billion
+horizon, before its finite spin workload ends, in both control and randomized
+modes under host preemption.
+
 **RISK-26** is retired by `T-RISK-18` with live preemption:
 `checks.crucible.phase0.s12PreemptionDecision` scanned the current QEMU Nix
 wiring, every local QEMU patch, the production trace plugin, and the Rust crates,

@@ -68,8 +68,8 @@
         needle = "cargoTestFlags = \"-p crucible-qemu-plugin\";";
       }
       {
-        label = "cdylib install enabled";
-        needle = "installLibs = true;";
+        label = "generic library install disabled for explicit cdylib selection";
+        needle = "installLibs = false;";
       }
       {
         label = "matched qemu package dependency";

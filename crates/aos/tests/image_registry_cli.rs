@@ -61,6 +61,39 @@ fn publish_image(
         None,
     )?;
     fs::write(cache.join(format!("{store_hash}.narinfo")), narinfo)?;
+    let info_bytes = br#"{"schema":"fixture.image-info/v1"}"#;
+    let info_nar = regular_file_nar(info_bytes);
+    let info_hash = format!("sha256:{:x}", Sha256::digest(&info_nar));
+    let info_store_hash = (number + 4).to_string().repeat(32);
+    let info_store = format!("/nix/store/{info_store_hash}-image-info.json");
+    let info_payload = nar_url(&info_store, &info_hash, NarCompression::None)?;
+    fs::create_dir_all(
+        cache
+            .join(&info_payload)
+            .parent()
+            .context("metadata NAR parent")?,
+    )?;
+    fs::write(cache.join(&info_payload), &info_nar)?;
+    let info_narinfo = render_static_narinfo(
+        &StaticNarInfoInput {
+            store_path: &info_store,
+            nar_hash: &info_hash,
+            nar_size: info_nar.len() as u64,
+            references: &[],
+            deriver: None,
+            signatures: &[],
+            file_hash: &info_hash,
+            file_size: info_nar.len() as u64,
+            compression: NarCompression::None,
+        },
+        "/nix/store",
+        None,
+    )?;
+    fs::write(
+        cache.join(format!("{info_store_hash}.narinfo")),
+        info_narinfo,
+    )?;
+    let info_sha = format!("{:x}", Sha256::digest(info_bytes));
     let architecture = platform.split_once('-').context("platform")?.0;
     let sha = format!("{:x}", Sha256::digest(&bytes));
     let fixture_hash = "a".repeat(64);
@@ -107,15 +140,17 @@ measured = false
 
 [versions.platforms.{platform}.images.delivery.image_info]
 filename = "image-info.json"
-store_path = "/nix/store/{store_hash}-image-info.json"
-nar_hash = "{hash}"
-nar_size = {nar_size}
+store_path = "{info_store}"
+nar_hash = "{info_hash}"
+nar_size = {info_nar_size}
 media_type = "application/vnd.aos.image-info+json"
-byte_size = 16
-sha256 = "{fixture_hash}"
+byte_size = {info_byte_size}
+sha256 = "{info_sha}"
 "#,
         nar_size = nar.len(),
-        byte_size = bytes.len()
+        byte_size = bytes.len(),
+        info_nar_size = info_nar.len(),
+        info_byte_size = info_bytes.len()
     );
     Ok((metadata, bytes, cache.join(payload)))
 }
@@ -351,6 +386,30 @@ priority = 9999
     )
     .await?;
     assert_eq!(fs::read(&destination)?, expected_bytes);
+    let metadata_destination = home.join("image-info.json");
+    success(
+        &home,
+        &[
+            "--json",
+            "image",
+            "download",
+            "--registry",
+            "images",
+            "--architecture",
+            "x86_64",
+            "--metadata-only",
+            "--output",
+            metadata_destination
+                .to_str()
+                .context("metadata output path")?,
+        ],
+    )
+    .await?;
+    assert_eq!(
+        fs::read(&metadata_destination)?,
+        br#"{"schema":"fixture.image-info/v1"}"#
+    );
+
     let historical = success(
         &home,
         &[

@@ -656,7 +656,9 @@ in {
         owners = provenance.dependencyOwnersOfAttr path name;
       in
         # Both login PATH files embed the resolved system package paths.
-        if path == ["environment" "etc"]
+        if
+          path
+          == ["environment" "etc"]
           && builtins.elem name ["profile" "profile.d/10-apm-path.sh"]
         then sharedArtifactOwner "environment.etc.${name}" (owners ++ systemPackageOwners)
         else if path == ["environment" "etc"] && name == "pam/environment"

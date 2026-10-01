@@ -540,4 +540,9 @@ in
         '';
       }
     ];
+    meta = {
+      description = "Bazel bootstrap Java runner compiled from source";
+      homepage = "https://bazel.build/";
+      license = "Apache-2.0";
+    };
   }

@@ -45,12 +45,16 @@ pkgs.mkDerivation {
         test -f "$systemd/lib/tmpfiles.d/credstore.conf" \
           || fail "credstore tmpfiles config is missing"
 
+        export SYSTEMD_COLORS=0 SYSTEMD_URLIFY=0
         "$systemd/bin/systemd-creds" --help > systemd-creds.help
         "$systemd/lib/systemd/systemd-measure" --help > systemd-measure.help
 
         grep -q -- '^  encrypt INPUT OUTPUT' systemd-creds.help \
           || fail "systemd-creds lacks encrypt subcommand"
-        grep -q -- '--with-key=host|tpm2|host+tpm2|null|auto|auto-initrd' systemd-creds.help \
+        # The selector's choices wrap onto a second help line in systemd 260.
+        grep -Fq -- '--with-key=KEY' systemd-creds.help \
+          || fail "systemd-creds lacks encryption key selector"
+        grep -Fq -- 'host+tpm2' systemd-creds.help \
           || fail "systemd-creds lacks TPM2 key selector"
         grep -q -- '--tpm2-public-key=PATH' systemd-creds.help \
           || fail "systemd-creds lacks signed PCR public-key flag"
@@ -60,7 +64,7 @@ pkgs.mkDerivation {
           || fail "systemd-measure lacks sign subcommand"
         grep -q -- '^  policy-digest ' systemd-measure.help \
           || fail "systemd-measure lacks policy-digest subcommand"
-        grep -q -- '--private-key=KEY' systemd-measure.help \
+        grep -Fq -- '--private-key=' systemd-measure.help \
           || fail "systemd-measure lacks private-key signing option"
         grep -q -- '--public-key=KEY' systemd-measure.help \
           || fail "systemd-measure lacks public-key verification option"

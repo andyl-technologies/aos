@@ -133,7 +133,7 @@ if [ $# -ne 1 ]; then
   exit "$EX_PREFLIGHT"
 fi
 N=$1
-new_top=$(@coreutils@/bin/readlink /aos-toplevel)
+new_top=$(@coreutils@/bin/readlink /usr/lib/aos/toplevel)
 
 # Each activation intent carries a one-shot nonce. Recovery accepts only the
 # marker for that exact transaction, so a marker left by an earlier activation

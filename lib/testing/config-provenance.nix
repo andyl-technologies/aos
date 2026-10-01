@@ -179,6 +179,7 @@ in
   assert hostComposedManifest.ownership.etc."pam/environment" == "@host";
   assert hostComposedManifest.ownership.storePaths.${testAgentPath} == "@host";
   assert hostSessionManifest.ownership.etc.profile == "@base";
+  assert hostSessionManifest.ownership.etc."profile.d/10-apm-path.sh" == "@base";
   assert hostSessionManifest.ownership.etc."pam/environment" == "@host";
   assert directHostLoginManifest.ownership.etc.profile == "@host";
   assert directHostLoginManifest.ownership.etc."pam/environment" == "@host";

@@ -12,7 +12,10 @@
     inherit lib;
     entry = ../../crates/crucible-session/tests/gate_control_responsive.rs;
   };
-  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
+  apiLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/src/lib.rs;
+  };
   apiStream = builtins.readFile ../../crates/crucible-api/src/event_log_stream.rs;
   apiGate = builtins.readFile ../../crates/crucible-api/tests/gate_control_responsive.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;

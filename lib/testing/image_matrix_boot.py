@@ -219,7 +219,7 @@ def observe(machine: Any, system: dict[str, Any], phase: str, root_hash: str | N
         "kernel": guest(machine, "uname -r").strip(),
         "version": identity[0],
         "moduleAbi": int(identity[1]),
-        "toplevel": guest(machine, "readlink /aos-toplevel").strip(),
+        "toplevel": guest(machine, "readlink /usr/lib/aos/toplevel").strip(),
         "security": observed_security(machine, system["expected"]["security"], root_hash),
         "configuration": configuration_identity(machine, require_runtime=phase != "initial"),
     }
