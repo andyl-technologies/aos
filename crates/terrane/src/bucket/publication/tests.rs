@@ -254,6 +254,8 @@ async fn absent_history_retains_sequence_and_recreation_replays_the_exact_chain(
     wrong_home.home.region = Some("elsewhere".into());
     assert!(absent.ref_transition(NAME, &wrong_home).is_err());
     drop(absent);
+    // The adapter retains a duplicate exclusion descriptor until it is dropped.
+    drop(adapter);
     drop(holder);
 
     assert_eq!(bucket.ref_get(NAME).await.unwrap(), None);
