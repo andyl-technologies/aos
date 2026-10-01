@@ -1465,6 +1465,13 @@ fn retryable_probe_io(error: &io::Error) -> bool {
     )
 }
 
+/// Distinguishes original image provisioning from a retained source helper.
+#[derive(Clone, Copy)]
+enum GuardedImageToolPurpose {
+    FreshLaunch,
+    RetainedHotForkSource,
+}
+
 fn run_guarded_image_tool(
     executable: &Path,
     args: &[std::ffi::OsString],
@@ -1472,7 +1479,33 @@ fn run_guarded_image_tool(
     run_directory: &QemuPreparedRunDirectory,
     process_contract: &QemuChildProcessContract,
 ) -> Result<(), QemuGuardedImagePreparationError> {
-    if let Err(source) = run_directory.validate_helper_basis(process_contract) {
+    run_guarded_image_tool_for_purpose(
+        executable,
+        args,
+        operation,
+        run_directory,
+        process_contract,
+        GuardedImageToolPurpose::FreshLaunch,
+    )
+}
+
+fn run_guarded_image_tool_for_purpose(
+    executable: &Path,
+    args: &[std::ffi::OsString],
+    operation: &'static str,
+    run_directory: &QemuPreparedRunDirectory,
+    process_contract: &QemuChildProcessContract,
+    purpose: GuardedImageToolPurpose,
+) -> Result<(), QemuGuardedImagePreparationError> {
+    let admission = match purpose {
+        GuardedImageToolPurpose::FreshLaunch => {
+            run_directory.validate_helper_basis(process_contract)
+        }
+        GuardedImageToolPurpose::RetainedHotForkSource => {
+            run_directory.validate_retained_source_helper_basis(process_contract)
+        }
+    };
+    if let Err(source) = admission {
         return Err(QemuGuardedImagePreparationError {
             source,
             child: None,
