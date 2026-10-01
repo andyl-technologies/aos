@@ -66,8 +66,8 @@ pub enum SqlxBackend {
     Mysql(sqlx::MySqlPool),
 }
 
-const SQLITE_OPEN_LOCK_RETRY_LIMIT: Duration = Duration::from_secs(30);
-const SQLITE_OPEN_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const SQLITE_LOCK_RETRY_LIMIT: Duration = Duration::from_secs(30);
+const SQLITE_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Returns whether sqlite rejected an operation because the database is busy
 /// or a table is locked.
@@ -123,7 +123,7 @@ impl SqlxBackend {
                 .idle_timeout(None)
                 .max_lifetime(None);
         }
-        let retry_deadline = tokio::time::Instant::now() + SQLITE_OPEN_LOCK_RETRY_LIMIT;
+        let retry_deadline = tokio::time::Instant::now() + SQLITE_LOCK_RETRY_LIMIT;
         let pool = loop {
             match pool_options.clone().connect_with(options.clone()).await {
                 Ok(pool) => break pool,
@@ -132,7 +132,7 @@ impl SqlxBackend {
                         && sqlite_lock_error(&error)
                         && tokio::time::Instant::now() < retry_deadline =>
                 {
-                    tokio::time::sleep(SQLITE_OPEN_LOCK_RETRY_INTERVAL).await;
+                    tokio::time::sleep(SQLITE_LOCK_RETRY_INTERVAL).await;
                 }
                 Err(error) => {
                     return Err(error).with_context(|| format!("opening sqlite database {path:?}"));
@@ -308,6 +308,7 @@ mod sqlite {
     use super::super::super::dialect::Dialect;
     use super::super::super::value::{Row, Value};
     use super::super::{prepare, CheckedStatement, Statement};
+    use super::{sqlite_lock_error, SQLITE_LOCK_RETRY_INTERVAL, SQLITE_LOCK_RETRY_LIMIT};
 
     /// Binds `params` onto a sqlite query, encoding each [`Value`] in its
     /// native type.
@@ -405,11 +406,22 @@ mod sqlite {
         target: i64,
         stmts: &[Statement],
     ) -> Result<()> {
-        let mut tx = pool.begin().await.context("beginning sqlite migration")?;
-        sqlx::query("UPDATE schema_version SET version = version")
-            .execute(&mut *tx)
-            .await
-            .context("locking sqlite schema version")?;
+        // Take the writer lock before reading the ledger. Concurrent starters
+        // can hold it beyond SQLite's per-statement busy timeout; retry only
+        // acquisition, before any migration statement can have taken effect.
+        let retry_deadline = tokio::time::Instant::now() + SQLITE_LOCK_RETRY_LIMIT;
+        let mut tx = loop {
+            match pool.begin_with("BEGIN IMMEDIATE").await {
+                Ok(tx) => break tx,
+                Err(error)
+                    if sqlite_lock_error(&error)
+                        && tokio::time::Instant::now() < retry_deadline =>
+                {
+                    tokio::time::sleep(SQLITE_LOCK_RETRY_INTERVAL).await;
+                }
+                Err(error) => return Err(error).context("locking sqlite schema version"),
+            }
+        };
         let versions = sqlx::query_scalar::<_, i64>("SELECT version FROM schema_version")
             .fetch_all(&mut *tx)
             .await
