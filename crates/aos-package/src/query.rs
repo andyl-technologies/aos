@@ -113,7 +113,9 @@ pub async fn search(
         printer.json(&serde_json::json!(json_results));
     } else {
         for (name, registry, version, description) in &results {
-            printer.plain(&format!("{name}/{registry} {version} - {description}"));
+            printer.plain(&format!(
+                "{name} {version} [registry: {registry}]\n  {description}"
+            ));
         }
     }
 
@@ -177,7 +179,9 @@ async fn search_installed(
         printer.json(&serde_json::json!(json_results));
     } else {
         for (name, registry, version, description) in &results {
-            printer.plain(&format!("{name}/{registry} {version} - {description}"));
+            printer.plain(&format!(
+                "{name} {version} [registry: {registry}]\n  {description}"
+            ));
         }
     }
 
