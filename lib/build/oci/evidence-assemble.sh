@@ -259,6 +259,9 @@ while IFS= read -r layer_path; do
     | .paths[]
     | {
         path: .path,
+        narHash: .narHash,
+        narSize: .narSize,
+        references: (.references | sort),
         layer: {
           name: $layer.name,
           digest: $layer.digest,
@@ -271,11 +274,29 @@ while IFS= read -r layer_path; do
 done < "$AOS_EVIDENCE_LAYER_PATHS"
 jq -s -S . closure-layer-descriptors.jsonl > closure-layer-descriptors.pretty.json
 write_compact_json closure-layer-descriptors.pretty.json closure-layer-descriptors.json
-jq -s -S 'sort_by(.path)' layer-map.jsonl > layer-map.pretty.json
+jq -s -S 'sort_by([.path, .layer.digest])' layer-map.jsonl > layer-map.pretty.json
 write_compact_json layer-map.pretty.json layer-map.json
 
+# Shared store paths may occur in different platform images. Every occurrence
+# must describe the exact authoritative NAR before one canonical mapping is kept.
+jq -e --slurpfile graph "$AOS_EVIDENCE_REFERENCE_GRAPH/inventory.json" '
+  all(.[];
+    . as $entry
+    | any($graph[0].paths[];
+        .path == $entry.path
+        and .narHash == $entry.narHash
+        and .narSize == $entry.narSize
+        and (.references | sort) == $entry.references
+      )
+  )
+' layer-map.json >/dev/null
+
 "$CONFIG_SHELL" "$AOS_EVIDENCE_PLATFORM_VALIDATOR" \
-  "$out/image-index.json" "$out/layout" closure-layer-descriptors.json
+  "$out/image-index.json" "$out/layout" closure-layer-descriptors.json layer-map.json
+
+jq -S 'group_by(.path) | map(min_by(.layer.digest)) | sort_by(.path)' \
+  layer-map.json > layer-map.pretty.json
+write_compact_json layer-map.pretty.json layer-map.json
 
 jq -r '.[].path' layer-map.json | sort > layer-paths.sorted
 jq -r '.paths[].path' "$AOS_EVIDENCE_REFERENCE_GRAPH/inventory.json" \
@@ -284,12 +305,6 @@ if ! cmp layer-paths.sorted reference-paths.sorted; then
   echo "closure evidence layer map does not equal the authoritative reference graph" >&2
   exit 1
 fi
-duplicate_layer_path=$(uniq -d layer-paths.sorted | head -n 1)
-if [ -n "$duplicate_layer_path" ]; then
-  echo "closure evidence maps one store path to multiple layers: $duplicate_layer_path" >&2
-  exit 1
-fi
-
 jq -S \
   --slurpfile catalog package-catalog.json '
     .paths
