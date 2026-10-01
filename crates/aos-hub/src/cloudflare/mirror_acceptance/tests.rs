@@ -8,7 +8,7 @@ use crate::cloudflare::{HybridDirectUploadAcceptanceConfig, HybridDirectUploadDe
 
 mod fixtures;
 
-fn chain() -> (
+pub(super) fn chain() -> (
     HybridDeployConfig,
     DirectWorkerDeploymentIdentity,
     HybridMirrorAcceptanceConfig,

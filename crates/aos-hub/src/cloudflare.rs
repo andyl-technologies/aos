@@ -72,7 +72,8 @@ mod direct_upload;
 mod mirror_acceptance;
 
 pub use mirror_acceptance::{
-    activate_hybrid_mirror, HybridMirrorAcceptanceConfig, HybridMirrorTrustConfig,
+    activate_hybrid_mirror, activate_hybrid_mirror_live, HybridMirrorAcceptanceConfig,
+    HybridMirrorLiveAcceptanceConfig, HybridMirrorTrustConfig,
 };
 
 /// Secret-free managed R2 configuration for the hybrid direct upload broker.

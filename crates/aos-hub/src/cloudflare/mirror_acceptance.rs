@@ -23,6 +23,10 @@ use aos_hub_core::mirror_acceptance::{
 
 use super::{Assets, HybridDeployConfig, HybridDirectUploadTrustConfig};
 
+mod live;
+
+pub use live::{activate_hybrid_mirror_live, HybridMirrorLiveAcceptanceConfig};
+
 /// Selects independently installed mirror reviewer trust and its KV binding.
 #[derive(Clone, Debug)]
 pub struct HybridMirrorTrustConfig {

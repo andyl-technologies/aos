@@ -29,6 +29,7 @@ use aos_hub::server::{router, AppState};
 mod database_input;
 mod indexing;
 mod logging;
+mod mirror_live_install;
 mod password_input;
 mod signing_input;
 mod snapshot_input;
@@ -320,6 +321,8 @@ enum WorkerCommand {
     ActivateHybridDirectUpload(ActivateHybridDirectArgs),
     /// Publish reviewed mirror and optional pack acceptance without redeploying.
     ActivateHybridMirror(ActivateHybridMirrorArgs),
+    /// Publish separately reviewed live delivery acceptance without redeploying.
+    ActivateHybridMirrorLive(mirror_live_install::Args),
     /// Capture current protected direct upload bindings for independent review.
     InspectHybridDirectUpload(InspectHybridDirectArgs),
     /// Provision provider resources, deploy the Worker, and set its secrets.
@@ -2013,6 +2016,9 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         );
         return Ok(());
     }
+    if let WorkerCommand::ActivateHybridMirrorLive(args) = &command {
+        return args.run().await;
+    }
     if let WorkerCommand::ActivateHybridMirror(args) = &command {
         let cfg = args.config.to_config()?;
         let acceptance = cloudflare::HybridMirrorAcceptanceConfig::from_files(
@@ -2105,6 +2111,7 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         | WorkerCommand::InstallHybrid(_)
         | WorkerCommand::ActivateHybridDirectUpload(_)
         | WorkerCommand::ActivateHybridMirror(_)
+        | WorkerCommand::ActivateHybridMirrorLive(_)
         | WorkerCommand::InspectHybridDirectUpload(_)
         | WorkerCommand::RenderHybridConfig(_) => Provider::Cloudflare,
     };
@@ -2127,6 +2134,7 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         | WorkerCommand::InstallHybrid(_)
         | WorkerCommand::ActivateHybridDirectUpload(_)
         | WorkerCommand::ActivateHybridMirror(_)
+        | WorkerCommand::ActivateHybridMirrorLive(_)
         | WorkerCommand::InspectHybridDirectUpload(_)
         | WorkerCommand::RenderHybridConfig(_) => {}
         WorkerCommand::Provision(args) => {
