@@ -561,10 +561,27 @@ impl Backend for SqlDoBackend {
     }
 
     async fn checked_batch(&self, stmts: &[CheckedStatement]) -> Result<()> {
+        self.checked_batch_owned(stmts.to_vec()).await
+    }
+}
+
+impl SqlDoBackend {
+    /// Applies an owned checked batch without duplicating its statement payload.
+    ///
+    /// The remote SQL receiver transfers its decoded batch directly into the
+    /// transaction, keeping large snapshots within the isolate memory budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for SQL failure or a mismatched affected-row count; the
+    /// platform rolls back every preceding statement in the same transaction.
+    pub(crate) async fn checked_batch_owned(
+        &self,
+        statements: Vec<CheckedStatement>,
+    ) -> Result<()> {
         self.metrics.record_transaction();
         let sql = self.sql.clone();
         let metrics = self.metrics.clone();
-        let statements = stmts.to_vec();
         self.storage
             .transaction(move |_transaction| async move {
                 for checked in &statements {

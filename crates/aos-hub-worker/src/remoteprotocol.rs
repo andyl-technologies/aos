@@ -53,6 +53,28 @@ pub(crate) struct RemoteSqlResponse {
 ///
 /// Returns an error when `body` is not a valid [`RemoteSqlRequest`].
 pub(crate) fn decode_request(body: &[u8]) -> Result<RemoteSqlRequest> {
+    // Internally tagged enum decoding buffers every field before selecting a
+    // variant. Borrow the large batch first so its statement strings are only
+    // allocated once within the Durable Object's memory limit.
+    #[derive(Deserialize)]
+    struct Envelope<'a> {
+        operation: String,
+        #[serde(borrow)]
+        statements: Option<&'a serde_json::value::RawValue>,
+    }
+
+    let envelope: Envelope<'_> =
+        serde_json::from_slice(body).context("decoding remote SQL envelope")?;
+    if envelope.operation == "batch" {
+        let statements = envelope
+            .statements
+            .context("remote SQL batch omitted statements")?;
+        return Ok(RemoteSqlRequest::Batch {
+            statements: serde_json::from_str(statements.get())
+                .context("decoding remote SQL batch statements")?,
+        });
+    }
+
     serde_json::from_slice(body).context("decoding remote SQL request JSON")
 }
 
@@ -75,5 +97,49 @@ mod tests {
         };
         assert_eq!(sql, "SELECT ?1, ?2");
         assert_eq!(params, vec![Value::Int(7), Value::Null]);
+    }
+
+    #[test]
+    fn wire_decoder_preserves_large_checked_batches_with_reordered_fields() {
+        let text = "release metadata ".repeat(131_072);
+        let statements = vec![super::RemoteStatement {
+            sql: "INSERT INTO catalog VALUES (?1, ?2, ?3)".to_string(),
+            params: vec![
+                Value::Text(text.clone()),
+                Value::Int(9_007_199_254_740_991),
+                Value::Null,
+            ],
+            expected_rows: Some(1),
+        }];
+        let statements_json = serde_json::to_string(&statements).unwrap();
+        let body =
+            format!(r#"{{"statements":{statements_json},"operation":"batch"}}"#).into_bytes();
+
+        let RemoteSqlRequest::Batch { statements } = decode_request(&body).unwrap() else {
+            panic!("expected a batch request");
+        };
+
+        assert_eq!(statements.len(), 1);
+        assert_eq!(statements[0].expected_rows, Some(1));
+        assert_eq!(
+            statements[0].params,
+            vec![
+                Value::Text(text),
+                Value::Int(9_007_199_254_740_991),
+                Value::Null
+            ]
+        );
+    }
+
+    #[test]
+    fn wire_decoder_rejects_incomplete_batch_envelopes() {
+        for body in [
+            br#"{"operation":"batch"}"#.as_slice(),
+            br#"{"operation":"batch","statements":null}"#.as_slice(),
+            br#"{"operation":"batch","statements":[{"sql":"SELECT 1"}]}"#.as_slice(),
+            br#"{"operation":"batch","statements":[]} trailing"#.as_slice(),
+        ] {
+            assert!(decode_request(body).is_err());
+        }
     }
 }

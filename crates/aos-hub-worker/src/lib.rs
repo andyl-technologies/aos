@@ -2884,6 +2884,7 @@ mod entry {
                                 return Response::error(format!("remote SQL decode: {error}"), 400);
                             }
                         };
+                        drop(body);
                         let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage());
                         return match crate::remotebackend::execute_remote_sql(&backend, operation)
                             .await
