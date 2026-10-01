@@ -378,7 +378,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Cancellation separately checks the actual independently opened coordination
   descriptor remains kernel-locked after the waiter is aborted. The probe gate
   requires all eight exact startup selectors. These scoped results do not
-  qualify the full task; fresh/Pending retention remains incomplete.
+  qualify the full task; they precede the separate fresh/Pending qualification.
   The verify-on-get, ranged-get and file-CAS gates now require the appropriate
   exact held-content selectors and reject missing tests. Complete effect routing
   remains pending.
@@ -415,8 +415,22 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   inputs before the first root mutation and reserves fresh receipts for genuine
   native creators. Its private programs remain beneath the retained publication
   frame and native executor; unavailable bindings refuse without root creation.
-  The shared default external control naming is unchanged. Actual fresh and
-  Pending activation integration and qualification remain pending.
+  The shared default external control naming is unchanged. A separate frozen
+  initializer candidate passes 22 actual cases: nine creator/probe cases,
+  five Pending recovery cases and the eight unchanged Active-open cases.
+  Actual successful create-new supplies freshness; durable staged snapshot,
+  transaction and portable pointer precede handoff. Existing Pending restart
+  reuses its exact operation, and same-byte replacement of an original staged
+  inode refuses activation. Queued and running cancellation retain actual
+  opened descriptors and kernel exclusion through worker acknowledgment.
+  An effective-UID mismatch refuses before any root/control creation. The
+  supported non-Send build, strict rustdoc and mandatory formatting pass on
+  that candidate. Strict Clippy exposes a large shared receipt variant and
+  test-only assertion diagnostics; the shared outcome now boxes its opaque
+  receipt, and narrowly scoped test corrections remain under qualification.
+  The capability gate now requires all 14 new exact cases, raising its floor
+  from 24 to 38; actual Nix qualification and complete source integration
+  remain pending.
   Qualification exposed
   an overwrite fixture still targeting the previous rename primitive and three
   fixtures retaining their own namespace receipts while waiting to reacquire.
@@ -438,9 +452,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   test-only trace passes the same case in 32.851 seconds; it separates fresh
   policy/history/tree verification from synchronous merge and encoding, which
   take milliseconds. The observed acknowledgments arrive 8.67 and 17.19 seconds
-  after the unchanged original origins. Complete reference-gate qualification
-  and the earlier untraced expiration remain unresolved. No deadline change or
-  speedup is claimed.
+  after the unchanged original origins. A later original untraced multiwriter
+  process passes in 40.700 seconds including setup and final assertions.
+  The grouped 33-selector run passes 32 cases and fails the unchanged
+  two-second cancellation-barrier arrival. That full-run failure leaves
+  reference-gate qualification incomplete; one successful original untraced
+  process does not establish reliable timing. No deadline change or speedup
+  is claimed.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,
