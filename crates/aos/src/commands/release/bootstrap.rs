@@ -1,55 +1,103 @@
-//! Explicit signed bootstrap of the first canonical Hub registry base.
+//! Explicit signed bootstrap of the first registry base on one surface.
+//!
+//! A new surface has no publication that can serve as the compare-and-swap
+//! parent of its first release, and the first release must not
+//! self-authorize one. Identical signed bootstrap intents from exactly the
+//! plan's release-evidence threshold authorize one base commit for one
+//! surface identity. The command dispatches on the surface kind: the Hub
+//! publication protocol for a Hub, direct upload (with `HEAD` last) for a
+//! static origin whose `.aos-surface` already names the planned identity.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
-use std::io::Write as _;
-use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
 use aos_core::output::Printer;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
+use aos_release::plan::SurfaceRole;
 use aos_release::receipt::{
-    HubEnvironment, RegistryBootstrapIntentV1, verify_signed_receipt_with_key,
+    HubEnvironment, RegistryBootstrapIntent, verify_signed_receipt_with_key,
 };
 use aos_release::signing::SignerRole;
-use aos_remote::hub::{HubClient, hub_rpc};
 
-use crate::cli::{HubAccessArgs, ReleaseBootstrapArgs};
+use crate::cli::ReleaseBootstrapArgs;
 
-use super::{capture, hub_transition, verify};
+use super::access::{self, SignerNeed};
+use super::journal::persist_tree;
+use super::surface::PublishedSurface;
+use super::{capture, verify};
 
-const STAGING_HUB: &str = "https://aos.staging.andyl.org";
-const PRODUCTION_HUB: &str = "https://aos.andyl.org";
-
+/// Verifies the bootstrap approvals and installs the base publication.
 pub(super) async fn run(args: &ReleaseBootstrapArgs, printer: &Printer) -> Result<()> {
     let plan_bytes = capture::control_file(&args.plan, "release plan")?;
     canonical::require_canonical(&plan_bytes, "release plan")?;
-    let plan: aos_release::plan::ReleasePlanV1 =
-        canonical::from_slice(&plan_bytes, "release plan")?;
+    let plan: aos_release::plan::ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
     plan.require_publishable_qualification()?;
     let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
-    let (environment, hub_url, deployment_id) = match args.environment.as_str() {
-        "staging" => (
-            HubEnvironment::Staging,
-            STAGING_HUB,
-            &plan.staging_deployment_id,
-        ),
-        "production" => (
-            HubEnvironment::Production,
-            PRODUCTION_HUB,
-            &plan.production_deployment_id,
-        ),
+    let (role, environment) = match args.environment.as_str() {
+        "staging" => (SurfaceRole::Staging, HubEnvironment::Staging),
+        "production" => (SurfaceRole::Production, HubEnvironment::Production),
         _ => bail!("bootstrap environment must be staging or production"),
     };
+    let surface = plan.surface(role)?;
 
+    let (intent, envelopes) = verify_intents(args, &plan)?;
+    if intent.environment != environment
+        || intent.deployment_id != surface.identity
+        || intent.registry != plan.registry
+        || intent.base_commit != plan.registry_base_commit
+        || intent.plan_digest != plan_digest
+    {
+        bail!("registry bootstrap intent differs from the exact plan and surface");
+    }
+
+    let client = access::connect(
+        &plan,
+        role,
+        args.token.as_deref(),
+        args.config.as_deref(),
+        SignerNeed::Credentials,
+    )
+    .await?;
+    client.verify_identity().await?;
+    let publication = client
+        .bootstrap(&args.registry_surface, &plan.registry_base_commit, printer)
+        .await?;
+    client.verify_identity().await?;
+    client.read_back(&publication.objects).await?;
+    persist(args, &envelopes, &publication)?;
+
+    if printer.json_if_active(&serde_json::json!({
+        "schema_version": "aos.release.registry-bootstrap-result/v1",
+        "environment": args.environment,
+        "surface_identity": surface.identity,
+        "surface_kind": surface.kind,
+        "registry": plan.registry,
+        "base_commit": plan.registry_base_commit,
+        "publication_id": publication.operation_id,
+        "approval_signatures": envelopes.len(),
+        "output": args.output,
+    })) {
+        return Ok(());
+    }
+    printer.success(&format!(
+        "Bootstrapped {} {} at {} as publication {}",
+        args.environment, plan.registry, plan.registry_base_commit, publication.operation_id
+    ));
+    Ok(())
+}
+
+/// Verifies identical intents from exactly the release-evidence threshold.
+fn verify_intents(
+    args: &ReleaseBootstrapArgs,
+    plan: &aos_release::plan::ReleasePlan,
+) -> Result<(RegistryBootstrapIntent, Vec<Vec<u8>>)> {
     let requirement = plan
         .signers
         .iter()
         .find(|requirement| requirement.role == SignerRole::ReleaseEvidence)
         .context("release plan lacks the release-evidence signer policy")?;
-    let approval_keys = verify::load_trusted_keys(&args.approval_keys)?;
-    let approval_map = approval_keys
+    let approval_map = verify::load_trusted_keys(&args.approval_keys)?
         .into_iter()
         .map(|key| (key.key_id, key.public_key))
         .collect::<BTreeMap<_, _>>();
@@ -61,11 +109,11 @@ pub(super) async fn run(args: &ReleaseBootstrapArgs, printer: &Printer) -> Resul
         bail!("bootstrap trust inputs must exactly satisfy the planned release-evidence threshold");
     }
     let mut signers = BTreeSet::new();
-    let mut intent: Option<RegistryBootstrapIntentV1> = None;
+    let mut intent: Option<RegistryBootstrapIntent> = None;
     let mut envelopes = Vec::with_capacity(args.signed_intents.len());
     for path in &args.signed_intents {
         let bytes = capture::control_file(path, "signed registry bootstrap intent")?;
-        let (key_id, found): (String, RegistryBootstrapIntentV1) =
+        let (key_id, found): (String, RegistryBootstrapIntent) =
             verify_signed_receipt_with_key(&bytes, &approval_map)?;
         found.validate()?;
         if !signers.insert(key_id) {
@@ -80,136 +128,34 @@ pub(super) async fn run(args: &ReleaseBootstrapArgs, printer: &Printer) -> Resul
     if signers.len() != usize::from(requirement.threshold) {
         bail!("registry bootstrap approvals do not satisfy the planned threshold");
     }
-    let intent = intent.context("registry bootstrap approval set is empty")?;
-    if intent.environment != environment
-        || intent.deployment_id != *deployment_id
-        || intent.registry != plan.registry
-        || intent.base_commit != plan.registry_base_commit
-        || intent.plan_digest != plan_digest
-    {
-        bail!("registry bootstrap intent differs from the exact plan and destination");
-    }
-
-    let public_client = hub_transition::public_client()?;
-    hub_transition::verify_deployment(&public_client, hub_url, deployment_id).await?;
-    let token = args
-        .token
-        .as_deref()
-        .context("registry bootstrap requires an environment-specific access token")?;
-    let hub = HubClient::connect_with_token(hub_url, token)?;
-    let existing = hub
-        .call_topology(
-            hub_rpc::ListRegistryPublications,
-            &aos_proto_types::ListRegistryPublicationsRequest {
-                registry: plan.registry.clone(),
-                state: String::new(),
-                page_size: 1,
-                page_token: String::new(),
-            },
-        )
-        .await?;
-    if !existing.publications.is_empty() || !existing.next_page_token.is_empty() {
-        bail!("registry bootstrap destination already contains a publication");
-    }
-
-    let access = HubAccessArgs {
-        hub: Some(hub_url.into()),
-        token: args.token.clone(),
-    };
-    let publication = crate::commands::hub::upload_registry_publication(
-        &access,
-        &plan.registry,
-        None,
-        &args.registry_surface,
-        printer,
-    )
-    .await?;
-    if publication.state != "ready"
-        || publication.completed_at <= 0
-        || !publication.parent_publication_id.is_empty()
-        || publication.default_commit != plan.registry_base_commit
-    {
-        bail!("first Hub publication does not match the approved empty base");
-    }
-    hub_transition::verify_deployment(&public_client, hub_url, deployment_id).await?;
-    hub_transition::read_back_publication(&public_client, hub_url, &plan.registry, &publication)
-        .await?;
-    persist(args, &envelopes, &publication)?;
-
-    if printer.json_if_active(&serde_json::json!({
-        "schema_version": "aos.release.registry-bootstrap-result/v1",
-        "environment": args.environment,
-        "deployment_id": deployment_id,
-        "registry": plan.registry,
-        "base_commit": plan.registry_base_commit,
-        "publication_id": publication.publication_id,
-        "approval_signatures": envelopes.len(),
-        "output": args.output,
-    })) {
-        return Ok(());
-    }
-    printer.success(&format!(
-        "Bootstrapped {} {} at {} as publication {}",
-        args.environment, plan.registry, plan.registry_base_commit, publication.publication_id
-    ));
-    Ok(())
+    Ok((
+        intent.context("registry bootstrap approval set is empty")?,
+        envelopes,
+    ))
 }
 
 fn persist(
     args: &ReleaseBootstrapArgs,
     envelopes: &[Vec<u8>],
-    publication: &aos_remote::hub_types::RegistryPublication,
+    publication: &PublishedSurface,
 ) -> Result<()> {
-    if args.output.exists() {
-        bail!("bootstrap output already exists: {}", args.output.display());
-    }
-    let parent = args
-        .output
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    fs::create_dir_all(parent)?;
-    let temporary = tempfile::Builder::new()
-        .prefix(".aos-release-bootstrap-")
-        .tempdir_in(parent)?;
-    let root = temporary.path().join("tree");
-    fs::create_dir(&root)?;
-    fs::create_dir(root.join("signed-intents"))?;
-    for (index, bytes) in envelopes.iter().enumerate() {
-        write_file(
-            &root
-                .join("signed-intents")
-                .join(format!("{:04}.json", index + 1)),
-            bytes,
-        )?;
-    }
     let evidence = canonical::to_vec(&serde_json::json!({
         "schema_version": "aos.release.registry-bootstrap-evidence/v1",
         "environment": args.environment,
-        "publication_id": publication.publication_id,
-        "generation": publication.generation,
-        "refs_digest": publication.refs_digest,
+        "publication_id": publication.operation_id,
         "default_commit": publication.default_commit,
-        "completed_at": publication.completed_at,
+        "object_count": publication.objects.len(),
     }))?;
-    write_file(&root.join("bootstrap-evidence.json"), &evidence)?;
-    File::open(&root)?.sync_all()?;
-    rustix::fs::renameat_with(
-        rustix::fs::CWD,
-        &root,
-        rustix::fs::CWD,
-        &args.output,
-        rustix::fs::RenameFlags::NOREPLACE,
-    )?;
-    File::open(parent)?.sync_all()?;
-    Ok(())
-}
-
-fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut file = File::create(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    Ok(())
+    let names: Vec<String> = (1..=envelopes.len())
+        .map(|index| format!("signed-intents/{index:04}.json"))
+        .collect();
+    let mut files: Vec<(&str, &[u8])> = names
+        .iter()
+        .map(String::as_str)
+        .zip(envelopes.iter().map(Vec::as_slice))
+        .collect();
+    files.push(("bootstrap-evidence.json", &evidence));
+    persist_tree(&args.output, &files, "bootstrap")
 }
 
 #[cfg(test)]
@@ -226,20 +172,19 @@ mod tests {
             signed_intents: Vec::new(),
             approval_keys: Vec::new(),
             token: None,
+            config: None,
             output: temp.path().join("evidence"),
         };
-        let publication = aos_remote::hub_types::RegistryPublication {
-            publication_id: "bootstrap-publication".into(),
-            generation: "bootstrap-generation".into(),
-            refs_digest: "a".repeat(64),
-            default_commit: "b".repeat(40),
-            completed_at: 1,
-            ..Default::default()
+        let publication = PublishedSurface {
+            operation_id: "bootstrap-publication".into(),
+            objects: Vec::new(),
+            default_commit: "b".repeat(64),
+            parent: None,
         };
         persist(&args, &[b"intent".to_vec()], &publication)?;
         assert!(persist(&args, &[b"changed".to_vec()], &publication).is_err());
         assert_eq!(
-            fs::read(args.output.join("signed-intents/0001.json"))?,
+            std::fs::read(args.output.join("signed-intents/0001.json"))?,
             b"intent"
         );
         Ok(())

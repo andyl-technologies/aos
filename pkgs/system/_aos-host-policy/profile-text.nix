@@ -10,6 +10,14 @@
   export PATH=${lib.escapeShellArg path}
   export PAGER=less
 
+  # Package-owned fragments run after the baseline PATH is established.
+  for aos_profile_fragment in /etc/profile.d/*.sh; do
+    if [ -f "$aos_profile_fragment" ]; then
+      . "$aos_profile_fragment"
+    fi
+  done
+  unset aos_profile_fragment
+
   if [ -f /etc/profile.local ]; then
     . /etc/profile.local
   fi

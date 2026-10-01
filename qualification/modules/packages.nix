@@ -33,7 +33,6 @@ in {
         invalidated_by = ["subject" "policy" "executor" "environment"];
         method = "automated";
         phase = "staging";
-        production_only = false;
         regressions = [
           "checks.fleet.apm-e2e"
           "checks.fleet.k3s-combined-worker"

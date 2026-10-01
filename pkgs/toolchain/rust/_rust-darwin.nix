@@ -96,6 +96,72 @@ in
             else ""
           }
           ${
+            if builtins.compareVersions version "1.98.0" < 0
+            then ''
+              # Older bootstrap Cargo releases vendor openssl-sys versions
+              # that reject OpenSSL 4 before compiling even though they use
+              # only the OpenSSL 3-compatible API subset. Remove that obsolete
+              # check and update Cargo's vendored-source checksum.
+              patched_openssl_sys=0
+              for openssl_sys_build in vendor/openssl-sys*/build/main.rs; do
+                test -f "$openssl_sys_build" || continue${
+                if version == "1.97.0"
+                then ''
+
+                  # openssl-sys 0.9.114 supports OpenSSL 4 and rejects only the
+                  # unreleased next major. Leave that branch intact.
+                  grep -q 'Version::Openssl4xx' "$openssl_sys_build" && continue
+                ''
+                else ""
+              }
+                grep -q 'if openssl_version >= 0x4_00_00_00_0 {' "$openssl_sys_build" || continue
+
+                test "$(grep -c 'if openssl_version >= 0x4_00_00_00_0 {' "$openssl_sys_build")" -eq 1
+                sed -i \
+                  '/if openssl_version >= 0x4_00_00_00_0 {/,/} else if openssl_version >= 0x3_00_00_00_0 {/c\        if openssl_version >= 0x3_00_00_00_0 {' \
+                  "$openssl_sys_build"
+                test "$(grep -c 'if openssl_version >= 0x4_00_00_00_0 {' "$openssl_sys_build")" -eq 0
+
+                openssl_sys_dir=''${openssl_sys_build%/build/main.rs}
+                openssl_sys_checksum=$openssl_sys_dir/.cargo-checksum.json
+                test "$(grep -o '\"build/main.rs\":\"[0-9a-f]*\"' "$openssl_sys_checksum" | wc -l)" -eq 1
+                updated_checksum=$(sha256sum "$openssl_sys_build")
+                updated_checksum=''${updated_checksum%% *}
+                sed -i \
+                  "s|\"build/main.rs\":\"[0-9a-f]*\"|\"build/main.rs\":\"$updated_checksum\"|" \
+                  "$openssl_sys_checksum"
+                grep -q "\"build/main.rs\":\"$updated_checksum\"" "$openssl_sys_checksum"
+
+                patched_openssl_sys=$((patched_openssl_sys + 1))
+              done
+              test "$patched_openssl_sys" -ge 1
+            ''
+            else ""
+          }
+          ${
+            if builtins.compareVersions version "1.91.0" >= 0 && builtins.compareVersions version "1.96.0" < 0
+            then ''
+              # Cargo's curl 8.15 and 8.17 read ASN.1 structure fields that are
+              # opaque in OpenSSL 4. Preserve certificate reporting through
+              # the public accessors and retain Cargo's source integrity check.
+              patched_curl_vendors=0
+              for curl_vendor in vendor/curl-sys-*+curl-8.15.0 vendor/curl-sys-*+curl-8.17.0; do
+                test -d "$curl_vendor" || continue
+                patch --fuzz=0 -d "$curl_vendor" -p1 < ${./rust-curl-openssl4-asn1.patch}
+                curl_openssl_checksum=$(sha256sum "$curl_vendor/curl/lib/vtls/openssl.c" | cut -d ' ' -f 1)
+                checksum_file="$curl_vendor/.cargo-checksum.json"
+                test "$(grep -o '"curl/lib/vtls/openssl.c":"[0-9a-f]*"' "$checksum_file" | wc -l)" -eq 1
+                sed -i \
+                  "s|\"curl/lib/vtls/openssl.c\":\"[0-9a-f]*\"|\"curl/lib/vtls/openssl.c\":\"$curl_openssl_checksum\"|" \
+                  "$checksum_file"
+                grep -q "\"curl/lib/vtls/openssl.c\":\"$curl_openssl_checksum\"" "$checksum_file"
+                patched_curl_vendors=$((patched_curl_vendors + 1))
+              done
+              test "$patched_curl_vendors" -ge 1
+            ''
+            else ""
+          }
+          ${
             if
               builtins.compareVersions version "1.75.0"
               >= 0

@@ -1,35 +1,60 @@
 # Hosted registry policy and runbooks
 
-The hosted Hub uses separate registries for separate trust and lifecycle
-domains. Channels are mutable rollout pointers inside a registry; they do not
-provide enough isolation for an experimental trust root or disposable data.
+AOS uses separate registries for separate trust and lifecycle domains.
+Channels are mutable rollout pointers inside a registry; they do not provide
+enough isolation for an experimental trust root or disposable data.
 
-| Registry | Local APM alias | Purpose | Allowed release class | Default channel | Data policy |
+| Registry | Local APM alias | Purpose | Channels | Destinations | Data policy |
 | --- | --- | --- | --- | --- | --- |
-| `andyl/testing` | `andyl-testing` | Experimental integration releases | `edge` | `edge` | Disposable |
-| `andyl/main` | `andyl` | Supported releases after graduation | `candidate`, `stable`, `emergency` | `stable` | Durable |
+| `andyl/testing` | `andyl-testing` | Experimental integration releases | `edge` | `staging/edge`, `production/edge` | Disposable |
+| `andyl/main` | `andyl` | Supported releases after graduation | `candidate`, `stable` | `staging/candidate`, `staging/stable`, `production/candidate`, `production/stable` | Durable |
 
-Do not publish an edge release to `andyl/main`, and do not promote a testing
-release into main. Graduation is a new main-registry release plan built from a
-reviewed source commit; it is not a channel move across registries.
+Each destination selects a qualification profile, listed in the
+[qualification contract](qualification.md#surfaces-and-destinations).
+Testing epochs (`andyl/testing-vN`) carry the same destinations as
+`andyl/testing`.
+
+Never publish `edge` to `andyl/main`, and never move a testing release into
+main. Graduation is a new main-registry release plan built from a reviewed
+source commit; it is not a channel move across registries.
+
+There is no emergency release class. An emergency on main is a
+[signed profile override](qualification.md#profile-overrides) of
+`production/stable` that references an incident record and may shorten only
+its soak and rollout rings. Every other obligation still applies.
 
 Do not create a separate `andyl/nightly` registry. `edge` is the rapidly moving
 channel inside `andyl/testing`; adding a registry is reserved for a genuinely
 different trust root, owner, legal boundary, dependency universe, or data
-lifecycle. Add later testing rollout rings as signed channels only when they
-share the same root and retention policy.
-
-Staging and production are deployment environments, not registry identities.
-Both contain independently bootstrapped copies of the same signed registry
-identity, while environment-specific deployment ids, publications, receipts,
-tokens, databases, and object stores remain isolated. Do not create
-`andyl/staging` or sign a staging-only registry name.
+lifecycle. Testing carries no other channel; a staged rollout within a channel
+uses the destination profile's rings, not additional channels.
 
 The signed identity and local alias are deliberately different. Signed release,
 receipt, TUF, and Hub values use the slash-qualified identity. APM configuration
 filenames, local clone directories, and trust lines use the slash-free alias.
 For example, an `andyl/testing` image contains an
 `andyl-testing:Ed25519:...` bootstrap trust line.
+
+## Surfaces
+
+Staging and production are publication surfaces, not registry identities.
+Both contain independently bootstrapped copies of the same signed registry
+identity, while surface-specific identities, publications, receipts,
+credentials, and storage remain isolated. Do not create `andyl/staging` or sign
+a staging-only registry name.
+
+A surface is either an AOS Hub deployment or a
+[static origin](canonical-releases.md#static-surfaces) served from a
+filesystem, S3, or SFTP location and read back over HTTPS. A registry does not
+require a Hub. A Hub staging surface may pair with a Hub or static production
+surface; a static staging surface requires a static production surface.
+
+Staging surfaces are maintainer-facing. A staging destination requires only a
+reproduced, authorized build, and its channel moves as soon as the publication
+is read back, so executors and reviewers can consume the release exactly as
+clients will. Consumers must not configure a staging surface. Production
+surfaces are consumer-facing and accept a release only after its staging
+publication and the destination's qualification.
 
 ## Trust-root epochs
 
@@ -79,14 +104,16 @@ One designated maintainer machine may perform all operations, but it does not
 collapse the security domains. Use separate restricted state directories and
 credential sets for testing versus main and for staging versus production.
 Load only the credentials required by the current phase, verify the selected
-Hub deployment before mutation, and serialize release, backup, restore, and
+surface identity before mutation, and serialize release, backup, restore, and
 registry-maintenance jobs with the coordinator lock described in
 [`canonical-releases.md`](canonical-releases.md).
 
 The machine is not its own backup. Keep an encrypted, access-controlled copy of
 private keys, authoring repositories, closed release bundles, operation logs,
-and recovery manifests on independently recoverable storage. Exercise restoring
-that operator state along with Hub data. A failed or lost maintainer disk must
+and recovery manifests on independently recoverable storage. The
+`storage-restore`, `authority-recovery`, and `hub-restore`
+[fitness exercises](release-checklist.md#fitness-exercises) prove that operator
+state and surface data can be restored. A failed or lost maintainer disk must
 not force an unrecorded trust-root replacement.
 
 Co-location also does not create an independent approval quorum. Testing may

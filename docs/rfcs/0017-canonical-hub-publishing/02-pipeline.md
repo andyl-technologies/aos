@@ -30,17 +30,18 @@ At minimum the bundle inventories:
   SBAT generations, dm-verity roots, and expected PCR values;
 - gate names, exact commands, result store paths, start and finish times, and
   logs or digests of logs;
-- staging upload receipt and public read-back results;
-- production upload receipt, channel plan, channel observations, approvals,
-  and incident/waiver references; and
-- the release-tool and Hub deployment ids used for every transition.
+- staging publication receipt and public read-back results;
+- production publication receipts, rollout rings, channel observations,
+  approvals, and any profile override with its incident reference; and
+- the release-tool version and surface identities used for every transition.
 
 It also carries the package eligibility matrix derived by applying the release
 policy's selected four targets to package-owned `platformSupport` declarations,
 plus both Linux architecture image matrices defined by
 [`06-platform-matrix.md`](06-platform-matrix.md). Every planned cell is an
-artifact, an explicit policy-backed `not-applicable`, or an edge/RC-only
-`blocked` result. Stable-eligible bundles contain no blocked cell.
+artifact, an explicit policy-backed `not-applicable`, or a `blocked` result.
+A plan with a `production/stable` destination, whose `soak` profile requires a
+complete matrix, contains no blocked cell.
 
 TUF root, targets, delegated-targets, snapshot, and timestamp files are
 repository metadata on the registry surface, not targets inside this bundle.
@@ -48,7 +49,7 @@ The delegated release entry authorizes the signed manifest envelope; that
 manifest inventories every bundle payload. This direction is intentional: if
 the manifest inventoried TUF bytes that themselves named the manifest or whole
 bundle digest, construction would require a cryptographic hash fixed point.
-Exact-byte Hub receipts separately bind the resulting bundle digest.
+Exact-byte publication receipts separately bind the resulting bundle digest.
 
 The public portion is signed by the provenance/evidence key and published with
 the release. Secrets, personal data, provider account ids, internal host
@@ -57,13 +58,31 @@ manifest carries their digests and pass/fail claims.
 
 ## States
 
-One release id advances monotonically through this state machine:
+One release id advances monotonically through three global states and then
+through one state per planned destination. The hash-chained journal
+(`aos.release.journal-entry/v1`) records each transition:
 
 ```text
-planned -> built -> finalized -> staged -> qualified -> promoted -> rolling -> complete
-    |         |          |          |          |           |          |
-    +---------+----------+----------+----------+-----------+----------+-> failed
+planned -> built -> finalized -+-> published(staging/c)    -> rolling -> complete
+                               +-> published(production/c) -> rolling -> complete
+
+any non-terminal state -> failed
 ```
+
+- `planned`, `built`, and `finalized` are global and linear.
+- `published(d)` requires `finalized` and a published, rolling, or complete
+  entry for every surface role that destination `d` lists in `after`.
+  Production destinations list staging; staging destinations list nothing.
+- `rolling(d)` records each ring advance; `complete(d)` closes the
+  destination's rollout.
+- Destinations interleave. `production/candidate` and `production/stable` of a
+  final version advance independently once staging is published.
+- The release succeeds when every planned destination is `complete`.
+
+There is no `qualified` state. The signed staging qualification of a
+production destination is evidence attached to that destination's
+`published` entry; rollout and completion qualifications attach to the entries
+they authorize.
 
 `failed` is terminal for the release bytes. A failed version is never reused.
 An interrupted transition may resume only from a verified journal whose inputs
@@ -73,13 +92,16 @@ and already-written immutable objects match the bundle manifest.
 
 The release plan freezes:
 
-- release version and class (`edge`, `candidate`, `stable-eligible`, or
-  `emergency`);
-- exact source commit, target channels, and intended partition changes;
+- release version and the class derived from it (`edge`, `candidate`, or
+  `stable`);
+- exact source commit;
+- the staging and production surfaces: kind, origin, read-back origin, and
+  identity;
+- every destination with its profile digest, gates, soak, and rollout rings;
+- the change scope against the predecessor release;
+- any accepted profile override, by digest;
 - package, image, documentation, source, and license artifact matrix;
 - build and signing tool closures;
-- mandatory gates selected from the changed paths and release class;
-- expected staging and production Hub deployment ids;
 - key ids and quorum policy, without private material; and
 - retention roots and rollback/fix-forward owner.
 
@@ -150,29 +172,40 @@ documentation objects, image facts, and recovery artifacts; constructs the
 immutable release; creates threshold release metadata; signs narinfos; and
 writes the release evidence envelope. No channel moves in this state.
 
-### `staged`
+### `published` to a staging destination
 
-The maintainer host obtains a short-lived, staging-only upload grant. It uploads
-immutable objects first and mutable registry discovery data last to the
-isolated staging Hub. The Hub verifies the bundle signature, expected staging
-deployment id, registry identity, object hashes, sizes, completeness, and
-compare-and-swap base before it admits the publication.
+The maintainer host obtains a short-lived, staging-only upload credential. It
+uploads immutable objects first and mutable registry discovery data last to the
+isolated staging surface. A Hub surface verifies the bundle signature, expected
+staging deployment id, registry identity, object hashes, sizes, completeness,
+and compare-and-swap base before it admits the publication. On a static
+surface the maintainer host performs the same checks, confirms the
+`.aos-surface` identity before and after upload, and signs the receipt with the
+surface-receipt role.
 
-Read-back is from `aos.staging.andyl.org`, not from the local authoring clone or
-provider storage endpoint. Every object is fetched by its public route and
-compared with the manifest. Range requests are checked for image artifacts.
+Read-back is from the staging surface's public route, such as
+`aos.staging.andyl.org`, not from the local authoring clone or provider storage
+endpoint. Every object is fetched by its public route and compared with the
+manifest. Range requests are checked for image artifacts. The staging
+destination's `build` profile has no further gate: its channel moves across all
+partitions once read-back succeeds, so executors consume the release through
+the same channel protocol clients use.
 
 Staging registry metadata may refer to the canonical production cache URL. A
 staging APM test uses an explicit staging cache override until the immutable
 objects are present in production. Environment-specific cache URLs must not be
 baked into the release commit merely to make staging work.
 
-### `qualified`
+### Staging qualification
 
 Qualification boots and exercises the exact finalized bytes read back from the
-staging Hub. It must not substitute a local image or regenerate a metadata file.
+staging surface. It must not substitute a local image or regenerate a metadata
+file. It is evidence for a production destination, collected under that
+destination's profile, and it is admitted when the destination is published;
+it is not a journal state.
 
-An image-bearing candidate passes:
+An image-bearing release qualified for `production/candidate` or
+`production/stable` passes:
 
 - SHA-256, size, catalog signature, TUF threshold, narinfo, realization graph,
   source/license, Secure Boot certificate, SBAT, and recovery-manifest checks;
@@ -185,49 +218,62 @@ An image-bearing candidate passes:
 - A/B image update, boot blessing, forced candidate failure, automatic
   fallback, and offline recovery media;
 - the platform-specific canary appropriate to every advertised format; and
-- clean Hub logs, storage checks, ranged downloads, cache headers, and audit
-  entries.
+- clean surface logs, storage checks, ranged downloads, cache headers, and
+  audit entries.
 
 Qualification runs both Linux image architectures and the native Darwin
 package gates required by [`06-platform-matrix.md`](06-platform-matrix.md).
 Cross-compilation and static inspection alone cannot qualify a Darwin cell for
 stable.
 
-A package-only candidate installs and activates each changed package in its
-supported system context, verifies package-root integrity and documentation,
-proves no image-affecting input changed, and has no unreviewed finding that
-violates the channel policy. A Hub Worker release follows the separate
+A change-scoped `smoke` qualification for `production/edge` exercises only
+what differs from the predecessor. A package-only edge release installs and
+activates each changed package cell in its supported system context, verifies
+package-root integrity and documentation, proves from the recorded change scope
+that no image-affecting input changed, and has no unreviewed finding that
+violates the channel policy. An uncertain change scope selects every target. A Hub Worker release follows the separate
 application path below.
 
-### `promoted`
+### `published` to a production destination
 
-Promotion copies the bundle's existing immutable objects to production storage
-and imports its existing signed registry objects. It never invokes Nix,
-`ukify`, an image converter, a signing key, or a metadata generator.
+Production publication copies the bundle's existing immutable objects to the
+production surface and imports its existing signed registry objects. It never
+invokes Nix, `ukify`, an image converter, a content signing key, or a metadata
+generator.
 
-The production Hub requires:
+The production surface requires:
 
-- a short-lived token scoped to `andyl/main` publication;
-- the exact qualified bundle id and staging receipt;
-- a production deployment id on the release plan's allowlist;
+- a short-lived credential scoped to the production surface of this registry;
+- the exact bundle id and the staging publication receipt;
+- the planned production surface identity, checked before and after upload;
+- the destination's signed staging qualification, covering exactly its planned
+  gates under the recomputed change scope, with the profile's reviews;
+- fitness attestations required by the profile, within their maximum age and
+  bound to the live surface, schema, signer roster, tooling, and alert
+  configuration;
 - object-by-object digest and completeness verification;
-- a current backup and restore proof within policy;
 - a compare-and-swap base matching the recorded production generation; and
 - no active publication or topology migration.
 
 Production immutable objects are uploaded first. The registry snapshot becomes
 discoverable only after every referenced cache, image, documentation, source,
 and recovery object is readable and verified. A clean consumer with only the
-image-baked trust root must verify the candidate from the public production
-route before any supported channel changes.
+image-baked trust root must verify the release from the public production
+route before any supported channel changes. When a final version is published
+to `production/stable` after `production/candidate`, the surface already holds
+its publication; the stable destination verifies it by full read-back and moves
+only its own channel.
 
 ### `rolling` and `complete`
 
-`edge` and `candidate` advance all partitions after production read-back. An
+Each production destination advances the rings of its profile. `edge` and
+`candidate` advance all partitions in one ring after production read-back;
+`candidate` first requires a fresh reviewed rollout-health approval. An
 image-bearing candidate therefore imports its qualified image objects before
-the candidate pointer moves. A normal stable release reuses those production
-objects, advances the four recorded canary partitions, observes the ring, and
-proceeds through the cumulative `4 -> 32 -> 128 -> 256` plan.
+the candidate pointer moves. A stable release reuses those production objects,
+advances the four recorded canary partitions, observes the ring, and proceeds
+through the cumulative `4 -> 32 -> 128 -> 256` plan, with a fresh reviewed
+health approval before every ring.
 
 Each advancement is an independent, signed, compare-and-swap operation. The
 operator records:
@@ -236,32 +282,49 @@ operator records:
 - exact target release and manifest digest;
 - public partition state immediately before and after the write;
 - signer key id and approval;
-- Hub deployment id, operation id, and audit record; and
+- surface identity, operation id, and audit record; and
 - canary and delivery observations used for the decision.
 
-Completion means all intended partitions name the target, two independent
-public reads agree, a clean APM client accepts the target, retention roots are
-installed, and the restricted and public evidence records are durable.
+Completion of a destination means all intended partitions name the target, two
+independent public reads agree, a clean APM client accepts the target,
+retention roots are installed, the release-evidence completion approvals are
+signed, and the restricted and public evidence records are durable. A `soak`
+destination additionally requires the signed complete-phase observation report
+covering its full soak.
 
-## Release classes and gates
+## Profiles and gates
 
-| Gate | Edge | Candidate | Stable-eligible promotion | Emergency stable |
+Each destination selects one profile. The shipped profiles are:
+
+| Gate | `build` (staging destinations) | `smoke` (`production/edge`) | `functional` (`production/candidate`) | `soak` (`production/stable`) |
 | --- | --- | --- | --- | --- |
 | Clean protected source and contributor authorization | Required | Required | Required | Required |
-| Hermetic build and closure/license audit | Required | Required | Required | Required |
-| Repeat-build comparison | Targeted | Required | Reuse candidate evidence | Required |
-| Threshold release metadata | Required | Required | Reuse candidate signatures | Required |
-| External production Secure Boot signing | If image-bearing | If image-bearing | Reuse candidate signatures | If image-bearing |
-| Full VM verified-boot/recovery suite | If image-bearing | Required if image-bearing | Reuse candidate evidence plus canary | Required if image-bearing |
-| Hosted staging read-back | Required | Required | Reuse candidate plus freshness check | Required |
-| Soak | None | Until superseded or selected | Seven days | May be shortened by incident commander |
-| Progressive production partitions | No | No | Required | Required unless delay increases active exploitation risk |
+| Hermetic build, repeat-build comparison, closure/license audit | Required | Required | Required | Required |
+| Threshold release metadata and external image signing | Required | Required | Required | Required |
+| Hosted staging read-back | Required | Required | Required | Required |
+| Functional claims and package cells (A2) | No | Changed targets and cells only | Every target and cell | Every target and cell |
+| Qualified claims (A3) | No | No | No | Required |
+| Independent report review | No | No | One reviewer | One reviewer, including each ring |
+| Registry transaction review | No | No | Required | Required |
+| Complete package/image matrix | No | No | No | Required |
+| Fitness attestations | No | No | Weekly automated (14 days); quarterly restore and authority recovery (90 days) | As `functional`, plus quarterly key rotation |
+| Rollout health approval | No | No | Before the single ring | Before every ring |
+| Soak | None | None | None | Seven days |
+| Progressive production partitions | No | No | No | 4, 32, 128, 256 |
+| Overridable by a signed profile override | Nothing | Nothing | Nothing | Soak (minimum one day) and rings (ending at 256) |
 
-No emergency class may waive signature verification, contribution
-authorization, corresponding source, closure integrity, public read-back, or
-boot/recovery checks for changed image code. It may shorten repeat observation
-and may start with more stable partitions when the recorded incident analysis
-shows that delay is the greater risk.
+Build-side gates run once per release: a final version's candidate and stable
+destinations share one build, one signature set, and one staging publication.
+
+No release class relaxes obligations. An emergency is a `production/stable`
+release planned with a threshold-signed profile override that references an
+incident record. The override changes the plan digest, so it is fixed before
+any build.
+No override may waive signature verification, contribution authorization,
+corresponding source, closure integrity, public read-back, review, fitness,
+the complete matrix, or boot/recovery checks for changed image code. It may
+shorten observation and may start with more stable partitions when the
+recorded incident analysis shows that delay is the greater risk.
 
 ## Hub Worker application releases
 
@@ -281,9 +344,9 @@ A Hub schema migration that is not backward compatible requires a signed
 backup/restore and roll-forward plan before staging. Code rollback does not
 pretend to reverse Durable Object, R2, KV, Queue, or registry state.
 
-The content publisher pins an allowed Hub deployment-id range in its release
-plan. A content release does not overlap a Hub deployment, topology cutover,
-storage migration, or key rotation.
+When a surface is a Hub, the content publisher pins its deployment identity in
+the release plan. A content release does not overlap a Hub deployment,
+topology cutover, storage migration, or key rotation.
 
 ## Failure and recovery
 

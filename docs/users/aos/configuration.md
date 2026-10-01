@@ -6,7 +6,7 @@ the runtime configuration-generation path is active.
 
 | Configuration path | Use it for | Current behavior |
 | --- | --- | --- |
-| Metadata `host.nix` under `aos.provisioning.storage` | First-boot partition layout | Applied once, then checked for drift |
+| Metadata `host.nix` under `aos.provisioning.storage` | First-boot partition, array, and volume layout | Applied once, then checked for drift |
 | Other metadata `host.nix` settings | Hostname, networking, users, access, services, and desired packages | Purely evaluated, materialized, and atomically activated as a configuration generation |
 | `apm` | User packages and implemented machine-wide package reconciliation | Active at runtime |
 | System modules in the source tree | Golden-image and release policy | Maintainer workflow, evaluated when the image is built |
@@ -54,6 +54,33 @@ path:
     sizeMin = "20G";
     sizeMax = "20G";
     format = "ext4";
+  };
+}
+```
+
+Partitions on two disks can form an MD mirror, and a mirror can carry `/var`
+itself. The array is created in the same first-boot transaction and assembled
+by the initrd on every later boot:
+
+```nix
+{
+  aos.provisioning.storage = {
+    partitions = {
+      var = {
+        sizeMin = "32G";
+        sizeMax = "32G";
+        grow = false;
+      };
+      var-mirror = {
+        device = "/dev/disk/by-id/virtio-aos-mirror";
+        sizeMin = "32G";
+        sizeMax = "32G";
+      };
+    };
+    arrays.var = {
+      level = "raid1";
+      members = [ "var" "var-mirror" ];
+    };
   };
 }
 ```

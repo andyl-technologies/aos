@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use aos_release::signing::{
-    SignatureAlgorithm, SignatureResponseV1, SignerRole, SigningContext, SigningOperation,
+    SignatureAlgorithm, SignatureResponse, SignerRole, SigningContext, SigningOperation,
     verify_response_binding,
 };
 
@@ -45,7 +45,7 @@ pub struct PreparedFilesystemsV1 {
     /// Normal command lines rebound to the rebuilt root hash.
     pub command_lines: ImageCommandLinesV1,
     /// Audited provider responses for every signed module instance.
-    pub signing_operations: Vec<SignatureResponseV1>,
+    pub signing_operations: Vec<SignatureResponse>,
 }
 
 /// Signs every module instance and deterministically rebuilds root and initrds.
@@ -274,7 +274,7 @@ async fn sign_tree_modules(
     scratch: &Path,
     signer: &dyn ImageSigner,
     authorizer: &dyn ImageRequestAuthorizer,
-) -> Result<Vec<SignatureResponseV1>> {
+) -> Result<Vec<SignatureResponse>> {
     let modules = kernel_modules(tree)?;
     let mut responses = Vec::with_capacity(modules.len());
     for (index, module) in modules.into_iter().enumerate() {

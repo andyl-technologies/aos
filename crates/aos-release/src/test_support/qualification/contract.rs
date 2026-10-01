@@ -41,12 +41,14 @@ pub fn contract() -> Result<QualificationContract> {
             "phase": phase,
             "scope": scope,
             "method": "automated",
-            "production_only": production_only,
             "checks": [format!("exercise-{id}")],
             "regressions": [],
             "invalidated_by": ["subject", "policy", "executor", "environment"],
             "measurements": measurements_for(id),
         });
+        if production_only && id.starts_with("ability-") {
+            requirement["production_only"] = json!(true);
+        }
         if id == "ability-native-adapter-matrix" {
             requirement["checks"] = json!(["native-adapter-matrix"]);
             requirement["native_operation_spec"] =
@@ -86,12 +88,9 @@ pub fn contract() -> Result<QualificationContract> {
         "id": "aos-system-v2",
         "promises": ["Exercise the release protocol fixture."],
         "exclusions": ["The synthetic fixture makes no production claim."],
-        "thresholds": {
-            "edge": threshold(86_400, false, false),
-            "candidate": threshold(604_800, false, true),
-            "stable": threshold(1_209_600, true, true),
-            "emergency": threshold(1_209_600, true, true),
-        },
+        "profiles": profiles(),
+        "destinations": destinations(),
+        "fitness": fitness(),
         "targets": targets,
         "package_rules": [{
             "name": "fixture",
@@ -108,19 +107,6 @@ pub fn contract() -> Result<QualificationContract> {
             "trains": {},
         },
     }))?)
-}
-
-fn threshold(
-    soak_seconds: u64,
-    require_complete_matrix: bool,
-    require_independent_review: bool,
-) -> Value {
-    json!({
-        "exercise_max_age_seconds": 2_592_000,
-        "require_complete_matrix": require_complete_matrix,
-        "require_independent_review": require_independent_review,
-        "soak_seconds": soak_seconds,
-    })
 }
 
 fn measurements_for(requirement: &str) -> Value {
@@ -300,4 +286,304 @@ fn claims_for(target: &str, kind: &str) -> [Value; 2] {
     });
 
     [functional, qualified]
+}
+
+fn profiles() -> Value {
+    json!(
+        [
+            {
+                "change_scoped": false,
+                "claims": "none",
+                "description": "Reproducible, authorized build of the complete closure.",
+                "fitness": {},
+                "name": "build",
+                "override": {
+                    "rings": false,
+                    "soak_seconds": false
+                },
+                "require_complete_matrix": false,
+                "requirements": [
+                    "build-integrity"
+                ],
+                "review_registry_transaction": false,
+                "review_threshold": 0,
+                "rollout": {
+                    "rings": [
+                        {
+                            "observe_seconds": 0,
+                            "partitions": 256
+                        }
+                    ]
+                },
+                "soak_seconds": 0
+            },
+            {
+                "change_scoped": false,
+                "claims": "functional",
+                "description": "Reviewed functional qualification of every target with fresh environment fitness.",
+                "fitness": {
+                    "alert-delivery": {
+                        "max_age_seconds": 1209600
+                    },
+                    "authority-recovery": {
+                        "max_age_seconds": 7776000
+                    },
+                    "hub-restore": {
+                        "max_age_seconds": 7776000
+                    },
+                    "storage-restore": {
+                        "max_age_seconds": 1209600
+                    }
+                },
+                "name": "functional",
+                "override": {
+                    "rings": false,
+                    "soak_seconds": false
+                },
+                "require_complete_matrix": false,
+                "requirements": [
+                    "ability-crucible-baseline",
+                    "ability-native-activation",
+                    "ability-native-adapter-matrix",
+                    "ability-native-kubernetes",
+                    "ability-native-recovery",
+                    "build-integrity",
+                    "package-function",
+                    "rollout-health",
+                    "staging-delivery"
+                ],
+                "review_registry_transaction": true,
+                "review_threshold": 1,
+                "rollout": {
+                    "rings": [
+                        {
+                            "observe_seconds": 0,
+                            "partitions": 256
+                        }
+                    ]
+                },
+                "soak_seconds": 0
+            },
+            {
+                "change_scoped": true,
+                "claims": "functional",
+                "description": "Automated exact-byte functional checks on the changed targets.",
+                "fitness": {},
+                "name": "smoke",
+                "override": {
+                    "rings": false,
+                    "soak_seconds": false
+                },
+                "require_complete_matrix": false,
+                "requirements": [
+                    "ability-crucible-baseline",
+                    "ability-native-activation",
+                    "ability-native-adapter-matrix",
+                    "ability-native-kubernetes",
+                    "ability-native-recovery",
+                    "build-integrity",
+                    "package-function",
+                    "staging-delivery"
+                ],
+                "review_registry_transaction": false,
+                "review_threshold": 0,
+                "rollout": {
+                    "rings": [
+                        {
+                            "observe_seconds": 0,
+                            "partitions": 256
+                        }
+                    ]
+                },
+                "soak_seconds": 0
+            },
+            {
+                "change_scoped": false,
+                "claims": "qualified",
+                "description": "Complete-matrix qualification with a week of observation and staged rollout.",
+                "fitness": {
+                    "alert-delivery": {
+                        "max_age_seconds": 1209600
+                    },
+                    "authority-recovery": {
+                        "max_age_seconds": 7776000
+                    },
+                    "hub-restore": {
+                        "max_age_seconds": 7776000
+                    },
+                    "key-rotation": {
+                        "max_age_seconds": 7776000
+                    },
+                    "storage-restore": {
+                        "max_age_seconds": 1209600
+                    }
+                },
+                "name": "soak",
+                "override": {
+                    "rings": true,
+                    "soak_seconds": true
+                },
+                "require_complete_matrix": true,
+                "requirements": [
+                    "ability-crucible-baseline",
+                    "ability-native-activation",
+                    "ability-native-adapter-matrix",
+                    "ability-native-kubernetes",
+                    "ability-native-recovery",
+                    "build-integrity",
+                    "package-function",
+                    "rollout-health",
+                    "rollout-observation",
+                    "staging-delivery"
+                ],
+                "review_registry_transaction": true,
+                "review_threshold": 1,
+                "rollout": {
+                    "rings": [
+                        {
+                            "observe_seconds": 86400,
+                            "partitions": 4
+                        },
+                        {
+                            "observe_seconds": 86400,
+                            "partitions": 32
+                        },
+                        {
+                            "observe_seconds": 172800,
+                            "partitions": 128
+                        },
+                        {
+                            "observe_seconds": 0,
+                            "partitions": 256
+                        }
+                    ]
+                },
+                "soak_seconds": 604800
+            }
+        ]
+    )
+}
+
+fn destinations() -> Value {
+    json!(
+        [
+            {
+                "after": [
+                    "staging"
+                ],
+                "channel": "candidate",
+                "profile": "functional",
+                "registry_tier": "production",
+                "surface": "production"
+            },
+            {
+                "after": [
+                    "staging"
+                ],
+                "channel": "stable",
+                "profile": "soak",
+                "registry_tier": "production",
+                "surface": "production"
+            },
+            {
+                "after": [
+                    "staging"
+                ],
+                "channel": "edge",
+                "profile": "smoke",
+                "registry_tier": "testing",
+                "surface": "production"
+            },
+            {
+                "after": [],
+                "channel": "candidate",
+                "profile": "build",
+                "registry_tier": "production",
+                "surface": "staging"
+            },
+            {
+                "after": [],
+                "channel": "stable",
+                "profile": "build",
+                "registry_tier": "production",
+                "surface": "staging"
+            },
+            {
+                "after": [],
+                "channel": "edge",
+                "profile": "build",
+                "registry_tier": "testing",
+                "surface": "staging"
+            }
+        ]
+    )
+}
+
+fn fitness() -> Value {
+    json!(
+        [
+            {
+                "bindings": [
+                    "alert-config"
+                ],
+                "checks": [
+                    "failed-unit-alert-delivered",
+                    "acknowledged-by-on-call",
+                    "no-secret-material-in-alert"
+                ],
+                "kind": "alert-delivery",
+                "method": "automated"
+            },
+            {
+                "bindings": [
+                    "signer-roster"
+                ],
+                "checks": [
+                    "key-custody",
+                    "recover-encrypted-authority-backup",
+                    "test-signature-per-role-verifies"
+                ],
+                "kind": "authority-recovery",
+                "method": "operator"
+            },
+            {
+                "bindings": [
+                    "surface",
+                    "hub-schema"
+                ],
+                "checks": [
+                    "isolated-hub-restore",
+                    "portable-database-export-import",
+                    "anonymous-readback-of-restored-deployment"
+                ],
+                "kind": "hub-restore",
+                "method": "operator"
+            },
+            {
+                "bindings": [
+                    "signer-roster",
+                    "surface"
+                ],
+                "checks": [
+                    "registry-key-rotation-trust-continuity",
+                    "unauthorized-replacement-rejected",
+                    "interrupted-publication-single-final-state"
+                ],
+                "kind": "key-rotation",
+                "method": "operator"
+            },
+            {
+                "bindings": [
+                    "tooling"
+                ],
+                "checks": [
+                    "independent-encrypted-backup",
+                    "restore-to-clean-environment",
+                    "offline-verification-of-restored-bundle"
+                ],
+                "kind": "storage-restore",
+                "method": "automated"
+            }
+        ]
+    )
 }

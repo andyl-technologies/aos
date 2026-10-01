@@ -6,6 +6,7 @@ set -eu
 image_index=$1
 layout=$2
 closure_layers=$3
+layer_map=${4:-}
 max_json_bytes=4194304
 
 fail_platform_binding() {
@@ -72,6 +73,21 @@ while IFS= read -r descriptor; do
       and all($bound[]; . as $layer | any($declared[0][]; . == $layer))
   ' "$manifest" >/dev/null \
     || fail_platform_binding "closure layers are not the platform's exact prefix"
+
+  if [ -n "$layer_map" ]; then
+    # A shared path can occur once in each platform, never in two layers of
+    # the same runnable image. The assembler checks each occurrence's NAR.
+    jq -e --slurpfile mapping "$layer_map" '
+      [.layers[].digest] as $digests
+      | [$mapping[0][]
+          | select(.layer.digest as $digest | $digests | index($digest))
+          | .path
+        ] as $paths
+      | ($paths | length) == ($paths | unique | length)
+    ' "$manifest" >/dev/null \
+      || fail_platform_binding "one platform maps a store path to multiple layers"
+  fi
+
   jq -c --slurpfile declared "$closure_layers" '
     .layers[]
     | select(.digest as $digest | any($declared[0][]; .digest == $digest))

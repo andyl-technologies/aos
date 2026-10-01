@@ -2,6 +2,7 @@
 {
   lib,
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
   perl-mozilla-ca,
@@ -10,7 +11,7 @@
 }: let
   version = "2.083";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     platformSupport = {
       build = [
         {

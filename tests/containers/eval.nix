@@ -274,7 +274,7 @@ in
   );
   assert aos.platform.aosSystem == aosSystem;
   assert testing.config.aos.release.registry == "andyl/testing";
-  assert testing.config.aos.system.version == "2026.9.0-dev.20260917.0";
+  assert testing.config.aos.system.version == "2026.9.0-dev.20260927.1";
   assert lib.hasInfix "\nID=aos\n" testing.config.environment.etc."os-release".text;
   assert lib.hasInfix "\nAOS_REGISTRY=andyl/testing\n" testing.config.environment.etc."os-release".text;
   assert testing.config.system.build.defaultContainer.coordination.definitionAttribute
@@ -289,6 +289,13 @@ in
   assert testing.config.aos.release.url == "https://cdn.aos.andyl.org/andyl/testing/";
   assert testing.config.aos.apm.registries.andyl-testing.url == "https://cdn.aos.andyl.org/andyl/testing/";
   assert lib.hasInfix "https://cdn.aos.andyl.org/andyl/testing/" testingFileText;
+  assert testing.config.aos.apm.registries.andyl-testing.rootOwnerSigners == ["andyl-testing-provenance-v1"];
+  assert lib.hasInfix
+  ''root_owner_signers = ["andyl-testing-provenance-v1"]''
+  testing.config.environment.etc."apm/registries.d/andyl-testing.toml".text;
+  assert lib.hasInfix
+  ''root_owner_signers = ["andyl-testing-provenance-v1"]''
+  testingFileText;
   assert testing.config.aos.release.channel == "edge";
   assert builtins.attrNames testing.config.aos.apm.registries == ["andyl-testing"];
   assert testingAos.publication.repository == "aos-testing";

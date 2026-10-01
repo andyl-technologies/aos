@@ -440,17 +440,6 @@ pub enum PackageCommand {
         #[arg(long)]
         system: bool,
     },
-    /// Show package information
-    Info {
-        /// Package name
-        package: String,
-        /// Show package from this registry
-        #[arg(long)]
-        registry: Option<String>,
-        /// Query the system scope instead of the user scope
-        #[arg(long)]
-        system: bool,
-    },
     /// List packages
     List {
         /// Only installed packages
@@ -950,7 +939,6 @@ impl PackageCommand {
             | PackageCommand::Docs { .. }
             | PackageCommand::Options { .. }
             | PackageCommand::Schema { .. }
-            | PackageCommand::Info { .. }
             | PackageCommand::List { .. }
             | PackageCommand::Depends { .. }
             | PackageCommand::Rdepends { .. }
@@ -989,7 +977,6 @@ impl PackageCommand {
             PackageCommand::Registry { system, .. } => *system,
             PackageCommand::Search { system, .. } => *system,
             PackageCommand::Show { system, .. } => *system,
-            PackageCommand::Info { system, .. } => *system,
             PackageCommand::List { system, .. } => *system,
             PackageCommand::Depends { system, .. } => *system,
             PackageCommand::Rdepends { system, .. } => *system,
@@ -3068,9 +3055,6 @@ pub async fn run(
             .await
         }
         PackageCommand::Show {
-            package, registry, ..
-        } => query::show(&config, package, registry.as_deref(), printer).await,
-        PackageCommand::Info {
             package, registry, ..
         } => query::show(&config, package, registry.as_deref(), printer).await,
         PackageCommand::List {

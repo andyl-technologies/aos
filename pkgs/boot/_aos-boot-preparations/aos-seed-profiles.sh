@@ -4,13 +4,13 @@ profile_dir=/sysroot/var/lib/profiles/system
 image_dir=/sysroot/var/lib/profiles/image
 
 # The seed pointer is a symlink the rootfs builder writes at
-# /aos-toplevel -> /nix/store/<hash>-toplevel. readlink
+# /usr/lib/aos/toplevel -> /nix/store/<hash>-toplevel. readlink
 # returns the literal target (a /nix/store/... path); we
 # access toplevel-resident files by prefixing /sysroot
 # because the real root is still under /sysroot in the
 # initrd. /sysroot/nix is the merged overlay (set up by
 # nix-overlay-setup.service, which we ordered After).
-toplevel=$(readlink /sysroot/aos-toplevel)
+toplevel=$(readlink /sysroot/usr/lib/aos/toplevel)
 
 read_meta() {
   tr -d '\n' < "/sysroot$toplevel/meta/$1" 2>/dev/null \

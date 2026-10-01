@@ -1,18 +1,30 @@
 //! Release-scoped Hub publication RPC implementation.
+//!
+//! Staging commits and production promotions issue deployment-signed
+//! [`PublicationReceipt`]s naming the planned destination, this Hub as the
+//! surface (`surface_kind = hub`, `surface_identity` = deployment id), and the
+//! staging receipt a production publication follows. Channel advances issue
+//! [`ChannelReceipt`]s for one destination ring. Channel advances and
+//! anonymous receipt reads are bound to the deployment serving the request:
+//! the production deployment advances channels from a completed promotion,
+//! and a distinct staging deployment advances its own channels from its
+//! committed staging receipt.
 
 use std::time::{Duration, UNIX_EPOCH};
 
 use aos_proto_types as pb;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
+use aos_release::plan::{SurfaceKind, SurfaceRole};
 use aos_release::receipt::{
-    ChannelReceiptV1, HubEnvironment, PublicationReceiptV1, QualificationReceiptV1,
-    PUBLICATION_RECEIPT_V1,
+    ChannelReceipt, PublicationReceipt, QualificationReceipt, SignedReceiptEnvelope,
+    CHANNEL_RECEIPT, PUBLICATION_RECEIPT,
 };
 
 use crate::db::{
-    NewReleaseBundle, NewReleaseBundlePublication, NewReleaseChannelOperation, NewReleasePromotion,
-    NewReleaseQualification, NewReleaseTimestampPublication,
+    is_release_channel_name, NewReleaseBundle, NewReleaseBundlePublication,
+    NewReleaseChannelOperation, NewReleasePromotion, NewReleaseQualification,
+    NewReleaseTimestampPublication,
 };
 use crate::domain::Permission;
 
@@ -90,16 +102,18 @@ impl RpcService {
         }
         let authority = self.release_authority(&req.expected_deployment_id)?;
         let now = crate::clock::now_unix_secs();
-        let receipt = PublicationReceiptV1 {
-            schema_version: PUBLICATION_RECEIPT_V1.into(),
-            environment: HubEnvironment::Staging,
-            deployment_id: authority.deployment_id().into(),
+        let receipt = PublicationReceipt {
+            schema_version: PUBLICATION_RECEIPT.into(),
+            destination: req.destination.clone(),
+            surface_role: SurfaceRole::Staging,
+            surface_kind: SurfaceKind::Hub,
+            surface_identity: authority.deployment_id().into(),
             registry: registry.slug,
             release_id: bundle.release_id,
             manifest_digest: parse_digest(&bundle.manifest_digest)?,
             bundle_digest: parse_digest(&bundle.bundle_digest)?,
             operation_id: req.publication_id.clone(),
-            staging_receipt_digest: None,
+            predecessor_receipt_digest: None,
             committed_at: format_time(now)?,
         };
         receipt.validate().map_err(invalid)?;
@@ -140,7 +154,7 @@ impl RpcService {
             .authorize_release(auth, &req.registry, &req.bundle_digest)
             .await?;
         let receipt_bytes = req.qualification_receipt_json.as_bytes();
-        let receipt: QualificationReceiptV1 =
+        let receipt: QualificationReceipt =
             canonical::from_slice(receipt_bytes, "qualification receipt").map_err(invalid)?;
         receipt.validate().map_err(invalid)?;
         if canonical::to_vec(&receipt).map_err(RpcError::internal)? != receipt_bytes
@@ -202,9 +216,9 @@ impl RpcService {
             .await?;
         let authority = self.release_authority(&req.expected_deployment_id)?;
         let staging_bytes = req.signed_staging_receipt_json.as_bytes();
-        let staging: PublicationReceiptV1 =
+        let staging: PublicationReceipt =
             canonical::from_slice(staging_bytes, "staging receipt envelope")
-                .and_then(|envelope: aos_release::receipt::SignedReceiptEnvelopeV1| {
+                .and_then(|envelope: SignedReceiptEnvelope| {
                     canonical::from_slice(
                         &canonical::to_vec(&envelope.payload)?,
                         "staging receipt payload",
@@ -212,13 +226,16 @@ impl RpcService {
                 })
                 .map_err(invalid)?;
         staging.validate().map_err(invalid)?;
-        if staging.environment != HubEnvironment::Staging
-            || staging.deployment_id != bundle.staging_deployment_id
+        // A production Hub follows only a staging Hub publication it can
+        // verify with a pinned deployment key.
+        if staging.surface_role != SurfaceRole::Staging
+            || staging.surface_kind != SurfaceKind::Hub
+            || staging.surface_identity != bundle.staging_deployment_id
             || staging.registry != registry.slug
             || staging.release_id != bundle.release_id
             || staging.manifest_digest.to_string() != bundle.manifest_digest
             || staging.bundle_digest.to_string() != bundle.bundle_digest
-            || staging.staging_receipt_digest.is_some()
+            || staging.predecessor_receipt_digest.is_some()
             || Sha256Digest::of_bytes(staging_bytes).to_string() != req.staging_receipt_digest
         {
             return Err(RpcError::invalid(
@@ -231,7 +248,7 @@ impl RpcService {
             .map_err(failed_precondition)?;
 
         let qualification_bytes = req.qualification_receipt_json.as_bytes();
-        let qualification: QualificationReceiptV1 =
+        let qualification: QualificationReceipt =
             canonical::from_slice(qualification_bytes, "qualification receipt").map_err(invalid)?;
         qualification.validate().map_err(invalid)?;
         if canonical::to_vec(&qualification).map_err(RpcError::internal)? != qualification_bytes
@@ -282,16 +299,18 @@ impl RpcService {
             ));
         }
         let now = crate::clock::now_unix_secs();
-        let receipt = PublicationReceiptV1 {
-            schema_version: PUBLICATION_RECEIPT_V1.into(),
-            environment: HubEnvironment::Production,
-            deployment_id: authority.deployment_id().into(),
+        let receipt = PublicationReceipt {
+            schema_version: PUBLICATION_RECEIPT.into(),
+            destination: req.destination.clone(),
+            surface_role: SurfaceRole::Production,
+            surface_kind: SurfaceKind::Hub,
+            surface_identity: authority.deployment_id().into(),
             registry: registry.slug,
             release_id: bundle.release_id,
             manifest_digest: parse_digest(&bundle.manifest_digest)?,
             bundle_digest: parse_digest(&bundle.bundle_digest)?,
             operation_id: req.publication_id.clone(),
-            staging_receipt_digest: Some(parse_digest(&req.staging_receipt_digest)?),
+            predecessor_receipt_digest: Some(parse_digest(&req.staging_receipt_digest)?),
             committed_at: format_time(now)?,
         };
         receipt.validate().map_err(invalid)?;
@@ -324,27 +343,48 @@ impl RpcService {
         Ok(receipt_message(signed.digest, signed.envelope_json))
     }
 
-    /// Returns a public production receipt without operator-private data.
+    /// Returns a public publication receipt without operator-private data.
+    ///
+    /// Production receipts are readable wherever they are stored. A staging
+    /// receipt is readable only from the bundle's pinned staging deployment,
+    /// which lets a client read back the receipt that authorizes staging
+    /// channel advances.
     ///
     /// # Errors
     ///
-    /// Returns an invalid-argument, not-found, or storage error.
+    /// Returns an invalid-argument error for an unknown environment, a
+    /// failed-precondition error when a staging read reaches a deployment
+    /// other than the bundle's staging deployment (or no release authority is
+    /// configured), a not-found error for an absent bundle or receipt, or a
+    /// storage error.
     pub async fn get_release_receipt(
         &self,
         _auth: Option<&str>,
         req: pb::GetReleaseReceiptRequest,
     ) -> Result<pb::ReleaseReceipt, RpcError> {
-        if req.environment != "production" {
-            return Err(RpcError::invalid(
-                "only production release receipts are public",
-            ));
-        }
+        let staging_deployment = match req.environment.as_str() {
+            "production" => None,
+            "staging" => Some(self.require_staging_deployment(&req.bundle_digest).await?),
+            _ => {
+                return Err(RpcError::invalid(
+                    "release receipt environment must be staging or production",
+                ))
+            }
+        };
         let receipt = self
             .db
-            .release_bundle_publication(&req.bundle_digest, "production")
+            .release_bundle_publication(&req.bundle_digest, &req.environment)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("release receipt"))?;
+
+        // The stored row must come from this deployment; anything else is
+        // evidence this Hub did not issue and must not vouch for.
+        if staging_deployment.is_some_and(|deployment| receipt.deployment_id != deployment) {
+            return Err(RpcError::FailedPrecondition(
+                "staging release receipt was issued by another deployment".into(),
+            ));
+        }
         Ok(receipt_message(
             receipt.receipt_digest,
             receipt.receipt_json,
@@ -398,14 +438,28 @@ impl RpcService {
 
     /// Signs and atomically compare-and-swaps one channel partition range.
     ///
+    /// The request's `publication_receipt_digest` names this deployment's
+    /// publication receipt for the release: the promoted production receipt
+    /// on the production deployment, or the committed staging receipt on a
+    /// distinct staging deployment. The signed channel receipt names the
+    /// requested destination and ring; the database binds the advance to this
+    /// deployment's own publication, and verifiers bind the destination's
+    /// role to the planned surface identity.
+    ///
     /// # Errors
     ///
-    /// Returns an authorization, signing, continuity, or storage error.
+    /// Returns an invalid-argument error for a malformed channel name, range,
+    /// destination, or ring, or an authorization, signing, continuity
+    /// (including missing authorizing evidence for this deployment), or
+    /// storage error.
     pub async fn advance_release_channel(
         &self,
         auth: Option<&str>,
         req: pb::AdvanceReleaseChannelRequest,
     ) -> Result<pb::ReleaseReceipt, RpcError> {
+        if !is_release_channel_name(&req.channel) {
+            return Err(RpcError::invalid("release channel name is invalid"));
+        }
         let claims = self.require_claims(auth)?;
         let registry = self.registry_or_not_found(&req.registry).await?;
         let scope = self.registry_scope(&registry).await?;
@@ -426,11 +480,22 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
         {
+            let committed: ChannelReceipt =
+                canonical::from_slice(existing.receipt_json.as_bytes(), "channel receipt envelope")
+                    .and_then(|envelope: SignedReceiptEnvelope| {
+                        canonical::from_slice(
+                            &canonical::to_vec(&envelope.payload)?,
+                            "channel receipt payload",
+                        )
+                    })
+                    .map_err(RpcError::internal)?;
             if existing.prior_generation != req.prior_generation
                 || existing.first_partition != req.first_partition
                 || existing.last_partition != req.last_partition
                 || existing.manifest_digest != req.manifest_digest
-                || existing.production_receipt_digest != req.production_receipt_digest
+                || existing.publication_receipt_digest != req.publication_receipt_digest
+                || committed.destination != req.destination
+                || i64::from(committed.ring) != req.ring
             {
                 return Err(RpcError::FailedPrecondition(
                     "release channel retry conflicts with the committed operation".into(),
@@ -440,12 +505,13 @@ impl RpcService {
                 .advance_release_channel(
                     &NewReleaseChannelOperation {
                         registry_id: registry.id,
+                        deployment_id: authority.deployment_id().into(),
                         channel: req.channel,
                         prior_generation: req.prior_generation,
                         first_partition: req.first_partition,
                         last_partition: req.last_partition,
                         manifest_digest: req.manifest_digest,
-                        production_receipt_digest: req.production_receipt_digest,
+                        publication_receipt_digest: req.publication_receipt_digest,
                         operation_digest: existing.operation_digest.clone(),
                         receipt_json: existing.receipt_json.clone(),
                     },
@@ -458,15 +524,19 @@ impl RpcService {
                 existing.receipt_json,
             ));
         }
-        let receipt = ChannelReceiptV1 {
-            schema_version: "aos.release.channel-receipt/v1".into(),
+        let receipt = ChannelReceipt {
+            schema_version: CHANNEL_RECEIPT.into(),
+            destination: req.destination.clone(),
             channel: req.channel.clone(),
+            ring: u16::try_from(req.ring).map_err(invalid)?,
             first_partition: u16::try_from(req.first_partition).map_err(invalid)?,
             last_partition: u16::try_from(req.last_partition).map_err(invalid)?,
             prior_generation: u64::try_from(req.prior_generation).map_err(invalid)?,
             new_generation: u64::try_from(new_generation).map_err(invalid)?,
             manifest_digest: parse_digest(&req.manifest_digest)?,
-            production_receipt_digest: parse_digest(&req.production_receipt_digest)?,
+            publication_receipt_digest: parse_digest(&req.publication_receipt_digest)?,
+            surface_kind: SurfaceKind::Hub,
+            surface_identity: authority.deployment_id().into(),
             committed_at: format_time(now)?,
         };
         receipt.validate().map_err(invalid)?;
@@ -478,12 +548,13 @@ impl RpcService {
             .advance_release_channel(
                 &NewReleaseChannelOperation {
                     registry_id: registry.id,
+                    deployment_id: authority.deployment_id().into(),
                     channel: req.channel,
                     prior_generation: req.prior_generation,
                     first_partition: req.first_partition,
                     last_partition: req.last_partition,
                     manifest_digest: req.manifest_digest,
-                    production_receipt_digest: req.production_receipt_digest,
+                    publication_receipt_digest: req.publication_receipt_digest,
                     operation_digest: signed.digest.clone(),
                     receipt_json: signed.envelope_json.clone(),
                 },
@@ -515,6 +586,27 @@ impl RpcService {
             return Err(RpcError::not_found("release bundle"));
         }
         Ok((registry, bundle))
+    }
+
+    /// Returns this deployment's identity when it is the bundle's pinned
+    /// staging deployment.
+    async fn require_staging_deployment(&self, bundle_digest: &str) -> Result<&str, RpcError> {
+        let authority = self
+            .release_evidence
+            .as_deref()
+            .ok_or_else(authority_unavailable)?;
+        let bundle = self
+            .db
+            .release_bundle(bundle_digest)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("release receipt"))?;
+        if bundle.staging_deployment_id != authority.deployment_id() {
+            return Err(RpcError::FailedPrecondition(
+                "staging release receipts are served only by the staging deployment".into(),
+            ));
+        }
+        Ok(authority.deployment_id())
     }
 
     fn release_authority(

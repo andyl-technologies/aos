@@ -8,11 +8,11 @@
   lib,
   pkgs,
   rootPrefix ? "",
-  registrationPath ? "${rootPrefix}/aos-registration",
+  registrationPath ? "${rootPrefix}/usr/lib/aos/nix-registration",
   storePathsPath ? "${rootPrefix}/usr/lib/aos-container/store-paths",
   bakedRootsPath ? "${rootPrefix}/usr/lib/aos-container/baked-roots",
   deploymentPath ? null,
-  defaultCommand ? ["/usr/bin/aos" "--help"],
+  defaultCommand ? ["/bin/bash"],
 }: let
   rootPath = path: "${rootPrefix}${path}";
   initPath = lib.makeBinPath [pkgs.nix pkgs.coreutils pkgs.findutils pkgs.grep pkgs.util-linux];

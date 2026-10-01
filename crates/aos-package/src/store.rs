@@ -1,7 +1,7 @@
 //! Nix store interactions: NAR import, validity checks, and GC roots.
 //!
 //! This module is apm's boundary with the Nix store, shelling out to
-//! `nix-store` (with [`aos_nix_env`] so `AOS_ROOT`-relative stores work):
+//! `nix-store` (with [`aos_management_nix_env`] so `AOS_ROOT`-relative stores work):
 //!
 //! - [`import_nar`] turns a downloaded `.nar.zst` plus its narinfo metadata
 //!   into a valid store path via `nix-store --import`, synthesizing the
@@ -24,7 +24,7 @@ use anyhow::{Context, Result, bail, ensure};
 use tokio::process::Command;
 
 use aos_core::nar::export::ExportTrailer;
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::aos_management_nix_env;
 
 use super::registry::store_path_hash;
 use super::types::PackageMeta;
@@ -135,11 +135,11 @@ pub async fn import_nar_with_compression(
 
     let trailer = ExportTrailer::new(expected_store_path, full_refs, full_deriver);
 
-    // Stream NAR + trailer into `nix-store --import`. aos_nix_env() routes
+    // Stream NAR + trailer into `nix-store --import`. aos_management_nix_env() routes
     // the import at AOS_ROOT's store when that env var is set.
     let import_output = tokio::task::spawn_blocking(move || -> Result<std::process::Output> {
         let mut child = std::process::Command::new("nix-store")
-            .envs(aos_nix_env())
+            .envs(aos_management_nix_env())
             .arg("--import")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -242,7 +242,7 @@ pub async fn filter_missing(store_paths: &[String]) -> Result<Vec<String>> {
 
     for path in store_paths {
         let status = Command::new("nix-store")
-            .envs(aos_nix_env())
+            .envs(aos_management_nix_env())
             .args(["--check-validity", path])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -546,7 +546,7 @@ fn atomic_symlink(target: &str, link_path: &Path) -> Result<()> {
 /// (e.g. the path is not valid in the store).
 pub async fn closure_paths(store_path: &str) -> Result<Vec<String>> {
     let output = Command::new("nix-store")
-        .envs(aos_nix_env())
+        .envs(aos_management_nix_env())
         .args(["-qR", store_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -572,7 +572,7 @@ pub async fn closure_paths(store_path: &str) -> Result<Vec<String>> {
 /// (e.g. the path is not valid in the store).
 pub async fn direct_references(store_path: &str) -> Result<Vec<String>> {
     let output = Command::new("nix-store")
-        .envs(aos_nix_env())
+        .envs(aos_management_nix_env())
         .args(["-q", "--references", store_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

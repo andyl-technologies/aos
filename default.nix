@@ -66,6 +66,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     if releasePlatforms == null
     then throw "release evaluation requires an explicit releasePlatforms selection"
     else value;
+  # An explicit target equal to the builder is still a native build. Release
+  # commands name every platform, including the one executing their tools.
+  isCrossBuild = hostPlatform.system != buildPlatform.system;
 
   # The native stdenv and package set provide tools that execute on the build
   # machine. A cross stdenv uses those tools while producing hostPlatform
@@ -84,13 +87,13 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     stdenv = buildStdenv;
   };
   buildPackages =
-    if crossSystem == null
+    if !isCrossBuild
     then pkgs
     else ordinaryBuildPackages;
   ordinaryToolchainPackages =
     if !anySharedCache
     then null
-    else if crossSystem == null
+    else if !isCrossBuild
     then ordinaryBuildPackages
     else
       (import ./. {
@@ -98,7 +101,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       }).pkgs;
 
   stdenv =
-    if crossSystem == null
+    if !isCrossBuild
     then buildStdenv
     else if hostPlatform.isDarwin
     then
@@ -529,16 +532,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     identity = qualificationExecutorIdentity;
     reportRoot = "/run/aos-release/qualification-reports/${hostPlatform.system}";
   };
-  operatorRecoveryScenario = testing.mkQualificationReportScenario {
-    name = "aos-qualification-operator-recovery";
-    identity = qualificationExecutorIdentity;
-    reportPath = "/run/aos-release/qualification-reports/operator-recovery.json";
-  };
-  productionRecoveryScenario = testing.mkQualificationReportScenario {
-    name = "aos-qualification-production-recovery";
-    identity = qualificationExecutorIdentity;
-    reportPath = "/run/aos-release/qualification-reports/production-recovery.json";
-  };
   qualificationPackageScenario = testing.mkQualificationPackageScenario {
     name = "aos-qualification-${hostPlatform.system}-package-function";
     identity = qualificationExecutorIdentity;
@@ -804,11 +797,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   # executor derivation and every VM scenario during pure evaluation.
   releaseQualificationScenarios =
     qualificationReportScenarios
-    // qualificationAutomatedScenarios
-    // lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
-      operator-recovery = "${operatorRecoveryScenario}/bin/aos-qualification-operator-recovery";
-      production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";
-    };
+    // qualificationAutomatedScenarios;
   releaseQualificationCaseScenarios =
     k3sPackageScenarios
     // lib.optionalAttrs hostPlatform.isLinux {
@@ -878,6 +867,10 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   };
   selinuxBaseCheck = import ./lib/testing/selinux-base.nix {
     inherit pkgs lib testing;
+    mkSystem = mkFixtureSystem;
+  };
+  homesEnabledCheck = import ./lib/testing/homes.nix {
+    inherit lib pkgs testing;
     mkSystem = mkFixtureSystem;
   };
 
@@ -1808,6 +1801,7 @@ in {
         pkgs = buildPackages;
       };
       aos-dev-cli = import ./tests/build/aos-dev-cli.nix {inherit pkgs;};
+      aos-cloud-vm = import ./tests/build/aos-cloud-vm.nix {inherit pkgs;};
       accache = import ./tests/build/accache.nix {
         inherit lib;
         pkgs = buildPackages;
@@ -1943,7 +1937,7 @@ in {
       ) (builtins.attrNames discoverSystems));
     in
       {
-        inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-dev-cache-identity accache;
+        inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache;
         inherit artifact-consumption native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe host-native-inputs initrd-native-inputs initrd-stage-contract native-stage-replay native-profile-replay kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
         # These checks inspect realized closures, so keep them out of the pure evaluation layer.
         inherit config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness;
@@ -1964,7 +1958,7 @@ in {
               else []
             )
             ++ lib.optional (artifact-consumption != null) artifact-consumption
-            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-dev-cache-identity accache native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract native-stage-replay native-profile-replay kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
+            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract native-stage-replay native-profile-replay kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
             ++ builtins.attrValues (builtins.removeAttrs renderedEvalSuites ["rendered-system"])
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
@@ -2177,6 +2171,7 @@ in {
         native-configuration-lower = import ./tests/vm/configuration-lower.nix {inherit pkgs testing;};
         hub-settings = hubSettingsTest;
         apm-install-at-boot = apmInstallAtBootCheck;
+        homes-enabled = homesEnabledCheck;
         package-preset = packagePresetCheck;
         selinux-base = selinuxBaseCheck;
       };

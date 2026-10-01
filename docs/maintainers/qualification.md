@@ -2,23 +2,290 @@
 
 AOS uses one versioned system contract for testing and production. The
 authoritative inputs are [`qualification/`](../../qualification/default.nix).
-The registry selects pipeline assurance: main requires production recovery and
-independent signed review even for edge releases; testing uses lighter pipeline
-assurance even for stable releases. The release class selects software soak and
-matrix completeness obligations. Operators cannot remove individual mandatory
-gates from a release request.
+A release is published to one or more **destinations**. Each destination
+selects a named **profile**, and the profile states everything the release
+must prove before that destination may be published: gates, selected claims,
+soak, review, matrix completeness, environment fitness, and rollout rings.
+Operators cannot remove individual gates from a plan; the only permitted
+relaxation is a signed [profile override](#profile-overrides) of the fields a
+profile marks overridable.
 
-Start with the [release checklist](release-checklist.md), which includes the
-manual recovery checks and when to perform them. This page specifies the
+Environment recovery is not proven per release. Backup restore, authority
+recovery, Hub restore, key rotation, and alert delivery are **fitness
+exercises** performed on their own cadence. Each produces a signed, dated
+[fitness attestation](#fitness-attestations) bound to the identities it
+covered, and a profile requires attestations no older than its stated maximum
+age.
+
+Start with the [release checklist](release-checklist.md), which gives the order
+of operations and the fitness exercise cadence. This page specifies the
 contract and evidence formats; the [command reference](canonical-releases.md)
 documents command arguments.
+
+## Destinations and profiles
+
+### Surfaces and destinations
+
+A **surface** is one publication endpoint with the role `staging` or
+`production`. It is either an AOS Hub deployment or a
+[static origin](#static-surfaces). A **destination** is one surface role and
+one channel of the plan's registry, written `<role>/<channel>`. The registry
+comes from the plan, so `production/stable` in an `andyl/main` plan and
+`production/edge` in an `andyl/testing` plan are unambiguous.
+
+The contract exports exactly these destinations. Anything else is not a
+destination, and plan validation rejects it.
+
+| Destination | Registry tier | Profile | Published after |
+| --- | --- | --- | --- |
+| `staging/edge` | testing (`andyl/testing`, `andyl/testing-vN`) | `build` | nothing |
+| `production/edge` | testing | `smoke` | a staging publication |
+| `staging/candidate` | production (`andyl/main`) | `build` | nothing |
+| `production/candidate` | production | `functional` | a staging publication |
+| `staging/stable` | production | `build` | nothing |
+| `production/stable` | production | `soak` | a staging publication |
+
+Testing registries carry the `edge` channel only. `andyl/main` carries
+`candidate` and `stable` and never publishes `edge`. A per-train channel such
+as `stable-2026.3` has the kind of the prefix before its first `-` and selects
+that kind's destination.
+
+The release class, derived from the version, restricts which destinations a
+plan contains. An edge version (`-dev.YYYYMMDD.N`) plans only edge
+destinations. A release candidate (`-rc.N`) plans only candidate destinations.
+A final version (`YYYY.M.P`) plans both candidate and stable destinations,
+because the same bundle is published to `candidate` and then to `stable`.
+Qualification snapshots plan no destinations.
+
+Staging surfaces are maintainer-facing. A staging destination's `build` profile
+requires only the build gate, and its channel moves as soon as the publication
+is read back. Production destinations are consumer-facing and require that a
+staging destination of the same release is already published.
+
+### Profiles
+
+A profile is a closed obligation bundle. The shipped values are in
+[`qualification/modules/profiles.nix`](../../qualification/modules/profiles.nix):
+
+| Profile | Requirements | Claims | Change scoped | Soak | Reviews | Complete matrix | Transaction review | Fitness (max age) | Rings (cumulative partitions @ observation) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `build` | `build-integrity` | none | no | none | 0 | no | no | none | 256 @ 0 |
+| `smoke` | `build-integrity`, `staging-delivery`, `package-function` | functional (A2) | yes | none | 0 | no | no | none | 256 @ 0 |
+| `functional` | `smoke` plus `rollout-health` | functional (A2) | no | none | 1 | no | yes | `storage-restore` 14 d, `alert-delivery` 14 d, `authority-recovery` 90 d, `hub-restore` 90 d | 256 @ 0 |
+| `soak` | `functional` plus `rollout-observation` | qualified (A2 and A3) | no | 7 days | 1 | yes | yes | `functional` plus `key-rotation` 90 d | 4 @ 24 h, 32 @ 24 h, 128 @ 48 h, 256 @ 0 |
+
+The fields mean:
+
+- **Requirements** are release- and package-scoped requirement IDs, each
+  required at its own phase. Image and container requirements enter through
+  the selected claims.
+- **Claims** selects target claims. `functional` selects every `*-functional`
+  claim (A2, staging phase). `qualified` adds every `*-qualified` claim (A3,
+  complete phase).
+- **Change scoped** narrows image, container, and package obligations to what
+  changed relative to the predecessor. See [change scoping](#change-scoping).
+- **Soak** is the minimum observed window for A3 claims and
+  `rollout-observation`.
+- **Reviews** is the number of distinct release-evidence reviewer signatures
+  required over each report the destination admits.
+- **Complete matrix** rejects a plan with any blocked package/platform cell.
+- **Transaction review** stops the pipeline after `prepare-registry` until an
+  operator accepts the isolated registry transaction.
+- **Fitness** names the attestation kinds that must be fresh and
+  binding-matched when the destination is published or advanced.
+- **Rings** are ordered cumulative partition counts. Each ring must be observed
+  for its stated time before the next ring advances. The last ring is always
+  256. A single `256 @ 0` ring advances every partition at once.
+
+`soak` is the only profile whose soak and rings are overridable. The other
+profiles mark nothing overridable.
+
+Every profile is subject to floors enforced by both the Nix module and the Rust
+contract type:
+
+- every profile requires `build-integrity`;
+- `qualified` claims require `rollout-observation` and a soak of at least one
+  day;
+- rings are strictly increasing and end at 256;
+- fitness kinds must be declared in the contract; and
+- a destination in the production registry tier (`andyl/main`) whose profile
+  selects claims requires at least one reviewer.
+
+A reviewed contract revision may change shipped values with `mkForce`, within
+those floors. Record the frozen plan's values; the plan binds each
+destination's profile by digest.
+
+### Hold points by destination
+
+Each requirement has one phase. The phases a destination actually exercises
+follow from its profile:
+
+| Destination | Build | Staging (before publication) | Rollout (before each ring) | Complete |
+| --- | --- | --- | --- | --- |
+| `staging/*` | `build-integrity` | none | none | none |
+| `production/edge` | `build-integrity` | `staging-delivery`, changed `package-function` cells, functional claims of affected targets | none | none |
+| `production/candidate` | `build-integrity` | `staging-delivery`, every `package-function` cell, every functional claim | `rollout-health` | none |
+| `production/stable` | `build-integrity` | as `production/candidate` | `rollout-health`, fresh for every ring | `rollout-observation`, every qualified claim |
+
+The staging phase always tests the public bytes on the staging surface. Rollout
+and complete phases test the destination's own surface. Only a profile that
+selects `qualified` claims (`soak`) has a complete phase: its destination
+needs a complete-phase report and the release-evidence completion approvals. A
+destination of any other profile records `complete` automatically when its
+final ring's channel advance and public read-back succeed.
+
+### Change scoping
+
+A change-scoped profile (`smoke`) applies obligations only where the release
+differs from its predecessor:
+
+- image claims apply only when the release is image-affecting;
+- container claims apply only when any OCI artifact digest differs; and
+- `package-function` applies only to package/platform cells whose artifact set
+  differs.
+
+Planning records the decision in an `aos.release.change-scope/v1` document
+inside the plan. It compares image artifact digests, OCI artifact digests, and
+per-cell package artifact digests with the predecessor manifest.
+`step qualify-run` and publication recompute the scope from the finalized
+manifest and reject any disagreement. When the predecessor manifest is
+unavailable or the predecessor is a qualification snapshot, everything is
+affecting. Uncertainty never narrows a campaign.
+
+```json
+{
+  "schema_version": "aos.release.change-scope/v1",
+  "predecessor_manifest_digest": "sha256:<predecessor-manifest-hash>",
+  "image_affecting": false,
+  "container_affecting": true,
+  "changed_package_cells": [["nginx", "aarch64-linux"], ["nginx", "x86_64-linux"]],
+  "reason": "image artifact digests unchanged; OCI index and nginx cells differ"
+}
+```
+
+Non-scoped profiles ignore the change scope and exercise every target and
+every published cell.
+
+### Fitness attestations
+
+A fitness attestation proves that the release environment can recover. It
+replaces the per-release operator recovery exercises of earlier contracts:
+nothing about a single release is observed by restoring a backup, and a quarterly
+exercise bound to the identities it covered says more than a rushed one before
+every publication.
+
+| Kind | Method | Cadence | Bindings | Checks |
+| --- | --- | --- | --- | --- |
+| `storage-restore` | automated | weekly timer | `tooling` | `independent-encrypted-backup`, `restore-to-clean-environment`, `offline-verification-of-restored-bundle` |
+| `alert-delivery` | automated | weekly timer | `alert-config` | `failed-unit-alert-delivered`, `acknowledged-by-on-call`, `no-secret-material-in-alert` |
+| `authority-recovery` | operator | quarterly | `signer-roster` | `key-custody`, `recover-encrypted-authority-backup`, `test-signature-per-role-verifies` |
+| `hub-restore` | operator | quarterly | `surface`, `hub-schema` | `isolated-hub-restore`, `portable-database-export-import`, `anonymous-readback-of-restored-deployment` |
+| `key-rotation` | operator | quarterly | `signer-roster`, `surface` | `registry-key-rotation-trust-continuity`, `unauthorized-replacement-rejected`, `interrupted-publication-single-final-state` |
+
+The maintainer machine's `aos-release-restore-check` and
+`aos-release-alert-check` services record the automated kinds. Operators record
+the others with `aos release fitness run <kind> --report PATH`, or with the
+report on standard input, after performing the exercise in the
+[release checklist](release-checklist.md#fitness-exercises). The input is an
+`aos.release.fitness-report/v1` exercise report: `performed_at`, `operator`,
+and a `checks` map giving each of the kind's checks as `{passed, detail}`. The
+command copies those fields into the attestation below, adds the live
+bindings, and records the report's SHA-256 as `evidence_digest`.
+Profiles accept automated attestations for at most 14 days and operator
+attestations for at most 90 days.
+
+A binding names an identity the attestation carries and publication compares
+with the live value:
+
+| Binding | Live value |
+| --- | --- |
+| `surface` | The destination surface identity: the Hub deployment ID, or the static surface identity served at `.aos-surface` |
+| `hub-schema` | The Hub schema version reported by the deployment. A static surface has none; the binding is recorded as `null` and is satisfied vacuously |
+| `signer-roster` | Digest of the plan's `signers` list, canonical JSON under the domain `aos.release.signer-roster/v1` |
+| `tooling` | Digest of the maintainer configuration's `tooling_closure` |
+| `alert-config` | Digest of the maintainer configuration's `[alert]` section |
+
+A binding mismatch makes an attestation unusable regardless of its age. A new
+signer roster therefore requires fresh `authority-recovery` and `key-rotation`
+attestations; a new production surface requires fresh `hub-restore` and
+`key-rotation` attestations for that surface; a new `aos` tooling closure
+requires the next restore check to run before a `functional` or `soak`
+destination can be published.
+
+An attestation is canonical JSON signed with the standard receipt envelope by a
+release-evidence key, stored under the maintainer configuration's
+`fitness_root` as `<kind>/<performed_at>.json`:
+
+```json
+{
+  "schema_version": "aos.release.fitness-attestation/v1",
+  "kind": "hub-restore",
+  "registry": "andyl/main",
+  "performed_at": "2026-09-14T15:00:00Z",
+  "checks": {
+    "isolated-hub-restore": {"passed": true, "detail": "Restored recovery point rp-0914 into hub-restore-test."},
+    "portable-database-export-import": {"passed": true, "detail": "Exported and imported the portable database; row counts reconcile."},
+    "anonymous-readback-of-restored-deployment": {"passed": true, "detail": "Read back every indexed object anonymously."}
+  },
+  "bindings": {"hub-schema": "2026-09", "surface": "production-2026-09"},
+  "evidence_digest": "sha256:<restricted-report-hash>",
+  "operator": "dplecki",
+  "authority_id": "release-evidence-v1"
+}
+```
+
+`checks` contains exactly the kind's checks, all passed. `evidence_digest`
+binds the retained restricted report; the attestation itself carries no
+secret, provider account, or internal address. Attestations are
+maintainer-wide, not per release: one fresh attestation serves every release
+that publishes while it remains valid.
+
+### Profile overrides
+
+A profile override is the only way to relax a destination's obligations. It is
+how AOS handles an emergency; no release class relaxes obligations. An
+override is an `aos.release.profile-override/v1` document, threshold-signed by
+release-evidence keys (one envelope per signer, reaching the role threshold),
+that names one release, one destination, and an incident record:
+
+```json
+{
+  "schema_version": "aos.release.profile-override/v1",
+  "registry": "andyl/main",
+  "release_id": "release-2026.9.1",
+  "destination": "production/stable",
+  "incident_reference": "INC-2026-0914",
+  "soak_seconds": 86400,
+  "rings": [{"partitions": 32, "observe_seconds": 43200}, {"partitions": 256, "observe_seconds": 0}],
+  "authority_id": "release-evidence-v1",
+  "approved_at": "2026-09-14T16:00:00Z"
+}
+```
+
+An override may set only fields the profile marks overridable. For the shipped
+contract that is `soak_seconds` and `rings` of `soak`, so only
+`production/stable` can be overridden. Two floors still apply: soak may not go
+below one day, and rings must still end at 256.
+
+An override never relaxes gates, selected claims, change scoping, reviews,
+matrix completeness, transaction review, fitness, signature thresholds,
+contributor authorization, closure and corresponding-source integrity, public
+read-back, or the staging-before-production order.
+
+The plan references each accepted override by digest, so an override changes
+the plan digest: an emergency is planned as such, before any build. A plan that
+references an override may also select a reviewed `dplecki/hotfix-*` source
+branch; see [generate the plan](canonical-releases.md#generate-the-plan). An
+override offered after the release is built is rejected; start a new release
+instead.
 
 ## Target support matrix
 
 The support matrix records compatibility claims and the evidence supporting them.
 Each claim identifies an artifact, a function, an environment scope, and an
 assurance level. Release policy specifies the minimum assurance required for
-selected claims. The release class sets observation duration; the registry sets independent review obligations.
+selected claims. The destination's profile selects which claims apply and sets
+their observation window and review obligations.
 
 ### Assurance levels
 
@@ -27,7 +294,7 @@ selected claims. The release class sets observation duration; the registry sets 
 | A0: unassessed | No accepted compatibility assessment or applicable execution evidence | Compatibility is unknown |
 | A1: assessed | Reviewed CPU/ABI requirements, firmware and device interfaces, enabled kernel drivers, required firmware, and known exclusions | Expected to work within the documented compatibility scope; no direct execution claim |
 | A2: exercised | A1 assessment plus direct tests of the exact artifact and stated functions on recorded configurations, with expected and observed results | The listed functions passed on the tested configurations |
-| A3: qualified | A2 evidence plus all applicable acceptance checks, update/recovery transitions, release-class observation and required review | The complete stated contract passed qualification on the tested configurations |
+| A3: qualified | A2 evidence plus all applicable acceptance checks, update/recovery transitions, the profile's soak window and required review | The complete stated contract passed qualification on the tested configurations |
 
 Levels express evidence strength, not statistical reliability or certification.
 Successful artifact builds establish availability, but do not establish A1
@@ -89,9 +356,11 @@ and scenarios. Physical or cloud categories receive no blanket assurance from
 the reference VM results.
 
 Each required target has a release-blocking A2 claim at staging and an A3 claim
-at completion. A3 requires the complete functional and recovery checks and the
-class observation window on that same recorded configuration. Staging evidence
-does not award A3 before observation completes.
+at completion. A profile with `claims = "functional"` selects only the A2
+claims; `claims = "qualified"` selects both. A3 requires the complete
+functional and recovery checks and the profile's soak window on that same
+recorded configuration. Staging evidence does not award A3 before observation
+completes, and a destination whose profile selects no A3 claim never awards it.
 
 A2 and A3 outcomes cover the exact inventory identified by their environment
 digest. Declare separate required targets for the CPU, board, device and runtime
@@ -150,8 +419,8 @@ system-integrity or workload role.
 Record optional features such as redundant storage, GPU acceleration, watchdogs
 and server management with their own functions, configuration scope and evidence.
 An A3 base-image result covers only the features included in that contract.
-Stable and emergency releases prohibit blocked package/platform cells under the
-shared contract.
+A profile with `require_complete_matrix` (`soak`) rejects a plan with any
+blocked package/platform cell.
 
 ### QEMU and disk-image acceptance
 
@@ -170,7 +439,7 @@ requirements require a separate resource-sizing campaign.
 | Interrupted update and recovery | Interrupt at each updater commit boundary exposed by the scenario, including before/after boot selection; every attempt boots the committed image or documented fallback; explicit rollback and offline recovery work, followed by another successful update |
 | Persistent workload | Serve a known response with nginx over HTTP and TLS; reject an invalid certificate from the client; append numbered durable records and verify their hashes after reboot, update, rollback and recovery |
 | Resource exhaustion | Exercise full state/update storage and memory pressure in the isolated test; mutation fails with a useful error, committed state remains readable, and operation succeeds after resources are restored |
-| Observation | Run mixed network, package and persistent-data operations for the release-class window; retain attempts, successes, failures, reboot/recovery counts and monitoring records; no unexplained crash, integrity mismatch, data loss or unresolved required-function failure |
+| Observation | Run mixed network, package and persistent-data operations for the profile's soak window; retain attempts, successes, failures, reboot/recovery counts and monitoring records; no unexplained crash, integrity mismatch, data loss or unresolved required-function failure |
 
 The cycle minima are numeric requirement bounds, composed by the image and
 container modules and bound into each case.
@@ -202,7 +471,7 @@ exact published artifacts are required before a public release can pass this gat
 | Lifecycle and state | Complete 10 stop/start/recreate cycles using a named volume; each graceful stop respects the documented timeout and exit behavior; numbered committed records and hashes survive removal/recreation; an abrupt kill preserves records already acknowledged as durable |
 | Limits and signals | Runtime CPU/memory limits are applied and observed; the workload handles its documented termination signal; memory exhaustion has the documented failure/restart behavior without corrupting committed volume data |
 | Image replacement | Recreate with the candidate digest using the existing volume, then exercise the documented recovery/rollback path; verify data compatibility rather than assuming image rollback reverses data migrations |
-| Profile and observation | Verify the testing/production registry and trust identities, run the persistent network workload for the class window, and retain operation counts and failures with no unresolved required-function or integrity failure |
+| Profile and observation | Verify the testing/production registry and trust identities, run the persistent network workload for the profile's soak window, and retain operation counts and failures with no unresolved required-function or integrity failure |
 
 ### Physical-hardware acceptance
 
@@ -223,7 +492,7 @@ In addition, verify installer media boots, disks/NICs enumerate correctly,
 storage read/write checksums agree under load, link loss/reconnection recovers,
 and shutdown powers off. Perform the 3 cold boots by removing/restoring power;
 exercise interrupted writes only on expendable test storage. Monitor machine
-checks, storage errors and thermal behavior during the class soak; unexplained
+checks, storage errors and thermal behavior during the profile's soak window; unexplained
 hardware/driver faults block the affected qualification pending diagnosis.
 Requalify affected coverage after kernel, driver, firmware or boot/security changes.
 
@@ -285,43 +554,42 @@ path.
 ## Inspect and freeze the contract
 
 ```sh
-aos release contract --registry andyl/testing --class edge --output qualification-contract.json
-aos --json release contract --registry andyl/testing --class edge
-aos release contract --registry andyl/main --class stable --input qualification-contract.json
+aos release step contract --registry andyl/testing
+aos release step contract --registry andyl/main --to production/stable
+aos --json release step contract --registry andyl/main --to production/candidate \
+  --output qualification-contract.json
+aos release step contract --registry andyl/main --input qualification-contract.json
 ```
 
-The output lists requirements, never claims that they passed. JSON output
-contains the exact `gates` and `public_evidence_policy_digest` for the reviewed
-plan request. `--output` writes a new canonical file and refuses replacement.
-`--input` supports inspection without Nix or network. New plans use
-`aos.release.plan/v2` and embed the complete contract; older v1 bundles remain
-readable for archival verification.
+Without `--to`, the command prints the destination table for the registry tier
+with each destination's profile. With `--to`, it prints that destination's
+profile, profile digest, and gate identities. The gates shown assume every
+target is affected; a change-scoped plan may require fewer. The output lists
+requirements and never claims that they passed. `--output` writes a new
+canonical contract file and refuses replacement. `--input` supports inspection
+without Nix or network.
+
+`aos release new` exports the contract itself and freezes it into the plan.
+Plans use `aos.release.plan/v1` and embed the complete
+`aos.release.qualification-contract/v1` (`aos-system`). A plan or contract
+with any other schema or identity is rejected.
 
 Record a `qualification_predecessor` with the same registry, a distinct
-`release_id`, and the verified preceding `manifest_digest`. First public
-releases use the restricted, non-public
+`release_id`, and the verified preceding `manifest_digest`. The maintainer
+configuration's `predecessor_bundle` supplies it to `aos release new`. First
+public releases use the restricted, non-public
 [qualification snapshot workflow](canonical-releases.md#create-a-first-qualification-predecessor)
 as their predecessor. A descriptor alone is insufficient: retain the signed
-bundle and verification keys for the image update executor.
-A testing-to-main transition is a new main release and installation unless a
-separate authenticated migration contract has been implemented and qualified.
+bundle and verification keys for the image update executor and for change
+scoping. A testing-to-main transition is a new main release and installation
+unless a separate authenticated migration contract has been implemented and
+qualified.
 
-## Shared obligations
-
-| Obligation | Edge/testing | Candidate | Stable/emergency |
-| --- | --- | --- | --- |
-| Authentic artifacts, complete closures, source/license evidence | Required | Required | Required |
-| Both reference Linux disk and OCI environments | Required | Required | Required |
-| Declared install, configure, package, update, recovery workflows | Required | Required | Required |
-| Blocked additional package/platform cells | Explicitly permitted | Explicitly permitted for incomplete candidates | Forbidden |
-| Mixed-workload observation | 24 hours | 7 days | 14 days |
-| Independent review and production recovery | Recorded testing arrangement | Required | Required |
-| Operational exercise age | At most 30 days | At most 30 days | At most 30 days |
-
-Durations are engineering policy, not statistical failure-rate claims. Record
-machines, workload, attempts, successes, failures, and recovery operations.
-Emergency is not a switch that removes integrity or recovery requirements.
-Changing its observation rule requires a reviewed policy revision first.
+Every destination requires authentic artifacts, complete closures, source and
+license evidence, and a reproduced build through `build-integrity`. Durations
+are engineering policy, not statistical failure-rate claims. Record machines,
+workload, attempts, successes, failures, and recovery operations for every
+observation window.
 
 ## Requirements, subjects, and evidence
 
@@ -332,10 +600,26 @@ excludes `_`-prefixed implementation files. `qualification/default.nix` accepts
 additional `modules`; normal `mkDefault`, `mkForce`, `mkIf`, `mkMerge` and list
 ordering rules apply. Required acceptance floors still constrain the result.
 Package classifications and target claims derive from the final configuration.
+`profiles.nix`, `destinations.nix`, and `fitness.nix` own the three tables
+above.
 
 Each requirement specifies its hold point, subject population, observation
-method, acceptance checks, numeric bounds, regression coverage, and invalidation conditions.
-The coordinator expands requirements into exact cases:
+method, acceptance checks, numeric bounds, regression coverage, and invalidation
+conditions:
+
+| Requirement | Phase | Scope | Selected by |
+| --- | --- | --- | --- |
+| `build-integrity` | build | release | every profile |
+| `staging-delivery` | staging | release | `smoke`, `functional`, `soak` |
+| `package-function` | staging | packages | `smoke`, `functional`, `soak` |
+| `rollout-health` | rollout | release | `functional`, `soak` |
+| `rollout-observation` | complete | release | `soak` |
+| `image-installation`, `image-lifecycle`, `image-update-recovery` | staging | image targets | functional claims |
+| `container-lifecycle` | staging | container targets | functional claims |
+| `image-observation`, `container-observation` | complete | image and container targets | qualified claims |
+
+The coordinator expands the requirements a destination selects into exact
+cases:
 
 - release-wide gates cover the frozen release artifacts;
 - package gates cover each published package/platform cell independently;
@@ -352,9 +636,14 @@ unknown, duplicated, future-dated, expired, or incorrectly scoped evidence
 cannot satisfy a required case. Preserve failed attempts; a later pass does not
 erase them from the operational record.
 
-Current plans embed `aos.release.qualification-contract/v2`; current cases use
-`aos.release.qualification-case/v2`. Every target observation includes a reviewed
-assessment bound to the canonical environment-profile digest. A1 contains the
+Two ages are fixed in `aos_release::qualification::limits`: rollout
+observations and approvals expire after 10 minutes, and any other observation a
+report relies on expires after 30 days. A3 cases additionally require
+observation at least as long as the destination's soak, or the soak of an
+accepted override.
+
+Cases use `aos.release.qualification-case/v1`. Every target observation
+includes a reviewed assessment bound to the canonical environment-profile digest. A1 contains the
 reviewer's rationale and exact retained references, without execution times or
 operation counts. A2 and A3 additionally contain a typed
 `aos.release.environment-inventory/v1` document. The coordinator verifies its
@@ -373,42 +662,104 @@ values and driver/firmware availability at the required stages, and binds direct
 execution to the same capability digest. Build availability and observed device
 binding are separate requirements.
 
-`aos.release.qualification-report/v3` records coordinator-derived claim outcomes
+`aos.release.qualification-report/v1` records coordinator-derived claim outcomes
 alongside the observations. Consumers recompute those outcomes; an executor
 cannot assign its own assurance. Missing, failed and stale optional claims remain
 visible and do not block admission. Malformed or incorrectly bound evidence is
 rejected even for an optional claim. A complete functional run with insufficient
 observation duration can establish A2 but cannot satisfy an A3 obligation. Reports
-require the configured authority signatures and independent review before they
-authorize release operations. Archived v1 contracts retain their original digest
-semantics and cannot authorize new publication.
+require the configured authority signatures and the destination's review
+threshold before they authorize release operations.
 
 Build observations belong in the immutable manifest. Staging observations
-refer to that finished manifest and its staging receipt. Rollout and completion
-observations are later records; never mutate the original manifest to add
-evidence that did not exist when it was signed.
+refer to that finished manifest and its staging publication receipt. Rollout
+and completion observations are later records; never mutate the original
+manifest to add evidence that did not exist when it was signed.
+
+### Scoped gate digests
+
+Each gate identity is digested over only what it depends on, under the domain
+`aos.release.gate-policy/v1`:
+
+- a requirement gate digests the requirement; and
+- a claim gate `claim-<id>` digests the claim, its target, and the requirements
+  the claim references, in contract order.
+
+Each planned destination additionally carries a `profile_digest` over its
+profile under `aos.release.qualification-profile/v1`. Soak, review, fitness,
+and ring changes therefore change the destination's binding without
+invalidating case evidence for unrelated targets. Each gate records whether it
+is `blocking`: requirement gates always block, and a claim gate blocks when its
+claim does.
+
+A plan's destinations each carry their own gate list, equal to
+`contract.gates(destination, change_scope)`. There is no plan-wide gate union.
+
+## Release journal and admissions
+
+Each release keeps an append-only, hash-chained journal
+(`aos.release.journal-entry/v1`). It records three global states and then one
+state per planned destination:
+
+```text
+planned -> built -> finalized -+-> published(staging/c)    -> rolling -> complete
+                               +-> published(production/c) -> rolling -> complete
+any non-terminal state -> failed
+```
+
+- `planned`, `built`, and `finalized` are global and linear.
+- A destination may become `published` once the release is `finalized` and
+  every surface role in its `after` list already holds a published, rolling, or
+  complete entry for the same release. Production destinations wait for
+  staging; staging destinations wait for nothing.
+- A published destination advances to `rolling` with its first ring, stays
+  `rolling` across later rings, and becomes `complete` when its rollout is
+  closed.
+- Destinations interleave: publishing `production/candidate` does not wait for
+  `staging/stable` to complete, and `production/stable` may be published while
+  `production/candidate` is still rolling.
+- `failed` is reachable from any non-terminal state and is terminal for the
+  release bytes. The release succeeds when every planned destination is
+  `complete`.
+
+There is no separate qualified state. The signed staging-phase qualification of
+a production destination is attached, by digest, to that destination's
+published entry. Rollout and completion qualifications are attached to the
+rolling and complete entries they authorize. The admissions of one release are
+therefore independent per destination: a failure to qualify
+`production/stable` does not undo `production/candidate`.
 
 ## Collect, review, and sign
+
+`aos release advance` performs this section's steps for each destination and
+stops at every human decision. The underlying leaf commands are documented here
+because their inputs and outputs are the evidence.
 
 Inspect the actual case population before allocating machines:
 
 ```sh
-aos release qualification cases --plan release-bundle/release-plan.json \
-  --manifest release-bundle/release-manifest.json --phase staging
+aos release step qualification cases \
+  --plan "$WORK/plan.json" \
+  --manifest "$WORK/finalized/bundle/release-manifest.json" \
+  --to production/candidate --phase staging
 ```
 
 This command displays requirements, a `case_digests` map keyed by case ID, and
-an `environment_profile_digests` map for target cases. It does not verify
-signatures or claim a pass. Use `aos release verify` with independent public
-anchors for verification.
+an `environment_profile_digests` map for target cases. It applies the
+destination's profile and the plan's change scope. It does not verify
+signatures or claim a pass. Use `aos release step verify` with independent
+public anchors for verification. `aos release explain --to <destination>`
+prints the same population with the current status of every case.
 
-Run `aos release qualify-run --prepare-only` with the bundle, publication
-receipt, applicable executor mappings, and `--qualified-at now` described in
+Run `aos release step qualify-run --to <destination> --phase staging
+--prepare-only` with the bundle, the staging publication receipt, applicable
+executor mappings, and `--qualified-at now` described in
 [the runbook](canonical-releases.md#run-the-native-qualification-matrix).
 For staging image update cases, also supply the retained snapshot through an
 absolute `--predecessor-bundle` path.
-Inspect the prepared report and its retained `reports/` directory. Sign an
-independent review payload with a planned `release-evidence` key:
+Inspect the prepared report and its retained `reports/` directory. Each
+reviewer signs an independent review payload with a planned `release-evidence`
+key, either through `aos release review` or directly:
 
 ```json
 {
@@ -424,34 +775,35 @@ Use the existing signed-receipt envelope: Ed25519 signs the SHA-256 of
 `aos.hub.release-evidence-signature/v1`, a NUL byte, then the canonical payload.
 This is `RECEIPT_SIGNATURE_DOMAIN` in `crates/aos-release/src/receipt.rs`.
 Keep review signing under the configured authority provider, outside the Nix
-store. Review thresholds are required for candidate, stable, and emergency.
-Testing may include reviews voluntarily. Human independence and custody are
+store. The destination's profile sets the review threshold: `functional` and
+`soak` require one reviewer, `smoke` and `build` none. A reviewer may be added
+voluntarily where none is required. Human independence and custody are
 confirmed in the maintainer checklist; separate key IDs alone do not prove it.
+A rejected review (`"accepted": false`) stops the destination; the report must
+be recollected.
 
 Repeat `qualify-run` with `--report-input PREPARED/qualification-report.json`
 and each `--review-receipt PATH`, omitting `--prepare-only`. The authority checks
 and signs the same report. Its output atomically retains report bodies,
 reviews, and signatures. Keep that entire directory and the separately retained
-`.aos-qualification-attempt-*` directories. `qualify` and `promote` recheck the
-original report directory, including its bodies and reviews; a copied aggregate
-JSON file alone is insufficient.
+`.aos-qualification-attempt-*` directories. `step publish` and `step record`
+recheck the original report directory, including its bodies and reviews; a
+copied aggregate JSON file alone is insufficient.
 
-For rollout use `--phase rollout --publication-receipt PRODUCTION_RECEIPT`
-(the latter aliases `--staging-receipt`), the production Hub receipt key,
-`--journal CURRENT_JOURNAL`, and `--rollout-intent NEXT_RANGE.json`:
+For rollout, use `--phase rollout --ring N --prior-generation G` with the
+destination's current publication receipt (`--publication-receipt`) and the
+current journal. The command derives the ring's partition range from the
+planned rings; `G` is the channel generation observed on the live surface.
+Rings are numbered from 1 in profile order.
 
-```json
-{"channel":"edge","first_partition":0,"last_partition":31,"prior_generation":0}
-```
-
-For completion use `--phase complete` with the current production receipt and
-rolling journal. No rollout intent is supplied. These authority signatures
-bind the exact report, policy, manifest, publication receipt, entire journal,
-and next range where applicable. Channel commands require `--qualification`
-and `--qualification-key`; observations and approvals at rollout must be at
-most ten minutes old. Recollect health for each new range. A completion
-approval must also be fresh, while its workload report covers the full selected
-observation window. Campaigns lasting days run outside a single bounded RPC;
+For completion, use `--phase complete` with the destination's publication
+receipt and rolling journal. These authority signatures bind the exact report,
+policy, manifest, publication receipt, entire journal, and next ring where
+applicable. Channel commands require the signed rollout qualification when the
+profile has a rollout-phase gate; observations and approvals at rollout must be
+at most ten minutes old. Recollect health for each new ring. A completion
+approval must also be fresh, while its workload report covers the full soak
+window. Campaigns lasting days run outside a single bounded executor process;
 import their retained observations for review and admission.
 
 ## Native executors
@@ -606,7 +958,7 @@ relationships, including signed narinfo and dependency artifacts. Scenarios
 use AOS-built tools and the published image's normal provisioning and
 serial/SSH interfaces.
 
-The scenario emits `QualificationExecutorResponseV1`. Its observation must
+The scenario emits `QualificationExecutorResponse`. Its observation must
 contain the exact case digest, acceptance checks, numeric measurements, assessment
 and applicable environment/capability evidence. Include the predecessor for update
 claims. Set
@@ -626,7 +978,7 @@ assembly to the installed CLI. Write a canonical report in the attempt
 directory, then run:
 
 ```sh
-aos release qualification respond \
+aos release step qualification respond \
   --request request.json \
   --scenarios scenario-registry.json \
   --report scenario-report.json \
@@ -673,8 +1025,8 @@ OCI objects, runtime properties, lifecycle operations, or report bindings fail
 the case and leave the complete failed attempt in the executor work root.
 
 Completion container claims still consume retained campaign reports because
-their 24-hour-or-longer observation windows exceed the executor's six-hour
-process bound. Those reports must cover the same target inventory and include
+the `soak` profile's observation window exceeds the executor's six-hour process
+bound. Those reports must cover the same target inventory and include
 the required operation denominators and committed-data result.
 
 An executor that imports reports from several machines or package exercises can
@@ -723,15 +1075,15 @@ environment shape that does not match the case.
 The flake exposes `qualification-executor-<platform>` packages for all four
 release platforms under `packages.x86_64-linux`, plus a native
 `qualification-executor` alias on each supported system. Install the exact
-platform closures at the paths passed to `qualify-run`. Before starting an
+platform closures at the paths named by the maintainer configuration's
+`[executors.<platform>]` tables, which `advance` passes to `step qualify-run`. Before starting an
 executor, install each applicable report-backed scenario's single-link
 canonical report at
 `/run/aos-release/qualification-reports/<platform>/<case-digest>.json`.
 The staging container and native ability lifecycle cases execute directly and
-do not read this report directory.
-The x86_64 Linux executor uses the fixed paths
-`/run/aos-release/qualification-reports/operator-recovery.json` and
-`production-recovery.json` for those two operator exercises. Each adapter
+do not read this report directory. Environment recovery exercises are not
+executor cases; they are [fitness attestations](#fitness-attestations). Each
+report-backed adapter
 drains the coordinator request, captures the selected report without following
 links, and binds it through `qualification respond`. A missing, changing,
 stale, malformed, incorrectly identified, or case-incomplete report fails the
@@ -741,6 +1093,29 @@ A fixture gate proves regression behavior only. The native Hub fleet uses
 visibly synthetic observations and timing to test admission mechanics; those
 records cannot establish release workload duration or physical reliability.
 The same acceptance conditions govern real automated and operator adapters.
+
+## Static surfaces
+
+Qualification does not require an AOS Hub. A surface may be a static origin
+(filesystem, S3, or SFTP, read back over HTTPS or `file://`), and every
+requirement above applies unchanged. The differences are confined to identity
+and receipts:
+
+- executors download the staging-phase subjects from the staging surface's
+  read-back origin, exactly as they would from a Hub route;
+- the surface identity is the string served at `<readback>/.aos-surface`
+  rather than a Hub deployment ID, and `staging-delivery` and `rollout-health`
+  check it before and after publication;
+- publication and channel receipts on a static surface are
+  `aos.release.publication-receipt/v1` documents signed by the plan's
+  `surface-receipt` role instead of a Hub receipt key; and
+- the `hub-schema` fitness binding is recorded as `null`.
+
+The `hub-restore` fitness kind still applies to a static production surface:
+restore the origin's object set and channel generation records into an
+isolated origin and read it back anonymously. The supported surface pairs and
+upload mechanics are in
+[static surfaces](canonical-releases.md#static-surfaces).
 
 ## Qualification roles and public status
 
@@ -765,7 +1140,9 @@ separate case. A package published for both `x86_64-linux` and `aarch64-linux`
 requires successful observations for both; a local check on one architecture
 does not satisfy the other. Package publication support policy determines
 which cells apply. The package probe schema has no architecture selector that
-can silently exempt an otherwise published cell.
+can silently exempt an otherwise published cell. Only a change-scoped profile
+narrows the population, and only to cells whose artifact set changed; see
+[change scoping](#change-scoping).
 
 Recovery and K3s package cases also bind their published execution image. The
 shared policy's `qualification.packageExecutionImageVariant` defaults to
@@ -808,8 +1185,11 @@ that fixture with the authoritative data so schema tests cannot drift silently.
 Evidence is reusable only for unchanged subjects, policy, executor, and
 environment under its age limit. New update pairs need new transition evidence.
 Firmware, kernel, bootloader, initrd, storage, updater, and harness changes
-invalidate dependent results. Live Hub health always needs a fresh observation.
-Uncertain impact selects the broader campaign.
+invalidate dependent results. Live surface health always needs a fresh
+observation. Uncertain impact selects the broader campaign. Scoped gate digests
+keep this rule honest: a claim gate changes only when its claim, target, or
+referenced requirements change, so evidence for an unrelated target survives a
+policy edit elsewhere in the contract.
 
 ## Release-train support
 
@@ -840,17 +1220,20 @@ declares `default`. Registry finalization copies the release's own train entry
 into the signed registry's `[support]` table and refuses a contract that names
 another train, so a backport on an old train can extend that train's support
 without touching newer ones, and no branch can rewrite the roadmap of another.
-The Hub indexes the table with the registry metadata and renders it on the
-Releases page, so changing the promise is a reviewed contract change on the
-owning branch followed by that branch's next release, never a Hub setting.
+A Hub surface indexes the table with the registry metadata and renders it on
+the Releases page; a static surface serves it only inside the signed registry.
+Changing the promise is therefore a reviewed contract change on the owning
+branch followed by that branch's next release, never a surface setting.
 
 ## Public release record
 
 Registry finalization precedes qualification, so the qualification outcome
-cannot live in the registry tree. After admission, `aos release record`
-composes `aos.release-record/v1` from the frozen plan, the final manifest, the
-signed qualification receipt, and the public report, and the TUF and
-compose-surface steps authorize and serve it beside the release manifest. The
+cannot live in the registry tree. After the staging-phase report for a
+production destination is signed, `aos release step record` composes
+`aos.release-record/v1` from the frozen plan, the final manifest, the signed
+qualification, and the public report, and the TUF and compose-surface steps
+authorize and serve it beside the release manifest on that destination's
+surface. The
 record carries the result, policy, authority, and admission time; each claim's
 required and achieved assurance and disposition; the train's support
 statement; provenance digests; and the exact signed envelope. Achieved

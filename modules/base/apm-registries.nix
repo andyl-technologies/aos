@@ -5,7 +5,8 @@
 ##!
 ##!   - `/etc/apm/registries.d/<name>.toml` — registry URL, signed channel,
 ##!     priority, bootstrap cache endpoints, and `[registry.signing]` with the
-##!     first trust key as the bootstrap anchor.
+##!     first trust key as the bootstrap anchor and an explicit provenance
+##!     signer allowlist for privileged shared-root ownership.
 ##!   - `/etc/apm/trusted-keys.d/<name>.pub` — every trust key, one per
 ##!     line (`apm` reads this directory in both profile scopes).
 ##!   - `/etc/apm/trusted-sb-certs.d/<name>.pem` — the Secure Boot db

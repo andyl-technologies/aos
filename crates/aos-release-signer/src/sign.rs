@@ -7,10 +7,11 @@
 //! combination is refused.
 
 use anyhow::{Context as _, Result, bail};
+use aos_oci_types::CONTAINER_DSSE_SIGNATURE_NAMESPACE;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::signing::{
-    SignatureAlgorithm, SignatureResponseV1, SigningContext, SigningOperation, SigningRequestV1,
+    SignatureAlgorithm, SignatureResponse, SigningContext, SigningOperation, SigningRequest,
     verify_response_binding,
 };
 use base64::Engine as _;
@@ -40,7 +41,7 @@ const PROVENANCE_SSHSIG_NAMESPACE: &str = "aos-package-provenance-dsse-v1";
 /// A verified response together with any transformed output bytes.
 pub struct SignedExchange {
     /// Response the coordinator verifies against its pinned public material.
-    pub response: SignatureResponseV1,
+    pub response: SignatureResponse,
     /// Signed artifact bytes for transforming operations; empty otherwise.
     pub output: Vec<u8>,
 }
@@ -57,7 +58,7 @@ pub fn sign_exchange(
     config: &SignerConfigV1,
     exchange: &ExchangeRequest,
 ) -> Result<SignedExchange> {
-    let request: SigningRequestV1 = canonical::from_slice(&exchange.request, "signing request")?;
+    let request: SigningRequest = canonical::from_slice(&exchange.request, "signing request")?;
     request.validate()?;
     if canonical::to_vec(&request)? != exchange.request {
         bail!("signing request is not canonical JSON");
@@ -72,7 +73,7 @@ pub fn sign_exchange(
     let (signature_base64, output) = produce(config, &request, &key, &exchange.payload)?;
 
     let output_digest = (!output.is_empty()).then(|| Sha256Digest::of_bytes(&output));
-    let response = SignatureResponseV1 {
+    let response = SignatureResponse {
         schema_version: RESPONSE_SCHEMA_V1.to_owned(),
         request_digest: request.digest()?,
         role: request.role,
@@ -92,7 +93,7 @@ pub fn sign_exchange(
 }
 
 /// Rejects requests outside the configured provider, registry, and role policy.
-fn authorize(config: &SignerConfigV1, request: &SigningRequestV1) -> Result<()> {
+fn authorize(config: &SignerConfigV1, request: &SigningRequest) -> Result<()> {
     if request.provider_revision != config.provider_revision {
         bail!(
             "signing request names provider revision {} but this adapter is {}",
@@ -122,7 +123,7 @@ fn authorize(config: &SignerConfigV1, request: &SigningRequestV1) -> Result<()> 
 /// Produces the detached signature or transformed output for one request.
 fn produce(
     config: &SignerConfigV1,
-    request: &SigningRequestV1,
+    request: &SigningRequest,
     key: &LoadedKey,
     payload: &[u8],
 ) -> Result<(String, Vec<u8>)> {
@@ -200,7 +201,7 @@ fn produce(
 }
 
 /// Selects the SSHSIG namespace the coordinator verifies for this context.
-fn sshsig_namespace(request: &SigningRequestV1) -> Result<&'static str> {
+fn sshsig_namespace(request: &SigningRequest) -> Result<&'static str> {
     match (&request.context, request.operation) {
         (SigningContext::Git { .. }, SigningOperation::SignGitObject) => Ok(GIT_SSHSIG_NAMESPACE),
         (SigningContext::Payload { artifact_kind }, SigningOperation::SignPayload)
@@ -208,7 +209,12 @@ fn sshsig_namespace(request: &SigningRequestV1) -> Result<&'static str> {
         {
             Ok(PROVENANCE_SSHSIG_NAMESPACE)
         }
-        _ => bail!("SSHSIG signing is limited to Git objects and package provenance"),
+        (SigningContext::Payload { artifact_kind }, SigningOperation::SignPayload)
+            if artifact_kind == "container-provenance-dsse" =>
+        {
+            Ok(CONTAINER_DSSE_SIGNATURE_NAMESPACE)
+        }
+        _ => bail!("SSHSIG signing is limited to Git objects and provenance DSSE"),
     }
 }
 
@@ -233,8 +239,8 @@ mod tests {
 
     const SEED: [u8; 32] = [11_u8; 32];
 
-    fn request(role: SignerRole, key_id: &str, payload: &[u8]) -> SigningRequestV1 {
-        SigningRequestV1 {
+    fn request(role: SignerRole, key_id: &str, payload: &[u8]) -> SigningRequest {
+        SigningRequest {
             schema_version: SIGNING_REQUEST_DOMAIN.into(),
             request_id: "test/request-1".into(),
             nonce: "ab".repeat(32),
@@ -289,7 +295,7 @@ mod tests {
         }
     }
 
-    fn exchange(request: &SigningRequestV1, payload: &[u8]) -> ExchangeRequest {
+    fn exchange(request: &SigningRequest, payload: &[u8]) -> ExchangeRequest {
         ExchangeRequest {
             request: canonical::to_vec(request).unwrap(),
             payload: payload.to_vec(),
@@ -367,6 +373,48 @@ mod tests {
             signed.response.verification_material_digest,
             Sha256Digest::of_bytes(trust_line.as_bytes())
         );
+    }
+
+    #[test]
+    fn provenance_signatures_are_bound_to_their_artifact_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config(dir.path());
+        config.keys[1].roles = vec![SignerRole::Provenance];
+        let payload = b"DSSEv1 public payload";
+        let KeyMaterial::OpensshEd25519 { trust_line, .. } = &config.keys[1].material else {
+            panic!("expected OpenSSH material");
+        };
+        let blob = trust_line.rsplit(':').next().unwrap();
+        let public = ssh_key::PublicKey::from_openssh(&format!("ssh-ed25519 {blob}")).unwrap();
+
+        for (kind, namespace, other_namespace) in [
+            (
+                "package-provenance-dsse",
+                PROVENANCE_SSHSIG_NAMESPACE,
+                CONTAINER_DSSE_SIGNATURE_NAMESPACE,
+            ),
+            (
+                "container-provenance-dsse",
+                CONTAINER_DSSE_SIGNATURE_NAMESPACE,
+                PROVENANCE_SSHSIG_NAMESPACE,
+            ),
+        ] {
+            let mut request = request(SignerRole::Provenance, "registry-v1", payload);
+            request.algorithm = SignatureAlgorithm::SshsigEd25519;
+            request.context = SigningContext::Payload {
+                artifact_kind: kind.into(),
+            };
+
+            let signed = sign_exchange(&config, &exchange(&request, payload)).unwrap();
+            let armored = base64::engine::general_purpose::STANDARD
+                .decode(&signed.response.signature_base64)
+                .unwrap();
+            let signature = ssh_key::SshSig::from_pem(&armored).unwrap();
+
+            public.verify(namespace, payload, &signature).unwrap();
+            assert!(public.verify(other_namespace, payload, &signature).is_err());
+            assert!(public.verify("git", payload, &signature).is_err());
+        }
     }
 
     #[test]

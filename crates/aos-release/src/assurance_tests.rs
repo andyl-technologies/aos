@@ -3,12 +3,12 @@
 use anyhow::Result;
 
 use crate::digest::Sha256Digest;
-use crate::evidence::{EvidenceRecord, GateResult, QualificationReportV1};
+use crate::evidence::{EvidenceRecord, GateResult, QualificationReport};
 use crate::qualification::QualificationPhase;
 use crate::qualification::claims::{AssuranceLevel, ClaimDisposition};
 use crate::qualification::environment::{Accelerator, Backend};
 use crate::qualification_evidence::{assess_observations, validate_observations};
-use crate::verify::tests::{observations, qualification_fixture};
+use crate::verify::tests::{STABLE, observations, qualification_fixture, rebind};
 
 const NOW: &str = "2026-09-01T00:00:02Z";
 
@@ -30,7 +30,7 @@ fn image_record(records: &mut [EvidenceRecord]) -> &mut EvidenceRecord {
 #[test]
 fn actual_environment_must_match_every_required_dimension() -> Result<()> {
     let (plan, manifest) = qualification_fixture()?;
-    let original = observations(&plan, &manifest, QualificationPhase::Staging)?;
+    let original = observations(&plan, &manifest, Some(STABLE), QualificationPhase::Staging)?;
     for dimension in [
         "accelerator",
         "host-platform",
@@ -69,8 +69,16 @@ fn actual_environment_must_match_every_required_dimension() -> Result<()> {
             observation.environment_digest = environment.digest()?;
         }
         assert!(
-            validate_observations(&plan, &manifest, QualificationPhase::Staging, &changed, NOW)
-                .is_err(),
+            validate_observations(
+                &plan,
+                &manifest,
+                Some(STABLE),
+                QualificationPhase::Staging,
+                &changed,
+                NOW,
+                None,
+            )
+            .is_err(),
             "accepted changed {dimension}"
         );
     }
@@ -80,13 +88,18 @@ fn actual_environment_must_match_every_required_dimension() -> Result<()> {
 #[test]
 fn cpu_family_scope_and_exact_sku_scope_have_distinct_membership() -> Result<()> {
     let (plan, manifest) = qualification_fixture()?;
-    let case = crate::qualification_evidence::cases(&plan, &manifest, QualificationPhase::Staging)?
-        .into_iter()
-        .find(|case| {
-            case.platform == Some(crate::platform::Platform::X86_64Linux) && case.target.is_some()
-        })
-        .unwrap();
-    let mut scope = case.target.as_ref().unwrap().environment.clone().unwrap();
+    let case = crate::qualification_evidence::cases(
+        &plan,
+        &manifest,
+        Some(STABLE),
+        QualificationPhase::Staging,
+    )?
+    .into_iter()
+    .find(|case| {
+        case.platform == Some(crate::platform::Platform::X86_64Linux) && case.target.is_some()
+    })
+    .unwrap();
+    let mut scope = case.target.as_ref().unwrap().environment.clone();
     let mut inventory = crate::test_support::qualification::environment(&case)?.unwrap();
     let required = &mut scope.layers.last_mut().unwrap().cpu;
     required.vendors = vec!["AMD".into()];
@@ -112,15 +125,20 @@ fn cpu_family_scope_and_exact_sku_scope_have_distinct_membership() -> Result<()>
 #[test]
 fn cloud_instance_and_region_are_recorded_scope_dimensions() -> Result<()> {
     let (plan, manifest) = qualification_fixture()?;
-    let case = crate::qualification_evidence::cases(&plan, &manifest, QualificationPhase::Staging)?
-        .into_iter()
-        .find(|case| {
-            case.target
-                .as_ref()
-                .is_some_and(|target| target.kind == crate::qualification::TargetKind::Image)
-        })
-        .unwrap();
-    let mut scope = case.target.as_ref().unwrap().environment.clone().unwrap();
+    let case = crate::qualification_evidence::cases(
+        &plan,
+        &manifest,
+        Some(STABLE),
+        QualificationPhase::Staging,
+    )?
+    .into_iter()
+    .find(|case| {
+        case.target
+            .as_ref()
+            .is_some_and(|target| target.kind == crate::qualification::TargetKind::Image)
+    })
+    .unwrap();
+    let mut scope = case.target.as_ref().unwrap().environment.clone();
     let mut inventory = crate::test_support::qualification::environment(&case)?.unwrap();
     scope.layers.remove(0);
     inventory.layers.remove(0);
@@ -149,7 +167,7 @@ fn cloud_instance_and_region_are_recorded_scope_dimensions() -> Result<()> {
 #[test]
 fn cycle_measurements_cannot_be_replaced_by_affirmative_checks() -> Result<()> {
     let (plan, manifest) = qualification_fixture()?;
-    let original = observations(&plan, &manifest, QualificationPhase::Staging)?;
+    let original = observations(&plan, &manifest, Some(STABLE), QualificationPhase::Staging)?;
     for count in [Some(9), None] {
         let mut changed = original.clone();
         let operations = &mut image_record(&mut changed)
@@ -163,8 +181,16 @@ fn cycle_measurements_cannot_be_replaced_by_affirmative_checks() -> Result<()> {
             operations.remove("reboot_cycles");
         }
         assert!(
-            validate_observations(&plan, &manifest, QualificationPhase::Staging, &changed, NOW)
-                .is_err()
+            validate_observations(
+                &plan,
+                &manifest,
+                Some(STABLE),
+                QualificationPhase::Staging,
+                &changed,
+                NOW,
+                None,
+            )
+            .is_err()
         );
     }
     Ok(())
@@ -173,7 +199,7 @@ fn cycle_measurements_cannot_be_replaced_by_affirmative_checks() -> Result<()> {
 #[test]
 fn each_configuration_requires_its_own_complete_observation_window() -> Result<()> {
     let (plan, manifest) = qualification_fixture()?;
-    let mut complete = observations(&plan, &manifest, QualificationPhase::Complete)?;
+    let mut complete = observations(&plan, &manifest, Some(STABLE), QualificationPhase::Complete)?;
     for record in &mut complete {
         record.finished_at = "2026-09-15T00:00:00Z".into();
         record.qualification.as_mut().unwrap().observed_seconds = 1_209_600;
@@ -182,9 +208,11 @@ fn each_configuration_requires_its_own_complete_observation_window() -> Result<(
     validate_observations(
         &plan,
         &manifest,
+        Some(STABLE),
         QualificationPhase::Complete,
         &complete,
         now,
+        None,
     )?;
     for index in 0..complete.len() {
         let mut changed = complete.clone();
@@ -197,9 +225,11 @@ fn each_configuration_requires_its_own_complete_observation_window() -> Result<(
             validate_observations(
                 &plan,
                 &manifest,
+                Some(STABLE),
                 QualificationPhase::Complete,
                 &changed,
-                now
+                now,
+                None,
             )
             .is_err()
         );
@@ -215,9 +245,11 @@ fn each_configuration_requires_its_own_complete_observation_window() -> Result<(
         validate_observations(
             &plan,
             &manifest,
+            Some(STABLE),
             QualificationPhase::Complete,
             &corrupt,
-            now
+            now,
+            None,
         )
         .is_err()
     );
@@ -227,7 +259,7 @@ fn each_configuration_requires_its_own_complete_observation_window() -> Result<(
 #[test]
 fn capability_evidence_is_bound_to_exact_metadata_bytes_and_observed_image() -> Result<()> {
     let (plan, manifest) = qualification_fixture()?;
-    let original = observations(&plan, &manifest, QualificationPhase::Staging)?;
+    let original = observations(&plan, &manifest, Some(STABLE), QualificationPhase::Staging)?;
     for change in ["metadata", "inventory", "absent", "artifact"] {
         let mut records = original.clone();
         let observation = image_record(&mut records).qualification.as_mut().unwrap();
@@ -249,8 +281,16 @@ fn capability_evidence_is_bound_to_exact_metadata_bytes_and_observed_image() -> 
             _ => unreachable!(),
         }
         assert!(
-            validate_observations(&plan, &manifest, QualificationPhase::Staging, &records, NOW)
-                .is_err(),
+            validate_observations(
+                &plan,
+                &manifest,
+                Some(STABLE),
+                QualificationPhase::Staging,
+                &records,
+                NOW,
+                None,
+            )
+            .is_err(),
             "accepted {change}"
         );
     }
@@ -261,7 +301,7 @@ fn capability_evidence_is_bound_to_exact_metadata_bytes_and_observed_image() -> 
 fn optional_assessments_preserve_missing_and_failed_results_without_awarding_execution()
 -> Result<()> {
     let (mut plan, manifest) = qualification_fixture()?;
-    let contract = plan.qualification.as_mut().unwrap();
+    let contract = &mut plan.qualification;
     let mut optional = contract
         .claims
         .iter()
@@ -274,18 +314,31 @@ fn optional_assessments_preserve_missing_and_failed_results_without_awarding_exe
     optional.minimum_assurance = AssuranceLevel::A1;
     optional.blocks_release = false;
     contract.claims.push(optional);
-    plan.gates = contract.gates(&plan.registry, plan.release_class)?;
-    plan.public_evidence_policy_digest = contract.digest()?;
+    rebind(&mut plan)?;
     plan.validate()?;
-    let records = observations(&plan, &manifest, QualificationPhase::Staging)?;
+    let records = observations(&plan, &manifest, Some(STABLE), QualificationPhase::Staging)?;
     let outcome = |records: &[EvidenceRecord]| -> Result<_> {
-        validate_observations(&plan, &manifest, QualificationPhase::Staging, records, NOW)?;
-        Ok(
-            assess_observations(&plan, &manifest, QualificationPhase::Staging, records, NOW)?
-                .into_iter()
-                .find(|outcome| outcome.claim_id == "optional-reviewed-scope")
-                .unwrap(),
-        )
+        validate_observations(
+            &plan,
+            &manifest,
+            Some(STABLE),
+            QualificationPhase::Staging,
+            &records,
+            NOW,
+            None,
+        )?;
+        Ok(assess_observations(
+            &plan,
+            &manifest,
+            Some(STABLE),
+            QualificationPhase::Staging,
+            &records,
+            NOW,
+            None,
+        )?
+        .into_iter()
+        .find(|outcome| outcome.claim_id == "optional-reviewed-scope")
+        .unwrap())
     };
     let assessed = outcome(&records)?;
     assert_eq!(assessed.achieved_assurance, AssuranceLevel::A1);
@@ -329,51 +382,65 @@ fn optional_assessments_preserve_missing_and_failed_results_without_awarding_exe
 #[test]
 fn report_assurance_is_recomputed_and_cannot_be_self_promoted_or_downgraded() -> Result<()> {
     let (plan, manifest) = qualification_fixture()?;
-    let evidence = observations(&plan, &manifest, QualificationPhase::Staging)?;
+    let evidence = observations(&plan, &manifest, Some(STABLE), QualificationPhase::Staging)?;
     let claims = assess_observations(
         &plan,
         &manifest,
+        Some(STABLE),
         QualificationPhase::Staging,
         &evidence,
         NOW,
+        None,
     )?;
-    let mut report = QualificationReportV1 {
-        schema_version: "aos.release.qualification-report/v3".into(),
-        phase: Some(QualificationPhase::Staging),
-        admitted_at: Some(NOW.into()),
+    let mut report = QualificationReport {
+        schema_version: crate::evidence::QUALIFICATION_REPORT.into(),
+        destination: STABLE.into(),
+        phase: QualificationPhase::Staging,
+        admitted_at: NOW.into(),
         staging_receipt_digest: Sha256Digest::of_bytes("staging"),
         manifest_digest: Sha256Digest::of_bytes("manifest"),
-        claims: Some(claims),
+        claims,
         evidence,
     };
-    report.validate_phase(&plan, &manifest, QualificationPhase::Staging, NOW)?;
-    report.claims.as_mut().unwrap()[0].achieved_assurance = AssuranceLevel::A3;
-    assert!(
-        report
-            .validate_phase(&plan, &manifest, QualificationPhase::Staging, NOW)
-            .is_err()
-    );
-    report.schema_version = "aos.release.qualification-report/v2".into();
-    report.claims = None;
-    assert!(
-        report
-            .validate_phase(&plan, &manifest, QualificationPhase::Staging, NOW)
-            .is_err()
-    );
+    let validate = |report: &QualificationReport, destination| {
+        report.validate_phase(
+            &plan,
+            &manifest,
+            destination,
+            QualificationPhase::Staging,
+            NOW,
+        )
+    };
+    validate(&report, STABLE)?;
+    // A report is bound to its destination and cannot be replayed elsewhere.
+    assert!(validate(&report, "production/candidate").is_err());
+    let mut rescoped = report.clone();
+    rescoped.destination = "production/candidate".into();
+    assert!(validate(&rescoped, STABLE).is_err());
+
+    let mut unknown = report.clone();
+    unknown.schema_version = "aos.release.qualification-report/v0".into();
+    assert!(validate(&unknown, STABLE).is_err());
+
+    report.claims[0].achieved_assurance = AssuranceLevel::A3;
+    assert!(validate(&report, STABLE).is_err());
     Ok(())
 }
 
 #[test]
-fn current_case_semantics_cannot_be_hashed_as_an_archived_case() -> Result<()> {
+fn cases_hash_only_under_their_own_schema() -> Result<()> {
     let (plan, manifest) = qualification_fixture()?;
-    let mut case =
-        crate::qualification_evidence::cases(&plan, &manifest, QualificationPhase::Staging)?
-            .into_iter()
-            .find(|case| case.claim.is_some())
-            .unwrap();
-    case.schema_version = None;
-    assert!(case.digest().is_err());
-    case.schema_version = Some("unknown".into());
+    let mut case = crate::qualification_evidence::cases(
+        &plan,
+        &manifest,
+        Some(STABLE),
+        QualificationPhase::Staging,
+    )?
+    .into_iter()
+    .find(|case| case.claim.is_some())
+    .unwrap();
+    case.digest()?;
+    case.schema_version = "unknown".into();
     assert!(case.digest().is_err());
     Ok(())
 }

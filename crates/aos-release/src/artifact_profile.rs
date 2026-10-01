@@ -9,6 +9,8 @@
 //!   "registry": "andyl/testing",
 //!   "rootEpoch": 1,
 //!   "clientName": "andyl-testing",
+//!   "registryOrigin": "https://cdn.aos.andyl.org",
+//!   "hubUrl": "https://aos.andyl.org",
 //!   "url": "https://cdn.aos.andyl.org/andyl/testing/",
 //!   "channel": "edge",
 //!   "trustKeys": ["andyl-testing:Ed25519:<OpenSSH public-key blob>"],
@@ -23,7 +25,6 @@
 use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 
-use crate::plan::ReleaseClass;
 use crate::registry::{RegistryTier, registry_policy};
 
 /// Evaluated client and support identity shared by a system's release artifacts.
@@ -40,6 +41,12 @@ pub struct ArtifactProfile {
     pub root_epoch: u64,
     /// Slash-free APM registry alias and trust-key prefix.
     pub client_name: String,
+    /// HTTPS delivery origin of the deployment receiving the artifacts.
+    #[serde(default = "production_registry_origin")]
+    pub registry_origin: String,
+    /// HTTPS control origin of the deployment receiving the artifacts.
+    #[serde(default = "production_hub_url")]
+    pub hub_url: String,
     /// Canonical registry URL installed in the package-manager configuration.
     pub url: String,
     /// Default update channel installed in both artifact forms.
@@ -53,11 +60,15 @@ pub struct ArtifactProfile {
 impl ArtifactProfile {
     /// Requires this artifact's client configuration to match its release destination.
     ///
+    /// The baked default channel must have a kind the registry tier carries:
+    /// `edge` for testing registries, `candidate` or `stable` for `andyl/main`.
+    ///
     /// # Errors
     /// Returns an error for a disabled profile, a registry or tier crossover,
-    /// an incompatible channel or root epoch, a different client URL or alias,
-    /// absent or malformed trust keys, or an absent testing warning.
-    pub fn require_release(&self, registry: &str, class: ReleaseClass) -> Result<()> {
+    /// a channel kind outside the tier, a different root epoch, a different
+    /// client URL or alias, absent or malformed trust keys, or an absent
+    /// testing warning.
+    pub fn require_release(&self, registry: &str) -> Result<()> {
         if !self.enabled {
             bail!("selected system does not enable a public release artifact profile");
         }
@@ -73,17 +84,20 @@ impl ArtifactProfile {
         if self.tier != expected_tier || self.root_epoch != policy.root_epoch() {
             bail!("artifact support tier or trust-root epoch differs from its registry");
         }
-        policy.require_release(class, std::slice::from_ref(&self.channel))?;
+        policy.require_release(std::slice::from_ref(&self.channel))?;
 
         let expected_alias = match policy.tier() {
             RegistryTier::Production => "andyl".to_owned(),
             RegistryTier::Testing => registry.replace('/', "-"),
         };
         if self.client_name != expected_alias
-            || self.url != format!("https://cdn.aos.andyl.org/{registry}/")
+            || self.url != format!("{}/{registry}/", self.registry_origin)
         {
             bail!("artifact package-manager alias or URL differs from its registry");
         }
+        require_https_origin(&self.registry_origin)?;
+        require_https_origin(&self.hub_url)?;
+
         if self.trust_keys.is_empty() {
             bail!("release artifacts require a baked registry trust key");
         }
@@ -99,6 +113,52 @@ impl ArtifactProfile {
         }
         Ok(())
     }
+
+    /// Requires the baked Hub origin to match the selected publication deployment.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid origin or a different publication destination.
+    pub fn require_hub(&self, origin: &str) -> Result<()> {
+        require_https_origin(&self.hub_url)?;
+        require_https_origin(origin)?;
+        if self.hub_url != origin {
+            bail!("artifact Hub origin differs from the publication deployment");
+        }
+        Ok(())
+    }
+}
+
+fn production_registry_origin() -> String {
+    "https://cdn.aos.andyl.org".into()
+}
+
+fn production_hub_url() -> String {
+    "https://aos.andyl.org".into()
+}
+
+// Match the Nix profile's HTTPS origin grammar without accepting credentials,
+// paths, or query components as part of a deployment identity.
+fn require_https_origin(origin: &str) -> Result<()> {
+    let authority = origin
+        .strip_prefix("https://")
+        .context("release deployment origins require HTTPS")?;
+    let (host, port) = authority
+        .split_once(':')
+        .map_or((authority, None), |(host, port)| (host, Some(port)));
+    if host.is_empty()
+        || !host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+    {
+        bail!("release deployment origin has an invalid hostname");
+    }
+    if let Some(port) = port {
+        let port = port.parse::<u16>().context("invalid release origin port")?;
+        if port == 0 {
+            bail!("release origin port must be positive");
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -119,6 +179,8 @@ mod tests {
             registry: registry.into(),
             root_epoch: registry_policy(registry).unwrap().root_epoch(),
             client_name: alias.clone(),
+            registry_origin: production_registry_origin(),
+            hub_url: production_hub_url(),
             url: format!("https://cdn.aos.andyl.org/{registry}/"),
             channel: if testing { "edge" } else { "stable" }.into(),
             trust_keys: vec![aos_registry_surface::sshsig::trusted_key_line(&alias, &key)],
@@ -128,33 +190,35 @@ mod tests {
 
     #[test]
     fn artifact_destinations_cannot_cross_registry_or_epoch_boundaries() {
-        for (registry, class) in [
-            ("andyl/main", ReleaseClass::Stable),
-            ("andyl/testing", ReleaseClass::Edge),
-            ("andyl/testing-v2", ReleaseClass::Edge),
-        ] {
+        for registry in ["andyl/main", "andyl/testing", "andyl/testing-v2"] {
             let artifact = profile(registry);
-            assert!(artifact.require_release(registry, class).is_ok());
+            assert!(artifact.require_release(registry).is_ok());
             for other in ["andyl/main", "andyl/testing", "andyl/testing-v2"] {
                 if other != registry {
-                    assert!(artifact.require_release(other, class).is_err());
+                    assert!(artifact.require_release(other).is_err());
                 }
             }
         }
     }
 
     #[test]
-    fn every_registry_can_bake_every_software_channel() {
-        for registry in ["andyl/main", "andyl/testing", "andyl/testing-v2"] {
-            for (class, channel) in [
-                (ReleaseClass::Edge, "edge"),
-                (ReleaseClass::Candidate, "candidate"),
-                (ReleaseClass::Stable, "stable"),
-            ] {
-                let mut artifact = profile(registry);
-                artifact.channel = channel.into();
-                assert!(artifact.require_release(registry, class).is_ok());
-            }
+    fn baked_channels_follow_the_registry_tier() {
+        for (registry, channel, allowed) in [
+            ("andyl/testing", "edge", true),
+            ("andyl/testing", "candidate", false),
+            ("andyl/testing-v2", "stable", false),
+            ("andyl/main", "edge", false),
+            ("andyl/main", "candidate", true),
+            ("andyl/main", "stable", true),
+            ("andyl/main", "stable-2026.3", true),
+        ] {
+            let mut artifact = profile(registry);
+            artifact.channel = channel.into();
+            assert_eq!(
+                artifact.require_release(registry).is_ok(),
+                allowed,
+                "{registry} {channel}"
+            );
         }
     }
 
@@ -181,11 +245,7 @@ mod tests {
         ] {
             let mut invalid = valid.clone();
             change(&mut invalid);
-            assert!(
-                invalid
-                    .require_release("andyl/testing", ReleaseClass::Edge)
-                    .is_err()
-            );
+            assert!(invalid.require_release("andyl/testing").is_err());
         }
     }
 }

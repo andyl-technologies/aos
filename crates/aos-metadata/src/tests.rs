@@ -796,3 +796,35 @@ fn fetch_metadata_without_user_data_returns_facts_only() {
     assert_eq!(acquired.host_module_signature, None);
     assert_eq!(acquired.facts, Facts::default());
 }
+
+#[test]
+fn shared_bundle_pointer_checks_pin_and_entrypoint() {
+    use super::fetcher::UserData;
+    use super::http::RecordedMethod;
+
+    let bytes =
+        br#"{"schema":"aos.config-bundle/v1","entrypoint":"host.nix","files":{"host.nix":"e30K"}}"#;
+    let pointer = |entrypoint: &str, digest: &str| UserData::Inline {
+        payload: serde_json::to_vec(&serde_json::json!({
+            "schema":"aos.config-bundle-pointer/v1", "url":"https://config.example/bundle",
+            "sha256":digest, "entrypoint":entrypoint
+        }))
+        .unwrap(),
+        sig: None,
+    };
+    let http = RecordedHttp::new().on(
+        RecordedMethod::Get,
+        "https://config.example/bundle",
+        200,
+        bytes,
+    );
+    let digest = super::bundle::sha256_hex(bytes);
+    assert_eq!(
+        block_on(pointer("host.nix", &digest).resolve(&http))
+            .unwrap()
+            .payload,
+        bytes
+    );
+    assert!(block_on(pointer("other.nix", &digest).resolve(&http)).is_err());
+    assert!(block_on(pointer("host.nix", &"0".repeat(64)).resolve(&http)).is_err());
+}

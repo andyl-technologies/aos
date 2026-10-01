@@ -7,6 +7,7 @@
   - [Understand and operate host.nix](aos/host-nix.md)
   - [Use the repository CLI](aos/cli.md)
   - [Manage packages](aos/packages.md)
+  - [Run multi-user Nix builds](aos/nix-daemon.md)
   - [Configure package registries](aos/registries.md)
   - [Understand native package runtime policy](aos/package-sandbox.md)
   - [Use Secure Boot and verify package trust](aos/secure-boot.md)

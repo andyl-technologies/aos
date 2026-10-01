@@ -4,6 +4,7 @@
   mkDerivation,
   fetchurl,
   python3,
+  buildPackages,
 }: let
   version = "26.2.1";
 in
@@ -70,7 +71,7 @@ in
       hash = "sha256-9q1mfomh/ngEbI8TIyskcgD1JY14KPP3iD1mCHjggT8=";
     };
 
-    buildDeps = [python3];
+    buildDeps = [buildPackages.python3];
     runtimeDeps = [python3];
     propagatedDeps = [];
 
@@ -127,7 +128,10 @@ in
         name = "check";
         script = ''
           unset PYTHONPATH
-          "$out/bin/pip" --version | grep -F "pip ${version}"
+          # Run the installed pure-Python launcher on the build platform;
+          # its target interpreter cannot execute during a cross build.
+          ${buildPackages.python3}/bin/python3 "$out/bin/pip" --version \
+            | grep -F "pip ${version}"
         '';
       }
     ];

@@ -8,7 +8,7 @@ use anyhow::{Context as _, Result, bail};
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::signing::{
-    SignatureAlgorithm, SignatureResponseV1, SignerRole, SigningContext, SigningOperation,
+    SignatureAlgorithm, SignatureResponse, SignerRole, SigningContext, SigningOperation,
     verify_response_binding,
 };
 use base64::Engine as _;
@@ -39,6 +39,8 @@ pub struct PcrSections<'a> {
     pub sbat: &'a Path,
     /// Captured PCR public key embedded in the UKI.
     pub pcrpkey: &'a Path,
+    /// Kernel release section detected and embedded by ukify, when present.
+    pub uname: Option<&'a Path>,
 }
 
 /// Signed `.pcrsig` plus independently derived ready-phase PCR 11.
@@ -51,7 +53,7 @@ pub struct SignedPcrPolicyV1 {
     /// Ready-phase expected PCR 11, serialized as `sha256:<hex>`.
     pub expected_ready_pcr11: Sha256Digest,
     /// Audited external provider response.
-    pub signing_operation: SignatureResponseV1,
+    pub signing_operation: SignatureResponse,
 }
 
 /// Signed ready-phase PCR evidence for one finalized normal UKI.
@@ -62,7 +64,7 @@ pub struct UkiMeasurementV1 {
     /// Raw SHA-256 signature over the measurement document.
     pub signature: PathBuf,
     /// Audited detached-signature provider response.
-    pub signing_operation: SignatureResponseV1,
+    pub signing_operation: SignatureResponse,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -329,7 +331,7 @@ async fn verify_signed_policy(
 }
 
 fn measure_arguments(sections: &PcrSections<'_>) -> Result<Vec<std::ffi::OsString>> {
-    Ok([
+    let mut arguments: Vec<_> = [
         ("--linux=", sections.linux),
         ("--osrel=", sections.osrel),
         ("--cmdline=", sections.cmdline),
@@ -343,7 +345,15 @@ fn measure_arguments(sections: &PcrSections<'_>) -> Result<Vec<std::ffi::OsStrin
         value.push(path);
         value
     })
-    .collect())
+    .collect();
+
+    if let Some(uname) = sections.uname {
+        let mut argument = std::ffi::OsString::from("--uname=");
+        argument.push(uname);
+        arguments.push(argument);
+    }
+
+    Ok(arguments)
 }
 
 fn validate_policy(policy: &PolicyDocument) -> Result<()> {

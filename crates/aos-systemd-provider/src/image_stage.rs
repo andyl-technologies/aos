@@ -419,7 +419,7 @@ fn validate_candidate_root(
     let validation = (|| {
         let toplevel = Path::new(string(&request.candidate, "toplevel")?);
         ensure!(
-            fs::read_link(mounted.join("aos-toplevel"))? == toplevel,
+            fs::read_link(mounted.join("usr/lib/aos/toplevel"))? == toplevel,
             "candidate root embeds another toplevel"
         );
         let metadata = mounted.join(toplevel.strip_prefix("/")?).join("meta");

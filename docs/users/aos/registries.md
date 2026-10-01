@@ -201,7 +201,7 @@ service privilege contract separately:
 
 ```sh
 apm show acme-agent --system --registry acme
-apm info acme-agent --system --permissions
+apm show acme-agent --system --permissions
 apm policy acme-agent --system
 ```
 

@@ -32,6 +32,8 @@
   file,
   patchelf,
   bazel-bootstrap,
+  nativeBazelBootstrap ? null,
+  qemu-img ? null,
   bootstrapTools,
   gcc-libs,
   llvm,
@@ -40,6 +42,7 @@
   srcHash,
   vendorDepsHash,
   platformSupport,
+  source ? null,
   update ? null,
   qualification ? null,
   # Major version string for the version check test (e.g. "7.7", "8.6", "9.0")
@@ -47,6 +50,10 @@
 }: let
   isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  bootstrapJavaRuntime =
+    if source == null
+    then "local_jdk_21"
+    else "local_jdk";
   needsDarwinMdns = builtins.compareVersions version "8.0.0" >= 0;
   needsRulesJavaRuntime = builtins.compareVersions version "9.0.0" >= 0;
   darwinIOKitUserSrc =
@@ -121,6 +128,7 @@
     if isCross
     then buildPackages.openjdk-21
     else openjdk-21;
+  buildOpenjdk8 = buildPackages.openjdk-8;
   buildGcc =
     if isCross
     then buildPackages.gcc
@@ -170,9 +178,144 @@
     then buildPackages.patchelf
     else patchelf;
   buildBazelBootstrap =
-    if isCross
+    if nativeBazelBootstrap != null
+    then nativeBazelBootstrap
+    else if isCross
     then buildPackages.bazel-bootstrap
     else bazel-bootstrap;
+  buildProguard = buildBazelBootstrap.passthru.offlineProguard;
+  prepareFastutilTools = import ./_bazel-fastutil-source-tools.nix {
+    proguard = buildProguard;
+    jdk8 = buildOpenjdk8;
+    platformClasspath =
+      if builtins.compareVersions version "9.0.0" >= 0
+      then "platformclasspath_nostrip"
+      else "platformclasspath";
+  };
+  sourceRemoteJavaTools = import ./_bazel-remote-java-tools.nix {
+    inherit buildPackages;
+    mkDerivation = buildPackages.mkDerivation;
+    bazelSource = src;
+    bazelBootstrap = buildBazelBootstrap;
+    bazelAsm = buildBazelBootstrap.passthru.offlineAsm;
+    bazelJacoco = buildBazelBootstrap.passthru.offlineJacoco;
+    bazelProguard = buildProguard;
+    bazelErrorProne = buildBazelBootstrap.passthru.offlineErrorProne;
+    mavenRepositories = [buildBazelBootstrap.passthru.offlineMavenJars];
+  };
+  buildQemuImg =
+    if isCross
+    then buildPackages.qemu-img
+    else qemu-img;
+  sourcePythonRuntime = import ./_bazel-python-runtime.nix {inherit buildPackages;};
+  sourcePythonRepositoryName =
+    if builtins.compareVersions version "8.0.0" >= 0
+    then "rules_python++python+python_3_11_x86_64-unknown-linux-gnu"
+    else "rules_python~~python~python_3_11_x86_64-unknown-linux-gnu";
+  upstreamSourceModules =
+    if builtins.compareVersions version "9.0.0" >= 0
+    then
+      import ./_bazel-offline-modules-9.nix {
+        inherit buildPackages;
+        fetchgit = lib.fetchgit;
+        bazelSource = src;
+        rulesGraalvmBase = buildBazelBootstrap.passthru.offlineModules.rules_graalvm;
+        rulesKotlin = buildBazelBootstrap.passthru.offlineModules.rules_kotlin;
+        zstdJniBase = buildBazelBootstrap.passthru.offlineModules.zstd-jni;
+      }
+    else if builtins.compareVersions version "8.0.0" < 0
+    then
+      import ./_bazel-offline-modules-7.nix {
+        inherit buildPackages;
+        fetchgit = lib.fetchgit;
+        bazelSource = src;
+        sharedModules = buildBazelBootstrap.passthru.offlineModules;
+      }
+    else buildBazelBootstrap.passthru.offlineModules;
+  sourceModules =
+    upstreamSourceModules
+    // {
+      rules_python = import ./_bazel-rules-python-tools.nix {inherit buildPackages;} {
+        source = upstreamSourceModules.rules_python;
+        python = buildPython3;
+      };
+      rules_java = import ./_bazel-rules-java-tools.nix {inherit buildPackages;} {
+        source = upstreamSourceModules.rules_java;
+        version =
+          if builtins.compareVersions version "9.0.0" >= 0
+          then "9.1.0"
+          else if builtins.compareVersions version "8.0.0" < 0
+          then "7.6.5"
+          else "8.14.0";
+      };
+    };
+  sourceRepositoryFlags =
+    if source == null
+    then []
+    else
+      builtins.filter (flag: flag != null) (lib.mapAttrsToList (
+          name: path: let
+            canonicalName =
+              if builtins.compareVersions version "8.0.0" >= 0
+              then name
+              else builtins.replaceStrings ["+"] ["~"] name;
+          in
+            if path == null || (builtins.compareVersions version "8.0.0" < 0 && (lib.strings.hasPrefix "+" name || name == "grpc++grpc_repo_deps_ext+com_envoyproxy_protoc_gen_validate"))
+            then null
+            else "--override_repository=${canonicalName}=${path}"
+        )
+        buildBazelBootstrap.passthru.offlineRepositories)
+      ++ [
+        "--override_repository=${
+          if builtins.compareVersions version "8.0.0" >= 0
+          then "rules_java++toolchains+remote_java_tools"
+          else "rules_java~~toolchains~remote_java_tools"
+        }=${sourceRemoteJavaTools}"
+      ]
+      ++ ["--override_repository=${sourcePythonRepositoryName}=${sourcePythonRuntime}"]
+      ++ lib.optionals (builtins.compareVersions version "8.0.0" < 0) [
+        "--override_repository=grpc~~grpc_repo_deps_ext~com_google_googleapis=${sourceModules.grpc-googleapis}"
+        "--override_repository=grpc~~grpc_repo_deps_ext~envoy_api=${sourceModules.grpc-envoy-api}"
+        "--override_repository=grpc~~grpc_repo_deps_ext~com_github_cncf_udpa=${sourceModules.grpc-udpa}"
+        "--override_repository=grpc~~grpc_repo_deps_ext~rules_cc=${sourceModules.grpc-rules-cc}"
+        "--override_repository=grpc~~grpc_repo_deps_ext~bazel_gazelle=${sourceModules.grpc-gazelle}"
+        "--override_repository=grpc~~grpc_repo_deps_ext~bazel_skylib=${sourceModules.grpc-skylib}"
+        "--override_repository=grpc~~grpc_repo_deps_ext~com_envoyproxy_protoc_gen_validate=${import ./_bazel-protoc-gen-validate-source.nix {
+          inherit buildPackages;
+          mkDerivation = buildPackages.mkDerivation;
+          fetchgit = lib.fetchgit;
+          bazelOfflineModules = buildBazelBootstrap.passthru.offlineModules;
+          pythonRuntimeProvidedByDeps = true;
+        }}"
+      ];
+  sourceModuleFlags =
+    if source == null
+    then []
+    else
+      builtins.filter (flag: flag != null) (lib.mapAttrsToList (
+          name: path:
+          # Bazel 7's older protocol graph does not include these newer modules.
+            if path == null || (builtins.compareVersions version "8.0.0" < 0 && (lib.strings.hasPrefix "grpc-" name || builtins.elem name ["chicory" "rules_apple" "rules_foreign_cc" "rules_fuzzing" "rules_shell" "rules_swift"]))
+            then null
+            else "--override_module=${name}=${path}"
+        )
+        sourceModules);
+  buildSourceModuleFlags =
+    if source != null && isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64
+    then
+      map (flag:
+        builtins.replaceStrings
+        [
+          "--override_module=blake3=${sourceModules.blake3}"
+          "--override_module=abseil-cpp=${sourceModules.abseil-cpp}"
+        ]
+        [
+          "--override_module=blake3=$BLAKE3_SOURCE"
+          "--override_module=abseil-cpp=$ABSEIL_SOURCE"
+        ]
+        flag)
+      sourceModuleFlags
+    else sourceModuleFlags;
   buildBootstrapTools =
     if isCross
     then buildPackages.bootstrapTools
@@ -441,7 +584,7 @@
     ]
     ++ lib.optional isDarwinCross llvm
   );
-  buildToolsPath =
+  baseBuildToolsPath =
     if isCross
     then
       lib.makeBinPath [
@@ -465,6 +608,10 @@
         buildFile
       ]
     else toolsPath;
+  # Bazel 9 samples compiler-worker memory through ps on the Linux executor.
+  buildToolsPath =
+    baseBuildToolsPath
+    + lib.optionalString needsRulesJavaRuntime ":${buildPackages.procps-ng}/bin";
 
   # Cross builds keep the javac bootstrap and execution actions on Linux. A
   # separate Darwin crosstool is selected only for target C/C++ actions,
@@ -486,7 +633,11 @@
       # archive. Copy the pinned rules_cc implementation so this package-local
       # toolchain can adjust its Darwin archiver without modifying the vendor
       # fixed-output derivation.
-      unix_cc_toolchain_config=${vendorDeps}/rules_cc~/cc/private/toolchain/unix_cc_toolchain_config.bzl
+      unix_cc_toolchain_config=${
+      if source != null
+      then sourceModules.rules_cc + "/cc/private/toolchain/unix_cc_toolchain_config.bzl"
+      else vendorDeps + "/rules_cc~/cc/private/toolchain/unix_cc_toolchain_config.bzl"
+    }
       if [ ! -f "$unix_cc_toolchain_config" ]; then
         echo "Bazel ${version}: vendored Unix C++ toolchain config is missing" >&2
         exit 1
@@ -855,7 +1006,7 @@
     )
     config_setting(
         name = "darwin-java-runtime-setting",
-        values = {"java_runtime_version": "local_jdk_21"},
+        values = {"java_runtime_version": "${bootstrapJavaRuntime}"},
     )
     toolchain(
         name = "darwin-java-runtime-toolchain",
@@ -995,12 +1146,16 @@
       scripts/bootstrap/bootstrap.sh
   '';
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/bazelbuild/bazel/releases/download/${version}/bazel-${version}-dist.zip"
-    ];
-    hash = srcHash;
-  };
+  src =
+    if source != null
+    then source
+    else
+      fetchurl {
+        urls = [
+          "https://github.com/bazelbuild/bazel/releases/download/${version}/bazel-${version}-dist.zip"
+        ];
+        hash = srcHash;
+      };
 
   # Fixed-output derivation: vendor all external dependencies using the
   # source-built Java bootstrap runner.
@@ -1019,10 +1174,17 @@
 
                 export PATH="${buildBazelBootstrap}/bin:$PATH"
 
-                # Extract dist zip
+                # Bazel's Git source checkout contains no bundled compiled
+                # release artifacts. Older recipes retain the dist ZIP path.
                 mkdir -p "$TMPDIR/bazel_src"
                 cd "$TMPDIR/bazel_src"
-                unzip -q ${src}
+                if [ -d ${src} ]; then
+                  cp -R ${src}/. .
+                  chmod -R u+w .
+                else
+                  unzip -q ${src}
+                fi
+                ${lib.optionalString (source != null) prepareFastutilTools}
 
                 # Apply reproducibility patch when the target test file exists.
                 if [ -f src/test/shell/bazel/list_source_repository.bzl ]; then
@@ -1086,18 +1248,26 @@
                 VENDOR_FLAGS=(
                   --check_direct_dependencies=off
                   --check_bazel_compatibility=off
+                  --repository_disable_download
                   --repo_env=JAVA_HOME=${buildOpenjdk}
                   --repo_env=PATH="$PATH"
                   --repo_env=CC=${buildGcc}/bin/gcc
                 )
+                ${lib.optionalString (builtins.compareVersions version "9.0.0" < 0) ''
+          VENDOR_FLAGS+=("--override_repository=rules_java_builtin=${sourceModules.rules_java}")
+        ''}
+                ${builtins.concatStringsSep "\n" (map (flag: "VENDOR_FLAGS+=(\"${flag}\")") sourceRepositoryFlags)}
+                ${builtins.concatStringsSep "\n" (map (flag: "VENDOR_FLAGS+=(\"${flag}\")") sourceModuleFlags)}
 
                 # Fetch module metadata first — triggers rules_java repo setup so
                 # we can patch _detect_java_version before the actual vendor step.
-                bazel --batch --ignore_all_rc_files \
-                  --output_user_root="$TMPDIR/bazel_cache" \
-                  --server_javabase="${buildOpenjdk}" \
-                  mod deps --curses=no \
-                  "''${VENDOR_FLAGS[@]}" 2>&1 || true
+                if [ "${buildBazelBootstrap.version}" = "7.7.1" ]; then
+                  bazel --batch --ignore_all_rc_files \
+                    --output_user_root="$TMPDIR/bazel_cache" \
+                    --server_javabase="${buildOpenjdk}" \
+                    mod deps --curses=no \
+                    "''${VENDOR_FLAGS[@]}" 2>&1 || true
+                fi
 
                 # Patch rules_java: replace _detect_java_version to read release file
                 # instead of running java -XshowSettings:properties (which fails under
@@ -1145,6 +1315,11 @@
                   --vendor_dir="$out" \
                   --verbose_failures \
                   --spawn_strategy=standalone \
+                  --tool_java_runtime_version=${bootstrapJavaRuntime} \
+                  --java_runtime_version=${bootstrapJavaRuntime} \
+                  --tool_java_language_version=21 \
+                  --java_language_version=21 \
+                  --extra_toolchains=@bazel_tools//tools/jdk:all \
                   "''${VENDOR_FLAGS[@]}"
 
                 # Clean non-reproducible artifacts
@@ -1153,20 +1328,24 @@
                 rm -f "$out/rules_go~~go_sdk~go_default_sdk/versions.json" 2>/dev/null || true
                 rm -f "$out/bazel-external" 2>/dev/null || true
 
-                # The generated Maven maintenance helper records HTTP proxy
-                # arguments, including ephemeral relay ports, but is not used by
-                # offline consumers of the vendor tree. Remove it so identical
-                # dependencies produce identical fixed-output contents.
-                rm -f "$out/rules_jvm_external~~maven~maven/outdated.sh"
+                # Maven maintenance helpers record proxy arguments and optional
+                # credentials. They are unused by the offline build and must not
+                # enter a reproducible dependency output.
+                for maven_repository in \
+                  "$out/rules_jvm_external~~maven~maven" \
+                  "$out/rules_jvm_external++maven+maven"; do
+                  if [ ! -d "$maven_repository" ]; then
+                    continue
+                  fi
+                  rm -f "$maven_repository/outdated.sh" "$maven_repository/netrc"
 
-                # Bazel links the imported Maven manifest back into its temporary
-                # source tree. Materialize that metadata so the vendor output is
-                # self-contained and remains valid after the build tree disappears.
-                imported_maven_install="$out/rules_jvm_external~~maven~maven/imported_maven_install.json"
-                if [ -L "$imported_maven_install" ]; then
-                  rm "$imported_maven_install"
-                  install -m 0644 maven_install.json "$imported_maven_install"
-                fi
+                  # Materialize the manifest link into the temporary source tree.
+                  imported_maven_install="$maven_repository/imported_maven_install.json"
+                  if [ -L "$imported_maven_install" ]; then
+                    rm "$imported_maven_install"
+                    install -m 0644 maven_install.json "$imported_maven_install"
+                  fi
+                done
 
                 # Remove files/directories that reference Nix store paths.
                 # FODs must not contain store path references. Marker files from
@@ -1196,6 +1375,10 @@
   };
 in
   mkDerivation {
+    passthru.sourceBootstrap = buildBazelBootstrap;
+    passthru.sourceJavaTools = sourceRemoteJavaTools;
+    passthru.sourcePythonRuntime = sourcePythonRuntime;
+    passthru.sourceModules = sourceModules;
     pname = "bazel";
     inherit platformSupport;
     inherit version qualification;
@@ -1209,28 +1392,32 @@ in
 
     inherit src;
 
-    buildDeps = [
-      bash
-      coreutils
-      which
-      zip
-      unzip
-      gawk
-      python3
-      openjdk-21
-      gcc
-      binutils
-      grep
-      gzip
-      patch
-      diffutils
-      findutils
-      sed
-      tar
-      xz
-      file
-      patchelf
-    ];
+    buildDeps =
+      [
+        buildBash
+        buildCoreutils
+        buildWhich
+        buildZip
+        buildUnzip
+        buildGawk
+        buildPython3
+        buildOpenjdk
+        buildGcc
+        buildBinutils
+        buildGrep
+        buildGzip
+        buildPatch
+        buildDiffutils
+        buildFindutils
+        buildSed
+        buildTar
+        buildXz
+        buildFile
+        buildPatchelf
+      ]
+      ++ lib.optional (source != null) buildQemuImg
+      ++ lib.optionals (source != null) [buildProguard buildOpenjdk8]
+      ++ lib.optional needsRulesJavaRuntime buildPackages.procps-ng;
     runtimeDeps =
       [
         bash
@@ -1252,15 +1439,48 @@ in
       {
         name = "unpack";
         script = ''
-          # Bazel source is a zip, not a tarball
+          # The source checkout is already unpacked; dist ZIPs need extraction.
           mkdir bazel_src
           cd bazel_src
-          unzip -q $src
+          if [ -d "$src" ]; then
+            cp -R "$src"/. .
+            chmod -R u+w .
+          else
+            unzip -q "$src"
+          fi
         '';
       }
       {
         name = "patch";
         script = ''
+                  ${lib.optionalString (source != null && builtins.compareVersions version "9.0.0" < 0) ''
+            # The dist archive bundles an empty Android emulator
+            # snapshot. Recreate it with AOS-built qemu-img and zip.
+            test ! -e tools/android/emulator/snapshots.img.zip
+            ${buildQemuImg}/bin/qemu-img create -f qcow2 \
+              -o compat=0.10,cluster_size=65536 \
+              tools/android/emulator/snapshots.img 500M
+            (cd tools/android/emulator && \
+              ${buildZip}/bin/zip -X -q snapshots.img.zip snapshots.img && \
+              rm snapshots.img)
+          ''}
+                  ${lib.optionalString (source != null) prepareFastutilTools}
+                  ${lib.optionalString (source != null) ''
+            # Source-built classifier JARs already contain only their
+            # target library. Info-ZIP returns 12 when no removal matches;
+            # preserve that valid archive while retaining other failures.
+            ${buildPython3}/bin/python3 - <<'PY'
+            from pathlib import Path
+
+            path = Path("third_party/BUILD")
+            original = path.read_text()
+            command = '"zip -qd $@ */license/* " + UNNECESSARY_DYNAMIC_LIBRARIES'
+            if command in original:
+                assert original.count(command) == 1
+                replacement = command.replace('"zip -qd', '"(zip -qd') + ' + " || test $$? -eq 12)"'
+                path.write_text(original.replace(command, replacement))
+            PY
+          ''}
                   # Apply patches (|| true — patches may not apply to all versions)
                   patch --batch -p1 < ${./bazel-patches/java_toolchain.patch} || true
                   if [ -f src/test/shell/bazel/list_source_repository.bzl ]; then
@@ -1277,7 +1497,9 @@ in
                         -e "s|/usr/local/bin/bash|${buildBash}/bin/bash|g" \
                         -e "s|/usr/bin/bash|${buildBash}/bin/bash|g" \
                         -e "s|/bin/bash|${buildBash}/bin/bash|g" \
-                        -e "s|/usr/bin/env python|${buildPython3}/bin/python3|g" \
+                        -e "s|/usr/bin/env python3|${buildPython3}/bin/python3|g" \
+                        -e "s|/usr/bin/env python\\([^[:alnum:]_]\\)|${buildPython3}/bin/python3\\1|g" \
+                        -e "s|/usr/bin/env python$|${buildPython3}/bin/python3|g" \
                         -e "s|/usr/bin/env bash|${buildBash}/bin/bash|g" \
                         -e "s|/usr/bin/env|${buildCoreutils}/bin/env|g" \
                         -e "s|/bin/true|${buildCoreutils}/bin/true|g" \
@@ -1408,27 +1630,65 @@ in
                   -e "s|/usr/bin/env|${buildCoreutils}/bin/env|g" \
                   "$f" 2>/dev/null || true
               done
+            find ../vendor_dir -type f -name '*.sh' \
+              -exec sed -i "1s|^#!/bin/sh$|#!${buildBash}/bin/bash|" {} +
 
-            ${lib.optionalString (version == "8.6.0") ''
-              # The vendored Java aliases select ELF binaries that require
-              # /lib64. Use the vendored source targets in the AOS build.
-              RULES_JAVA_TOOLCHAINS=../vendor_dir/rules_java+/toolchains/BUILD
-              test "$(grep -Fc 'actual = ":ijar_prebuilt_binary_or_cc_binary"' "$RULES_JAVA_TOOLCHAINS")" = 1
-              test "$(grep -Fc 'actual = ":singlejar_prebuilt_or_cc_binary"' "$RULES_JAVA_TOOLCHAINS")" = 1
-              test "$(grep -Fc 'actual = ":one_version_prebuilt_or_cc_binary"' "$RULES_JAVA_TOOLCHAINS")" = 1
-              sed -i \
-                -e 's|actual = ":ijar_prebuilt_binary_or_cc_binary"|actual = "@remote_java_tools//:ijar_cc_binary"|' \
-                -e 's|actual = ":singlejar_prebuilt_or_cc_binary"|actual = "@remote_java_tools//:singlejar_cc_bin"|' \
-                -e 's|actual = ":one_version_prebuilt_or_cc_binary"|actual = "@remote_java_tools//:one_version_cc_bin"|' \
-                "$RULES_JAVA_TOOLCHAINS"
+            ${lib.optionalString (source != null && version == "7.7.1") ''
+              # The source-built AutoValue processor loads support classes at
+              # execution time, but rules_jvm_external omits those dependencies.
+              MAVEN_BUILD=../vendor_dir/rules_jvm_external~~maven~maven/BUILD
+              cp ${buildBazelBootstrap.passthru.offlineMavenJars}/maven/net/ltgt/gradle/incap/incap/1.0.0/incap-1.0.0.jar \
+                ../vendor_dir/rules_jvm_external~~maven~maven/aos-incap.jar
+              cp ${buildBazelBootstrap.passthru.offlineMavenJars}/maven/com/google/escapevelocity/escapevelocity/1.1/escapevelocity-1.1.jar \
+                ../vendor_dir/rules_jvm_external~~maven~maven/aos-escapevelocity.jar
+              ${buildPython3}/bin/python3 - "$MAVEN_BUILD" <<'PY'
+              import pathlib
+              import sys
+
+              build_file = pathlib.Path(sys.argv[1])
+              contents = build_file.read_text()
+              target = 'jvm_import(\n\tname = "com_google_auto_value_auto_value",'
+              assert contents.count(target) == 1
+              start = contents.index(target)
+              end = contents.index('\n)\n', start) + 3
+              rule = contents[start:end]
+              assert rule.count('deps = [\n\t],') == 1
+              dependencies = (
+                  'deps = [\n'
+                  '\t\t":aos_processor_support",\n'
+                  '\t\t":com_google_auto_auto_common",\n'
+                  '\t\t":com_google_auto_service_auto_service_annotations",\n'
+                  '\t\t":com_google_auto_value_auto_value_annotations",\n'
+                  '\t\t":com_google_guava_guava",\n'
+                  '\t],'
+              )
+              rule = rule.replace('deps = [\n\t],', dependencies)
+              contents = contents[:start] + rule + contents[end:]
+              contents += '\njava_import(name = "aos_processor_support", '
+              contents += 'jars = ["aos-incap.jar", "aos-escapevelocity.jar"])\n'
+              build_file.write_text(contents)
+              PY
             ''}
 
             ${lib.optionalString (isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64) ''
               # compile.sh must retain its native platform for the bootstrap JDK
               # toolchains. Select BLAKE3's ARM implementation explicitly while
               # the output configuration uses the cross compiler.
-              BLAKE3_BUILD=$(find ../vendor_dir -maxdepth 2 \
-                -path '*/blake3*/BUILD.bazel' -print -quit)
+              ${lib.optionalString (source != null) ''
+                # Source overrides bypass the vendor tree. Patch local copies
+                # and pass those same copies to the compilation module resolver.
+                BLAKE3_SOURCE="$PWD/aos-source-modules/blake3"
+                ABSEIL_SOURCE="$PWD/aos-source-modules/abseil-cpp"
+                mkdir -p aos-source-modules
+                cp -R ${sourceModules.blake3} "$BLAKE3_SOURCE"
+                cp -R ${sourceModules.abseil-cpp} "$ABSEIL_SOURCE"
+                chmod -R u+w aos-source-modules
+              ''}
+              BLAKE3_BUILD=${
+                if source != null
+                then ''"$BLAKE3_SOURCE/BUILD.bazel"''
+                else ''$(find ../vendor_dir -maxdepth 2 -path '*/blake3*/BUILD.bazel' -print -quit)''
+              }
               test -n "$BLAKE3_BUILD"
               if grep -q '@bazel_tools//src/conditions:linux_x86_64' "$BLAKE3_BUILD"; then
                 test "$(grep -Fc '@bazel_tools//src/conditions:linux_x86_64' "$BLAKE3_BUILD")" = 2
@@ -1446,8 +1706,11 @@ in
                   -e 's|@platforms//cpu:aarch64|@platforms//cpu:x86_64|g' \
                   "$BLAKE3_BUILD"
 
-                ABSEIL_RANDOM_BUILD=$(find ../vendor_dir -path \
-                  '*/abseil-cpp*/absl/random/internal/BUILD.bazel' -print -quit)
+                ABSEIL_RANDOM_BUILD=${
+                if source != null
+                then ''"$ABSEIL_SOURCE/absl/random/internal/BUILD.bazel"''
+                else ''$(find ../vendor_dir -path '*/abseil-cpp*/absl/random/internal/BUILD.bazel' -print -quit)''
+              }
                 test "$(grep -Fc '@platforms//cpu:x86_64' "$ABSEIL_RANDOM_BUILD")" = 1
                 test "$(grep -Fc '@platforms//cpu:aarch64' "$ABSEIL_RANDOM_BUILD")" = 1
                 sed -i \
@@ -1499,12 +1762,16 @@ in
             # --vendor_dir provides all vendored deps from the FOD.
             # --repository_disable_download prevents any network access.
             VENDOR_ABS="$(cd ../vendor_dir && pwd)"
+            ${lib.optionalString (source != null) ''
+              ${buildPython3}/bin/python3 ${./_bazel-registry-lock.py} "$VENDOR_ABS"
+            ''}
 
             # Bazel exec actions clear the environment before running C++ tools
             # such as protoc, so their runtime library must be linked. Bazel 8
             # and 9 select gold, which emits zero-filled executables with this
             # toolchain; use BFD for both target and execution-tool links.
             export EXTRA_BAZEL_ARGS="
+              --jobs=''${NIX_BUILD_CORES:-1}
               --verbose_failures
               --curses=no
               ${lib.optionalString (version == "7.7.1") ''
@@ -1525,17 +1792,35 @@ in
               --host_linkopt=-Wl,-rpath,${bazelExecGccLibs}/lib
             ''}
               ${lib.optionalString (isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64) ''
+              --repo_env=CC=${stdenv.cc}/bin/cc
+              --repo_env=CXX=${stdenv.cc}/bin/c++
               --cpu=aarch64
               --host_cpu=aarch64
               --noenable_platform_specific_config
             ''}
-              --tool_java_runtime_version=local_jdk_21
-              --java_runtime_version=local_jdk_21
+              --tool_java_runtime_version=${bootstrapJavaRuntime}
+              --java_runtime_version=${bootstrapJavaRuntime}
               --tool_java_language_version=21
               --java_language_version=21
               --extra_toolchains=@bazel_tools//tools/jdk:all
               --vendor_dir=$VENDOR_ABS
               --repository_disable_download
+              ${builtins.concatStringsSep "\n" sourceRepositoryFlags}
+              ${builtins.concatStringsSep "\n" buildSourceModuleFlags}
+              --repo_env=JAVA_HOME=${buildOpenjdk}
+              ${lib.optionalString (builtins.compareVersions version "9.0.0" >= 0) ''
+              --repo_env=PATH=${buildToolsPath}
+              --repo_env=CC=${
+                if isDarwinCross
+                then buildPackages.cc
+                else stdenv.cc
+              }/bin/cc
+              --repo_env=CXX=${
+                if isDarwinCross
+                then buildPackages.cc
+                else stdenv.cc
+              }/bin/c++
+            ''}
               --nobuild_python_zip
               --incompatible_strict_action_env
               --action_env=PATH=${buildToolsPath}
@@ -1552,6 +1837,47 @@ in
             if [ -n "''${AOS_BAZEL_DISK_CACHE:-}" ]; then
               export EXTRA_BAZEL_ARGS="$EXTRA_BAZEL_ARGS --disk_cache=$AOS_BAZEL_DISK_CACHE"
             fi
+
+            ${lib.optionalString (source != null) ''
+                # A Git checkout lacks the generated Java classes in dist ZIPs.
+                # Start from the already source-built AOS bootstrap runner.
+                cp -R ${buildBazelBootstrap}/share/bazel-bootstrap-derived/. derived/
+              chmod -R u+w derived
+              # The native bootstrap generates gRPC service sources alongside
+              # protobuf messages; their execution-time classpath must accompany
+              # the retained inputs consumed by starlark-deps.
+              mkdir -p derived/jars/aos-grpc
+              cp -rL ${buildBazelBootstrap.passthru.offlineMavenJars}/maven/io/grpc/. \
+                derived/jars/aos-grpc/
+              for support in com/google/auto/auto-common com/google/escapevelocity \
+                net/ltgt/gradle/incap com/squareup/javapoet; do
+                mkdir -p "derived/jars/aos-processors/$support"
+                cp -rL "${buildBazelBootstrap.passthru.offlineMavenJars}/maven/$support/." \
+                  "derived/jars/aos-processors/$support/"
+              done
+                mkdir -p derived/maven
+                # Use the analyzed source-backed Maven exports. The dist bootstrap
+                # normally overrides this repository with bundled JARs, which are
+                # absent from our Git checkout and are not valid release inputs.
+                cp -R "$VENDOR_ABS/${
+                if builtins.compareVersions version "8.0.0" >= 0
+                then "rules_jvm_external++maven+maven"
+                else "rules_jvm_external~~maven~maven"
+              }"/. derived/maven/
+                chmod -R u+w derived/maven
+                printf '%s\n' '${
+                if builtins.compareVersions version "8.0.0" >= 0
+                then "rules_jvm_external++maven+maven"
+                else "rules_jvm_external~~maven~maven"
+              }' \
+                  > derived/maven/MAVEN_CANONICAL_REPO_NAME
+                # Bazel 9 obtains this launcher from the source Java rules.
+                if test -f src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt; then
+                  cp src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
+                    tools/jdk/java_stub_template.txt
+                fi
+                export BAZEL=${buildBazelBootstrap}/bin/bazel
+            ''}
 
             # Run the bootstrap build
             ${buildBash}/bin/bash ./compile.sh

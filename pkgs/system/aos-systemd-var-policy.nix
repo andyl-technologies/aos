@@ -9,6 +9,7 @@
   service-management,
   aos-boot-storage,
   e2fsprogs,
+  xfsprogs,
   jq,
   systemd,
   util-linux,
@@ -93,6 +94,7 @@ mkDerivation {
       coreutils
       cryptsetup
       e2fsprogs
+      xfsprogs
       jq
       systemd
       util-linux
@@ -542,6 +544,7 @@ mkDerivation {
           -e 's|@coreutils@|${coreutils}|g' \
           -e 's|@cryptsetup@|${cryptsetup}|g' \
           -e 's|@e2fsprogs@|${e2fsprogs}|g' \
+          -e 's|@xfsprogs@|${xfsprogs}|g' \
           -e 's|@systemd@|${systemd}|g' \
           -e 's|@util-linux@|${util-linux}|g' \
           ${./_aos-systemd-var-policy/aos-var-crypt.sh} \

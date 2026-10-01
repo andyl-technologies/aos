@@ -518,6 +518,8 @@
           mkdir -p root/etc/modules-load.d
           mkdir -p root/lib/systemd/system
           mkdir -p root/lib/systemd/system-generators
+          mkdir -p root/lib/aos
+          printf 'aos.config-bundle/v1\n' > root/lib/aos/configuration-capabilities
           mkdir -p root/lib/modules
           mkdir -p root/nix/store
           mkdir -p root/proc root/sys root/dev root/run root/tmp root/sysroot root/var

@@ -51,6 +51,21 @@ in {
       '';
     };
 
+    packageServicePolicyAbi = lib.mkOption {
+      type = lib.types.int;
+      default = 2;
+      readOnly = true;
+      apply = value:
+        if value == 2
+        then 2
+        else throw "aos.system.packageServicePolicyAbi is an immutable image capability";
+      description = ''
+        Image capability for authenticated service policy drop-ins, retained
+        build-identity removal checks, reserved Nix IDs, login fragments, and
+        declared package child slices for independently recoverable resources.
+      '';
+    };
+
     ## System locale (LANG environment variable).
     ##
     ## # Examples
@@ -61,6 +76,12 @@ in {
       type = lib.types.str;
       default = "C.UTF-8";
       description = "System locale (LANG environment variable).";
+    };
+
+    localePackages = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [pkgs.glibc-locales];
+      description = "Source-built locale data packages used by the system C library.";
     };
 
     ## System timezone (e.g. UTC, America/New_York).
@@ -145,6 +166,16 @@ in {
       environment.etc."hostname" = {
         text = config.aos.networking.hostName + "\n";
       };
+
+      environment.systemPackages = [pkgs.glibc-tools] ++ cfg.localePackages;
+      environment.sessionVariables = {
+        LANG = lib.mkDefault cfg.locale;
+        LOCPATH = lib.mkDefault (lib.concatStringsSep ":" (map (package: "${package}/lib/locale") cfg.localePackages));
+      };
+      environment.etc."profile.d/20-locale.sh".text = ''
+        export LANG=${lib.escapeShellArg cfg.locale}
+        export LOCPATH=${lib.escapeShellArg (lib.concatStringsSep ":" (map (package: "${package}/lib/locale") cfg.localePackages))}
+      '';
 
       # Locale configuration via systemd's locale.conf.
       # systemd reads /etc/locale.conf and exports LANG to all services.

@@ -8,8 +8,25 @@
   apr,
   bazelNettyBoringssl2061,
   bazelNettyTcnativeClasses2061,
+  version ? "2.0.61.Final",
 }: let
-  version = "2.0.61.Final";
+  sourcePin =
+    if version == "2.0.70.Final"
+    then {
+      revision = "431c098de23145edbd7112d96ad3fc30955a0e3b";
+      hash = "sha256-qFMhJCJNHwDuaWTFFVcFj1X8SAsR2tNUpwH9DikBbHI=";
+      files = 20;
+      jniVersion = "0.0.9.Final";
+      jniHash = "sha256-2rFdDCsIBz1q5Uv+039Xv2wzdDF4uqRO6YUzElwesL0=";
+    }
+    else
+      assert version == "2.0.61.Final"; {
+        revision = "ea87032e1dd058f7d3d5a8c5d1852e690a5142a3";
+        hash = "sha256-pxJ2Q//Z/ByQcNZhhxcV2octR9zdKH34pr6vf/bWxxc=";
+        files = 28;
+        jniVersion = "0.0.6.Final";
+        jniHash = "sha256-CbvbrDHP2QIubN18npILENi0ui+CZD24wzoDvC8qGJM=";
+      };
   buildJdk = buildPackages.openjdk-21;
   nativeTarget =
     if stdenv.hostPlatform.system == "x86_64-linux"
@@ -34,8 +51,8 @@
     then "-dynamiclib -Wl,-undefined,dynamic_lookup"
     else "-shared -ldl -pthread";
   jniUtilSource = fetchurl {
-    urls = ["https://repo.maven.apache.org/maven2/io/netty/netty-jni-util/0.0.6.Final/netty-jni-util-0.0.6.Final-sources.jar"];
-    hash = "sha256-CbvbrDHP2QIubN18npILENi0ui+CZD24wzoDvC8qGJM=";
+    urls = ["https://repo.maven.apache.org/maven2/io/netty/netty-jni-util/${sourcePin.jniVersion}/netty-jni-util-${sourcePin.jniVersion}-sources.jar"];
+    hash = sourcePin.jniHash;
   };
 in
   mkDerivation {
@@ -44,9 +61,9 @@ in
 
     src = fetchgit {
       url = "https://github.com/netty/netty-tcnative.git";
-      rev = "ea87032e1dd058f7d3d5a8c5d1852e690a5142a3";
+      rev = sourcePin.revision;
       name = "netty-tcnative-${version}-native-source-only";
-      hash = "sha256-pxJ2Q//Z/ByQcNZhhxcV2octR9zdKH34pr6vf/bWxxc=";
+      inherit (sourcePin) hash;
       deepClone = true;
       git = buildPackages.git-minimal;
       caCertificates = buildPackages.ca-certificates;
@@ -79,7 +96,7 @@ in
           import sys
 
           files = [path for path in Path("source").rglob("*") if path.is_file()]
-          if len(files) != 28:
+          if len(files) != ${toString sourcePin.files}:
             raise SystemExit(f"Unexpected Netty TCNative C source inventory: {len(files)}")
           for path in files:
               if path.suffix not in {".c", ".cpp", ".h", ".txt"}:
@@ -112,6 +129,8 @@ in
           native=source/openssl-dynamic/src/main/c
           mkdir -p objects native-jar/META-INF/native
           for input in "$native"/*.c "$native"/*.cpp source/jni-util/netty_jni_util.c; do
+            # Newer TCNative releases contain C sources only.
+            test -f "$input" || continue
             object="objects/$(basename "''${input%.*}").o"
             case "$input" in
               *.cpp) compiler=c++ ;;

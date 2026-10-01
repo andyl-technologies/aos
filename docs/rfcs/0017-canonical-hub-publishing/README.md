@@ -12,21 +12,28 @@
 
 ## Summary
 
-AOS uses one public package and system catalog, `andyl/main`. It does not create
-separate registries for `stable`, `testing`, or `unstable`. Registry identity is
-a trust, ownership, policy, and dependency-resolution boundary; release
-maturity is not. AOS expresses maturity with three signed channels inside the
-one registry:
+AOS uses one supported package and system catalog, `andyl/main`. It does not
+create separate registries for `stable` or `unstable` maturity. Registry
+identity is a trust, ownership, policy, and dependency-resolution boundary;
+release maturity is not. AOS expresses supported maturity with two signed
+channels inside `andyl/main`:
 
-- `edge` is the newest integrated development snapshot;
 - `candidate` is the weekly release candidate; and
 - `stable` is the supported production stream.
 
+The newest integrated development snapshot, `edge`, lives only in the
+experimental `andyl/testing` registry, which exists because it has its own
+trust root, lighter pipeline assurance, and disposable data, not because of
+maturity. Its releases never move into `andyl/main`.
+
 Each channel keeps its existing 256 signed partitions. Those partitions are
 rollout rings within a channel, not additional channels or repositories.
-`aos.staging.andyl.org` and `aos.andyl.org` are isolated Hub deployments used to
-qualify and serve the same immutable release objects at different stages. They
-are not distinct AOS distributions.
+Each registry has a staging and a production surface, normally the isolated Hub
+deployments `aos.staging.andyl.org` and `aos.andyl.org`, or static origins.
+They qualify and serve the same immutable release objects at different stages
+and are not distinct AOS distributions. A release is published to destinations
+such as `staging/candidate` and `production/stable`; each destination's profile
+states what the release must prove before that destination moves.
 
 This RFC's stable release policy selects and closes one four-target package
 matrix:
@@ -48,13 +55,13 @@ hermetic build on maintainer host ---> repeat-build comparison
 external hardware-backed signing ----> signed release/evidence bundle
         |
         v
-aos.staging.andyl.org ----> exact-byte qualification
+staging surface ----> exact-byte qualification under the destination profile
         |
         v
-promote immutable objects, without rebuild or re-sign
+publish the same immutable objects, without rebuild or re-sign
         |
         v
-aos.andyl.org ----> advance signed channel partitions ----> consumers
+production surface ----> advance signed channel rings ----> consumers
 ```
 
 Production signing keys never enter a Nix derivation, the Nix store, the Hub,
@@ -68,9 +75,11 @@ authority.
 
 | Question | Decision |
 | --- | --- |
-| How many public registries? | One: `andyl/main`. Add another only for a different owner, trust root, legal/distribution policy, or intentionally independent dependency universe. |
+| How many public registries? | One supported catalog, `andyl/main`, plus the experimental `andyl/testing` with its own trust root and disposable data. Add another only for a different owner, trust root, legal/distribution policy, or intentionally independent dependency universe. |
 | What is the Debian analogue? | AOS channels correspond to Debian's maturity suites. APM registries are closer to independently trusted archives, not suites. |
-| Which channels? | `edge`, `candidate`, and `stable`; no `testing` registry and no environment-named registry. |
+| Which channels? | `candidate` and `stable` in `andyl/main`; `edge` only in `andyl/testing`. No environment-named registry. |
+| What decides a release's obligations? | The destination's profile: `build` for staging, `smoke` for testing production, `functional` for candidate, `soak` for stable. An emergency is a signed profile override of stable soak and rings, not a class. |
+| How is environment recovery proven? | By signed, identity-bound fitness attestations: weekly automated restore and alert checks, quarterly operator exercises. They are not repeated per release. |
 | Which package targets? | `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and `aarch64-darwin`, subject to the fail-closed package eligibility inventory. |
 | Which targets receive images? | Both Linux architectures receive the complete raw/QCOW2/VMDK/VHD and recovery matrix. Darwin receives packages only. |
 | How often are registry releases cut? | `edge` on changed business days, `candidate` weekly, `stable` monthly, plus security releases. No release is cut only to satisfy freshness metadata. |
@@ -116,8 +125,8 @@ and trust primitives but have their own owners, cadence, and authorization.
 6. **Promotion is monotonic.** Release versions, TUF metadata versions,
    published Git history, and consumer channel floors never decrease.
 7. **Release failure is fail-closed.** A missing check, signature, source
-   artifact, authorization record, recovery artifact, backup, or public
-   verification result blocks the transition.
+   artifact, authorization record, recovery artifact, fitness attestation, or
+   public verification result blocks the transition.
 8. **Staging is production-shaped, not production-trusted.** Provider state,
    secrets, tokens, logs, and disposable smoke registries remain isolated. Only
    a reviewed candidate bundle crosses the environment boundary.
@@ -132,8 +141,8 @@ and trust primitives but have their own owners, cadence, and authorization.
 
 | File | Contents |
 | --- | --- |
-| [`01-release-model.md`](01-release-model.md) | Registry count, channels, versions, cadence, image policy, URLs, support, and retention |
-| [`02-pipeline.md`](02-pipeline.md) | Artifact inventory, release state machine, staging qualification, exact promotion, rollout, and recovery |
+| [`01-release-model.md`](01-release-model.md) | Registry count, channels, destinations and profiles, versions, cadence, image policy, surfaces and URLs, support, and retention |
+| [`02-pipeline.md`](02-pipeline.md) | Artifact inventory, per-destination release journal, profiles and gates, staging qualification, exact production publication, rollout, and recovery |
 | [`03-security-and-keys.md`](03-security-and-keys.md) | Threat model, role-separated keys, TUF, Secure Boot finalization, Hub security, and residual risk |
 | [`04-maintainer-host-runbook.md`](04-maintainer-host-runbook.md) | Manual maintainer-host procedure and records for routine, stable, emergency, and Hub application releases |
 | [`05-implementation-plan.md`](05-implementation-plan.md) | Current capabilities, production blockers, implementation phases, and acceptance criteria |

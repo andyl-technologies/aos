@@ -59,7 +59,7 @@ pub(crate) fn native_adapter_matrix_spec() -> NativeAdapterMatrixSpec {
     let adapters = ["fixture-a", "fixture-z"].map(|name| {
         let identity = vec!["fixture", "host", name, "fixture", name, "subject"];
         let identity_digest = Sha256Digest::of_bytes(
-            crate::canonical::to_vec(&identity).expect("synthetic effect identity serializes")
+            aos_release::canonical::to_vec(&identity).expect("synthetic effect identity serializes")
         ).to_string();
         let effect_id = identity_digest.strip_prefix("sha256:")
             .expect("canonical digest contains its algorithm");
@@ -153,6 +153,7 @@ pub(crate) fn native_adapter_matrix_spec() -> NativeAdapterMatrixSpec {
 
 pub fn metadata() -> Result<Value> {
     let capabilities = ImageCapabilities {
+        configuration: Vec::new(),
         schema_version: "aos.image.capabilities/v1".into(),
         kernel_release: "synthetic-kernel".into(),
         kernel_config_digest: Sha256Digest::of_bytes("synthetic-kernel-config"),
@@ -196,11 +197,7 @@ pub fn capabilities(case: &QualificationCase) -> Result<Option<CapabilityEvidenc
 }
 
 pub fn environment(case: &QualificationCase) -> Result<Option<EnvironmentInventory>> {
-    let Some(scope) = case
-        .target
-        .as_ref()
-        .and_then(|target| target.environment.as_ref())
-    else {
+    let Some(scope) = case.target.as_ref().map(|target| &target.environment) else {
         return Ok(None);
     };
     let mut layers = Vec::new();
@@ -299,7 +296,7 @@ pub fn measurements() -> BTreeMap<String, u64> {
 pub fn assessment(case: &QualificationCase) -> Result<Option<CompatibilityAssessment>> {
     case.target
         .as_ref()
-        .and_then(|target| target.environment.as_ref())
+        .map(|target| &target.environment)
         .map(|scope| {
             Ok(CompatibilityAssessment {
                 scope_digest: Sha256Digest::of_canonical(
@@ -353,7 +350,8 @@ pub(crate) fn native_cohort_observation(
         selected_evaluation: authored.selected_evaluation.clone(),
         adoption_evaluation: authored.adoption_evaluation.clone(),
         spec_digest: Sha256Digest::of_bytes(
-            crate::canonical::to_vec(&authored.matrix_spec).expect("synthetic matrix serializes"),
+            aos_release::canonical::to_vec(&authored.matrix_spec)
+                .expect("synthetic matrix serializes"),
         ),
         adoption_digest: aos_contract::Sha256Digest::of_bytes("synthetic adopted baseline"),
         candidate_digest: Sha256Digest::of_bytes("synthetic candidate bytes"),

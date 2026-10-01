@@ -71,6 +71,7 @@ let
       url = "https://registry.example/aos";
       trustKeys = ["example:Ed25519:QUJDREVGR0g=" "example:Ed25519:SUpLTE1OT1A="];
       caches = [{url = "file:///var/lib/aos-cache";}];
+      rootOwnerSigners = ["release-provenance"];
     };
   };
 in {
@@ -85,6 +86,8 @@ in {
   emptyAnchorRejected = assert rejects {aos.apm.configKeys.ops = [];}; true;
   signedWithoutAnchorRejected = assert rejects {aos.config.evalAtBoot.trust = "signed";}; true;
   registryRotation = assert registry.config.environment.etc."apm/trusted-keys.d/example.pub".text == "example:Ed25519:QUJDREVGR0g=\nexample:Ed25519:SUpLTE1OT1A=\n"; assert lib.hasInfix "public_key = \"example:Ed25519:QUJDREVGR0g=\"" registry.config.environment.etc."apm/registries.d/example.toml".text; true;
+  registryRootOwnerPolicy = assert registry.config.aos.apm.registries.example.rootOwnerSigners == ["release-provenance"]; assert lib.hasInfix ''root_owner_signers = ["release-provenance"]'' registry.config.environment.etc."apm/registries.d/example.toml".text; true;
+  defaultRegistryRootOwnerPolicy = assert default.config.aos.apm.registries.andyl.rootOwnerSigners == []; true;
   invalidRegistryNameRejected = assert rejects {
     aos.apm.registries."../foreign" = {
       url = "https://registry.example/aos";

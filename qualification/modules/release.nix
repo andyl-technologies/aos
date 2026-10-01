@@ -50,7 +50,7 @@ in {
       else
         data {
           schema_version = "aos.release.qualification-contract/v2";
-          inherit (cfg) id promises exclusions thresholds;
+          inherit (cfg) id promises exclusions;
           targets = named "id" (builtins.mapAttrs (_: target:
             target
             // {
@@ -58,9 +58,10 @@ in {
             })
           cfg.targets);
           requirements = named "id" (builtins.mapAttrs (_: requirement:
-            if requirement.native_operation_spec == null
-            then removeAttrs requirement ["native_operation_spec"]
-            else requirement)
+            removeAttrs requirement (
+              lib.optional (requirement.native_operation_spec == null) "native_operation_spec"
+              ++ lib.optional (!requirement.production_only) "production_only"
+            ))
           cfg.requirements);
           package_rules = named "name" (builtins.mapAttrs (
               _: rule:
@@ -80,6 +81,11 @@ in {
           support = {
             inherit (cfg.support) default trains;
           };
+          profiles = named "name" cfg.profiles;
+          # Destination keys are derived from the row, so the list carries no
+          # separate identity field; attribute order keeps it sorted by key.
+          destinations = builtins.attrValues cfg.destinations;
+          fitness = named "kind" cfg.fitness;
         };
   };
 }

@@ -685,7 +685,13 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
     };
     let caches = resolved_cache_urls(caches);
     let external = svc.registry_setup_url(&registry).await.ok();
-    let setup = pages::RegistrySetup::new(&registry, status.as_ref(), external.as_deref(), &caches);
+    let setup = pages::RegistrySetup::new(&registry, status.as_ref(), external.as_deref(), &caches)
+        .with_nix_cache_public_keys(
+            svc.registry_cache_public_keys
+                .get(slug)
+                .cloned()
+                .unwrap_or_default(),
+        );
     Rendered::Html(pages::registry_home(
         &registry,
         status.as_ref(),
@@ -1449,6 +1455,12 @@ pub async fn package(
         status.as_ref(),
         external.ok().as_deref(),
         &caches,
+    )
+    .with_nix_cache_public_keys(
+        svc.registry_cache_public_keys
+            .get(slug)
+            .cloned()
+            .unwrap_or_default(),
     );
     let unavailable = native_reference.is_err();
     let native_reference = native_reference.ok().flatten();

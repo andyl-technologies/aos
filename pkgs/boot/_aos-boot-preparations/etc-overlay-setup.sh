@@ -3,7 +3,7 @@ set -euo pipefail
 
 . /run/aos-profile-gen.env
 
-toplevel=$(readlink /sysroot/aos-toplevel)
+toplevel=$(readlink /sysroot/usr/lib/aos/toplevel)
 gen=$AOS_PROFILE_GEN
 sys=/run/etc/system-$gen
 config_lower=/run/etc/config-$gen

@@ -54,6 +54,9 @@ pub struct ImageCapabilities {
     pub builtin_drivers: Vec<String>,
     /// Exact runtime, initrd and both recovery filesystem inventories.
     pub stages: BTreeMap<String, StageCapabilities>,
+    /// Configuration transport protocols present in both initrd and runtime.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configuration: Vec<String>,
 }
 
 impl ImageCapabilities {

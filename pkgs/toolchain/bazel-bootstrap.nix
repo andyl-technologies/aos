@@ -54,7 +54,19 @@
     scope =
       buildPackages
       // {
-        inherit mkDerivation fetchgit fetchurl lib stdenv buildPackages protobuf abseil-cpp zlib;
+        # Bootstrap helpers execute while building Bazel, so cross builds must
+        # construct their Java libraries and native tools for the build host.
+        inherit buildPackages fetchgit;
+        inherit
+          (buildPackages)
+          mkDerivation
+          fetchurl
+          lib
+          stdenv
+          protobuf
+          abseil-cpp
+          zlib
+          ;
       }
       // helperScope
       // aliases;
@@ -75,32 +87,80 @@
     if builtins.compareVersions bootstrapVersion "8.0.0" >= 0
     then callHelper ./_bazel-maven-bootstrap.nix {includeModernLibraries = true;}
     else helperScope.bazelMavenBootstrap;
+  errorProneCheckApi =
+    if builtins.compareVersions bootstrapVersion "9.0.0" >= 0
+    then callHelper ./_bazel-error-prone-check-api.nix {version = "2.41.0";}
+    else helperScope.bazelErrorProneCheckApi;
+  javaFormat =
+    if builtins.compareVersions bootstrapVersion "9.0.0" >= 0
+    then callHelper ./_bazel-google-java-format.nix {version = "1.27.0";}
+    else helperScope.bazelGoogleJavaFormat;
+  errorProneCore =
+    if builtins.compareVersions bootstrapVersion "9.0.0" >= 0
+    then
+      callHelper ./_bazel-error-prone-core.nix {
+        version = "2.41.0";
+        bazelErrorProneCheckApi = errorProneCheckApi;
+        bazelGoogleJavaFormat = javaFormat;
+      }
+    else helperScope.bazelErrorProneCore;
+  errorProneRepositories =
+    (callHelper ./_bazel-maven-source-repositories.nix {mavenPackage = errorProneCore;})
+    // (callHelper ./_bazel-maven-source-repositories.nix {mavenPackage = errorProneCheckApi;});
   mavenSourceRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = callHelper ./_bazel-maven-bootstrap.nix {
       includeModernLibraries = true;
     };
   };
+  grpcNettyRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelGrpcNetty;
+  };
+  asyncProfilerMavenRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelAsyncProfilerJar;
+  };
+  netty93Repositories = helperScope.bazelNetty93Repositories;
+  netty93NativeRepositories = helperScope.bazelNetty93NativeRepositories;
   googleHttpRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelGoogleHttp;
   };
   tomcatAnnotationRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelTomcatAnnotations6053;
   };
-  googleAuthRepositories = callHelper ./_bazel-maven-source-repositories.nix {
-    mavenPackage = helperScope.bazelGoogleAuth123;
+  chicoryMavenRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = callHelper ./_bazel-chicory-maven.nix {chicoryPackage = chicory;};
   };
-  googleHttpModernRepositories = callHelper ./_bazel-maven-source-repositories.nix {
-    mavenPackage = helperScope.bazelGoogleHttp1433;
-  };
+  googleAuthRepositories =
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = helperScope.bazelGoogleAuth123;
+    })
+    // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0)
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = callHelper ./_bazel-google-auth-123.nix {version = "1.24.1";};
+    });
+  googleHttpModernRepositories =
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = helperScope.bazelGoogleHttp1433;
+    })
+    // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0)
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = callHelper ./_bazel-google-http-1433.nix {version = "1.44.2";};
+    });
   nettyHttp2Repositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelNettyHttp2119;
   };
   modernAnnotationRepositories = callHelper ./_bazel-maven-source-repositories.nix {
-    mavenPackage = helperScope.bazelMavenModernAnnotations;
+    mavenPackage = callHelper ./_bazel-maven-modern-annotations.nix {
+      includeBazel9 = builtins.compareVersions bootstrapVersion "9.0.0" >= 0;
+    };
   };
-  guavaModernRepositories = callHelper ./_bazel-maven-source-repositories.nix {
-    mavenPackage = helperScope.bazelGuava3345;
-  };
+  guavaModernRepositories =
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = helperScope.bazelGuava3345;
+    })
+    // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0)
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = callHelper ./_bazel-guava-3345.nix {version = "33.5.0-jre";};
+    });
   nettyDnsProxyRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelNettyDnsProxy119;
   };
@@ -110,8 +170,19 @@
   velocityRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelVelocity;
   };
-  nettyTcnativeClassesRepositories = callHelper ./_bazel-maven-source-repositories.nix {
-    mavenPackage = helperScope.bazelNettyTcnativeClasses2061;
+  nettyTcnativeClassesRepositories =
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = helperScope.bazelNettyTcnativeClasses2061;
+    })
+    // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0)
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = callHelper ./_bazel-netty-tcnative-classes-2061.nix {version = "2.0.70.Final";};
+    });
+  nettyTcnative70Repositories = callHelper ./_bazel-netty-tcnative-2061-repositories.nix {
+    version = "2.0.70.Final";
+    bazelNettyTcnativeClasses2061 = callHelper ./_bazel-netty-tcnative-classes-2061.nix {
+      version = "2.0.70.Final";
+    };
   };
   protobufJava = helperScope.bazelProtobufJava;
   protobufJavaUtil = helperScope.bazelProtobufJavaUtil;
@@ -242,11 +313,25 @@ in
     # overrides while fetching the remaining graph with downloads disabled.
     passthru.offlineModules = helperScope.bazelOfflineModules;
     passthru.offlineSource = source;
+    passthru.offlineMavenJars = mavenJars;
+    passthru.offlineProguard = helperScope.bazelProguard;
+    passthru.offlineAsm = helperScope.bazelAsm;
+    passthru.offlineJacoco = helperScope.bazelJacoco;
+    passthru.offlineErrorProne = [
+      errorProneCore
+      errorProneCheckApi
+      helperScope.bazelErrorProneDataflow
+      javaFormat
+    ];
     passthru.offlineSource8Prepared = helperScope.bazelSource8Prepared;
     passthru.offlineNettyModules = helperScope.bazelNetty119;
     passthru.offlineNettyNativeRepositories = helperScope.bazelNetty119NativeRepositories;
     passthru.offlineCommonProtos = helperScope.bazelCommonProtos241;
     passthru.offlineMavenSourceRepositories = mavenSourceRepositories;
+    passthru.offlineGrpcNettyRepositories = grpcNettyRepositories;
+    passthru.offlineAsyncProfilerMavenRepositories = asyncProfilerMavenRepositories;
+    passthru.offlineNetty93Repositories = netty93Repositories;
+    passthru.offlineNetty93NativeRepositories = netty93NativeRepositories;
     passthru.offlineGoogleHttpRepositories = googleHttpRepositories;
     passthru.offlineTomcatAnnotationRepositories = tomcatAnnotationRepositories;
     passthru.offlineGoogleAuthRepositories = googleAuthRepositories;
@@ -261,8 +346,15 @@ in
     passthru.offlineNettyBoringssl2061 = helperScope.bazelNettyBoringssl2061;
     passthru.offlineNettyTcnativeNative2061 = helperScope.bazelNettyTcnativeNative2061;
     passthru.offlineNettyTcnative2061NativeRepositories = helperScope.bazelNettyTcnative2061Repositories;
+    passthru.offlineNettyTcnative70NativeRepositories = nettyTcnative70Repositories;
     passthru.offlineRepositories =
       mavenSourceRepositories
+      // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0) errorProneRepositories
+      // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0) chicoryMavenRepositories
+      // grpcNettyRepositories
+      // asyncProfilerMavenRepositories
+      // netty93Repositories
+      // netty93NativeRepositories
       // googleHttpRepositories
       // tomcatAnnotationRepositories
       // googleAuthRepositories
@@ -275,6 +367,7 @@ in
       // velocityRepositories
       // nettyTcnativeClassesRepositories
       // helperScope.bazelNettyTcnative2061Repositories.repositories
+      // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0) nettyTcnative70Repositories.repositories
       // {platforms = helperScope.bazelPlatformsSource;}
       // helperScope.bazelAsyncProfilerRepositories
       // helperScope.bazelNetty119.repositories
@@ -282,6 +375,10 @@ in
       // {
         "rules_jvm_external++maven+com_google_api_grpc_proto_google_common_protos_2_41_0" = helperScope.bazelCommonProtos241.repository;
         "rules_jvm_external++maven+com_google_guava_listenablefuture_9999_0_empty_to_avoid_conflict_with_guava" = helperScope.bazelCommonProtos241.emptyListenableFuture;
+      }
+      // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0) {
+        "rules_jvm_external++maven+com_google_api_grpc_proto_google_common_protos_2_51_0" =
+          (callHelper ./_bazel-common-protos-241.nix {version = "2.51.0";}).repository;
       }
       // {
         "grpc++grpc_repo_deps_ext+com_github_cncf_xds" = helperScope.bazelGrpcXdsSource;
@@ -365,6 +462,22 @@ in
             > derived/maven/MAVEN_CANONICAL_REPO_NAME
 
           python3 ${./generate-bazel-bootstrap-resources.py} --source-root .
+          ${lib.optionalString (builtins.compareVersions bootstrapVersion "9.0.0" < 0) (lib.removeSuffix "\n" ''
+            # Source checkouts generate this text template as a Bazel action;
+            # the initial bootstrap archive must carry it before Bazel can run.
+            cp src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
+              tools/jdk/java_stub_template.txt
+            sed -i '1s|^#!/usr/bin/env bash$|#!${bash}/bin/bash|' \
+              src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
+              tools/jdk/java_stub_template.txt
+          '')}
+          for pythonSource in \
+            src/main/java/com/google/devtools/build/lib/rules/python/PyRuntimeInfo.java \
+            tools/python/toolchain.bzl; do
+            if [ -f "$pythonSource" ]; then
+              sed -i 's|#!/usr/bin/env python3|#!${python3}/bin/python3|' "$pythonSource"
+            fi
+          done
           ${lib.optionalString (bootstrapVersion == "9.2.0") ''
             # This Bazel source tag omits the Protolark option definition.
             # Removing only its annotations preserves the project message
@@ -439,7 +552,19 @@ in
           fi
           install -Dm644 "$OUTPUT_DIR/archive/libblaze.jar" \
             "$out/share/java/libblaze.jar"
+          # Git sources need the generated proto Java inputs that upstream
+          # normally carries in its distribution ZIP. Retain their source-built
+          # bootstrap libraries so the full Bazel graph can consume them offline.
+          mkdir -p "$out/share/bazel-bootstrap-derived/src"
+          cp -rL derived/src/java "$out/share/bazel-bootstrap-derived/src/"
+          cp -rL derived/jars "$out/share/bazel-bootstrap-derived/"
           cp -rL "$OUTPUT_DIR/archive" "$out/share/bazel-bootstrap-archive"
+          ${lib.optionalString (builtins.compareVersions bootstrapVersion "8.0.0" >= 0) ''
+            # The bootstrap archive runs with @bazel_tools, whose root BUILD
+            # uses the generated host platform alias from BUILD.tools.
+            cp "$out/share/bazel-bootstrap-archive/embedded_tools/tools/BUILD.tools" \
+              "$out/share/bazel-bootstrap-archive/embedded_tools/tools/BUILD"
+          ''}
           ${lib.optionalString (platformsSource != null) ''
             cp -rL ${platformsSource} "$out/share/bazel-bootstrap-archive/platforms"
           ''}

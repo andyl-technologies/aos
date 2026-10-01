@@ -296,7 +296,7 @@ impl ArtifactRecord {
 /// # Errors
 ///
 /// Returns an error unless the path has an exact Nix base-32 store hash, a
-/// conservative name component, and the requested derivation suffix policy.
+/// name accepted by Nix, and the requested derivation suffix policy.
 pub fn require_store_path(value: &str, derivation: bool) -> Result<()> {
     let Some(tail) = value.strip_prefix("/nix/store/") else {
         bail!("Nix store path must begin with /nix/store/");
@@ -308,10 +308,18 @@ pub fn require_store_path(value: &str, derivation: bool) -> Result<()> {
     if hash.len() != 32 || !hash.bytes().all(|byte| NIX_BASE32.contains(&byte)) {
         bail!("Nix store path has an invalid store hash");
     }
-    if name.contains('/') {
-        bail!("Nix store path must identify a root without member paths or traversal");
+    if name.is_empty() || name.len() > 211 {
+        bail!("Nix store path name must contain 1 through 211 bytes");
     }
-    require_identifier(name, "Nix store path name")?;
+    if matches!(name, "." | "..") || name.starts_with(".-") || name.starts_with("..-") {
+        bail!("Nix store path name has a forbidden first component");
+    }
+    // Nix source names may retain query punctuation from their download URLs.
+    if !name.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.' | b'_' | b'?' | b'=')
+    }) {
+        bail!("Nix store path name contains a forbidden character: {name}");
+    }
     if derivation != name.ends_with(".drv") {
         bail!("Nix store path derivation suffix does not match its field");
     }

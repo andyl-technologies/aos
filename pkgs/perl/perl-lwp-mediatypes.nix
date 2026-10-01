@@ -2,12 +2,13 @@
 {
   lib,
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
 }: let
   version = "6.04";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     platformSupport = {
       build = [
         {

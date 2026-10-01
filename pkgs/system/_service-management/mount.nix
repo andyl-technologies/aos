@@ -34,10 +34,19 @@
         default = true;
         description = "Enable this managed mount.";
       };
+      optional = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Retain the mount unit when its source is absent and report unavailable instead of blocking activation.";
+      };
     };
     result.options.resource = lib.mkOption {
       type = lib.types.str;
       description = "Manager-owned mount unit identity.";
+    };
+    result.options.state = lib.mkOption {
+      type = lib.types.enum ["mounted" "unavailable" "disabled"];
+      description = "Observed mount availability; unavailable never promises that the filesystem is mounted.";
     };
   };
 }

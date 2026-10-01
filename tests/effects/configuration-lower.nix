@@ -6,7 +6,10 @@
   fixture = import ./_configuration-lower-fixture.nix {inherit lib pkgs;};
   input = fixture.node.input;
   nodes = builtins.attrValues fixture.evaluated.deployment.graph.nodes;
-  mount = builtins.head (builtins.filter (node: builtins.elem "mount" node.identity) nodes);
+  lowerMounts = builtins.filter (node:
+    builtins.elem "configurationLower" node.identity && builtins.elem "mount" node.identity)
+  nodes;
+  mount = assert builtins.length lowerMounts == 1; builtins.head lowerMounts;
 in {
   checkedFileModes = assert input.files."runtime-config/materialized.conf".mode == "0644"; true;
   exactFileOwnership = assert builtins.attrNames input.files == builtins.attrNames input.ownership.files; true;

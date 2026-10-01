@@ -65,6 +65,11 @@ impl RuntimeBoundary {
     }
 }
 
+/// Returns whether the official container restricts packages to user scope.
+pub(crate) fn is_container() -> bool {
+    RuntimeBoundary::from_env().container
+}
+
 /// Checks the process runtime markers against one parsed package command.
 ///
 /// This is intentionally the first operation in [`crate::run`].
@@ -124,7 +129,6 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         PackageCommand::Update { system, .. }
         | PackageCommand::Search { system, .. }
         | PackageCommand::Show { system, .. }
-        | PackageCommand::Info { system, .. }
         | PackageCommand::List { system, .. }
         | PackageCommand::Depends { system, .. }
         | PackageCommand::Rdepends { system, .. }
@@ -187,7 +191,6 @@ fn is_read_only(command: &PackageCommand) -> bool {
     match command {
         PackageCommand::Search { .. }
         | PackageCommand::Show { .. }
-        | PackageCommand::Info { .. }
         | PackageCommand::List { .. }
         | PackageCommand::Depends { .. }
         | PackageCommand::Rdepends { .. }

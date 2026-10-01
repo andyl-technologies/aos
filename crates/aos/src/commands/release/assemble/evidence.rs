@@ -8,7 +8,7 @@ use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::evidence::{EvidenceRecord, GateResult};
 use aos_release::manifest::ReleaseManifestV1;
-use aos_release::plan::ReleasePlanV1;
+use aos_release::plan::ReleasePlan;
 use aos_release::qualification::{QualificationMethod, QualificationPhase};
 use aos_release::qualification_evidence::{
     CheckObservation, QualificationCase, QualificationObservation,
@@ -35,7 +35,7 @@ struct BuildIntegrityReportV1<'a> {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build(
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
     manifest: &ReleaseManifestV1,
     report: &BuildReportV1,
     sbom: &[u8],
@@ -50,8 +50,12 @@ pub(super) fn build(
     if start > finish {
         bail!("assembly completed before its build report");
     }
-    let cases =
-        aos_release::qualification_evidence::cases(plan, manifest, QualificationPhase::Build)?;
+    let cases = aos_release::qualification_evidence::cases(
+        plan,
+        manifest,
+        None,
+        QualificationPhase::Build,
+    )?;
     let executor_digest = Sha256Digest::of_canonical(
         "aos.release.build-integrity-executor/v1",
         &(plan.source.commit.as_str(), BUILD_INTEGRITY_REPORT_V1),
@@ -140,9 +144,11 @@ pub(super) fn build(
     aos_release::qualification_evidence::validate_observations(
         plan,
         &candidate,
+        None,
         QualificationPhase::Build,
         &records,
         completed_at,
+        None,
     )?;
     Ok(records)
 }

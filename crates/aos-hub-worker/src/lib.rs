@@ -62,8 +62,9 @@
 //! The outer `fetch` handler assigns public requests to deterministic control,
 //! tenant, registry, or cache execution objects. Those objects bridge to the
 //! shared router and make only short, seal-gated SQL calls to `HubDb`; they do
-//! not copy relational state. Internal and administrative endpoints remain
-//! pinned to `HubDb`. The schema is migrated there on first use (no external
+//! not copy relational state. SQL and administrative endpoints remain
+//! pinned to `HubDb`; the seal-gated job endpoint uses the same outer execution
+//! path as queue deliveries. The schema is migrated there on first use (no external
 //! init step), and the root admin is bootstrapped over a seal-gated endpoint.
 //! Cron and queue handlers run outside the database object and likewise keep
 //! provider or network I/O outside its serialized request turn. See `README.md`
@@ -123,6 +124,9 @@
 //! this crate to the workspace members never breaks the native build.
 
 pub mod keymap;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod delivery_ingress;
 
 // The method-agnostic nested-console bridge seam is compiled for the Worker
 // and for native unit tests. Keeping the Workers request conversion outside
@@ -189,9 +193,9 @@ fn registry_index_build_id(
     use sha2::{Digest as _, Sha256};
 
     let mut digest = Sha256::new();
-    // Version 3 rebuilds the release catalog and lazy documentation tree on
-    // existing installations, even when their signed publication is unchanged.
-    digest.update(b"aos-registry-index-build-v3\0");
+    // Version 4 retries generations previously marked unchanged while an
+    // active publication or unreadable surface actually deferred indexing.
+    digest.update(b"aos-registry-index-build-v4\0");
     digest.update(registry_id.to_be_bytes());
     digest.update(registry_resource_version.to_be_bytes());
     digest.update(placement_id.to_be_bytes());
@@ -203,6 +207,18 @@ fn registry_index_build_id(
         None => digest.update([0]),
     }
     hex::encode(digest.finalize())
+}
+
+/// Keeps deferred index runs retryable instead of recording a completed no-op.
+#[cfg(any(test, target_arch = "wasm32"))]
+fn completed_index_outcome(
+    outcome: aos_hub_core::indexer::IndexOutcome,
+) -> anyhow::Result<aos_hub_core::indexer::IndexOutcome> {
+    anyhow::ensure!(
+        !outcome.pending,
+        "registry index is deferred until publication and surface reads are ready"
+    );
+    Ok(outcome)
 }
 
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -269,9 +285,42 @@ impl RequestShardingMode {
 #[cfg(test)]
 mod index_build_identity_tests {
     use super::{
-        oci_inventory_follow_up, parse_oci_capability, registry_index_build_id,
-        scheduled_maintenance_jobs, RequestShardingMode,
+        completed_index_outcome, oci_inventory_follow_up, parse_oci_capability,
+        registry_index_build_id, scheduled_maintenance_jobs, RequestShardingMode,
     };
+
+    #[test]
+    fn pending_index_runs_are_retryable_but_empty_indexes_can_finish() {
+        let outcome = |pending| aos_hub_core::indexer::IndexOutcome {
+            commit: String::new(),
+            packages: 0,
+            releases: 0,
+            channels: 0,
+            incremental: false,
+            pending,
+        };
+
+        assert!(completed_index_outcome(outcome(true)).is_err());
+        assert!(completed_index_outcome(outcome(false)).is_ok());
+    }
+
+    #[test]
+    fn deferred_index_upgrade_does_not_reuse_finished_v3_builds() {
+        use sha2::{Digest as _, Sha256};
+
+        let mut old = Sha256::new();
+        old.update(b"aos-registry-index-build-v3\0");
+        old.update(7_i64.to_be_bytes());
+        old.update(3_i64.to_be_bytes());
+        old.update(11_i64.to_be_bytes());
+        old.update([1]);
+        old.update(b"publication-a");
+
+        assert_ne!(
+            registry_index_build_id(7, 3, Some("publication-a"), 11),
+            hex::encode(old.finalize())
+        );
+    }
 
     #[test]
     fn identity_coalesces_duplicates_and_tracks_every_input_version() {
@@ -462,6 +511,7 @@ mod entry {
     const HUB_ROUTE_PUBLICATION_PUBLIC_KEY: &str = "HUB_ROUTE_PUBLICATION_PUBLIC_KEY";
     /// The Wrangler `[vars]` entry holding the hub's externally-reachable URL.
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
+    const HUB_LAYER7_DELIVERY_HOSTS: &str = "HUB_LAYER7_DELIVERY_HOSTS";
     /// Immutable source/build identity used to attest the active deployment.
     const HUB_DEPLOYMENT_ID: &str = "HUB_DEPLOYMENT_ID";
     /// Atomic JSON secret containing role-separated release evidence keys.
@@ -1125,6 +1175,17 @@ mod entry {
         .with_kv(Arc::new(crate::workerkv::WorkerKv::new(
             env.kv(crate::handlers::bindings::KV_SESSIONS)?,
         )));
+        if let Ok(keys) = env.var("HUB_REGISTRY_CACHE_PUBLIC_KEYS") {
+            service = service
+                .with_registry_cache_public_keys(
+                    serde_json::from_str(&keys.to_string()).map_err(|error| {
+                        worker::Error::RustError(format!("registry cache public keys: {error}"))
+                    })?,
+                )
+                .map_err(|error| {
+                    worker::Error::RustError(format!("registry cache public keys: {error:#}"))
+                })?;
+        }
         if let Some(authority) = release_evidence {
             service = service.with_release_evidence(authority);
         }
@@ -1174,10 +1235,32 @@ mod entry {
     /// no unauthenticated init path. A handler error is logged and returned as a
     /// `500` so a binding/back-end failure never panics the isolate.
     #[worker::event(fetch, respond_with_errors)]
-    async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
+    async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         // Route the shared core's `tracing` events to the console so handler
         // errors land in Workers Logs (idempotent; see `crate::tracinglog`).
         crate::tracinglog::init();
+
+        // Manual jobs must have the same isolation as queue deliveries. R2
+        // reads and hashing must not occupy the authoritative database turn.
+        if req.method() == Method::Post && req.url()?.path() == "/_internal/job" {
+            let expected_seal = env
+                .secret(HUB_SEAL_KEY)
+                .map(|secret| secret.to_string())
+                .unwrap_or_default();
+            let supplied_seal = req.headers().get("x-hub-seal")?.unwrap_or_default();
+            if expected_seal.is_empty() || supplied_seal != expected_seal {
+                return Response::error("forbidden", 403);
+            }
+
+            let envelope: aos_hub_core::jobs::JobEnvelope = match req.json().await {
+                Ok(envelope) => envelope,
+                Err(error) => return Response::error(format!("job decode: {error}"), 400),
+            };
+            return match run_job_envelope(&envelope, None, &env).await {
+                Ok(()) => Response::ok("ok"),
+                Err(error) => Response::error(format!("job: {error}"), 500),
+            };
+        }
 
         if req.url()?.path() == DEPLOYMENT_ID_PATH {
             if !matches!(req.method(), Method::Get | Method::Head) {
@@ -2011,7 +2094,6 @@ mod entry {
                 let db = Arc::new(aos_hub_core::db::Database::attach(make()));
                 match db.registry_by_id(*registry_id).await {
                     Ok(Some(registry)) => {
-                        use aos_hub_core::reindex::Reindexer as _;
                         let egress = match worker_egress(env) {
                             Ok(egress) => egress,
                             Err(error) => {
@@ -2086,7 +2168,11 @@ mod entry {
                                 return Ok(());
                             }
                         };
-                        if let Err(error) = reindexer.reindex(&registry).await {
+                        let result = reindexer
+                            .index(&registry)
+                            .await
+                            .and_then(crate::completed_index_outcome);
+                        if let Err(error) = result {
                             let detail =
                                 aos_hub_core::jobs::redacted_job_failure(&format!("{error:#}"));
                             if let Err(failure_error) = db
@@ -2516,11 +2602,16 @@ mod entry {
         let runtime = shard_request_runtime(env, runtime).await?;
         let started_at = worker::Date::now().as_millis();
         let sql_before = runtime.remote_sql_metrics.snapshot();
+        let layer7_delivery_hosts = env
+            .var(HUB_LAYER7_DELIVERY_HOSTS)
+            .ok()
+            .map(|value| value.to_string());
         let response = crate::bridge::dispatch(
             runtime.router,
             runtime.service.as_ref(),
             runtime.console_deps,
             runtime.delivery_attestation_verifier.as_deref(),
+            layer7_delivery_hosts.as_deref(),
             req,
         )
         .await?;
@@ -2793,6 +2884,7 @@ mod entry {
                                 return Response::error(format!("remote SQL decode: {error}"), 400);
                             }
                         };
+                        drop(body);
                         let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage());
                         return match crate::remotebackend::execute_remote_sql(&backend, operation)
                             .await
@@ -2957,7 +3049,20 @@ mod entry {
                 )));
                 let (router, service, console_deps) =
                     router_from_do_e2e(&self.state, &self.env, db).await?;
-                return crate::bridge::dispatch(router, &service, console_deps, None, req).await;
+                let layer7_delivery_hosts = self
+                    .env
+                    .var(HUB_LAYER7_DELIVERY_HOSTS)
+                    .ok()
+                    .map(|value| value.to_string());
+                return crate::bridge::dispatch(
+                    router,
+                    &service,
+                    console_deps,
+                    None,
+                    layer7_delivery_hosts.as_deref(),
+                    req,
+                )
+                .await;
             }
             // The DO runs the same shared router as the native shell.
             #[cfg(not(feature = "do-e2e"))]
@@ -2971,11 +3076,17 @@ mod entry {
                     .unwrap_or_else(|| "<invalid>".to_string());
                 let started_at = worker::Date::now().as_millis();
                 let sql_before = runtime.sql_metrics.snapshot();
+                let layer7_delivery_hosts = self
+                    .env
+                    .var(HUB_LAYER7_DELIVERY_HOSTS)
+                    .ok()
+                    .map(|value| value.to_string());
                 let result = crate::bridge::dispatch(
                     runtime.router,
                     runtime.service.as_ref(),
                     runtime.console_deps,
                     runtime.delivery_attestation_verifier.as_deref(),
+                    layer7_delivery_hosts.as_deref(),
                     req,
                 )
                 .await;

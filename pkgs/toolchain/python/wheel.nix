@@ -5,8 +5,14 @@
   fetchurl,
   python3,
   packaging,
+  stdenv,
+  buildPackages,
 }: let
   version = "0.48.0";
+  buildPython =
+    if stdenv.isCross
+    then buildPackages.python3
+    else python3;
 in
   mkDerivation {
     platformSupport = {
@@ -78,7 +84,7 @@ in
       hash = "sha256-lIAHZWAekXG/XVjQZuZAZihCvO3Lq5grLJB4eiyYcyI=";
     };
 
-    buildDeps = [python3];
+    buildDeps = [buildPython];
     runtimeDeps = [
       python3
       packaging
@@ -132,7 +138,7 @@ in
         name = "check";
         script = ''
           PYTHONPATH=$out/lib/python3.14/site-packages:${packaging}/lib/python3.14/site-packages \
-            "$out/bin/wheel" version | grep -F "wheel ${version}"
+            ${buildPython}/bin/python3 "$out/bin/wheel" version | grep -F "wheel ${version}"
         '';
       }
     ];

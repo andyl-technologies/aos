@@ -1787,6 +1787,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit mkAccacheEnvironment;
       inherit mkCargoPackage mkAosCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
       inherit mkOciTools ociTools mkOciMultiPlatformContainer mkOciPackageEvidence;
+      # Downstream flakes use the same package argument resolution as discovery.
+      inherit callPackage;
+      inherit (lib) mkShell;
       inherit (cargoArtifactsSupport) mkCargoDummySource;
       inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;
       inherit bootstrapTools;
@@ -2170,7 +2173,12 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
               };
             };
           }
-          (withDefaultMaintainers stdenv.darwinRuntimes)
+          (withDistributionMeta {
+              description = "LLVM runtime libraries for Darwin";
+              homepage = "https://llvm.org/";
+              license = "Apache-2.0 WITH LLVM-exception";
+            }
+            stdenv.darwinRuntimes)
         else {
           pname = "darwin-runtimes";
           platformSupport = darwinRuntimePlatformSupport;
@@ -2634,6 +2642,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         } (
           (withDistributionMeta {
               description = "AOS C and C++ compiler wrapper toolchain";
+              homepage = null;
               license = "GPL-3.0-or-later WITH GCC-exception-3.1";
             }
             (
@@ -2685,7 +2694,10 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
             ];
             role = "public-package";
           };
-          version = "16.2.0";
+          version =
+            if stdenv.hostPlatform.isDarwin
+            then darwinGcc.version
+            else "16.2.0";
           packageProbe = lib.qualification.commandProbe {
             "primary" = {
               "artifacts" = [];
@@ -2753,6 +2765,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         } (
           (withDistributionMeta {
               description = "Unwrapped GNU Compiler Collection for the AOS target toolchain";
+              homepage = "https://gcc.gnu.org/";
               license = "GPL-3.0-or-later WITH GCC-exception-3.1";
             }
             (
@@ -2764,15 +2777,24 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
               then stdenv.gccStage2
               else stdenv.gcc
             ))
-          // {version = "16.2.0";}
+          // {
+            version =
+              if stdenv.hostPlatform.isDarwin
+              then darwinGcc.version
+              else "16.2.0";
+          }
         );
-      gcc-libs = withPlatformSupport discoveredPackages.gcc-libs (
-        if stdenv.hostPlatform.isDarwin
-        then withDefaultMaintainers darwinGcc
-        else if stdenv.isCross && stdenv.hostPlatform.isLinux
-        then withDefaultMaintainers linuxTargetGccLibs
-        else discoveredPackages.gcc-libs
-      );
+      gcc-libs = withPlatformSupport discoveredPackages.gcc-libs (withDistributionMeta {
+          description = "GCC runtime libraries";
+          homepage = "https://gcc.gnu.org/";
+          license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+        } (
+          if stdenv.hostPlatform.isDarwin
+          then darwinGcc
+          else if stdenv.isCross && stdenv.hostPlatform.isLinux
+          then linuxTargetGccLibs
+          else discoveredPackages.gcc-libs
+        ));
       getent =
         withQualification {
           packageName = "getent";

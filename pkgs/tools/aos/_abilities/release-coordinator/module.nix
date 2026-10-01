@@ -48,7 +48,7 @@
   groupName = name: (outputs groups name).name;
   principalName = name: (outputs principals name).name;
   serviceResource = name: (outputs services name).resource;
-  stateKeys = ["release-state" "timestamp-state" "backup-state" "monitor-state"];
+  stateKeys = ["release-state" "timestamp-state" "backup-state" "monitor-state" "fitness"];
   storagePath = key:
     (outputs (
         if builtins.elem key stateKeys
@@ -88,7 +88,7 @@
     aos-release = {
       description = "AOS content release coordinator";
       home = "/var/lib/aos-release-coordinator";
-      supplementaryGroups = [];
+      supplementaryGroups = ["aos-release-fitness"];
     };
     aos-release-timestamp = {
       description = "AOS TUF timestamp renewal";
@@ -98,12 +98,12 @@
     aos-release-backup = {
       description = "AOS release backup and restore verification";
       home = "/var/lib/aos-release-backup";
-      supplementaryGroups = ["aos-release" "aos-release-timestamp"];
+      supplementaryGroups = ["aos-release" "aos-release-timestamp" "aos-release-fitness"];
     };
     aos-release-monitor = {
       description = "AOS release operation alerts";
       home = "/var/lib/aos-release-monitor";
-      supplementaryGroups = [];
+      supplementaryGroups = ["aos-release-fitness"];
     };
   };
 
@@ -139,6 +139,7 @@
     mode,
     path,
     owner,
+    owningGroup ? owner,
   }:
     effect "filesystem" (
       if purpose == "state"
@@ -148,7 +149,7 @@
     key {
       inherit mode path;
       owner = principalName owner;
-      group = groupName owner;
+      group = groupName owningGroup;
     };
   networkReadiness = effect "network" "ready" "network-readiness" {
     scope = "address-configured";
@@ -387,7 +388,7 @@
       isolation = isolation "host";
       hardening = hardening true;
     };
-  restoreService = programs:
+  restoreService = programs: credentials:
     service {
       service = "restore-check";
       enabled = false;
@@ -408,12 +409,14 @@
         group = "release-state";
         conflict = "reject";
       };
+      credentials.views = credentialViews "fitness" credentials.fitness;
       storage.mounts = [
+        (readWriteMount "fitness" "fitness")
         (readWriteMount "state" "backup-state")
         (readWriteMount "runtime" "restore-runtime")
       ];
       inherit logging;
-      identity = identity "aos-release-backup";
+      identity = (identity "aos-release-backup") // {file_creation_mask = "0027";};
       isolation = isolation "none";
       hardening = hardening false;
     };
@@ -438,14 +441,56 @@
       hardening = hardening true;
     };
 
+  alertCheckService = programs: credentials:
+    service {
+      service = "alert-check";
+      enabled = false;
+      lifecycle = lifecycle {
+        description = "Exercise release alert delivery and record its fitness";
+        executable = programs.alertCheck;
+        workingDirectory = storagePath "monitor-state";
+        timeoutMillis = 1800000;
+      };
+      failure_policy = {
+        handlers = [(failureHandler "alert-alert-check")];
+        dispatch = "replace-active-goal";
+      };
+      credentials.views = (credentialViews "alert" credentials.alert) ++ (credentialViews "fitness" credentials.fitness);
+      storage.mounts = [
+        (readWriteMount "state" "monitor-state")
+        (readWriteMount "runtime" "alert-check-runtime")
+        (readWriteMount "fitness" "fitness")
+      ];
+      inherit logging;
+      identity = (identity "aos-release-monitor") // {file_creation_mask = "0027";};
+      # Mask other coordinator state while exposing the shared fitness subtree.
+      isolation =
+        (isolation "host")
+        // {
+          temporary_filesystems = [
+            {
+              path = "/var/lib/aos-release-coordinator";
+              read_only = true;
+            }
+          ];
+          host_paths = [
+            {
+              source = storagePath "fitness";
+              mode = "read-write";
+            }
+          ];
+        };
+      hardening = hardening true;
+    };
+
   prerequisiteModulesFor = credentials: active:
     (identityFragmentsFor {
-      aos-release = active.release || active.backup;
+      aos-release = active.release || active.backup || active."restore-check" || active."alert-check";
       aos-release-timestamp = active.timestamp || active.backup;
       aos-release-backup = active.backup || active."restore-check";
-      aos-release-monitor = active.alert;
+      aos-release-monitor = active.alert || active."alert-check";
     })
-    ++ lib.optionals (active.release || active.backup) [
+    ++ lib.optionals (active.release || active.backup || active."restore-check" || active."alert-check") [
       (storage {
         key = "release-state";
         name = "aos-release-coordinator";
@@ -515,7 +560,7 @@
         owner = "aos-release-backup";
       })
     ]
-    ++ lib.optionals active.alert [
+    ++ lib.optionals (active.alert || active."alert-check") [
       (storage {
         key = "monitor-state";
         name = "aos-release-monitor";
@@ -533,6 +578,30 @@
         owner = "aos-release-monitor";
       })
     ]
+    ++ lib.optionals (active.release || active.backup || active."restore-check" || active.alert || active."alert-check") [(group "aos-release-fitness")]
+    ++ lib.optionals (active."restore-check" || active."alert-check") [
+      (storage {
+        key = "fitness";
+        name = "aos-release-fitness";
+        purpose = "state";
+        mode = "2770";
+        path = cfg.fitnessRoot;
+        owner = "aos-release";
+        owningGroup = "aos-release-fitness";
+      })
+    ]
+    ++ lib.optionals active."alert-check" [
+      (storage {
+        key = "alert-check-runtime";
+        name = "aos-release-alert-check";
+        purpose = "runtime";
+        mode = "0700";
+        path = "/run/aos-release-alert-check";
+        owner = "aos-release-monitor";
+      })
+      (schedule "alert-check" cfg.alertCheckCalendar)
+    ]
+    ++ lib.optionals (active."restore-check" || active."alert-check") (credentialFragments "fitness" credentials.fitness)
     ++ lib.optionals (active.release || active.timestamp) [networkReadiness]
     ++ lib.optional active.timestamp (schedule "timestamp" cfg.timestampCalendar)
     ++ lib.optional active.backup (schedule "backup" cfg.backupCalendar)
@@ -540,7 +609,7 @@
     ++ lib.optionals active.release (credentialFragments "release" credentials.release)
     ++ lib.optionals active.timestamp (credentialFragments "timestamp" credentials.timestamp)
     ++ lib.optionals active.backup (credentialFragments "backup" credentials.backup)
-    ++ lib.optionals active.alert (credentialFragments "alert" credentials.alert);
+    ++ lib.optionals (active.alert || active."alert-check") (credentialFragments "alert" credentials.alert);
 
   configuredPrograms = {
     release = configuredProgram cfg.releaseProgram;
@@ -548,18 +617,22 @@
     backup = configuredProgram cfg.backupProgram;
     restoreCheck = configuredProgram cfg.restoreCheckProgram;
     alert = configuredProgram cfg.alertProgram;
+    alertCheck = configuredProgram cfg.alertCheckProgram;
   };
   configuredCredentials = {
     release = cfg.releaseCredentials;
     timestamp = cfg.timestampCredentials;
     backup = cfg.backupCredentials;
     alert = cfg.alertCredentials;
+    fitness = cfg.fitnessCredentials;
   };
   configuredServices = {
     release = releaseService configuredPrograms configuredCredentials;
     timestamp = timestampService configuredPrograms configuredCredentials;
     backup = backupService configuredPrograms configuredCredentials;
-    restore-check = restoreService configuredPrograms;
+    restore-check = restoreService configuredPrograms configuredCredentials;
+    alert-check = alertCheckService configuredPrograms configuredCredentials;
+    alert-alert-check = alertService configuredPrograms configuredCredentials "alert-check";
     alert-release = alertService configuredPrograms configuredCredentials "release";
     alert-timestamp = alertService configuredPrograms configuredCredentials "timestamp";
     alert-backup = alertService configuredPrograms configuredCredentials "backup";
@@ -576,7 +649,7 @@
       alert =
         builtins.any
         (name: activeServices."alert-${name}")
-        ["release" "timestamp" "backup" "restore-check"];
+        ["release" "timestamp" "backup" "restore-check" "alert-check"];
     };
   activePrerequisites = prerequisiteModulesFor configuredCredentials activeRoles;
   prerequisiteEffects = ability: operation:
@@ -587,7 +660,8 @@
     lib.optionals activeServices.release (builtins.attrValues cfg.releaseCredentials)
     ++ lib.optionals activeServices.timestamp (builtins.attrValues cfg.timestampCredentials)
     ++ lib.optionals activeServices.backup (builtins.attrValues cfg.backupCredentials)
-    ++ lib.optionals activeRoles.alert (builtins.attrValues cfg.alertCredentials);
+    ++ lib.optionals (activeRoles.alert || activeServices."alert-check") (builtins.attrValues cfg.alertCredentials)
+    ++ lib.optionals (activeServices."restore-check" || activeServices."alert-check") (builtins.attrValues cfg.fitnessCredentials);
 in {
   options.aos.release.coordinator = {
     enable = lib.mkOption {
@@ -619,6 +693,26 @@ in {
       type = lib.types.nullOr executableType;
       default = null;
       description = "Authenticated executable for release operation failure alerts.";
+    };
+    alertCheckProgram = lib.mkOption {
+      type = lib.types.nullOr executableType;
+      default = null;
+      description = "Authenticated wrapper that checks alert delivery and signs its fitness attestation.";
+    };
+    fitnessCredentials = lib.mkOption {
+      type = credentialSet;
+      default = {};
+      description = "Named signer credentials shared only by restore and alert-delivery checks.";
+    };
+    fitnessRoot = lib.mkOption {
+      type = lib.types.strMatching "/[A-Za-z0-9_./-]+";
+      default = "/var/lib/aos-release-coordinator/fitness";
+      description = "Shared signed fitness directory; maintainer configurations must use this fitness_root.";
+    };
+    alertCheckCalendar = lib.mkOption {
+      type = calendarExpression;
+      default = "weekly";
+      description = "Alert delivery check schedule, within the fourteen-day attestation validity period.";
     };
     releaseCredentials = lib.mkOption {
       type = credentialSet;
@@ -663,6 +757,21 @@ in {
           builtins.mapAttrs (_: value: value // {enable = cfg.enable;})
           (lib.mapAttrs' (name: value: lib.nameValuePair "release-coordinator.${name}" value) configuredServices);
         assertions = [
+          {
+            assertion = !activeServices."alert-check" || (cfg.alertCheckProgram != null && activeServices."alert-alert-check");
+            message = "releaseCoordinator alert check requires its program and failure alert service";
+          }
+          {
+            assertion = builtins.intersectAttrs cfg.alertCredentials cfg.fitnessCredentials == {};
+            message = "releaseCoordinator alert and fitness credentials must use distinct names";
+          }
+          {
+            assertion =
+              !(lib.hasPrefix "/nix/store/" cfg.fitnessRoot)
+              && !(lib.hasInfix ".." cfg.fitnessRoot)
+              && !(builtins.elem cfg.fitnessRoot ["/" "/var" "/var/lib" "/var/lib/aos-release-coordinator" "/var/lib/aos-release-timestamp" "/var/lib/aos-release-backup" "/var/lib/aos-release-monitor"]);
+            message = "releaseCoordinator fitnessRoot must be a separate writable directory";
+          }
           {
             assertion = !activeServices.release || cfg.releaseProgram != null;
             message = "releaseCoordinator.releaseProgram must be configured";

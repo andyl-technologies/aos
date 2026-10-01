@@ -185,11 +185,18 @@
         target = "/nix/var/nix/gcroots/aos-profiles";
       }
     ]
-    ++ lib.optional container.filesystem.shell {
-      path = "/bin/sh";
-      target = "${pkgs.bash}/bin/bash";
-      requireExecutable = true;
-    };
+    ++ lib.optionals container.filesystem.shell [
+      {
+        path = "/bin/sh";
+        target = "${pkgs.bash}/bin/bash";
+        requireExecutable = true;
+      }
+      {
+        path = "/bin/bash";
+        target = "${pkgs.bash}/bin/bash";
+        requireExecutable = true;
+      }
+    ];
 
   initScript = import ./init-script.nix {
     inherit lib pkgs;
@@ -330,7 +337,7 @@
         text = "root:!:1::::::\n";
       }
       {
-        path = "/aos-registration";
+        path = "/usr/lib/aos/nix-registration";
         mode = "0444";
         source = "${referenceGraph}/registration";
       }

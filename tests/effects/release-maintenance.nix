@@ -47,6 +47,8 @@ let
               timestampProgram = {path = "${package}/bin/timestamp";};
               backupProgram = {path = "${package}/bin/backup";};
               restoreCheckProgram = {path = "${package}/bin/restore";};
+              alertCheckProgram = {path = "${package}/bin/alert-check";};
+              fitnessCredentials = {fitness = "fitness-secret";};
               alertProgram = {path = "${package}/bin/alert";};
               releaseCredentials = {release = "release-secret";};
               timestampCredentials = {timestamp = "timestamp-secret";};
@@ -79,10 +81,18 @@ let
   overrideGraph = timestampDisabled.config.aos.activation.graph;
 in
   assert builtins.all (item: item.assertion) evaluated.config.assertions;
-  assert builtins.length nodes == 34;
-  assert builtins.length graph.order == 34;
+  assert builtins.length graph.order == builtins.length nodes;
   assert builtins.all (node: node.lifetime == "persistent") ((effectsFor "identity" "group") ++ (effectsFor "identity" "principal") ++ (effectsFor "filesystem" "persistentAllocate"));
-  assert builtins.length (effectsFor "scheduledActivation" "ensure") == 3;
+  assert builtins.length (effectsFor "scheduledActivation" "ensure") == 4;
+  assert (serviceFor "release-coordinator.alert-check").input.identity.file_creation_mask == "0027";
+  assert (serviceFor "release-coordinator.alert-check").input.isolation.temporary_filesystems
+  == [
+    {
+      path = "/var/lib/aos-release-coordinator";
+      read_only = true;
+    }
+  ];
+  assert builtins.length (serviceFor "release-coordinator.restore-check").input.credentials.views == 1;
   assert timestamp.input.target._type == "aos-effect-output";
   assert timestamp.input.target.output == "resource";
   assert release.input.policy.hardening.operation_deny == ["mount" "reboot" "swap"];

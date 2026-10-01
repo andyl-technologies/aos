@@ -219,7 +219,8 @@
                         # Headless tests do not run the stage-2 Nix DB seed
                         # unit, but they can load the same registration stream
                         # explicitly when they exercise Nix store operations.
-                        cp "$REGINFO/registration" rootfs/aos-registration
+                        mkdir -p rootfs/usr/lib/aos
+                        cp "$REGINFO/registration" rootfs/usr/lib/aos/nix-registration
 
                         # /bin/sh -> bash (required for shell scripts)
                         ln -sfn $AOS_BASH/bin/bash rootfs/bin/sh

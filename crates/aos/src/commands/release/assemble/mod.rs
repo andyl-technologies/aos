@@ -27,7 +27,7 @@ use aos_release::build::{BuildReportV1, ReproducibilityResult};
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::manifest::{FinalArtifactSet, ImageResult, PackageResult, ReleaseManifestV1};
-use aos_release::plan::{PlatformCell, ReleasePlanV1};
+use aos_release::plan::{PlatformCell, ReleasePlan};
 use aos_release::platform::MatrixCell;
 use aos_release::sbom::SpdxDocument;
 use aos_release::signing::{SignerRole, TrustedEd25519Key};
@@ -202,7 +202,7 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
     }
     let completed = require_utc(&args.completed_at, "assembly completion time")?;
     let plan_bytes = read_canonical(&args.plan, "release plan")?;
-    let plan: ReleasePlanV1 = canonical::from_slice(&plan_bytes, "release plan")?;
+    let plan: ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
     plan.validate()?;
     let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
 
@@ -405,7 +405,7 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
     Ok(())
 }
 
-fn package_results(plan: &ReleasePlanV1) -> Vec<PackageResult> {
+fn package_results(plan: &ReleasePlan) -> Vec<PackageResult> {
     plan.packages
         .iter()
         .map(|package| PackageResult {
@@ -422,7 +422,7 @@ fn package_results(plan: &ReleasePlanV1) -> Vec<PackageResult> {
         .collect()
 }
 
-fn image_results(plan: &ReleasePlanV1) -> Vec<ImageResult> {
+fn image_results(plan: &ReleasePlan) -> Vec<ImageResult> {
     plan.images
         .iter()
         .map(|image| ImageResult {
@@ -535,7 +535,7 @@ fn validate_advisory(
     Ok(())
 }
 
-fn cache_key(specification: &str, plan: &ReleasePlanV1) -> Result<TrustedEd25519Key> {
+fn cache_key(specification: &str, plan: &ReleasePlan) -> Result<TrustedEd25519Key> {
     let (key_id, path) = super::finalize_cache::parse_key_spec(specification)?;
     let requirement = plan
         .signers

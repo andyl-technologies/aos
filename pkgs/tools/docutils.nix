@@ -4,9 +4,15 @@
   mkDerivation,
   fetchurl,
   python3,
+  buildPackages,
+  stdenv,
 }: let
   version = "0.23";
   sitePackages = "lib/python3.14/site-packages";
+  buildPython =
+    if stdenv.isCross
+    then buildPackages.python3
+    else python3;
   entryPoints = {
     docutils = "docutils.__main__:main";
     rst2html = "docutils.core:rst2html";
@@ -82,7 +88,7 @@ in
       hash = "sha256-dG9QYDIlESgKHlDrdoRu1r8jQphLKsBNxCyqGo14eZ4=";
     };
 
-    buildDeps = [];
+    buildDeps = [buildPython];
     runtimeDeps = [python3];
     propagatedDeps = [python3];
 
@@ -97,7 +103,7 @@ in
       {
         name = "check";
         script = ''
-          PYTHONPATH="$PWD" ${python3}/bin/python3 - <<'PY'
+          PYTHONPATH="$PWD" ${buildPython}/bin/python3 - <<'PY'
           from docutils.core import publish_string
           output = publish_string("Heading\n=======\n", writer_name="html5")
           assert b"<h1" in output
@@ -131,7 +137,12 @@ in
             )
           )}
 
-          printf 'Title\n=====\n' | "$out/bin/rst2man" > test.1
+          # Exercise the installed Python sources with a native interpreter;
+          # the entry point scripts retain the target interpreter shebang.
+          printf 'Title\n=====\n' \
+            | PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$out/${sitePackages}" \
+              ${buildPython}/bin/python3 -c 'from docutils.core import rst2man; rst2man()' \
+            > test.1
           grep -Fq '.TH "Title"' test.1
         '';
       }

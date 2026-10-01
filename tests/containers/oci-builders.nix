@@ -183,7 +183,7 @@
         text = "fixture init\n";
       }
       {
-        path = "/aos-registration";
+        path = "/usr/lib/aos/nix-registration";
         mode = "0444";
         source = generatedRegistration;
       }
@@ -570,7 +570,7 @@ in
                 test "$(readlink metadata-root/bin/base-tool)" = ${lib.escapeShellArg "${base}/bin/base-tool"} \
                   || fail "metadata layer changed an authored symlink"
                 test -f metadata-root/etc/os-release
-                grep -Fx 'generated registration bytes' metadata-root/aos-registration >/dev/null \
+                grep -Fx 'generated registration bytes' metadata-root/usr/lib/aos/nix-registration >/dev/null \
                   || fail "store-backed metadata source bytes changed"
                 test ! -e metadata-root/etc/hosts
                 test ! -e metadata-root/etc/resolv.conf

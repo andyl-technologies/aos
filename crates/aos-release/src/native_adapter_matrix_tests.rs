@@ -18,7 +18,7 @@ use crate::qualification_evidence::{
     validate_native_adapter_matrix_spec,
 };
 
-use crate::verify::tests::{observations, qualification_fixture};
+use crate::verify::tests::{STABLE, observations, qualification_fixture};
 
 fn digest(label: &str) -> Sha256Digest {
     Sha256Digest::of_bytes(label)
@@ -153,7 +153,7 @@ fn fixture() -> Result<(
         })
         .collect::<Result<Vec<_>>>()?;
     let case = QualificationCase {
-        schema_version: Some("aos.release.qualification-case/v2".into()),
+        schema_version: crate::qualification_evidence::QUALIFICATION_CASE.into(),
         claim: None,
         measurements: BTreeMap::new(),
         minimum_observed_seconds: None,
@@ -867,7 +867,7 @@ fn central_phase_rejects_failed_cells_and_prepared_environment_mutation() -> Res
 
     let (plan, manifest) = qualification_fixture()?;
 
-    let complete = observations(&plan, &manifest, QualificationPhase::Staging)?;
+    let complete = observations(&plan, &manifest, Some(STABLE), QualificationPhase::Staging)?;
     let matrix_index = complete
         .iter()
         .position(|record| record.policy_id == NATIVE_ADAPTER_MATRIX_REQUIREMENT)
@@ -910,9 +910,11 @@ fn central_phase_rejects_failed_cells_and_prepared_environment_mutation() -> Res
         crate::qualification_evidence::assess_observations(
             &plan,
             &manifest,
+            Some(STABLE),
             QualificationPhase::Staging,
             &failed,
             NOW,
+            None,
         )
         .is_err()
     );
@@ -929,9 +931,11 @@ fn central_phase_rejects_failed_cells_and_prepared_environment_mutation() -> Res
         crate::qualification_evidence::assess_observations(
             &plan,
             &manifest,
+            Some(STABLE),
             QualificationPhase::Staging,
             &changed_environment,
             NOW,
+            None,
         )
         .is_err()
     );

@@ -113,7 +113,7 @@
       # A variant that defers signing to the release finalizer has no final
       # image in Nix at all: `build.image` and `imageArtifacts` stay undefined
       # and the unsigned assembly is the only buildable output. Signed disks
-      # for those variants come from `aos release finalize-image`.
+      # for those variants come from `aos release step finalize-image`.
       externallyFinalized = name: assembly: {
         "${name}-unsigned-image-assembly" = assembly;
       };
@@ -222,6 +222,11 @@
     };
   in {
     aosSystems = genAttrs systems (system: (aosFor system).systems);
+
+    # The complete package set, including its builders (mkDerivation,
+    # mkCargoPackage, mkGoPackage, callPackage, mkShell) and `lib`, for
+    # downstream flakes that take AOS as their only input.
+    legacyPackages = genAttrs systems (system: (aosFor system).pkgs);
 
     packages = genAttrs systems (
       system: let

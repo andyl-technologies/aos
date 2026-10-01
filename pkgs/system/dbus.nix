@@ -4,6 +4,7 @@
   service-management,
   mkDerivation,
   fetchurl,
+  buildPackages,
   patchelf,
   meson,
   ninja,
@@ -18,6 +19,15 @@
 }: let
   version = "1.16.2";
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  darwinCpu =
+    if stdenv.hostPlatform.isAarch64
+    then "aarch64"
+    else "x86_64";
+  buildPython =
+    if stdenv.isCross
+    then buildPackages.python3
+    else python3;
   linuxRuntimeLibraryPath = builtins.concatStringsSep ":" (map (dependency: "${dependency}/lib") [expat libselinux audit libcap-ng systemd]);
 in
   mkDerivation {
@@ -186,7 +196,7 @@ in
             meson_post_install.py \
             test/data/copy_data_for_tests.py \
             tools/build-timestamp.py; do
-            sed -i "1s|^#!.*|#!${python3}/bin/python3|" "$script"
+            sed -i "1s|^#!.*|#!${buildPython}/bin/python3|" "$script"
           done
         '';
       }
@@ -199,7 +209,26 @@ in
         # not a read-only store path.
         script = ''
           export PYTHONPATH="${meson}/lib/python3/site-packages"
+          ${lib.optionalString isDarwinCross ''
+              # Without a cross file Meson executes its Mach-O compiler probe.
+              cat > aos-darwin-cross.ini <<EOF
+            [binaries]
+            c = '$CC'
+            cpp = '$CXX'
+            pkg-config = 'pkg-config'
+
+            [host_machine]
+            system = 'darwin'
+            cpu_family = '${darwinCpu}'
+            cpu = '${darwinCpu}'
+            endian = 'little'
+
+            [properties]
+            needs_exe_wrapper = true
+            EOF
+          ''}
           meson setup build \
+            ${lib.optionalString isDarwinCross "--cross-file=$PWD/aos-darwin-cross.ini"} \
             --prefix="$out" \
             --sysconfdir=/etc \
             --localstatedir=/var \

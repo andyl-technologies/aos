@@ -20,7 +20,7 @@
   };
   unpatchedCargoDeps = fetchCargoDeps {
     inherit src;
-    hash = "sha256-TMIaRjGV+qooWVMKL0dWfcC1EJcNlHnllHIIB5AgkqA=";
+    hash = "sha256-sGxZwXtN/2esgGAQiYTR5AgUnIZhvttPKJaBjarGQmE=";
   };
   cargoDeps = mkDerivation {
     pname = "cargo-nextest-cargo-deps";

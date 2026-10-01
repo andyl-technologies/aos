@@ -1,8 +1,8 @@
 ##! Envoy proxy — high-performance L7 proxy built from source
 ##!
 ##! Uses mkBazelPackage (two-phase FOD build adapted from nixpkgs):
-##! (1) fetchBazelDeps fetches all Bazel external deps via `bazel build --nobuild`
-##! (2) bazelPhases patchelfs downloaded ELFs and builds offline
+##! (1) fetchBazelDeps fetches Bazel external deps, then removes opaque artifacts
+##! (2) bazelPhases builds offline with source-built execution tools
 {
   mkBazelPackage,
   fetchBazelDeps,
@@ -24,6 +24,7 @@
   binutils,
   llvm,
   rust,
+  go-1_24,
   cmake,
   ninja,
   grep,
@@ -110,6 +111,16 @@
     if isCross
     then rust.passthru.buildTool
     else rust;
+  buildGo =
+    if isCross
+    then buildPackages.go-1_24
+    else go-1_24;
+  buildAntlr4Tool = import ./envoy-patches/_antlr4-tool.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildJdk buildPython;
+    icu4j = buildPackages.icu4j;
+  };
   nativeRust =
     if isCross
     then buildPackages.rust
@@ -350,9 +361,8 @@
   # Mach-O helper is ever executed by the builder.
   darwinToolchainSetup = lib.optionalString isDarwinCross ''
     mkdir -p aos-darwin-toolchain
-    ${buildUnzip}/bin/unzip -jo "${buildBazel.src}" \
-      tools/cpp/unix_cc_toolchain_config.bzl \
-      -d aos-darwin-toolchain
+    cp "${buildBazel.src}/tools/cpp/unix_cc_toolchain_config.bzl" \
+      aos-darwin-toolchain/
     mkdir -p aos-darwin-toolchain/include
     ${buildTar}/bin/tar -xOf ${darwinMdnsResponderSrc} \
       --wildcards '*/mDNSShared/dns_sd.h' \
@@ -509,9 +519,8 @@
 
   linuxToolchainSetup = lib.optionalString isLinuxCross ''
     mkdir -p aos-linux-cross-toolchain
-    ${buildUnzip}/bin/unzip -jo "${buildBazel.src}" \
-      tools/cpp/unix_cc_toolchain_config.bzl \
-      -d aos-linux-cross-toolchain
+    cp "${buildBazel.src}/tools/cpp/unix_cc_toolchain_config.bzl" \
+      aos-linux-cross-toolchain/
 
     mkdir -p aos-linux-host-toolchain
     cp aos-linux-cross-toolchain/unix_cc_toolchain_config.bzl \
@@ -1156,6 +1165,7 @@ in
     # Deprecated configuration can become fatal without a major release.
     # https://www.envoyproxy.io/docs/envoy/latest/faq/configuration/deprecation
     version = "=${version}";
+    passthru.evidenceSources = buildAntlr4Tool.passthru.evidenceSources;
 
     bazel = buildBazel;
     jdk = buildJdk;
@@ -1208,10 +1218,8 @@ in
     # --- Fetch-specific ---
     depsHash =
       if isDarwinCross
-      then "sha256-OFSJQxEQ+LWGa8ZnTBZ6R16IauY5EL7Kh80T+m17emU="
-      else if isLinuxCross
-      then "sha256-NpOZJqaq2eKswg/ZMIsvxAPMD2r61qfqgpYsam4fR/Y="
-      else "sha256-NpOZJqaq2eKswg/ZMIsvxAPMD2r61qfqgpYsam4fR/Y=";
+      then "sha256-Uk3z32gZlcfQUDbaYDJDgniHKPIzU5lNaZwA83XM1Kk="
+      else "sha256-QRqsiL5d3IGl0q9ft1vShpSb/A7qJ+ayYuxQnQ1tOzg=";
     fetchPostPatch = "";
     bazelFetchFlags = [
       "--extra_toolchains=//bazel/nix:${
@@ -1220,7 +1228,7 @@ in
         else "rust_nix_x86_64"
       }"
     ];
-    fetchEnv = lib.optionalAttrs isCross {
+    fetchEnv = {
       CARGO_BAZEL_REPIN = "true";
     };
     postFetch = ''
@@ -1260,6 +1268,13 @@ in
       # Remove Go caches
       rm -rf "$bazelOut/external/bazel_gazelle_go_repository_cache/gocache" 2>/dev/null || true
       rm -rf "$bazelOut/external/bazel_gazelle_go_repository_cache/pkg" 2>/dev/null || true
+
+      # Downloaded executables and Java archives are never build inputs.
+      # Repository overrides retain source; source-built tools are supplied
+      # separately during the offline build.
+      chmod -R u+w "$bazelOut/external"
+      ${buildPython}/bin/python3 ${./envoy-patches/source-only-bazel-deps.py} \
+        "$bazelOut/external"
     '';
 
     # --- Build-specific ---
@@ -1337,9 +1352,33 @@ in
                 test "$(grep -Fc 'if(SIZEOF_SSIZE_T STREQUAL "")' "$nghttp2_cmake")" = 1
                 sed -i 's/if(SIZEOF_SSIZE_T STREQUAL "")/if(WIN32 AND SIZEOF_SSIZE_T STREQUAL "")/' "$nghttp2_cmake"
 
+                # Protobuf 33.2 provides a source target for its compiler.
+                # Select it instead of the downloaded protoc archives.
+                protobuf_build="$TMPDIR/repo-overrides/com_google_protobuf/BUILD.bazel"
+                test "$(grep -Ec '@com_google_protobuf_protoc_[^"]+//:protoc' "$protobuf_build")" = 6
+                sed -i -E \
+                  's|"@com_google_protobuf_protoc_[^"]+//:protoc"|":compiled_protoc"|g' \
+                  "$protobuf_build"
+
+                # CEL's parser generator uses an AOS-built ANTLR JAR directly.
+                # A shell target avoids Bazel's separate prebuilt JavaBuilder.
+                cel_repo="$TMPDIR/repo-overrides/com_google_cel_cpp"
+                ${buildPatch}/bin/patch -d "$cel_repo" -p1 \
+                  < ${./envoy-patches/cel-source-antlr-tool.patch}
+
                 # Bootstrap a linker that flushes mapped outputs, including
                 # intermediates created during external Go linking.
                 go_sdk="$TMPDIR/repo-overrides/go_sdk"
+                rm -rf "$go_sdk/bin" "$go_sdk/pkg" "$go_sdk/src"
+                cp -a ${buildGo}/bin ${buildGo}/pkg ${buildGo}/src "$go_sdk/"
+                chmod -R u+w "$go_sdk"
+                find "$go_sdk/src" -type d -name testdata -prune -exec rm -rf {} +
+                find "$go_sdk/src" -type f -name '*.syso' -delete
+                printf '%s\n' '${buildGo.version}' > "$go_sdk/VERSION"
+                test "$(grep -Fc 'version = "1.24.6"' "$go_sdk/BUILD.bazel")" = 1
+                sed -i 's/version = "1.24.6"/version = "${buildGo.version}"/' \
+                  "$go_sdk/BUILD.bazel"
+
                 go_linker="$go_sdk/pkg/tool/linux_amd64/link"
                 test -x "$go_linker"
                 mv "$go_linker" "$go_linker.real"
@@ -1350,6 +1389,7 @@ in
                 (
                   cd "$go_sdk/src"
                   export HOME="$TMPDIR/go-link-bootstrap-home"
+                  export GOROOT="$go_sdk"
                   export GOTOOLCHAIN=local GO111MODULE=off GOTELEMETRY=off GOENV=off
                   mkdir -p "$HOME"
                   "$go_sdk/bin/go" build -trimpath -ldflags=-buildid= \
@@ -1420,7 +1460,15 @@ in
                 find "$TMPDIR/repo-overrides" -type f \( -name '*.sh' -o -name 'configure' \) 2>/dev/null | \
                   while read f; do
                     sed -i "1s|^#!/bin/sh|#!${buildBash}/bin/bash|" "$f" 2>/dev/null || true
-                  done${lib.optionalString (!isDarwinCross) ''
+                  done
+
+                # Create this wrapper after the broad shebang rewrite so its
+                # already absolute AOS Bash path is not rewritten twice.
+                printf '%s\n' \
+                  '#!${buildBash}/bin/bash' \
+                  'exec ${buildJdk}/bin/java -cp ${buildAntlr4Tool}/share/java/envoy-antlr4-tool.jar org.antlr.v4.Tool "$@"' \
+                  > "$cel_repo/bazel/antlr4-tool.sh"
+                chmod +x "$cel_repo/bazel/antlr4-tool.sh"${lib.optionalString (!isDarwinCross) ''
 
                 # LuaJIT runs minilua during its build. Keep that helper native
                 # and omit target linker flags from its host link command.
@@ -1813,7 +1861,7 @@ in
         }
       '';
 
-    buildDeps = [buildPatchelf];
+    buildDeps = [buildPatchelf buildAntlr4Tool];
     # The Linux cross-toolchain embeds the target glibc interpreter in Envoy.
     # Retain that loader through reference scrubbing and in the runtime closure.
     runtimeDeps = lib.optional isLinuxCross glibc;

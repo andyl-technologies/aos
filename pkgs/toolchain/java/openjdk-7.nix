@@ -293,6 +293,10 @@ in
         ];
       propagatedDeps = [];
 
+      # Darwin's cross-build phases exceed Linux's per-argument size limit.
+      # Keep the complete script as a Nix input and execute it from the store.
+      passBuildScriptAsFile = isDarwinCross;
+
       phases = [
         {
           name = "unpack";
