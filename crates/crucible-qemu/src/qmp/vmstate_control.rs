@@ -2,6 +2,9 @@
 
 mod hot_fork_barriers;
 
+#[cfg(test)]
+mod launch_fdsets_tests;
+
 use std::io::Write;
 use std::os::fd::BorrowedFd;
 use std::os::unix::net::UnixStream;
@@ -33,6 +36,7 @@ use crate::{QMP_DEBUG_GUEST_ACTIVATION_TOKEN, QemuNodeChannelError};
 pub struct QemuQmpVmStateControlChannel<S> {
     pub(super) client: QmpClient<S>,
     debug_guest_activation_stream: Option<UnixStream>,
+    guarded_launch_fdsets_pending: bool,
 }
 
 impl<S> QemuQmpVmStateControlChannel<S>
@@ -45,6 +49,7 @@ where
         Self {
             client,
             debug_guest_activation_stream: None,
+            guarded_launch_fdsets_pending: false,
         }
     }
 
@@ -61,6 +66,11 @@ where
         has_overlay: bool,
     ) -> Result<(), QmpError> {
         self.client.adopt_guarded_launch_fdsets(has_overlay)
+    }
+
+    /// Retains the authenticated launch pair until native read-only sealing.
+    pub(crate) fn retain_guarded_launch_fdsets_until_disk_seal(&mut self) {
+        self.guarded_launch_fdsets_pending = true;
     }
 
     /// Returns a channel with the pre-established guest activation stream.

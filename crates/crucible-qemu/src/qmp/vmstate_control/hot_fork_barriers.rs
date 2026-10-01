@@ -271,15 +271,30 @@ where
     ///
     /// # Errors
     ///
-    /// Returns a channel error on native refusal or mismatched receipt.
+    /// Returns a channel error on native refusal, mismatched receipt, or failure
+    /// to retire authenticated launch descriptors after read-only sealing.
     pub fn seal_hot_fork_block_roots(
         &mut self,
         inventory: &crate::QmpHotForkBlockSealState,
         roots: &[crate::QmpHotForkBlockSealRequest],
     ) -> Result<crate::QmpHotForkBlockSealState, QemuNodeChannelError> {
-        self.client
+        let sealed = self
+            .client
             .seal_hot_fork_block_roots(inventory, roots)
-            .map_err(QemuNodeChannelError::from)
+            .map_err(QemuNodeChannelError::from)?;
+
+        // The original RO/RW fdset pair permits the native read-only reopen.
+        // Retire it only after the seal is authenticated, before PREPARE can
+        // publish custody or a fork can inherit monitor registry state.
+        if self.guarded_launch_fdsets_pending {
+            let adoption = self.client.adopt_guarded_launch_fdsets(true);
+            self.client
+                .poison_after_descriptor_mutation_error(adoption)
+                .map_err(QemuNodeChannelError::from)?;
+            self.guarded_launch_fdsets_pending = false;
+        }
+
+        Ok(sealed)
     }
 
     /// Releases QEMU's retained all-block drain section.
