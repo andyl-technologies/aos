@@ -45,7 +45,7 @@
     sandbox = false
     NIXCONF
     nix-store --init || true
-    nix-store --load-db < /aos-registration
+    nix-store --load-db < /usr/lib/aos/nix-registration
   '';
 
   serverToplevel = pkgs.mkDerivation {

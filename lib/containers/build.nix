@@ -294,7 +294,7 @@
         text = "root:!:1::::::\n";
       }
       {
-        path = "/aos-registration";
+        path = "/usr/lib/aos/nix-registration";
         mode = "0444";
         source = "${referenceGraph}/registration";
       }
