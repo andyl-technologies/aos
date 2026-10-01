@@ -49,12 +49,17 @@
   enableLinuxUser ? pname == "qemu" && stdenv.hostPlatform.isLinux,
   testOnlyNonDistributable ? false,
   fullUpstreamTestSuiteOnly ? false,
+  focusedUpstreamTest ? null,
   qemuTestRunner ? null,
   atomicPatch ? import ./qemu-patches/_atomic-patch.nix,
 }: let
   _testArtifactPolicy =
     if testOnlyNonDistributable && !applyCruciblePatch
     then throw "test-only QEMU artifacts require the tracked Crucible atomic patch"
+    else null;
+  _focusedTestPolicy =
+    if focusedUpstreamTest != null && (!fullUpstreamTestSuiteOnly || focusedUpstreamTest != "io-qcow2-108")
+    then throw "the focused QEMU diagnostic requires the full test VM and selects only io-qcow2-108"
     else null;
   _fullTestSuitePolicy =
     if fullUpstreamTestSuiteOnly && (!applyCruciblePatch || !testOnlyNonDistributable)
@@ -200,6 +205,7 @@
   qemuNixHash = builtins.hashFile "sha256" ./qemu.nix;
   thoroughTestInventory = ../../tests/crucible/qemu-thorough-test-inventory.txt;
   testInventoryValidator = ../../tests/crucible/qemu-test-inventory.py;
+  io108Diagnostic = ../../tests/crucible/qemu-io108-diagnostic.py;
   thoroughTestCount = builtins.length (
     builtins.filter (name: name != "")
     (lib.splitString "\n" (builtins.readFile thoroughTestInventory))
@@ -408,6 +414,10 @@
       ])
       fullUpstreamTestGuestRoots);
   fullUpstreamTestHarnessMutationMaterial = ''
+    ${lib.optionalString (focusedUpstreamTest != null) ''
+      diagnostic_selection=${focusedUpstreamTest}
+      diagnostic_helper_sha256=${builtins.hashFile "sha256" io108Diagnostic}
+    ''}
     mutation_version=2
     mutation_scope=post-build-test-harness-only
     temp_root=$TMPDIR
@@ -471,6 +481,7 @@
     then "      patch --batch --forward --fuzz=0 --no-backup-if-mismatch -p1 < ${atomicPatchPath}\n"
     else "";
 in
+  assert _focusedTestPolicy == null;
   assert _testArtifactPolicy == null;
   assert _fullTestSuitePolicy == null;
   assert _fullTestVmPolicy == null;
@@ -675,7 +686,16 @@ in
             # translators. Pin Python's hash order so those C inputs and the
             # resulting emulator binaries are byte-reproducible.
             export PYTHONHASHSEED=0
-            make -j$NIX_BUILD_CORES
+            ${
+              if focusedUpstreamTest != null
+              then ''
+                ${ninja}/bin/ninja -C build -j$NIX_BUILD_CORES \
+                  qemu-img qemu-io qemu-nbd \
+                  storage-daemon/qemu-storage-daemon qemu-system-x86_64
+                make -C build Makefile.mtest
+              ''
+              else "make -j$NIX_BUILD_CORES"
+            }
           '';
         }
         {
@@ -950,6 +970,9 @@ in
               done < "$TMPDIR/qemu-full-test-closure-paths"
 
               cp -a "$PWD" "$guest_root/build/qemu-${version}"
+              ${lib.optionalString (focusedUpstreamTest != null) ''
+                cp ${io108Diagnostic} "$guest_root/qemu-io108-diagnostic.py"
+              ''}
               ln -s ${buildBash}/bin/bash "$guest_root/bin/bash"
               ln -s ${buildBash}/bin/bash "$guest_root/bin/sh"
 
@@ -1034,6 +1057,24 @@ in
                 full-upstream-test-suite.inventory
               test -s full-upstream-test-suite.inventory
               cmp qemu-thorough-test-inventory.txt full-upstream-test-suite.inventory
+              ${lib.optionalString (focusedUpstreamTest != null) ''
+                # A diagnostic result records failures without asserting that
+                # the complete regression gate passed.
+                ${buildPython}/bin/python3 /qemu-io108-diagnostic.py \
+                  --source "$PWD" --output "$out"
+                mkdir -p "$out/nix-support"
+                cp "$mutation_manifest" "$out/test-harness.mutations.tsv"
+                cp build/meson-info/intro-tests.json "$out/configured-tests.json"
+                cat > "$out/nix-support/aos-release-policy" <<'DIAGNOSTIC_POLICY'
+                policy_version=1
+                artifact_role=test-evidence
+                standalone_release=false
+                release_via=none-test-only
+                corresponding_source_required=false
+                publishable=false
+                DIAGNOSTIC_POLICY
+                exit 0
+              ''}
               # Thorough migration includes COLO cases whose cumulative run
               # time can exceed Meson's 480-second per-test limit in this VM.
               if (
@@ -1048,6 +1089,19 @@ in
               fi
               cat full-upstream-test-suite.log
               if [ "$suite_status" -ne 0 ]; then
+                # Preserve reports on the results disk before the guest exits.
+                # The outer runner extracts them before checking success.
+                failure_evidence="$out/share/aos/crucible"
+                mkdir -p "$failure_evidence"
+                cp full-upstream-test-suite.log full-upstream-test-suite.inventory \
+                  "$mutation_manifest" "$failure_evidence/"
+                for report_suffix in txt json junit.xml; do
+                  report_path="build/meson-logs/check-report-thorough-thorough.$report_suffix"
+                  if [ -f "$report_path" ]; then
+                    cp "$report_path" "$failure_evidence/"
+                  fi
+                done
+                printf 'FAIL\nmeson_status=%s\n' "$suite_status" > "$out/result"
                 echo "QEMU's complete configured Meson tests failed with status $suite_status" >&2
                 exit "$suite_status"
               fi
@@ -1372,6 +1426,15 @@ in
                 vm_status=$?
               fi
               cat -v "$serial_log"
+              # Failed guests also carry useful reports. Extract those before
+              # status checks, and retain the VM envelope beside the reports.
+              mkdir -p "$out" "$TMPDIR/qemu-full-test-retained"
+              ${e2fsprogs}/sbin/debugfs \
+                -R "rdump /output $TMPDIR/qemu-full-test-retained" "$results_image" >/dev/null
+              if [ -d "$TMPDIR/qemu-full-test-retained/output" ]; then
+                cp -a "$TMPDIR/qemu-full-test-retained/output/." "$out/"
+              fi
+              cp "$serial_log" "$qemu_log" "$runner_identity" "$out/"
               if [ "$vm_status" -ne 0 ]; then
                 cat "$qemu_log" >&2
                 echo "generic QEMU test VM failed with status $vm_status" >&2
@@ -1380,13 +1443,15 @@ in
               grep -F -q 'QEMU_FULL_TEST_VM_RESULT:PASS' "$serial_log"
               ! grep -F -q 'QEMU_FULL_TEST_VM_RESULT:FAIL:' "$serial_log"
 
-              mkdir -p "$out"
-              ${e2fsprogs}/sbin/debugfs \
-                -R "rdump /output $TMPDIR" "$results_image" >/dev/null
-              cp -a "$TMPDIR/output/." "$out/"
               guest_test_status=$(${e2fsprogs}/sbin/debugfs \
                 -R 'cat /guest-test-status' "$results_image" 2>/dev/null)
               test "$guest_test_status" = 0
+              ${lib.optionalString (focusedUpstreamTest != null) ''
+                test -s "$out/diagnostic.json"
+                grep -F -x -q DIAGNOSTIC "$out/result"
+                grep -F -x -q 'qualification=false' "$out/result"
+                exit 0
+              ''}
               test -s "$out/result"
               grep -F -x -q PASS "$out/result"
               ${buildPython}/bin/python3 ${testInventoryValidator} executed \
