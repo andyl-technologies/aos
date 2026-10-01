@@ -48,6 +48,7 @@ pub(crate) use journal::{
     require_broker_floor_owner_v1, require_lock_ack_v2,
 };
 pub(crate) use journal::require_launch_image_presence;
+pub(crate) use journal::ModePinV1;
 mod role_direction;
 
 use role_direction::request_direction_for_endpoint;

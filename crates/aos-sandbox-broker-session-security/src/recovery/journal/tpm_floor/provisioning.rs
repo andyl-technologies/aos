@@ -36,7 +36,8 @@ pub(super) enum ImageFloorModeV1 {
     Required,
 }
 
-pub(super) struct ModePinV1 {
+/// Retains one fixed immutable mode through the shared file-admission engine.
+pub(crate) struct ModePinV1 {
     path: PathBuf,
     target: PathBuf,
     file: File,
@@ -51,6 +52,20 @@ impl ModePinV1 {
             FloorEndpointV1::StorageBroker => "storage-mode",
         };
         let path = Path::new("/etc/aos/method46-tpm-floor").join(basename);
+        Self::open_fixed(path)
+    }
+
+    /// Retains only the immutable mode named by the signed Host contract.
+    ///
+    /// # Errors
+    /// Rejects absent, unsafe, noncanonical or changed fixed mode files.
+    pub(crate) fn open_runtime_deployment() -> Result<Self, FloorErrorV1> {
+        Self::open_fixed(PathBuf::from("/etc/aos/runtime-deployment-tpm-floor/mode"))
+    }
+
+    // Both fixed entries use this same retained-file engine. No caller path
+    // crosses the module boundary or selects a provisioning purpose.
+    fn open_fixed(path: PathBuf) -> Result<Self, FloorErrorV1> {
         let target = std::fs::canonicalize(&path).map_err(|_| FloorErrorV1::Provisioning)?;
         if !target.starts_with("/nix/store") {
             return Err(FloorErrorV1::Provisioning);
@@ -97,7 +112,16 @@ impl ModePinV1 {
         self.mode
     }
 
-    pub(super) fn revalidate(&self) -> Result<(), FloorErrorV1> {
+    /// Reports the exact decoded required spelling, not deployment readiness.
+    pub(crate) const fn is_required(&self) -> bool {
+        matches!(self.mode, ImageFloorModeV1::Required)
+    }
+
+    /// Rechecks the original immutable mode name, inode and decoded bytes.
+    ///
+    /// # Errors
+    /// Rejects any path, metadata, mount or content drift.
+    pub(crate) fn revalidate(&self) -> Result<(), FloorErrorV1> {
         if std::fs::canonicalize(&self.path).map_err(|_| FloorErrorV1::Provisioning)? != self.target
         {
             return Err(FloorErrorV1::Provisioning);
