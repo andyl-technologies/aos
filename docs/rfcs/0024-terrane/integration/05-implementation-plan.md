@@ -797,6 +797,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   directory import, authorized reads and registered SDK checkout. Actual
   factory tests pass genuine legacy refusal, protected bootstrap and reopening
   with a damaged mutable capability cache; non-Send `std,wasm` passes 116 tests.
+  Snapshot path authorization reuses only the current tree verified within
+  that same call, avoiding a duplicate complete history traversal. Five actual
+  regressions pass live ACL revocation, scoped content/hash access, removed
+  named roots, ordinary-file boundary refusal and protected bootstrap loss.
+  Every entry, file and chunk still receives fresh authorization. The 116
+  non-Send tests, strict native rustdoc and mandatory formatting pass; the
+  actual trunk aggregate remains red on index-generation retirement.
   Documented `Chunk`, `Object`, `Ref` and `Root` SDK names now reuse the
   canonical core representations. Strict core Clippy, core/native rustdoc,
   `formats-no-std`, and both mandatory formatting commands pass for this facade.
@@ -806,8 +813,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   trailing directory separator. All 439 core tests, strict core Clippy and
   rustdoc, `formats-no-std`, and both mandatory formatting commands pass.
   This does not qualify runtime surfaces or complete the exposure configuration.
-  The integrated binary still has only its T0 configuration/role launcher;
-  local command frontend implementation remains pending. No Terrane ext4
+  The integrated binary still has only its T0 configuration/role launcher.
+  The reviewed local command frontend is on its isolated task branch; after
+  the shared same-call verification correction, all three CLI integration tests
+  pass. Its unchanged whole workflow completes real initialization, directory
+  commit, fork, independent branch commits, merge, registered merged checkout
+  and fixed-commit checkout in 106.45 seconds within the original 120-second
+  limit. This branch remains unmerged while aggregate qualification is red.
+  Strict native Clippy still fails on twenty production and two test dead-code
+  diagnostics; the shared correction adds none. No Terrane ext4
   workflow artifact is present in the current tracked gate or workflow sources;
   the earlier claim of registration does not establish qualification. The scoped
   descendant-only policy diff correction is integrated; its real protected-factory
