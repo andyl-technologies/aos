@@ -22,6 +22,7 @@ pub fn metadata() -> Result<Value> {
         kernel_release: "synthetic-kernel".into(),
         kernel_config_digest: Sha256Digest::of_bytes("synthetic-kernel-config"),
         kernel_options: BTreeMap::from([("CONFIG_EFI".into(), "y".into())]),
+        configuration: Vec::new(),
         builtin_drivers: vec!["virtio_blk".into(), "virtio_net".into()],
         stages: ["runtime", "initrd", "recovery-a", "recovery-b"]
             .into_iter()

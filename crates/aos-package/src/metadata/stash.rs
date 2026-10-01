@@ -207,6 +207,8 @@ impl Stash {
     pub fn clear_authorized_outputs(&self) -> Result<()> {
         for file in [
             "host.nix",
+            super::bundle::BUNDLE_FILE,
+            "config-bundle.json.sig",
             super::repart::STORAGE_PLAN_FILE,
             super::provisioning::PROVISIONING_RESULT_FILE,
         ] {
@@ -215,6 +217,10 @@ impl Stash {
                 std::fs::remove_file(&path)
                     .with_context(|| format!("removing {}", path.display()))?;
             }
+        }
+        let source = self.dir.join(super::bundle::SOURCE_DIR);
+        if source.exists() {
+            std::fs::remove_dir_all(&source).context("removing authorized source tree")?;
         }
         let repart = self.dir.join(super::repart::REPART_DIR);
         if repart.exists() {
