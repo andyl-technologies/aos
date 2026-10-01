@@ -292,6 +292,41 @@ fn sibling_fault_checkpoints_share_immutable_qemu_fingerprints_and_sequences() {
 
 #[test]
 fn fault_checkpoint_clone_cost_keeps_mutable_ledgers_private() {
+    const CHILD_MARKER: &str = "AOS_FAULT_CLONE_MEMORY_CHILD";
+
+    if std::env::var_os(CHILD_MARKER).is_some() {
+        measure_fault_checkpoint_clone_cost();
+        return;
+    }
+
+    // smaps_rollup covers the whole process. Run this measurement in a fresh
+    // test process so parallel, unrelated tests cannot charge its clones.
+    let executable = std::env::current_exe()
+        .unwrap_or_else(|error| panic!("locate fault clone test executable: {error}"));
+    let test_name = format!(
+        "{}::fault_checkpoint_clone_cost_keeps_mutable_ledgers_private",
+        module_path!()
+            .split_once("::")
+            .map_or(module_path!(), |(_, module)| module)
+    );
+    let output = std::process::Command::new(executable)
+        .arg("--exact")
+        .arg(test_name)
+        .arg("--nocapture")
+        .env(CHILD_MARKER, "1")
+        .output()
+        .unwrap_or_else(|error| panic!("run isolated fault clone test: {error}"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && stdout.contains("1 passed; 0 failed"),
+        "isolated fault clone test failed: status={}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status
+    );
+    print!("{stdout}");
+}
+
+fn measure_fault_checkpoint_clone_cost() {
     const SIBLINGS: usize = 64;
     const AUTHENTICATED_NODES: usize = 4096;
     const ADAPTER_BYTES: usize = 32 * 1024;
