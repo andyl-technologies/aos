@@ -322,7 +322,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   owner-masked creation before protected handoff. The actual guard producer
   retains successful current requests and complete consumed control receipts;
   complete routing and refusal when registration changes during staging remain
-  unqualified. Ordered ancestry and record-parent batching preserve all metadata observations,
+  unqualified. Ordered ancestry and record-parent batching preserve all metadata
+  observations,
   duplicate reads, exact payload reads and initial/final fences. The CAS gate
   now requires their actual cardinality, error-priority and ancestry regressions;
   the complete current gate build remains pending vendor qualification.
@@ -345,8 +346,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and source-lineage preservation; their native implementation and actual
   effect/recovery qualification remain incomplete. D-82 registers permanent
   burns, destination retirement barriers for ordinary copies, and recurring
-  physical-residue reconciliation. Its codecs, private factories, local
-  copied-retirement effects and provider qualification remain pending.
+  physical-residue reconciliation. The reviewed pure codec candidate passes
+  271 core tests, strict Clippy and rustdoc. Selected permanent control records
+  preserve their whole authorization and ownership associations, and three
+  malformed inventory regressions pass in actual test processes bounded to
+  256 MiB. The canonical format gate now requires those byte and allocation
+  witnesses; its Nix build remains pending. Incremental ref-row validation,
+  private factories, local copied-retirement effects and provider qualification
+  remain pending. Decoded records grant no physical collection authority.
   Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,
