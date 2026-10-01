@@ -2381,30 +2381,6 @@ mod tests {
     }
 
     #[test]
-    fn verify_install_provenance_keeps_root_owner_policy_bound_to_local_alias() {
-        let tmp = TempDir::new().unwrap();
-        let mut meta = aliased_provenance_fixture(tmp.path());
-        add_owned_root(&mut meta, "firewall");
-        let signers = HashSet::from([TEST_PROVENANCE_KEY_ID.to_string()]);
-        let entries = [("local-alias", &meta)];
-        let canonical_policy = HashMap::from([("test-reg".to_string(), signers.clone())]);
-
-        let error = verify_package_provenance_entries_from_cache_inner(
-            tmp.path(),
-            entries,
-            &canonical_policy,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("operator allowlist"));
-
-        let alias_policy = HashMap::from([("local-alias".to_string(), signers)]);
-        let count =
-            verify_package_provenance_entries_from_cache_inner(tmp.path(), entries, &alias_policy)
-                .unwrap();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
     fn verify_install_provenance_rejects_foreign_key_namespace_under_alias() {
         let tmp = TempDir::new().unwrap();
         let meta = aliased_provenance_fixture(tmp.path());

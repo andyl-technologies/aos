@@ -423,15 +423,15 @@ in
           exit 1
         fi
 
+        # Both cases acquire the same broker name; execute them serially.
         cargo test \
           --frozen \
           --offline \
           -p aos-systemd \
           --test pinned_bus \
-          replacement_owner_cannot_complete_reused_job_path \
           -- \
           --ignored \
-          --exact
+          --test-threads=1
 
         cleanup_pinned_bus
         trap - EXIT HUP INT TERM
