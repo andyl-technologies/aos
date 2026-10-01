@@ -115,16 +115,17 @@ impl ProductionVmHotForkDiskCustody {
     pub(super) fn capture(
         receipt: &QmpHotForkBlockSealState,
         request: &QmpHotForkBlockSealRequest,
-        snapshot: File,
-        snapshot_path: &Path,
-        boot: File,
-        boot_path: &Path,
+        snapshot: (File, &Path),
+        boot: (File, &Path),
         expected_boot: ContentHash,
-        vmstate: File,
-        vmstate_path: &Path,
-        detached: File,
-        detached_path: &Path,
+        vmstate: (File, &Path),
+        detached: (File, &Path),
     ) -> Result<Self, SchedulerError> {
+        let (snapshot, snapshot_path) = snapshot;
+        let (boot, boot_path) = boot;
+        let (vmstate, vmstate_path) = vmstate;
+        let (detached, detached_path) = detached;
+
         if !receipt.seals(std::slice::from_ref(request))
             || request.candidate().file_path() != snapshot_path
         {
@@ -369,6 +370,9 @@ fn reject_external_qcow2_backing(file: &File) -> Result<(), SchedulerError> {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- failed filesystem fixtures must fail the custody test.
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
     use std::os::unix::fs::symlink;
 

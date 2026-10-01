@@ -1197,15 +1197,11 @@ impl ProductionVmLifecycleLoop {
         let custody = ProductionVmHotForkDiskCustody::capture(
             &sealed,
             &request,
-            snapshot,
-            &root_path,
-            boot,
-            &boot_path,
+            (snapshot, &root_path),
+            (boot, &boot_path),
             expected_boot,
-            vmstate,
-            &vmstate_path,
-            detached,
-            &detached_path,
+            (vmstate, &vmstate_path),
+            (detached, &detached_path),
         )?;
         let latest = self
             .inner
@@ -1444,10 +1440,7 @@ impl ProductionVmLifecycleLoop {
                 continuation.disk_bases.insert(node.clone(), basis.clone());
             }
             let binding_storage = bindings.map(|(_basis, binding)| binding);
-            let binding_slice = binding_storage
-                .as_ref()
-                .map(std::slice::from_ref)
-                .unwrap_or(&[]);
+            let binding_slice = binding_storage.as_slice();
             match self.inner.backend_mut().prepare_retained_hot_fork_template(
                 node,
                 configuration,
