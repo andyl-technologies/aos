@@ -3,7 +3,11 @@
 //! This module is a logical descendant of the private native executor. Public
 //! record bytes alone do not provide authority to construct a submitted effect.
 
-pub(crate) use super::initialization::{
+/// Owns opaque creator receipts beneath the private retained publication frame.
+#[path = "../../store/native_effect/initialization.rs"]
+pub(crate) mod initialization_inputs;
+
+pub(crate) use initialization_inputs::{
     fresh as initialization, pending as pending_initialization,
 };
 

@@ -20,13 +20,13 @@ pub(crate) mod protected_read;
 #[cfg(feature = "std")]
 pub use native_clock::NativeEffectClock;
 #[cfg(feature = "std")]
-pub(crate) use native_effect::initialization::request_for_open as native_initialization_request;
+pub(crate) use native_effect::publication as native_publication_effects;
 #[cfg(feature = "std")]
-pub use native_effect::initialization::{
+pub(crate) use native_effect::publication::initialization_inputs::request_for_open as native_initialization_request;
+#[cfg(feature = "std")]
+pub use native_effect::publication::initialization_inputs::{
     NativePendingRoot, NativePublicationInitialization, NativePublicationInitializationOutcome,
 };
-#[cfg(feature = "std")]
-pub(crate) use native_effect::publication as native_publication_effects;
 #[cfg(all(feature = "std", test))]
 pub(crate) use native_effect::{EffectFault, EffectFaultProbe};
 #[cfg(feature = "std")]

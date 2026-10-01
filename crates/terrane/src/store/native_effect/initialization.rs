@@ -15,7 +15,9 @@ use std::path::{Component, Path, PathBuf};
 use terrane_core::bucket::StoreProfile;
 
 #[cfg(all(feature = "tokio", unix))]
-use super::{ExactRead, NamedFence, NativeExclusion, NativeOpenedDirectory};
+use super::super::{ExactRead, NamedFence, NativeExclusion, NativeOpenedDirectory};
+#[cfg(all(feature = "tokio", unix))]
+use super::{corrupt, digest};
 #[cfg(all(feature = "tokio", unix))]
 use std::sync::Arc;
 #[cfg(all(feature = "tokio", unix))]
