@@ -126,6 +126,9 @@
 pub mod keymap;
 
 #[cfg(any(target_arch = "wasm32", test))]
+mod worker_jobs;
+
+#[cfg(any(target_arch = "wasm32", test))]
 mod control_receipt;
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -1365,22 +1368,29 @@ mod entry {
         // Manual jobs must have the same isolation as queue deliveries. R2
         // reads and hashing must not occupy the authoritative database turn.
         if req.method() == Method::Post && req.url()?.path() == "/_internal/job" {
-            let expected_seal = env
-                .secret(HUB_SEAL_KEY)
-                .map(|secret| secret.to_string())
-                .unwrap_or_default();
-            let supplied_seal = req.headers().get("x-hub-seal")?.unwrap_or_default();
-            if expected_seal.is_empty() || supplied_seal != expected_seal {
-                return Response::error("forbidden", 403);
-            }
+            return match crate::worker_jobs::dispatch(hybrid, || async {
+                let expected_seal = env
+                    .secret(HUB_SEAL_KEY)
+                    .map(|secret| secret.to_string())
+                    .unwrap_or_default();
+                let supplied_seal = req.headers().get("x-hub-seal")?.unwrap_or_default();
+                if expected_seal.is_empty() || supplied_seal != expected_seal {
+                    return Response::error("forbidden", 403);
+                }
 
-            let envelope: aos_hub_core::jobs::JobEnvelope = match req.json().await {
-                Ok(envelope) => envelope,
-                Err(error) => return Response::error(format!("job decode: {error}"), 400),
-            };
-            return match run_job_envelope(&envelope, None, &env).await {
-                Ok(()) => Response::ok("ok"),
-                Err(error) => Response::error(format!("job: {error}"), 500),
+                let envelope: aos_hub_core::jobs::JobEnvelope = match req.json().await {
+                    Ok(envelope) => envelope,
+                    Err(error) => return Response::error(format!("job decode: {error}"), 400),
+                };
+                match run_job_envelope(&envelope, None, &env).await {
+                    Ok(()) => Response::ok("ok"),
+                    Err(error) => Response::error(format!("job: {error}"), 500),
+                }
+            })
+            .await
+            {
+                Ok(response) => response,
+                Err(_) => Response::error("not found", 404),
             };
         }
 
@@ -1897,6 +1907,10 @@ mod entry {
         env: &Env,
     ) -> Result<()> {
         use aos_hub_core::db::WorkerJobClaim;
+
+        crate::worker_jobs::require_worker_only(hybrid_mode(env)?).map_err(|_| {
+            worker::Error::RustError("Worker logical jobs are unavailable in Hybrid".into())
+        })?;
 
         envelope
             .validate()
