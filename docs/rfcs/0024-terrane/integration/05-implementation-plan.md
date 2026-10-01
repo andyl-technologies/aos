@@ -492,8 +492,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   the reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
-  collector graph byte-for-byte; their source formatting passes. Publication
-  codec integration and qualification on the complete trunk remain pending.
+  collector graph byte-for-byte; their source formatting passes. The base
+  publication codecs are now integrated, including complete checkpoint coverage
+  of represented catalog changes. The actual trunk core passes all 260 tests,
+  no-default compilation, strict Clippy and rustdoc, complete core formatting
+  and the hermetic `formats-no-std` gate. D-79 evidence records, D-82 extensions
+  and qualification on the complete trunk remain pending.
   The shared canonical collector lease preserves whole-value proposal and
   fencing checks. Actual selected lease authority remains joint native work;
   native integration, actual crash/timer/restore qualification and complete
