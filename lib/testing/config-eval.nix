@@ -54,17 +54,19 @@ in
               fi
             done
             ${pkgs.diffutils}/bin/cmp "$out/first.json" "$out/second.json"
-            # Replay records its immutable descriptor and source roots. This
-            # integrity check does not grant authority to execute the result.
+            # Replay retains the immutable descriptor, authenticated publication
+            # companions, and source roots without granting execution authority.
             if ! ${pkgs.jq}/bin/jq -e \
               --slurpfile fixture ${fixture}/fixture.json \
-              '(del(.inputs) == ($fixture[0].document | del(.inputs)))
-                and ((.inputs - ([$fixture[0].library, $fixture[0].configuration]
-                  + $fixture[0].document.inputs | unique)) as $descriptors
-                  | ($descriptors | length) == 1
-                    and ($descriptors[0] | endswith("-evaluation-input.json")))
-                and (([$fixture[0].library, $fixture[0].configuration]
-                  + $fixture[0].document.inputs | unique) - .inputs | length) == 0' \
+              '([$fixture[0].library, $fixture[0].configuration]
+                + $fixture[0].document.inputs
+                + ($fixture[0].publications | map(.envelope | sub("/[^/]+$"; "")))
+                | unique) as $expected
+                | (del(.inputs) == ($fixture[0].document | del(.inputs)))
+                  and ((.inputs - $expected) as $descriptors
+                    | ($descriptors | length) == 1
+                      and ($descriptors[0] | endswith("-evaluation-input.json")))
+                  and (($expected - .inputs | length) == 0)' \
               "$out/first.json" >/dev/null; then
               echo "Native deployment differs from the admitted fixture" >&2
               ${pkgs.jq}/bin/jq '{schema, scope, inputs}' "$out/first.json" >&2
@@ -73,7 +75,9 @@ in
             descriptor_path="$(${pkgs.jq}/bin/jq -r \
               --slurpfile fixture ${fixture}/fixture.json \
               '.inputs - ([$fixture[0].library, $fixture[0].configuration]
-                + $fixture[0].document.inputs | unique) | .[0]' "$out/first.json")"
+                + $fixture[0].document.inputs
+                + ($fixture[0].publications | map(.envelope | sub("/[^/]+$"; "")))
+                | unique) | .[0]' "$out/first.json")"
             cp "$evaluation_store_root$descriptor_path" "$out/evaluation-input.json"
             echo PASS > "$out/result"
           '';

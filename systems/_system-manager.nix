@@ -11,7 +11,6 @@
     ../pkgs/system/_systemd-abilities/platform/initrd.nix
     ../pkgs/system/_systemd-abilities/platform/presets.nix
     ../pkgs/system/_systemd-abilities/platform/tmpfiles.nix
-    ../pkgs/system/_systemd-abilities/platform/users.nix
     ../pkgs/system/_systemd-abilities/platform/event-log.nix
     ../pkgs/system/_systemd-abilities/platform/crash-dump.nix
     ../pkgs/system/_systemd-abilities/platform/nsswitch.nix
