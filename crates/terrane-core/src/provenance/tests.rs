@@ -9,6 +9,7 @@ use alloc::{string::ToString, vec, vec::Vec};
 use ed25519_dalek::{Signature, Signer, SigningKey};
 
 mod context;
+mod snapshot;
 
 fn issuer_keys() -> Vec<IssuerKey> {
     vec![IssuerKey {

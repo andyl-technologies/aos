@@ -101,13 +101,34 @@ impl Retention {
 }
 
 impl SnapshotEnvelope {
+    /// Encodes the exact canonical signature preimage with key 5 absent (REF-20).
+    ///
+    /// The four-key map has no additional identity-domain prefix. Legacy key
+    /// identifiers remain encodable; verification binds new terminal key names.
+    ///
+    /// # Errors
+    /// Returns [`RecordError`] for a non-tag name or invalid attestation map.
+    pub fn signature_preimage(&self) -> Result<Vec<u8>, RecordError> {
+        let mut output = Vec::new();
+        self.encode_fields(&mut output, false)?;
+        Ok(output)
+    }
+
     fn encode_into(&self, output: &mut Vec<u8>) -> Result<(), RecordError> {
+        self.encode_fields(output, true)
+    }
+
+    fn encode_fields(
+        &self,
+        output: &mut Vec<u8>,
+        include_signature: bool,
+    ) -> Result<(), RecordError> {
         if self.tag.class() != RefClass::Tags {
             return Err(RecordError::Schema);
         }
         validate_raw_map(&self.attestation, 3)?;
 
-        cbor::write_map(output, 5);
+        cbor::write_map(output, 4 + usize::from(include_signature));
         cbor::write_uint(output, 1);
         cbor::write_text(output, self.tag.as_str());
         cbor::write_uint(output, 2);
@@ -116,8 +137,10 @@ impl SnapshotEnvelope {
         output.extend_from_slice(&self.attestation);
         cbor::write_uint(output, 4);
         cbor::write_text(output, &self.signer_key);
-        cbor::write_uint(output, 5);
-        cbor::write_bytes(output, &self.signature);
+        if include_signature {
+            cbor::write_uint(output, 5);
+            cbor::write_bytes(output, &self.signature);
+        }
         Ok(())
     }
 

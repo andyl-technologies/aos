@@ -657,12 +657,22 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.gc-grace-window`,
   `checks.terrane.gates.gc-two-phase-delete`,
   `checks.terrane.gates.gc-singleton-lease`.
-- [x] **T-PROV-1** Commit signing and verification, entry provenance,
+- [ ] **T-PROV-1** Commit signing and verification, entry provenance,
   selector language and trust presets. Historical signatures, authenticated
   tree evidence, and entry and attribute origins are verified in the pure
   core. Current-ACL commit guarding and durable disclosure certificate
   verification/publication are joint with T-REF-2 and T-DOM-1; merge admission
   with T-ALG-2; wire and command error translation with their runtime tasks.
+  The pure task is reopened for PROV-13: unavailable public ancestry can
+  become empty acceptance evidence under negation. The reviewed task correction
+  propagates content and attribute acceptance errors; its coupled context and
+  derived-data source closure still requires trunk adoption and qualification.
+  Reviewed annotated-tag signing and verification now bind the exact REF-20
+  preimage, terminal key, expected tag/commit and source Tag/Admin scope.
+  All 303 trunk core tests, strict all-target Clippy, strict rustdoc and core
+  formatting pass. The expanded hermetic signature gate passes its 12 exact
+  selectors, including four snapshot cases. This does not qualify native tag
+  publication, current ACL checks or the pending acceptance correction.
   — satisfies PROV-1 to PROV-25;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`.

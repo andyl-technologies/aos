@@ -13,6 +13,7 @@ mod attributes;
 mod history;
 mod selector;
 mod signing;
+mod snapshot;
 mod trust;
 
 pub use history::{EntryLocation, VerifiedHistory, same_content, source_commit_references};
@@ -21,6 +22,7 @@ pub use signing::{
     Diagnostic, Rejected, VerifiedCommit, sign, sign_authored, verify, verify_diagnostic,
     verify_history,
 };
+pub use snapshot::{sign_snapshot, verify_snapshot};
 pub use trust::{TrustContext, validate_canonical_context};
 
 #[cfg(test)]

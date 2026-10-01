@@ -15,6 +15,10 @@ in {
     ${runTest "context::prov_commit_context_rejects_tampered_scope_and_unvalidated_roots"}
     ${runTest "context::prov_commit_authored_requires_context_and_legacy_bytes_remain_explicit"}
     ${runTest "context::prov_commit_context_canonicalizes_unsigned_root_pairs_and_rejects_duplicates"}
+    ${runTest "snapshot::prov_snapshot_signature_binds_exact_preimage_and_terminal_key"}
+    ${runTest "snapshot::prov_snapshot_verification_rejects_wrong_target_scope_and_signature"}
+    ${runTest "snapshot::prov_snapshot_tag_scope_accepts_admin_implication_and_rejects_commit_only"}
+    ${runTest "snapshot::prov_snapshot_tag_scope_enforces_exact_source_caveats"}
     printf 'PASS: pure terminal-key commit signatures and embedded authorization\n' > "$out/result"
   '';
 
