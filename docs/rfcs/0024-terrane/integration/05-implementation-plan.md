@@ -388,9 +388,26 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   now requires their actual cardinality, error-priority and ancestry regressions;
   the hermetic registry gate qualifies all 292 registered specification names,
   including the four ref gates. This registry result does not qualify their
-  implementations. The complete current gate build remains pending vendor
-  qualification and remaining producer/GC source integration; trunk formatting
-  also awaits those missing source modules.
+  implementations. The declared workspace vendor output now builds with its
+  exact lockfile hash. Previously submitted hermetic snapshot builds pass all
+  27 file-CAS selectors, all seven atomic-write/directory selectors and the
+  formats-without-std gate. Those snapshots precede the expanded current gate
+  set and qualify only their recorded source. Complete current gate builds
+  still require remaining producer/GC source integration; trunk formatting
+  also awaits those missing source modules. A fixed optional protected-record
+  read recipe now keeps all ordered parent observations, policy checks before
+  body reads and same-descriptor leaf checks in one native worker. Unsupported
+  bindings and fault-intercepting wrappers retain the original scalar path.
+  The reviewed consumer preserves the complete scalar path on `None` and
+  propagates hook errors without retrying. Shared native/scalar predicates
+  preserve owner, mode and single-link checks. One focused native process passes
+  all six binding fixtures, seven complete-transcript/fallback/final-fence
+  fixtures and 14 prior record/control/content cases. Native and supported
+  non-Send library builds and both mandatory formatting commands pass on that
+  candidate. Exact gates now require the six binding and seven consumer cases;
+  their current hermetic builds remain pending. The narrow FsRef adapter
+  forwards only to its actual underlying binding; FaultFs keeps scalar
+  interception. No deadline change or performance result is claimed.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,
@@ -446,11 +463,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   fresh complete chain checks so live-other-holder, stale lease or Guard
   rejection can precede every cache effect. A separately anchored test clock
   retains its exact injected state for queued-expiry and continuity witnesses;
-  production clock constructors remain private. The selected lease worker's
-  native candidate passes 11 of 12 actual Tokio cases and the independent
-  Rc acquire/renew/takeover/reopen case. The failing existing-open case confirms
-  missing coordination is recreated by the old activation path; it remains
-  failing until the retained Active-open route is integrated. Full review of
+  production clock constructors remain private. The initial selected lease
+  candidate passes 11 of 12 actual Tokio cases and the independent Rc
+  acquire/renew/takeover/reopen case. Its failing existing-open case identifies
+  coordination creation in the old activation path. After the reviewed
+  retained Active-open route and genuine read-observation helper are integrated,
+  a separate task worktree rebased onto the shared trunk passes all 13 actual
+  native lease cases, including missing-coordination and the final clock check.
+  Both mandatory formatting commands pass there. Full review of
   the nine owned source files checks the genuine producer, exact whole lease
   and preserved successor, consumed registration controls, retained clock and
   cancellation durability. A final retained clock check before receipt
