@@ -49,4 +49,6 @@ tracing = { workspace = true }
 rand = { workspace = true }
 
 [dev-dependencies]
+# The loopback HTTP fixture does not construct a TLS trust store.
+aws-smithy-http-client = { version = "1.1.12", default-features = false, features = ["default-client"] }
 tempfile = { workspace = true }

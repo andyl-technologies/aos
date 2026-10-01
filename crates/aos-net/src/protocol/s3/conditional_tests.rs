@@ -2,7 +2,7 @@
 //!
 //! The wire-level tests point a real SDK client at a one-shot local HTTP
 //! responder, so they cover exactly what S3 would receive and how its
-//! answers are mapped, without credentials or network access.
+//! answers are mapped, without provider credentials or external network access.
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -16,10 +16,14 @@ use crate::protocol::conditional::PRECONDITION_FAILED;
 fn test_client(endpoint: &str) -> aws_sdk_s3::Client {
     let credentials =
         aws_sdk_s3::config::Credentials::new("test-access", "test-secret", None, None, "test");
+    // This fixture serves plain loopback HTTP; loading machine TLS roots would
+    // add an unrelated environment requirement before any request is sent.
+    let http_client = aws_smithy_http_client::Builder::new().build_http();
     let config = aws_sdk_s3::Config::builder()
         .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
         .region(aws_sdk_s3::config::Region::new("us-east-1"))
         .credentials_provider(credentials)
+        .http_client(http_client)
         .endpoint_url(endpoint)
         .force_path_style(true)
         .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
