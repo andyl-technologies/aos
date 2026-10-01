@@ -3,12 +3,12 @@
 // of Wrangler's live development proxy and external Request.cf discovery.
 const { createHash } = require('node:crypto');
 const { chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, readFileSync,
-  readlinkSync, readSync, realpathSync, writeFileSync } = require('node:fs');
+  readlinkSync, readSync, realpathSync, writeFileSync, writeSync, fsyncSync, mkdirSync, existsSync } = require('node:fs');
 const { createRequire } = require('node:module');
 const { createServer } = require('node:net');
 const path = require('node:path');
 
-function acceptanceRegistryServer(runtime, socketPath, bindings, namespaceObservation, ociNamespaceObservation) {
+function acceptanceRegistryServer(runtime, socketPath, bindings, namespaceObservation, ociNamespaceObservation, ociAnchorCreation) {
   const parent = lstatSync(path.dirname(socketPath));
   if (!parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o077)) {
     throw new Error('Acceptance control requires an owner-private directory');
@@ -41,6 +41,10 @@ function acceptanceRegistryServer(runtime, socketPath, bindings, namespaceObserv
         if (request.version === 1 && fields === 'kind,version'
             && request.kind === 'oci-sdk-namespace-readback') {
           socket.end(JSON.stringify(await ociNamespaceObservation()) + '\n');
+          return;
+        }
+        if (request.version === 1 && request.kind === 'oci-sdk-anchor-create') {
+          socket.end(JSON.stringify(await ociAnchorCreation(request)) + '\n');
           return;
         }
         if (request.version !== 1 || fields !== 'artifactBase64,artifactSha256,key,version') {
@@ -315,6 +319,211 @@ async function observeOciSdkNamespace(runtime, load, options, configurationBytes
   };
 }
 
+function ociDecodeBytes(encoded, digest, maximum) {
+  if (typeof encoded !== 'string' || encoded.length > Math.ceil(maximum / 3) * 4
+      || !/^[0-9a-f]{64}$/.test(digest)) {
+    throw new Error('OCI original encoding exceeds its bound');
+  }
+  const bytes = Buffer.from(encoded, 'base64');
+  if (bytes.length > maximum || bytes.toString('base64') !== encoded
+      || createHash('sha256').update(bytes).digest('hex') !== digest) {
+    throw new Error('OCI original bytes differ');
+  }
+  return bytes;
+}
+
+function ociAnchorOriginal(originalBytes) {
+  if (!Buffer.from(originalBytes.toString('utf8'), 'utf8').equals(originalBytes)) {
+    throw new Error('OCI anchor original is not exact UTF-8');
+  }
+  const original = JSON.parse(originalBytes.toString('utf8'));
+  const canonical = JSON.stringify(Object.fromEntries(Object.keys(original).sort()
+    .map(field => [field, original[field]]))) + '\n';
+  if (!Buffer.from(canonical).equals(originalBytes)) {
+    throw new Error('OCI anchor original is not exact canonical JSON');
+  }
+  const fields = 'expiresAt,issuedAt,namespaceObservationBase64,namespaceObservationSha256,payloadBase64,payloadByteSize,payloadSha256,runId,version';
+  if (Object.keys(original).sort().join(',') !== fields || original.version !== 1
+      || typeof original.runId !== 'string' || !/^[0-9a-f]{32}$/.test(original.runId)
+      || typeof original.issuedAt !== 'string' || typeof original.expiresAt !== 'string'
+      || !/^[1-9][0-9]{0,11}$/.test(original.issuedAt)
+      || !/^[1-9][0-9]{0,11}$/.test(original.expiresAt)
+      || Number(original.expiresAt) <= Number(original.issuedAt)
+      || Number(original.expiresAt) - Number(original.issuedAt) > 30) {
+    throw new Error('OCI anchor original differs from its closed scope');
+  }
+  const payload = ociDecodeBytes(original.payloadBase64, original.payloadSha256, 1024);
+  if (payload.length === 0 || original.payloadByteSize !== String(payload.length)) {
+    throw new Error('OCI anchor payload length differs');
+  }
+  const namespaceBytes = ociDecodeBytes(original.namespaceObservationBase64,
+    original.namespaceObservationSha256, 16384);
+  return { original, payload, namespace: JSON.parse(namespaceBytes.toString('utf8')) };
+}
+
+function ociPersistBytes(filename, bytes) {
+  const descriptor = openSync(filename, constants.O_WRONLY | constants.O_CREAT
+    | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    let offset = 0;
+    while (offset < bytes.length) offset += writeSync(descriptor, bytes, offset, bytes.length - offset);
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+  const directory = openSync(path.dirname(filename), constants.O_RDONLY
+    | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    fsyncSync(directory);
+  } finally {
+    closeSync(directory);
+  }
+}
+
+function ociAnchorIdentity(object, key, expectedSize) {
+  if (!object || object.key !== key || object.size !== expectedSize
+      || typeof object.version !== 'string' || !/^[0-9a-f]{32}$/.test(object.version)
+      || typeof object.httpEtag !== 'string' || !/^"[0-9a-f]{32}"$/.test(object.httpEtag)) {
+    throw new Error('OCI anchor SDK returned a different positive incarnation');
+  }
+  return { key, provider_version: object.version, etag: object.httpEtag, size: object.size };
+}
+
+async function ociAnchorBody(object, maximum, current) {
+  if (!object.body || typeof object.body.getReader !== 'function') {
+    throw new Error('OCI conditional read returned no body');
+  }
+  const reader = object.body.getReader();
+  const chunks = [];
+  let byteSize = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      current();
+      if (done) break;
+      if (!(value instanceof Uint8Array) || value.byteLength === 0) {
+        throw new Error('OCI anchor stream returned an invalid chunk');
+      }
+      byteSize += value.byteLength;
+      if (byteSize > maximum) throw new Error('OCI anchor read exceeds its bound');
+      chunks.push(Buffer.from(value));
+    }
+    return Buffer.concat(chunks, byteSize);
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function createOciSdkAnchor(runtime, options, request, namespaceObservation) {
+  if (!options.ociAnchorEnabled || Object.keys(request).sort().join(',')
+      !== 'kind,originalBase64,originalSha256,version'
+      || request.version !== 1 || request.kind !== 'oci-sdk-anchor-create') {
+    throw new Error('OCI anchor effect requires explicit isolated fixture selection');
+  }
+  const originalBytes = ociDecodeBytes(request.originalBase64, request.originalSha256, 32768);
+  const { original, payload, namespace } = ociAnchorOriginal(originalBytes);
+  let lastClock = Number(original.issuedAt);
+  const current = () => {
+    const now = Math.floor(Date.now() / 1000);
+    if (now < lastClock || now < Number(original.issuedAt) || now >= Number(original.expiresAt)) {
+      throw new Error('OCI anchor original clock expired or moved backward');
+    }
+    lastClock = now;
+  };
+  current();
+  const observed = await namespaceObservation();
+  current();
+  const fields = Object.keys(observed).sort();
+  if (Object.keys(namespace).sort().join(',') !== fields.join(',')
+      || fields.some(field => field !== 'observedAt' && namespace[field] !== observed[field])
+      || observed.observationScope !== 'oci_sdk_emulator_namespace_readback'
+      || !/^oci-sdk-qualification-[0-9a-f]{32}$/.test(observed.namespaceId)) {
+    throw new Error('OCI anchor namespace differs from the retained dedicated mapping');
+  }
+  const root = options.resourcePersistencePath;
+  const rootMetadata = lstatSync(root);
+  if (!rootMetadata.isDirectory() || rootMetadata.uid !== process.getuid()
+      || (rootMetadata.mode & 0o077) || realpathSync(root) !== root) {
+    throw new Error('OCI anchor persistence custody differs');
+  }
+  const journalRoot = path.join(root, 'oci-sdk-anchor-journal');
+  if (!existsSync(journalRoot)) {
+    mkdirSync(journalRoot, { mode: 0o700 });
+    const parent = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      fsyncSync(parent);
+    } finally {
+      closeSync(parent);
+    }
+  }
+  const journalMetadata = lstatSync(journalRoot);
+  if (!journalMetadata.isDirectory() || journalMetadata.uid !== process.getuid()
+      || (journalMetadata.mode & 0o077) || realpathSync(journalRoot) !== journalRoot) {
+    throw new Error('OCI anchor journal custody differs');
+  }
+  const journal = path.join(journalRoot, original.runId);
+  // An existing run, including an unknown original, never dispatches again.
+  mkdirSync(journal, { mode: 0o700 });
+  ociPersistBytes(path.join(journal, 'original.json'), originalBytes);
+  const parent = openSync(journalRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    fsyncSync(parent);
+  } finally {
+    closeSync(parent);
+  }
+
+  const key = `.aos-oci-sdk-qualification/${original.runId}/anchor`;
+  const invocations = { put: 0, get: 0 };
+  let outcome;
+  try {
+    current();
+    const bucket = await runtime.getR2Bucket(observed.bindingName, observed.workerName);
+    current();
+    invocations.put++;
+    const written = await bucket.put(key, payload, {
+      onlyIf: { etagDoesNotMatch: '*' }, sha256: original.payloadSha256,
+    });
+    current();
+    if (written === null) {
+      outcome = { version: 1, status: 'refused', reason: 'conditional_create_refused' };
+    } else {
+      const positive = ociAnchorIdentity(written, key, payload.length);
+      current();
+      invocations.get++;
+      const read = await bucket.get(key, { onlyIf: { etagMatches: positive.etag } });
+      current();
+      const retained = ociAnchorIdentity(read, key, payload.length);
+      if (JSON.stringify(retained) !== JSON.stringify(positive)) {
+        throw new Error('OCI anchor changed between conditional effects');
+      }
+      const bytes = await ociAnchorBody(read, payload.length, current);
+      current();
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      if (bytes.length !== payload.length || sha256 !== original.payloadSha256) {
+        throw new Error('OCI anchor full read differs from its original');
+      }
+      outcome = { version: 1, status: 'observed', anchor: { object: positive, sha256 } };
+    }
+  } catch {
+    // No error proves absence after a possible dispatch. Keep the original,
+    // known objects and unknown effects; status never resumes or deletes them.
+    outcome = { version: 1, status: 'unknown', reason: 'no_complete_positive_receipt' };
+  }
+  const completedAt = new Date().toISOString();
+  if (outcome.status === 'observed'
+      && Date.parse(completedAt) >= Number(original.expiresAt) * 1000) {
+    outcome = { version: 1, status: 'unknown', reason: 'no_complete_positive_receipt' };
+  }
+  const receipt = { ...outcome, runId: original.runId, originalSha256: request.originalSha256,
+    namespaceObservationSha256: original.namespaceObservationSha256,
+    completedAt, sdkInvocations: invocations };
+  ociPersistBytes(path.join(journal, 'receipt.json'), Buffer.from(JSON.stringify(receipt) + '\n'));
+  return receipt;
+}
+
 async function main() {
   const [toolingRoot, configurationPath] = process.argv.slice(2);
   if (!toolingRoot || !configurationPath) {
@@ -332,7 +541,7 @@ async function main() {
   const configurationBytes = readFileSync(configurationPath);
   const {
     certificatePath, privateKeyPath, queueObservationPath, namespaceObservationPath,
-    acceptanceSocketPath, ociSdkNamespaceObservation, ...options
+    acceptanceSocketPath, ociSdkNamespaceObservation, ociSdkAnchorEnabled, ...options
   } = JSON.parse(configurationBytes);
   const queueOptions = QueuesOptionsSchema.parse(options);
   if (queueObservationPath && 'maxConcurrentInvocations' in QueueConsumerOptionsSchema.shape) {
@@ -416,6 +625,10 @@ async function main() {
         runtime, acceptanceSocketPath, options.bindings, namespaceObservation,
         () => observeOciSdkNamespace(runtime, load, options, configurationBytes,
           ociSdkNamespaceObservation, configurationPath),
+        request => createOciSdkAnchor(runtime, { ...options,
+          ociAnchorEnabled: ociSdkAnchorEnabled === true }, request,
+          () => observeOciSdkNamespace(runtime, load, options, configurationBytes,
+            ociSdkNamespaceObservation, configurationPath)),
       );
       await acceptanceServer.ready;
     }
@@ -449,4 +662,4 @@ if (require.main === module) {
 
 module.exports = { acceptanceRegistryServer, observeOciSdkNamespace, ociLocalR2Selection,
   ociHashFile, ociProcessIdentity, ociWorkerdIdentity, ociMiniflareImplementation,
-  ociNamespaceObjectId, OCI_MINIFLARE_PIN };
+  ociNamespaceObjectId, createOciSdkAnchor, ociAnchorOriginal, OCI_MINIFLARE_PIN };
