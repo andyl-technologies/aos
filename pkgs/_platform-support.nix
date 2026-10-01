@@ -539,6 +539,7 @@ let
     "aos-ebpf-net-policy"
     "aos-fuse-transport"
     "aos-filesystem-fuse-worker"
+    "aos-git-helper"
     "aos-landlock"
     "aos-method46-tpm-helper"
     "aos-netd"
@@ -1166,6 +1167,7 @@ let
     "tests/_aos-test-agent-config/module.nix" = "linux-only-test-source";
     "tests/_config-module-smoke/module.nix" = "linux-only-test-source";
     "tests/_config-module-smoke/private.nix" = "linux-only-test-source";
+    "tools/_aos-git-helper/helper.c" = "linux-only-build-source";
     "tools/_conntrackd-config/module.nix" = "linux-only-config-source";
     "tools/_rsyncd-config/module.nix" = "linux-only-config-source";
     "tools/_uv-darwin/security.tbd" = "target-independent-source";
