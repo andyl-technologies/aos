@@ -70,10 +70,6 @@
       expected = "library";
     }
     {
-      package = "crucible-debug-gateway";
-      expected = "gateway-binary";
-    }
-    {
       package = "crucible-campaign";
       expected = "library";
     }

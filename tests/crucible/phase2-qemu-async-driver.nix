@@ -221,6 +221,10 @@
     ]
     ++ failuresFor "crates/crucible-qemu/src/node.rs" nodeLib [
       {
+        label = "QMP save timeout reaps the indeterminate process";
+        needle = "qemu_node_qmp_timeout_terminates_indeterminate_save_job";
+      }
+      {
         label = "node owns async policy";
         needle = "async_policy: QemuAsyncDriverPolicy";
       }
@@ -251,10 +255,6 @@
       {
         label = "node timeout crash test";
         needle = "qemu_node_timeout_reports_crash_and_runs_shutdown";
-      }
-      {
-        label = "node QMP timeout crash test";
-        needle = "qemu_node_qmp_timeout_terminates_indeterminate_save_job";
       }
       {
         label = "QMP channel timeout classification";

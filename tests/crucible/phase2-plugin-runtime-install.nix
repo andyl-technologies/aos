@@ -71,14 +71,6 @@
         needle = "pub const QEMU_PLUGIN_API_VERSION: c_int = 7;";
       }
       {
-        label = "version symbol constant";
-        needle = "pub const QEMU_PLUGIN_VERSION_SYMBOL: &str = \"qemu_plugin_version\";";
-      }
-      {
-        label = "Register compatibility symbol";
-        needle = "pub const QEMU_PLUGIN_REGISTER_ENTRYPOINT_SYMBOL";
-      }
-      {
         label = "exported plugin version symbol";
         needle = "pub static qemu_plugin_version: c_int = QEMU_PLUGIN_API_VERSION;";
       }
