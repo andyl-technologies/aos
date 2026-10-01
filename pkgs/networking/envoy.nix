@@ -2142,7 +2142,7 @@ in
 
       config-module = testing.mkVMTest {
         name = "networking-envoy-config-module";
-        rootfsDeps = [self];
+        rootfsDeps = [self renderedBootstrap];
         testScript = ''
           envoy --mode validate --config-path ${renderedBootstrap}
           ${pkgs.grep}/bin/grep -q 'envoy-check' ${renderedBootstrap}

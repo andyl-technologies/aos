@@ -84,6 +84,7 @@ in
         libs = ["-llmdb"];
         testSource = ''
           #include <lmdb.h>
+          #include <stddef.h>
 
           int main(void) {
               MDB_env *environment = NULL;

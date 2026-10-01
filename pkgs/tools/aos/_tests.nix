@@ -86,6 +86,9 @@ in {
       pkgs.git
     ];
     testScript = ''
+      mkdir -p /tmp/proj
+      printf '{}\n' > /tmp/proj/default.nix
+      export AOS_ROOT=/tmp/proj
       echo "==> Testing aos describe"
       ${self}/bin/aos describe
       echo "==> aos describe passed"
@@ -99,8 +102,10 @@ in {
     ];
     testScript = ''
       mkdir -p /tmp/proj
+      printf '{}\n' > /tmp/proj/default.nix
+      export AOS_ROOT=/tmp/proj
       cat > /tmp/proj/test.nix << 'EOF'
-      { pkgs }: pkgs.hello
+      {pkgs}: pkgs.hello
       EOF
 
       echo "==> Testing aos fmt --check on valid file"

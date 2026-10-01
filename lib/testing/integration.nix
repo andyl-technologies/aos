@@ -19,12 +19,13 @@
   lib,
   mkVMTest,
 }: let
-  bootstrapTools = pkgs.bootstrapTools;
+  libc = pkgs.glibc;
+  libcDev = libc.dev or libc;
 
   # Helper: build colon-separated paths for C_INCLUDE_PATH, LIBRARY_PATH,
   # and LD_LIBRARY_PATH from a list of packages.
-  # Automatically includes bootstrap tools' glibc headers and libraries
-  # so that the raw gcc from bootstrap tools can find standard headers.
+  # Automatically includes the split glibc headers and libraries
+  # so that the source-built compiler can find standard headers.
   makeIncludePath = deps:
     builtins.concatStringsSep ":" (
       builtins.concatMap (
@@ -33,7 +34,7 @@
         in ["${base}/include"]
       )
       deps
-      ++ ["${builtins.toString bootstrapTools}/include-glibc"]
+      ++ ["${libcDev}/include"]
     );
 
   makeLibraryPath = deps:
@@ -44,7 +45,7 @@
         in ["${base}/lib"]
       )
       deps
-      ++ ["${builtins.toString bootstrapTools}/lib"]
+      ++ ["${libc}/lib"]
     );
 
   # -------------------------------------------------------------------------
