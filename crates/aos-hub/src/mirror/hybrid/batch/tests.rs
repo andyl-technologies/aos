@@ -190,12 +190,17 @@ async fn fixture() -> (
         .register_registry("mirror-phase-tests", &[], false)
         .await
         .unwrap();
-    db.create_mirror_source(
+    // Positive controller fixtures use the same explicit default ref selection
+    // as public mirror configuration, rather than the legacy SQL empty default.
+    db.set_registry_mirror(
         registry_id,
         "https://upstream.example.invalid/registry/",
+        "refs/*",
+        "",
         "full",
-        false,
+        "allow_unsigned",
         3600,
+        None,
     )
     .await
     .unwrap();
