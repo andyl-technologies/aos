@@ -441,8 +441,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   create-once slot, and portable projection precedes logical caches. Existing
   collector observation and checkpoint anchors remain intact. All five adopted
   files pass source formatting and match the qualified candidate except for
-  those preserved anchors. Child implementation integration and the full trunk
-  gate set remain pending; this adoption does not qualify a task merge.
+  those preserved anchors. Seven shared children now implement sealed checked
+  transitions, protected control reads, registered-profile input, portable
+  projection, exact read receipts, consecutive chain resolution and raw
+  successor validation. Their complete source review checks held identity,
+  whole preimages, absent-name history, opaque Notes and unchanged burn ownership;
+  all seven match both qualified bucket and collector graphs and pass scoped
+  source formatting. Activation, task-owned tests and complete native graph
+  integration remain pending, as does the full trunk gate set; these shared
+  prerequisite adoptions do not qualify a task merge.
   Qualification exposed
   an overwrite fixture still targeting the previous rename primitive and three
   fixtures retaining their own namespace receipts while waiting to reacquire.
