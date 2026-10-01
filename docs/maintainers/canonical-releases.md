@@ -174,6 +174,25 @@ plan. Every porcelain command accepts `--config PATH` to select the
 commands that act on a release select the most recently created release under
 the configuration's `work_root`; `new` defaults to `<work_root>/<release_id>`.
 
+### Release tooling environment
+
+The coordinator never reads its own store path or the qualification
+executors from the maintainer configuration. Both come from the installed
+tooling closure, the flake's `release-tooling` package: its `bin/aos`
+wrapper exports `AOS_RELEASE_TOOLING` naming the closure, and the closure
+carries one executor per platform it can qualify at
+`libexec/aos-release/executors/<platform>/{run,identity}`. Enter it with
+`nix develop .#release`, or install it as the `aos` every coordinator
+service wrapper runs.
+
+Without the wrapper, `aos maintain release` falls back to the `/nix/store/<name>`
+root containing its own executable. A binary outside the store, such as a
+development `cargo build`, has no closure: it can inspect state, but `new`,
+`advance`, and every qualification step refuse to run from it. The closure
+path is the `tooling` fitness binding, so all maintainer roles on a machine
+must run the same closure or the restore check's attestation will not match
+the operator's release.
+
 ### Maintainer configuration
 
 The porcelain reads one `aos.release.maintainer-config/v1` TOML file: the path
@@ -192,7 +211,6 @@ contributor_authorization = "/etc/aos-release/release-contributor-authorization.
 retention_policy = "/etc/aos-release/release-retention-policy.md"
 restricted_operator_policy = "/etc/aos-release/restricted-operator-policy.md"
 predecessor_bundle = "/var/lib/aos-release-coordinator/predecessor"
-tooling_closure = "/nix/store/...-aos"
 trusted_keys = ["release-evidence-v1=/etc/aos-release/keys/release-evidence-v1.pub"]
 
 [git]
@@ -241,10 +259,6 @@ root = "/etc/aos-release/tuf/root.json"
 trusted_root_keys = ["root-v1=/etc/aos-release/keys/root-v1.pub"]
 trusted_root_threshold = 1
 
-[executors.x86_64-linux]
-path = "/nix/store/...-qualification-executor-x86_64-linux/bin/run"
-identity = "aos-x86_64-linux-qualification-v1"
-
 [reviewer]
 key_id = "release-evidence-v1"
 public_key = "/etc/aos-release/keys/release-evidence-v1.pub"
@@ -265,7 +279,6 @@ destination = "oncall@example.org"
 | `retention_policy` | Retention policy document whose digest the plan binds |
 | `restricted_operator_policy` | Restricted operator policy whose digest the plan binds without publishing it |
 | `predecessor_bundle` | Verified signed bundle of the preceding release, used for the qualification predecessor, image update cases, and change scoping |
-| `tooling_closure` | Store path of the installed `aos` tooling; its digest is the `tooling` fitness binding |
 | `trusted_keys` | Independently obtained `KEY_ID=PATH` manifest verification keys |
 | `git.name`, `git.email` | Required public author and committer of the registry release commit and tag. Both are published in the registry; use the maintaining organization's release identity, not a person's. The name may not contain control characters or angle brackets, and the email must be one address |
 | `surfaces.<role>.kind` | `hub` or `static` |
@@ -284,14 +297,12 @@ destination = "oncall@example.org"
 | `signer.roles.<role>.keys`, `threshold` | Multi-key form: a list of `{key_id, public_key, verification_identity}` tables and the number of distinct signatures required (default 1). Use either this form or the single-key form, not both |
 | `signer.roles.<role>.provider_revision` | Provider policy revision for this role; overrides `signer.provider_revision` |
 | `tuf.root`, `tuf.trusted_root_keys`, `tuf.trusted_root_threshold` | Authenticated current TUF root and its independent trust inputs |
-| `executors.<platform>.path`, `identity` | Installed qualification executor and its expected identity, one table per applicable platform |
 | `reviewer.key_id`, `public_key` | Release-evidence key used by `aos maintain release review` and, when present, by `aos maintain release fitness run` |
 | `alert.program`, `alert.destination` | Alert delivery program and on-call destination; the section's digest is the `alert-config` fitness binding |
 
-`predecessor_bundle`, `tooling_closure`, `trusted_keys`, `[tuf]`,
-`[executors]`, `[reviewer]`, and `[alert]` may be omitted; a command that needs
-an omitted value refuses to run. The two surfaces must have different
-identities.
+`predecessor_bundle`, `trusted_keys`, `[tuf]`, `[reviewer]`, and `[alert]`
+may be omitted; a command that needs an omitted value refuses to run. The two
+surfaces must have different identities.
 
 Every `*_credential` key resolves to `$CREDENTIALS_DIRECTORY/<name>` or an
 absolute path, is read without following links, and is trimmed. No secret
@@ -533,7 +544,8 @@ destinations.
 Binding values come from the configuration: `surface` and `hub-schema` from
 `[surfaces.production]` and its live deployment, `signer-roster` from the
 `[signer.roles]` tables that `new` freezes into each plan's signer list,
-`tooling` from `tooling_closure`, and `alert-config` from `[alert]`. The
+`tooling` from the [release tooling environment](#release-tooling-environment),
+and `alert-config` from `[alert]`. The
 maintainer machine's restore-check and alert-check services call
 `fitness run` for the automated kinds.
 
@@ -1512,9 +1524,9 @@ each required target, then install the canonical assessment object as
 `/etc/aos-release/qualification-assessments/<target-id>.json` on the applicable
 Linux executor host. The built-in container lifecycle program refuses a
 missing, symlinked, or scope-mismatched assessment and records its own concrete
-execution inventory. Install the matching `qualification-executor-<platform>`
-flake output rather than copying an individual scenario script without its
-closure.
+execution inventory. Run the `release-tooling` closure that ships the
+matching executor rather than copying an individual scenario script without
+its closure.
 
 ```sh
 aos maintain release step qualify-run \

@@ -146,7 +146,9 @@ mutation capability resolve them. No second review round was used.
 
 ### Golden-image parity
 
-- [x] Define `containers/aos.nix` as the sole registered image.
+- [x] Define the `aos` base-container recipe (now
+  `modules/image/_container-definition.nix`, imported by each system's OCI
+  projection).
 - [x] Take package roots from
   `systems.server.config.environment.systemPackages` without copying the list.
 - [x] Assert exact package-root equality in pure evaluation.
