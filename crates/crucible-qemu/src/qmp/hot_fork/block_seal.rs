@@ -379,6 +379,31 @@ mod tests {
             parse_hot_fork_block_seal_state(&sealed, QmpCommandKind::HotForkBlockSeal).unwrap();
         assert!(receipt.seals(std::slice::from_ref(&request)));
 
+        // Native sealing acquires the barrier after its graph mutation. Its
+        // returned receipt must retain that authority before host capture.
+        for (field, value) in [
+            ("barrier-held", json!(false)),
+            ("barrier-quiescent", json!(false)),
+            ("barrier-generation", json!(0)),
+            ("receipt-generation", json!(0)),
+        ] {
+            let mut unretained = sealed.clone();
+            unretained[field] = value;
+            assert!(
+                parse_hot_fork_block_seal_state(&unretained, QmpCommandKind::HotForkBlockSeal)
+                    .is_err(),
+                "unretained native seal accepted: {field}"
+            );
+        }
+        for field in ["overlay-empty", "snapshot-read-only"] {
+            let mut writable = sealed.clone();
+            writable["sealed-roots"][0][field] = json!(false);
+            let receipt =
+                parse_hot_fork_block_seal_state(&writable, QmpCommandKind::HotForkBlockSeal)
+                    .unwrap();
+            assert!(!receipt.seals(std::slice::from_ref(&request)));
+        }
+
         sealed["sealed-roots"][0]["snapshot-file-inode"] = json!(35);
         let swapped =
             parse_hot_fork_block_seal_state(&sealed, QmpCommandKind::HotForkBlockSeal).unwrap();
