@@ -13,7 +13,7 @@ zstd.workspace = true
 blake3.workspace = true
 xattr = { version = "=1.6.1", optional = true }
 libc = { workspace = true, optional = true }
-rustix = { workspace = true, optional = true }
+rustix = { workspace = true, optional = true, features = ["process"] }
 
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }

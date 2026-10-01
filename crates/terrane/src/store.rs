@@ -10,6 +10,17 @@ compile_error!("CRATE-8: tokio and wasm are mutually exclusive I/O bindings");
 #[cfg(all(feature = "wasm", feature = "send"))]
 compile_error!("CRATE-7: wasm host futures do not support the send feature");
 
+#[cfg(feature = "std")]
+mod native_clock;
+#[cfg(feature = "std")]
+mod native_effect;
+#[cfg(feature = "std")]
+pub use native_clock::NativeEffectClock;
+#[cfg(all(feature = "std", test))]
+pub(crate) use native_effect::{EffectFault, EffectFaultProbe};
+#[cfg(feature = "std")]
+pub use native_effect::{NativeEffectFailure, NativeExclusion, NativeFsEffect};
+
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroU8;
@@ -596,6 +607,22 @@ pub trait Clock {
     /// a tick or compare it with wall time.
     fn monotonic(&self) -> Duration;
 
+    /// Retains this binding's exact clock state for queued native final checks.
+    ///
+    /// This optional synchronous hook returns an opaque owned adapter. It adds
+    /// no `Clone`, `Sync`, `Send`, or `'static` bound to this trait or to generic
+    /// clock consumers. The default refuses without effects.
+    ///
+    /// # Errors
+    /// Returns `Unsupported` when the binding cannot retain its actual state.
+    #[cfg(feature = "std")]
+    fn retain_native_clock(&self) -> std::io::Result<NativeEffectClock> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "retained native clock unavailable",
+        ))
+    }
+
     /// Waits for at least the requested elapsed duration through the host timer.
     ///
     /// A clock that supplies timestamps alone explicitly refuses timer use.
@@ -748,6 +775,44 @@ pub trait LocalFs {
             std::io::ErrorKind::Unsupported,
             "existing-only coordination locking unavailable",
         ))
+    }
+
+    /// Retains exclusion by duplicating an actual already held native guard.
+    ///
+    /// The opaque result has no public constructor or descriptor accessor. This
+    /// synchronous hook never borrows the guard across an await and adds no
+    /// `Sync`, `Clone`, or `'static` requirement to `Self::Lock`.
+    /// The default refuses without filesystem effects.
+    ///
+    /// # Errors
+    /// Returns `Unsupported` for bindings without retained native exclusion,
+    /// or an I/O error when duplicating the actual held descriptor fails.
+    fn retain_native_exclusion(&self, _held: &Self::Lock) -> std::io::Result<NativeExclusion> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "retained native exclusion unavailable",
+        ))
+    }
+
+    /// Consumes one privately fixed effect through native completion and durability.
+    ///
+    /// The effect owns its actual exclusions and owned final checks inside the
+    /// physical worker. Bindings must not forward its mutations to detached
+    /// child filesystem futures or release retained locks before durable sync.
+    /// The default refuses without filesystem effects.
+    ///
+    /// # Errors
+    /// Preserves genuine final-check rejection, physical I/O or sync failure,
+    /// worker failure, and `Unsupported` for bindings without retained execution.
+    async fn execute_retained_effect(
+        &self,
+        _effect: NativeFsEffect,
+    ) -> Result<(), NativeEffectFailure> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "retained native effects unavailable",
+        )
+        .into())
     }
 
     /// Reads a complete file.

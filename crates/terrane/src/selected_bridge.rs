@@ -8,6 +8,12 @@
 #[path = "guard/selected.rs"]
 pub(crate) mod native_guard;
 
+// This test-only descendant constructs typed deadline checks for effect mechanics
+// without exposing a production callback or authority factory.
+#[cfg(all(feature = "std", test))]
+#[path = "store/native_effect/final_check_tests.rs"]
+pub(crate) mod effect_test_checks;
+
 use crate::bucket::publication::SelectedObservation;
 use crate::store::StoreFailure;
 use terrane_core::gc::publication::{LogicalChange, PublicationProof, PublicationState};
@@ -19,6 +25,36 @@ type FinalCheck<'operation> = dyn Fn() -> Result<(), StoreFailure> + Send + Sync
 /// Retains genuine request checks without imposing native runtime bounds.
 #[cfg(not(feature = "send"))]
 type FinalCheck<'operation> = dyn Fn() -> Result<(), StoreFailure> + 'operation;
+
+/// Owns the genuine producer's final check without borrowing its operation.
+#[cfg(feature = "send")]
+type OwnedCheck = dyn Fn() -> Result<(), StoreFailure> + Send + Sync + 'static;
+
+/// Owns a final check for bindings whose runtime accepts non-Send futures.
+#[cfg(not(feature = "send"))]
+type OwnedCheck = dyn Fn() -> Result<(), StoreFailure> + 'static;
+
+#[cfg(feature = "send")]
+type SharedOwnedCheck = std::sync::Arc<OwnedCheck>;
+
+#[cfg(not(feature = "send"))]
+type SharedOwnedCheck = std::rc::Rc<OwnedCheck>;
+
+/// Retains an owned authority refresh constructed only by a genuine producer.
+#[derive(Clone)]
+pub(crate) struct OwnedFinalCheck {
+    check: SharedOwnedCheck,
+}
+
+impl OwnedFinalCheck {
+    /// Refreshes genuine requests against their retained clock, keys and limits.
+    ///
+    /// # Errors
+    /// Preserves current request or deadline rejection from the checked producer.
+    pub(crate) fn recheck(&self) -> Result<(), StoreFailure> {
+        (self.check)()
+    }
+}
 
 /// Binds one checked transition to its actual retained backend observations.
 ///

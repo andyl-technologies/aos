@@ -71,6 +71,12 @@ pub struct TokioClock;
 )]
 #[async_trait::async_trait]
 impl Clock for TokioClock {
+    fn retain_native_clock(&self) -> std::io::Result<super::NativeEffectClock> {
+        // TokioClock is stateless; all instances use the same native monotonic
+        // origin. Copying this exact injected binding retains the same clock.
+        Ok(super::NativeEffectClock::from_native_clock(*self))
+    }
+
     fn now(&self) -> SystemTime {
         SystemTime::now()
     }
@@ -197,6 +203,22 @@ pub struct TokioLocalFs;
 #[async_trait::async_trait]
 impl LocalFs for TokioLocalFs {
     type Lock = TokioFileLock;
+
+    fn retain_native_exclusion(
+        &self,
+        held: &Self::Lock,
+    ) -> std::io::Result<super::NativeExclusion> {
+        Ok(super::NativeExclusion::from_held_descriptor(
+            held._file.try_clone()?,
+        ))
+    }
+
+    async fn execute_retained_effect(
+        &self,
+        effect: super::NativeFsEffect,
+    ) -> Result<(), super::NativeEffectFailure> {
+        effect.execute_tokio().await
+    }
 
     async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>> {
         // Entropy-device I/O belongs to this native binding, and must not
