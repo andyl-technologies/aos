@@ -179,6 +179,10 @@ async fn upload_registry_publication_with_commit(
     printer: &Printer,
     commit: bool,
 ) -> Result<hub_types::RegistryPublication> {
+    let options = direct_upload::options(access);
+    // Local inventory failures belong to this invocation too. Keep the original
+    // counters alive before validation, admission, and the final commit.
+    let mut metrics_report = direct_upload::report_on_completion(&options);
     let pinned = match manifest {
         Some(manifest) => {
             let request = publication_manifest_request(manifest, registry)?;
@@ -187,10 +191,6 @@ async fn upload_registry_publication_with_commit(
         None => publication_from_root(root, registry)?,
     };
     let client = publication_client(access).await?;
-    let options = direct_upload::options(access);
-    // This scope includes admission errors and the final commit, so every
-    // reported counter comes from the original complete invocation.
-    let mut metrics_report = direct_upload::report_on_completion(&options);
     let discovery = aos_remote::discover_publication_transport(&client, &options).await?;
     if discovery.transfer_mode() == hub_types::direct_upload::DirectAdvertisedTransferMode::Legacy {
         metrics_report.suppress();
