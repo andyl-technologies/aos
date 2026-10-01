@@ -530,6 +530,8 @@ in {
       + builtins.readFile ./_hub-direct-review.py
       + builtins.readFile ./_hub-direct-bootstrap.py
       + builtins.readFile ./_hub-direct-authority.py
+      + builtins.readFile ./_hub-direct-shared-controls.py
+      + builtins.readFile ./_hub-direct-prebody.py
       + builtins.readFile ./_hub-direct-publisher.py
       + builtins.readFile ./_hub-direct-qualification.py
       + builtins.readFile ./_hub-direct-queue-restart.py
@@ -767,6 +769,9 @@ in {
               "issuerCertificateHost": "localhost", "fleetCaPem": ${builtins.toJSON caCertificate},
               "nativeDatabaseUrlFile": "/run/hybrid-bootstrap-credentials/database-url",
               "nativeStorageWorkKeyFile": "/run/credentials/@system/hybrid-fleet-storage-key",
+              "nativeIngressKeyFile": "/run/credentials/@system/hybrid-fleet-ingress-key",
+              "sharedControlInterpreter": "${pkgs.glibc}/lib/ld-linux-x86-64.so.2",
+              "sharedControlRuntimeRoots": ["${pkgs.glibc}", "${pkgs.openssl}", "${pkgs.sqlite}"],
               "parityTools": {
                   "coreutils": "${pkgs.coreutils}/bin", "jq": "${pkgs.jq}/bin/jq",
                   "sqlite": "${pkgs.sqlite}/bin/sqlite3", "tar": "${pkgs.tar}/bin/tar",

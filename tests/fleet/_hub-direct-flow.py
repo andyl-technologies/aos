@@ -684,6 +684,9 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
         "reviewerPublicKey", "privateStagePolicy", "providerPrefix", "providerReviewFile", "bindingPrefix",
     })
     inputs = initial_review["selection"]
+    shared_controls = install_direct_shared_controls(native, tools, artifacts)
+    prebody = run_direct_native_prebody_probes(native, tools, shared_controls)
+    retain_direct_flow("actual-native-prebody-window.json", prebody)
     worker_controls = initialize_direct_worker_controls(
         worker, tools["python"], tools["reviewer"], original_configuration, inputs["reviewerPublicKey"],
     )
@@ -776,5 +779,5 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     publication = run_external_direct_publication(client, native, worker, s3, tools, controls, credentials,
         authority, process, identity, acceptance)
     failures = run_direct_dependency_outages(client, native, worker, database_machine, tools, process)
-    return {"publication": publication, "queueRestart": queue_restart,
+    return {"publication": publication, "queueRestart": queue_restart, "nativePrebody": prebody,
             "dependencyFailures": failures}
