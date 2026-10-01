@@ -820,6 +820,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   commit, fork, independent branch commits, merge, registered merged checkout
   and fixed-commit checkout in 106.45 seconds within the original 120-second
   limit. This branch remains unmerged while aggregate qualification is red.
+  Its fresh feature matrix passes both 439-test core runs and 73 portable
+  native tests, then fails with 351 native passes and eight failures, including
+  a multiwriter join expiry. The release package builds, but its unchanged
+  full suite runs 802 tests: 786 pass, fourteen fail and two time out. Seven
+  shared ref operations expire under aggregate load; the CLI workflow and
+  descendant-policy regression exceed their unchanged 120-second limits.
+  The isolated workflow pass therefore does not establish package qualification.
   Strict native Clippy still fails on twenty production and two test dead-code
   diagnostics; the shared correction adds none. No Terrane ext4
   workflow artifact is present in the current tracked gate or workflow sources;
