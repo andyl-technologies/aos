@@ -6,6 +6,7 @@
 
 mod async_worker_barrier;
 mod block_barrier;
+mod block_seal;
 mod child_console;
 mod child_files;
 mod child_process;
@@ -30,6 +31,12 @@ pub use block_barrier::{
     QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
     QmpHotForkBlockBarrierState, QmpHotForkBlockSnapshotBinding,
     QmpHotForkBlockSnapshotBindingError, QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof,
+};
+pub(crate) use block_seal::parse_hot_fork_block_seal_state;
+pub use block_seal::{
+    QMP_HOT_FORK_BLOCK_SEAL_COMMAND, QMP_HOT_FORK_BLOCK_SEAL_SCHEMA_VERSION,
+    QMP_QUERY_HOT_FORK_BLOCK_SEAL_COMMAND, QmpHotForkBlockSealCandidate,
+    QmpHotForkBlockSealRequest, QmpHotForkBlockSealState, QmpHotForkBlockSealedRoot,
 };
 pub(crate) use child_console::parse_hot_fork_child_console_state;
 pub use child_console::{

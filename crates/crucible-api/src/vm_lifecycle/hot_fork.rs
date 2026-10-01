@@ -9,7 +9,9 @@
 
 use super::*;
 
+pub(super) mod disk_basis;
 mod resource_usage;
+use disk_basis::{ProductionVmHotForkDiskBasis, ProductionVmHotForkDiskCustody};
 pub use resource_usage::ProductionVmHotForkSourceWorldResourceUsage;
 
 const MAXIMUM_HOT_FORK_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -37,6 +39,7 @@ pub struct ProductionVmHotForkSourceWorld {
     lifecycle: Option<Box<ProductionVmLifecycleLoop>>,
     continuation: ProductionVmHotForkWorldContinuation,
     prepared: Vec<QemuNodeSetPreparedHotForkTemplate>,
+    disk_custody: BTreeMap<NodeId, Arc<ProductionVmHotForkDiskCustody>>,
 }
 
 impl ProductionVmHotForkSourceWorld {
@@ -112,6 +115,7 @@ impl ProductionVmHotForkSourceWorld {
         &mut self,
         node: &NodeId,
     ) -> Result<QemuNodeSetPreparedHotForkSource<'_>, SchedulerError> {
+        self.validate_source_ownership()?;
         let prepared = self
             .prepared
             .iter()
@@ -154,6 +158,7 @@ impl ProductionVmHotForkSourceWorld {
         T: Send,
         O: for<'a> Fn(QemuNodeSetPreparedHotForkSource<'a>, D) -> T + Send + Sync,
     {
+        self.validate_source_ownership()?;
         let lifecycle = self.lifecycle.as_deref_mut().ok_or_else(|| {
             hot_fork_boundary_error("production hot-fork source world lost its lifecycle owner")
         })?;
@@ -386,6 +391,37 @@ impl ProductionVmHotForkSourceWorld {
                         node.name
                     ))
                 })?;
+            if let Some(custody) = self.disk_custody.get(node) {
+                if self.continuation.disk_bases.get(node) != Some(custody.basis())
+                    || !custody.current()?
+                {
+                    return Err(hot_fork_boundary_error(format!(
+                        "prepared source `{}` lost its pinned disk basis",
+                        node.name
+                    )));
+                }
+                let state = lifecycle
+                    .inner
+                    .backend_mut()
+                    .query_hot_fork_disk_seal(node)
+                    .map_err(|error| {
+                        hot_fork_boundary_error(format!(
+                            "recheck prepared source `{}` native disk seal: {error}",
+                            node.name
+                        ))
+                    })?;
+                if !custody.native_current(&state) {
+                    return Err(hot_fork_boundary_error(format!(
+                        "prepared source `{}` native disk seal changed",
+                        node.name
+                    )));
+                }
+            } else if self.continuation.disk_bases.contains_key(node) {
+                return Err(hot_fork_boundary_error(format!(
+                    "prepared source `{}` lost its disk file custody",
+                    node.name
+                )));
+            }
         }
         Ok(())
     }
@@ -560,6 +596,7 @@ pub struct ProductionVmHotForkWorldContinuation {
     node_generations: BTreeMap<NodeId, u64>,
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
     immutable_root_images: BTreeMap<NodeId, ContentHash>,
+    disk_bases: BTreeMap<NodeId, ProductionVmHotForkDiskBasis>,
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
     active_host_io: BTreeMap<NodeId, QemuHostIoCheckpoint>,
@@ -592,6 +629,7 @@ impl ProductionVmHotForkWorldContinuation {
             node_generations: self.node_generations.clone(),
             node_service_states: self.node_service_states.clone(),
             immutable_root_images: self.immutable_root_images.clone(),
+            disk_bases: self.disk_bases.clone(),
             block_bindings: self.block_bindings.clone(),
             ninep_bindings: self.ninep_bindings.clone(),
             active_host_io: self.active_host_io.clone(),
@@ -691,6 +729,7 @@ impl ProductionVmHotForkWorldContinuation {
             || self.node_generations.keys().ne(node_ids.iter())
             || self.node_service_states.keys().ne(node_ids.iter())
             || self.immutable_root_images.keys().ne(node_ids.iter())
+            || self.disk_bases.keys().any(|node| !node_ids.contains(node))
             || self
                 .block_bindings
                 .keys()
@@ -853,6 +892,7 @@ impl ProductionVmHotForkWorldContinuation {
             config,
             checkpoint,
             immutable_root_images: self.immutable_root_images,
+            disk_bases: self.disk_bases,
             block_bindings: self.block_bindings,
             ninep_bindings: self.ninep_bindings,
             active_host_io: self.active_host_io,
@@ -991,6 +1031,201 @@ fn hot_fork_io_node_boundaries(
 }
 
 impl ProductionVmLifecycleLoop {
+    fn prepare_sealed_hot_fork_disk(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<
+        Option<(
+            ProductionVmHotForkDiskCustody,
+            crucible_qemu::QmpHotForkBlockSnapshotBinding,
+        )>,
+        SchedulerError,
+    > {
+        #[cfg(any(test, feature = "test-support"))]
+        if self
+            .node_leases
+            .get(node)
+            .is_some_and(|lease| lease.scripted_vmstate_only_hot_fork())
+        {
+            return Ok(None);
+        }
+        let launch = self.launch_configs.get(node).ok_or_else(|| {
+            hot_fork_boundary_error(format!(
+                "hot-fork node `{}` has no launch profile",
+                node.name
+            ))
+        })?;
+        if launch.root_image().is_none() {
+            return Ok(None);
+        }
+        let root_path = launch
+            .run_directory()
+            .join(crucible_qemu::DEFAULT_ROOT_OVERLAY_FILE_NAME);
+        let vmstate_path = launch
+            .run_directory()
+            .join(crucible_qemu::DEFAULT_VMSTATE_FILE_NAME);
+        let boot_path = launch
+            .root_image()
+            .ok_or_else(|| {
+                hot_fork_boundary_error("rooted hot-fork launch lost its authored boot image")
+            })?
+            .to_owned();
+        let expected_boot = *self.immutable_root_images.get(node).ok_or_else(|| {
+            hot_fork_boundary_error("rooted hot-fork node lost its authored boot-image hash")
+        })?;
+
+        let process = self
+            .inner
+            .backend()
+            .process_identity(node)
+            .map_err(|error| {
+                hot_fork_boundary_error(format!("read hot-fork source process: {error}"))
+            })?;
+        let first = self
+            .inner
+            .backend_mut()
+            .begin_hot_fork_disk_seal(node)
+            .map_err(|error| {
+                hot_fork_boundary_error(format!("pause and inventory hot-fork disk: {error}"))
+            })?;
+        if first.qemu_pid() != i64::from(process.process_id) || first.candidates().len() != 1 {
+            return Err(hot_fork_boundary_error(
+                "native disk inventory does not cover exactly the current root backend",
+            ));
+        }
+        let candidate = first.candidates()[0].clone();
+        if candidate.backend_name() != crucible_qemu::ROOT_DRIVE_ID
+            || candidate.root_node_name() != crucible_qemu::ROOT_OVERLAY_NODE_NAME
+            || candidate.file_path() != root_path
+        {
+            return Err(hot_fork_boundary_error(
+                "native writable root differs from the pinned launch disk",
+            ));
+        }
+
+        let overlay_node = format!("hf-root-{:x}", first.graph_mutation_generation());
+        let request =
+            crucible_qemu::QmpHotForkBlockSealRequest::new(candidate.clone(), overlay_node)
+                .map_err(|error| {
+                    hot_fork_boundary_error(format!(
+                        "construct exact hot-fork root request: {error}",
+                    ))
+                })?;
+        let lease = self.node_leases.get_mut(node).ok_or_else(|| {
+            hot_fork_boundary_error("hot-fork source lost its original generation lease")
+        })?;
+        let (detached, detached_path) = lease
+            .prepare_hot_fork_detached_root_overlay(
+                first.graph_mutation_generation(),
+                candidate.virtual_size(),
+            )
+            .map_err(|error| {
+                hot_fork_boundary_error(format!(
+                    "create guarded detached hot-fork overlay: {error}",
+                ))
+            })?;
+        self.inner
+            .backend_mut()
+            .add_hot_fork_detached_root_overlay(node, &request, &detached_path)
+            .map_err(|error| {
+                hot_fork_boundary_error(format!("register detached hot-fork overlay: {error}",))
+            })?;
+        let held = self
+            .inner
+            .backend_mut()
+            .hold_hot_fork_disk_seal_barrier(node)
+            .map_err(|error| {
+                hot_fork_boundary_error(format!("hold native block-drain barrier: {error}",))
+            })?;
+        if !held.held() {
+            return Err(hot_fork_boundary_error(
+                "native block-drain barrier did not retain its hold",
+            ));
+        }
+
+        let mut current = None;
+        for poll in 0..MAXIMUM_HOT_FORK_ROLLBACK_POLLS_PER_NODE {
+            let state = self
+                .inner
+                .backend_mut()
+                .query_hot_fork_disk_seal(node)
+                .map_err(|error| {
+                    hot_fork_boundary_error(
+                        format!("query held hot-fork block inventory: {error}",),
+                    )
+                })?;
+            if state.barrier_held() && state.barrier_quiescent() {
+                current = Some(state);
+                break;
+            }
+            if poll + 1 < MAXIMUM_HOT_FORK_ROLLBACK_POLLS_PER_NODE {
+                std::thread::sleep(HOT_FORK_ROLLBACK_POLL_INTERVAL);
+            }
+        }
+        let current = current.ok_or_else(|| {
+            hot_fork_boundary_error(
+                "native block-drain barrier did not become quiescent within the bounded wait",
+            )
+        })?;
+        if current.qemu_pid() != first.qemu_pid() || current.candidates() != first.candidates() {
+            return Err(hot_fork_boundary_error(
+                "writable-root inventory changed before native sealing",
+            ));
+        }
+        let sealed = self
+            .inner
+            .backend_mut()
+            .seal_hot_fork_disk_roots(node, &current, std::slice::from_ref(&request))
+            .map_err(|error| {
+                hot_fork_boundary_error(
+                    format!("install read-only current disk snapshot: {error}",),
+                )
+            })?;
+
+        let lease = self.node_leases.get(node).ok_or_else(|| {
+            hot_fork_boundary_error("sealed hot-fork source lost its original generation lease")
+        })?;
+        let snapshot = lease.open_checkpoint_root_overlay().map_err(|error| {
+            hot_fork_boundary_error(format!("open pinned sealed current root: {error}"))
+        })?;
+        let vmstate = lease.open_hot_fork_vmstate().map_err(|error| {
+            hot_fork_boundary_error(format!("open pinned parentless VMState: {error}"))
+        })?;
+        let boot = std::fs::File::open(&boot_path).map_err(|error| {
+            hot_fork_boundary_error(format!("open authored boot-image backing: {error}"))
+        })?;
+        let custody = ProductionVmHotForkDiskCustody::capture(
+            &sealed,
+            &request,
+            snapshot,
+            &root_path,
+            boot,
+            &boot_path,
+            expected_boot,
+            vmstate,
+            &vmstate_path,
+            detached,
+            &detached_path,
+        )?;
+        let latest = self
+            .inner
+            .backend_mut()
+            .query_hot_fork_disk_seal(node)
+            .map_err(|error| {
+                hot_fork_boundary_error(format!("recheck retained native disk seal: {error}",))
+            })?;
+        if !custody.native_current(&latest)
+            || !custody.current()?
+            || self.inner.backend().process_identity(node).ok() != Some(process)
+        {
+            return Err(hot_fork_boundary_error(
+                "sealed disk basis changed before template preparation",
+            ));
+        }
+        let binding = custody.snapshot_binding(&request)?;
+        Ok(Some((custody, binding)))
+    }
+
     /// Releases reaped child-world process loans before source-world recovery.
     ///
     /// This operation is valid after complete lifecycle shutdown and final
@@ -1118,7 +1353,7 @@ impl ProductionVmLifecycleLoop {
 
     fn prepare_hot_fork_source_world_from_continuation(
         mut self,
-        continuation: ProductionVmHotForkWorldContinuation,
+        mut continuation: ProductionVmHotForkWorldContinuation,
     ) -> Result<ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure>
     {
         let retained_nodes = continuation
@@ -1147,6 +1382,7 @@ impl ProductionVmLifecycleLoop {
         }
         let configuration = continuation.configuration().id();
         let event_log = self.inner.loop_impl().event_log().clone();
+        let mut disk_custody = BTreeMap::new();
         for node in &retained_nodes {
             let launch_resources = match self.launch_configs.get(node) {
                 Some(config) => config.resource_requirements(),
@@ -1170,16 +1406,73 @@ impl ProductionVmLifecycleLoop {
                     );
                 }
             };
+            let disk = match self.prepare_sealed_hot_fork_disk(node) {
+                Ok(disk) => disk,
+                Err(error) => {
+                    let mut rollback_targets = prepared
+                        .iter()
+                        .map(|token| HotForkRollbackTarget {
+                            node: token.node().clone(),
+                            template_generation: Some(token.template_generation()),
+                        })
+                        .collect::<Vec<_>>();
+                    rollback_targets.push(HotForkRollbackTarget {
+                        node: node.clone(),
+                        template_generation: None,
+                    });
+                    let mut rollback = rollback_hot_fork_sources(&mut self, &rollback_targets);
+                    // A native graph exchange can fail after committing. Even
+                    // a successful template abort cannot prove its detached
+                    // file and graph effects were fully unwound.
+                    if !rollback.nodes.contains(node) {
+                        rollback.nodes.push(node.clone());
+                    }
+                    rollback.diagnostics.insert(node.clone(), error.to_string());
+                    return Err(
+                        ProductionVmHotForkSourceWorldPreparationFailure::with_rollback(
+                            self,
+                            format!("seal retained source disk `{}`: {error}", node.name),
+                            rollback,
+                        ),
+                    );
+                }
+            };
+            let bindings = disk
+                .as_ref()
+                .map(|(custody, binding)| (custody.basis().clone(), binding.clone()));
+            if let Some((basis, _binding)) = &bindings {
+                continuation.disk_bases.insert(node.clone(), basis.clone());
+            }
+            let binding_storage = bindings.map(|(_basis, binding)| binding);
+            let binding_slice = binding_storage
+                .as_ref()
+                .map(std::slice::from_ref)
+                .unwrap_or(&[]);
             match self.inner.backend_mut().prepare_retained_hot_fork_template(
                 node,
                 configuration,
                 event_log.clone(),
                 launch_resources,
-                &[],
+                binding_slice,
                 MAXIMUM_HOT_FORK_RING_IMAGE_BYTES,
             ) {
-                Ok(token) => prepared.push(token),
+                Ok(token) => {
+                    if let Some((custody, _binding)) = disk {
+                        let custody = Arc::new(custody);
+                        self.retained_resource_owners
+                            .push(Box::new(Arc::clone(&custody)));
+                        disk_custody.insert(node.clone(), custody);
+                    }
+                    prepared.push(token);
+                }
                 Err(error) => {
+                    let had_disk = disk.is_some();
+                    if let Some((custody, _binding)) = disk {
+                        // Keep the original open inodes with the unresolved
+                        // lifecycle; rollback of PREPARE cannot discharge a
+                        // prior block graph mutation.
+                        self.retained_resource_owners.push(Box::new(custody));
+                    }
                     let mut rollback_targets = prepared
                         .iter()
                         .map(|token| HotForkRollbackTarget {
@@ -1194,7 +1487,13 @@ impl ProductionVmLifecycleLoop {
                         node: node.clone(),
                         template_generation: None,
                     });
-                    let rollback = rollback_hot_fork_sources(&mut self, &rollback_targets);
+                    let mut rollback = rollback_hot_fork_sources(&mut self, &rollback_targets);
+                    if had_disk && !rollback.nodes.contains(node) {
+                        // PREPARE can refuse after the native disk graph has
+                        // changed. Template rollback alone does not discharge
+                        // the seal or detached-overlay obligation.
+                        rollback.nodes.push(node.clone());
+                    }
                     return Err(
                         ProductionVmHotForkSourceWorldPreparationFailure::with_rollback(
                             self,
@@ -1231,6 +1530,7 @@ impl ProductionVmLifecycleLoop {
             lifecycle: Some(Box::new(self)),
             continuation,
             prepared,
+            disk_custody,
         };
         if let Err(error) = world.validate_source_ownership() {
             let message = error.to_string();
@@ -1404,6 +1704,7 @@ impl ProductionVmLifecycleLoop {
             node_generations: self.node_generations.clone(),
             node_service_states: self.node_service_states.clone(),
             immutable_root_images: self.immutable_root_images.clone(),
+            disk_bases: BTreeMap::new(),
             block_bindings: self.block_bindings.clone(),
             ninep_bindings: self.ninep_bindings.clone(),
             active_host_io,

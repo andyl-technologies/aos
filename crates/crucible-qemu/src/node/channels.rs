@@ -634,6 +634,66 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
         &mut self,
     ) -> Result<crate::QmpHotForkPluginBarrierState, QemuNodeChannelError>;
 
+    /// Holds the native graph writer and block-drain barrier before sealing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this channel cannot retain the actual native hold.
+    fn hold_hot_fork_block_barrier(
+        &mut self,
+    ) -> Result<crate::QmpHotForkBlockBarrierState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "hold hot-fork block barrier",
+            "native block barrier is unavailable",
+        ))
+    }
+
+    /// Reads the current writable roots and retained native seal receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the closed inventory cannot be authenticated.
+    fn query_hot_fork_block_seal(
+        &mut self,
+    ) -> Result<crate::QmpHotForkBlockSealState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query hot-fork block seal",
+            "native block seal is unavailable",
+        ))
+    }
+
+    /// Opens one guarded, empty qcow2 file as a detached graph node.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the QMP graph operation fails or is unavailable.
+    fn add_hot_fork_detached_root_overlay(
+        &mut self,
+        _request: &crate::QmpHotForkBlockSealRequest,
+        _file_path: &std::path::Path,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "add detached hot-fork overlay",
+            "native block seal is unavailable",
+        ))
+    }
+
+    /// Transactionally installs all detached overlays and reads its receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on native refusal or a mismatched retained receipt.
+    fn seal_hot_fork_block_roots(
+        &mut self,
+        _inventory: &crate::QmpHotForkBlockSealState,
+        _roots: &[crate::QmpHotForkBlockSealRequest],
+    ) -> Result<crate::QmpHotForkBlockSealState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "seal hot-fork block roots",
+            "native block seal is unavailable",
+        ))
+    }
+
     /// Starts or advances QEMU's retained hot-fork template transaction.
     ///
     /// # Errors

@@ -15,8 +15,8 @@ use crucible_api::{
     ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher, ProductionVmNodeLease,
 };
 use crucible_qemu::{
-    QemuLiveNodeIdentity, QemuNode, QemuPreparedRunDirectory, QemuProductionFreshLaunchAdmission,
-    launch_qemu_production_fresh_node,
+    QemuChildProcessContract, QemuLiveNodeIdentity, QemuNode, QemuPreparedRunDirectory,
+    QemuProductionFreshLaunchAdmission, launch_qemu_production_fresh_node,
 };
 
 use crate::{
@@ -117,6 +117,15 @@ where
             Err(error) => return Err(abort_unspawned_generation(lease, error)),
         };
         let process_contract = terminal_contract.as_ref().unwrap_or(attempt_contract);
+        let retained_contract = match process_contract.try_clone_for_attempt_generation() {
+            Ok(contract) => contract,
+            Err(error) => {
+                return Err(abort_unspawned_generation(
+                    lease,
+                    launcher_message(format!("retain exact generation contract: {error}")),
+                ));
+            }
+        };
         let atomic = match admission.into_atomic_restore(request, run_directory, process_contract) {
             Ok(atomic) => atomic,
             Err(error) => return Err(abort_unspawned_generation(lease, error)),
@@ -143,7 +152,14 @@ where
                 ));
             }
         };
-        self.record_launched_generation(request, lease, run_directory, node, run_directories)
+        self.record_launched_generation(
+            request,
+            lease,
+            run_directory,
+            node,
+            retained_contract,
+            run_directories,
+        )
     }
 
     fn launch_fresh_generation(
@@ -217,18 +233,28 @@ where
             request.router_name(),
             request.crash_detector(),
         );
-        let launched = {
+        let (launched, retained_contract) = {
             let process_contract = match self.owner.child_process_contract() {
                 Ok(contract) => contract,
                 Err(error) => return Err(abort_unspawned_generation(lease, error)),
             };
-            QemuProductionFreshLaunchAdmission::admit(
+            let retained_contract = match process_contract.try_clone_for_attempt_generation() {
+                Ok(contract) => contract,
+                Err(error) => {
+                    return Err(abort_unspawned_generation(
+                        lease,
+                        launcher_message(format!("retain fresh generation contract: {error}")),
+                    ));
+                }
+            };
+            let launched = QemuProductionFreshLaunchAdmission::admit(
                 &launch,
                 &run_directory,
                 process_contract,
                 identity,
             )
-            .and_then(|admission| launch_qemu_production_fresh_node(&launch, admission))
+            .and_then(|admission| launch_qemu_production_fresh_node(&launch, admission));
+            (launched, retained_contract)
         };
         let node = match launched {
             Ok(node) => node,
@@ -253,7 +279,14 @@ where
             }
         };
 
-        self.record_launched_generation(request, lease, run_directory, node, run_directories)
+        self.record_launched_generation(
+            request,
+            lease,
+            run_directory,
+            node,
+            retained_contract,
+            run_directories,
+        )
     }
 
     fn record_launched_generation(
@@ -262,6 +295,7 @@ where
         lease: QemuAttemptGenerationLease,
         run_directory: QemuPreparedRunDirectory,
         node: QemuNode,
+        process_contract: QemuChildProcessContract,
         run_directories: &mut BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
         let generation = lease.identity().clone();
@@ -271,6 +305,9 @@ where
         let lease = QemuLifecycleGenerationLease {
             inner: lease,
             run_directories: Arc::clone(&self.run_directories),
+            qemu_executable: request.launch().qemu_executable().to_path_buf(),
+            process_contract,
+            failed_image_helper: None,
             directory_released: false,
         };
 
@@ -411,7 +448,21 @@ where
 struct QemuLifecycleGenerationLease {
     inner: QemuAttemptGenerationLease,
     run_directories: Arc<Mutex<BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>>>,
+    qemu_executable: std::path::PathBuf,
+    process_contract: QemuChildProcessContract,
+    failed_image_helper: Option<crucible_qemu::QemuNodeChild>,
     directory_released: bool,
+}
+
+impl Drop for QemuLifecycleGenerationLease {
+    fn drop(&mut self) {
+        if let Some(child) = self.failed_image_helper.take() {
+            // The generation registry also marks this lease abandoned. Keep
+            // the unique wait handle alive while the aggregate stays in
+            // quarantine; dropping it would hide an unreaped helper.
+            let _retained_for_process_lifetime = Box::leak(Box::new(child));
+        }
+    }
 }
 
 impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
@@ -432,7 +483,63 @@ impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
             .map_err(|error| launcher_message(format!("open pinned checkpoint overlay: {error}")))
     }
 
+    fn open_hot_fork_vmstate(&self) -> Result<std::fs::File, LifecycleApiError> {
+        let run_directories = self
+            .run_directories
+            .lock()
+            .map_err(|_| launcher_message("QEMU generation run-directory registry is poisoned"))?;
+        let directory = run_directories.get(self.inner.identity()).ok_or_else(|| {
+            launcher_message("QEMU generation lost its retained run-directory authority")
+        })?;
+        directory
+            .open_vmstate_for_hot_fork()
+            .map_err(|error| launcher_message(format!("open pinned hot-fork VMState: {error}")))
+    }
+
+    fn prepare_hot_fork_detached_root_overlay(
+        &mut self,
+        graph_generation: u64,
+        virtual_size: u64,
+    ) -> Result<(std::fs::File, std::path::PathBuf), LifecycleApiError> {
+        if self.failed_image_helper.is_some() {
+            return Err(launcher_message(
+                "prior hot-fork image helper still owes process cleanup",
+            ));
+        }
+        let run_directories = self
+            .run_directories
+            .lock()
+            .map_err(|_| launcher_message("QEMU generation run-directory registry is poisoned"))?;
+        let directory = run_directories.get(self.inner.identity()).ok_or_else(|| {
+            launcher_message("QEMU generation lost its retained run-directory authority")
+        })?;
+        match directory.prepare_hot_fork_detached_root_overlay_guarded(
+            &self.qemu_executable,
+            &self.process_contract,
+            graph_generation,
+            virtual_size,
+        ) {
+            Ok(overlay) => Ok(overlay),
+            Err(mut error) => {
+                let message = error.to_string();
+                if let Some(child) = error.take_unreaped_child() {
+                    // An unreaped helper is retained with the source generation.
+                    // Its lease cannot finish and the aggregate guard quarantines.
+                    self.failed_image_helper = Some(child);
+                }
+                Err(launcher_message(format!(
+                    "prepare guarded hot-fork detached overlay: {message}"
+                )))
+            }
+        }
+    }
+
     fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        if self.failed_image_helper.is_some() {
+            return Err(launcher_message(
+                "hot-fork image helper still owes process cleanup",
+            ));
+        }
         if !self.directory_released {
             let mut run_directories = self.run_directories.lock().map_err(|_| {
                 launcher_message("QEMU generation run-directory registry is poisoned")

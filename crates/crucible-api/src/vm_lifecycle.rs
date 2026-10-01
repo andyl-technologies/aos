@@ -788,6 +788,7 @@ struct ProductionVmHotForkRestore {
     expected_times: BTreeMap<NodeId, VirtualTime>,
     adoptions: BTreeMap<NodeId, ProductionVmHotForkNodeAdoption>,
     immutable_root_images: BTreeMap<NodeId, ContentHash>,
+    disk_bases: BTreeMap<NodeId, hot_fork::disk_basis::ProductionVmHotForkDiskBasis>,
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
     active_host_io: BTreeMap<NodeId, QemuHostIoCheckpoint>,
@@ -797,6 +798,7 @@ struct ProductionVmHotForkRestoreParts {
     config: ProductionVmLifecycleConfig,
     checkpoint: ProductionVmExactCheckpointSet,
     immutable_root_images: BTreeMap<NodeId, ContentHash>,
+    disk_bases: BTreeMap<NodeId, hot_fork::disk_basis::ProductionVmHotForkDiskBasis>,
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
     active_host_io: BTreeMap<NodeId, QemuHostIoCheckpoint>,
@@ -1566,6 +1568,14 @@ pub trait ProductionVmNodeLease: Send {
     #[must_use]
     fn identity(&self) -> &ProductionVmNodeGeneration;
 
+    /// Identifies a scripted lease whose QMP boundary intentionally models
+    /// VMState-only preparation without a physical root file.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    fn scripted_vmstate_only_hot_fork(&self) -> bool {
+        false
+    }
+
     /// Opens the exact pinned root overlay for a stopped checkpoint capture.
     ///
     /// # Errors
@@ -1573,6 +1583,37 @@ pub trait ProductionVmNodeLease: Send {
     /// Returns [`LifecycleApiError`] if the generation cannot prove that the
     /// named overlay still matches its retained file authority.
     fn open_checkpoint_root_overlay(&self) -> Result<std::fs::File, LifecycleApiError>;
+
+    /// Duplicates the original pinned VMState inode for hot-fork custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this lease lacks authenticated VMState authority.
+    fn open_hot_fork_vmstate(&self) -> Result<std::fs::File, LifecycleApiError> {
+        Err(loop_factory_error(
+            "generation lease has no pinned hot-fork VMState authority",
+        ))
+    }
+
+    /// Creates an exclusively named empty qcow2 overlay under the generation's
+    /// original process contract and returns its pinned inode and path.
+    ///
+    /// The default refuses; only a lease retaining the guarded run directory
+    /// and source-built image tool can produce this physical file authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the generation cannot retain a bounded helper and
+    /// authenticate the resulting file, or if a prior attempt still owes cleanup.
+    fn prepare_hot_fork_detached_root_overlay(
+        &mut self,
+        _graph_generation: u64,
+        _virtual_size: u64,
+    ) -> Result<(std::fs::File, PathBuf), LifecycleApiError> {
+        Err(loop_factory_error(
+            "generation lease has no guarded detached-overlay authority",
+        ))
+    }
 
     /// Releases generation-specific authority after QEMU reap is attested.
     ///
@@ -2452,6 +2493,7 @@ where
         config,
         checkpoint,
         immutable_root_images,
+        disk_bases,
         block_bindings,
         ninep_bindings,
         active_host_io,
@@ -2466,6 +2508,7 @@ where
             expected_times,
             adoptions: adoptions_by_node,
             immutable_root_images,
+            disk_bases,
             block_bindings,
             ninep_bindings,
             active_host_io,

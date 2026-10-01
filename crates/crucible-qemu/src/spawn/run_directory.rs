@@ -1049,6 +1049,27 @@ impl QemuPreparedRunDirectory {
         Ok(File::from(overlay))
     }
 
+    /// Duplicates the pinned VMState container for stopped-source custody.
+    ///
+    /// The native block seal inventories device backends, while VMState is a
+    /// separate parentless writable node. The host retains and hashes its
+    /// original inode independently until child-private copying completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] if the named directory or VMState inode
+    /// differs from the prepared generation or the descriptor cannot be cloned.
+    pub fn open_vmstate_for_hot_fork(&self) -> Result<File, QemuSpawnError> {
+        self.revalidate_identity()?;
+        self.vmstate
+            .try_clone()
+            .map(File::from)
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "duplicate pinned hot-fork VMState container",
+                source,
+            })
+    }
+
     /// Invalidates destinations after any fork exchange without a success token.
     ///
     /// This operation can only remove launch authority. It is safe after an

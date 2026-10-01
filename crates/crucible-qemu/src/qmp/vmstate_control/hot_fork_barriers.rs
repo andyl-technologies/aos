@@ -224,6 +224,49 @@ where
             .map_err(QemuNodeChannelError::from)
     }
 
+    /// Reads current native writable roots and the retained seal receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns a channel error on QMP failure or malformed response.
+    pub fn query_hot_fork_block_seal(
+        &mut self,
+    ) -> Result<crate::QmpHotForkBlockSealState, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_block_seal()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Opens an already-guarded empty qcow2 file as a detached QEMU node.
+    ///
+    /// # Errors
+    ///
+    /// Returns a channel error on QMP failure.
+    pub fn add_hot_fork_detached_root_overlay(
+        &mut self,
+        request: &crate::QmpHotForkBlockSealRequest,
+        path: &std::path::Path,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .add_hot_fork_detached_root_overlay(request, path)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Installs all requested roots as one native graph transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns a channel error on native refusal or mismatched receipt.
+    pub fn seal_hot_fork_block_roots(
+        &mut self,
+        inventory: &crate::QmpHotForkBlockSealState,
+        roots: &[crate::QmpHotForkBlockSealRequest],
+    ) -> Result<crate::QmpHotForkBlockSealState, QemuNodeChannelError> {
+        self.client
+            .seal_hot_fork_block_roots(inventory, roots)
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Releases QEMU's retained all-block drain section.
     ///
     /// # Errors

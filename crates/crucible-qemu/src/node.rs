@@ -65,6 +65,9 @@ mod hot_fork_child_qmp;
 #[path = "node/hot_fork_diagnostics.rs"]
 mod hot_fork_diagnostics;
 #[cfg(target_os = "linux")]
+#[path = "node/hot_fork_disk.rs"]
+mod hot_fork_disk;
+#[cfg(target_os = "linux")]
 #[path = "node/hot_fork_operation.rs"]
 mod hot_fork_operation;
 #[cfg(target_os = "linux")]
