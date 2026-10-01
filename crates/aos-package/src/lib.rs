@@ -2933,8 +2933,8 @@ fn parse_system_transition_mode(reboot: bool) -> SystemTransitionMode {
 }
 
 const DEFAULT_SWITCH_HOST_NIX: &str = "/run/aos-metadata/host.nix";
-const DEFAULT_SWITCH_BASE_LIB: &str = "/aos-toplevel/base-lib";
-const DEFAULT_SWITCH_OS_RELEASE: &str = "/aos-toplevel/os-release";
+const DEFAULT_SWITCH_BASE_LIB: &str = "/usr/lib/aos/toplevel/base-lib";
+const DEFAULT_SWITCH_OS_RELEASE: &str = "/usr/lib/aos/toplevel/os-release";
 const DEFAULT_SYSTEM_GENERATION_PROFILE: &str = "/var/lib/profiles/system";
 
 fn resolve_switch_manifest(selector: Option<&str>, profile: &Path) -> Result<(PathBuf, String)> {

@@ -603,7 +603,7 @@ in {
           manifest = "/run/aos/manifest.json"
           base_lib = target.succeed(f"{JQ} -er '.inputs.base_lib.store_path' {manifest}").strip()
           evaluator = target.succeed(f"{JQ} -er '.inputs.evaluator.store_path' {manifest}").strip()
-          linked_base = target.succeed("readlink -f /aos-toplevel/base-lib").strip()
+          linked_base = target.succeed("readlink -f /usr/lib/aos/toplevel/base-lib").strip()
           assert base_lib == linked_base, (
               f"manifest base-lib {base_lib!r} != running base-lib {linked_base!r}"
           )
@@ -612,7 +612,7 @@ in {
               ("evaluator", evaluator, "bin/aos-package-runtime"),
           ):
               assert path.startswith("/nix/store/"), f"unsafe {label} path: {path!r}"
-              lower = "/nix.lower/store/" + path.removeprefix("/nix/store/")
+              lower = "/usr/lib/aos/nix/store/" + path.removeprefix("/nix/store/")
               target.succeed(f"test -e {lower}/{required}")
               root_dev = target.succeed("stat -c %d /").strip()
               lower_dev = target.succeed(f"stat -c %d {lower}/{required}").strip()
@@ -620,7 +620,7 @@ in {
                   f"{label} lower-store input is not on the verified root filesystem"
               )
           target.succeed(
-              f"test -s /nix.lower/store/{base_lib.removeprefix('/nix/store/')}/system-roots.json"
+              f"test -s /usr/lib/aos/nix/store/{base_lib.removeprefix('/nix/store/')}/system-roots.json"
           )
 
           return root_hash, data_devices[0], hash_devices[0], calculated_ready
@@ -865,15 +865,15 @@ in {
           # Exercise the public, identity-pinned generation verifier. The
           # verifier policy is a separate file even in this single-node test;
           # production callers supply these values from their fleet catalog.
-          immutable_top = target.succeed("readlink /aos-toplevel").strip()
+          immutable_top = target.succeed("readlink /usr/lib/aos/toplevel").strip()
           immutable_top_lower = (
-              "/nix.lower/store/" + immutable_top.removeprefix("/nix/store/")
+              "/usr/lib/aos/nix/store/" + immutable_top.removeprefix("/nix/store/")
           )
           immutable_seed = target.succeed(
               f"readlink {immutable_top_lower}/package-profile-seed"
           ).strip()
           immutable_seed_lower = (
-              "/nix.lower/store/" + immutable_seed.removeprefix("/nix/store/")
+              "/usr/lib/aos/nix/store/" + immutable_seed.removeprefix("/nix/store/")
           )
           seed_meta_paths = target.succeed(
               f"ls -1 {immutable_seed_lower}/meta/*.json"
@@ -902,7 +902,7 @@ in {
               ]
               assert len(matches) == 1, (package_name, matches)
               lower_store_path = (
-                  "/nix.lower/store/" + store_path.removeprefix("/nix/store/")
+                  "/usr/lib/aos/nix/store/" + store_path.removeprefix("/nix/store/")
               )
               target.succeed(f"test -e {lower_store_path}")
               actual_nar_hash = "sha256:" + target.succeed(

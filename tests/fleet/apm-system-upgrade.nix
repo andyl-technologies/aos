@@ -21,7 +21,7 @@
 # `extraClosures` pre-stages the entire server-2 closure onto the target's
 # disk, so `apm upgrade --system` finds every store path present and downloads
 # nothing. Two details are handled here:
-#   1. The full image ships `/aos-registration`, and aos-nix-db.service loads it
+#   1. The full image ships `/usr/lib/aos/nix-registration`, and aos-nix-db.service loads it
 #      at boot. That makes the pre-staged server-2 closure visible to
 #      `nix-store --check-validity` without manual test seeding.
 #   2. `apm upgrade --system` reads SYSTEM-scope registries

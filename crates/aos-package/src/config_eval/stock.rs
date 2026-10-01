@@ -856,7 +856,7 @@ impl RegistryConfigModules {
 }
 
 fn immutable_image_seed_catalog() -> Result<BTreeMap<String, crate::types::InstalledMeta>> {
-    let toplevel = std::fs::read_link("/aos-toplevel")
+    let toplevel = std::fs::read_link("/usr/lib/aos/toplevel")
         .context("reading the booted immutable toplevel link")?;
     let toplevel = toplevel
         .to_str()
