@@ -23,6 +23,7 @@ use aos_release::state::ReleaseState;
 use serde::Serialize;
 
 use super::super::access::{self, SignerNeed};
+use super::super::tooling::ToolingEnvironment;
 use super::super::{
     build, capture, channel, finalize, finalize_cache, finalize_image, finalize_registry,
     qualification_run, verify,
@@ -435,6 +436,9 @@ impl Driver<'_> {
             Vec::new()
         };
         let authority = keys::single(config, SignerRole::Qualification)?;
+        // Executors ship inside the installed tooling closure, never in the
+        // maintainer configuration; a development build cannot qualify.
+        let tooling = ToolingEnvironment::require()?;
         let predecessor_bundle = if admit {
             None
         } else {
@@ -458,8 +462,8 @@ impl Driver<'_> {
             predecessor_bundle,
             trusted_keys: keys::trusted(config)?,
             hub_receipt_keys: keys::receipt(config, receipt_role)?,
-            executors: executor_specs(config, |executor| executor.path.display().to_string())?,
-            executor_identities: executor_specs(config, |executor| executor.identity.clone())?,
+            executors: tooling.executor_specs(|executor| executor.path.display().to_string())?,
+            executor_identities: tooling.executor_specs(|executor| executor.identity.clone())?,
             executor_timeout_seconds: EXECUTOR_TIMEOUT_SECONDS,
             authority_executable: config.signer.executable.clone(),
             authority_key: keys::spec(&authority),
@@ -677,21 +681,6 @@ impl Driver<'_> {
         };
         channel::run(&ReleaseChannelCommand::Complete(args), self.printer).await
     }
-}
-
-/// Renders one `PLATFORM=VALUE` specification per configured executor.
-fn executor_specs(
-    config: &super::super::config::MaintainerConfig,
-    value: impl Fn(&super::super::config::ExecutorConfig) -> String,
-) -> Result<Vec<String>> {
-    if config.executors.is_empty() {
-        bail!("maintainer configuration has no [executors.<platform>] tables");
-    }
-    Ok(config
-        .executors
-        .iter()
-        .map(|(platform, executor)| format!("{platform}={}", value(executor)))
-        .collect())
 }
 
 /// Returns a fresh 32-byte lowercase hexadecimal nonce.
