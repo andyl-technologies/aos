@@ -163,7 +163,7 @@
     testSource,
     flags ? "-std=c++17",
   }: let
-    includePath = makeIncludePath deps;
+    includeFlags = builtins.concatStringsSep " " (builtins.map (dep: "-isystem ${dep}/include") deps);
     libraryPath = makeLibraryPath deps;
   in
     mkVMTest {
@@ -171,8 +171,9 @@
       rootfsDeps = [pkgs.gcc] ++ deps;
       memory = 512;
       testScript = ''
-                export C_INCLUDE_PATH="${includePath}:$C_INCLUDE_PATH"
-                export CPLUS_INCLUDE_PATH="${includePath}:$CPLUS_INCLUDE_PATH"
+                # libc must follow libstdc++ so its include_next directives work.
+                # Environment include paths would move libc ahead of those headers.
+                unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH
                 export LIBRARY_PATH="${libraryPath}:$LIBRARY_PATH"
                 export LD_LIBRARY_PATH="${libraryPath}:$LD_LIBRARY_PATH"
 
@@ -181,7 +182,8 @@
         TESTSRC
 
                 echo "==> Compiling C++ test program"
-                ${pkgs.gcc}/bin/g++ ${flags} -o /tmp/test /tmp/test.cpp
+                ${pkgs.gcc}/bin/g++ ${flags} ${includeFlags} \
+                  -idirafter ${libcDev}/include -o /tmp/test /tmp/test.cpp
                 echo "==> Running test program"
                 /tmp/test
                 echo "==> Test program exited successfully"
