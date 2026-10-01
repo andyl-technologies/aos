@@ -182,9 +182,14 @@ mod tests {
         console_router, route_manifest, ConsoleRouteMatched, RouteMethods,
     };
     use axum::http::StatusCode;
+    use tokio::sync::Mutex;
     use tower::ServiceExt as _;
 
     use super::*;
+
+    // Independent simulated Workers share the renderer's process-wide chrome.
+    // Keep each instance's settings refreshes and assertions in one sequence.
+    static SITE_PRESENTATION: Mutex<()> = Mutex::const_new(());
 
     fn worker_rpc_service(state: &Arc<aos_hub::server::AppState>) -> RpcService {
         let surface: Arc<dyn SurfaceProvider> = Arc::new(
@@ -229,6 +234,8 @@ mod tests {
         use aos_hub_core::oci::{OciRequest, ResolvedOciRoute};
         use aos_oci_types::{RepositoryName, Sha256Digest};
         use aos_proto_types as pb;
+
+        let _presentation = SITE_PRESENTATION.lock().await;
 
         let db = Arc::new(aos_hub_core::db::Database::open_in_memory().await.unwrap());
         let org_id = db
@@ -499,6 +506,8 @@ mod tests {
     async fn unreadable_settings_render_browser_pages_without_masking_api_failures() {
         use aos_hub_core::backend::{Backend as _, SqlxBackend};
 
+        let _presentation = SITE_PRESENTATION.lock().await;
+
         let backend = SqlxBackend::connect_sqlite(":memory:").await.unwrap();
         let SqlxBackend::Sqlite(pool) = &backend else {
             panic!("expected SQLite test backend");
@@ -552,6 +561,8 @@ mod tests {
         use aos_hub_core::db::TokenAuth;
         use aos_hub_core::domain::{Permission, Principal, Scope};
         use aos_proto_types as pb;
+
+        let _presentation = SITE_PRESENTATION.lock().await;
 
         let db = Arc::new(aos_hub_core::db::Database::open_in_memory().await.unwrap());
         let user_id = db.create_user("branding@example.test", None).await.unwrap();
@@ -794,6 +805,8 @@ mod tests {
 
     #[tokio::test]
     async fn worker_bridge_reaches_every_declared_console_route() {
+        let _presentation = SITE_PRESENTATION.lock().await;
+
         let db = Arc::new(aos_hub_core::db::Database::open_in_memory().await.unwrap());
         let state =
             Arc::new(aos_hub::server::AppState::new(db, "http://worker.test".to_string()).await);
