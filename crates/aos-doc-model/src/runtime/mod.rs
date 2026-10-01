@@ -18,12 +18,13 @@ use serde_json::Value;
 use crate::{DocumentationError, OptionType, Result};
 
 mod comparison;
+pub mod compatibility;
 mod contracts;
 pub mod deployment;
 mod render;
 
 pub use comparison::{NativeComparison, ReferenceChanges};
-pub use contracts::{AbilityContract, ModuleRequirement};
+pub use contracts::{ModuleRequirement, OsRelease, OsRequirement};
 
 /// Serializes the complete portable option type as a stable signature.
 ///
@@ -79,6 +80,9 @@ pub struct NativeOption {
     pub read_only: bool,
     /// Indicates whether other modules may extend this option.
     pub extensible: bool,
+    /// Reports an authored default without exposing or evaluating its value.
+    #[serde(default)]
+    pub has_default: bool,
 }
 
 /// Describes one declared operation input or result.
@@ -130,6 +134,13 @@ pub struct OperationReference {
     pub result: BTreeMap<String, OperationField>,
     /// Preserves the complete input schema.
     pub input_type: OptionType,
+    /// Lists input declaration paths with defaults, without evaluating their values.
+    #[serde(
+        rename = "inputDefaults",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub input_defaults: Vec<Vec<String>>,
     /// Preserves the complete result schema.
     pub result_type: OptionType,
     /// Reports whether this fixed point selected a handler.
@@ -156,13 +167,6 @@ pub struct ModuleReference {
     pub options: Vec<NativeOption>,
     /// Groups operation references by ability and operation names.
     pub abilities: BTreeMap<String, BTreeMap<String, OperationReference>>,
-    /// Records independent semantic versions declared by ability interface owners.
-    #[serde(
-        rename = "abilityContracts",
-        default,
-        skip_serializing_if = "BTreeMap::is_empty"
-    )]
-    pub ability_contracts: BTreeMap<String, AbilityContract>,
     /// Records ranged module dependencies projected from the same source declarations.
     #[serde(
         rename = "moduleRequirements",
@@ -170,6 +174,16 @@ pub struct ModuleReference {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub module_requirements: Vec<ModuleRequirement>,
+    /// Records OS requirements for base-provided interfaces.
+    #[serde(
+        rename = "osRequirements",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub os_requirements: Vec<OsRequirement>,
+    /// Identifies the OS release supplying base interfaces when known.
+    #[serde(rename = "osRelease", default, skip_serializing_if = "Option::is_none")]
+    pub os_release: Option<OsRelease>,
 }
 
 #[derive(Clone, Debug)]
@@ -282,6 +296,25 @@ impl RuntimeDocument {
                 crate::validate_option_type(&option.option_type)?;
             }
             for operation in reference.abilities.values().flat_map(BTreeMap::values) {
+                if operation.input_defaults.len() > 16_384 {
+                    return Err(invalid("operation input default paths exceed their bound"));
+                }
+                let mut default_paths = BTreeSet::new();
+                for path in &operation.input_defaults {
+                    if path.is_empty()
+                        || path.len() > 64
+                        || path
+                            .iter()
+                            .any(|segment| segment.is_empty() || segment.len() > 256)
+                    {
+                        return Err(invalid(
+                            "operation input default path must be nonempty and bounded",
+                        ));
+                    }
+                    if !default_paths.insert(path) {
+                        return Err(invalid("duplicate operation input default path"));
+                    }
+                }
                 crate::validate_option_type(&operation.input_type)?;
                 crate::validate_option_type(&operation.result_type)?;
                 for field in operation.input.values().chain(operation.result.values()) {

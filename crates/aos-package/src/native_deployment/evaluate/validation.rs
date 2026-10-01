@@ -1,8 +1,7 @@
 //! Checks offline replay against original retained package envelopes.
 //!
-//! Envelope companions retain authored dependencies and independently versioned
-//! exports. Their selected-store bytes validate an exact lock without registry
-//! discovery. Authenticating the descriptor and those roots remains the caller's
+//! Envelope companions retain authored dependencies and OS constraints. Their
+//! selected-store bytes validate exact choices without registry discovery. Authenticating the descriptor and those roots remains the caller's
 //! responsibility; these checks establish consistency, not new authority.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,29 +16,64 @@ use crate::native_registry::{same_package_context, solver};
 
 /// Validates retained declarations before importing any configuration modules.
 ///
-/// Ranged moduleless requesters are opened through the lock's exact companion
-/// bindings. An exact-only descriptor needs no compatibility decision for its
-/// moduleless payload roots; its retained modules still receive full dependency
-/// and export checks.
+/// Every selected payload retains its original envelope, including moduleless
+/// packages with exact dependencies. Their OS constraints are checked against
+/// the fixed host release before any configuration module is imported.
 ///
 /// # Errors
 /// Returns an error for unavailable or malformed companions, changed module or
 /// requester identities, incomplete exact dependencies, incompatible lock
-/// choices, conflicting package contexts or exports, or cancellation.
+/// choices, conflicting package contexts, incompatible OS releases, or cancellation.
 pub(super) fn validate(
     descriptor: &EvaluationInput,
     nix_store: &Path,
     cancellation: &CancellationToken,
-) -> Result<()> {
+) -> Result<Vec<aos_doc_model::runtime::OsRequirement>> {
     validate_with(descriptor, |path| {
         read_regular_store_document_in(path, nix_store, cancellation)
     })
 }
 
+/// Checks original envelope choices against an explicitly selected target.
+///
+/// # Errors
+/// Returns an error for unavailable or inconsistent retained envelopes,
+/// incompatible target constraints, dependency mismatches, or cancellation.
+pub(super) fn validate_for_release(
+    descriptor: &EvaluationInput,
+    release: Option<aos_doc_model::runtime::OsRelease>,
+    nix_store: &Path,
+    cancellation: &CancellationToken,
+) -> Result<Vec<aos_doc_model::runtime::OsRequirement>> {
+    validate_with_release(descriptor, release, |path| {
+        read_regular_store_document_in(path, nix_store, cancellation)
+    })
+}
+
+fn validate_with_release(
+    descriptor: &EvaluationInput,
+    release: Option<aos_doc_model::runtime::OsRelease>,
+    read: impl FnMut(&Path) -> Result<Vec<u8>>,
+) -> Result<Vec<aos_doc_model::runtime::OsRequirement>> {
+    let mut target = descriptor.clone();
+    target.os_release = release;
+    validate_with(&target, read)
+}
+
 fn validate_with(
     descriptor: &EvaluationInput,
     mut read: impl FnMut(&Path) -> Result<Vec<u8>>,
-) -> Result<()> {
+) -> Result<Vec<aos_doc_model::runtime::OsRequirement>> {
+    let payloads: BTreeSet<_> = descriptor
+        .packages
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.canonical_catalog().path)
+        .collect();
+    ensure!(
+        payloads == descriptor.package_envelopes.keys().cloned().collect(),
+        "replay payload catalog differs from retained envelope catalog"
+    );
     let names: BTreeSet<_> = descriptor
         .packages
         .modules
@@ -70,6 +104,18 @@ fn validate_with(
         insert(&mut envelopes, envelope)?;
     }
 
+    for (artifact, root) in &descriptor.package_envelopes {
+        let envelope = Envelope::decode(&read(&root.join("deployment.json"))?)?;
+        ensure!(
+            envelope.system == descriptor.packages.system
+                && envelope.package.canonical_catalog().path == *artifact
+                && descriptor.packages.artifacts.iter().any(|selected| {
+                    selected.canonical_catalog() == envelope.package.canonical_catalog()
+                }),
+            "replay payload envelope differs from its selected package catalog"
+        );
+        insert(&mut envelopes, envelope)?;
+    }
     if let Some(lock) = &descriptor.resolution_lock {
         for (artifact, root) in &lock.requesters {
             let envelope = Envelope::decode(&read(&root.join("deployment.json"))?)?;
@@ -88,11 +134,11 @@ fn validate_with(
                 selected,
                 "replay lock requester is absent from the selected package catalog"
             );
+            solver::check_os_requirement(&envelope, descriptor.os_release.as_ref())?;
             insert(&mut envelopes, envelope)?;
         }
-        lock.validate(&envelopes.into_values().collect::<Vec<_>>())?;
+        lock.validate(&envelopes.values().cloned().collect::<Vec<_>>())?;
     } else {
-        solver::check_exports(envelopes.values())?;
         for envelope in envelopes.values() {
             for dependency in &envelope.module_dependencies {
                 ensure!(
@@ -109,7 +155,19 @@ fn validate_with(
             }
         }
     }
-    Ok(())
+    let mut os_requirements = Vec::new();
+    for envelope in envelopes.values() {
+        solver::check_os_requirement(envelope, descriptor.os_release.as_ref())?;
+        if envelope.module.is_none() {
+            if let Some(os_version) = &envelope.os_version {
+                os_requirements.push(aos_doc_model::runtime::OsRequirement {
+                    owner: envelope.package.name.clone(),
+                    os_version: os_version.clone(),
+                });
+            }
+        }
+    }
+    Ok(os_requirements)
 }
 
 fn insert(envelopes: &mut BTreeMap<String, Envelope>, mut envelope: Envelope) -> Result<()> {

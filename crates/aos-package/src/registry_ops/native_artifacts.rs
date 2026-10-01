@@ -260,8 +260,10 @@ pub(crate) fn publish_native_documents(
             .find(|candidate| candidate.version == version)
             .and_then(|candidate| candidate.platforms.get(platform))
             .context("named output lacks its primary native catalog")?;
-        envelope
-            .verify_catalog_resolution(&primary.ability_exports, &primary.module_dependencies)?;
+        envelope.verify_catalog_resolution(
+            primary.os_version.as_deref(),
+            &primary.module_dependencies,
+        )?;
         let output = outputs
             .iter()
             .find(|(_, path)| *path == &envelope.package.path)
@@ -286,7 +288,7 @@ pub(crate) fn publish_native_documents(
         &deployment_meta,
         documentation.as_ref(),
         qualification.as_ref(),
-        &envelope.ability_exports,
+        envelope.os_version.as_deref(),
         &envelope.module_dependencies,
     )?;
     fs::write(&path, content).with_context(|| format!("writing {}", path.display()))
@@ -296,27 +298,27 @@ pub(crate) fn publish_native_documents(
 // Checking their owned projections prevents a signed, stale companion from
 // advertising a contract that the published module no longer declares.
 fn verify_documented_resolution(envelope: &Envelope, document: &RuntimeDocument) -> Result<()> {
-    use crate::deployment::model::{AbilityExport, ModuleDependency, ModuleRequirement};
+    use crate::deployment::model::{ModuleDependency, ModuleRequirement};
 
     let reference = document
         .reference()
         .context("native module reference is absent")?;
-    let exports = reference
-        .ability_contracts
+    let declared_os =
+        envelope
+            .os_version
+            .as_ref()
+            .map(|requirement| aos_doc_model::runtime::OsRequirement {
+                owner: envelope.package.name.clone(),
+                os_version: requirement.clone(),
+            });
+    let documented_os = reference
+        .os_requirements
         .iter()
-        .filter(|(_, contract)| contract.owner == envelope.package.name)
-        .map(|(name, contract)| {
-            (
-                name.clone(),
-                AbilityExport {
-                    version: contract.version.clone(),
-                },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+        .filter(|requirement| requirement.owner == envelope.package.name)
+        .collect::<Vec<_>>();
     ensure!(
-        exports == envelope.ability_exports,
-        "module documentation ability versions differ from native envelope"
+        documented_os == declared_os.as_ref().into_iter().collect::<Vec<_>>(),
+        "module documentation OS requirement differs from native envelope"
     );
 
     let mut documented = reference
@@ -325,7 +327,6 @@ fn verify_documented_resolution(envelope: &Envelope, document: &RuntimeDocument)
         .filter(|requirement| requirement.owner == envelope.package.name)
         .map(|requirement| ModuleRequirement {
             package: requirement.package.clone(),
-            abilities: requirement.abilities.clone(),
             package_version: requirement.package_version.clone(),
         })
         .collect::<Vec<_>>();
@@ -391,23 +392,23 @@ mod tests {
             "schema":"aos.package.deployment","system":"x86_64-linux",
             "package":{"name":"example","version":"7","path":path,"outputs":{"out":path},"mainProgram":null},
             "module":{"name":"example","version":"7","source":"/nix/store/11111111111111111111111111111111-example-source","entrypoint":"module.nix"},
-            "abilityExports":{"filesystem":{"version":"1.2.3"}},"runtimeDependencies":{},
-            "moduleDependencies":[{"package":{"name":"interfaces","version":"9","source":"/nix/store/22222222222222222222222222222222-interfaces","entrypoint":"module.nix"},"abilities":{"service":"^2.0"}}]
+            "osVersion":"^1.0","runtimeDependencies":{},
+            "moduleDependencies":[{"package":{"name":"interfaces","version":"9","source":"/nix/store/22222222222222222222222222222222-interfaces","entrypoint":"module.nix"},"packageVersion":"^9.0"}]
         })).unwrap()).unwrap();
         let mut reference = json!({"schema":"aos.module.documentation","scope":["package","example"],
             "system":"x86_64-linux","packages":[{"name":"example","version":"7"}],"options":[],"abilities":{},
-            "abilityContracts":{"filesystem":{"owner":"example","version":"1.2.3"}},
-            "moduleRequirements":[{"owner":"example","package":"interfaces","abilities":{"service":"^2.0"}}]});
+            "osRequirements":[{"owner":"example","osVersion":"^1.0"}],
+            "moduleRequirements":[{"owner":"example","package":"interfaces","packageVersion":"^9.0"}]});
         let decode = |value: &serde_json::Value| {
             RuntimeDocument::from_json(&serde_json::to_vec(value).unwrap()).unwrap()
         };
 
         verify_documented_resolution(&envelope, &decode(&reference)).unwrap();
 
-        reference["abilityContracts"]["filesystem"]["version"] = json!("1.3.0");
+        reference["osRequirements"][0]["osVersion"] = json!("^2.0");
         assert!(verify_documented_resolution(&envelope, &decode(&reference)).is_err());
-        reference["abilityContracts"]["filesystem"]["version"] = json!("1.2.3");
-        reference["moduleRequirements"][0]["abilities"]["service"] = json!("^3.0");
+        reference["osRequirements"][0]["osVersion"] = json!("^1.0");
+        reference["moduleRequirements"][0]["packageVersion"] = json!("^10.0");
         assert!(verify_documented_resolution(&envelope, &decode(&reference)).is_err());
     }
 
@@ -429,7 +430,7 @@ mod tests {
             system: "x86_64-linux".into(),
             package: dependency.clone(),
             module: None,
-            ability_exports: BTreeMap::new(),
+            os_version: None,
             runtime_dependencies: BTreeMap::from([("lexical-role".into(), dependency.clone())]),
             module_dependencies: Vec::new(),
         };
@@ -456,14 +457,8 @@ mod tests {
 
     #[test]
     fn native_catalog_binding_retires_legacy_projection_and_gates_consumption() {
-        use crate::deployment::model::{AbilityExport, ModuleDependency, ModuleSource};
+        use crate::deployment::model::{ModuleDependency, ModuleSource};
 
-        let exports = BTreeMap::from([(
-            "filesystem".into(),
-            AbilityExport {
-                version: "1.2.3".into(),
-            },
-        )]);
         let dependencies = vec![ModuleDependency::Ranged {
             package: ModuleSource {
                 name: "interfaces".into(),
@@ -471,8 +466,7 @@ mod tests {
                 source: "/nix/store/22222222222222222222222222222222-interfaces".into(),
                 entrypoint: "module.nix".into(),
             },
-            abilities: BTreeMap::from([("filesystem".into(), "^1.2".into())]),
-            package_version: Some("^7.0".into()),
+            package_version: "^7.0".into(),
         }];
         let artifact = NativeArtifactMeta {
             store_path: "/nix/store/00000000000000000000000000000000-reference".to_owned(),
@@ -504,7 +498,7 @@ contract = { legacy = true }
             &artifact,
             Some(&artifact),
             Some(&artifact),
-            &exports,
+            Some("^1.0"),
             &dependencies,
         )
         .unwrap();
@@ -528,10 +522,7 @@ contract = { legacy = true }
             platform["references"]["requires-features"][0].as_str(),
             Some("native-package-modules-v1")
         );
-        assert_eq!(
-            platform["ability_exports"]["filesystem"]["version"].as_str(),
-            Some("1.2.3")
-        );
+        assert_eq!(platform["osVersion"].as_str(), Some("^1.0"));
         let decoded: Vec<ModuleDependency> =
             platform["module_dependencies"].clone().try_into().unwrap();
         assert_eq!(decoded, dependencies);
@@ -544,13 +535,13 @@ contract = { legacy = true }
             &artifact,
             Some(&artifact),
             Some(&artifact),
-            &BTreeMap::new(),
+            None,
             &[],
         )
         .unwrap();
         let rewritten: toml::Value = toml::from_str(&rewritten).unwrap();
         let rewritten = &rewritten["versions"][0]["platforms"]["x86_64-linux"];
-        assert!(rewritten.get("ability_exports").is_none());
+        assert!(rewritten.get("osVersion").is_none());
         assert!(rewritten.get("module_dependencies").is_none());
         assert!(
             record_native_artifacts(
@@ -561,7 +552,7 @@ contract = { legacy = true }
                 &artifact,
                 None,
                 None,
-                &BTreeMap::new(),
+                None,
                 &[],
             )
             .is_err()

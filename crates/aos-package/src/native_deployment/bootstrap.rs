@@ -170,6 +170,8 @@ mod tests {
     fn descriptor_preserves_source_roles_and_requires_supplemental_roots() {
         let root = |name: &str| PathBuf::from(format!("/nix/store/{}-{name}", "a".repeat(32)));
         let mut input = super::super::EvaluationInput {
+            os_release: None,
+            package_envelopes: Default::default(),
             schema: "aos.package.evaluation-input".into(),
             library: root("library").join("default.nix"),
             library_nar_hash: Sha256Digest::of_bytes(b"library NAR"),

@@ -129,7 +129,7 @@ mod tests {
             },
             module: Some(source(name)),
             runtime_dependencies: BTreeMap::new(),
-            ability_exports: BTreeMap::new(),
+            os_version: None,
             module_dependencies: dependencies
                 .iter()
                 .map(|name| ModuleDependency::Exact(source(name)))

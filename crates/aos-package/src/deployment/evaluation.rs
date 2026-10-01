@@ -1,8 +1,8 @@
 //! Pure package-module evaluation over a resolved dependency closure.
 //!
 //! Evaluation imports the generic module library, explicit package modules, and
-//! operator definitions. No host manifest, image baseline, or provider discovery
-//! pass participates in this boundary.
+//! operator definitions. The caller supplies the resolved artifacts and fixed
+//! host release; evaluation checks their declared compatibility requirements.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -72,7 +72,7 @@ pub fn resolve_packages(
                 .as_ref()
                 .context("resolved dependency has no module")?;
             ensure!(
-                dependency.accepts(source, &resolved.package.version, &resolved.ability_exports)?,
+                dependency.accepts(source, &resolved.package.version)?,
                 "resolved module does not satisfy its original dependency"
             );
             pending.push(resolved);
@@ -91,6 +91,10 @@ pub fn resolve_packages(
 
 /// Supplies the immutable inputs for one target-independent evaluation.
 pub struct Evaluation {
+    /// Supplies the fixed host release for runtime compatibility checks.
+    pub os_release: Option<aos_doc_model::runtime::OsRelease>,
+    /// Projects authenticated requirements from moduleless payload envelopes.
+    pub os_requirements: Vec<aos_doc_model::runtime::OsRequirement>,
     /// Selects the immutable Nix tool suite used for source access and evaluation.
     pub nix_store: PathBuf,
     /// Identifies the generic AOS module library, rather than an image base library.
@@ -146,6 +150,8 @@ impl Evaluation {
         let packages = nix_string(&serde_json::to_string(&self.packages.modules)?);
         let artifacts = nix_string(&serde_json::to_string(&self.packages.artifacts)?);
         let requirements = nix_string(&serde_json::to_string(&self.module_requirements)?);
+        let os_release = nix_string(&serde_json::to_string(&self.os_release)?);
+        let os_requirements = nix_string(&serde_json::to_string(&self.os_requirements)?);
         let system = nix_string(&self.packages.system);
         let inputs = nix_string(&serde_json::to_string(&self.inputs()?)?);
         let evaluation_input = self
@@ -167,6 +173,9 @@ impl Evaluation {
                packageModules = builtins.fromJSON {packages};\n\
                packageArtifacts = builtins.fromJSON {artifacts};\n\
                moduleRequirements = builtins.fromJSON {requirements};\n\
+               osRelease = builtins.fromJSON {os_release};\n\
+               osRequirements = builtins.fromJSON {os_requirements};\n\
+               enforceOsRequirements = true;\n\
                packageImportRoots = {{ {sources} }};\n\
                operatorModules = [ {configuration} ];\n\
              }}; in {output}\n"

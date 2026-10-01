@@ -274,8 +274,7 @@ mod tests {
                 },
                 requirement: ModuleDependency::Ranged {
                     package: source.clone(),
-                    abilities: BTreeMap::from([("storage".into(), "^1".into())]),
-                    package_version: None,
+                    package_version: "^1".into(),
                 },
                 selected: source.clone(),
             }],

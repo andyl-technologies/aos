@@ -307,7 +307,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         inherit lib;
         pkgs = effectivePkgs;
         system = effectivePkgs.stdenv.hostPlatform.system;
-        inherit (stage) packages scope configuration runtimeConfiguration supplementalInputs;
+        inherit (stage) packages scope configuration runtimeConfiguration supplementalInputs osRelease;
       };
     };
     abilityEvaluation = import ./lib/build/evaluate-stages.nix {

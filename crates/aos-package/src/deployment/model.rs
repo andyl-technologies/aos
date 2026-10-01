@@ -17,7 +17,7 @@ use serde_json::Value;
 
 /// Re-exports native declaration and dependency contracts shared with signed catalogs.
 pub use aos_registry_surface::native_dependencies::{
-    AbilityExport, ModuleDependency, ModuleRequirement, ModuleSource,
+    ModuleDependency, ModuleRequirement, ModuleSource,
 };
 
 /// Identifies realized package outputs without reconstructing a derivation.
@@ -48,9 +48,9 @@ pub struct Envelope {
     pub package: Artifact,
     /// Supplies an optional deployment module.
     pub module: Option<ModuleSource>,
-    /// Exposes only independently versioned abilities owned by this package's module.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub ability_exports: BTreeMap<String, AbilityExport>,
+    /// Restricts the host operating system release accepted by this package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_version: Option<String>,
     /// Exposes exact runtime artifacts under package-owned local binding names.
     pub runtime_dependencies: BTreeMap<String, Artifact>,
     /// Names the module dependency closure's direct edges.
@@ -61,14 +61,14 @@ impl Envelope {
     /// Checks that a signed discovery catalog projects this exact envelope's declarations.
     ///
     /// # Errors
-    /// Returns an error when exports or dependency requests differ from authenticated bytes.
+    /// Returns an error when OS constraints or dependency requests differ from authenticated bytes.
     pub fn verify_catalog_resolution(
         &self,
-        exports: &BTreeMap<String, AbilityExport>,
+        os_version: Option<&str>,
         dependencies: &[ModuleDependency],
     ) -> Result<()> {
         ensure!(
-            &self.ability_exports == exports && self.module_dependencies == dependencies,
+            self.os_version.as_deref() == os_version && self.module_dependencies == dependencies,
             "native resolution catalog differs from its authenticated envelope"
         );
         Ok(())
@@ -100,12 +100,8 @@ impl Envelope {
             artifact.check()?;
             ensure!(!name.is_empty(), "runtime dependency binding is empty");
         }
-        ensure!(
-            envelope.module.is_some() || envelope.ability_exports.is_empty(),
-            "ability exports require the owning package module"
-        );
         aos_registry_surface::native_dependencies::check_resolution_metadata(
-            &envelope.ability_exports,
+            envelope.os_version.as_deref(),
             &envelope.module_dependencies,
         )?;
         Ok(envelope)
@@ -119,7 +115,7 @@ impl Envelope {
             version: module.version.clone(),
             config_root: module.source.clone(),
             module: format!("{}/{}", module.source, module.entrypoint),
-            ability_exports: self.ability_exports.clone(),
+            os_version: self.os_version.clone(),
             module_requirements: self
                 .module_dependencies
                 .iter()
@@ -200,9 +196,9 @@ pub struct PackageModule {
     pub config_root: String,
     /// Names its canonical module entry point.
     pub module: String,
-    /// Retains the owned versions authenticated by this module's exact envelope.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub ability_exports: BTreeMap<String, AbilityExport>,
+    /// Retains the host release compatibility constraint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_version: Option<String>,
     /// Retains original ranged dependency requirements after exact resolution.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub module_requirements: Vec<ModuleRequirement>,
@@ -284,7 +280,7 @@ impl Deployment {
                     ensure!(!name.is_empty(), "runtime dependency binding is empty");
                 }
                 aos_registry_surface::native_dependencies::check_resolution_metadata(
-                    &record.ability_exports,
+                    record.os_version.as_deref(),
                     &[],
                 )?;
                 let mut required_packages = BTreeSet::new();
@@ -459,29 +455,25 @@ mod resolution_tests {
                 "outputs":{"out":payload},"mainProgram":null},
             "module":{"name":"example","version":"7",
                 "source":"/nix/store/11111111111111111111111111111111-example-source","entrypoint":"module.nix"},
-            "abilityExports":{"filesystem":{"version":"1.2.3"}},
+            "osVersion":"^1.0",
             "runtimeDependencies":{},"moduleDependencies":[]})
     }
 
     #[test]
-    fn exports_require_the_owning_module_and_match_signed_discovery_metadata() {
+    fn os_constraint_matches_signed_discovery_metadata() {
         let mut value = document();
         let envelope = Envelope::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
         envelope
-            .verify_catalog_resolution(&envelope.ability_exports, &[])
+            .verify_catalog_resolution(envelope.os_version.as_deref(), &[])
             .unwrap();
-        assert!(
-            envelope
-                .verify_catalog_resolution(&BTreeMap::new(), &[])
-                .is_err()
-        );
+        assert!(envelope.verify_catalog_resolution(None, &[]).is_err());
         assert_eq!(
-            envelope.module_record().unwrap().ability_exports,
-            envelope.ability_exports
+            envelope.module_record().unwrap().os_version,
+            envelope.os_version
         );
 
         value["module"] = Value::Null;
-        assert!(Envelope::decode(&serde_json::to_vec(&value).unwrap()).is_err());
+        assert!(Envelope::decode(&serde_json::to_vec(&value).unwrap()).is_ok());
     }
 
     #[test]
@@ -489,18 +481,15 @@ mod resolution_tests {
         let mut value = document();
         value["moduleDependencies"] = json!([{"package":{"name":"interfaces","version":"2",
             "source":"/nix/store/22222222222222222222222222222222-interfaces","entrypoint":"module.nix"},
-            "abilities":{"filesystem":"^1.2"}}]);
+            "packageVersion":"^2.0"}]);
         let envelope = Envelope::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
         let module = envelope.module_record().unwrap();
 
         assert_eq!(module.module_requirements[0].package, "interfaces");
-        assert_eq!(
-            module.module_requirements[0].abilities["filesystem"],
-            "^1.2"
-        );
+        assert_eq!(module.module_requirements[0].package_version, "^2.0");
         assert!(
             envelope
-                .verify_catalog_resolution(&envelope.ability_exports, &[])
+                .verify_catalog_resolution(envelope.os_version.as_deref(), &[])
                 .is_err()
         );
     }

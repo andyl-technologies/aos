@@ -1,6 +1,6 @@
 //! Native source replay, reference, and retained-output inspection commands.
 
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -20,6 +20,8 @@ pub enum AbilityCommand {
     Operator(AbilityOperatorArgs),
     /// Compare native declarations or desired effect revisions
     Compare(AbilityCompareArgs),
+    /// Check structural interface compatibility for one release owner
+    CheckCompat(AbilityCheckCompatArgs),
     /// Preview effects depending on an exact desired effect identity
     RemovalPreview(AbilityRemovalPreviewArgs),
 }
@@ -75,6 +77,24 @@ pub struct AbilityCompareArgs {
     /// Verify the exact later document digest
     #[arg(long)]
     pub after_digest: Option<String>,
+}
+
+#[derive(Args)]
+#[command(group(ArgGroup::new("release_owner").required(true).args(["owner", "os"])))]
+pub struct AbilityCheckCompatArgs {
+    /// Read the earlier native module documentation
+    pub before: PathBuf,
+    /// Read the later native module documentation
+    pub after: PathBuf,
+    /// Check this package's public interface and release version
+    #[arg(long)]
+    pub owner: Option<String>,
+    /// Check the OS public interface and release version
+    #[arg(long)]
+    pub os: bool,
+    /// Read exact compatibility exceptions with their reasons
+    #[arg(long)]
+    pub exceptions: Option<PathBuf>,
 }
 
 #[derive(Args)]

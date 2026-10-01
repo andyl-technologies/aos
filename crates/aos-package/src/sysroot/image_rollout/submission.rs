@@ -43,6 +43,12 @@ pub(super) fn evaluation(config: &ApmConfig) -> Result<(Evaluation, PathBuf)> {
     configuration.extend(input.runtime_configuration);
     Ok((
         Evaluation {
+            os_release: input.os_release.clone(),
+            os_requirements: crate::native_deployment::retained_os_requirements(
+                &input.package_envelopes,
+                input.os_release.as_ref(),
+                &nix_store,
+            )?,
             nix_store,
             library: input.library,
             scope: input.scope,

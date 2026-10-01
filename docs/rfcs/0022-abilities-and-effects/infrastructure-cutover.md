@@ -215,17 +215,19 @@ transport bounds input, output, duration, and cancellation. The generated docume
 must retain the selected platform, package contexts, and artifact identities.
 
 A package appears once in a scope's resolved module closure. Exact dependencies
-pin source identity. Compatible dependencies carry an exact seed plus independent
-ability and optional package SemVer ranges; build evaluation checks the seed and
-APM resolves compatible authenticated releases. A versioned ability has one
-version and declaring owner per scope. Conflicts fail before evaluation.
+pin source identity. Compatible dependencies carry an exact seed and a package
+SemVer range; build evaluation checks the seed and APM resolves compatible
+authenticated package releases. Package interfaces follow their owning package
+release; OS/base interfaces follow the selected OS release. The selected host OS
+is fixed input, and optional `osVersion` requirements check it without asking the
+dependency resolver to select or upgrade the OS. Conflicts fail before evaluation.
 
 `resolutionLock` in the evaluation descriptor retains original dependency edges,
 exact selections, and requester companions whenever ranges occur. Saved
 activation inputs replay that lock, including declarations from moduleless
-packages. Signed `abilityExports` and `moduleDependencies` must match generated
-companions; evaluation must reproduce declared owned ability versions. Generated
-`abilityContracts` and `moduleRequirements` documentation projects the same data.
+packages. Signed dependency and interface metadata must match generated
+companions and their package or OS release owners. Generated reference
+documentation projects the same release ownership and requirements.
 See [resolution and binding](04-resolution-and-binding.md) for solver policy and
 [user examples](../../users/aos/runtime-abilities.md#version-and-compose-interfaces-across-packages)
 for authoring syntax.

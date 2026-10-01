@@ -56,14 +56,12 @@ impl ResolutionLock {
             .filter_map(|edge| {
                 if let ModuleDependency::Ranged {
                     package,
-                    abilities,
                     package_version,
                 } = &edge.requirement
                 {
                     Some(aos_doc_model::runtime::ModuleRequirement {
                         owner: edge.requester.name.clone(),
                         package: package.name.clone(),
-                        abilities: abilities.clone(),
                         package_version: package_version.clone(),
                     })
                 } else {
@@ -126,10 +124,9 @@ impl ResolutionLock {
     ///
     /// # Errors
     /// Returns an error for missing or extra edges, changed requirements or
-    /// module identities, incompatible exports, or conflicting ability owners.
+    /// module identities or incompatible package requirements.
     pub fn validate(&self, envelopes: &[Envelope]) -> Result<()> {
         self.check()?;
-        check_exports(envelopes.iter())?;
         let mut expected = Vec::new();
         for envelope in envelopes {
             for requirement in &envelope.module_dependencies {
@@ -192,13 +189,24 @@ pub(crate) fn solve(
     preferred_sources: &[ModuleSource],
     refresh_names: Option<&BTreeSet<String>>,
     cancellation: &CancellationToken,
+    os_release: Option<&aos_doc_model::runtime::OsRelease>,
 ) -> Result<Solution> {
     ensure!(
         candidates.len() <= MAX_CANDIDATES,
         "module candidate universe exceeds its bound"
     );
+    // The fixed host release filters the universe before dependency search.
+    let candidates = candidates
+        .iter()
+        .filter_map(|candidate| match accepts_os(candidate, os_release) {
+            Ok(true) => Some(Ok(candidate.clone())),
+            Ok(false) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut selected = BTreeMap::new();
     for root in roots {
+        check_os_requirement(root, os_release)?;
         let mut normalized = root.clone();
         normalized.package = normalized.package.canonical_catalog();
         if let Some(previous) = selected.insert(root.package.name.clone(), normalized.clone()) {
@@ -215,7 +223,7 @@ pub(crate) fn solve(
         deadline: Instant::now() + Duration::from_secs(30),
         cancellation,
     };
-    let selected = search(selected, candidates, &policy, &mut budget, 0).map_err(|error| {
+    let selected = search(selected, &candidates, &policy, &mut budget, 0).map_err(|error| {
         let message = format!("module dependency resolution failed: {error}");
         error.context(message)
     })?;
@@ -410,7 +418,6 @@ fn search(
             candidate.package.name
         );
     }
-    check_exports(selected.values())?;
     let refreshed = policy.refreshed_names(&selected);
     let mut requirements: BTreeMap<String, Vec<(&Envelope, &ModuleDependency)>> = BTreeMap::new();
     for requester in selected.values() {
@@ -534,30 +541,43 @@ pub(crate) fn matches_requirement(
     candidate: &Envelope,
 ) -> Result<bool> {
     match &candidate.module {
-        Some(source) => requirement.accepts(
-            source,
-            &candidate.package.version,
-            &candidate.ability_exports,
-        ),
+        Some(source) => requirement.accepts(source, &candidate.package.version),
         None => Ok(false),
     }
 }
 
-/// Checks that the selected closure has one declaring owner per versioned ability.
+/// Checks one authenticated envelope against the fixed runtime host release.
 ///
 /// # Errors
-/// Returns an error when two selected envelopes export the same ability name.
-pub(crate) fn check_exports<'a>(envelopes: impl IntoIterator<Item = &'a Envelope>) -> Result<()> {
-    let mut owners = BTreeMap::new();
-    for envelope in envelopes {
-        for ability in envelope.ability_exports.keys() {
-            ensure!(
-                owners.insert(ability, &envelope.package.name).is_none(),
-                "ability {ability} has multiple selected owners"
-            );
-        }
-    }
+/// Returns an error for an invalid range, a missing host release, or a host
+/// release outside the package's declared OS constraint.
+pub(crate) fn check_os_requirement(
+    envelope: &Envelope,
+    release: Option<&aos_doc_model::runtime::OsRelease>,
+) -> Result<()> {
+    ensure!(
+        accepts_os(envelope, release)?,
+        "package '{}' requires OS version {}, incompatible with the retained host release",
+        envelope.package.name,
+        envelope.os_version.as_deref().unwrap_or("unspecified")
+    );
     Ok(())
+}
+
+fn accepts_os(
+    envelope: &Envelope,
+    release: Option<&aos_doc_model::runtime::OsRelease>,
+) -> Result<bool> {
+    let Some(requirement) = &envelope.os_version else {
+        return Ok(true);
+    };
+    let Some(release) = release else {
+        return Ok(false);
+    };
+    let Ok(version) = semver::Version::parse(&release.version) else {
+        return Ok(false);
+    };
+    Ok(semver::VersionReq::parse(requirement)?.matches(&version))
 }
 
 #[cfg(test)]

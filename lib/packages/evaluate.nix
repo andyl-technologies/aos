@@ -5,14 +5,17 @@
 }: let
   moduleLib = import ../build/package-modules.nix {};
   artifactLib = import ./artifacts.nix {};
-  contracts = import ./ability-contracts.nix {inherit lib;};
+  compatibility = import ./release-compatibility.nix {inherit lib;};
 in
   {
     scope,
     packages ? [],
     packageModules ? moduleLib.closure packages,
     packageArtifacts ? moduleLib.payloads packages,
-    moduleRequirements ? contracts.requirements packages,
+    moduleRequirements ? compatibility.requirements packages,
+    osRelease ? null,
+    osRequirements ? compatibility.osRequirements packages,
+    enforceOsRequirements ? false,
     modules ? [],
     operatorModules ? [],
     runtimeModules ? [],
@@ -21,6 +24,13 @@ in
     evaluationInput ? null,
   }: let
     records = moduleLib.canonicalize packageModules;
+    releaseRequirements = lib.unique (osRequirements
+      ++ builtins.concatLists (map (record:
+        lib.optional ((record.osVersion or null) != null) {
+          owner = record.name;
+          inherit (record) osVersion;
+        })
+      records));
     evaluated = lib.evalModules {
       inherit lib operatorModules runtimeModules packageImportRoots;
       packageModules = builtins.map (record:
@@ -43,7 +53,7 @@ in
     };
     documentation = import ../effects/documentation.nix {inherit lib;};
     declarations = builtins.map (declaration: {
-      inherit (declaration) path owner description type visibility readOnly extensible;
+      inherit (declaration) path owner description type visibility readOnly extensible hasDefault;
     }) (builtins.filter (declaration: declaration.path != [] && builtins.head declaration.path != "_module") evaluated._optionDecls);
     graph = evaluated._withoutProvenance evaluated.config.aos.activation.graph;
     inputs = artifactLib.graphInputs {
@@ -57,7 +67,8 @@ in
       })
     packageArtifacts;
   in
-    assert contracts.checkRecords records evaluated.config;
+    assert compatibility.checkSeeds packages;
+    assert !enforceOsRequirements || compatibility.checkOsRequirements releaseRequirements osRelease;
       evaluated
       // {
         documentation = {
@@ -72,7 +83,8 @@ in
           (packageArtifacts ++ builtins.map (record: record.artifacts.package) records));
           options = declarations;
           abilities = documentation.abilities evaluated.config.aos.abilities;
-          abilityContracts = contracts.fromConfig evaluated.config;
+          inherit osRelease;
+          osRequirements = releaseRequirements;
           moduleRequirements = lib.unique (moduleRequirements
             ++ builtins.concatLists (map (record:
               map (requirement: requirement // {owner = record.name;}) (record.moduleRequirements or []))

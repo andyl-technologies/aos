@@ -41,6 +41,7 @@ pub use crate::native_registry::solver::{LockedEdge, ResolutionLock};
 pub use admission::{AdmissionCatalog, AdmittedRoot};
 pub use bootstrap::{SourceAuthorization, apply_with_sources, resume_profile};
 pub use evaluate::evaluate_input;
+pub(crate) use evaluate::{os_requirements, retained_os_requirements, validate_target_os};
 
 #[derive(clap::Args)]
 pub struct NativeDeploymentArgs {
@@ -114,6 +115,12 @@ pub struct EvaluationInput {
     /// Retains each resolved module's original authenticated deployment envelope.
     #[serde(rename = "moduleEnvelopes")]
     pub module_envelopes: std::collections::BTreeMap<String, PathBuf>,
+    /// Retains selected payload envelopes, including packages without a module.
+    #[serde(default, rename = "packageEnvelopes")]
+    pub package_envelopes: BTreeMap<String, PathBuf>,
+    /// Pins the host release used for runtime compatibility checks.
+    #[serde(default, rename = "osRelease", skip_serializing_if = "Option::is_none")]
+    pub os_release: Option<aos_doc_model::runtime::OsRelease>,
     /// Pins ranged dependency choices; exact-only closures omit this field.
     #[serde(
         default,
@@ -199,7 +206,31 @@ impl EvaluationInput {
             module_names == input.module_envelopes.keys().collect(),
             "module envelope catalog differs from resolved module names"
         );
-        for path in input.module_envelopes.values() {
+        let payloads: BTreeSet<_> = input
+            .packages
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.canonical_catalog().path)
+            .collect();
+        ensure!(
+            payloads == input.package_envelopes.keys().cloned().collect(),
+            "selected payloads differ from retained envelope catalog"
+        );
+
+        if let Some(release) = &input.os_release {
+            ensure!(
+                !release.name.is_empty()
+                    && release.name.len() <= 256
+                    && release.version.len() <= 128
+                    && semver::Version::parse(&release.version).is_ok(),
+                "retained host release has an invalid name or semantic version"
+            );
+        }
+        for path in input
+            .module_envelopes
+            .values()
+            .chain(input.package_envelopes.values())
+        {
             let (root, suffix) = crate::deployment::nix::store_root_and_suffix(path)?;
             ensure!(
                 root == *path && suffix.as_os_str().is_empty(),
@@ -353,6 +384,20 @@ pub(crate) fn read_retained_evaluation_in(
         input.scope == desired.scope() && input.packages == desired.resolved(),
         "retained evaluation descriptor differs from committed scope or packages"
     );
+    for companion in input
+        .module_envelopes
+        .values()
+        .chain(input.package_envelopes.values())
+    {
+        ensure!(
+            desired
+                .inputs()
+                .iter()
+                .any(|root| Path::new(root) == companion),
+            "committed deployment does not retain its package envelope"
+        );
+    }
+    os_requirements(&input, nix_store, cancellation)?;
     Ok((identity, input))
 }
 
@@ -360,6 +405,8 @@ pub(crate) fn read_retained_evaluation_in(
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct EvaluationInputs {
+    #[serde(default, rename = "osRelease")]
+    pub(crate) os_release: Option<aos_doc_model::runtime::OsRelease>,
     pub(crate) library: PathBuf,
     pub(crate) configuration: Vec<PathBuf>,
     #[serde(default, rename = "runtimeConfiguration")]
@@ -373,6 +420,7 @@ impl EvaluationInputs {
         {
             let input = EvaluationInput::read(path)?;
             Ok(Self {
+                os_release: input.os_release,
                 library: input.library,
                 configuration: input.configuration,
                 runtime_configuration: input.runtime_configuration,
@@ -585,6 +633,12 @@ fn apply_profile(
                 .map(PathBuf::from)
                 .collect();
             let evaluator = crate::deployment::evaluation::Evaluation {
+                os_release: descriptor.os_release.clone(),
+                os_requirements: retained_os_requirements(
+                    &descriptor.package_envelopes,
+                    descriptor.os_release.as_ref(),
+                    &command.nix_store,
+                )?,
                 module_requirements: descriptor
                     .resolution_lock
                     .as_ref()
@@ -929,6 +983,12 @@ pub(crate) fn deployment_observer(
         admission.admit(&module.config_root)?;
     }
     let evaluation = crate::deployment::evaluation::Evaluation {
+        os_release: input.os_release.clone(),
+        os_requirements: retained_os_requirements(
+            &input.package_envelopes,
+            input.os_release.as_ref(),
+            &executable,
+        )?,
         module_requirements: input
             .resolution_lock
             .as_ref()

@@ -550,8 +550,12 @@ mod tests {
         let transaction = json!({"schema":"aos.package.transaction","scope":scope,"system":"x86_64-linux",
             "artifacts":[],"inputs":["/nix/store/00000000000000000000000000000000-library"],"packages":[],"retire":[],
             "graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}});
-        let evaluation = json!({"schema":"aos.package.evaluation-input","library":library,
-            "libraryNarHash":format!("sha256:{}", "a".repeat(64)),"scope":scope,"packages":packages,"moduleEnvelopes":{},"configuration":[]});
+        let mut evaluation = json!({"schema":"aos.package.evaluation-input","library":library,
+            "libraryNarHash":format!("sha256:{}", "a".repeat(64)),"scope":scope,"packages":packages,
+            "moduleEnvelopes":{},"packageEnvelopes":{},"configuration":[]});
+        if stage == "host" {
+            evaluation["osRelease"] = json!({"name":"fixture","version":"1.0.0"});
+        }
         let admission = canonical::to_vec(
             &json!({"schema":"aos.package.admission","roots":[{"storePath":"/nix/store/00000000000000000000000000000000-library","narHash":format!("sha256:{}", "a".repeat(64)),"narSize":1,"references":[]}]}),
         )?;

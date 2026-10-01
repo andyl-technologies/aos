@@ -17,5 +17,19 @@ publication authenticity. Disabled conditional uses cannot be inferred from
 absent definitions. Existing release indexes, installed-package docs, and live
 inspection consumers remain to be migrated to the native artifacts.
 
+`aos ability check-compat BEFORE AFTER --owner PACKAGE` (or `--os`) checks
+release compatibility against generated public input/result schemas
+from the previous and current owner release. Package interfaces follow the
+owning package version; OS/base interfaces follow the OS release version.
+Removed operations or fields, new required inputs, and type changes are breaking
+changes or require review. Optional input additions and new operations are
+allowed. Opaque constraints require explicit review, and structural comparison
+does not prove runtime behavior. Breaking changes require an owner major release
+increase or an exception identifying the exact diagnostic and explaining why it
+is permitted. The check consumes the generated reference rather than a separately
+maintained interface manifest. `--exceptions FILE` supplies exact diagnostic
+IDs with explanatory reasons; incompatible reports are emitted before a nonzero
+exit.
+
 See the [target state](13-target-state.md) and the
 [end-to-end code examples](../../users/aos/runtime-abilities.md).

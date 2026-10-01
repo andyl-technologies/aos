@@ -12,10 +12,7 @@
     then artifacts.canonicalDependencies
     else package: artifacts.keyed (package.runtimeDeps or []);
   recordFor = package: let
-    exports =
-      if verifyMetadata
-      then package.deployment.abilityExports or {}
-      else {};
+    osVersion = package.osVersion or null;
     requirements =
       builtins.filter (value: value != null)
       (map (dependencies.requirement nameFor) (package.moduleDeps or []));
@@ -31,9 +28,9 @@
       };
     }
     // (
-      if exports == {}
+      if osVersion == null
       then {}
-      else {abilityExports = exports;}
+      else {inherit osVersion;}
     )
     // (
       if requirements == []
@@ -42,15 +39,15 @@
     );
   identity = record:
     if
-      builtins.removeAttrs record ["artifacts" "configRoot" "module" "name" "version" "abilityExports" "moduleRequirements"]
+      builtins.removeAttrs record ["artifacts" "configRoot" "module" "name" "version" "osVersion" "moduleRequirements"]
       != {}
       || !(builtins.all (name: record ? ${name}) ["artifacts" "configRoot" "module" "name" "version"])
     then throw "Package module record has a non-canonical shape."
     else
       (builtins.removeAttrs record (
         (
-          if (record.abilityExports or {}) == {}
-          then ["abilityExports"]
+          if (record.osVersion or null) == null
+          then ["osVersion"]
           else []
         )
         ++ (

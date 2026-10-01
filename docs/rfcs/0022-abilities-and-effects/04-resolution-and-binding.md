@@ -2,14 +2,15 @@
 
 Package resolution selects an exact module closure and payload artifacts before
 evaluation. `moduleDeps` accepts exact package references or explicit compatibility
-requirements with an exact build-time seed. Ability versions are declared through
-`aos.abilities.<name>.version`; signed exports are generated from that module
-configuration and its declaring provenance owner. Package versions and effect
-revisions remain independent.
+requirements with an exact build-time seed and `packageVersion` range. Interfaces
+released by a package use that package's release version; OS/base interfaces use
+the selected OS release version. Ability declarations have no independent
+version. Effect revisions remain independent of release compatibility.
 
-A scope selects one contract version and declaring owner per ability, and one
-exact identity per package name. The bounded dependency solver considers
-transitive requirements and historical releases from configured authenticated
+A scope selects one exact identity per package name. An optional recipe
+`osVersion` requirement checks the selected host OS release, which is a fixed
+input and is never solved for or upgraded by the dependency resolver.
+The bounded dependency solver considers transitive requirements and historical releases from configured authenticated
 registries. Compatible releases must retain the requested package identity;
 resolution does not substitute unrelated implementations. Ordinary installation
 prefers compatible retained choices; explicit upgrades permit reselection.
