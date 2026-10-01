@@ -1,16 +1,9 @@
 //! Real PostgreSQL and MariaDB initialization/refusal on create-new test databases.
 
 use super::*;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 fn database_name(label: &str) -> String {
-    format!(
-        "hub_reset_{label}_{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    )
+    format!("hub_reset_{label}_{}", uuid::Uuid::new_v4().simple())
 }
 
 async fn verify_fresh_and_refusal(first: SqlxBackend, second: SqlxBackend, old: SqlxBackend) {

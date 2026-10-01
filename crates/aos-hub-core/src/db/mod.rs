@@ -27430,7 +27430,7 @@ source_nar_hash = ""
             )
             .unwrap();
         connection
-            .execute_batch(include_str!("release_channel_advances.sql"))
+            .execute_batch(include_str!("002-r2-gc-incarnation.sql"))
             .unwrap();
 
         let inventory_version: Option<String> = connection
@@ -27803,6 +27803,38 @@ source_nar_hash = ""
 
     #[tokio::test]
     async fn migrate_refuses_pre_cutover_version_collision() {
+        fn fingerprint(connection: &Connection) -> String {
+            let mut schema_statement = connection
+                .prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name")
+                .unwrap();
+            let schema = schema_statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            let marker: i64 = connection
+                .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+                .unwrap();
+            let mut rows_statement = connection
+                .prepare("SELECT id,slug FROM registries ORDER BY id")
+                .unwrap();
+            let rows = rows_statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            serde_json::to_string(&(schema, marker, rows)).unwrap()
+        }
+
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("legacy.db");
         let connection = Connection::open(&path).unwrap();
@@ -27810,10 +27842,11 @@ source_nar_hash = ""
             .execute_batch(
                 "CREATE TABLE schema_version(version INTEGER NOT NULL);
                  INSERT INTO schema_version(version) VALUES (1);
-                 CREATE TABLE registries(id INTEGER PRIMARY KEY, slug TEXT NOT NULL);",
+                 CREATE TABLE registries(id INTEGER PRIMARY KEY, slug TEXT NOT NULL);
+                 INSERT INTO registries(id,slug) VALUES (7,'retained');",
             )
             .unwrap();
-        drop(connection);
+        let before = fingerprint(&connection);
 
         let error = match Database::open(&path).await {
             Ok(_) => panic!("pre-cutover schema must be refused"),
@@ -27821,9 +27854,10 @@ source_nar_hash = ""
         };
         let message = format!("{error:#}");
         assert!(
-            message.contains("predates the first stable production baseline"),
+            message.contains(crate::backend::schema_lineage::RESET_REQUIRED),
             "{message}"
         );
+        assert_eq!(fingerprint(&connection), before);
     }
 
     #[tokio::test]

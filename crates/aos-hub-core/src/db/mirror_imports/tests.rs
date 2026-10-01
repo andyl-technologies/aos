@@ -655,26 +655,72 @@ async fn initialize_generation_four(backend: &dyn crate::backend::Backend) {
 }
 
 #[tokio::test]
-async fn upgrades_actual_sqlite_generation_four_without_changing_old_rows() {
+async fn sqlite_generation_four_serving_refuses_without_changing_old_rows() {
     let backend = crate::backend::SqlxBackend::connect_sqlite(":memory:")
         .await
         .unwrap();
     initialize_generation_four(&backend).await;
-    let db = Database::with_backend(Box::new(backend)).await.unwrap();
-    let version: i64 = db
-        .backend
-        .query_opt("SELECT version FROM schema_version", &[])
+    backend
+        .execute(
+            "INSERT INTO users(email,created_at) VALUES ('retained@example.test',1)",
+            &[],
+        )
         .await
-        .unwrap()
-        .unwrap()
-        .get(0)
         .unwrap();
-    assert_eq!(version, 7);
-    let original = original(&db).await;
-    assert_eq!(
-        db.admit_mirror_import(&original, 1).await.unwrap().state,
-        "admitted"
-    );
+    let before = legacy_database_fingerprint(&backend).await;
+    let retained_backend = cloned_sqlite_backend(&backend);
+
+    let error = match Database::with_backend(Box::new(backend)).await {
+        Ok(_) => panic!("generation four must refuse serving"),
+        Err(error) => error,
+    };
+
+    assert!(format!("{error:#}").contains(crate::backend::schema_lineage::RESET_REQUIRED));
+    assert_eq!(legacy_database_fingerprint(&retained_backend).await, before);
+}
+
+fn cloned_sqlite_backend(backend: &SqlxBackend) -> SqlxBackend {
+    // Keep the same actual database observable after the initializer consumes it.
+    match backend {
+        SqlxBackend::Sqlite(pool) => SqlxBackend::Sqlite(pool.clone()),
+        #[cfg(feature = "postgres")]
+        SqlxBackend::Postgres(_) => panic!("fixture requires SQLite"),
+        #[cfg(feature = "mysql")]
+        SqlxBackend::Mysql(_) => panic!("fixture requires SQLite"),
+    }
+}
+
+async fn legacy_database_fingerprint(backend: &dyn Backend) -> String {
+    let schema = backend
+        .query(
+            "SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name",
+            &[],
+        )
+        .await
+        .unwrap();
+    let tables = backend
+        .query(
+            "SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name",
+            &[],
+        )
+        .await
+        .unwrap();
+    let mut payloads = Vec::new();
+    for table in tables {
+        let name: String = table.get(0).unwrap();
+        let sql = format!("SELECT * FROM \"{}\"", name.replace('"', "\"\""));
+        let mut rows = backend
+            .query(&sql, &[])
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| serde_json::to_string(row).unwrap())
+            .collect::<Vec<_>>();
+        rows.sort();
+        payloads.push((name, rows));
+    }
+    let changes = backend.query("SELECT total_changes()", &[]).await.unwrap();
+    serde_json::to_string(&(schema, payloads, changes)).unwrap()
 }
 
 #[cfg(feature = "postgres")]
@@ -835,7 +881,7 @@ async fn indexed_identity_preserves_long_legacy_paths_and_rejects_changed_scalar
 }
 
 #[tokio::test]
-async fn actual_generation_five_upgrade_backfills_a_legacy_original_without_reencoding() {
+async fn generation_five_serving_refuses_and_isolated_backfill_preserves_original() {
     let backend = SqlxBackend::connect_sqlite(":memory:").await.unwrap();
     initialize_generation_four(&backend).await;
     backend
@@ -846,6 +892,7 @@ async fn actual_generation_five_upgrade_backfills_a_legacy_original_without_reen
         .execute("UPDATE schema_version SET version = 5", &[])
         .await
         .unwrap();
+    let retained_backend = cloned_sqlite_backend(&backend);
     let legacy_db = Database {
         backend: Box::new(backend),
     };
@@ -893,11 +940,59 @@ async fn actual_generation_five_upgrade_backfills_a_legacy_original_without_reen
         .await
         .unwrap();
 
-    let upgraded = Database::with_backend(legacy_db.backend).await.unwrap();
-    let retained = upgraded
-        .mirror_import_for_path(legacy.registry_id, &legacy.path)
+    let before = legacy_database_fingerprint(legacy_db.backend.as_ref()).await;
+
+    let error = match Database::with_backend(Box::new(retained_backend)).await {
+        Ok(_) => panic!("generation five must refuse serving"),
+        Err(error) => error,
+    };
+
+    assert!(format!("{error:#}").contains(crate::backend::schema_lineage::RESET_REQUIRED));
+    assert_eq!(
+        legacy_database_fingerprint(legacy_db.backend.as_ref()).await,
+        before
+    );
+
+    // Exercise the immutable legacy script and typed backfill in isolation.
+    // This does not admit the old schema through the serving initializer.
+    legacy_db
+        .backend
+        .execute_batch(include_str!("../006-mirror-import-generations.sql"))
+        .await
+        .unwrap();
+    legacy_db.backfill_mirror_import_index().await.unwrap();
+    // Read the historical generation-six projection, without requiring the
+    // later publication qualifier used by the current serving reader.
+    let row = legacy_db
+        .backend
+        .query_opt(
+            "SELECT job_id,registry_id,original_digest,original_json,progress_json,
+                    state,commit_digest,created_at,updated_at,
+                    source_path,source_path_digest,copy_operation_id
+             FROM mirror_import_objects WHERE registry_id = ?1 AND source_path_digest = ?2",
+            &vals![legacy.registry_id, legacy.source_path_digest()],
+        )
         .await
         .unwrap()
+        .unwrap();
+    let retained = MirrorImportRecord::decode(
+        &row.get::<String>(0).unwrap(),
+        row.get(1).unwrap(),
+        &row.get::<String>(2).unwrap(),
+        &row.get::<String>(3).unwrap(),
+        row.get::<Option<String>>(4).unwrap().as_deref(),
+        &row.get::<String>(5).unwrap(),
+        row.get::<Option<String>>(6).unwrap().as_deref(),
+        row.get(7).unwrap(),
+        row.get(8).unwrap(),
+    )
+    .unwrap();
+    retained
+        .validate_index(
+            row.get::<Option<String>>(9).unwrap().as_deref(),
+            row.get::<Option<String>>(10).unwrap().as_deref(),
+            row.get::<Option<String>>(11).unwrap().as_deref(),
+        )
         .unwrap();
     assert_eq!(retained.original, legacy);
     assert_eq!(
@@ -905,6 +1000,12 @@ async fn actual_generation_five_upgrade_backfills_a_legacy_original_without_reen
         canonical
     );
     assert!(retained.original.copy_operation_id.is_none());
+    let version = legacy_db
+        .backend
+        .query("SELECT version FROM schema_version", &[])
+        .await
+        .unwrap();
+    assert_eq!(version[0].get::<i64>(0).unwrap(), 5);
     retained
         .validate_index(Some(&legacy.path), Some(&legacy.source_path_digest()), None)
         .unwrap();
