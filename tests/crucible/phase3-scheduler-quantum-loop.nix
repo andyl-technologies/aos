@@ -8,7 +8,10 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   quantumTest = builtins.readFile ../../crates/crucible/tests/scheduler_quantum_loop.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -127,8 +130,12 @@
         needle = "fn step_quantum";
       }
       {
+        label = "STEP derives the scheduler frontier from node counters";
+        needle = "let frontier = frontier_for(&self.nodes, self.timeline.shift())?;";
+      }
+      {
         label = "STEP updates scheduler frontier";
-        needle = "self.frontier = frontier_for(&self.nodes, self.timeline.shift())?";
+        needle = "self.frontier = frontier;";
       }
       {
         label = "STEP counts one quantum";

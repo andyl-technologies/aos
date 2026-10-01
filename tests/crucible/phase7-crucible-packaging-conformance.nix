@@ -11,7 +11,19 @@
   qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   packagingSpec = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
-  allSpecText = qemuPatchSpec + "\n" + packagingSpec;
+  specTextIn = directory:
+    builtins.concatStringsSep "\n" (
+      lib.mapAttrsToList (name: type:
+        if type == "directory"
+        then specTextIn (directory + "/${name}")
+        else if lib.hasSuffix ".md" name
+        then builtins.readFile (directory + "/${name}")
+        else "") (builtins.readDir directory)
+    );
+  allSpecText =
+    specTextIn ../../docs/rfcs/0010-crucible
+    + "\n"
+    + specTextIn ../../docs/rfcs/0014-signal-driven-fault-model;
 
   patchMicrotestsGateProvided = patchMicrotestsGate != null;
 
@@ -126,7 +138,7 @@
   tokensFor = enforces:
     builtins.filter (token: token != "") (map lib.trim (lib.splitString "," enforces));
   isRequirementToken = token:
-    builtins.match "([A-Z]+-[0-9]+|E[0-9]+)" token != null;
+    builtins.match "([A-Z]+-[0-9]+|E[0-9]+|QFP-[A-Z0-9-]+|FAULT-[A-Z0-9-]+|STOR-[A-Z0-9-]+)" token != null;
   isDocumentedCapabilityToken = token:
     builtins.elem token ["coverage" "PERF" "PLUG"];
   tokenIsStated = token:
@@ -183,7 +195,7 @@
     ++ lib.concatMap
     (token:
       lib.optionals (!(tokenIsStated token)) [
-        "${kind} ${name}: enforces token ${token} is not stated in RFC0010"
+        "${kind} ${name}: enforces token ${token} is not stated in RFC0010 or RFC0014"
       ])
     tokens;
 

@@ -108,6 +108,8 @@ if bash "$root/aos-dev" --release build build 'server:..invalid' --no-out-link >
   echo 'malformed system build target was accepted' >&2
   exit 1
 fi
+test "$(bash "$root/aos-dev" --release all checks --no-out-link)" = /tmp/aos-dev-test-output
+grep -Fq -- '-A allChecks --no-out-link' "$AOS_DEV_TEST_LOG"
 if bash "$root/aos-dev" --release build package darwin-runtimes --no-out-link >/dev/null 2>&1; then
   echo 'cross-only package was accepted without its target' >&2
   exit 1

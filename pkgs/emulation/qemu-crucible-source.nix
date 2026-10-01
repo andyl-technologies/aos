@@ -59,12 +59,15 @@
       # Keep the repository's source layout without copying local tool state
       # or generated files beside the checked-in build inputs.
       && (
-        pathString == repoRootString
+        pathString
+        == repoRootString
         || builtins.any (
           entry:
-            pathString == "${repoRootString}/${entry}"
+            pathString
+            == "${repoRootString}/${entry}"
             || lib.hasPrefix "${repoRootString}/${entry}/" pathString
-        ) sourceEntries
+        )
+        sourceEntries
       )
       # Characterization goldens are review fixtures, not corresponding source
       # required to rebuild QEMU. Excluding them also prevents the base-lib's

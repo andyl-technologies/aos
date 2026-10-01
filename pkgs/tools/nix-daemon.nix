@@ -150,13 +150,17 @@ in
     buildDeps = [];
     runtimeDeps = [nix bash coreutils systemd control];
     propagatedDeps = [];
+    passthru.evidenceSources = [./nix-daemon.nix ./_nix-daemon-config];
 
     phases = [
       {
         name = "install";
         script = ''
-          mkdir -p "$out/bin"
+          mkdir -p "$out/bin" "$out/nix-support"
           ln -s ${control}/bin/aos-nix-daemon-control "$out/bin/aos-nix-daemon-control"
+          # The configuration module authenticates this shell as a direct
+          # dependency; the control script retains it only transitively.
+          printf '%s\n' '${bash}' > "$out/nix-support/config-shell"
         '';
       }
     ];

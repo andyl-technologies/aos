@@ -653,6 +653,7 @@ in
             argv_libs=$(pkg-config --libs glib-2.0)
             cc -O2 -Wall -Wextra -Werror $argv_cflags \
               "$TMPDIR/qemu-argv-launcher.c" $argv_libs \
+              -Wl,-rpath,${pkgs.glib}/lib \
               -o "$TMPDIR/qemu-argv-launcher"
             cargo test \
               --frozen \

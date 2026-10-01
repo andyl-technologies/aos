@@ -47,6 +47,7 @@ let
   common = {
     kernelModules = [
       "br_netfilter"
+      "xt_physdev" # kube-router matches bridged pod traffic for network policy.
       "vxlan"
       "ip_set"
     ];

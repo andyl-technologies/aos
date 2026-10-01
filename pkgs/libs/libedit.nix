@@ -148,6 +148,7 @@ in
         pname = "libedit";
         library = self;
         libs = ["-ledit" "-lncursesw"];
+        extraDeps = [ncurses];
         testSource = ''
           #include <histedit.h>
 

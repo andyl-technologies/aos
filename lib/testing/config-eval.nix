@@ -33,6 +33,9 @@ in
             done < ${inputs}/store-paths
             ${pkgs.nix}/bin/nix-store --store "$evaluation_store" --init
             ${pkgs.nix}/bin/nix-store --store "$evaluation_store" --load-db < ${inputs}/registration
+            # The writable store root changes physical storage only; retained
+            # descriptors and their Nix paths keep the canonical logical store.
+            export AOS_NIX_STORE_DIR=/nix/store
             export AOS_NIX_EVAL_STORE="$evaluation_store"
             export AOS_NIX_STORE=${pkgs.nix}/bin/nix-store
             export AOS_NIX_INSTANTIATE=${pkgs.nix}/bin/nix-instantiate

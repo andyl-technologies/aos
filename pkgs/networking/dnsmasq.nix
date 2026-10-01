@@ -154,7 +154,13 @@ in
       tool = testing.mkToolCheck {
         pname = "tool-dnsmasq";
         tool = self;
-        command = "dnsmasq --version | grep ' IDN ' | grep ' Lua ' | grep ' DNSSEC ' | grep ' nftset '";
+        command = ''
+          dnsmasq --version > /tmp/dnsmasq-version &&
+          grep -F ' IDN2 ' /tmp/dnsmasq-version &&
+          grep -F ' Lua ' /tmp/dnsmasq-version &&
+          grep -F ' DNSSEC ' /tmp/dnsmasq-version &&
+          grep -F ' nftset ' /tmp/dnsmasq-version
+        '';
       };
       native-module-contract =
         if contractHolds

@@ -261,6 +261,9 @@ in
   assert !builtins.elem
   "/etc/systemd/system/aos-ability-host-receiver.service"
   containerFilePaths;
+  assert aos.runtime.environment.LANG == "C.UTF-8";
+  assert aos.runtime.environment.LOCPATH == "${pkgs.glibc-locales}/lib/locale";
+  assert builtins.any (directory: directory.path == "/var/tmp" && directory.mode == "1777") aos.filesystem.directories;
   assert aos.runtime.environment.XDG_DATA_HOME == "/root/.local/share";
   assert aos.runtime.workingDirectory == "/work";
   assert (builtins.head aos.filesystem.directories).path == "/root";
@@ -274,7 +277,8 @@ in
   );
   assert aos.platform.aosSystem == aosSystem;
   assert testing.config.aos.release.registry == "andyl/testing";
-  assert testing.config.aos.system.version == "2026.9.0-dev.20260927.1";
+  assert builtins.match "[0-9]+\\.[0-9]+\\.[0-9]+-dev\\.[0-9]{8}\\.[0-9]+" testing.config.aos.system.version != null;
+  assert lib.hasInfix "\nVERSION_ID=${testing.config.aos.system.version}\n" testing.config.environment.etc."os-release".text;
   assert lib.hasInfix "\nID=aos\n" testing.config.environment.etc."os-release".text;
   assert lib.hasInfix "\nAOS_REGISTRY=andyl/testing\n" testing.config.environment.etc."os-release".text;
   assert testing.config.system.build.defaultContainer.coordination.definitionAttribute

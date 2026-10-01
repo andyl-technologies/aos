@@ -63,8 +63,10 @@ pub(super) fn restore_app_random_continuation() -> Result<(), LiveWhiteboxError>
 
 #[derive(Clone, Copy, Default)]
 struct LiveWhiteboxRegisters {
-    pointer: Option<NonNull<QemuPluginRegister>>,
-    length: Option<NonNull<QemuPluginRegister>>,
+    // QEMU encodes register zero as a null-valued opaque handle.
+    // Option records whether the descriptor was found, independently of its value.
+    pointer: Option<*mut QemuPluginRegister>,
+    length: Option<*mut QemuPluginRegister>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -81,6 +83,8 @@ fn whitebox_register_role(
         .strip_prefix(b"%")
         .or_else(|| raw_name.strip_prefix(b"$"))
         .unwrap_or(raw_name);
+    // Multiboot guests expose eax/ecx through the GDB description even when
+    // the system-emulation target is x86_64; OUT consumes those low halves.
     match (architecture, name) {
         (QemuPluginTargetArchitecture::X86_64, b"rax" | b"eax")
         | (QemuPluginTargetArchitecture::Aarch64, b"x0") => Some(LiveWhiteboxRegisterRole::Pointer),
@@ -91,6 +95,23 @@ fn whitebox_register_role(
 }
 
 impl LiveWhiteboxRegisters {
+    fn observe(
+        &mut self,
+        architecture: QemuPluginTargetArchitecture,
+        name: &[u8],
+        handle: *mut QemuPluginRegister,
+    ) {
+        match whitebox_register_role(architecture, name) {
+            Some(LiveWhiteboxRegisterRole::Pointer) => {
+                self.pointer = Some(handle);
+            }
+            Some(LiveWhiteboxRegisterRole::Length) => {
+                self.length = Some(handle);
+            }
+            _ => {}
+        }
+    }
+
     const fn complete(self, _architecture: QemuPluginTargetArchitecture) -> bool {
         self.pointer.is_some() && self.length.is_some()
     }
@@ -295,20 +316,7 @@ impl LiveWhiteboxState {
             // SAFETY: QEMU documents descriptor names as valid NUL-terminated
             // strings retained for the plugin lifetime.
             let raw_name = unsafe { CStr::from_ptr(descriptor.name) }.to_bytes();
-            let handle = NonNull::new(descriptor.handle);
-            // QEMU exposes the same architectural register through the active
-            // GDB description. A 32-bit multiboot guest therefore reports
-            // eax/ecx even though the system-emulation target and frozen ABI
-            // are x86_64. OUT consumes those low halves, so they are exact.
-            match whitebox_register_role(self.architecture, raw_name) {
-                Some(LiveWhiteboxRegisterRole::Pointer) => {
-                    registers.pointer = handle;
-                }
-                Some(LiveWhiteboxRegisterRole::Length) => {
-                    registers.length = handle;
-                }
-                None => {}
-            }
+            registers.observe(self.architecture, raw_name, descriptor.handle);
         }
         (self.apis.g_array_free)(array.as_ptr(), true);
         if !registers.complete(self.architecture) {
@@ -418,15 +426,12 @@ impl LiveWhiteboxState {
         Ok(())
     }
 
-    fn read_register_u64(
-        &self,
-        handle: NonNull<QemuPluginRegister>,
-    ) -> Result<u64, LiveWhiteboxError> {
+    fn read_register_u64(&self, handle: *mut QemuPluginRegister) -> Result<u64, LiveWhiteboxError> {
         let array = (self.apis.g_byte_array_new)();
         let Some(array) = NonNull::new(array) else {
             return Err(LiveWhiteboxError::ByteArrayAllocation);
         };
-        let read = (self.apis.read_register)(handle.as_ptr(), array.as_ptr());
+        let read = (self.apis.read_register)(handle, array.as_ptr());
         if !read {
             (self.apis.g_byte_array_free)(array.as_ptr(), true);
             return Err(LiveWhiteboxError::RegisterRead);
@@ -631,3 +636,7 @@ mod register_descriptor_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "live_whitebox/tests.rs"]
+mod tests;

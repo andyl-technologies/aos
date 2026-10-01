@@ -59,8 +59,8 @@
         needle = "pub fn plan(mut self, plan: Plan) -> Self";
       }
       {
-        label = "plan-entry layer entry point";
-        needle = "pub fn plan_entry(mut self, entry: PlanEntry) -> Self";
+        label = "complete event-graph plan entry point";
+        needle = "pub fn plan(mut self, plan: Plan) -> Self";
       }
       {
         label = "properties layer entry point";
@@ -112,7 +112,7 @@
       }
       {
         label = "test validates plan layer against world";
-        needle = "Err(EngineError::PlanFaultUnknownLink";
+        needle = "incompatible_world";
       }
       {
         label = "test validates properties layer against world";

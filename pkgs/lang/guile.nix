@@ -227,6 +227,8 @@ in
           pname = "lib-guile";
           library = self;
           libs = ["-lguile-3.0"];
+          includes = ["${self}/include/guile/3.0"];
+          extraDeps = [gc gmp];
           testSource = ''
             #include <libguile.h>
 

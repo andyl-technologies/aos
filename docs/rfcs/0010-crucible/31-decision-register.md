@@ -2146,6 +2146,23 @@ register.
     check is the narrower RISK-23/RISK-24 guard.
   - **Fallback:** none adopted.
 
+- **2026-09-30 Linux 7.2 qualification refresh**
+  - **Checks:** `checks.crucible.phase0.s6KaslrAslr` and
+    `checks.crucible.phase0.s11MultiVcpuFingerprint`.
+  - **Reason:** the current kernel's startup outlasts the previous S11 horizon;
+    the proof must include the guest workload and sustained SMP contention.
+  - **S11 result:** `s11_result_status=PASS`, `s11_rr_switch_quantum=4096`,
+    `s11_horizon_icount=8000000000`, `s11_extended_fingerprint_match=true`,
+    `periodic_samples_expected=80`, `periodic_samples_observed=80`, `samples=81`,
+    `workload_affinity_vcpus=0,1,2,3`, `sustained_workload_active=true`,
+    `rr_switch_trace_match=true`, and `horizon_fingerprint_match=true`.
+  - **S6 result:** `horizon_icount=6000000000`,
+    `control_fingerprint_match=true`, `randomized_fingerprint_match=true`, and
+    `randomized_bases_identical=true`, including bounded host preemption.
+  - **Scope:** retain fixed instruction horizons and every existing deterministic
+    comparison. The older records below describe their original qualifications;
+    these horizons supersede their defaults for the current kernel.
+
 - **RISK-25 / T-RISK-17 — diskless multi-vCPU RR-TCG fingerprint**
   - **Status:** PASS; the normative `-accel sim,thread=single` S11 run is green
     with no `-smp 1` fallback.

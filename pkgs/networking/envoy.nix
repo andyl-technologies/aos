@@ -1218,8 +1218,8 @@ in
     # --- Fetch-specific ---
     depsHash =
       if isDarwinCross
-      then "sha256-Uk3z32gZlcfQUDbaYDJDgniHKPIzU5lNaZwA83XM1Kk="
-      else "sha256-QRqsiL5d3IGl0q9ft1vShpSb/A7qJ+ayYuxQnQ1tOzg=";
+      then "sha256-6/knJlyWgf0AmnzKg/zGECjfQ3zbK5anDIUVJVUHVs0="
+      else "sha256-uydyo4JuyqE1e55HOtM6LidYy9XnAMnFku+1IuEhWag=";
     fetchPostPatch = "";
     bazelFetchFlags = [
       "--extra_toolchains=//bazel/nix:${
@@ -2089,6 +2089,8 @@ in
         name = "networking-envoy-native-config";
         rootfsDeps = [self renderedBootstrap pkgs.grep];
         testScript = ''
+          # Systemd creates the service log directory in a fully booted system.
+          mkdir -p /var/log/aos-pkg-envoy
           envoy --mode validate --config-path ${renderedBootstrap}
           ${pkgs.grep}/bin/grep -q 'envoy-check' ${renderedBootstrap}
           ${pkgs.grep}/bin/grep -q 'envoy.reloadable_features.check' ${renderedBootstrap}

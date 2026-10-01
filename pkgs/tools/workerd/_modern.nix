@@ -301,9 +301,15 @@ in
           "rules_cc++cc_configure_extension+local_config_cc_toolchains"
         ]
         ++ lib.optionals isSupportedCross ["+local_repository+${crossRepositoryName}"];
-      # Native and ARM64 analysis produce the same pinned dependency snapshot;
-      # local toolchain repositories are regenerated for the selected target.
-      depsHash = "sha256-FGjai5OCbqKGqWMdBnDrpcNsH7MfSk0WaVNPWbrDSqw=";
+      # Native Linux and ARM64 cross analysis produce distinct snapshots;
+      # both Darwin architectures share a third dependency snapshot.
+      # Local toolchain repositories are regenerated for the selected target.
+      depsHash =
+        if isDarwinCross
+        then "sha256-pWz9mz8EtXsux1K9bQlViPpX/89BzmtqsOiRFBDgiLE="
+        else if isArmCross
+        then "sha256-FGjai5OCbqKGqWMdBnDrpcNsH7MfSk0WaVNPWbrDSqw="
+        else "sha256-B2XsKE5brhw4DMbw0F8VHfKzVm2N6VR2ptqZIEp+FS8=";
       bazelTarget = "//src/workerd/server:workerd";
       bazelFlags =
         [

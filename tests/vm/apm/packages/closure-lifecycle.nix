@@ -68,7 +68,7 @@
         version="$1"
         runtime_store="$2"
         tool_store="$3"
-        $APR publish "$runtime_store" \
+        publish_vm_package "$runtime_store" \
           --name lifecycle-runtime \
           --version "$version" \
           --description "Runtime payload for lifecycle workflow" \
@@ -76,7 +76,7 @@
           --maintainer lifecycle@example.invalid \
           --registry lifecycle-reg \
           --no-commit
-        $APR publish "$tool_store" \
+        publish_vm_package "$tool_store" \
           --name lifecycle-tool \
           --version "$version" \
           --description "Executable tool for lifecycle workflow" \
@@ -108,7 +108,7 @@
       assert_file_contains /tmp/tool-v2-refs.out "$RUNTIME_V2_STORE" \
         "v2 tool has a real Nix reference to runtime"
 
-      $APR create lifecycle-reg
+      create_publish_registry lifecycle-reg
       REG_DIR="$REG_STORAGE/lifecycle-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       publish_version 1.0.0 "$RUNTIME_V1_STORE" "$TOOL_V1_STORE"

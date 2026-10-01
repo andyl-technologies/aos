@@ -135,11 +135,17 @@ in
           export PATH="${self}/bin:$PATH"
           export LD_LIBRARY_PATH="${self}/lib:${pkgs.libsepol}/lib:${pkgs.libselinux}/lib:$LD_LIBRARY_PATH"
 
-          # Create a minimal SELinux type enforcement file
+          # checkmodule consumes raw module syntax; policy_module is a
+          # reference-policy m4 macro and requires a separate preprocessing step.
           cat > /tmp/test_module.te << 'EOF'
-          policy_module(test_module, 1.0.0)
+          module test_module 1.0;
+
+          require {
+              class file { read };
+          }
 
           type test_t;
+          allow test_t self:file read;
           EOF
 
           echo "==> Compiling SELinux policy module with checkpolicy"

@@ -203,7 +203,12 @@ in
         pname = "lib-libslirp";
         library = self;
         libs = ["-lslirp"];
-        extraDeps = [pkgs.glib];
+        includes = [
+          "${self}/include/slirp"
+          "${pkgs.glib.dev}/include/glib-2.0"
+          "${pkgs.glib.dev}/lib/glib-2.0/include"
+        ];
+        extraDeps = [pkgs.glib pkgs.glib.dev];
         testSource = ''
           #include <libslirp.h>
           #include <stdio.h>

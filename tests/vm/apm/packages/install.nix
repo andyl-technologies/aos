@@ -84,10 +84,10 @@
       assert_store_valid "$BASIC_STORE" "install-basic-tool"
 
       echo "==> Maintainer: publish install-basic-tool and static cache"
-      $APR create install-basic-reg
+      create_publish_registry install-basic-reg
       REG_DIR="$REG_STORAGE/install-basic-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
-      $APR publish "$BASIC_STORE" \
+      publish_vm_package "$BASIC_STORE" \
         --name install-basic-tool \
         --version 1.0.0 \
         --description "Executable basic install fixture" \
@@ -284,10 +284,10 @@
         "install-with-deps has a real Nix reference to install-libfoo"
 
       echo "==> Maintainer: publish dependency, wrapper, second root, and static cache"
-      $APR create install-deps-reg
+      create_publish_registry install-deps-reg
       REG_DIR="$REG_STORAGE/install-deps-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
-      $APR publish "$BASIC_STORE" \
+      publish_vm_package "$BASIC_STORE" \
         --name install-basic-tool \
         --version 1.0.0 \
         --description "Second explicit install root fixture" \
@@ -297,7 +297,7 @@
         --no-commit
       assert_file_contains "$REG_DIR/packages/i/install-basic-tool.toml" \
         "$BASIC_HASH" "published second-root metadata records store hash"
-      $APR publish "$DEP_STORE" \
+      publish_vm_package "$DEP_STORE" \
         --name install-libfoo \
         --version 1.0.0 \
         --description "Runtime dependency install fixture" \
@@ -307,7 +307,7 @@
         --no-commit
       assert_file_contains "$REG_DIR/packages/i/install-libfoo.toml" \
         "$DEP_HASH" "published dependency metadata records store hash"
-      $APR publish "$WRAPPER_STORE" \
+      publish_vm_package "$WRAPPER_STORE" \
         --name install-with-deps \
         --version 2.0.0 \
         --description "Executable install dependency fixture" \
