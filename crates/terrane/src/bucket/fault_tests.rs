@@ -24,6 +24,14 @@ struct FaultFs {
 #[async_trait::async_trait]
 impl LocalFs for FaultFs {
     type Lock = crate::store::TokioFileLock;
+
+    async fn initialize_publication(
+        &self,
+        request: crate::store::NativePublicationInitialization,
+    ) -> Result<crate::store::NativePublicationInitializationOutcome, StoreFailure> {
+        TokioLocalFs.initialize_publication(request).await
+    }
+
     async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>> {
         TokioLocalFs.random_bytes(length).await
     }
