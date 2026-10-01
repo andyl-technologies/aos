@@ -8,3 +8,7 @@
 /// Executes fixed collector lease publication under genuinely retained inputs.
 #[path = "../../gc/effects.rs"]
 pub(crate) mod collection;
+
+/// Publishes fixed mark checkpoints under genuine lease and control receipts.
+#[path = "../../gc/checkpoint_effects.rs"]
+pub(crate) mod collection_checkpoints;

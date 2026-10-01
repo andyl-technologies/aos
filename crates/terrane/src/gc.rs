@@ -3,3 +3,7 @@
 /// Publishes and renews whole collector leases through native selected transactions.
 #[cfg(feature = "std")]
 pub mod lease;
+
+/// Coordinates selected root snapshots and resumable mark checkpoints.
+#[cfg(feature = "std")]
+pub mod runner;
