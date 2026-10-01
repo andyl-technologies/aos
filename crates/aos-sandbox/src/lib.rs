@@ -160,6 +160,8 @@ pub mod runtime_execution;
 #[cfg(target_os = "linux")]
 pub mod runtime_scope;
 pub mod sandbox_spec_state;
+#[cfg(target_os = "linux")]
+mod systemd_property_data;
 
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
