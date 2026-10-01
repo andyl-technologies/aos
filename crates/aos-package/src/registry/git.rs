@@ -1646,8 +1646,8 @@ fn cache_tree_is_owned_elsewhere(relative_ref: &str) -> bool {
 
 /// Replace `output_dir` with the contents of `commit:tree_path/`.
 ///
-/// The existing directory is removed first so deletions in the registry
-/// propagate. When the tree path is absent from the commit,
+/// The repository layer verifies and reuses identical cached trees, replacing
+/// mismatches so deletions propagate. When the tree path is absent from the commit,
 /// `create_empty_when_absent` selects between leaving an empty directory
 /// (the historical behavior for `packages/`) and leaving no directory at
 /// all (required for `store/`, where presence is meaningful).
@@ -1658,12 +1658,6 @@ async fn extract_tree_dir(
     output_dir: &Path,
     create_empty_when_absent: bool,
 ) -> Result<()> {
-    if output_dir.exists() {
-        tokio::fs::remove_dir_all(output_dir)
-            .await
-            .with_context(|| format!("cleaning {}", output_dir.display()))?;
-    }
-
     // libgit2 tree walk replaces `git archive <commit> <tree_path>/ | tar -x
     // --strip-components=1`: it materializes `commit:tree_path/` directly,
     // preserving file modes and symlinks, and handles the absent-path case via
@@ -2032,6 +2026,7 @@ fn is_leap_year(year: u64) -> bool {
 mod tests {
     use super::*;
     use crate::types::SigningConfig;
+    use std::os::unix::fs::MetadataExt;
     use tokio::process::Command;
 
     /// Build a `git` command for fixture setup with the developer's global
@@ -2544,6 +2539,15 @@ mod tests {
         extract_packages(&repo_dir, &commit, &output_dir)
             .await
             .unwrap();
+
+        // The caller must preserve the cache long enough for verified reuse.
+        let before = std::fs::metadata(output_dir.join("c/curl.toml")).unwrap();
+        extract_packages(&repo_dir, &commit, &output_dir)
+            .await
+            .unwrap();
+        let after = std::fs::metadata(output_dir.join("c/curl.toml")).unwrap();
+        assert_eq!(before.ino(), after.ino());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
 
         // Verify extracted files.
         assert!(output_dir.join("c").join("curl.toml").exists());
