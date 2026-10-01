@@ -1,15 +1,19 @@
 //! Closed registry identities and release-channel policy.
 //!
 //! `andyl/main` and `andyl/testing` are separate security and assurance
-//! domains. Mutable channels classify releases inside a registry; they do not
-//! replace that boundary. A destructive testing-root reset advances the
-//! registry identity (`andyl/testing-v2`, `andyl/testing-v3`, and so on), so an
-//! old image cannot silently accept a replacement out-of-band root.
+//! domains: they differ in key custody, publication infrastructure, and data
+//! lifecycle, not in the maturity of the software they carry. Mutable channels
+//! classify releases inside a registry; they do not replace that boundary. A
+//! destructive testing-root reset advances the registry identity
+//! (`andyl/testing-v2`, `andyl/testing-v3`, and so on), so an old image cannot
+//! silently accept a replacement out-of-band root.
 //!
 //! Channels have a *kind*: `edge`, `candidate`, or `stable`. A per-train
 //! channel such as `stable-2026.3` has kind `stable`; the kind is the prefix
-//! before the first `-`. The testing tier carries only `edge`; the production
-//! tier carries `candidate` and `stable` and never `edge`.
+//! before the first `-`. The production tier carries every kind, so the
+//! integration stream ships through the same keys and pipeline as supported
+//! releases. The testing tier carries only `edge`: it exists to rehearse
+//! pipeline and key changes, not to publish a second supported stream.
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -25,12 +29,17 @@ pub const TESTING_REGISTRY: &str = "andyl/testing";
 pub const CHANNEL_KINDS: [&str; 3] = ["edge", "candidate", "stable"];
 
 /// Pipeline assurance attached to a supported registry identity.
+///
+/// The tier describes the infrastructure behind a registry: key custody,
+/// signing thresholds, and publication pipeline. It says nothing about the
+/// maturity of a release, which is the channel's job.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RegistryTier {
-    /// Strictly assured releases in every software channel.
+    /// Hardware-backed custody and strict provenance for every channel,
+    /// including `edge`.
     Production,
-    /// Releases from the experimental build and publication pipeline.
+    /// The experimental build and publication pipeline; carries `edge` only.
     Testing,
 }
 
@@ -45,11 +54,15 @@ impl RegistryTier {
     }
 
     /// Returns the channel kinds a registry of this tier may carry.
+    ///
+    /// Production carries every kind. Testing carries only `edge`, because a
+    /// testing release never graduates and a second candidate or stable stream
+    /// on experimental infrastructure would only invite confusion.
     #[must_use]
     pub const fn allowed_channel_kinds(self) -> &'static [&'static str] {
         match self {
             Self::Testing => &["edge"],
-            Self::Production => &["candidate", "stable"],
+            Self::Production => &CHANNEL_KINDS,
         }
     }
 }
@@ -96,7 +109,7 @@ impl RegistryPolicy {
     ///
     /// # Errors
     /// Returns an error for a malformed channel name or a channel kind outside
-    /// the tier's closed set, such as `edge` on `andyl/main`.
+    /// the tier's closed set, such as `candidate` on `andyl/testing`.
     pub fn require_release(self, channels: &[String]) -> Result<()> {
         for channel in channels {
             let kind = channel_kind(channel)?;
@@ -169,7 +182,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn testing_carries_edge_only_and_production_never_carries_edge() {
+    fn testing_carries_edge_only_and_production_carries_every_kind() {
         for registry in [TESTING_REGISTRY, "andyl/testing-v2"] {
             let policy = registry_policy(registry).unwrap();
             assert!(!policy.requires_production_assurance());
@@ -180,10 +193,15 @@ mod tests {
 
         let main = registry_policy(MAIN_REGISTRY).unwrap();
         assert!(main.requires_production_assurance());
-        assert!(main.require_release(&["edge".into()]).is_err());
+        assert_eq!(main.allowed_channel_kinds(), CHANNEL_KINDS);
         assert!(
-            main.require_release(&["candidate".into(), "stable".into(), "stable-2026.3".into()])
-                .is_ok()
+            main.require_release(&[
+                "edge".into(),
+                "candidate".into(),
+                "stable".into(),
+                "stable-2026.3".into()
+            ])
+            .is_ok()
         );
         assert!(main.require_release(&["unknown".into()]).is_err());
     }
