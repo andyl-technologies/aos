@@ -100,6 +100,7 @@ struct Column {
     name: String,
     policy: Policy,
 }
+
 struct Table {
     family: String,
     columns: Vec<Column>,
@@ -349,11 +350,13 @@ struct Projection {
     family: String,
     cells: Vec<Cell>,
 }
+
 #[derive(Serialize)]
 struct Cell {
     column: String,
     value: CellValue,
 }
+
 #[derive(Serialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 enum CellValue {
