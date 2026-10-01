@@ -467,7 +467,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   pass scoped AOS source formatting. They preserve per-read physical namespace
   checks, detached-index exclusion and represented permanent-burn completeness;
   the older collector snapshot lacks those later backend corrections. The actual
-  trunk native build now reports 27 diagnostics, down from the lease adoption's
+  trunk native build then reported 27 diagnostics, down from the lease adoption's
   64, with real Guard types and consumers still absent. This source integration
   does not qualify the full task; Guard/reference integration precedes current
   runtime gates. Nine reviewed backend fixture paths now match the frozen
@@ -486,9 +486,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   protected installation APIs include the collector fixture's namespace and
   registration types; remaining inference diagnostics are retained separately.
   After native domain and backend-fixture adoption and the pure provenance/
-  derived closure, the actual current aggregate stops in package compilation
-  with 27 missing Guard/consumer and resulting inference diagnostics; its
-  dependent role-selection gate fails. No native gate or task merge is qualified.
+  derived closure, the aggregate stopped in package compilation with 27 missing
+  Guard/consumer and resulting inference diagnostics. Nineteen fully reviewed
+  Guard paths now retain actual current requests, complete protected controls,
+  original bootstrap associations and the injected clock through publication.
+  They match the frozen reference source while preserving the trunk collection
+  hook and shared interfaces. Mandatory repository formatting passes. The latest
+  native build and actual aggregate's `bundle-verify` compilation both stop on
+  29 missing algebra/ref-advance API diagnostics, before runtime tests. Native
+  admission still explicitly refuses disclosure certificates until their complete
+  authenticated publication path exists. No native gate or task merge is qualified.
   Qualification exposed
   an overwrite fixture still targeting the previous rename primitive and three
   fixtures retaining their own namespace receipts while waiting to reacquire.
@@ -668,7 +675,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Source parity preserves the existing private producer, executor and clock
   anchors. This adoption does not claim a current trunk lease gate pass; lower
   backend and reference/Guard integration still precede runtime qualification.
-  The current native build reaches type checking and fails on 64 diagnostics,
+  That lease-only adoption reached type checking and failed on 64 diagnostics,
   including the absent lower-backend artifact/retained-holder APIs and actual
   Guard types. No stub, weaker receipt or lint suppression replaces those
   remaining implementations.
@@ -715,8 +722,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   independent storage, namespace configuration and administrative request types.
   Their complete source matches the reference candidate; no manifest, lockfile,
   Guard or publication interface changed. Mandatory repository formatting passes.
-  The current native production build still stops on 27 missing Guard/consumer
-  and resulting inference diagnostics before runtime qualification. Actual
+  The subsequent reviewed Guard source adoption resolves those missing symbols.
+  The current native production build stops on 29 missing algebra/ref-advance
+  API diagnostics before runtime qualification. Actual
   current-authority disclosure, deletion and domain gates remain incomplete.
   — satisfies DOM-1 to DOM-11, DOM-16, DOM-17, DOM-20, DOM-24;
   `checks.terrane.gates.dom-reference-order`,
