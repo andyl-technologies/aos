@@ -36,6 +36,7 @@ use sha2::{Digest as _, Sha256};
 use format::{FloorCheckpointV1, FloorCutV1, FloorIntentV1};
 
 pub(crate) use format::FloorProfileV1;
+pub(crate) use provisioning::ModePinV1;
 pub(crate) use backend::{
     AuthenticatedNvObservationV1, BrokerPhysicalOpenV1, HelperObservationV1, HelperOperationV1,
     LOCK_ACK_BYTES, MeasuredHelperImageV1, NV_ATTRIBUTES_WRITTEN, RESPONSE_BYTES,

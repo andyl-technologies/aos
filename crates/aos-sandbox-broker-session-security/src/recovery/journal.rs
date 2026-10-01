@@ -28,6 +28,7 @@ pub(crate) use tpm_floor::{
     encode_auth_v2, encode_hello_v2, encode_request_v2, require_broker_floor_helper_v1,
     require_broker_floor_owner_v1, require_lock_ack_v2,
 };
+pub(crate) use tpm_floor::ModePinV1;
 pub(crate) use storage_inventory_archive::ArchivedStorageInventoryHeadV1;
 
 pub(crate) use historical_checkpoint::HistoricalSessionCheckpointV1;
