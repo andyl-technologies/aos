@@ -363,6 +363,11 @@ impl LocalStageStore {
         for pointer in &candidate.publication {
             if keymap::is_loose_git_object_path(&pointer.path) {
                 import_loose(&pointer.path, &pointer.bytes)?;
+            } else if pointer.path.starts_with("releases/") {
+                // Pack indexes and per-release server metadata are canonical
+                // prepared pointers. Retain their exact reviewed bytes beside
+                // the imported packs for subsequent publication adapters.
+                self.write_new(&git_dir.join(&pointer.path), &pointer.bytes)?;
             }
         }
 
