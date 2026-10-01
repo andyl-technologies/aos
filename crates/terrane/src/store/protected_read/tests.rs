@@ -1,5 +1,10 @@
 //! Checks actual native protected records and ordered policy refusal.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "fixture failures and missing native observations are test assertions"
+)]
+
 use super::NativeProtectedRead;
 use crate::store::{LocalFs, StoreErrorKind, TokioLocalFs};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};

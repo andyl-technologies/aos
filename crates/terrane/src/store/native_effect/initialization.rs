@@ -58,7 +58,7 @@ pub enum NativePublicationInitializationOutcome {
     /// Requires complete existing registration and selected-chain verification.
     Existing,
     /// Retains the actual creator's opened directories, exclusion and staging.
-    Fresh(NativePendingRoot),
+    Fresh(Box<NativePendingRoot>),
 }
 
 /// Retains genuine native activation inputs through physical worker completion.
