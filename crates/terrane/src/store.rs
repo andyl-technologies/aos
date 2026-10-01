@@ -868,6 +868,30 @@ pub trait LocalFs {
     /// Returns an I/O error if metadata cannot be read.
     async fn symlink_metadata(&self, path: &std::path::Path) -> std::io::Result<std::fs::Metadata>;
 
+    /// Returns nofollow metadata for every requested path in its original order.
+    ///
+    /// Each entry preserves its actual metadata result, including an individual
+    /// read failure. The default performs the existing individual operations;
+    /// native bindings may batch worker dispatch without caching observations
+    /// or treating the reads as atomic. Validation in request order preserves
+    /// an earlier physical-policy rejection ahead of a later read failure.
+    /// Callers validate the complete result count and each required physical
+    /// predicate, and retain their existing initial and final fences.
+    ///
+    /// # Errors
+    /// Returns a native worker or runtime failure. Individual metadata failures
+    /// remain in their original positions in the returned vector.
+    async fn symlink_metadata_batch(
+        &self,
+        paths: &[std::path::PathBuf],
+    ) -> std::io::Result<Vec<std::io::Result<std::fs::Metadata>>> {
+        let mut observations = Vec::with_capacity(paths.len());
+        for path in paths {
+            observations.push(self.symlink_metadata(path).await);
+        }
+        Ok(observations)
+    }
+
     /// Removes a file after GC, eviction, or temporary-write cleanup.
     ///
     /// # Errors

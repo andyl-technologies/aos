@@ -304,6 +304,27 @@ impl LocalFs for TokioLocalFs {
         tokio::fs::symlink_metadata(path).await
     }
 
+    async fn symlink_metadata_batch(
+        &self,
+        paths: &[std::path::PathBuf],
+    ) -> std::io::Result<Vec<std::io::Result<std::fs::Metadata>>> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        tokio::runtime::Handle::try_current().map_err(std::io::Error::other)?;
+        let paths = paths.to_vec();
+
+        let observations = tokio::task::spawn_blocking(move || {
+            paths
+                .iter()
+                .map(std::fs::symlink_metadata)
+                .collect::<Vec<_>>()
+        })
+        .await
+        .map_err(std::io::Error::other)?;
+        Ok(observations)
+    }
+
     async fn remove_file(&self, path: &std::path::Path) -> std::io::Result<()> {
         tokio::fs::remove_file(path).await
     }
