@@ -560,7 +560,8 @@ mod tests {
     }
 
     #[test]
-    fn setup_probe_preserves_the_builders_absolute_generation_overlay_read_only() {
+    fn setup_probe_preserves_the_builders_absolute_generation_overlay_read_only()
+    -> Result<(), Box<dyn std::error::Error>> {
         use crate::{QemuLaunchArtifact, QemuRootImageFormat, QemuVmLaunchConfig};
 
         let kernel = "/nix/store/00000000000000000000000000000000-kernel/bzImage";
@@ -582,10 +583,9 @@ mod tests {
             )
             .with_root_image_format(format)
             .with_root_overlay_absolute_path(overlay.clone());
-            vm.validate().expect("production absolute overlay config");
+            vm.validate()?;
 
-            let probe = x86_whitebox_probe_args_from(&vm.qemu_args())
-                .expect("probe accepts the production builder's absolute path");
+            let probe = x86_whitebox_probe_args_from(&vm.qemu_args())?;
             let expected = format!(
                 "id={ROOT_DRIVE_ID},node-name={ROOT_OVERLAY_NODE_NAME},file={},backing.driver={},backing.file.driver=file,backing.file.filename={backing},if=none,format=qcow2,cache=none,aio=threads,discard=unmap,readonly=on",
                 overlay.display(),
@@ -598,6 +598,8 @@ mod tests {
                     .any(|pair| pair[0] == "-drive" && pair[1] == expected)
             );
         }
+
+        Ok(())
     }
 
     #[test]
