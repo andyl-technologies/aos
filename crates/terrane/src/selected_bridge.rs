@@ -163,11 +163,12 @@ pub(crate) enum GcCheckpointPublication {
         /// Fixed canonical marks and their exact integrity pointers.
         revisions: Vec<GcMarkRevision>,
     },
-    /// Stages final shards after marking completes, then selects sweep phase.
+    /// Verifies the completed selected shards, then selects sweep phase.
     FinishMark {
         /// Whole state whose marking frontier has been genuinely completed.
         state: terrane_core::gc::GcState,
-        /// Final marks matching the selected incremental shard contents.
+        /// Optional final marks matching the selected incremental shard contents.
+        /// Keeping the immutable revisions selected permits this list to be empty.
         final_marks: Vec<terrane_core::gc::GcMark>,
     },
 }
