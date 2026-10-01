@@ -61,7 +61,7 @@ pub(super) async fn execute(
                 (200..300).contains(&recovery_status),
                 "credential probe recovery listing refused"
             );
-            let bytes = crate::direct_digest::read_bounded_native(recovery, 1024 * 1024).await?;
+            let bytes = crate::direct_digest::read_bounded_native(recovery, 512 * 1024).await?;
             let uploads =
                 surface.parse_exact_multipart_uploads(&path, std::str::from_utf8(&bytes)?)?;
             evidence.insert("recoveredMultipartUploads".into(), uploads.len().into());
@@ -91,7 +91,7 @@ pub(super) async fn execute(
             evidence.insert("multipartCreateStatus".into(), status.into());
             if (200..300).contains(&status) {
                 let bytes =
-                    crate::direct_digest::read_bounded_native(response, 1024 * 1024).await?;
+                    crate::direct_digest::read_bounded_native(response, 512 * 1024).await?;
                 let upload_id = aos_hub_core::s3surface::parse_multipart_upload_id(
                     std::str::from_utf8(&bytes)?,
                 )?;
