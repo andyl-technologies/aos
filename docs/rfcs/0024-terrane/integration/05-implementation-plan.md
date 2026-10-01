@@ -627,6 +627,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   strict Clippy remains blocked by 22 inherited
   unfinished-production diagnostics. Native source integration, runner-wide
   lease fencing and complete gate qualification remain pending.
+  The nine reviewed native lease paths now match the frozen qualified collector
+  graph on the trunk and pass scoped AOS source formatting. The genuine lease
+  producer and fixed executor retain the actual clock, namespace and consumed
+  registration controls; final selection acknowledgment refreshes that same
+  clock. Native and Rc fixtures forward initialization to their actual binding.
+  Source parity preserves the existing private producer, executor and clock
+  anchors. This adoption does not claim a current trunk lease gate pass; lower
+  backend and reference/Guard integration still precede runtime qualification.
+  The current native build reaches type checking and fails on 64 diagnostics,
+  including the absent lower-backend artifact/retained-holder APIs and actual
+  Guard types. No stub, weaker receipt or lint suppression replaces those
+  remaining implementations.
   Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,
