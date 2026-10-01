@@ -18,6 +18,8 @@ mod format;
 mod gateway_funding;
 #[cfg(target_os = "linux")]
 mod gateway_registry;
+#[cfg(target_os = "linux")]
+mod gateway_service;
 mod history;
 #[cfg(all(target_os = "linux", feature = "git-helper-mechanics"))]
 mod helper_process;
@@ -61,6 +63,8 @@ pub use durable_payload::{
     encode_git_durable_payload_v1,
 };
 pub use format::{decode_git_exchange_plan_v1, encode_git_exchange_plan_v1};
+#[cfg(target_os = "linux")]
+pub use gateway_service::{GitGatewayServiceErrorV1, run_git_gateway_transport_from_environment_v1};
 pub use history::{
     GitDurableHistoryV1, GitExportHistoryRecordV1, GitPackLeaseV1, GitPublicationRecordV1,
     GitReceiveHistoryRecordV1, GitReceivePhaseV1, GitRepositoryStateV1,

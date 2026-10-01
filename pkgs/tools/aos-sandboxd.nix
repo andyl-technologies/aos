@@ -55,7 +55,7 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES ${mechanicsFeature} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES ${mechanicsFeature} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-git-gateway --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${mechanicsFeature} -p aos-sandbox -p aos-sandbox-broker-session-security"
     ];
     buildDeps = [buildProtobuf gitHelperImages];
@@ -66,7 +66,7 @@ in
     pname = "aos-sandboxd";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "${mechanicsFeature} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher";
+    cargoFlags = "${mechanicsFeature} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-git-gateway --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher";
     checkType = "debug";
     # Keep the core suite when moving process ownership into the transport crate.
     cargoTestFlags = "${mechanicsFeature} -p aos-sandbox -p aos-sandbox-broker-session-security";
@@ -77,6 +77,7 @@ in
 
     postInstall = ''
       test -x "$out/bin/aos-sandboxd"
+      test -x "$out/bin/aos-sandbox-git-gateway"
       test -x "$out/bin/aos-sandbox-entitlement-sign"
       test -x "$out/bin/aos-sandbox-policy-authorityd"
       test -x "$out/bin/aos-sandbox-cache-signerd"

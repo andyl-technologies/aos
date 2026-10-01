@@ -76,13 +76,21 @@ impl GatewayTransportRegistryV1 {
     /// # Errors
     /// Preserves fixed credential, certificate and registration rejection.
     pub(super) fn from_systemd_credentials() -> Result<Self, PublicApiSessionError> {
-        Ok(Self {
-            acceptor: Arc::new(PublicApiSessionAcceptor::from_systemd_credentials()?),
+        Ok(Self::from_fixed_acceptor(Arc::new(
+            PublicApiSessionAcceptor::from_systemd_credentials()?,
+        )))
+    }
+
+    // Only the fixed constructor and genuine service owner share this acceptor.
+    // This private seam neither admits caller trust nor duplicates originals.
+    pub(super) fn from_fixed_acceptor(acceptor: Arc<PublicApiSessionAcceptor>) -> Self {
+        Self {
+            acceptor,
             entry: None,
             funding: GatewayFundingV1::new(),
             failure: None,
             retirement_debt: None,
-        })
+        }
     }
 
     /// Funds actual backing before polling the original listener acceptance.

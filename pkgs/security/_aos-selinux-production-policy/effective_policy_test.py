@@ -201,6 +201,73 @@ FAKE_SETOOLS = SimpleNamespace(
 class EffectivePolicyTest(unittest.TestCase):
     """Exercises positive, negative, conditional, and permissive gates."""
 
+    def test_gateway_is_enforcing_but_not_a_writer_or_default_entry(self) -> None:
+        owner = effective_policy.owner_policy
+        self.assertNotIn("git_gateway", owner.OWNERS)
+        self.assertIn(owner.GATEWAY, effective_policy.ENFORCING_DOMAINS)
+        self.assertIn(owner.GATEWAY, owner.NO_DEFAULT_ENTRY)
+
+        policy = FakePolicy()
+        policy.permissive.add(owner.GATEWAY)
+        with self.assertRaisesRegex(ValueError, "permissive"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_gateway_requires_explicit_entry_and_read_only_hard_envelope_cells(self) -> None:
+        owner = effective_policy.owner_policy
+        for target, object_class, permission in (
+            (owner.GATEWAY_EXECUTABLE, "file", "entrypoint"),
+            (owner.GATEWAY_CREDENTIAL, "file", "read"),
+            ("cgroup_t", "file", "read"),
+            ("systemd_unit_t", "service", "status"),
+            (owner.GATEWAY, "tcp_socket", "listen"),
+        ):
+            with self.subTest(target=target, permission=permission):
+                access = effective_policy.Access(owner.GATEWAY, target, object_class, permission)
+                self.assertIn(access, effective_policy.POSITIVE_ACCESS)
+                self.assert_missing_allow_rejected(access)
+
+    def test_gateway_rejects_automatic_shared_binary_entry(self) -> None:
+        owner = effective_policy.owner_policy
+        policy = FakePolicy()
+        transition = effective_policy.Transition(
+            "init_t", owner.GATEWAY_EXECUTABLE, "process", owner.GATEWAY,
+        )
+        policy.transitions[transition] = [
+            FakeRule("automatic Gateway entry", default=transition.default),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "automatic entry transition"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_gateway_refuses_manager_writer_helper_outbound_and_foreign_custody(self) -> None:
+        owner = effective_policy.owner_policy
+        for target, object_class, permission in (
+            ("systemd_unit_t", "service", "start"),
+            ("init_t", "system", "reload"),
+            ("cgroup_t", "file", "write"),
+            ("aos_sandbox_controller_state_t", "file", "open"),
+            ("aos_sandbox_source_journal_t", "file", "read"),
+            ("aos_method46_tpm_device_t", "chr_file", "open"),
+            ("aos_method46_controller_helper_t", "process", "transition"),
+            ("port_t", "tcp_socket", "name_connect"),
+            (owner.GATEWAY, "udp_socket", "create"),
+        ):
+            with self.subTest(target=target, permission=permission):
+                self.assert_forbidden_allow_rejected(
+                    effective_policy.Access(owner.GATEWAY, target, object_class, permission)
+                )
+
+    def test_gateway_root_custody_fails_the_existing_all_source_cut_first(self) -> None:
+        policy = FakePolicy()
+        access = effective_policy.Access(
+            effective_policy.owner_policy.GATEWAY,
+            "aos_sandbox_policy_authority_t", "fd", "use",
+        )
+        policy.allows[access] = [FakeRule("foreign Gateway Root custody")]
+
+        with self.assertRaisesRegex(ValueError, "foreign normal Root custody grant exists"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def assert_missing_allow_rejected(self, access: effective_policy.Access) -> None:
         """Remove one required rule and require the linked-policy check to fail."""
         policy = FakePolicy()

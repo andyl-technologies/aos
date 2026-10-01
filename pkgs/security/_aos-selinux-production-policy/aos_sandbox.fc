@@ -6,6 +6,7 @@
 /(nix|nix\.lower)/store/@AOS_FUSE_WORKER_BASENAME_REGEX@/bin/aos-filesystem-fuse-worker -- system_u:object_r:aos_filesystem_fuse_worker_exec_t
 /(nix|nix\.lower)/store/@AOS_ZFS_WORKER_BASENAME_REGEX@/bin/aos-sandbox-guest-root-publisher -- system_u:object_r:aos_sandbox_guest_root_publisher_exec_t
 /(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandboxd -- system_u:object_r:aos_sandbox_controller_exec_t
+/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-git-gateway -- system_u:object_r:aos_sandbox_git_gateway_exec_t
 /(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-policy-authorityd -- system_u:object_r:aos_sandbox_policy_authority_exec_t
 /(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-source-signerd -- system_u:object_r:aos_sandbox_source_signer_exec_t
 /(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-cache-signerd -- system_u:object_r:aos_sandbox_cache_signer_exec_t
@@ -39,6 +40,7 @@
 /run/aos/sandbox-cache-signerd\.sock -s system_u:object_r:aos_sandbox_cache_signer_socket_t
 /run/credentials/aos-sandbox-source-signerd\.service(/.*)? system_u:object_r:aos_sandbox_source_signer_credential_t
 /run/credentials/aos-sandbox-cache-signerd\.service(/.*)? system_u:object_r:aos_sandbox_cache_signer_credential_t
+/run/credentials/aos-sandbox-git-gateway\.service(/.*)? system_u:object_r:aos_sandbox_git_gateway_credential_t
 /sysroot -d system_u:object_r:root_t
 
 /var/lib/aos/sandbox-network -d system_u:object_r:aos_sandbox_network_root_t

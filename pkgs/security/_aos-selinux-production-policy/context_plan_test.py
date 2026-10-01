@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import struct
 import tempfile
 import unittest
@@ -187,6 +188,32 @@ class ElfClassificationTest(unittest.TestCase):
 
 class PlanSemanticsTest(unittest.TestCase):
     """Covers alias authority, conflicts, hardlinks, and deterministic output."""
+
+    def test_gateway_executable_labels_only_the_exact_selected_package_sibling(self) -> None:
+        source = Path(__file__).with_name("aos_sandbox.fc").read_text()
+        row = next(line for line in source.splitlines() if "/bin/aos-sandbox-git-gateway --" in line)
+        pattern, marker, context = row.split()
+        package = "a" * 32 + "-aos-sandboxd-1"
+        pattern = pattern.replace("@AOS_CONTROLLER_BASENAME_REGEX@", re.escape(package))
+
+        self.assertEqual(marker, "--")
+        self.assertEqual(context, "system_u:object_r:aos_sandbox_git_gateway_exec_t")
+        for prefix in ("/nix/store", "/nix.lower/store"):
+            self.assertIsNotNone(re.fullmatch(pattern, f"{prefix}/{package}/bin/aos-sandbox-git-gateway"))
+            for sibling in ("aos-sandboxd", "aos-sandbox-git-gateway-copy"):
+                self.assertIsNone(re.fullmatch(pattern, f"{prefix}/{package}/bin/{sibling}"))
+        self.assertIsNone(re.fullmatch(pattern, f"/nix/store/{'b' * 32}-aos-sandboxd-1/bin/aos-sandbox-git-gateway"))
+
+    def test_gateway_credentials_label_only_the_exact_service_directory(self) -> None:
+        source = Path(__file__).with_name("aos_sandbox.fc").read_text()
+        row = next(line for line in source.splitlines() if line.startswith("/run/credentials/aos-sandbox-git-gateway"))
+        pattern, context = row.split()
+
+        self.assertEqual(context, "system_u:object_r:aos_sandbox_git_gateway_credential_t")
+        for suffix in ("", "/public-api-server-key"):
+            self.assertIsNotNone(re.fullmatch(pattern, "/run/credentials/aos-sandbox-git-gateway.service" + suffix))
+        for sibling in ("aos-sandboxd.service", "aos-sandbox-git-gateway.service-copy"):
+            self.assertIsNone(re.fullmatch(pattern, "/run/credentials/" + sibling))
 
     def test_generated_context_preserves_non_mls_policy_shape(self) -> None:
         self.assertEqual(

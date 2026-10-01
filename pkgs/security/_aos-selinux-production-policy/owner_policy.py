@@ -16,8 +16,11 @@ PREPARER_DOMAINS = (
     "aos_sandbox_cache_view_preparer_t",
     "aos_sandbox_source_view_preparer_t",
 )
-ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS)
-NO_DEFAULT_ENTRY = (*OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS)
+GATEWAY = "aos_sandbox_git_gateway_t"
+GATEWAY_EXECUTABLE = "aos_sandbox_git_gateway_exec_t"
+GATEWAY_CREDENTIAL = "aos_sandbox_git_gateway_credential_t"
+ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY)
+NO_DEFAULT_ENTRY = (*OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY)
 ROOT_CUSTODY_CUTS = (
     ("fd", "use"),
     ("unix_stream_socket", "read"),
@@ -108,6 +111,64 @@ def matrix(Access, Transition, accesses, ordinary_domains):
             domain, "sysctl_kernel_t", "file", ("append", "setattr", "write"),
         ))
         negative.append(Access(domain, "aos_method46_tpm_device_t", "chr_file", "open"))
+
+    # Gateway is not a writer-owning OWNERS role. The same checker observes
+    # its sole explicit entry, transport/readback cells and authority denials.
+    positive.extend(accesses(
+        "init_t", GATEWAY_EXECUTABLE, "file",
+        ("execute", "execute_no_trans", "getattr", "map", "open", "read"),
+    ))
+    positive.extend((
+        Access("init_t", GATEWAY, "process", "transition"),
+        Access("init_t", GATEWAY, "process2", "nnp_transition"),
+        Access(GATEWAY, GATEWAY_EXECUTABLE, "file", "entrypoint"),
+        Access(GATEWAY_CREDENTIAL, "tmpfs_t", "filesystem", "associate"),
+        Access(GATEWAY, "systemd_unit_t", "service", "status"),
+        Access(GATEWAY, "init_t", "system", "status"),
+        Access(GATEWAY, "proc_t", "filesystem", "getattr"),
+        Access(GATEWAY, "security_t", "filesystem", "getattr"),
+        Access(GATEWAY, "node_t", "tcp_socket", "node_bind"),
+        Access(GATEWAY, "unreserved_port_type", "tcp_socket", "name_bind"),
+        Access(GATEWAY, "unlabeled_t", "tcp_socket", "recvfrom"),
+        Access(GATEWAY, "unlabeled_t", "peer", "recv"),
+    ))
+    for target in (GATEWAY_CREDENTIAL, "cgroup_t", "sysctl_kernel_t", "systemd_unit_t", "usr_t", "security_t"):
+        positive.extend(accesses(GATEWAY, target, "file", file_read))
+    positive.extend(accesses(
+        GATEWAY, GATEWAY, "tcp_socket",
+        ("accept", "bind", "create", "getattr", "getopt", "listen", "read", "setopt", "shutdown", "write"),
+    ))
+    positive.extend(accesses(GATEWAY, "netif_t", "netif", ("egress", "ingress")))
+    positive.extend(accesses(GATEWAY, "node_t", "node", ("recvfrom", "sendto")))
+    positive.extend(accesses(GATEWAY, "unlabeled_t", "packet", ("recv", "send")))
+
+    for permission in ("start", "stop", "reload", "enable", "disable"):
+        negative.append(Access(GATEWAY, "*", "service", permission))
+    for permission in ("start", "stop", "reload", "reboot", "halt"):
+        negative.append(Access(GATEWAY, "*", "system", permission))
+    for target in (
+        "cgroup_t", "sysctl_kernel_t", "aos_sandbox_source_journal_t",
+        "aos_sandbox_cache_journal_t", "aos_sandbox_cache_object_t",
+        *(f"aos_sandbox_{role}_state_t" for role in OWNERS),
+    ):
+        negative.extend(accesses(GATEWAY, target, "file", file_mutate))
+        negative.extend(accesses(GATEWAY, target, "dir", dir_mutate))
+    for target in (
+        "aos_sandbox_source_journal_t", "aos_sandbox_cache_journal_t",
+        "aos_sandbox_cache_object_t", *(f"aos_sandbox_{role}_state_t" for role in OWNERS),
+    ):
+        negative.extend(accesses(GATEWAY, target, "file", ("open", "read")))
+    negative.extend(accesses(GATEWAY, "*", "file", ("execute_no_trans",)))
+    negative.append(Access(GATEWAY, "*", "tcp_socket", "name_connect"))
+    negative.append(Access(GATEWAY, "*", "udp_socket", "create"))
+    negative.append(Access(GATEWAY, "*", "rawip_socket", "create"))
+    negative.append(Access(GATEWAY, "aos_method46_tpm_device_t", "chr_file", "open"))
+    for helper in HELPER_DOMAINS:
+        negative.append(Access(GATEWAY, helper, "process", "transition"))
+    for other in all_roles:
+        if other not in (GATEWAY, "init_t"):
+            negative.extend(accesses(other, GATEWAY_CREDENTIAL, "file", ("open", "read", *file_mutate)))
+            negative.extend(accesses(other, GATEWAY_CREDENTIAL, "dir", dir_mutate))
 
     root = "aos_sandbox_policy_authority_t"
     positive.extend(accesses(root, "init_exec_t", "file", ("getattr", "read")))
