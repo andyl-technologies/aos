@@ -3,6 +3,101 @@
 use super::*;
 
 #[test]
+fn batched_choice_and_request_roots_match_sequential_owner_edits() {
+    let (repository, lineage, policy) = fixture();
+    let campaign = "batched-discovery";
+    repository
+        .create_funded(campaign, &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+
+    for ordinal in 0..8 {
+        let request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            &format!("batch-root-{ordinal}"),
+        );
+        let prior = repository.head(campaign).expect("prior head");
+        let discovered = repository
+            .discover_operator_choice_opportunity(
+                campaign,
+                prior.snapshot_id(),
+                request.parent(),
+                request.opportunity(),
+            )
+            .expect("discover choice");
+        let choice = repository.head(campaign).expect("choice head");
+        let mut sequential_graph = prior.snapshot().roots().graph;
+        let index = repository
+            .merkle
+            .get(choice.snapshot().roots().graph, choice_index_anchor_key())
+            .expect("read choice index")
+            .expect("choice index");
+        for (key, value) in [
+            (
+                authoritative_choice_key(request.opportunity()),
+                request.opportunity().content_id(),
+            ),
+            (
+                branch_point_opportunity_key(request.branch_point(), request.opportunity()),
+                request.opportunity().content_id(),
+            ),
+            (choice_index_anchor_key(), index),
+        ] {
+            sequential_graph = repository
+                .merkle
+                .insert(sequential_graph, key, value)
+                .expect("sequential graph edit")
+                .content_id();
+        }
+        assert_eq!(choice.snapshot().roots().graph, sequential_graph);
+
+        repository
+            .submit_operator_branch_request(campaign, discovered.new_snapshot, &request)
+            .expect("submit request");
+        let accepted = repository.head(campaign).expect("accepted head");
+        let mut sequential_exploration = choice.snapshot().roots().exploration;
+        let mut edits = vec![(
+            map_key_content(
+                "exploration.branch-request",
+                request.id().expect("request id").content_id(),
+            ),
+            request.id().expect("request id").content_id(),
+        )];
+        for anchor in [
+            branch_request_index_anchor_key(),
+            frontier_index_anchor_key(),
+            planner_scan_index_anchor_key(),
+        ] {
+            edits.push((
+                anchor,
+                repository
+                    .merkle
+                    .get(accepted.snapshot().roots().exploration, anchor)
+                    .expect("read index")
+                    .expect("index"),
+            ));
+        }
+        for (key, value) in edits {
+            sequential_exploration = repository
+                .merkle
+                .insert(sequential_exploration, key, value)
+                .expect("sequential exploration edit")
+                .content_id();
+        }
+        assert_eq!(
+            accepted.snapshot().roots().exploration,
+            sequential_exploration
+        );
+    }
+
+    let hot = repository.head(campaign).expect("hot head");
+    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert_eq!(cold.head(campaign).expect("cold authenticated head"), hot);
+}
+
+#[test]
 fn initial_discovery_import_recomputes_stop_ordinal_and_lifecycle() {
     let (repository, lineage, policy) = fixture();
     let head = repository

@@ -311,7 +311,10 @@ fn run_corpus(
     let (supervisor, _cancellation) = CanonicalPlannerProcessSupervisor::new(config);
     let supervisor = supervisor.with_worker_peak_rss_observer(Arc::clone(&worker_peak_rss));
     let client = PlannerClient::new(
-        AuthorizedPlannerService::new(CanonicalFrontierPlanner, supervisor, planner_authority),
+        campaign_store_profile::ProfilePlannerService::new(
+            AuthorizedPlannerService::new(CanonicalFrontierPlanner, supervisor, planner_authority),
+            profiler.clone(),
+        ),
         PlannerAuthorityKey::from_bytes([0x91; 32])?,
     );
     let mut planner = CampaignPlannerDriver::new(
@@ -336,12 +339,18 @@ fn run_corpus(
     for request_index in 0..admissions / REQUEST_SIZE {
         let setup_started = clock_gettime(ClockId::Monotonic);
         let request = publish_request(&repository, &lineage, request_index)?;
+        if let Some(profiler) = &profiler {
+            profiler.report(request_index + 1, "publish-request");
+        }
         let discovered = repository.discover_operator_choice_opportunity(
             CAMPAIGN,
             parent,
             genesis_content,
             request.opportunity(),
         )?;
+        if let Some(profiler) = &profiler {
+            profiler.report(request_index + 1, "discover");
+        }
         repository.submit_operator_branch_request(CAMPAIGN, discovered.new_snapshot, &request)?;
         ancestry_depth += 2;
         setup_elapsed += measurement_elapsed_since(setup_started)?;
