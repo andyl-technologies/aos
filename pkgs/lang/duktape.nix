@@ -90,7 +90,8 @@ in
       tool = testing.mkToolCheck {
         pname = "tool-duktape";
         tool = self;
-        command = "printf 'print(6 * 7);' | duk | grep -qx 42";
+        command = "duk -e 'print(6 * 7);'";
+        expectedOutput = "42";
       };
     };
 
