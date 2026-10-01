@@ -466,6 +466,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   64, with real Guard types and consumers still absent. This source integration
   does not qualify the full task; backend test closure and Guard/reference
   integration precede current runtime gates.
+  The declared opened-directory retention test module is restored exactly
+  from its reviewed source. It preserves actual descriptor, ancestry, kernel
+  exclusion and queued/running cancellation assertions. The exact mandatory
+  Rust-check and all-format sequence now passes on the trunk; native execution
+  of these fixtures still requires the complete Guard/reference source graph.
   Qualification exposed
   an overwrite fixture still targeting the previous rename primitive and three
   fixtures retaining their own namespace receipts while waiting to reacquire.
