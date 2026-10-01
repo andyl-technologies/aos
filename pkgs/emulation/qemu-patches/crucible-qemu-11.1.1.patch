@@ -1,13 +1,17 @@
-From 59884489cef9ac05109580210fc06916c11e3ddf Mon Sep 17 00:00:00 2001
+From b181bc3857667841a5a4f5c1748ca9330245963d Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 1 Oct 2026 13:02:50 -0700
-Subject: [PATCH] crucible: distribute cumulative native runtime sources
+Date: Thu, 1 Oct 2026 14:04:17 -0700
+Subject: [PATCH] crucible: distribute qualified native runtime sources
 
 Preserve the native graph and descriptor implementation with the
 reviewed deterministic runtime and schemas. Restore ordinary zero-budget
 execution and queue translation invalidation through exclusive CPU work.
-Retain main-loop physical completion and drain all RR queues before
-guest execution or stop acknowledgment.
+Retain main-loop physical completion and drain RR queues before guest
+execution or stop acknowledgment while preserving idle timer ordering.
+
+Convert denied service instructions to exact sim ticks with signed-range
+checks. Version service clock evidence and retain production-body unit
+coverage for rate, phase, interruption, ordinary mode and refusal paths.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -3461,7 +3465,7 @@ index 0000000000000000000000000000000000000000..64a0a5db661128340846bd948505d7aa
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..672e56128e798ba6683eef4436d16fd3ea84b3e7 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..c8e7c3b83ce61adf2d21a50455f3ffe4d1ce035d 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -27,45 +27,1688 @@
@@ -4121,10 +4125,6 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..672e56128e798ba6683eef4436d16fd3
  {
      CPUState *cpu;
  
--    CPU_FOREACH(cpu) {
--        tcg_kick_vcpu_thread(cpu);
--    };
--}
 +    if (rr_crucible_sim_mode() &&
 +        icount_crucible_rr_switch_quantum() != 0) {
 +        /*
@@ -4190,9 +4190,9 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..672e56128e798ba6683eef4436d16fd3
 +        rr_crucible_sim_notify_dispatch_ceiling();
 +        return;
 +    }
-+    CPU_FOREACH(cpu) {
-+        tcg_kick_vcpu_thread(cpu);
-+    };
+     CPU_FOREACH(cpu) {
+         tcg_kick_vcpu_thread(cpu);
+     };
 +    if (rr_crucible_sim_mode()) {
 +        /* The direct kick is the durable wake state when no quantum is set. */
 +        rr_crucible_sim_notify_dispatch_ceiling();
@@ -4832,13 +4832,26 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..672e56128e798ba6683eef4436d16fd3
 +           !cpu->exit_request &&
 +           !cpu->stop &&
 +           !cpu->unplug;
-+}
-+
+ }
+ 
+-/*
+- * TCG vCPU kick timer
+- *
+- * The kick timer is responsible for moving single threaded vCPU
+- * emulation on to the next vCPU. If more than one vCPU is running a
+- * timer event we force a cpu->exit so the next vCPU can get
+- * scheduled.
+- *
+- * The timer is removed if all vCPUs are idle and restarted again once
+- * idleness is complete.
+- */
 +static void rr_crucible_sim_refresh_batch_budget(int64_t *cpu_budget)
 +{
 +    bool acquired_replay = false;
 +    int cpu_count;
-+
+ 
+-static QEMUTimer *rr_kick_vcpu_timer;
+-static CPUState *rr_current_cpu;
 +    if (!icount_enabled()) {
 +        return;
 +    }
@@ -4856,25 +4869,12 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..672e56128e798ba6683eef4436d16fd3
 +    rr_crucible_sim_drain_pending_ipis();
 +    cpu_count = rr_cpu_count();
 +    *cpu_budget = icount_percpu_budget(cpu_count);
- 
--/*
-- * TCG vCPU kick timer
-- *
-- * The kick timer is responsible for moving single threaded vCPU
-- * emulation on to the next vCPU. If more than one vCPU is running a
-- * timer event we force a cpu->exit so the next vCPU can get
-- * scheduled.
-- *
-- * The timer is removed if all vCPUs are idle and restarted again once
-- * idleness is complete.
-- */
++
 +    if (acquired_replay) {
 +        rr_replay_mutex_unlock();
 +    }
 +}
- 
--static QEMUTimer *rr_kick_vcpu_timer;
--static CPUState *rr_current_cpu;
++
 +static bool rr_crucible_sim_complete_dispatch_boundary(
 +    CPUState **cpu_ptr, uint64_t current_icount)
 +{
@@ -5367,7 +5367,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..672e56128e798ba6683eef4436d16fd3
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +1989,201 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +1989,196 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -5522,11 +5522,6 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..672e56128e798ba6683eef4436d16fd3
 +        bql_lock();
  
 -        if (icount_enabled() && all_cpu_threads_idle()) {
-+        /* Drain every FIFO before selecting a vCPU, including a new RR owner. */
-+        if (rr_crucible_sim_vcpu_work_pending()) {
-+            rr_crucible_sim_drain_vcpu_work_to_fixed_point();
-+        }
-+
 +        if (rr_crucible_sim_service_deferred_reset_handoff()) {
 +            continue;
 +        }
@@ -5587,7 +5582,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..672e56128e798ba6683eef4436d16fd3
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2199,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2194,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -5620,7 +5615,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..672e56128e798ba6683eef4436d16fd3
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2241,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2236,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -5759,7 +5754,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..672e56128e798ba6683eef4436d16fd3
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2365,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2360,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -5899,7 +5894,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..672e56128e798ba6683eef4436d16fd3
      }
  
      g_assert_not_reached();
-@@ -318,13 +2504,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2499,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -111376,10 +111371,10 @@ index 0000000000000000000000000000000000000000..1fb9a26a6625b76db01a04b2e7614a95
 +}
 diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c1fa53ac925037f6ba3dab2705a27d661e2fa208
+index 0000000000000000000000000000000000000000..2460175df1e5e74a5f3807e2d9f203d28e1e89fa
 --- /dev/null
 +++ b/plugins/crucible-fault-vcpu-service.c
-@@ -0,0 +1,1471 @@
+@@ -0,0 +1,1484 @@
 +/*
 + * Crucible deterministic vCPU service and fixed-topology eligibility faults
 + *
@@ -112041,7 +112036,8 @@ index 0000000000000000000000000000000000000000..c1fa53ac925037f6ba3dab2705a27d66
 +        rr.cursor_position = qemu_crucible_internal_rr_cursor_position();
 +        rr.rr_switch_quantum = icount_crucible_rr_switch_quantum();
 +    }
-+    memcpy(evidence, "CRUCVCS1", 8);
++    /* Version 2 records exact ps ticks at 88 and 96; 112 remains raw icount. */
++    memcpy(evidence, "CRUCVCS2", 8);
 +    stl_le_p(evidence + 8, cpu->cpu_index);
 +    stl_le_p(evidence + 12, service->discipline);
 +    stq_le_p(evidence + 16, ++service->window_sequence);
@@ -112124,15 +112120,24 @@ index 0000000000000000000000000000000000000000..c1fa53ac925037f6ba3dab2705a27d66
 +                                       CrucibleVcpuService *service,
 +                                       uint64_t remainder_before)
 +{
-+    int64_t before = icount_get_observed();
++    int64_t before = icount_crucible_sim_tick_observed();
 +    int64_t after;
++    uint64_t denied_ticks;
 +
-+    if (before < 0 ||
-+        !icount_crucible_advance_virtual_time_by_ticks(
-+            service->denied_pending)) {
++    /* Service credits are instructions; the sim clock advances in ps ticks. */
++    if (before < 0 || service->denied_pending >
++            INT64_MAX / CRUCIBLE_SIM_TICKS_PER_INSTRUCTION) {
 +        abort();
 +    }
-+    after = icount_get_observed();
++    denied_ticks = service->denied_pending *
++                   CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;
++    if (!icount_crucible_advance_virtual_time_by_ticks(denied_ticks)) {
++        abort();
++    }
++    after = icount_crucible_sim_tick_observed();
++    if (after < 0) {
++        abort();
++    }
 +    crucible_vcpu_window_event(cpu, service, remainder_before, before, after,
 +                               false);
 +    service->window_credit = 0;
@@ -112150,7 +112155,10 @@ index 0000000000000000000000000000000000000000..c1fa53ac925037f6ba3dab2705a27d66
 +    if (!service->window_reservation) {
 +        return;
 +    }
-+    now = icount_get_observed();
++    now = icount_crucible_sim_tick_observed();
++    if (now < 0) {
++        abort();
++    }
 +    service->grant_own = 0;
 +    service->grant_borrowed = 0;
 +    crucible_vcpu_window_event(cpu, service,
@@ -146703,7 +146711,7 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..bd8d69eb10b79cbc1c60547a46d10bfdf500f415 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..b3ab201ebe36ed61c03825aa4ffb46162a4e768b 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -125,6 +125,10 @@ if have_block
@@ -146755,10 +146763,33 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..bd8d69eb10b79cbc1c60547a46d10bfd
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +242,627 @@ foreach test_name, extra: tests
+@@ -207,3 +242,650 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
++
++if have_system and have_tcg and get_option('plugins')
++  vcpu_service_time_test = executable(
++    'test-crucible-vcpu-service-time',
++    'test-crucible-vcpu-service-time.c',
++    genh,
++    dependencies: [glib],
++    c_args: [
++      '-DCONFIG_SOFTMMU', '-DCOMPILING_SYSTEM_VS_USER',
++      '-ffunction-sections', '-fdata-sections',
++    ],
++    link_args: ['-Wl,--gc-sections'],
++  )
++  test(
++    'test-crucible-vcpu-service-time',
++    vcpu_service_time_test,
++    env: test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 30,
++    suite: ['unit'],
++  )
++endif
 +
 +if have_system and 'x86_64-softmmu' in target_dirs
 +  x86_fingerprint_test = executable(
@@ -170623,6 +170654,357 @@ index 0000000000000000000000000000000000000000..99c5e4e0e5e6c2b1687a34c93c5d3c2d
 +        g_free(name);
 +    }
 +    g_test_add_func("/sparc/ordinary", test_ordinary);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-vcpu-service-time.c b/tests/unit/test-crucible-vcpu-service-time.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..fdafa1613411f94c367055016735de55d7469f1c
+--- /dev/null
++++ b/tests/unit/test-crucible-vcpu-service-time.c
+@@ -0,0 +1,345 @@
++/*
++ * Crucible vCPU service instruction-to-tick accounting tests.
++ *
++ * Copyright (c) 2026 ANDYL Technologies
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/module.h"
++
++/* The fixture invokes service accounting directly, without registration. */
++#undef type_init
++#define type_init(fn) static void (* const fixture_##fn)(void) \
++    __attribute__((unused)) = fn;
++#include "../../accel/tcg/icount-common.c"
++#include "../../plugins/crucible-fault-vcpu-service.c"
++
++TimersState timers_state;
++__thread CPUState *current_cpu;
++CPUTailQ cpus_queue = QTAILQ_HEAD_INITIALIZER(cpus_queue);
++
++static const char *test_accel = "sim";
++static bool test_ceiling_enabled;
++static uint64_t test_ceiling;
++static unsigned test_timers;
++static unsigned test_notify;
++static unsigned test_events;
++static uint8_t test_evidence[192];
++static uint64_t test_event_raw;
++static uint64_t test_event_tick;
++
++/* Only the external accelerator, scheduler and event sinks are controlled. */
++bool cpu_can_run(CPUState *cpu)
++{
++    return true;
++}
++
++bool cpu_has_work(CPUState *cpu)
++{
++    return true;
++}
++
++void qemu_plugin_fire_rr_handoff_cb(unsigned int from, unsigned int to,
++                                   uint64_t quantum, uint64_t retired)
++{
++    g_assert_not_reached();
++}
++
++void error_report(const char *format, ...)
++{
++    g_assert_not_reached();
++}
++
++const char *current_accel_name(void)
++{
++    return test_accel;
++}
++
++bool crucible_sim_shmem_dispatch_registered(void)
++{
++    return test_ceiling_enabled;
++}
++
++uint64_t crucible_sim_shmem_logical_ceiling(void)
++{
++    return test_ceiling;
++}
++
++bool qemu_clock_run_timers(QEMUClockType clock)
++{
++    g_assert_cmpint(clock, ==, QEMU_CLOCK_VIRTUAL);
++    test_timers++;
++    return false;
++}
++
++void qemu_clock_notify(QEMUClockType clock)
++{
++    g_assert_cmpint(clock, ==, QEMU_CLOCK_VIRTUAL);
++    test_notify++;
++}
++
++uint64_t qemu_plugin_icount_raw(void)
++{
++    return icount_get_raw_observed();
++}
++
++int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
++{
++    memset(out, 0, sizeof(*out));
++    return 0;
++}
++
++uint64_t qemu_crucible_internal_rr_cursor_position(void)
++{
++    return 0;
++}
++
++uint64_t qemu_crucible_fault_rule_generation(const QemuCrucibleFaultRule *rule)
++{
++    return 1;
++}
++
++QemuCrucibleFaultEventReservation *qemu_crucible_fault_event_reserve(size_t n)
++{
++    return (void *)1;
++}
++
++void qemu_crucible_fault_event_reservation_consume(
++    QemuCrucibleFaultEventReservation *reservation)
++{
++    g_assert_nonnull(reservation);
++}
++
++void qemu_crucible_fault_event_reservation_release(
++    QemuCrucibleFaultEventReservation *reservation)
++{
++    g_assert_nonnull(reservation);
++}
++
++void qemu_crucible_fault_rule_event(const QemuCrucibleFaultRule *rule,
++    uint16_t outcome, uint64_t raw, const uint8_t opportunity[32],
++    const uint8_t before[32], const uint8_t after[32],
++    const uint8_t *evidence, size_t len)
++{
++    g_assert_cmpuint(len, ==, sizeof(test_evidence));
++    test_events++;
++    memcpy(test_evidence, evidence, len);
++    test_event_raw = raw;
++    test_event_tick = icount_crucible_sim_tick_observed();
++}
++
++void qemu_system_vmstop_request_prepare(void)
++{
++    g_assert_not_reached();
++}
++
++void qemu_system_vmstop_request(RunState state)
++{
++    g_assert_not_reached();
++}
++
++static void reset_clock(void)
++{
++    memset(&timers_state, 0, sizeof(timers_state));
++    seqlock_init(&timers_state.vm_clock_seqlock);
++    qemu_spin_init(&timers_state.vm_clock_lock);
++    current_cpu = NULL;
++    use_icount = ICOUNT_PRECISE;
++    test_accel = "sim";
++    crucible_rr_switch_quantum = 96;
++    test_ceiling_enabled = false;
++    test_timers = test_notify = 0;
++    test_events = 0;
++}
++
++static void test_ratio(uint64_t numerator, uint64_t denominator,
++                       uint64_t expected_credit, uint64_t expected_denied)
++{
++    CPUState cpu = { .cpu_index = 0 };
++    CrucibleVcpuService service = {
++        .numerator = numerator, .denominator = denominator, .quantum = 96,
++        .discipline = CRUCIBLE_VCPU_STRICT_CAP,
++        .state = CRUCIBLE_VCPU_ONLINE,
++    };
++
++    reset_clock();
++    timers_state.crucible_sim_tick_bias = 357;
++    service.service_rules = g_ptr_array_new();
++    g_ptr_array_add(service.service_rules, (void *)1);
++    crucible_vcpu_services = g_array_new(false, true, sizeof(service));
++    g_array_append_val(crucible_vcpu_services, service);
++    service = g_array_index(crucible_vcpu_services, CrucibleVcpuService, 0);
++
++    g_assert_cmpint(qemu_crucible_fault_vcpu_service_clamp_budget(&cpu, 96),
++                    ==, expected_credit);
++    timers_state.qemu_icount = expected_credit;
++    qemu_crucible_fault_vcpu_service_account(&cpu, 0, expected_credit, true);
++
++    g_assert_cmpint(icount_crucible_sim_tick_observed(), ==, 5157);
++    g_assert_cmpmem(test_evidence, 8, "CRUCVCS2", 8);
++    g_assert_cmpuint(ldq_le_p(test_evidence + 64), ==, expected_credit);
++    g_assert_cmpuint(ldq_le_p(test_evidence + 80), ==, expected_denied);
++    g_assert_cmpuint(ldq_le_p(test_evidence + 88), ==,
++                     357 + expected_credit * 50);
++    g_assert_cmpuint(ldq_le_p(test_evidence + 96), ==, 5157);
++    g_assert_cmpuint(ldq_le_p(test_evidence + 112), ==, test_event_raw);
++    g_assert_cmpuint(ldq_le_p(test_evidence + 96), ==, test_event_tick);
++    g_assert_cmpuint(test_timers, ==, expected_denied != 0);
++    g_assert_cmpuint(test_notify, ==, expected_denied != 0);
++    g_assert_cmpuint(test_events, ==, 1);
++    g_ptr_array_unref(service.service_rules);
++    g_array_unref(crucible_vcpu_services);
++    crucible_vcpu_services = NULL;
++}
++
++static void test_service_ratios(void)
++{
++    test_ratio(1, 1, 96, 0);
++    test_ratio(1, 2, 48, 48);
++    test_ratio(1, 3, 32, 64);
++}
++
++static void test_service_interruption(void)
++{
++    CPUState cpu = { .cpu_index = 0 };
++    CrucibleVcpuService service = {
++        .numerator = 1, .denominator = 2, .quantum = 96,
++        .discipline = CRUCIBLE_VCPU_STRICT_CAP,
++        .state = CRUCIBLE_VCPU_ONLINE,
++    };
++
++    reset_clock();
++    timers_state.qemu_icount = 3;
++    timers_state.crucible_sim_tick_bias = 357;
++    service.service_rules = g_ptr_array_new();
++    g_ptr_array_add(service.service_rules, (void *)1);
++
++    g_assert_true(crucible_vcpu_refill(&cpu, &service));
++    crucible_vcpu_interrupt_window(&cpu, &service);
++
++    g_assert_cmpmem(test_evidence, 8, "CRUCVCS2", 8);
++    g_assert_cmpuint(ldq_le_p(test_evidence + 80), ==, 48);
++    g_assert_cmpuint(ldq_le_p(test_evidence + 88), ==, 507);
++    g_assert_cmpuint(ldq_le_p(test_evidence + 96), ==, 507);
++    g_assert_cmpuint(ldq_le_p(test_evidence + 112), ==, 3);
++    g_assert_cmpuint(ldl_le_p(test_evidence + 184), ==, 2);
++    g_assert_cmpuint(test_event_tick, ==, 507);
++    g_assert_cmpuint(test_timers, ==, 0);
++    g_assert_cmpuint(test_notify, ==, 0);
++    g_assert_cmpuint(test_events, ==, 1);
++    g_ptr_array_unref(service.service_rules);
++}
++
++static void test_ordinary_mode(void)
++{
++    CPUState cpu = { .cpu_index = 0 };
++
++    reset_clock();
++    test_accel = "tcg";
++    timers_state.icount_time_shift = 3;
++    timers_state.qemu_icount = 3;
++    timers_state.crucible_sim_tick_bias = 357;
++
++    g_assert_false(crucible_vcpu_service_mode());
++    g_assert_cmpint(qemu_crucible_fault_vcpu_service_clamp_budget(&cpu, 96),
++                    ==, 96);
++    g_assert_false(icount_crucible_advance_virtual_time_by_ticks(2400));
++    g_assert_cmpint(icount_get_observed(), ==, 24);
++    g_assert_cmpint(timers_state.crucible_sim_tick_bias, ==, 357);
++    g_assert_cmpint(timers_state.qemu_icount, ==, 3);
++    g_assert_cmpuint(test_timers, ==, 0);
++
++    test_accel = "sim";
++    use_icount = ICOUNT_ADAPTATIVE;
++    g_assert_false(crucible_vcpu_service_mode());
++    g_assert_false(icount_crucible_advance_virtual_time_by_ticks(2400));
++    use_icount = ICOUNT_DISABLED;
++    g_assert_false(crucible_vcpu_service_mode());
++    g_assert_false(icount_crucible_advance_virtual_time_by_ticks(2400));
++}
++
++static void test_tick_range(void)
++{
++    CPUState cpu = { .cpu_index = 0 };
++    CrucibleVcpuService service = {
++        .denied_pending = INT64_MAX / CRUCIBLE_SIM_TICKS_PER_INSTRUCTION,
++    };
++
++    reset_clock();
++    service.service_rules = g_ptr_array_new();
++
++    crucible_vcpu_close_window(&cpu, &service, 0);
++
++    g_assert_cmpint(icount_crucible_sim_tick_observed(), ==,
++                    INT64_MAX - INT64_MAX %
++                    CRUCIBLE_SIM_TICKS_PER_INSTRUCTION);
++    g_assert_cmpuint(test_timers, ==, 1);
++    g_assert_false(icount_crucible_advance_virtual_time_by_ticks(8));
++    g_assert_cmpint(icount_crucible_sim_tick_observed(), ==,
++                    INT64_MAX - INT64_MAX %
++                    CRUCIBLE_SIM_TICKS_PER_INSTRUCTION);
++    g_assert_cmpuint(test_timers, ==, 1);
++    g_ptr_array_unref(service.service_rules);
++
++    reset_clock();
++    timers_state.crucible_sim_tick_bias = 357;
++    test_ceiling_enabled = true;
++    test_ceiling = 2756;
++
++    g_assert_false(icount_crucible_advance_virtual_time_by_ticks(2400));
++    g_assert_cmpint(timers_state.crucible_sim_tick_bias, ==, 357);
++    g_assert_cmpint(timers_state.qemu_icount, ==, 0);
++    g_assert_cmpuint(test_timers, ==, 0);
++    g_assert_cmpuint(test_notify, ==, 0);
++
++    test_ceiling = 2757;
++    g_assert_true(icount_crucible_advance_virtual_time_by_ticks(2400));
++    g_assert_cmpint(icount_crucible_sim_tick_observed(), ==, 2757);
++}
++
++static void conversion_refused(int signal_number)
++{
++    /* The production guard must abort before committing an executing prefix. */
++    _exit(signal_number == SIGABRT && timers_state.qemu_icount == 0 &&
++          timers_state.crucible_sim_tick_bias == 357 &&
++          test_timers == 0 && test_notify == 0 && test_events == 0 ?
++          EXIT_SUCCESS : EXIT_FAILURE);
++}
++
++static void test_instruction_overflow(void)
++{
++    CPUState cpu = {
++        .cpu_index = 0, .running = true, .icount_budget = 1,
++    };
++    CrucibleVcpuService service = {
++        .denied_pending = INT64_MAX / CRUCIBLE_SIM_TICKS_PER_INSTRUCTION + 1,
++    };
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    reset_clock();
++    timers_state.crucible_sim_tick_bias = 357;
++    cpu.neg.can_do_io = true;
++    current_cpu = &cpu;
++    signal(SIGABRT, conversion_refused);
++
++    crucible_vcpu_close_window(&cpu, &service, 0);
++    g_assert_not_reached();
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/vcpu-service/ratios", test_service_ratios);
++    g_test_add_func("/vcpu-service/interruption", test_service_interruption);
++    g_test_add_func("/vcpu-service/ordinary-mode", test_ordinary_mode);
++    g_test_add_func("/vcpu-service/tick-range", test_tick_range);
++    g_test_add_func("/vcpu-service/instruction-overflow",
++                    test_instruction_overflow);
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-vfio-timer.c b/tests/unit/test-crucible-vfio-timer.c
