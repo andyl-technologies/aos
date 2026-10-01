@@ -131,6 +131,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0115-crucible-clock-impulse-read-error-policies.patch",
     "0116-crucible-qemu-11-api-port.patch",
     "0117-crucible-qemu-11-runtime-semantics.patch",
+    "0118-crucible-queued-runtime-tb-invalidation.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each
