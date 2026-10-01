@@ -271,8 +271,8 @@ pub async fn seed_dev_with_snapshots(
         })?;
     }
 
-    // Register the managed registry, pinning the maintainer trust key with
-    // signature verification on, then index it from the binding root.
+    // Register the managed registry with signature verification enabled.
+    // Publication admission establishes fresh object origins before indexing.
     let registry_id = db
         .create_managed_registry(
             org_id,
@@ -293,26 +293,14 @@ pub async fn seed_dev_with_snapshots(
             true,
         )
         .await?;
-    let (registry, public_placement_id) = seed_placement_and_index(
-        db,
-        binding_id,
-        registry_id,
-        DEMO_REGISTRY,
-        &surface_root,
-        &image_snapshots,
-    )
-    .await
-    .context("indexing public seeded registry")?;
-    let (_, private_placement_id) = seed_placement_and_index(
-        db,
-        binding_id,
-        private_registry_id,
-        DEMO_PRIVATE_REGISTRY,
-        &private_surface_root,
-        &image_snapshots,
-    )
-    .await
-    .context("indexing private seeded registry")?;
+    let (registry, public_placement_id) =
+        seed_placement(db, binding_id, registry_id, DEMO_REGISTRY)
+            .await
+            .context("creating public seeded placement")?;
+    let (_, private_placement_id) =
+        seed_placement(db, binding_id, private_registry_id, DEMO_PRIVATE_REGISTRY)
+            .await
+            .context("creating private seeded placement")?;
     seed_hub_routes(
         db,
         org_id,
@@ -326,14 +314,8 @@ pub async fn seed_dev_with_snapshots(
     .await
     .context("configuring seeded delivery topology")?;
     if let Some(fixture) = &producer_fixture {
-        anyhow::ensure!(
-            db.list_system_images(registry_id).await?.is_empty()
-                && db.list_system_images(private_registry_id).await?.is_empty(),
-            "producer image became discoverable before release/channel publication"
-        );
-        let source = fixture.join("surface");
-        copy_surface_tree(&source, &surface_root, true)?;
-        copy_surface_tree(&source, &private_surface_root, true)?;
+        // The producer fixture initially omits visibility pointers. Its empty
+        // index must not expose images before the complete surface is copied.
         for (registry_id, placement_id, surface_root) in [
             (registry_id, public_placement_id, surface_root.as_path()),
             (
@@ -354,6 +336,29 @@ pub async fn seed_dev_with_snapshots(
             )
             .await?;
         }
+        anyhow::ensure!(
+            db.list_system_images(registry_id).await?.is_empty()
+                && db.list_system_images(private_registry_id).await?.is_empty(),
+            "producer image became discoverable before release/channel publication"
+        );
+        let source = fixture.join("surface");
+        copy_surface_tree(&source, &surface_root, true)?;
+        copy_surface_tree(&source, &private_surface_root, true)?;
+    }
+
+    for (registry_id, placement_id, surface_root) in [
+        (registry_id, public_placement_id, surface_root.as_path()),
+        (
+            private_registry_id,
+            private_placement_id,
+            private_surface_root.as_path(),
+        ),
+    ] {
+        let prepared =
+            publication::prepare(db, registry_id, surface_root, &image_snapshots).await?;
+        publication::verify_index(db, placement_id, surface_root, &image_snapshots, &prepared)
+            .await?;
+        publication::record(db, placement_id, surface_root, &image_snapshots, &prepared).await?;
     }
     anyhow::ensure!(
         db.list_system_image_root_keys(registry_id).await?.len() == 4
@@ -364,24 +369,6 @@ pub async fn seed_dev_with_snapshots(
                 == 4,
         "seeded image publication did not become exact release GC roots"
     );
-
-    for (registry_id, placement_id, surface_root) in [
-        (registry_id, public_placement_id, surface_root.as_path()),
-        (
-            private_registry_id,
-            private_placement_id,
-            private_surface_root.as_path(),
-        ),
-    ] {
-        publication::record(
-            db,
-            registry_id,
-            placement_id,
-            surface_root,
-            &image_snapshots,
-        )
-        .await?;
-    }
 
     // Mint one org-scoped token so the fixture can prove both anonymous public
     // access and authenticated private access through the same consumer CLI.
@@ -445,13 +432,11 @@ fn copy_surface_tree_inner(
     Ok(())
 }
 
-async fn seed_placement_and_index(
+async fn seed_placement(
     db: &Database,
     binding_id: i64,
     registry_id: i64,
     prefix: &str,
-    surface_root: &Path,
-    image_snapshots: &Arc<crate::image_snapshot::ImageSnapshotStore>,
 ) -> Result<(crate::db::RegistryRecord, i64)> {
     let registry = db
         .registry_by_id(registry_id)
@@ -496,13 +481,6 @@ async fn seed_placement_and_index(
         .await?;
     db.observe_surface_placement(placement.id, "ready", "complete", 1)
         .await?;
-    crate::indexer::index_and_record_from_placement(
-        db,
-        &LocalFsFetch::new(surface_root).with_image_snapshots(Arc::clone(image_snapshots)),
-        &registry,
-        Some(placement.id),
-    )
-    .await?;
     Ok((registry, placement.id))
 }
 

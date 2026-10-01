@@ -3,7 +3,7 @@
 //!
 //! Drives the real router and database for the operations surface:
 //!
-//! - staged publication accounting and concurrent-generation exclusion;
+//! - verified immutable accounting before visibility and concurrent-generation exclusion;
 //! - the per-endpoint rate limiter returning `429` with `Retry-After` on the
 //!   magic-link issuance and device-authorization paths;
 //! - the instance signup policy gating `OrganizationService.CreateOrg`;
@@ -542,7 +542,7 @@ async fn planned_rpc(
 }
 
 #[tokio::test]
-async fn staged_publication_bytes_remain_unaccounted_until_commit() {
+async fn verified_publication_bytes_are_charged_before_visibility() {
     let (db, _surface, _binding, _placement) = empty_managed().await;
     let org = db.org_by_slug("acme").await.unwrap().unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
@@ -561,6 +561,8 @@ async fn staged_publication_bytes_remain_unaccounted_until_commit() {
     let (status, publication) =
         begin_publication(&app, &token, "acme/infra/prod/cdn", "staging-v1", &first).await;
     assert_eq!(status, StatusCode::OK, "{publication}");
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 0);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 0);
     let (status, _) = upload_publication_object(
         &app,
         publication_upload_url(&publication, "objects/ab/cd"),
@@ -569,8 +571,57 @@ async fn staged_publication_bytes_remain_unaccounted_until_commit() {
     )
     .await;
     assert!(status.is_success(), "{status}");
-    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 0);
-    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 0);
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
+    let registry = db
+        .registry_by_slug("acme/infra/prod/cdn")
+        .await
+        .unwrap()
+        .unwrap();
+    let object = db
+        .surface_object_named(SurfaceTarget::Registry(registry.id), "objects/ab/cd")
+        .await
+        .unwrap()
+        .unwrap();
+    let charge = db.surface_object_usage(object.id).await.unwrap().unwrap();
+    assert_eq!(charge.accounted_bytes, 4);
+    assert!(db
+        .registry_publication_state(registry.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .current_publication_id
+        .is_none());
+
+    // Exact immutable replay keeps its durable charge; the unuploaded root
+    // still prevents this otherwise verified object from becoming visible.
+    let (status, _) = upload_publication_object(
+        &app,
+        publication_upload_url(&publication, "objects/ab/cd"),
+        &token,
+        b"data".to_vec(),
+    )
+    .await;
+    assert!(status.is_success(), "{status}");
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
+    let (status, _) = rpc(
+        &app,
+        "PublishService/CommitRegistryPublication",
+        serde_json::json!({"publicationId": publication["publicationId"]}),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(db
+        .registry_publication_state(registry.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .current_publication_id
+        .is_none());
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
 }
 
 #[tokio::test]
@@ -658,8 +709,8 @@ async fn concurrent_publication_generation_is_rejected() {
     )
     .await;
     assert!(status.is_success(), "{status}");
-    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 0);
-    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 0);
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
 
     // A later generation cannot start while the preceding publication is
     // incomplete. Admission fails before any additional write or usage change.
@@ -676,8 +727,8 @@ async fn concurrent_publication_generation_is_rejected() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 0);
-    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 0);
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
 }
 
 #[tokio::test]

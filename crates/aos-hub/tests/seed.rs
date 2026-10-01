@@ -117,6 +117,21 @@ async fn seed_creates_browsable_registry_and_login() {
             .unwrap();
         assert_eq!(publication.state, "ready");
     }
+    let usage = db.org_usage(org.id).await.unwrap();
+    assert!(usage.used_bytes > 0);
+    assert!(usage.object_count > 0);
+    for registry_id in [registry.id, private.id] {
+        let objects = db
+            .list_active_surface_objects(aos_hub::db::SurfaceTarget::Registry(registry_id))
+            .await
+            .unwrap();
+        for object in objects {
+            let charge = db.surface_object_usage(object.id).await.unwrap().unwrap();
+            assert_eq!(charge.org_id, Some(org.id));
+            assert_eq!(Some(charge.accounted_bytes), object.size);
+        }
+    }
+
     assert_eq!(
         db.ready_registry_canonical_url(registry.id)
             .await
@@ -161,6 +176,9 @@ async fn re_seeding_is_a_safe_no_op() {
         SeedOutcome::Seeded(_)
     ));
 
+    let org = db.org_by_slug(DEMO_ORG).await.unwrap().unwrap();
+    let before = db.org_usage(org.id).await.unwrap();
+
     // A second run detects the existing demo org and skips.
     assert!(matches!(
         seed_dev(&db, root.path(), &route_config(&keys))
@@ -172,4 +190,7 @@ async fn re_seeding_is_a_safe_no_op() {
     // Still exactly one org / the same public+private registries — no duplication.
     let org = db.org_by_slug(DEMO_ORG).await.unwrap().unwrap();
     assert_eq!(db.org_registry_count(org.id).await.unwrap(), 2);
+    let after = db.org_usage(org.id).await.unwrap();
+    assert_eq!(after.used_bytes, before.used_bytes);
+    assert_eq!(after.object_count, before.object_count);
 }
