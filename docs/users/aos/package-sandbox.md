@@ -70,7 +70,7 @@ Inspect both the signed request and the local policy decision before adding a
 package to the desired machine-wide set:
 
 ```sh
-apm info PACKAGE --system --permissions
+apm show PACKAGE --system --permissions
 apm policy PACKAGE --system
 ```
 
@@ -182,7 +182,7 @@ secrets on AOS](secrets.md) for the supported runtime paths.
 Start with APM's signed metadata and policy view:
 
 ```sh
-apm info PACKAGE --system --permissions
+apm show PACKAGE --system --permissions
 apm policy PACKAGE --system
 apm list --installed --system
 ```

@@ -514,7 +514,7 @@ Honest consequences for the package model:
   [`open-questions.md`](open-questions.md).
 
 The takeaway: there is no separate "class" to encode — the package's signed
-`[permissions]` manifest already tells `apm` (and an operator, via `apm info
+`[permissions]` manifest already tells `apm` (and an operator, via `apm show
 <pkg> --permissions`) exactly how privileged the generated service is, so it knows *not*
 to promise isolation for a package like k3s that has declared host network and
 broad caps. The manifest replaces the dropped `expose.kind` strawman (§2.2). The
