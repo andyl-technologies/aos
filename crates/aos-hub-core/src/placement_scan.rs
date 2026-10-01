@@ -161,7 +161,7 @@ impl PlacementScanController {
         let copy_detail = match operation.operation_kind.as_str() {
             "scan_placement" => None,
             "replicate_placement" | "repair_placement" => {
-                Some(self.copy_to_placement(operation, &placement).await?)
+                Some(self.copy_to_placement(operation, claim_token, &placement).await?)
             }
             kind => bail!("unsupported physical placement operation '{kind}'"),
         };
@@ -215,6 +215,7 @@ impl PlacementScanController {
     async fn copy_to_placement(
         &self,
         operation: &TopologyOperationRecord,
+        claim_token: &str,
         destination: &SurfacePlacementRecord,
     ) -> Result<serde_json::Value> {
         let source_target = self
@@ -289,7 +290,14 @@ impl PlacementScanController {
                     continue;
                 }
                 let size = match writes
-                    .copy_placement_object(&source, destination, &path, source_evidence.get(&path))
+                    .copy_placement_object_claimed(
+                        operation,
+                        claim_token,
+                        &source,
+                        destination,
+                        &path,
+                        source_evidence.get(&path),
+                    )
                     .await?
                 {
                     Some(size) => size,

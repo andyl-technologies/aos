@@ -35,7 +35,9 @@ use anyhow::Result;
 use md5::{Digest as _, Md5};
 
 use crate::backend::BackendBounds;
-use crate::db::{BindingWriteRevisionRecord, OciUploadChunkRecord, SurfacePlacementRecord};
+use crate::db::{
+    BindingWriteRevisionRecord, OciUploadChunkRecord, SurfacePlacementRecord, TopologyOperationRecord,
+};
 use crate::fetch::{SurfaceListedEvidence, SurfaceObjectEvidence};
 
 /// One multipart-upload part's identity: its 1-based `part_number` and the
@@ -513,6 +515,30 @@ pub trait SurfaceWriteProvider: BackendBounds {
     ) -> Result<Option<u64>> {
         let _ = (source, destination, path, listed_source);
         Ok(None)
+    }
+
+    /// Copies one object under the actual retained controller operation and claim.
+    ///
+    /// Existing local and R2 providers keep their normal copy behavior. External
+    /// Hybrid implementations use the supplied original and claim to authorize
+    /// bounded metadata controls; they must return an error for unsupported
+    /// cases instead of permitting a Native body fallback.
+    ///
+    /// # Errors
+    /// Returns an error for stale controller authority or under the same
+    /// conditions as [`copy_placement_object`](Self::copy_placement_object).
+    async fn copy_placement_object_claimed(
+        &self,
+        operation: &TopologyOperationRecord,
+        claim_token: &str,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+        listed_source: Option<&SurfaceListedEvidence>,
+    ) -> Result<Option<u64>> {
+        let _ = (operation, claim_token);
+        self.copy_placement_object(source, destination, path, listed_source)
+            .await
     }
 
     /// Composes a claimed OCI upload beside storage and returns physical evidence.

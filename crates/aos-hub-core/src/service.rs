@@ -44,6 +44,8 @@ mod hybrid_cache_upload;
 mod hybrid_publication_upload;
 #[cfg(test)]
 mod registry_accounting_tests;
+#[cfg(test)]
+mod external_copy_tests;
 mod direct_target;
 mod instance_settings;
 mod publication_manifest;

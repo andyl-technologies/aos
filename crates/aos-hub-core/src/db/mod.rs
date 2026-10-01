@@ -541,6 +541,7 @@ mod session_identity;
 mod publication_delivery;
 pub use delivery_workflow::*;
 mod egress_nonce;
+mod external_copy;
 mod gc_topology;
 pub use gc_topology::*;
 mod mirror_imports;

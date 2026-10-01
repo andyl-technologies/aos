@@ -2,6 +2,39 @@
 
 use super::*;
 
+#[test]
+fn scheduled_storage_permission_and_secondary_permission_are_preserved() {
+    let mut value = original();
+    value.topology.control_permission = Permission::StorageManage.as_str().into();
+    value.topology.destination.control_permission = value.topology.control_permission.clone();
+    value.validate().unwrap();
+    assert_eq!(value.topology.control_permission, "storage.manage");
+
+    value.topology.source.control_permission = Permission::StorageManage.as_str().into();
+    assert!(value.validate().is_err());
+    value.topology.source.control_permission = Permission::PlacementManage.as_str().into();
+    value.topology.destination.control_permission = Permission::PlacementManage.as_str().into();
+    assert!(value.validate().is_err());
+    value.topology.control_permission = Permission::Publish.as_str().into();
+    value.topology.source.control_permission = value.topology.control_permission.clone();
+    value.topology.destination.control_permission = value.topology.control_permission.clone();
+    assert!(value.validate().is_err());
+}
+
+#[test]
+fn sql_placement_target_selectors_are_preserved_without_normalization() {
+    let mut value = original();
+    value.topology.source.stable_id = "registry:source/placement:Primary copy".into();
+    value.topology.destination.stable_id = "registry:source/placement:Destination".into();
+    value.validate().unwrap();
+    assert_eq!(value.topology.source.stable_id, "registry:source/placement:Primary copy");
+    for invalid in [" ".to_owned(), " leading".to_owned(), "trailing ".to_owned(), "bad\nname".to_owned(), "x".repeat(256)] {
+        let mut changed = value.clone();
+        changed.topology.source.stable_id = invalid;
+        assert!(changed.validate().is_err());
+    }
+}
+
 pub(super) fn original() -> ExternalCopyOriginal {
     let target = |stable_id: &str, generation_key| CopyTarget {
         stable_id: stable_id.into(),

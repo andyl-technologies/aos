@@ -140,15 +140,30 @@ impl CopyTopologyOriginal {
         identifier(&self.operation_id)?;
         scope(&self.authorization_scope_key)?;
         ensure!(
-            Permission::parse(&self.control_permission) == Some(Permission::PlacementManage)
+            matches!(
+                Permission::parse(&self.control_permission),
+                Some(Permission::StorageManage | Permission::PlacementManage)
+            )
                 && self.created_at.get() > 0,
             "invalid placement-copy control original"
         );
-        for target in [&self.source, &self.destination] {
-            identifier(&target.stable_id)?;
+        for (target, expected_permission) in [
+            (&self.source, Permission::PlacementManage.as_str()),
+            (&self.destination, self.control_permission.as_str()),
+        ] {
+            // SQL placement targets include the owning stable identity and
+            // '/placement:' suffix. Preserve the existing selector contract;
+            // the Native adapter resolves this exact string before pinning IDs.
+            ensure!(
+                !target.stable_id.trim().is_empty()
+                    && target.stable_id == target.stable_id.trim()
+                    && target.stable_id.len() <= 255
+                    && !target.stable_id.chars().any(char::is_control),
+                "invalid sealed copy target identity"
+            );
             scope(&target.authorization_scope_key)?;
             ensure!(
-                Permission::parse(&target.control_permission) == Some(Permission::PlacementManage)
+                target.control_permission == expected_permission
                     && target.generation_key.get() > 0
                     && (target.configuration_digest.is_empty()
                         || digest_string(&target.configuration_digest)),
