@@ -136,6 +136,7 @@ in rec {
       local key_path="$3"
       local config_dir="''${XDG_CONFIG_HOME:-$HOME/.config}/apm/registries.d"
       local registry_dir="''${XDG_DATA_HOME:-$HOME/.local/share}/apm/registries"
+      local registration_log="$key_path.registration.log"
       mkdir -p "$config_dir"
       if [ ! -f "$config_dir/$registry_name.toml" ]; then
         {
@@ -144,8 +145,11 @@ in rec {
           printf 'url = "file://%s/%s"\n' "$registry_dir" "$registry_name"
         } > "$config_dir/$registry_name.toml"
       fi
-      $APR keys register "$key_id" --registry "$registry_name" \
-        --key "$key_path" > /dev/null
+      if ! "$APR" keys register "$key_id" --registry "$registry_name" \
+        --key "$key_path" > "$registration_log" 2>&1; then
+        cat "$registration_log" >&2
+        return 1
+      fi
     }
 
     create_publish_registry() {
@@ -154,11 +158,11 @@ in rec {
       local key_path="/tmp/vm-publish-keys/$registry_name"
       local public_key
       mkdir -p /tmp/vm-publish-keys
-      ssh-keygen -q -t ed25519 -N "" -f "$key_path"
-      public_key=$(cut -d ' ' -f2 < "$key_path.pub")
-      $APR "$@" create "$registry_name" \
+      ssh-keygen -q -t ed25519 -N "" -f "$key_path" || return 1
+      public_key=$(cut -d ' ' -f2 < "$key_path.pub") || return 1
+      "$APR" "$@" create "$registry_name" \
         --trust-key "$registry_name:Ed25519:$public_key" \
-        --trust-key-id vm --key "$key_path"
+        --trust-key-id vm --key "$key_path" || return 1
       XDG_CONFIG_HOME=/tmp/vm-publish-config \
         register_publish_key "$registry_name" vm "$key_path"
     }
