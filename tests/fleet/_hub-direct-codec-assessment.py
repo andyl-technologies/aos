@@ -146,6 +146,21 @@ def direct_release_storage_budget(projections, release_placements):
     return result
 
 
+def direct_storage_codec_selection(selection, source_digest):
+    """Preserve the independently observed completion beside the exact original."""
+    if (not isinstance(selection, dict) or set(selection) != {
+            "sourceDigest", "originalPlan", "completionObservedAtUnixMillis"}
+            or selection["sourceDigest"] != source_digest):
+        raise ValueError("StorageWork codec selection differs from its actual source")
+    completed = selection["completionObservedAtUnixMillis"]
+    if not isinstance(completed, str) or not re.fullmatch(r"[1-9][0-9]{0,15}", completed):
+        raise ValueError("StorageWork lacks a canonical positive proxy completion observation")
+    original = selection["originalPlan"]
+    return {"sourceDigest": source_digest, "completionObservedAtUnixMillis": completed,
+        "originalPlan": {**original, "file": str(Path(original["file"]).resolve()),
+            "byteSize": str(original["byteSize"])}}
+
+
 def assess_direct_native_bodies(body_receipts, control_joins, provider_classification,
                                mapping, source_digest, issuer_verifier, native_executable,
                                storage_work_boundary=None, release_placements=None):
@@ -196,10 +211,9 @@ def assess_direct_native_bodies(body_receipts, control_joins, provider_classific
             "bodies": {direction: {**body, "file": str(Path(body["file"]).resolve()),
                 "byteSize": str(body["byteSize"])} for direction, body in capture["bodies"].items()}}
         if "storageWorkSelection" in selected:
-            original = selected["storageWorkSelection"]["originalPlan"]
-            selected["storageWorkSelection"] = {"sourceDigest": source_digest,
-                "originalPlan": {**original, "file": str(Path(original["file"]).resolve()),
-                    "byteSize": str(original["byteSize"])}}
+            selected["storageWorkSelection"] = direct_storage_codec_selection(
+                selected["storageWorkSelection"], source_digest,
+            )
         captures.append(selected)
     selected_corpus_bytes = body_receipts["capturedCorpusBytes"] + sum(
         int(body["byteSize"]) for capture in storage_work_boundary["captures"]
