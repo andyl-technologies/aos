@@ -43,6 +43,7 @@
 /run/credentials/aos-sandbox-source-signerd\.service(/.*)? system_u:object_r:aos_sandbox_source_signer_credential_t
 /run/credentials/aos-sandbox-cache-signerd\.service(/.*)? system_u:object_r:aos_sandbox_cache_signer_credential_t
 /run/credentials/aos-sandbox-policy-authorityd\.service(/.*)? system_u:object_r:aos_sandbox_policy_authority_credential_t
+/run/credentials/aos-sandboxd\.service(/.*)? system_u:object_r:aos_sandbox_controller_credential_t
 /run/credentials/aos-sandbox-git-gateway\.service(/.*)? system_u:object_r:aos_sandbox_git_gateway_credential_t
 /sysroot -d system_u:object_r:root_t
 

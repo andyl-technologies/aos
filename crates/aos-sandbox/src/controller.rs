@@ -3071,6 +3071,26 @@ where
             .coordinate_provisioned_source_genesis_v1(input, profile)
     }
 
+    /// Issues fixed protected successor DATA through the SAME resident owners.
+    ///
+    /// This private administrative route opens no public mutation or readiness.
+    /// Its packet requires a separate future current/funded Source consumer.
+    ///
+    /// # Errors
+    /// Returns an original retaining failure; the installed caller must
+    /// terminate while this Controller and credential owner remain resident.
+    #[cfg(target_os = "linux")]
+    pub fn issue_source_successor_v2<'writers, 'profile, 'credentials>(
+        &'writers mut self,
+        profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+        credentials: &'credentials mut crate::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
+    ) -> Result<
+        crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2,
+        crate::policy_compiler::FailedOriginalSourceSuccessorInvocationV2<'writers, 'profile, 'credentials>,
+    > {
+        self.reconciler.issue_source_successor_v2(profile, credentials)
+    }
+
     /// Issues or replays a first public capability from signed deployment entitlement.
     ///
     /// The request supplies only an idempotency key. Fixed protected credential

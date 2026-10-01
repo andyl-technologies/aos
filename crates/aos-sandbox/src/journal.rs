@@ -38,6 +38,7 @@ pub mod canonical_map;
 #[cfg(target_os = "linux")]
 mod git_evidence_namespace;
 pub(crate) mod mount_manager_startup;
+pub(crate) mod controller_source_successor_issuance;
 mod prepared_transaction;
 mod root_local_recovery;
 mod root_original_inventory;
@@ -2777,7 +2778,43 @@ impl Journal {
         source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
         root_genesis_transition: RootSourceGenesisTransitionV1,
         root_local_edge: Option<RootOwnerEdge>,
+        cache_gate: CacheMutationGateV1<'_>,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_cache_gate_and_successor_issuance(
+            transaction,
+            settling_reservation,
+            allow_capacity_records,
+            allow_policy_hold_transition,
+            allow_host_fence_acquisition,
+            allow_host_currentness_fence_acquisition,
+            allow_host_settlement_admission_append,
+            project_admission_transition,
+            controller_genesis_transition,
+            source_genesis_transition,
+            root_genesis_transition,
+            root_local_edge,
+            cache_gate,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_with_cache_gate_and_successor_issuance(
+        &mut self,
+        transaction: &JournalTransaction,
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+        allow_policy_hold_transition: bool,
+        allow_host_fence_acquisition: bool,
+        allow_host_currentness_fence_acquisition: bool,
+        allow_host_settlement_admission_append: bool,
+        project_admission_transition: SourceProjectAdmissionTransition,
+        controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
+        source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
+        root_genesis_transition: RootSourceGenesisTransitionV1,
+        root_local_edge: Option<RootOwnerEdge>,
         mut cache_gate: CacheMutationGateV1<'_>,
+        successor_issuance_transition: Option<controller_source_successor_issuance::Transition>,
     ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
         let settling_reservation = if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
@@ -2819,6 +2856,11 @@ impl Journal {
             &self.state,
             transaction,
             controller_genesis_transition,
+        )?;
+        controller_source_successor_issuance::require_no_mutation(
+            &self.state,
+            transaction,
+            successor_issuance_transition,
         )?;
         source_tree_genesis::require_no_mutation(
             &self.state,
@@ -3100,7 +3142,37 @@ impl Journal {
         >,
         genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
         root_local_edge: Option<RootOwnerEdge>,
+        cache_gate: CacheMutationGateV1<'_>,
+    ) -> Result<(), JournalError> {
+        self.preflight_with_cache_gate_and_successor_issuance(
+            transactions,
+            settling_reservation,
+            allow_capacity_records,
+            allow_policy_hold_transition,
+            project_transitions,
+            controller_genesis_transitions,
+            genesis_transitions,
+            root_local_edge,
+            cache_gate,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn preflight_with_cache_gate_and_successor_issuance(
+        &self,
+        transactions: &[JournalTransaction],
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+        allow_policy_hold_transition: bool,
+        project_transitions: Option<&[SourceProjectAdmissionTransition]>,
+        controller_genesis_transitions: Option<
+            &[controller_source_genesis::ControllerSourceGenesisTransition],
+        >,
+        genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
+        root_local_edge: Option<RootOwnerEdge>,
         mut cache_gate: CacheMutationGateV1<'_>,
+        successor_issuance_transitions: Option<&[controller_source_successor_issuance::Transition]>,
     ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
         if root_local_edge.is_some() && transactions.len() != 1 {
@@ -3115,6 +3187,11 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         if genesis_transitions.is_some_and(|transitions| transitions.len() != transactions.len()) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        if successor_issuance_transitions
+            .is_some_and(|transitions| transitions.len() != transactions.len())
+        {
             return Err(JournalError::ProtectedBoundary);
         }
         cache_gate.check(self)?;
@@ -3153,6 +3230,11 @@ impl Journal {
                 controller_genesis_transitions
                     .map(|transitions| transitions[index])
                     .unwrap_or(controller_source_genesis::ControllerSourceGenesisTransition::None),
+            )?;
+            controller_source_successor_issuance::require_no_mutation(
+                &state,
+                transaction,
+                successor_issuance_transitions.map(|transitions| transitions[index]),
             )?;
             source_tree_genesis::require_no_mutation(
                 &state,
@@ -3299,6 +3381,7 @@ impl Journal {
         source_tree_genesis::require_no_compaction(&self.state)?;
         source_project_admission_challenge::require_no_compaction(&self.state)?;
         controller_source_genesis::require_no_compaction(&self.state)?;
+        controller_source_successor_issuance::require_no_compaction(&self.state)?;
         cache_policy_hold::require_valid_compaction(self)?;
         host_settlement_admission_gate::require_no_compaction(&self.state)?;
         host_currentness_fence::require_no_compaction(&self.state)?;

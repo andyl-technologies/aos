@@ -102,6 +102,26 @@ impl ProtectedSourceDomainJournalOwnerV1 {
         Ok((Self { journal }, report))
     }
 
+    /// Opens only an existing fixed Source writer for administrative issuance.
+    ///
+    /// This preserves the same path, limits, UID and protected replay engine.
+    /// It never initializes missing state or repairs interrupted history.
+    ///
+    /// # Errors
+    /// Rejects missing or unsafe fixed storage, changed ownership, stale
+    /// compaction, interrupted tails, corrupt replay or an unavailable lock.
+    pub fn open_existing_fixed_protected_for_uid(
+        expected_uid: u32,
+    ) -> Result<(Self, RecoveryReport), JournalError> {
+        let (journal, report) = Journal::open_existing_protected_at_for_uid(
+            Path::new(PROTECTED_SOURCE_DOMAIN_ROOT),
+            PROTECTED_SOURCE_DOMAIN_JOURNAL,
+            source_domain_journal_limits(),
+            expected_uid,
+        )?;
+        Ok((Self { journal }, report))
+    }
+
     pub(crate) fn journal(&mut self) -> &mut Journal {
         &mut self.journal
     }

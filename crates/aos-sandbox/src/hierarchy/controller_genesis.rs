@@ -22,11 +22,39 @@ use crate::journal::controller_source_genesis::{
     self as records, ControllerSourceGenesisTransition as Transition,
 };
 use crate::journal::{Journal, ProtectedJournalNamesV1};
+use crate::journal::controller_source_successor_issuance::PublicationCustodyV2;
 use crate::policy_compiler::{RootSourceGenesisFloorProofV1, SourceHierarchyFloorRecordV1};
 use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
 
 const CONTROLLER_ROOT: &str = "/var/lib/aos/sandboxd";
 const CONTROLLER_JOURNAL: &str = "controller.journal";
+
+// This issuer path may only reborrow a real already completed predecessor.
+// It never accepts a new seed, runs genesis recovery or appends a bootstrap row.
+#[cfg(target_os = "linux")]
+pub(crate) fn hold_existing_completed_source_genesis_v2(
+    journal: &mut Journal,
+    project: ProjectId,
+) -> Result<HeldControllerSourceGenesisV1<'_>, SourceGenesisErrorV1> {
+    let uid = journal.protected_owner_uid()?;
+    require_controller(journal, uid)?;
+    if records::pending(journal)?.is_some() {
+        return Err(SourceGenesisErrorV1::AdmissionClosed);
+    }
+    let row = records::rows(journal, project)?.ok_or(SourceGenesisErrorV1::AdmissionClosed)?;
+    if row.ack.is_none() || row.complete.is_none() {
+        return Err(SourceGenesisErrorV1::AdmissionClosed);
+    }
+    let names = journal.protected_writer_physical_names_v1()?;
+    let held = HeldControllerSourceGenesisV1 {
+        journal: RefCell::new(journal),
+        acceptance: row.acceptance,
+        uid,
+        names,
+    };
+    held.recheck()?;
+    Ok(held)
+}
 
 /// Retains the actual fixed Controller writer and original accepted input.
 ///
@@ -374,6 +402,103 @@ impl HeldControllerSourceGenesisV1<'_> {
 
     pub(crate) const fn uid(&self) -> u32 {
         self.uid
+    }
+
+    // The existing Complete decoder validates this checksum before it is read.
+    // This is its actual retained commitment, not a new genesis receipt.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn completed_record_commitment_v2(
+        &self,
+    ) -> Result<ObjectDigest, SourceGenesisErrorV1> {
+        self.recheck()?;
+        let journal = self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let complete = records::rows(&journal, self.acceptance.project())?
+            .and_then(|row| row.complete)
+            .ok_or(SourceGenesisErrorV1::Stale)?;
+        Ok(digest_at(&complete, 112))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn current_successor_authorization_v2(
+        &self,
+    ) -> Result<
+        (u64, ObjectDigest, ObjectDigest, ObjectDigest, super::model::TreeLimitsV1, [u8; 224]),
+        SourceGenesisErrorV1,
+    > {
+        self.recheck()?;
+        let mut journal = self.journal.try_borrow_mut().map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let current = PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default())?
+            .current_source_successor_authorization_v2(self.acceptance.project())?;
+        Ok((
+            current.publisher_generation,
+            current.publisher_head,
+            current.publisher_revision,
+            current.authorization_head,
+            current.limits,
+            current.packet,
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retained_successor_approval_v2(
+        &self,
+    ) -> Result<Option<super::source_successor::SourceSuccessorApprovalDataV2>, SourceGenesisErrorV1> {
+        self.recheck()?;
+        let journal = self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?;
+        Ok(crate::journal::controller_source_successor_issuance::retained(&journal)?
+            .map(|saved| saved.packet))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn preflight_successor_issuance_v2(
+        &self,
+        packet: &super::source_successor::SourceSuccessorApprovalDataV2,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.recheck()?;
+        self.journal.try_borrow()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?
+            .preflight_source_successor_issuance_v2(packet)?;
+        self.recheck()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn save_successor_issuance_v2(
+        &self,
+        packet: &super::source_successor::SourceSuccessorApprovalDataV2,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.recheck()?;
+        self.journal.try_borrow_mut()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?
+            .save_source_successor_issuance_v2(packet)?;
+        self.recheck()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn publish_successor_issuance_v2(
+        &self,
+        packet: &super::source_successor::SourceSuccessorApprovalDataV2,
+        custody: &mut PublicationCustodyV2,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.recheck()?;
+        self.journal.try_borrow()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?
+            .publish_source_successor_v2(packet, custody)?;
+        self.recheck()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn complete_successor_delivery_v2(
+        &self,
+        packet: &super::source_successor::SourceSuccessorApprovalDataV2,
+        custody: &mut PublicationCustodyV2,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.recheck()?;
+        let mut journal = self.journal.try_borrow_mut().map_err(|_| SourceGenesisErrorV1::Stale)?;
+        journal.recheck_source_successor_publication_v2(packet, custody)?;
+        journal.complete_source_successor_delivery_v2(packet)?;
+        journal.recheck_source_successor_publication_v2(packet, custody)?;
+        drop(journal);
+        self.recheck()
     }
 }
 

@@ -10,7 +10,7 @@
 //! must be genuinely installed; the old init_t endpoint necessarily refuses.
 
 use std::cell::{Cell, RefCell};
-use std::os::fd::{AsFd as _, BorrowedFd};
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::time::{Duration, Instant};
 
 use aos_sandbox_core::{RawClockProvenance, RawPairedClockSample};
@@ -131,6 +131,12 @@ impl CompletedRootSourceGenesisFloorV1<'_, '_> {
     pub(in crate::policy_compiler) fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
         self.proof.recheck()
     }
+
+    pub(in crate::policy_compiler) fn signing_boundary_clock(
+        &self,
+    ) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
+        self.proof.origin.signing_boundary_clock()
+    }
 }
 
 // Private to the same-flight coordinator. There is no adoption constructor
@@ -167,9 +173,6 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
             .map_err(|_| SourceGenesisErrorV1::Stale)?;
         let source_uid = peer.source_uid();
         let client_nonce = fresh_root_nonce()?;
-        let mut request = [0; 32];
-        request[..8].copy_from_slice(ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1);
-        request[8..24].copy_from_slice(&client_nonce);
         let mut origin = Self {
             stream: RefCell::new(stream),
             peer,
@@ -179,20 +182,95 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
             nonce: [0; 16],
             source_uid,
         };
-        origin.write(&request)?;
-        let hello = origin.receive_exact(56)?;
+        origin.establish_hello(client_nonce)?;
+        Ok(origin)
+    }
+
+    // The issuer owns both slots before this method starts. In particular,
+    // peer/adoption errors cannot release the retained original raw socket.
+    pub(super) fn connect_parked(
+        profile: &'profile ProductionControllerNormalRootProfileV1,
+        raw: &mut Option<OwnedFd>,
+        adopted: &mut Option<RetainedUnixStream>,
+        parked: &mut Option<Self>,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        if parked.is_some() || adopted.is_some() || raw.is_some() {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        let started = Instant::now();
+        let clock = kernel_pair()?;
+        profile.recheck().map_err(|_| SourceGenesisErrorV1::Stale)?;
+        *adopted = Some(transport::connect_parked(raw, started + MAXIMUM_FLIGHT)?);
+        let stream = adopted.as_mut().ok_or(SourceGenesisErrorV1::Stale)?;
+        stream.enable_subject_reporting()?;
+        let peer = profile.observe_original_peer(&stream)
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let source_uid = peer.source_uid();
+        let client_nonce = fresh_root_nonce()?;
+        let stream = adopted.take().ok_or(SourceGenesisErrorV1::Stale)?;
+        *parked = Some(Self {
+            stream: RefCell::new(stream),
+            peer,
+            clock,
+            started,
+            poisoned: Cell::new(false),
+            nonce: [0; 16],
+            source_uid,
+        });
+
+        let origin = parked.as_mut().ok_or(SourceGenesisErrorV1::Stale)?;
+        origin.establish_hello(client_nonce)
+    }
+
+    fn establish_hello(&mut self, client_nonce: [u8; 16]) -> Result<(), SourceGenesisErrorV1> {
+        let mut request = [0; 32];
+        request[..8].copy_from_slice(ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1);
+        request[8..24].copy_from_slice(&client_nonce);
+        self.write(&request)?;
+        let hello = self.receive_exact(56)?;
         if hello.get(..8) != Some(ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1.as_slice())
             || hello[8..16] != [0, 1, 0, 0, 0, 0, 0, 0]
             || take::<16>(&hello, 16)? != client_nonce
             || take::<16>(&hello, 32)? == [0; 16]
-            || u32::from_be_bytes(take(&hello, 48)?) != source_uid
-            || u32::from_be_bytes(take(&hello, 52)?) != source_uid
+            || u32::from_be_bytes(take(&hello, 48)?) != self.source_uid
+            || u32::from_be_bytes(take(&hello, 52)?) != self.source_uid
         {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
-        origin.nonce = take(&hello, 32)?;
-        origin.recheck()?;
-        Ok(origin)
+        self.nonce = take(&hello, 32)?;
+        self.recheck()
+    }
+
+    pub(super) fn issuance_clock(&self) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
+        self.recheck()?;
+        let now = kernel_pair()?;
+        self.clock.validate_later_sample(now).map_err(|_| SourceGenesisErrorV1::Stale)?;
+        self.recheck()?;
+        Ok(now)
+    }
+
+    // Unlike the general observation above, signing needs its genuine pair
+    // after the potentially slow original-flight observations. Only continuity
+    // and the unchanged original deadline are checked after this sample.
+    fn signing_boundary_clock(&self) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
+        self.recheck()?;
+
+        let now = kernel_pair()?;
+        self.clock.validate_later_sample(now)
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        if self.poisoned.get() || self.started.elapsed() >= MAXIMUM_FLIGHT {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+
+        Ok(now)
+    }
+
+    pub(super) fn end_failed(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.poisoned.set(true);
+        let stream = self.stream.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?;
+        rustix::net::shutdown(stream.as_fd(), rustix::net::Shutdown::Both)
+            .map_err(std::io::Error::from)?;
+        Ok(())
     }
 
     pub(super) const fn nonce(&self) -> [u8; 16] {

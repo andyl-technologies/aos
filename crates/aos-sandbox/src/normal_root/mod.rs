@@ -45,6 +45,10 @@ pub use client::{
     ProductionControllerNormalRootCaptureV1, ProductionControllerNormalRootProfileV1,
     ProductionControllerNormalRootStartupPartsV1,
 };
+pub use client::source_successor_credential::{
+    SourceSuccessorCredentialCustodyV2, SourceSuccessorCredentialErrorV2,
+    require_source_successor_delivery_absent_v2,
+};
 pub(crate) use controller_peer::OriginalControllerPolicyPeerV1;
 pub(crate) use git_evidence_credential::{
     RootGitEvidenceCredentialCustodyV1, RootGitEvidenceCredentialErrorV1,
