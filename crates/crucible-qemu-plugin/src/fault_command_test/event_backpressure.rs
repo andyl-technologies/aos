@@ -197,10 +197,10 @@ pub(super) fn assert_event_ring_backpressure(
     request.command_kind = FaultCommandKind::CpuVcpuState;
     request.target_kind = NodeFaultTargetKindV1::Vcpu;
     request.fields = vec![
-        NodeFaultFieldV1::u32(node_fault_field::T1, 0),
         NodeFaultFieldV1::u32(node_fault_field::P1, 2),
         NodeFaultFieldV1::boolean(node_fault_field::P2, false),
         NodeFaultFieldV1::hash(node_fault_field::P3, [0; 32]),
+        NodeFaultFieldV1::u32(node_fault_field::T1, 0),
     ];
     let request = request
         .encode()
