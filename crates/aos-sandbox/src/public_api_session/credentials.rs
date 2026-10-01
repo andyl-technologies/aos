@@ -33,6 +33,22 @@ const SOURCE_GENESIS_PACKET_NAMES: [&str; 2] = [
     "controller-source-tree-seed-v1",
     "project-authorization-source-v2",
 ];
+const NIX_OWNER_DIRECTORY: &str = "/run/credentials/aos-sandbox-nixd.service";
+const NIX_CONTROLLER_DIRECTORY: &str = "/run/credentials/aos-sandboxd.service";
+const NIX_PUBLIC_NAMES: [&str; 12] = [
+    "nix-recipe-issuer-v2",
+    "nix-fixed-domain-pins-v2",
+    "nix-broker-session-manifest-v1",
+    "nix-preadmitted-recipes-v2",
+    "ownership-lease-policy.cbor",
+    "ownership-lease-public-key",
+    "broker-plan-policy.cbor",
+    "broker-plan-public-key",
+    "broker-revocation-scope",
+    "mount-broker-plan-policy.cbor",
+    "mount-broker-plan-public-key",
+    "mount-broker-revocation-scope",
+];
 
 /// Retains one fixed protected credential and rejects replacement before use.
 pub(crate) struct PinnedSystemdCredential {
@@ -183,6 +199,52 @@ impl PinnedSystemdCredential {
     /// Rejects missing, oversized or unsafe fixed protected credential custody.
     pub(crate) fn load_nix_mount_plan_revocation_scope() -> Result<Self, PublicApiSessionError> {
         Self::load_named("mount-broker-revocation-scope")
+    }
+
+    /// Retains the twelve public pins from only the fixed Nix control unit.
+    ///
+    /// # Errors
+    /// Rejects absent, unsafe, oversized or replaced original credentials.
+    /// This ignores environment-selected directories and loads no secrets.
+    pub(crate) fn load_nix_owner_publics() -> Result<[Self; 12], PublicApiSessionError> {
+        let load = |index| {
+            Self::open_named(PathBuf::from(NIX_OWNER_DIRECTORY), NIX_PUBLIC_NAMES[index])
+        };
+        Ok([
+            load(0)?,
+            load(1)?,
+            load(2)?,
+            load(3)?,
+            load(4)?,
+            load(5)?,
+            load(6)?,
+            load(7)?,
+            load(8)?,
+            load(9)?,
+            load(10)?,
+            load(11)?,
+        ])
+    }
+
+    /// Retains the separate exact node credential from the fixed Nix owner.
+    ///
+    /// # Errors
+    /// Rejects missing, unsafe, replaced or nonexact sixteen-byte custody.
+    pub(crate) fn load_nix_owner_node_id() -> Result<Self, PublicApiSessionError> {
+        Self::load_nix_node_at(NIX_OWNER_DIRECTORY)
+    }
+
+    /// Retains the separate exact node credential from the fixed Controller.
+    ///
+    /// # Errors
+    /// Rejects missing, unsafe, replaced or nonexact sixteen-byte custody.
+    pub(crate) fn load_nix_controller_node_id() -> Result<Self, PublicApiSessionError> {
+        Self::load_nix_node_at(NIX_CONTROLLER_DIRECTORY)
+    }
+
+    fn load_nix_node_at(directory: &'static str) -> Result<Self, PublicApiSessionError> {
+        Self::open_optional_exact(PathBuf::from(directory), "node-id", 16)?
+            .ok_or(PublicApiSessionError::Configuration)
     }
 
     /// Retains both exact administrative packets, or no optional startup pair.
@@ -535,6 +597,61 @@ mod tests {
     use crate::hierarchy::source_seed::{
         PinnedControllerSourceTreeSeedIssuerV1, encode_controller_source_tree_seed_credential_v1,
     };
+
+    #[test]
+    fn nix_owner_public_names_keep_the_original_twelve_pin_order_without_node() {
+        assert_eq!(NIX_OWNER_DIRECTORY, "/run/credentials/aos-sandbox-nixd.service");
+        assert_eq!(NIX_CONTROLLER_DIRECTORY, "/run/credentials/aos-sandboxd.service");
+        assert_eq!(
+            NIX_PUBLIC_NAMES,
+            [
+                "nix-recipe-issuer-v2",
+                "nix-fixed-domain-pins-v2",
+                "nix-broker-session-manifest-v1",
+                "nix-preadmitted-recipes-v2",
+                "ownership-lease-policy.cbor",
+                "ownership-lease-public-key",
+                "broker-plan-policy.cbor",
+                "broker-plan-public-key",
+                "broker-revocation-scope",
+                "mount-broker-plan-policy.cbor",
+                "mount-broker-plan-public-key",
+                "mount-broker-revocation-scope",
+            ],
+        );
+        assert!(!NIX_PUBLIC_NAMES.contains(&"node-id"));
+    }
+
+    #[test]
+    fn nix_node_fixed_reader_refuses_nonexact_or_linked_originals() {
+        let directory = tempfile::tempdir().unwrap();
+        let descriptor = open(
+            directory.path(),
+            OFlags::RDONLY | OFlags::DIRECTORY,
+            Mode::empty(),
+        ).unwrap();
+        let uid = rustix::process::geteuid().as_raw();
+        let path = directory.path().join("node-id");
+        let replace_node = |bytes: &[u8]| {
+            let replacement = directory.path().join("node-replacement");
+            std::fs::write(&replacement, bytes).unwrap();
+            std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o400)).unwrap();
+            std::fs::rename(replacement, &path).unwrap();
+        };
+
+        for width in [15, 16, 17] {
+            replace_node(&vec![1; width]);
+            let read = read_optional_exact_one_with_identity(&descriptor, "node-id", uid, 16);
+            if width == 16 {
+                assert_eq!(&**read.unwrap().unwrap().0, &[1; 16]);
+            } else {
+                assert!(read.is_err());
+            }
+        }
+        replace_node(&[1; 16]);
+        std::fs::hard_link(&path, directory.path().join("alias")).unwrap();
+        assert!(read_optional_exact_one_with_identity(&descriptor, "node-id", uid, 16).is_err());
+    }
 
     #[test]
     fn accepts_only_private_single_link_regular_credentials() {

@@ -7,8 +7,9 @@
 //! move-only, borrow-bound and permanently closed after any failed or
 //! interrupted check. Each real observation arms the fence before its call.
 //! Neither a projection nor a helper check grants Session, NV, journal, build
-//! or operation authority. Helper-loader process mappings and the physical
-//! floor service crash barrier require separate genuine later owners.
+//! or operation authority. The Nix service barrier compares current PID1
+//! policy; it does not prove population drain. Helper-loader process mappings
+//! and an authenticated physical floor require separate genuine later owners.
 
 use std::path::Path;
 
@@ -17,16 +18,17 @@ use aos_sandbox_linux::pidfd::PidFd;
 use crate::production_operation_compiler::{
     ControllerNixStartRecipeSelectorV2, NixFixedDomainPinsDataV2, NixStartAdmissionErrorV2,
 };
+use crate::public_api_session::PinnedSystemdCredential;
 
-use super::{Error, ProductionNixOwnerStartupV1};
+use super::{Error, ProductionNixOwnerStartupV1, owner_public::original_node_id};
 
 #[derive(Default)]
-struct OriginFailureLatchV2 {
+pub(super) struct OriginFailureLatchV2 {
     closed: bool,
 }
 
 impl OriginFailureLatchV2 {
-    fn begin(&mut self) -> Option<OriginObservationV2<'_>> {
+    pub(super) fn begin(&mut self) -> Option<OriginObservationV2<'_>> {
         if self.closed {
             return None;
         }
@@ -39,12 +41,12 @@ impl OriginFailureLatchV2 {
 // The exclusive borrow permits reopening only the same previously-open
 // observation. Dropping it without success, including unwinding, stays closed.
 #[must_use = "complete the armed observation or leave the loan fenced"]
-struct OriginObservationV2<'observation> {
+pub(super) struct OriginObservationV2<'observation> {
     health: &'observation mut OriginFailureLatchV2,
 }
 
 impl OriginObservationV2<'_> {
-    fn finish<T, E>(self, result: Result<T, E>) -> Result<T, E> {
+    pub(super) fn finish<T, E>(self, result: Result<T, E>) -> Result<T, E> {
         if result.is_ok() {
             self.health.closed = false;
         }
@@ -61,6 +63,7 @@ impl OriginObservationV2<'_> {
 #[must_use = "retain the original selector borrow throughout later purpose coordination"]
 pub struct ControllerNixSessionFloorOriginV2<'origin> {
     selector: &'origin ControllerNixStartRecipeSelectorV2,
+    node: PinnedSystemdCredential,
     health: OriginFailureLatchV2,
 }
 
@@ -68,7 +71,9 @@ impl ControllerNixStartRecipeSelectorV2 {
     /// Borrows the same original selector for later Nix058 floor coordination.
     ///
     /// This creates neither a Session nor an NV observation. It selects no new
-    /// recipe, assignment, operation or time bound.
+    /// recipe, assignment, operation or time bound. Only this new floor loan
+    /// additionally retains the fixed Controller node original outside the
+    /// selector's unchanged twelve-public set and ordinary admission API.
     ///
     /// # Errors
     ///
@@ -77,8 +82,14 @@ impl ControllerNixStartRecipeSelectorV2 {
     pub fn borrow_session_floor_origin_v2(
         &self,
     ) -> Result<ControllerNixSessionFloorOriginV2<'_>, NixStartAdmissionErrorV2> {
+        self.recheck_session_floor_origin()?;
+        let node = PinnedSystemdCredential::load_nix_controller_node_id()?;
+        if original_node_id(&node)? != self.session_floor_pins().node() {
+            return Err(NixStartAdmissionErrorV2::Invalid);
+        }
         let mut origin = ControllerNixSessionFloorOriginV2 {
             selector: self,
+            node,
             health: OriginFailureLatchV2::default(),
         };
         origin.recheck()?;
@@ -87,7 +98,7 @@ impl ControllerNixStartRecipeSelectorV2 {
 }
 
 impl ControllerNixSessionFloorOriginV2<'_> {
-    /// Rechecks the same actual startup, twelve credentials and startup again.
+    /// Rechecks the original selector bookends, separate node, then startup.
     ///
     /// # Errors
     ///
@@ -100,8 +111,44 @@ impl ControllerNixSessionFloorOriginV2<'_> {
             .begin()
             .ok_or(NixStartAdmissionErrorV2::Invalid)?;
 
-        let result = self.selector.recheck_session_floor_origin();
+        let result = Self::recheck_originals(self.selector, &self.node);
         observation.finish(result)
+    }
+
+    fn recheck_originals(
+        selector: &ControllerNixStartRecipeSelectorV2,
+        node: &PinnedSystemdCredential,
+    ) -> Result<(), NixStartAdmissionErrorV2> {
+        selector.recheck_session_floor_origin()?;
+        node.recheck()?;
+        selector.session_floor_startup().recheck()?;
+        Ok(())
+    }
+
+    /// Requires both current Nix service-barrier flights to match the originals.
+    ///
+    /// This compares PID1 policy, not live population drain, manager image after
+    /// reexec, cross-flight bus-owner identity, or a physical TPM observation.
+    ///
+    /// # Errors
+    /// Returns the original typed startup/credential failure and fences this
+    /// loan on failure or interruption; a closed loan returns `Invalid`.
+    pub fn require_physical_service_barrier(
+        &mut self,
+    ) -> Result<(), NixStartAdmissionErrorV2> {
+        self.recheck()?;
+
+        let observation = self
+            .health
+            .begin()
+            .ok_or(NixStartAdmissionErrorV2::Invalid)?;
+        let result = self
+            .selector
+            .session_floor_startup()
+            .require_physical_service_barrier()
+            .map_err(NixStartAdmissionErrorV2::from);
+        observation.finish(result)?;
+        self.recheck()
     }
 
     /// Compares a live child against the original Controller helper checks.
@@ -142,6 +189,19 @@ impl ControllerNixSessionFloorOriginV2<'_> {
     pub fn helper_path(&mut self) -> Result<&Path, NixStartAdmissionErrorV2> {
         self.recheck()?;
         Ok(self.selector.session_floor_startup().retained.helper.path())
+    }
+
+    /// Returns the independently measured original helper-loader path as DATA.
+    ///
+    /// This proves neither executed-loader mappings nor physical helper custody.
+    ///
+    /// # Errors
+    /// Rejects changed or closed original startup/credential custody.
+    pub fn helper_loader_path(&mut self) -> Result<&Path, NixStartAdmissionErrorV2> {
+        self.recheck()?;
+        Ok(Path::new(
+            &self.selector.session_floor_startup().retained.profile.helper_loader.path,
+        ))
     }
 
     /// Returns the original immutable startup profile path as comparison DATA.
@@ -188,6 +248,15 @@ impl ControllerNixSessionFloorOriginV2<'_> {
     pub fn public_preimages(&mut self) -> Result<[&[u8]; 12], NixStartAdmissionErrorV2> {
         self.recheck()?;
         Ok(self.selector.session_floor_public_preimages())
+    }
+
+    /// Borrows the separate original node bytes outside the twelve-pin set.
+    ///
+    /// # Errors
+    /// Rejects changed or closed original startup/credential/node custody.
+    pub fn node_preimage(&mut self) -> Result<&[u8], NixStartAdmissionErrorV2> {
+        self.recheck()?;
+        Ok(self.node.bytes())
     }
 }
 

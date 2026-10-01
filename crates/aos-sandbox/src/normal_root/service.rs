@@ -27,6 +27,20 @@ pub(super) const SERVICE_PROPERTIES: &[&str] = &[
     "NoNewPrivileges",
 ];
 const UNIT_PROPERTIES: &[&str] = &["FragmentPath", "DropInPaths", "Transient", "InvocationID"];
+const NIX_BARRIER_PROPERTIES: &[&str] = &[
+    "ControlGroup",
+    "OpenFile",
+    "ExtraFileDescriptorNames",
+    "FileDescriptorStoreMax",
+    "NFileDescriptorStore",
+    "SELinuxContext",
+    "CapabilityBoundingSet",
+    "AmbientCapabilities",
+    "NoNewPrivileges",
+    "ExitType",
+    "KillMode",
+    "TimeoutStopUSec",
+];
 const PEER_PROPERTIES: &[&str] = &[
     "ControlGroup",
     "OpenFile",
@@ -165,6 +179,39 @@ pub(super) fn immutable_observation(
     Ok(observed)
 }
 
+// Only Nix floor-origin observations add the population crash-barrier fields.
+// The ordinary Root/Controller flights retain their exact property list.
+/// Reads the Nix barrier fields through the same authentic PID1 observer.
+///
+/// # Errors
+///
+/// Rejects failed original PID1 readback, wrong width or a barrier mismatch.
+pub(super) fn read_nix_barrier_properties(
+    unit_name: &'static str,
+    pid: u32,
+) -> Result<(Vec<OwnedValue>, Vec<OwnedValue>), NormalRootStartupErrorV1> {
+    let (mut properties, unit) = read_properties(unit_name, pid, NIX_BARRIER_PROPERTIES)?;
+    if properties.len() != NIX_BARRIER_PROPERTIES.len() {
+        return Err(NormalRootStartupErrorV1::Service);
+    }
+    let barrier = properties.split_off(SERVICE_PROPERTIES.len());
+    require_nix_barrier(&barrier)?;
+    Ok((properties, unit))
+}
+
+fn require_nix_barrier(values: &[OwnedValue]) -> Result<(), NormalRootStartupErrorV1> {
+    let [exit_type, kill_mode, timeout] = values else {
+        return Err(NormalRootStartupErrorV1::Service);
+    };
+    if <&str>::try_from(exit_type).ok() != Some("cgroup")
+        || <&str>::try_from(kill_mode).ok() != Some("control-group")
+        || u64::try_from(timeout).ok() != Some(u64::MAX)
+    {
+        return Err(NormalRootStartupErrorV1::Service);
+    }
+    Ok(())
+}
+
 pub(super) fn decode(
     service: &[OwnedValue],
     unit: &[OwnedValue],
@@ -278,4 +325,47 @@ pub(super) fn require_same(
         return Err(NormalRootStartupErrorV1::Service);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod nix_barrier_tests {
+    use super::*;
+
+    fn values(exit_type: &str, kill_mode: &str, timeout: u64) -> Vec<OwnedValue> {
+        vec![
+            OwnedValue::try_from(Value::from(exit_type.to_owned())).unwrap(),
+            OwnedValue::try_from(Value::from(kill_mode.to_owned())).unwrap(),
+            OwnedValue::from(timeout),
+        ]
+    }
+
+    #[test]
+    fn nix_barrier_appends_only_three_fields_to_the_ordinary_property_order() {
+        assert_eq!(
+            &NIX_BARRIER_PROPERTIES[..SERVICE_PROPERTIES.len()],
+            SERVICE_PROPERTIES,
+        );
+        assert_eq!(
+            &NIX_BARRIER_PROPERTIES[SERVICE_PROPERTIES.len()..],
+            &["ExitType", "KillMode", "TimeoutStopUSec"],
+        );
+    }
+
+    #[test]
+    fn nix_barrier_requires_exact_population_and_unbounded_stop_properties() {
+        assert!(require_nix_barrier(&values("cgroup", "control-group", u64::MAX)).is_ok());
+
+        for candidate in [
+            values("main", "control-group", u64::MAX),
+            values("cgroup", "process", u64::MAX),
+            values("cgroup", "control-group", u64::MAX - 1),
+            values("cgroup", "control-group", 0),
+        ] {
+            assert!(require_nix_barrier(&candidate).is_err());
+        }
+        assert!(require_nix_barrier(&[]).is_err());
+        let mut extra = values("cgroup", "control-group", u64::MAX);
+        extra.push(OwnedValue::from(0_u64));
+        assert!(require_nix_barrier(&extra).is_err());
+    }
 }
