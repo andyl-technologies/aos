@@ -14,13 +14,13 @@ use crate::store::{StoreErrorKind, StoreFailure};
 use std::path::{Component, Path, PathBuf};
 use terrane_core::bucket::StoreProfile;
 
-#[cfg(all(feature = "tokio", unix))]
+#[cfg(unix)]
 use super::super::{ExactRead, NamedFence, NativeExclusion, NativeOpenedDirectory};
-#[cfg(all(feature = "tokio", unix))]
+#[cfg(unix)]
 use super::{corrupt, digest};
-#[cfg(all(feature = "tokio", unix))]
+#[cfg(unix)]
 use std::sync::Arc;
-#[cfg(all(feature = "tokio", unix))]
+#[cfg(unix)]
 use terrane_core::gc::publication::{BackendBinding, PublicationTransaction};
 
 // The programs are descendants of both the opaque carriers and the native
@@ -41,15 +41,15 @@ pub(crate) mod pending;
 pub struct NativePublicationInitialization {
     // Keep unsupported configurations opaque too; the unit is no authority.
     _private: (),
-    #[cfg(all(feature = "tokio", unix))]
+    #[cfg(unix)]
     root: PathBuf,
-    #[cfg(all(feature = "tokio", unix))]
+    #[cfg(unix)]
     control: PathBuf,
-    #[cfg(all(feature = "tokio", unix))]
+    #[cfg(unix)]
     operator_uid: u32,
-    #[cfg(all(feature = "tokio", unix))]
+    #[cfg(unix)]
     profile: StoreProfile,
-    #[cfg(all(feature = "tokio", unix))]
+    #[cfg(unix)]
     timestamp: u64,
 }
 
@@ -71,26 +71,26 @@ pub enum NativePublicationInitializationOutcome {
 pub struct NativePendingRoot {
     // Privacy must not disappear when the native fields are compiled out.
     _private: (),
-    #[cfg(all(feature = "tokio", unix))]
+    #[cfg(unix)]
     request: NativePublicationInitialization,
-    #[cfg(all(feature = "tokio", unix))]
+    #[cfg(unix)]
     directories: Arc<[NativeOpenedDirectory]>,
-    #[cfg(all(feature = "tokio", unix))]
+    #[cfg(unix)]
     exclusions: Arc<[NativeExclusion]>,
-    #[cfg(all(feature = "tokio", unix))]
+    #[cfg(unix)]
     binding: BackendBinding,
-    #[cfg(all(feature = "tokio", unix))]
+    #[cfg(unix)]
     pending: Vec<u8>,
-    #[cfg(all(feature = "tokio", unix))]
+    #[cfg(unix)]
     staged: NativeGenesisStage,
-    #[cfg(all(feature = "tokio", unix))]
+    #[cfg(unix)]
     names: Vec<NamedFence>,
-    #[cfg(all(feature = "tokio", unix))]
+    #[cfg(unix)]
     reads: Vec<ExactRead>,
 }
 
 /// Keeps the exact full genesis proposal as data under the creator's receipt.
-#[cfg(all(feature = "tokio", unix))]
+#[cfg(unix)]
 struct NativeGenesisStage {
     snapshot_bytes: Vec<u8>,
     transaction: PublicationTransaction,
@@ -129,7 +129,7 @@ pub(crate) fn request_for_open(
         return Err(StoreFailure::new(StoreErrorKind::Unsupported));
     }
 
-    #[cfg(all(feature = "tokio", unix))]
+    #[cfg(unix)]
     {
         Ok(NativePublicationInitialization {
             _private: (),
@@ -141,28 +141,44 @@ pub(crate) fn request_for_open(
         })
     }
 
-    #[cfg(not(all(feature = "tokio", unix)))]
+    #[cfg(not(unix))]
     {
         let _ = (operator_uid, profile, timestamp);
         Err(StoreFailure::new(StoreErrorKind::Unsupported))
     }
 }
 
-#[cfg(all(feature = "tokio", unix))]
+#[cfg(unix)]
 impl NativePublicationInitialization {
+    /// Runs the same fixed creator synchronously through durable staging.
+    ///
+    /// Inline native bindings finish all physical work before yielding their
+    /// result; Tokio bindings submit this same program in one owned worker.
+    ///
+    /// # Errors
+    /// Preserves rejected physical inputs and genuine staging or durability
+    /// failures. This private method cannot construct authority from decoded
+    /// records or reinterpret an existing root as a successful creator event.
+    pub(in crate::store) fn execute_inline(
+        self,
+    ) -> Result<NativePublicationInitializationOutcome, StoreFailure> {
+        fresh::initialize(self)
+    }
+
     /// Owns the fixed creator program inside one submitted physical worker.
     ///
     /// # Errors
     /// Preserves creator rejection or durability failure and reports unavailable
     /// runtime or worker completion. Dropping the waiter does not cancel a
     /// submitted worker or release its actual retained descriptors early.
+    #[cfg(feature = "tokio")]
     pub(in crate::store) async fn execute_tokio(
         self,
     ) -> Result<NativePublicationInitializationOutcome, StoreFailure> {
         let unavailable = || StoreFailure::new(StoreErrorKind::Unavailable { retry_after: None });
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| unavailable())?;
         runtime
-            .spawn_blocking(move || fresh::initialize(self))
+            .spawn_blocking(move || self.execute_inline())
             .await
             .map_err(|_| unavailable())?
     }
