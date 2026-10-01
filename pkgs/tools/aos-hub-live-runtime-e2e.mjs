@@ -47,7 +47,7 @@ bindings.push('(name="HYBRID_OBJECT_GUARD",durableObjectNamespace="HybridObjectG
 bindings.push('(name="MIRROR_FIXTURE_STORE",durableObjectNamespace="MirrorFixtureStore")');
 await writeFile(join(root, "live-worker.capnp"), `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
- services=[(name="main",worker=.main),(name="upstream",worker=.upstream),
+ services=[(name="main",worker = .main),(name="upstream",worker = .upstream),
   (name="disk",disk=(path="do-storage",writable=true))],
  sockets=[(name="http",address="127.0.0.1:${manifest.workerPort}",http=(),service="main")]
 );
