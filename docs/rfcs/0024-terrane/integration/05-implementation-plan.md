@@ -407,7 +407,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   candidate. Exact gates now require the six binding and seven consumer cases;
   hermetic qualification passes all 44 exact `bucket-file-cas` cases and all
   10 exact `bucket-probe` cases on the reviewed joint candidate. The capability
-  gate passes 19 exact cases on its preceding checkpoint. Qualification exposed
+  gate passes 24 exact cases on a separate reviewed checkpoint, including five
+  opened-directory retention cases. Queued and running cancellation preserve
+  the actual directory descriptors and independently acquired kernel exclusion
+  through physical completion and durability; replacement and unsafe policy
+  refuse writes. A shared opaque initialization interface now fixes configured
+  inputs before the first root mutation and reserves fresh receipts for genuine
+  native creators. Its private programs remain beneath the retained publication
+  frame and native executor; unavailable bindings refuse without root creation.
+  The shared default external control naming is unchanged. Actual fresh and
+  Pending activation integration and qualification remain pending.
+  Qualification exposed
   an overwrite fixture still targeting the previous rename primitive and three
   fixtures retaining their own namespace receipts while waiting to reacquire.
   The reviewed test-only corrections inject a real write at the current
@@ -489,8 +499,20 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   handoff. The fixed consumer must derive canonical cycle/shard/revision paths
   and refresh its retained live clock and poisoned-session check before staging,
   slot dispatch and acknowledgment. These declarations grant no sweep,
-  deletion or availability-loss authority; actual native checkpoint production,
-  marking, resume verification and full collector gates remain pending.
+  deletion or availability-loss authority. A separate native checkpoint candidate
+  passes six actual cases: selected roots and immutable mark progress, restart
+  through completed marking, stale-renewal refusal and permanent session poison,
+  incomplete-frontier refusal, canceled checkpoint retention, count-zero
+  metadata witnesses without old chunks, and queued expiry before acknowledgment.
+  GC-7's optional final leaves are omitted to avoid colliding with immutable
+  revision directories; completed selected revision pointers remain unchanged.
+  Non-Send and no-default library builds, strict rustdoc and mandatory formatting
+  pass on that candidate. Review requires finite replay validation derived from
+  persisted traversal instead of a global step ceiling, plus direct independent
+  kernel contention in the checkpoint cancellation witness. Strict Clippy still
+  reports unfinished shared diagnostics. Native source integration, those review
+  corrections and full collector gates remain pending; foreign ownership,
+  disclosure, present Notes, grace, sweep, restore and deletion are incomplete.
   An unrepaired observation hook retains the actual writable holder role and
   fresh complete chain checks so live-other-holder, stale lease or Guard
   rejection can precede every cache effect. A separately anchored test clock
