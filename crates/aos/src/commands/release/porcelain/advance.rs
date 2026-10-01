@@ -20,6 +20,7 @@ use aos_core::output::Printer;
 use aos_release::plan::SurfaceRole;
 use aos_release::signing::SignerRole;
 
+use super::super::tooling::ToolingEnvironment;
 use super::super::{capture, plan};
 use super::planner::{self, Next, Options, Step};
 use super::steps::Driver;
@@ -40,6 +41,9 @@ pub(super) async fn run(
     nix: &NixRunner,
     printer: &Printer,
 ) -> Result<()> {
+    // Every automated step runs from the installed tooling closure; a
+    // development build may inspect a release but never drive one.
+    ToolingEnvironment::require()?;
     let mut session = Session::open(args.config.as_deref(), args.work.as_deref())?;
     let destination = session.destination(&args.to)?.clone();
     if let Some(ring) = args.ring

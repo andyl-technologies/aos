@@ -49,6 +49,7 @@ mod signer;
 mod status;
 mod surface;
 mod timestamp;
+mod tooling;
 mod tuf;
 mod verify;
 

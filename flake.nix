@@ -251,6 +251,7 @@
           aos = aos.pkgs.aos;
           apm = aos.pkgs.aos.apm;
           apr = aos.pkgs.aos.apr;
+          release-tooling = aos.releaseTooling;
           all = allPackages;
           crucible-nginx-curl-guest = import ./tests/crucible/_nginx-curl-http-200-guest.nix {
             pkgs = aos.pkgs;
@@ -335,6 +336,23 @@
               # the `nix` subprocesses they launch.
               export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib"
             '';
+        };
+
+        # The operator shell for canonical releases: only the installed
+        # release tooling closure, whose wrappers export AOS_RELEASE_TOOLING
+        # so `aos release` binds that closure and finds its executors.
+        release = builtins.derivation {
+          name = "aos-release";
+          inherit system;
+          outputs = ["out"];
+          builder = "${aos.pkgs.bash}/bin/bash";
+          args = [
+            "-c"
+            "echo 'Use nix develop .#release, not nix build' >&2; ${aos.pkgs.coreutils}/bin/mkdir -p $out"
+          ];
+          shellHook = ''
+            export PATH="${aos.releaseTooling}/bin''${PATH:+:$PATH}"
+          '';
         };
       }
     );
