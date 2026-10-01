@@ -1008,6 +1008,8 @@
     probe_migration_stream patched-b "$PATCHED_QEMU"
 
     QEMU_INERT_MIGRATION_PARSER=${./qemu-inert-migration.py} \
+    QEMU_INERT_MIGRATION_REFERENCE="$TMPDIR/migration-reference-a.bin" \
+    QEMU_INERT_MIGRATION_PATCHED="$TMPDIR/migration-patched-a.bin" \
       python3 ${./test_qemu_inert_migration.py} \
       > "$TMPDIR/migration-parser-tests.log" 2>&1 \
       || { cat "$TMPDIR/migration-parser-tests.log" >&2; fail "migration parser corruption controls failed"; }
@@ -1017,10 +1019,16 @@
       "$TMPDIR/migration-patched-a.bin" \
       "$TMPDIR/migration-patched-b.bin" \
       > "$TMPDIR/migration-projection.result" \
-      || fail "sim-off migration differs beyond the exact PIT phase subsection"
-    grep -Fxq 'migration_pit_phase_ps=0,0,0,578' \
+      || fail "sim-off migration differs beyond the authenticated wide timers"
+    grep -Fxq 'migration_timer_subsection_count=10' \
       "$TMPDIR/migration-projection.result" \
-      || fail "paused migration did not exercise the pinned nonzero PIT phase"
+      || fail "paused migration lacks the ten wide timer subsections"
+    grep -Fxq 'migration_timer_frame_bytes=1027' \
+      "$TMPDIR/migration-projection.result" \
+      || fail "paused migration wide timer frame inventory differs"
+    grep -Fxq 'migration_pit_fractional_phase_ps=578' \
+      "$TMPDIR/migration-projection.result" \
+      || fail "paused migration did not exercise the pinned fractional PIT coordinate"
 
     probe_migration_stream patched-restored "$PATCHED_QEMU" \
       "$TMPDIR/migration-patched-a.bin"
@@ -1095,10 +1103,10 @@
     qmp_crucible_control_extension=crucible-complete-terminal-lifecycle
     qmp_crucible_control_extension_sim_off_rejected_without_run_state_change=true
     migration_legacy_projection_identical=true
-    migration_exact_ps_pit_subsection_authenticated=true
+    migration_wide_timer_subsections_authenticated=true
     migration_same_binary_repeats_identical=true
     migration_patched_restore_resave_identical=true
-    migration_patched_restore_preserved_nonzero_pit_phase=true
+    migration_patched_restore_preserved_fractional_pit_coordinate=true
     upstream_equivalent_corpus=boot,device-io,virtio-rng-execution-output,qmp,migration-legacy-projection
     RESULT
     cat "$TMPDIR/migration-projection.result" >> "$out/result"
