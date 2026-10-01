@@ -1,17 +1,23 @@
-From b181bc3857667841a5a4f5c1748ca9330245963d Mon Sep 17 00:00:00 2001
+From a3eae68365be5839dd341bbf9829febd418eb097 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 1 Oct 2026 14:04:17 -0700
-Subject: [PATCH] crucible: distribute qualified native runtime sources
+Date: Thu, 1 Oct 2026 16:33:32 -0700
+Subject: [PATCH] crucible: preserve native runtime and sealed template
+ admission
 
 Preserve the native graph and descriptor implementation with the
-reviewed deterministic runtime and schemas. Restore ordinary zero-budget
-execution and queue translation invalidation through exclusive CPU work.
-Retain main-loop physical completion and drain RR queues before guest
-execution or stop acknowledgment while preserving idle timer ordering.
+deterministic runtime and schemas. Restore ordinary zero-budget execution
+and queue translation invalidation through exclusive CPU work. Retain
+main-loop physical completion and drain RR queues before guest execution
+or stop acknowledgment while preserving idle timer ordering.
 
 Convert denied service instructions to exact sim ticks with signed-range
 checks. Version service clock evidence and retain production-body unit
 coverage for rate, phase, interruption, ordinary mode and refusal paths.
+
+Authenticate retained native block seals under BQL during OOB template
+preparation. Acquire BQL before the template mutex, retain both through
+admission and state publication, and preserve inherited BQL ownership.
+Keep all receipt and barrier checks and other template action scopes.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -67453,10 +67459,10 @@ index 8fe0876a3dab43aa3dc7376ada20b149b7c9d032..5434d4501636c9aad39475c8f6920e48
      if (mon->commands == &qmp_commands) {
          error_set(errp, ERROR_CLASS_COMMAND_NOT_FOUND,
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..22a2c39c53fd32210bef953a076718f07f986267 100644
+index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..667ddc7b6dfa3edc0eaed2f4eb86db957522ebff 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
-@@ -14,53 +14,6281 @@
+@@ -14,53 +14,6286 @@
   */
  
  #include "qemu/osdep.h"
@@ -67482,6 +67488,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..22a2c39c53fd32210bef953a076718f0
  #include "monitor/qdev.h"
  #include "monitor/qmp-helpers.h"
 +#include "qemu/aio.h"
++#include "qemu/main-loop.h"
 +#include "block/block_int.h"
 +#include "block/graph-lock.h"
 +#include "qemu/rcu.h"
@@ -71826,6 +71833,10 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..22a2c39c53fd32210bef953a076718f0
 +    CrucibleHotForkTemplateOutcome outcome;
 +    uint64_t acknowledged;
 +    bool seal_barrier_handoff;
++    /* OOB PREPARE authenticates the seal under BQL before the template lock. */
++    g_autoptr(BQLLockAuto) prepare_bql =
++        action == CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_PREPARE ?
++        bql_auto_lock(__FILE__, __LINE__) : NULL;
 +
 +    g_mutex_lock(&crucible_hot_fork_template_lock);
 +    if (crucible_hot_fork_operation_active) {
@@ -73754,7 +73765,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..22a2c39c53fd32210bef953a076718f0
  }
  
  void qmp_cont(Error **errp)
-@@ -68,7 +6296,23 @@ void qmp_cont(Error **errp)
+@@ -68,7 +6301,23 @@ void qmp_cont(Error **errp)
      BlockBackend *blk;
      BlockJob *job;
      Error *local_err = NULL;
@@ -73778,7 +73789,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..22a2c39c53fd32210bef953a076718f0
      /* if there is a dump in background, we should wait until the dump
       * finished */
      if (qemu_system_dump_in_progress()) {
-@@ -116,6 +6360,155 @@ void qmp_cont(Error **errp)
+@@ -116,6 +6365,155 @@ void qmp_cont(Error **errp)
      }
  }
  
