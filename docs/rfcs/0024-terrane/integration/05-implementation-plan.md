@@ -363,8 +363,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Shared existing-open prerequisites now require an existing-only final
   catalog exclusion and a descriptor-bound native range probe. The generic
   native range reader also uses a nofollow descriptor and preserves ordinary
-  hardlinks. These changes await actual Active-open integration and native
-  qualification; fresh and Pending activation remain separate work.
+  hardlinks. All five focused native range/metadata/lock cases pass on the
+  released shared source. Exact gate membership now includes the three
+  descriptor-range cases, four ordered control-walk cases and four index-policy
+  cases. Actual Active-open integration and complete native qualification
+  remain pending; fresh and Pending activation remain separate work.
   The verify-on-get, ranged-get and file-CAS gates now require the appropriate
   exact held-content selectors and reject missing tests. Complete effect routing
   remains pending.
@@ -433,7 +436,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   rejection can precede every cache effect. A separately anchored test clock
   retains its exact injected state for queued-expiry and continuity witnesses;
   production clock constructors remain private. The selected lease worker's
-  native implementation and qualification remain pending.
+  native candidate passes 11 of 12 actual Tokio cases and the independent
+  Rc acquire/renew/takeover/reopen case. The failing existing-open case confirms
+  missing coordination is recreated by the old activation path; it remains
+  failing until the retained Active-open route is integrated. Full review of
+  the nine owned source files checks the genuine producer, exact whole lease
+  and preserved successor, consumed registration controls, retained clock and
+  cancellation durability. A final retained clock check before receipt
+  acknowledgment is being added. Rustdoc, no-default-feature compilation and
+  mandatory formatting pass; strict Clippy remains blocked by 22 inherited
+  unfinished-production diagnostics. Native source integration, runner-wide
+  lease fencing and complete gate qualification remain pending.
   Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,
