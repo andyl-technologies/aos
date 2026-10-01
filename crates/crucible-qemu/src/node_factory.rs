@@ -126,6 +126,15 @@ where
         self.vmstate.hold_hot_fork_block_barrier()
     }
 
+    fn query_hot_fork_source_graph(
+        &mut self,
+        expected_qemu_pid: i64,
+        expected_template_generation: u64,
+    ) -> Result<crate::QmpHotForkSourceGraphReceipt, QemuNodeChannelError> {
+        self.vmstate
+            .query_hot_fork_source_graph(expected_qemu_pid, expected_template_generation)
+    }
+
     fn query_hot_fork_block_seal(
         &mut self,
     ) -> Result<crate::QmpHotForkBlockSealState, QemuNodeChannelError> {

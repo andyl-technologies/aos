@@ -42,6 +42,10 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
             QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
         ),
         ("block-seal", QMP_HOT_FORK_BLOCK_SEAL_SCHEMA_VERSION),
+        (
+            "source-graph",
+            crucible_qemu::QMP_HOT_FORK_SOURCE_GRAPH_SCHEMA_VERSION,
+        ),
         ("rcu-barrier", QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION),
         ("private-rings", QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION),
         (
@@ -154,6 +158,10 @@ fn patched_qapi_commands_have_schema_owners_or_qapi_only_contracts() {
         (
             "crucible-hot-fork-block-barrier",
             "crucible.qemu.hot-fork.block-barrier",
+        ),
+        (
+            "crucible-hot-fork-source-graph",
+            "crucible.qemu.hot-fork.source-graph",
         ),
         (
             "crucible-hot-fork-block-seal",

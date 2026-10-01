@@ -19,6 +19,7 @@ mod plugin;
 mod plugin_endpoints;
 mod private_rings;
 mod rcu_barrier;
+mod source_graph;
 mod template;
 pub(crate) use async_worker_barrier::QmpHotForkAsyncWorkerBarrierState;
 pub(crate) use async_worker_barrier::parse_hot_fork_async_worker_barrier_state;
@@ -98,6 +99,12 @@ pub(crate) use rcu_barrier::parse_hot_fork_rcu_barrier_state;
 pub use rcu_barrier::{
     QMP_HOT_FORK_RCU_BARRIER_COMMAND, QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION,
     QmpHotForkRcuBarrierState,
+};
+pub(crate) use source_graph::parse_hot_fork_source_graph;
+pub use source_graph::{
+    QMP_HOT_FORK_SOURCE_GRAPH_COMMAND, QMP_HOT_FORK_SOURCE_GRAPH_MAX_BYTES,
+    QMP_HOT_FORK_SOURCE_GRAPH_MAX_NODES, QMP_HOT_FORK_SOURCE_GRAPH_SCHEMA_VERSION,
+    QmpHotForkSourceGraphMember, QmpHotForkSourceGraphReceipt,
 };
 pub(crate) use template::parse_hot_fork_template_state;
 pub use template::{

@@ -102,3 +102,81 @@ fn guarded_probe_read_only_overlay_child() -> Result<(), Box<dyn Error>> {
     assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
     Ok(())
 }
+
+#[test]
+fn overlay_relative_name_requires_actual_original_cwd_and_admitted_inode()
+-> Result<(), Box<dyn Error>> {
+    let fixture = GuardedProbeFixture::new(
+        "spawn::tests::image_launch_tests::overlay_relative_name_original_cwd_child",
+        ProbeChildDirectoryAccess::ReadOnly,
+    )?;
+    let output = run_guarded_qemu_setup_probe_inner(
+        &fixture.command,
+        GuardedSetupProbeCommand {
+            args: &fixture.args,
+            root_overlay: None,
+        },
+        &[],
+        4096,
+        Duration::from_secs(5),
+        &fixture.prepared,
+        &fixture.contract,
+    )?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+#[test]
+fn overlay_relative_name_original_cwd_child() -> Result<(), Box<dyn Error>> {
+    if !probe_child_is_active() {
+        return Ok(());
+    }
+    let directory = env::current_dir()?;
+    let prepared = open_prepared_run_directory_for_test(&directory)?;
+    let path = directory.join("crucible-hot-fork-overlay-11.qcow2");
+    std::fs::write(&path, b"admitted regular overlay")?;
+    let file = std::fs::File::open(&path)?;
+    let name = prepared.authenticate_hot_fork_overlay_name(std::process::id(), &file, &path)?;
+    assert_eq!(name, Path::new("crucible-hot-fork-overlay-11.qcow2"));
+    assert!(
+        prepared
+            .authenticate_hot_fork_overlay_name(u32::MAX, &file, &path)
+            .is_err()
+    );
+    assert!(
+        prepared
+            .authenticate_hot_fork_overlay_name(
+                std::process::id(),
+                &file,
+                &directory.join("foreign/overlay")
+            )
+            .is_err()
+    );
+
+    std::fs::rename(&path, directory.join("original-overlay"))?;
+    std::fs::write(&path, b"replacement regular overlay")?;
+    assert!(
+        prepared
+            .authenticate_hot_fork_overlay_name(std::process::id(), &file, &path)
+            .is_err()
+    );
+    let other = tempfile::tempdir()?;
+    std::fs::File::create(other.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
+    let foreign = open_prepared_run_directory_for_test(other.path())?;
+    let foreign_path = other.path().join("crucible-hot-fork-overlay-11.qcow2");
+    std::fs::write(&foreign_path, b"foreign regular overlay")?;
+    assert!(
+        foreign
+            .authenticate_hot_fork_overlay_name(
+                std::process::id(),
+                &std::fs::File::open(&foreign_path)?,
+                &foreign_path
+            )
+            .is_err()
+    );
+    Ok(())
+}

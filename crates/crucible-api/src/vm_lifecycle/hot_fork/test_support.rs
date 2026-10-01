@@ -513,6 +513,7 @@ fn lifecycle_without_backends(
         node_launcher: Box::new(PackagedProductionVmNodeLauncher),
         _run_directory: run_directory,
         retained_resource_owners: Vec::new(),
+        hot_fork_backing_files: BTreeMap::new(),
     };
     lifecycle
         .reserve_lifecycle_state_encoding(source.plan().fault_signals().resource_limits(), 0, 0)

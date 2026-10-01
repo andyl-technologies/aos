@@ -594,6 +594,28 @@ impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
         }
     }
 
+    fn authenticate_hot_fork_overlay_name(
+        &self,
+        source_pid: u32,
+        file: &std::fs::File,
+        path: &std::path::Path,
+    ) -> Result<std::path::PathBuf, LifecycleApiError> {
+        let directories = self
+            .run_directories
+            .lock()
+            .map_err(|_| launcher_message("QEMU generation run-directory registry is poisoned"))?;
+        let directory = directories.get(self.inner.identity()).ok_or_else(|| {
+            launcher_message("QEMU generation lost its retained run-directory authority")
+        })?;
+        directory
+            .authenticate_hot_fork_overlay_name(source_pid, file, path)
+            .map_err(|error| {
+                launcher_message(format!(
+                    "authenticate hot-fork source cwd and overlay: {error}"
+                ))
+            })
+    }
+
     fn finish(&mut self) -> Result<(), LifecycleApiError> {
         self.image_helpers
             .lock()

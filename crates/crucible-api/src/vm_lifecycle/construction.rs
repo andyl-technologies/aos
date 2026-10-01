@@ -281,6 +281,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     let mut node_service_states = BTreeMap::new();
     let mut immutable_root_images = BTreeMap::new();
     let mut retained_hot_fork_disk_files = Vec::new();
+    let mut hot_fork_backing_files = BTreeMap::new();
     let mut debug_backend_paths = BTreeMap::new();
     let mut initial_ticks = None;
     let mut repository_restore = restore_checkpoint
@@ -434,6 +435,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                             vm.id.name
                         ))
                     })?;
+                hot_fork_backing_files.insert(vm.id.clone(), basis.immutable_backing_chain());
                 retained_hot_fork_disk_files.append(&mut files);
             } else if !cfg!(any(test, feature = "test-support")) {
                 return Err(loop_factory_error(format!(
@@ -1510,6 +1512,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         debug_runtime_evidence: Vec::new(),
         node_launcher,
         _run_directory: run_directory,
+        hot_fork_backing_files,
         retained_resource_owners: retained_hot_fork_disk_files
             .into_iter()
             .map(|file| Box::new(file) as Box<dyn Send>)

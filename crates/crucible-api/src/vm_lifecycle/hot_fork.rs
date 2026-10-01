@@ -407,6 +407,11 @@ impl ProductionVmHotForkSourceWorld {
                         node.name
                     )));
                 }
+                custody.authenticate_source_graph(
+                    lifecycle,
+                    node,
+                    prepared.template_generation(),
+                )?;
                 if !custody.native_current_for_node(lifecycle, node)? {
                     return Err(hot_fork_boundary_error(format!(
                         "prepared source `{}` native disk seal changed",
@@ -1229,11 +1234,10 @@ impl ProductionVmLifecycleLoop {
                     );
                 }
             };
-            let reused_disk = retained_disk_custody.contains_key(node);
             let disk_preparation = match retained_disk_custody.remove(node) {
                 Some(custody) => self
-                    .revalidate_sealed_hot_fork_disk(node, &custody)
-                    .map(|binding| Some((custody, binding))),
+                    .reacquire_sealed_hot_fork_disk(node, &custody)
+                    .map(|(custody, binding)| Some((Arc::new(custody), binding))),
                 None => self
                     .prepare_sealed_hot_fork_disk(node)
                     .map(|disk| disk.map(|(custody, binding)| (Arc::new(custody), binding))),
@@ -1277,20 +1281,29 @@ impl ProductionVmLifecycleLoop {
             }
             let binding_storage = bindings.map(|(_basis, binding)| binding);
             let binding_slice = binding_storage.as_slice();
-            match self.inner.backend_mut().prepare_retained_hot_fork_template(
+            let preparation = self.inner.backend_mut().prepare_retained_hot_fork_template(
                 node,
                 configuration,
                 event_log.clone(),
                 launch_resources,
                 binding_slice,
                 MAXIMUM_HOT_FORK_RING_IMAGE_BYTES,
-            ) {
+            );
+            let preparation = preparation.and_then(|token| {
+                if let Some((custody, _)) = &disk {
+                    custody
+                        .authenticate_source_graph(&mut self, node, token.template_generation())
+                        .map_err(|error| crucible::BackendError::Rejected {
+                            message: error.to_string(),
+                        })?;
+                }
+                Ok(token)
+            });
+            match preparation {
                 Ok(token) => {
                     if let Some((custody, _binding)) = disk {
-                        if !reused_disk {
-                            self.retained_resource_owners
-                                .push(Box::new(Arc::clone(&custody)));
-                        }
+                        self.retained_resource_owners
+                            .push(Box::new(Arc::clone(&custody)));
                         disk_custody.insert(node.clone(), custody);
                     }
                     prepared.push(token);

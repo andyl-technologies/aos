@@ -14,6 +14,14 @@ use crucible::ContentHash;
 use super::hot_fork_boundary_error;
 use crucible::SchedulerError;
 
+/// One independently admitted immutable ancestor in the complete backing chain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::vm_lifecycle) struct ImmutableHotForkBackingFile {
+    pub(super) path: PathBuf,
+    pub(super) identity: (u64, u64),
+    pub(super) content: ContentHash,
+}
+
 /// Process-neutral whole disk basis carried with a child continuation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::vm_lifecycle) struct ProductionVmHotForkDiskBasis {
@@ -32,9 +40,23 @@ pub(in crate::vm_lifecycle) struct ProductionVmHotForkDiskBasis {
     pub(super) detached_path: PathBuf,
     pub(super) detached_identity: (u64, u64),
     pub(super) detached_content: ContentHash,
+    pub(super) backing_files: Vec<ImmutableHotForkBackingFile>,
 }
 
 impl ProductionVmHotForkDiskBasis {
+    /// Returns the immutable source ancestors admitted for an actual child.
+    pub(in crate::vm_lifecycle) fn immutable_backing_chain(
+        &self,
+    ) -> Vec<ImmutableHotForkBackingFile> {
+        let mut backings = vec![ImmutableHotForkBackingFile {
+            path: self.snapshot_path.clone(),
+            identity: self.snapshot_identity,
+            content: self.snapshot_content,
+        }];
+        backings.extend(self.backing_files.iter().cloned());
+        backings
+    }
+
     pub(in crate::vm_lifecycle) fn reopen_current(
         &self,
         expected_boot: ContentHash,
@@ -69,6 +91,20 @@ impl ProductionVmHotForkDiskBasis {
                     "retained hot-fork disk {} changed before child construction",
                     path.display(),
                 )));
+            }
+            files.push(file);
+        }
+
+        for backing in &self.backing_files {
+            let file = File::open(&backing.path).map_err(|error| {
+                hot_fork_boundary_error(format!("reopen immutable backing: {error}"))
+            })?;
+            if hash_owned_file(&file, &backing.path, "immutable backing")?
+                != (backing.identity, backing.content)
+            {
+                return Err(hot_fork_boundary_error(
+                    "immutable ancestor changed before child construction",
+                ));
             }
             files.push(file);
         }
@@ -113,6 +149,7 @@ pub(super) struct PinnedHotForkDiskFiles {
     boot: File,
     vmstate: File,
     detached: File,
+    backings: Vec<(File, ImmutableHotForkBackingFile)>,
 }
 
 impl PinnedHotForkDiskFiles {
@@ -171,6 +208,7 @@ impl PinnedHotForkDiskFiles {
             detached_path: detached_path.to_owned(),
             detached_identity,
             detached_content,
+            backing_files: Vec::new(),
         };
         Ok(Self {
             basis,
@@ -178,12 +216,187 @@ impl PinnedHotForkDiskFiles {
             boot,
             vmstate,
             detached,
+            backings: Vec::new(),
         })
+    }
+
+    /// Duplicates the actual current writable overlay retained by the source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when original inode custody is no longer current.
+    pub(super) fn open_current_overlay(&self) -> Result<File, SchedulerError> {
+        if !pinned_identity_current(
+            &self.detached,
+            &self.basis.detached_path,
+            self.basis.detached_identity,
+        )? {
+            return Err(hot_fork_boundary_error(
+                "current writable overlay lost original inode custody",
+            ));
+        }
+        self.detached.try_clone().map_err(|error| {
+            hot_fork_boundary_error(format!("duplicate current writable overlay: {error}"))
+        })
+    }
+
+    /// Retains every prior immutable snapshot when a new writable root is sealed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an original ancestor changed or cannot be retained.
+    pub(super) fn retain_prior_backings(&mut self, prior: &Self) -> Result<(), SchedulerError> {
+        let snapshot = ImmutableHotForkBackingFile {
+            path: prior.basis.snapshot_path.clone(),
+            identity: prior.basis.snapshot_identity,
+            content: prior.basis.snapshot_content,
+        };
+        for (file, backing) in std::iter::once((&prior.snapshot, &snapshot))
+            .chain(prior.backings.iter().map(|(file, backing)| (file, backing)))
+        {
+            if hash_owned_file(file, &backing.path, "retained immutable ancestor")?
+                != (backing.identity, backing.content)
+            {
+                return Err(hot_fork_boundary_error(
+                    "retained immutable ancestor changed before reacquisition",
+                ));
+            }
+            let retained = file.try_clone().map_err(|error| {
+                hot_fork_boundary_error(format!("retain immutable ancestor: {error}"))
+            })?;
+            self.basis.backing_files.push(backing.clone());
+            self.backings.push((retained, backing.clone()));
+        }
+        Ok(())
+    }
+
+    /// Retains immutable ancestors admitted during actual child adoption.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on replacement, mutation or unavailable original files.
+    pub(super) fn retain_adopted_backings(
+        &mut self,
+        backings: &[ImmutableHotForkBackingFile],
+    ) -> Result<(), SchedulerError> {
+        for backing in backings {
+            let file = File::open(&backing.path).map_err(|error| {
+                hot_fork_boundary_error(format!("open admitted child backing: {error}"))
+            })?;
+            if hash_owned_file(&file, &backing.path, "admitted child backing")?
+                != (backing.identity, backing.content)
+            {
+                return Err(hot_fork_boundary_error(
+                    "admitted child backing changed before descendant capture",
+                ));
+            }
+            self.basis.backing_files.push(backing.clone());
+            self.backings.push((file, backing.clone()));
+        }
+        Ok(())
     }
 
     /// Returns the independently authenticated continuation disk basis.
     pub(super) fn basis(&self) -> &ProductionVmHotForkDiskBasis {
         &self.basis
+    }
+
+    /// Independently authenticates every native graph file against admitted custody.
+    ///
+    /// The roster includes shared file visits. Each must bind one of the exact
+    /// admitted inodes, and every admitted file must occur in the complete graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on missing or foreign files, changed size or content,
+    /// or mutation while reading the retained descriptor.
+    pub(super) fn authenticate_graph_files(
+        &self,
+        members: &[((u64, u64), u64, &str, bool)],
+    ) -> Result<(), SchedulerError> {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::fs::FileExt;
+
+        let mut admitted = vec![
+            (&self.snapshot, self.basis.snapshot_identity, false),
+            (&self.boot, self.basis.boot_identity, false),
+            (&self.vmstate, self.basis.vmstate_identity, true),
+            (&self.detached, self.basis.detached_identity, true),
+        ];
+        admitted.extend(
+            self.backings
+                .iter()
+                .map(|(file, backing)| (file, backing.identity, false)),
+        );
+        let mut seen = std::collections::BTreeMap::new();
+        for &(identity, size, digest, originally_writable) in members {
+            if let Some(prior) = seen.insert(identity, (size, digest, originally_writable))
+                && prior != (size, digest, originally_writable)
+            {
+                return Err(hot_fork_boundary_error("shared graph file visits disagree"));
+            }
+            if !admitted.iter().any(|(_, admitted, writable)| {
+                *admitted == identity && *writable == originally_writable
+            }) {
+                return Err(hot_fork_boundary_error(
+                    "native graph contains a file outside independently admitted custody",
+                ));
+            }
+        }
+        let mut buffer = vec![0_u8; 64 * 1024];
+        for (file, identity, _) in admitted {
+            let &(size, digest, _) = seen.get(&identity).ok_or_else(|| {
+                hot_fork_boundary_error("complete native graph omitted an admitted file")
+            })?;
+            let before = file
+                .metadata()
+                .map_err(|error| hot_fork_boundary_error(format!("inspect graph file: {error}")))?;
+            if !before.is_file() || (before.dev(), before.ino()) != identity || before.len() != size
+            {
+                return Err(hot_fork_boundary_error(
+                    "native graph differs from the admitted regular inode and size",
+                ));
+            }
+            let mut hash = Sha256::new();
+            let mut offset = 0_u64;
+            while offset < size {
+                let limit =
+                    usize::try_from((size - offset).min(buffer.len() as u64)).map_err(|error| {
+                        hot_fork_boundary_error(format!("bound graph file read: {error}"))
+                    })?;
+                let count = file
+                    .read_at(&mut buffer[..limit], offset)
+                    .map_err(|error| {
+                        hot_fork_boundary_error(format!("hash retained graph file: {error}"))
+                    })?;
+                if count == 0 {
+                    return Err(hot_fork_boundary_error(
+                        "graph file became shorter during authentication",
+                    ));
+                }
+                hash.update(&buffer[..count]);
+                offset += count as u64;
+            }
+            let actual = hash
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let after = file.metadata().map_err(|error| {
+                hot_fork_boundary_error(format!("reinspect graph file: {error}"))
+            })?;
+            if actual != digest
+                || (after.dev(), after.ino()) != identity
+                || after.len() != size
+                || before.ctime() != after.ctime()
+                || before.ctime_nsec() != after.ctime_nsec()
+            {
+                return Err(hot_fork_boundary_error(
+                    "native complete-file digest differs from independently held bytes",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Rechecks immutable bytes and all retained file identities.
@@ -209,6 +422,13 @@ impl PinnedHotForkDiskFiles {
         ];
         for (file, path, identity, content) in immutable {
             if hash_owned_file(file, path, "retained hot-fork disk file")? != (identity, content) {
+                return Ok(false);
+            }
+        }
+        for (file, backing) in &self.backings {
+            if hash_owned_file(file, &backing.path, "retained immutable ancestor")?
+                != (backing.identity, backing.content)
+            {
                 return Ok(false);
             }
         }
@@ -362,6 +582,106 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     #[test]
+    fn native_graph_files_require_full_independent_bytes_and_every_owned_inode()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use sha2::{Digest, Sha256};
+        let directory = tempfile::tempdir()?;
+        let paths =
+            ["snapshot", "boot", "vmstate", "detached"].map(|name| directory.path().join(name));
+        for (index, path) in paths.iter().enumerate() {
+            std::fs::write(path, [index as u8; 16])?;
+        }
+        let snapshot = File::open(&paths[0])?;
+        let metadata = snapshot.metadata()?;
+        let files = PinnedHotForkDiskFiles::capture(
+            NativeDiskSealIdentity {
+                source_pid: 451,
+                generation: 1,
+                backend_id: 2,
+                snapshot_identity: (metadata.dev(), metadata.ino()),
+            },
+            (snapshot, &paths[0]),
+            (File::open(&paths[1])?, &paths[1]),
+            ContentHash::from_bytes(&[1_u8; 16]),
+            (File::open(&paths[2])?, &paths[2]),
+            (File::open(&paths[3])?, &paths[3]),
+        )?;
+        let digests = paths.each_ref().map(|path| {
+            Sha256::digest(std::fs::read(path).unwrap())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        });
+        let mut members = Vec::new();
+        for (index, path) in paths.iter().enumerate() {
+            let metadata = std::fs::metadata(path)?;
+            members.push((
+                (metadata.dev(), metadata.ino()),
+                metadata.len(),
+                digests[index].as_str(),
+                index >= 2,
+            ));
+        }
+        files.authenticate_graph_files(&members)?;
+        assert!(files.authenticate_graph_files(&members[..3]).is_err());
+        let mut foreign = members.clone();
+        foreign[0].0.1 += 1;
+        assert!(files.authenticate_graph_files(&foreign).is_err());
+        let mut size = members.clone();
+        size[2].1 += 1;
+        assert!(files.authenticate_graph_files(&size).is_err());
+        let mut disposition = members.clone();
+        disposition[2].3 = false;
+        assert!(files.authenticate_graph_files(&disposition).is_err());
+
+        let modified = std::fs::metadata(&paths[2])?.modified()?;
+        std::fs::write(&paths[2], [9_u8; 16])?;
+        File::options()
+            .write(true)
+            .open(&paths[2])?
+            .set_times(std::fs::FileTimes::new().set_modified(modified))?;
+        assert!(files.authenticate_graph_files(&members).is_err());
+        std::fs::write(&paths[2], [2_u8; 16])?;
+        files.authenticate_graph_files(&members)?;
+
+        let fresh_path = directory.path().join("fresh-overlay");
+        std::fs::write(&fresh_path, [4_u8; 16])?;
+        let current_root = files.open_current_overlay()?;
+        let current = current_root.metadata()?;
+        let mut reacquired = PinnedHotForkDiskFiles::capture(
+            NativeDiskSealIdentity {
+                source_pid: 451,
+                generation: 2,
+                backend_id: 2,
+                snapshot_identity: (current.dev(), current.ino()),
+            },
+            (current_root, &paths[3]),
+            (File::open(&paths[1])?, &paths[1]),
+            ContentHash::from_bytes(&[1_u8; 16]),
+            (File::open(&paths[2])?, &paths[2]),
+            (File::open(&fresh_path)?, &fresh_path),
+        )?;
+        reacquired.retain_prior_backings(&files)?;
+        assert_eq!(reacquired.basis().backing_files.len(), 1);
+        assert_eq!(
+            reacquired
+                .basis()
+                .reopen_current(ContentHash::from_bytes(&[1_u8; 16]))?
+                .len(),
+            5
+        );
+        std::fs::write(&paths[0], [9_u8; 16])?;
+        assert!(!reacquired.current()?);
+        assert!(
+            reacquired
+                .basis()
+                .reopen_current(ContentHash::from_bytes(&[1_u8; 16]))
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn pinned_content_rejects_mutation_and_path_replacement() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("root.qcow2");
@@ -424,6 +744,7 @@ mod tests {
             detached_path: paths[3].clone(),
             detached_identity: identities[3].0,
             detached_content: identities[3].1,
+            backing_files: Vec::new(),
         };
         assert_eq!(basis.reopen_current(identities[1].1).unwrap().len(), 4);
         assert!(

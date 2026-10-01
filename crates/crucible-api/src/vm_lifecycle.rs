@@ -1112,6 +1112,8 @@ pub struct ProductionVmLifecycleLoop {
     node_launcher: Box<dyn ProductionVmNodeLauncher>,
     _run_directory: ProductionRunDirectory,
     retained_resource_owners: Vec<Box<dyn Send>>,
+    hot_fork_backing_files:
+        BTreeMap<NodeId, Vec<hot_fork::disk_basis::ImmutableHotForkBackingFile>>,
 }
 
 /// Exact scheduler/evidence boundary exposed after production checkpoint restore.
@@ -1612,6 +1614,23 @@ pub trait ProductionVmNodeLease: Send {
     ) -> Result<(std::fs::File, PathBuf), LifecycleApiError> {
         Err(loop_factory_error(
             "generation lease has no guarded detached-overlay authority",
+        ))
+    }
+
+    /// Authenticates a relative overlay name under the original source cwd.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the lease retains the source directory and
+    /// independently binds its actual cwd and named file to the admitted inode.
+    fn authenticate_hot_fork_overlay_name(
+        &self,
+        _source_pid: u32,
+        _file: &std::fs::File,
+        _path: &Path,
+    ) -> Result<PathBuf, LifecycleApiError> {
+        Err(loop_factory_error(
+            "generation lease has no authenticated hot-fork cwd authority",
         ))
     }
 
