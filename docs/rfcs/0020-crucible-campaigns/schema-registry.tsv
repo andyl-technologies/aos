@@ -47,6 +47,8 @@ crucible.qemu.hot-fork.child-runtime	4	crucible-qemu::qmp::hot_fork	process-prot
 crucible.qemu.hot-fork.async-worker-barrier	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.block-barrier	4	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.block-source-proof	1	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
+crucible.qemu.hot-fork.block-seal	1	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
+crucible.qemu.hot-fork.cold-stop	1	qemu-patch::hot-fork-cold-stop	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
 crucible.qemu.hot-fork.rcu-barrier	1	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.private-rings	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.plugin-endpoints	5	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
