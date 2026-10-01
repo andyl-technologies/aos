@@ -7,6 +7,7 @@
 /(nix|nix\.lower)/store/@AOS_ZFS_WORKER_BASENAME_REGEX@/bin/aos-sandbox-guest-root-publisher -- system_u:object_r:aos_sandbox_guest_root_publisher_exec_t
 /(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandboxd -- system_u:object_r:aos_sandbox_controller_exec_t
 /(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-git-gateway -- system_u:object_r:aos_sandbox_git_gateway_exec_t
+/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-nix-floor-provision -- system_u:object_r:aos_nix_offline_prepare_exec_t
 /(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-policy-authorityd -- system_u:object_r:aos_sandbox_policy_authority_exec_t
 /(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-source-signerd -- system_u:object_r:aos_sandbox_source_signer_exec_t
 /(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-cache-signerd -- system_u:object_r:aos_sandbox_cache_signer_exec_t
@@ -16,6 +17,7 @@
 /dev/tpmrm0 -c system_u:object_r:aos_method46_tpm_device_t
 # These public immutable inputs are not signer secrets or runtime authority.
 /(nix|nix\.lower)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-normal-root-startup-profile-1/(profile\.json|effective-policy\.tsv|source-policy\.33) -- system_u:object_r:aos_sandbox_policy_authority_profile_t
+/(nix|nix\.lower)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-nix-offline-startup-profile-3/(profile\.json|effective-policy\.tsv|source-policy\.33) -- system_u:object_r:aos_nix_offline_prepare_profile_t
 /(nix|nix\.lower)/store/[a-z0-9]{32}-aos-selinux-runtime-roots-[^/]+/bin/aos-selinux-runtime-roots -- system_u:object_r:aos_sandbox_runtime_roots_exec_t
 /usr/lib/systemd/aos-selinux-root-handoff -- system_u:object_r:init_exec_t
 /usr/lib/systemd/aos-selinux-runtime-roots-handoff -- system_u:object_r:aos_sandbox_runtime_roots_handoff_exec_t
@@ -30,6 +32,10 @@
 /run/current-system -l system_u:object_r:var_run_t
 /run/etc -d system_u:object_r:var_run_t
 /var/lib/aos/sandbox -d system_u:object_r:aos_sandbox_view_parent_t
+/var/lib/aos/sandbox-nix-floor-provision -d system_u:object_r:aos_nix_offline_prepare_state_t
+/var/lib/aos/sandbox-nix-floor-provision/(installation\.lock|candidate-private-v3|candidate-public-v3) -- system_u:object_r:aos_nix_offline_prepare_state_t
+/run/credentials/aos-sandbox-nix-floor-provision\.service -d system_u:object_r:aos_nix_offline_prepare_credential_t
+/run/credentials/aos-sandbox-nix-floor-provision\.service/(node-id|nix-floor-provision-approval-public-key-v3) -- system_u:object_r:aos_nix_offline_prepare_credential_t
 /var/lib/aos/sandbox/source-evidence -d system_u:object_r:aos_sandbox_policy_authority_state_t
 /var/lib/aos/sandbox/source-evidence/git-authority-v1\.journal(\.lock|\.compact\.tmp)? -- system_u:object_r:aos_sandbox_policy_authority_state_t
 /var/lib/aos/sandbox/source-domains(/.*)? system_u:object_r:aos_sandbox_source_journal_t

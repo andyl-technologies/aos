@@ -36,7 +36,82 @@ require {
     class node { recvfrom sendto };
     class peer recv;
     class packet { recv send };
+    class capability { chown dac_override };
 }
+
+# Disabled manual prepare-only administrative principal. Its selected unit
+# uses root0/cap0x3, but this role receives no TPM, runtime writer or normal
+# owner conversion. Creation below the existing parent is a literal-name
+# transition; no generic var_lib_t file create or removal permission is added.
+type aos_nix_offline_prepare_t;
+typeattribute aos_nix_offline_prepare_t domain;
+typeattribute aos_nix_offline_prepare_t aos_private_root_custody_domain;
+role system_r types aos_nix_offline_prepare_t;
+type aos_nix_offline_prepare_exec_t;
+type aos_nix_offline_prepare_profile_t;
+type aos_nix_offline_prepare_credential_t;
+type aos_nix_offline_prepare_state_t;
+
+allow init_t aos_nix_offline_prepare_exec_t:file { execute execute_no_trans getattr map open read };
+allow init_t aos_nix_offline_prepare_t:process transition;
+allow init_t aos_nix_offline_prepare_t:process2 nnp_transition;
+allow aos_nix_offline_prepare_t aos_nix_offline_prepare_exec_t:file { entrypoint getattr map open read };
+allow aos_nix_offline_prepare_t self:capability { chown dac_override };
+allow aos_nix_offline_prepare_t self:process { fork getattr getsched sigchld signal };
+allow aos_nix_offline_prepare_t init_t:fd use;
+allow aos_nix_offline_prepare_t null_device_t:chr_file { getattr open read write };
+allow aos_nix_offline_prepare_t { root_t var_t var_lib_t var_run_t usr_t etc_t }:dir { getattr open search };
+allow aos_nix_offline_prepare_t { usr_t etc_t }:file { getattr open read };
+allow aos_nix_offline_prepare_t etc_t:lnk_file { getattr read };
+allow aos_nix_offline_prepare_t { lib_t ld_so_t }:file { execute getattr map open read };
+allow aos_nix_offline_prepare_t init_exec_t:file { getattr read };
+allow aos_nix_offline_prepare_t aos_nix_offline_prepare_profile_t:file { getattr open read };
+allow init_t aos_nix_offline_prepare_profile_t:file { getattr open read };
+allow aos_nix_offline_prepare_t proc_t:dir { getattr open read search };
+allow aos_nix_offline_prepare_t proc_t:filesystem getattr;
+allow aos_nix_offline_prepare_t self:dir { getattr open read search };
+allow aos_nix_offline_prepare_t self:file { getattr open read };
+allow aos_nix_offline_prepare_t self:lnk_file { getattr read };
+allow aos_nix_offline_prepare_t security_t:dir { getattr open read search };
+allow aos_nix_offline_prepare_t security_t:filesystem getattr;
+allow aos_nix_offline_prepare_t security_t:file { getattr open read };
+allow aos_nix_offline_prepare_t cgroup_t:dir { getattr open read search };
+allow aos_nix_offline_prepare_t cgroup_t:file { getattr open read };
+allow aos_nix_offline_prepare_t sysctl_t:dir search;
+allow aos_nix_offline_prepare_t sysctl_kernel_t:dir search;
+allow aos_nix_offline_prepare_t sysctl_kernel_t:file { getattr open read };
+allow aos_nix_offline_prepare_t systemd_unit_t:file { getattr open read };
+allow aos_nix_offline_prepare_t tmpfs_t:filesystem getattr;
+
+# Sole existing unique-PID1 status observer; no manager mutation grant.
+allow aos_nix_offline_prepare_t self:unix_stream_socket { connect create getattr getopt read setopt shutdown write };
+allow aos_nix_offline_prepare_t system_dbusd_var_run_t:sock_file { getattr open read write };
+allow aos_nix_offline_prepare_t system_dbusd_t:unix_stream_socket connectto;
+allow aos_nix_offline_prepare_t { init_t system_dbusd_t }:dbus send_msg;
+allow { init_t system_dbusd_t } aos_nix_offline_prepare_t:dbus send_msg;
+allow aos_nix_offline_prepare_t systemd_unit_t:service status;
+allow aos_nix_offline_prepare_t init_t:system status;
+
+# Preserve PID 1's existing inspection under the private custody attribute.
+allow init_t aos_nix_offline_prepare_t:dir { getattr search open read lock ioctl };
+allow init_t aos_nix_offline_prepare_t:file { getattr open read lock ioctl };
+allow init_t aos_nix_offline_prepare_t:lnk_file { getattr read };
+
+# Fixed independent public delivery only. PID1 creates its immutable credential
+# copy; the prepare role cannot mutate either delivered public original.
+allow aos_nix_offline_prepare_t aos_nix_offline_prepare_credential_t:dir { getattr open read search };
+allow aos_nix_offline_prepare_t aos_nix_offline_prepare_credential_t:file { getattr open read };
+allow aos_nix_offline_prepare_credential_t tmpfs_t:filesystem associate;
+allow init_t aos_nix_offline_prepare_credential_t:dir { add_name create getattr mounton open read relabelto remove_name search setattr write };
+allow init_t aos_nix_offline_prepare_credential_t:file { create getattr open read setattr unlink write };
+type_transition init_t aos_nix_offline_prepare_credential_t:file aos_nix_offline_prepare_credential_t;
+
+# No remove_name, unlink, rename, link or foreign-tree cleanup permissions.
+allow aos_nix_offline_prepare_t var_lib_t:dir { add_name write };
+type_transition aos_nix_offline_prepare_t var_lib_t:dir aos_nix_offline_prepare_state_t "sandbox-nix-floor-provision";
+allow aos_nix_offline_prepare_t aos_nix_offline_prepare_state_t:dir { add_name create getattr open read search setattr write };
+allow aos_nix_offline_prepare_t aos_nix_offline_prepare_state_t:file { create getattr lock open read setattr write };
+type_transition aos_nix_offline_prepare_t aos_nix_offline_prepare_state_t:file aos_nix_offline_prepare_state_t;
 
 # Dedicated transport-only Gateway. Its explicit unit context is the only
 # normal entry route; no writer, protected owner, helper or default transition

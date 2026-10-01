@@ -20,8 +20,13 @@ PREPARER_DOMAINS = (
 GATEWAY = "aos_sandbox_git_gateway_t"
 GATEWAY_EXECUTABLE = "aos_sandbox_git_gateway_exec_t"
 GATEWAY_CREDENTIAL = "aos_sandbox_git_gateway_credential_t"
-ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY)
-NO_DEFAULT_ENTRY = (*OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY)
+OFFLINE_PREPARE = "aos_nix_offline_prepare_t"
+OFFLINE_PREPARE_EXECUTABLE = "aos_nix_offline_prepare_exec_t"
+OFFLINE_PREPARE_PROFILE = "aos_nix_offline_prepare_profile_t"
+OFFLINE_PREPARE_CREDENTIAL = "aos_nix_offline_prepare_credential_t"
+OFFLINE_PREPARE_STATE = "aos_nix_offline_prepare_state_t"
+ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE)
+NO_DEFAULT_ENTRY = (*OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE)
 ROOT_CUSTODY_CUTS = (
     ("fd", "use"),
     ("unix_stream_socket", "read"),
@@ -215,6 +220,81 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     controller_runtime = "aos_sandbox_controller_runtime_t"
     negative.extend(accesses("init_t", controller_runtime, "dir", (*dir_mutate, "open", "read", "search")))
     negative.extend(accesses("init_t", controller_runtime, "sock_file", (*file_mutate, "open", "read")))
+
+    # Preparation is a separate manual principal, not an ordinary owner or
+    # TPM helper. Existing purpose writers and manager mutation stay denied.
+    positive.extend(accesses(
+        "init_t", OFFLINE_PREPARE_EXECUTABLE, "file",
+        ("execute", "execute_no_trans", "getattr", "map", "open", "read"),
+    ))
+    positive.extend((
+        Access("init_t", OFFLINE_PREPARE, "process", "transition"),
+        Access("init_t", OFFLINE_PREPARE, "process2", "nnp_transition"),
+        Access(OFFLINE_PREPARE, OFFLINE_PREPARE_EXECUTABLE, "file", "entrypoint"),
+        Access(OFFLINE_PREPARE, OFFLINE_PREPARE, "capability", "chown"),
+        Access(OFFLINE_PREPARE, OFFLINE_PREPARE, "capability", "dac_override"),
+        Access(OFFLINE_PREPARE, "init_t", "fd", "use"),
+        Access(OFFLINE_PREPARE, "init_t", "system", "status"),
+        Access(OFFLINE_PREPARE, "systemd_unit_t", "service", "status"),
+        Access(OFFLINE_PREPARE_CREDENTIAL, "tmpfs_t", "filesystem", "associate"),
+    ))
+    for reader in (OFFLINE_PREPARE, "init_t"):
+        positive.extend(accesses(reader, OFFLINE_PREPARE_PROFILE, "file", file_read))
+    positive.extend(accesses(OFFLINE_PREPARE, OFFLINE_PREPARE_CREDENTIAL, "file", file_read))
+    positive.extend(accesses(
+        OFFLINE_PREPARE, OFFLINE_PREPARE_CREDENTIAL, "dir",
+        ("getattr", "open", "read", "search"),
+    ))
+    positive.extend(accesses("init_t", OFFLINE_PREPARE_CREDENTIAL, "file", CREDENTIAL_PID1_FILE_DELIVERY))
+    positive.extend(accesses("init_t", OFFLINE_PREPARE_CREDENTIAL, "dir", CREDENTIAL_PID1_DIR_DELIVERY))
+    transitions.append(Transition("init_t", OFFLINE_PREPARE_CREDENTIAL, "file", OFFLINE_PREPARE_CREDENTIAL))
+    positive.extend(accesses(
+        OFFLINE_PREPARE, OFFLINE_PREPARE_STATE, "file",
+        ("create", "getattr", "lock", "open", "read", "setattr", "write"),
+    ))
+    positive.extend(accesses(
+        OFFLINE_PREPARE, OFFLINE_PREPARE_STATE, "dir",
+        ("add_name", "create", "getattr", "open", "read", "search", "setattr", "write"),
+    ))
+    positive.extend(accesses(OFFLINE_PREPARE, "var_lib_t", "dir", ("add_name", "write")))
+    # The canonical TE owns the literal basename; Transition's existing DATA
+    # model checks presence, not a new independent filename-policy engine.
+    transitions.append(Transition(OFFLINE_PREPARE, "var_lib_t", "dir", OFFLINE_PREPARE_STATE))
+    transitions.append(Transition(OFFLINE_PREPARE, OFFLINE_PREPARE_STATE, "file", OFFLINE_PREPARE_STATE))
+    for object_class, permissions in (
+        ("dir", ("getattr", "search", "open", "read", "lock", "ioctl")),
+        ("file", ("getattr", "open", "read", "lock", "ioctl")),
+        ("lnk_file", ("getattr", "read")),
+    ):
+        positive.extend(accesses("init_t", OFFLINE_PREPARE, object_class, permissions))
+    for target in ("security_t", "cgroup_t", "sysctl_kernel_t", "usr_t", "systemd_unit_t"):
+        positive.extend(accesses(OFFLINE_PREPARE, target, "file", file_read))
+    for permission in ("start", "stop", "reload", "enable", "disable"):
+        negative.append(Access(OFFLINE_PREPARE, "*", "service", permission))
+    for permission in ("start", "stop", "reload", "reboot", "halt"):
+        negative.append(Access(OFFLINE_PREPARE, "*", "system", permission))
+    negative.append(Access(OFFLINE_PREPARE, "*", "file", "execute_no_trans"))
+    negative.append(Access(OFFLINE_PREPARE, "aos_method46_tpm_device_t", "chr_file", "open"))
+    for target in ("cgroup_t", "sysctl_kernel_t"):
+        negative.extend(accesses(OFFLINE_PREPARE, target, "file", file_mutate))
+    for helper in HELPER_DOMAINS:
+        negative.append(Access(OFFLINE_PREPARE, helper, "process", "transition"))
+    for other in all_roles:
+        negative.extend(accesses(other, OFFLINE_PREPARE_PROFILE, "file", file_mutate + ("execute", "execute_no_trans", "map")))
+        if other != OFFLINE_PREPARE:
+            negative.extend(accesses(other, OFFLINE_PREPARE_STATE, "file", (*file_mutate, "open", "read")))
+            negative.extend(accesses(other, OFFLINE_PREPARE_STATE, "dir", dir_mutate))
+        if other not in (OFFLINE_PREPARE, "init_t"):
+            negative.extend(accesses(other, OFFLINE_PREPARE_CREDENTIAL, "file", (*file_mutate, "open", "read")))
+            negative.extend(accesses(other, OFFLINE_PREPARE_CREDENTIAL, "dir", dir_mutate))
+            negative.extend(accesses(other, OFFLINE_PREPARE, "file", ("ioctl", "open", "read")))
+            negative.append(Access(other, OFFLINE_PREPARE, "fd", "use"))
+            negative.extend(accesses(other, OFFLINE_PREPARE, "unix_stream_socket", ("read", "write")))
+            negative.append(Access(other, OFFLINE_PREPARE, "process", "transition"))
+    negative.extend(accesses(OFFLINE_PREPARE, OFFLINE_PREPARE_CREDENTIAL, "file", file_mutate))
+    negative.extend(accesses(OFFLINE_PREPARE, OFFLINE_PREPARE_CREDENTIAL, "dir", dir_mutate))
+    negative.extend(accesses(OFFLINE_PREPARE, OFFLINE_PREPARE_STATE, "file", ("append", "link", "rename", "unlink")))
+    negative.extend(accesses(OFFLINE_PREPARE, OFFLINE_PREPARE_STATE, "dir", ("remove_name", "rename", "rmdir")))
 
     root = "aos_sandbox_policy_authority_t"
     root_credential = "aos_sandbox_policy_authority_credential_t"

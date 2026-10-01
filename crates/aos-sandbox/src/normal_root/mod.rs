@@ -15,6 +15,7 @@
 mod client;
 mod controller_peer;
 mod git_evidence_credential;
+mod nix_offline_provision;
 pub(crate) mod images;
 mod nix_startup;
 pub(crate) mod profile;
@@ -58,6 +59,9 @@ pub use nix_startup::{
     NixOwnerSessionFloorStartupV2,
     ProductionControllerNixStartupCaptureV1, ProductionControllerNixStartupV1,
     ProductionNixOwnerStartupCaptureV1, ProductionNixOwnerStartupV1,
+};
+pub use nix_offline_provision::{
+    OfflineNixPrepareOriginV3, OfflineNixPrepareStartupErrorV3, OfflineNixPrepareStartupV3,
 };
 
 pub(super) const PID1_FD_NAME: &str = "aos-normal-root-pid1-image";
