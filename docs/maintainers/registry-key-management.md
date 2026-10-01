@@ -36,11 +36,12 @@ attestations, and profile overrides. Custody and threshold decisions for this
 role therefore govern environment fitness and emergency relaxation as well as
 release content.
 
-`andyl/testing` publishes edge releases only; `andyl/main` publishes candidate
-and stable releases, and handles an emergency as a signed profile override of
-`production/stable` rather than a separate class. Main requires strict pipeline
-provenance for every release; testing exercises new build and release
-mechanisms with lighter assurance.
+`andyl/main` publishes edge, candidate, and stable releases, and handles an
+emergency as a signed profile override of `production/stable` rather than a
+separate class. `andyl/testing` publishes edge releases only. Main requires
+strict pipeline provenance and the custody above for every release, including
+`edge`; testing exercises new build and release mechanisms with lighter
+assurance and file-backed keys.
 Do not import testing keys into main's trust policy. A threshold is
 meaningful only when its custodians and administrative access are independent;
 several keys accessible through one online credential do not provide that

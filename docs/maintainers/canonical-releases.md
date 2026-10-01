@@ -1,11 +1,11 @@
 # Canonical release coordinator
 
-Each registry carries its own channels. `andyl/testing`, and each
-`andyl/testing-vN` epoch, carries `edge` only. `andyl/main` carries
-`candidate` and `stable` and never publishes `edge`. Main requires strict build
-and publication provenance; testing isolates the experimental pipeline and its
-keys. Testing releases never become main releases by changing a channel or
-copying signed artifacts.
+Each registry carries its own channels. `andyl/main` carries `edge`,
+`candidate`, and `stable`. `andyl/testing`, and each `andyl/testing-vN` epoch,
+carries `edge` only. Main requires strict build and publication provenance for
+every channel; testing isolates the experimental pipeline and its keys. Testing
+releases never become main releases by changing a channel or copying signed
+artifacts.
 
 Disk images and OCI containers must configure APM for their exact publishing
 registry. The shared `aos.release` profile supplies the registry URL
@@ -703,7 +703,10 @@ Releases require the checked-out commit to be the local protected branch head
 and reachable from its protected local or remote reference. A plan that
 references an accepted [profile override](qualification.md#profile-overrides)
 may instead build a reviewed `dplecki/hotfix-*` branch whose head remains
-reachable from the protected branch. The requested source tag must not exist.
+reachable from the protected branch. The requested source tag must not exist,
+unless it already names the planned commit: a main edge release and a testing
+edge release of the same version share one `release/<version>` tag on one
+protected commit. A tag naming any other commit fails planning.
 
 Planning is read-only except for the named output. It refuses a dirty checkout
 and never replaces an existing output. The resulting file is canonical JSON;

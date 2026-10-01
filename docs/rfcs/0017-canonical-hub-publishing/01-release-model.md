@@ -7,7 +7,7 @@ Six names answer six different questions:
 | Layer | Question | AOS decision |
 | --- | --- | --- |
 | Registry | Who owns and authorizes this package universe? | `andyl/main`; the experimental `andyl/testing` |
-| Channel | How mature and supported is this snapshot? | `edge` in testing; `candidate` and `stable` in main |
+| Channel | How mature and supported is this snapshot? | `edge`, `candidate`, and `stable` in main; `edge` only in testing |
 | Partition | Which rollout cohort receives the channel's next release? | One of 256 stable buckets, `00` through `ff` |
 | Surface | Where is the content qualified or served? | A `staging` and a `production` surface: a Hub deployment such as `aos.staging.andyl.org` or `aos.andyl.org`, or a static origin |
 | Destination | Which surface and channel does a publication move? | `<surface>/<channel>`, for example `production/stable` |
@@ -25,11 +25,16 @@ Each registry has a closed destination table in the qualification contract:
 
 | Registry | Destination | Profile |
 | --- | --- | --- |
-| `andyl/testing` | `staging/edge` | `build` |
-| `andyl/testing` | `production/edge` | `smoke` |
-| `andyl/main` | `staging/candidate`, `staging/stable` | `build` |
+| `andyl/main` | `staging/edge`, `staging/candidate`, `staging/stable` | `build` |
+| `andyl/main` | `production/edge` | `smoke` |
 | `andyl/main` | `production/candidate` | `functional` |
 | `andyl/main` | `production/stable` | `soak` |
+| `andyl/testing` | `staging/edge` | `build` |
+| `andyl/testing` | `production/edge` | `smoke` |
+
+A channel kind selects the same profile on both registries. The registry
+decides the keys and pipeline a release ships through; the channel decides what
+it must prove.
 
 A production destination is published only after a staging destination of the
 same release. The version's class restricts the plan: edge versions plan edge
@@ -66,9 +71,12 @@ models multiple placements and routes; channels already carry stream selection.
 
 `andyl/testing` meets the trust-root and data-lifecycle criteria: it is an
 experimental registry with its own out-of-band root, disposable history, and
-lighter pipeline assurance, and its content is never promoted into
-`andyl/main`. It carries only the `edge` channel, so the integration stream
-never shares a monotonic floor or trust root with supported releases.
+lighter key-management and continuous-deployment infrastructure, and its
+content is never promoted into `andyl/main`. It carries only the `edge`
+channel because its releases never graduate; a testing candidate or stable
+stream would be a second supported stream in name only. Main's own `edge`
+shares main's trust root and monotonic floor with candidate and stable, exactly
+as candidate already does with stable.
 
 The complete package and image target contract is defined in
 [`06-platform-matrix.md`](06-platform-matrix.md). Architecture and operating
@@ -79,12 +87,19 @@ channels.
 
 ### `edge`
 
-`edge` is for AOS developers and disposable integration systems and lives only
-in `andyl/testing`. It receives a release on a changed business day after the
-`smoke` profile's automated exact-byte checks pass on the changed targets. It
-may contain prerelease packages and interface changes. It is public so
-downstream integrators can test the actual distribution protocol, but it has no
-production support promise.
+`edge` is for AOS developers and disposable integration systems. It receives a
+release on a changed business day after the `smoke` profile's automated
+exact-byte checks pass on the changed targets. It may contain prerelease
+packages and interface changes. It is public so downstream integrators can test
+the actual distribution protocol, but it has no production support promise, and
+edge artifacts bake a user-visible warning saying so.
+
+Main's `edge` is the integration stream that supported releases are cut from,
+published through main's keys and pipeline on every changed business day. That
+daily traffic is what keeps the signer, surface transitions, read-back, and
+ring machinery proven between weekly candidates. Testing's `edge` carries the
+same class of release through the experimental infrastructure; it is where a
+change to the pipeline itself is rehearsed.
 
 Edge has no soak and no review requirement. All 256 `edge` partitions advance
 together. Bucketing adds no safety when the audience has explicitly chosen the
@@ -169,7 +184,9 @@ stable-eligible candidate is signed. Earlier experimental candidates use the
 
 The monthly train follows this sequence:
 
-1. Any number of `YYYY.M.0-dev.*` edge releases in `andyl/testing`.
+1. Any number of `YYYY.M.0-dev.*` edge releases, on `andyl/main` and on
+   `andyl/testing`. The two registries may publish the same version from the
+   same protected commit and share its `release/<version>` source tag.
 2. Any number of `YYYY.M.0-rc.N` qualification releases.
 3. A final `YYYY.M.0` candidate, signed and staged as the stable-eligible
    artifact.
@@ -241,7 +258,7 @@ empty or unqualified artifact.
 
 | Item | Normal cadence | Triggered cadence |
 | --- | --- | --- |
-| `edge` release (`andyl/testing`) | Once per changed business day | Important integration fix |
+| `edge` release (`andyl/main`, `andyl/testing`) | Once per changed business day | Important integration fix |
 | `candidate` registry release | Weekly | Security or release-blocking fix |
 | `stable` registry release | Monthly | Supported security or critical reliability fix |
 | Staging system-image upload | Each image-affecting candidate, and at least one stable-eligible candidate per monthly train | Targeted edge qualification or an emergency image fix |

@@ -1,12 +1,15 @@
 # `andyl/main` registry runbook
 
 Use the shared [qualification contract](qualification.md) and
-[release checklist](release-checklist.md). Main's destinations select the
-`functional` and `soak` profiles of that contract.
+[release checklist](release-checklist.md). Main's production destinations
+select the `smoke`, `functional`, and `soak` profiles of that contract.
 
-`andyl/main` is the supported registry. It is a separate trust and pipeline assurance
-domain from `andyl/testing`; testing releases and testing roots never promote
-into it.
+`andyl/main` is the supported registry. It is a separate trust and pipeline
+assurance domain from `andyl/testing`: hardware-backed key custody, threshold
+signing, and the production publication pipeline, where testing has lighter
+versions of each. Testing releases and testing roots never promote into it.
+Main carries every channel, including `edge`, so the integration stream runs
+through the same keys and pipeline as the releases it leads to.
 
 Follow [Registry key management](registry-key-management.md) for the intended
 hardware-backed custody, independent authorities, rotation, and recovery
@@ -20,8 +23,9 @@ records an explicit go-live decision. Before any operation:
 2. for each Hub surface, build one immutable Hub installer, deploy it to
    staging, validate it, and promote the exact store path to production;
 3. take a complete verified backup and recovery point;
-4. confirm with `aos maintain release fitness status` that every fitness attestation the
-   `functional` and `soak` profiles require is fresh and binding-matched;
+4. confirm with `aos maintain release fitness status` that every fitness
+   attestation the planned profiles require is fresh and binding-matched
+   (`smoke` requires none);
 5. load only main-registry role credentials and the current surface's
    credentials; and
 6. record registry base commit/generation, surface identities, key roster,
@@ -84,24 +88,32 @@ Bootstrap and qualify the empty base in staging. Only then repeat the topology
 plan/apply/show and environment-specific release bootstrap in production.
 Creating the topology row does not authorize or publish a base.
 
-## Candidate and stable releases
+## Edge, candidate, and stable releases
 
-Main carries two channels and four destinations:
+Main carries three channels and six destinations:
 
 | Destination | Profile | Obligations |
 | --- | --- | --- |
-| `staging/candidate`, `staging/stable` | `build` | Reproduced, authorized build; channel moves on publication |
+| `staging/edge`, `staging/candidate`, `staging/stable` | `build` | Reproduced, authorized build; channel moves on publication |
+| `production/edge` | `smoke` | Automated exact-byte functional checks on the changed targets and cells; no review, soak, or fitness |
 | `production/candidate` | `functional` | Every functional claim and package cell, one reviewer per report, transaction review, rollout health, fresh fitness |
 | `production/stable` | `soak` | As candidate, plus a complete matrix, qualified (A3) claims, a seven-day soak, `key-rotation` fitness, and rings of 4, 32, 128, and 256 partitions with a reviewed health approval before each ring |
 
+- Edge releases use a `-dev.YYYYMMDD.N` version and plan only the edge
+  destinations. They are cut on changed business days, carry no support
+  promise, and publish only automated A2 evidence. Edge artifacts bake a
+  user-visible warning for that reason.
 - Candidate releases use an `-rc.N` version and plan only the candidate
   destinations.
 - Final releases use a version without a prerelease component and plan both
   candidate and stable destinations. Publish the bundle to
   `production/candidate` first, then advance it into `production/stable`; the
   stable channel receives the same signed bytes, never a rebuild.
-- Main never carries `edge`. Test new build or release mechanisms in
-  `andyl/testing`.
+- Main's `edge` and testing's `edge` are built from the same protected source
+  and may share a version and `release/<version>` source tag. Planning accepts
+  an existing tag only when it already names the planned commit.
+- A change to the build or release mechanism itself is rehearsed in
+  `andyl/testing` before it runs against main's keys and surfaces.
 
 Follow the [release checklist](release-checklist.md), using
 [`canonical-releases.md`](canonical-releases.md) for command arguments,
@@ -134,8 +146,9 @@ integrity check remain required.
 ## Routine package updates
 
 Use the `aos maintain` workflow documented in the testing runbook to land source
-updates through a reviewed pull request. After merge, publish an `-rc.N`
-candidate. A stable release is a new plan for a final version, whose one
+updates through a reviewed pull request. After merge, the next `edge` release
+picks the change up on its changed-business-day cadence, and the next weekly
+`-rc.N` candidate carries it toward stable. A stable release is a new plan for a final version, whose one
 bundle is published to `candidate` and then `stable`; it is never a retagged
 `-rc.N` candidate or a cross-registry channel move.
 

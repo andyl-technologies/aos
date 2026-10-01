@@ -4,8 +4,11 @@ This runbook owns every routine operation for the experimental hosted registry.
 The registry is public but uses experimental build and release infrastructure
 and may be rebuilt from scratch. It carries the `edge` channel only: each
 release is published to `staging/edge` and then to `production/edge` under the
-`smoke` profile. Candidate and stable streams belong to `andyl/main`. Its
-signing material remains separate from `andyl/main`.
+`smoke` profile, the same destinations and profile that `andyl/main` uses for
+its own `edge`. What differs is the infrastructure underneath: candidate and
+stable streams, and the edge stream that leads to them, belong to
+`andyl/main`; testing is where a change to the release mechanism itself is
+rehearsed first. Its signing material remains separate from `andyl/main`.
 
 `andyl/testing` does not use an HSM. Its release signer is the
 [file-backed adapter](canonical-releases.md#file-backed-signer-for-registries-without-an-hsm)
